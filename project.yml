@@ -1,0 +1,35 @@
+name: RexDuo
+options:
+  bundleIdPrefix: dev.abrahamgonzalez
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: R2PVQ496X7
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.99.3
+targets:
+  RexDuo:
+    type: application
+    platform: iOS
+    sources:
+      - path: RexDuo
+    dependencies:
+      - package: SwiftTerm
+        product: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo
+        PRODUCT_NAME: RexDuo
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: RexDuo/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
