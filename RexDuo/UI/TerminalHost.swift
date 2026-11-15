@@ -24,6 +24,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var lastBounds: CGSize = .zero
     private var serverSize: (Int, Int) = (80, 24)
     private var typedTest = false
+    private var lostOwnership = false
 
     init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme) {
         self.stream = stream
@@ -57,11 +58,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         statusLabel.layer.cornerRadius = 8
         statusLabel.layer.masksToBounds = true
         statusLabel.isHidden = true
+        statusLabel.isUserInteractionEnabled = true
+        statusLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(statusTapped)))
         addSubview(statusLabel)
 
         clipsToBounds = true
         applyTheme(theme)
         stream.sink = self
+
+        NotificationCenter.default.addObserver(self, selector: #selector(didBackground),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(willForeground),
+                                               name: UIApplication.willEnterForegroundNotification, object: nil)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
         tap.cancelsTouchesInView = false
@@ -71,6 +79,31 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func tapped() { onFocus?() }
+
+    /// Hand fitted panes back to the Mac while the app is in the background.
+    @objc private func didBackground() {
+        guard claimedSize != nil else { return }
+        claimTask?.cancel()
+        claimedSize = nil
+        let s = stream
+        Task { await s.release() }
+    }
+
+    @objc private func willForeground() {
+        guard window != nil, sizing == .fit, !lostOwnership else { return }
+        lastBounds = .zero
+        setNeedsLayout()
+    }
+
+    /// Tapping the "another device has this pane" chip takes the pane back.
+    @objc private func statusTapped() {
+        guard sizing == .fit, lostOwnership else { return }
+        lostOwnership = false
+        hideStatus()
+        claimedSize = nil
+        lastBounds = .zero
+        setNeedsLayout()
+    }
 
     func focusKeyboard() { _ = term.becomeFirstResponder() }
 
@@ -225,10 +258,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         serverSize = (cols, rows)
         guard changed else { return }
         applyServerGrid(cols, rows)
-        if sizing == .fit, let c = claimedSize, c != (cols, rows), isActive {
-            // Another client (e.g. the Mac) resized it; take it back while this pane is on screen.
+        if sizing == .fit, let c = claimedSize, c != (cols, rows), owner != stream.control.clientID {
+            // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
             claimedSize = nil
-            requestClaim(cols: c.0, rows: c.1)
+            lostOwnership = true
+            showStatus("Resized elsewhere · tap to fit here")
         }
     }
 
@@ -249,7 +283,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     func streamStatus(_ status: TerminalStream.Status) {
         switch status {
         case .live:
-            hideStatus()
+            if !lostOwnership { hideStatus() }
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true
                 term.send(txt: t.replacingOccurrences(of: "\\n", with: "\r"))
@@ -301,8 +335,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     func paste(_ s: String) {
-        // Bracketed paste is the program's choice; send as typed text wrapped if needed.
-        stream.send(text: s)
+        // Goes through SwiftTerm so it's bracketed when the program asked for bracketed paste.
+        term.pasteText(s)
     }
 
     func sendKey(_ bytes: [UInt8]) { stream.send(bytes) }
