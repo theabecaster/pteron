@@ -403,13 +403,18 @@ final class GhosttyScrollTests: XCTestCase {
         XCTAssertEqual(frame.rowsBuilt, 6)
     }
 
-    func testOutputFramesStillFollowTheDirtyFlags() {
-        // Reuse by content is only for frames this engine scrolled. Output keeps upstream's rule.
+    func testOutputThatScrollsReusesRowsToo() {
+        // Output that scrolls the screen marks every row dirty, like a scroll step. The rows
+        // that only moved up are reused the same way (more in GhosttyPerfTests).
         let (core, frame) = make(200, cols: 80, rows: 24)
         core.feed(lines(201...201))
         core.sync()
         XCTAssertTrue(frame.update(core: core))
-        XCTAssertEqual(frame.rowsBuilt, 24)
+        XCTAssertEqual(frame.rowsBuilt, 2, "the new line and the empty line under it")
+        XCTAssertEqual(frame.rowsReused, 22)
+        let fresh = GhosttyFrameBuilder(atlas: frame.atlas)
+        XCTAssertTrue(fresh.update(core: core))
+        XCTAssertEqual(drawn(frame), drawn(fresh))
     }
 
     // MARK: Performance

@@ -69,6 +69,18 @@ final class GhosttyInstanceList<T> {
     var array: [T] { Array(UnsafeBufferPointer(start: base, count: count)) }
 }
 
+/// A style as the row builder uses it: colors resolved against the palette, nil for "default".
+struct GhosttyRowStyle: Equatable {
+    /// The style's id in the row's page.
+    var id: UInt16
+    /// A column whose cell names it.
+    var column: UInt16
+    var flags: UInt16 = 0
+    var fg: UInt32?
+    var bg: UInt32?
+    var underlineColor: UInt32?
+}
+
 /// Everything needed to draw one row, in draw order: backgrounds, underlines, glyphs, then
 /// lines that go over text.
 final class GhosttyRow {
@@ -84,7 +96,7 @@ final class GhosttyRow {
     /// Columns that start a wide character (the cursor needs to know).
     var wideColumns: [UInt16] = []
 
-    // What the instances were built from, kept so a scroll step can tell that a row it has
+    // What the instances were built from, kept so a later frame can tell that a row it has
     // already built is still right (`GhosttyRowBuilder.matches`).
     private(set) var source: UnsafeMutablePointer<GhosttyCell>?
     private(set) var sourceCount = 0
@@ -94,6 +106,13 @@ final class GhosttyRow {
     /// The row has cells whose text lives outside the cell (grapheme clusters), which the raw
     /// cells can't vouch for.
     var hasClusters = false
+    /// Every style the row's cells name, as it resolved when the row was built. A cell holds a
+    /// style id, not the style, so equal cells only mean equal instances if these still hold.
+    let styles = GhosttyInstanceList<GhosttyRowStyle>(capacity: 4)
+    /// A style could not be read while building: nothing can vouch for the row.
+    var unverifiable = false
+    /// Some glyphs were not in the atlas yet and were left out (`GhosttyGlyphAtlas.defersSlowGlyphs`).
+    var awaitsGlyphs = false
 
     deinit { source?.deallocate() }
 
@@ -118,6 +137,9 @@ final class GhosttyRow {
         selectionStart = -1
         selectionEnd = -1
         hasClusters = false
+        styles.removeAll()
+        unverifiable = false
+        awaitsGlyphs = false
     }
 
     /// Moves a built row to another viewport row without rebuilding it.
@@ -277,22 +299,46 @@ final class GhosttyRowBuilder {
         return (Int(selection.start_x), end)
     }
 
+    /// The style of the cell at `column` of the row loaded into `cells`, or nil if it can't be read.
+    @inline(__always)
+    private func style(_ cells: GhosttyRenderStateRowCells?, column: Int, id: UInt16) -> GhosttyRowStyle? {
+        var style = GhosttyStyle()
+        guard ghostty_render_state_row_cells_select(cells, UInt16(column)) == GHOSTTY_SUCCESS,
+              ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS else { return nil }
+        return GhosttyRowStyle(id: id, column: UInt16(column), flags: style.flags, fg: resolve(style.fg_color),
+                               bg: resolve(style.bg_color), underlineColor: resolve(style.underline_color))
+    }
+
     /// True if `row`, built earlier, is exactly what building the iterator's current row would
-    /// give now. The caller has already matched the row id.
+    /// give now. `cells` is the shared cells handle.
     ///
-    /// Upstream marks every row dirty after the viewport scrolls ("the dirty flag is
-    /// conservative"), so the flag can't tell a scrolled row from a changed one. This can: a
-    /// row's instances are a function of its cells, the styles those cells name, its selection,
-    /// the colors and the atlas. Colors and atlas changes rebuild everything before we get here.
-    /// A style id is fixed while a cell of the same row still uses it, so equal cells mean equal
-    /// styles. Grapheme clusters live outside the cells, so rows that have any are rebuilt.
-    func matches(_ row: GhosttyRow, iterator: GhosttyRenderStateRowIterator) -> Bool {
-        guard !row.hasClusters, let source = row.source else { return false }
+    /// The dirty flag can't say this: upstream marks every row dirty after the viewport moves
+    /// ("the dirty flag is conservative"), and a program that repaints its whole screen dirties
+    /// rows it writes the same text to. This can. A row's instances are a function of its cells,
+    /// the styles those cells name, its selection, the colors and the atlas. Color and atlas
+    /// changes rebuild everything before we get here. The cells and the selection are compared
+    /// here. A cell names its style by an id, and an id can be given to another style once
+    /// nothing uses it, so each style the row was built with is read again and compared too.
+    /// Grapheme clusters live outside the cells, so rows that have any are rebuilt, and so are
+    /// rows that still wait for glyphs.
+    func matches(_ row: GhosttyRow, iterator: GhosttyRenderStateRowIterator, cells: GhosttyRenderStateRowCells) -> Bool {
+        guard !row.hasClusters, !row.unverifiable, !row.awaitsGlyphs, let source = row.source else { return false }
         var view = GhosttyCellsView()
         guard ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW, &view) == GHOSTTY_SUCCESS,
               let raws = view.ptr, view.len == row.sourceCount,
               memcmp(raws, source, view.len * MemoryLayout<GhosttyCell>.stride) == 0 else { return false }
-        return selection(iterator, cells: raws, count: view.len) == (row.selectionStart, row.selectionEnd)
+        guard selection(iterator, cells: raws, count: view.len) == (row.selectionStart, row.selectionEnd) else { return false }
+        let known = row.styles.count
+        guard known > 0 else { return true }
+        var cells = Optional(cells)
+        guard ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) == GHOSTTY_SUCCESS else { return false }
+        var i = 0
+        while i < known {
+            let was = row.styles[i]
+            guard style(cells, column: Int(was.column), id: was.id) == was else { return false }
+            i += 1
+        }
+        return true
     }
 
     /// Builds `row` from the iterator's current row. `cells` is the shared cells handle.
@@ -419,18 +465,33 @@ final class GhosttyRowBuilder {
             var underlineColor: UInt32? = nil
             if styled {
                 if cachedStyleId != Int(styleId) {
-                    if !cellsLoaded {
-                        cellsLoaded = ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) == GHOSTTY_SUCCESS
+                    // Read each style once per row, and keep what it was (`matches`).
+                    var found: GhosttyRowStyle?
+                    var i = 0
+                    while i < row.styles.count {
+                        if row.styles[i].id == styleId {
+                            found = row.styles[i]
+                            break
+                        }
+                        i += 1
                     }
-                    var style = GhosttyStyle()
-                    if cellsLoaded, ghostty_render_state_row_cells_select(cells, UInt16(x)) == GHOSTTY_SUCCESS,
-                       ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS {
-                        styleFg = resolve(style.fg_color)
-                        styleBg = resolve(style.bg_color)
-                        styleUnderlineColor = resolve(style.underline_color)
-                        styleFlags = style.flags
+                    if found == nil {
+                        if !cellsLoaded {
+                            cellsLoaded = ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) == GHOSTTY_SUCCESS
+                        }
+                        if cellsLoaded, let read = style(cells, column: x, id: styleId) {
+                            row.styles.append(read)
+                            found = read
+                        }
+                    }
+                    if let found {
+                        styleFg = found.fg
+                        styleBg = found.bg
+                        styleUnderlineColor = found.underlineColor
+                        styleFlags = found.flags
                         cachedStyleId = Int(styleId)
                     } else {
+                        row.unverifiable = true
                         styleFg = nil
                         styleBg = nil
                         styleUnderlineColor = nil
@@ -518,7 +579,10 @@ final class GhosttyRowBuilder {
                             haveGlyph = true
                         }
                     }
-                    if glyph.kind != GhosttyGlyph.empty {
+                    if glyph.kind == GhosttyGlyph.pending {
+                        // The atlas is still drawing it. The row is built again when it is there.
+                        row.awaitsGlyphs = true
+                    } else if glyph.kind != GhosttyGlyph.empty {
                         row.glyphs.append(GhosttyGlyphInstance(
                             x: Int16(clamping: x * cellW + Int(glyph.ox)), y: glyph.oy, w: glyph.w, h: glyph.h, u: glyph.u, v: glyph.v,
                             color: fg, col: UInt16(x), row: rowIndex, kind: UInt16(glyph.kind)))
@@ -577,14 +641,25 @@ final class GhosttyFrameBuilder {
     private(set) var rowsReused = 0
     /// Pixels the grid is drawn shifted up: the sub-row scroll offset plus the rubber band.
     private(set) var scrollOffset = 0
+    /// Bumped whenever a row's instances may have changed (a row was built, or rows moved). The
+    /// renderer skips copying instances into a GPU buffer that already holds this version.
+    private(set) var rowsVersion = 0
     /// Rows captured below the viewport by the last update (0 or 1).
     private(set) var overscanBelow = 0
-    /// Off only to measure what row reuse saves on a scroll step.
+    /// Off only to measure what reusing rows saves: with it off, every dirty row is rebuilt.
+    /// (The name is from when only scroll steps reused rows.)
     var reusesRowsOnScroll = true
 
     private var spare: [GhosttyRow] = []
     /// The previous frame's rows while a full frame is rebuilt. Kept to avoid allocating.
     private var previous: [GhosttyRow?] = []
+    /// Let the atlas draw slow glyphs (font fallback, clusters) on its worker thread: rows are
+    /// built without them and built again when they arrive. Off, every glyph is drawn inside
+    /// `update`, so one call gives the finished frame (tests, offscreen rendering).
+    var defersSlowGlyphs = false
+    /// Rows that left glyphs out because the atlas was still drawing them.
+    private(set) var rowsAwaitingGlyphs = 0
+    private var seenArrivals = 0
     private var seenStateGeneration = -1
     private var seenAtlasGeneration = -1
     private var seenAtlas: ObjectIdentifier?
@@ -601,6 +676,8 @@ final class GhosttyFrameBuilder {
 
     var background: UInt32 { builder.background }
     var foreground: UInt32 { builder.foreground }
+    /// The atlas generation the rows' glyph positions are good for.
+    var atlasGeneration: Int { seenAtlasGeneration }
 
     /// Forces every row to be rebuilt on the next update (theme or font changed).
     func invalidate() { needsFull = true }
@@ -613,6 +690,12 @@ final class GhosttyFrameBuilder {
         guard let iterator = core.rowIterator, let cells = core.rowCells else { return false }
         rowsBuilt = 0
         rowsReused = 0
+        // The atlas is ours for the whole build, so the lookups don't lock. Its worker thread
+        // only waits to store a glyph it has already drawn.
+        let atlas = self.atlas
+        atlas.lock()
+        defer { atlas.unlock() }
+        atlas.defersSlowGlyphs = defersSlowGlyphs
 
         var full = needsFull
         needsFull = false
@@ -632,25 +715,40 @@ final class GhosttyFrameBuilder {
         cols = Int(c)
         rowCount = Int(r)
 
-        var changed = full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE
-        if changed {
+        // Glyphs that rows were built without are in the atlas now.
+        let arrived = rowsAwaitingGlyphs > 0 && atlas.arrivals != seenArrivals
+        seenArrivals = atlas.arrivals
+        var changed = false
+        if full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || arrived {
+            let everything = full || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL
             // Row identity: on a full redraw, a row whose id we already built and whose dirty flag
             // is clear can be reused as is. Not when we forced the rebuild ourselves.
-            let reuse = !full && dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL
-            // A scroll step marks every row dirty. Then a row with a known id is reused if its
-            // cells still match what it was built from.
-            let scrolled = reusesRowsOnScroll && core.scroll.movedViewport
+            let reuse = !full
+            // A dirty row is often unchanged: every row is dirty after the viewport moves (a
+            // scroll step, or output that scrolls the screen), and a program that repaints its
+            // screen rewrites rows with the text they had. Such a row is reused if it still
+            // matches what it was built from.
+            let verify = reusesRowsOnScroll && !full
             var attempts = 0
             repeat {
                 attempts += 1
                 seenAtlas = ObjectIdentifier(atlas)
                 seenAtlasGeneration = atlas.generation
                 rebuild(state, iterator: iterator, cells: cells, everything: full || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL,
-                        reuse: reuse && attempts == 1, verifyDirty: scrolled)
+                        reuse: reuse && attempts == 1, verifyDirty: verify && attempts == 1, awaited: arrived)
                 // The atlas filled up and was wiped while we built: earlier rows point at stale slots.
                 full = true
             } while seenAtlasGeneration != atlas.generation && attempts < 3
             ghostty_render_state_clean(state)
+            // Dirty rows that all turned out to be what is on screen make no new frame.
+            changed = everything || rowsBuilt > 0
+            if changed { rowsVersion &+= 1 }
+            rowsAwaitingGlyphs = 0
+            var i = 0
+            while i < rows.count {
+                if rows[i].awaitsGlyphs { rowsAwaitingGlyphs += 1 }
+                i += 1
+            }
         }
 
         // Upstream: don't shift the grid toward a side where nothing was captured.
@@ -693,7 +791,7 @@ final class GhosttyFrameBuilder {
     }
 
     private func rebuild(_ state: GhosttyRenderState, iterator: GhosttyRenderStateRowIterator, cells: GhosttyRenderStateRowCells,
-                         everything: Bool, reuse: Bool, verifyDirty: Bool) {
+                         everything: Bool, reuse: Bool, verifyDirty: Bool, awaited: Bool) {
         var iterator = Optional(iterator)
         guard ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iterator) == GHOSTTY_SUCCESS,
               let iterator else { return }
@@ -725,7 +823,7 @@ final class GhosttyFrameBuilder {
                     while k < n {
                         let i = hint + k < n ? hint + k : hint + k - n
                         if let candidate = previous[i], candidate.id == key {
-                            if !rowDirty || builder.matches(candidate, iterator: iterator) {
+                            if rowDirty ? builder.matches(candidate, iterator: iterator, cells: cells) : !candidate.awaitsGlyphs {
                                 row = candidate
                                 previous[i] = nil
                                 hint = i + 1 < n ? i + 1 : 0
@@ -746,9 +844,19 @@ final class GhosttyFrameBuilder {
                     rowsBuilt += 1
                     rows.append(fresh)
                 }
-            } else if rowDirty, y < rows.count {
-                builder.build(rows[y], y: y, iterator: iterator, cells: cells)
-                rowsBuilt += 1
+            } else if y < rows.count, rowDirty || (awaited && rows[y].awaitsGlyphs) {
+                let row = rows[y]
+                if rowDirty, verifyDirty, builder.matches(row, iterator: iterator, cells: cells) {
+                    rowsReused += 1
+                } else {
+                    builder.build(row, y: y, iterator: iterator, cells: cells)
+                    rowsBuilt += 1
+                }
+                // The row at this place may be another one than before (a program scrolled part
+                // of the screen). A later full frame looks rows up by id.
+                var id = GhosttyRenderStateRowId()
+                ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_ID, &id)
+                row.id = (id.bits.0, id.bits.1)
             }
             y += 1
         }

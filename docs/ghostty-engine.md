@@ -200,10 +200,18 @@ foreground.
        `queue.async { lock; vt_write in 64 KB slices; unlock; markDirty }`.
      - Resize and snapshot restore go on the same queue, so stream order holds.
    - **Shared render thread**:
-     - One runloop with one `CADisplayLink` at 120 Hz for all panes. It pauses when idle and is
-       woken with `CFRunLoopPerformBlock`.
-     - Per dirty pane: lock, `begin_update`, unlock, `end_update`, rebuild dirty rows only, encode,
-       present.
+     - One runloop with one `CADisplayLink` at 120 Hz for all panes, woken with
+       `CFRunLoopPerformBlock`.
+     - Pacing follows Ghostty's renderer thread: a wake-up draws at once if the pane has not
+       presented in the current display interval, else the next tick draws. So a pane hands over
+       at most one frame per refresh, and a frame never waits a whole interval for a tick. The
+       link runs for 0.1 s after the last output frame, then pauses: an idle pane schedules no
+       ticks and no passes.
+     - Per dirty pane: lock, `begin_update`, unlock, `end_update`, rebuild rows, encode, present.
+     - A dirty row is rebuilt only if it changed: its cells, its selection and the styles its
+       cells name are compared with what the row was built from (`GhosttyRowBuilder.matches`).
+       Output that scrolls and programs that repaint their whole screen dirty rows they don't
+       change.
    - **Renderer**:
      - `CAMetalLayer`, bgra8Unorm, premultiplied blending.
      - Pipelines: instanced background rects (adjacent same-color cells merged), then glyph quads
@@ -215,7 +223,15 @@ foreground.
    - **Glyphs**:
      - CoreText rasterizes MesloLGS NF Regular, Bold, Italic and BoldItalic at pixel size with
        integer cell metrics.
-     - Missing glyphs and graphemes go through `CTLine` for automatic fallback.
+     - Missing glyphs and graphemes go through `CTLine` for automatic fallback. On screen that
+       happens on a worker thread: the frame is drawn without them and again when they arrive, so
+       a frame never waits for CoreText. Glyphs of our own faces and sprites are drawn in the
+       frame (tens of microseconds each).
+     - A shared atlas is warmed on the worker when it is made: printable ASCII in the four faces,
+       and one symbol, CJK character and emoji to make CoreText load its fallback fonts.
+     - The atlas has a lock. The render thread holds it for a frame's row build and for the
+       texture upload; the worker only to store a finished bitmap.
+     - Only the box of new glyphs is uploaded to the texture.
      - Fast array for ASCII. Reset the atlas on overflow.
      - Draw box drawing (U+2500–257F) and block elements (U+2580–259F) as cell-exact sprites
        (Claude Code boxes and logo, htop). Font glyphs leave gaps.
@@ -438,9 +454,66 @@ Criteria (first frame, gaps, main-thread time, memory within 10%): **FAIL**
   Mirror mode skips fit mode's 120 ms settle and claim, for both.
 - No run needed an assumed frame (the report lists any run where no frame was seen in time).
 
+### After renderer optimisations (2026-11-16)
+
+Provisional, like the rest: other builds ran on the Mac. Ghostty only, before (`7a0d37c` plus the
+two probe fixes below) against after, interleaved on one simulator, median (min–max). The app was
+reinstalled before every run, so every launch starts with cold font caches. The Results table
+above was not rerun.
+
+| Scenario | Metric | Before | After |
+| --- | --- | --- | --- |
+| claude (18 runs) | frame gaps >25 ms | 2 (0–26) | 0 (0–6) |
+| claude (10 runs) | row build, ms per run | 75 (46–89) | 28 (22–35) |
+| claude (10 runs) | CPU ms | 622 (550–724) | 588 (463–689) |
+| claude (10 runs) | first output ms | 21.6 (11.8–25.6) | 5.3 (3.9–14.8) |
+| unicode (5 runs) | worst row build ms | 259 (183–533) | 1.9 (0.9–2.6) |
+| unicode (5 runs) | final state drawn ms | 217 (one run had no frame for 0.5 s) | 35 (27–41) |
+| top (5 runs) | worst row build ms | 7.7 (6.4–9.1) | 0.41 (0.36–1.03) |
+| seq-wire, yes-wire (5 runs) | first output ms | 16.3, 15.3 | 2.5, 2.7 |
+| seq, yes (5 runs) | peak MB | 27.3, 26.5 | 27.9, 27.1 |
+
+SwiftTerm in the same session, `claude`, 7 runs: 1 (1–37) frame gaps.
+
+- **Cause of the `claude` gaps.** Frames were only presented from display link callbacks. A
+  frame parsed just after a callback waited a whole refresh, so when the program's frames land
+  near the callback, 1 ms of jitter decides between this refresh and the next: a 33 ms gap, then
+  two frames in one tick. Which runs suffer depends on the phase between program and display
+  (traced: 106 of 106 gaps in a bad run were frames parsed within 22 ms of the last present).
+  Keeping the link running instead of pausing it did not help (0 to 111 gaps in 8 runs). A late
+  first callback after a resume was real but rare: 8 of 12,543 callbacks came over 3 ms late.
+  The rest is noise both engines share: `nextDrawable` blocking and the replay's own frames
+  arriving late when the main thread stalls. The gaps left after the change come with those.
+- **Fix.** A wake-up draws at once unless the pane already presented in this display interval
+  (`GhosttyRenderThread`). The link stays on for 0.1 s after output, then pauses: an idle pane
+  has no ticks and no passes (tested).
+- **Rows.** A dirty row is rebuilt only if its cells, selection or styles changed. `claude`
+  rewrites 50 rows a frame and changes a few.
+- **Glyphs.** Fallback glyphs and clusters are drawn on a worker thread and the frame is drawn
+  again when they arrive. A shared atlas is warmed when it is made. Texture uploads are the box
+  that changed. Cost: about 0.6 MB (the warmed ASCII and the fallback fonts loaded early).
+- **Also.** One hold timer at a time instead of one per synchronized frame (60 timers and 60
+  empty passes a second before). A frame dropped for want of a drawable is drawn on the next tick
+  (it was lost until the next change). Instance buffers are not refilled for frames in which
+  only the cursor or the scroll offset moved.
+- Screenshots of a styles screen and of the end of `unicode` are byte-identical before and after.
+
+What changed in how things are measured:
+
+- The first-output mark was queued before the first chunk's bytes (the host calls the probe
+  first), so it could be set before anything was parsed. It is now queued behind the chunk.
+- A pass with nothing to draw dates a mark no earlier than the mark itself. `claude` starts with
+  a clear of an empty screen, which gave a first output of minus one second.
+- A Ghostty frame that still waits for glyphs decides no mark: "drawn" means drawn with every
+  glyph.
+- Ghostty's presents now follow the arrival of frames (at most one per display interval), so
+  its frame gaps count stalls of the renderer. SwiftTerm draws from its display link, so the
+  same number also counts a frame that slipped past a vsync. To compare what reaches the glass,
+  count display intervals with no new frame for both engines. Not done.
+
 ### Where Ghostty loses or is close, and what to do (ranked)
 
-1. **The render link pauses after every idle tick: dropped frames at 60 frames/s.**
+1. *(Done, with another cause: see "After renderer optimisations".)* **The render link pauses after every idle tick: dropped frames at 60 frames/s.**
    `GhosttyRenderThread.Worker.tick` pauses its display link as soon as one tick finds nothing
    dirty, and `wake()` resumes it. When output arrives at about the refresh rate, a frame that
    lands just before a vsync finds the link paused, and the resumed link fires one vsync late:
@@ -449,7 +522,7 @@ Criteria (first frame, gaps, main-thread time, memory within 10%): **FAIL**
    gave 598, 596, 598 and 599 presents with 0, 3, 0 and 0 gaps in four runs (same loaded
    machine). Proposal: pause only after about 0.5 s without a frame. Expected: `claude` frame
    gaps from 9 (0 to 84) to about 0. Cost: idle ticks for half a second after output stops.
-2. **Glyphs are rasterized inside the frame that first needs them.** The first `unicode` frame
+2. *(Done.)* **Glyphs are rasterized inside the frame that first needs them.** The first `unicode` frame
    spent 17 to 19 ms in the row build, and 266 ms in one run (CoreText fallback fonts, cold).
    `top` and `claude` spend 4 to 7 ms on their first frame. Proposal: draw the frame with the
    glyphs already in the atlas, rasterize misses on a second queue and redraw when they arrive;
@@ -468,7 +541,7 @@ Criteria (first frame, gaps, main-thread time, memory within 10%): **FAIL**
    2 MB/s in 1.8 KB messages. Proposal: for an engine that parses elsewhere, run the filter on
    the socket's queue and hand output straight to the core; only messages hop. Expected: main
    busy time under output near zero, and delivery no longer waits behind a busy main thread.
-5. **Full repaints rebuild every row.** `claude` costs Ghostty about 1.1 ms of CPU per frame
+5. *(Done.)* **Full repaints rebuild every row.** `claude` costs Ghostty about 1.1 ms of CPU per frame
    off the main thread (0.15 ms row build, 0.14 ms encode, the rest parse and present), 807 ms
    in 10 s. That is 3 times less than SwiftTerm, so this is last. Proposal: compare rebuilt
    rows with the previous instances and skip the buffer upload for unchanged ones.

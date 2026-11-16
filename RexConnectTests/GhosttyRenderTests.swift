@@ -267,6 +267,8 @@ final class GhosttyRenderTests: XCTestCase {
         let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 3)
         let m = atlas.metrics
         let renderer = GhosttyRenderer(core: core, atlas: atlas)
+        // The worst case: no row is taken over from the frame before.
+        renderer.frame.reusesRowsOnScroll = false
         let texture = try target(metal.device, width: cols * m.cellWidth, height: rows * m.cellHeight)
         func line(_ i: Int) -> String {
             var s = "\u{1b}[3\(i % 8)m\(i)\u{1b}[0m \u{1b}[1mdrwxr-xr-x\u{1b}[0m user \u{1b}[44m staff \u{1b}[0m "
