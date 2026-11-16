@@ -50,27 +50,29 @@ private final class GhosttyAtlasTextures {
     private var maskSize = -1
     private var colorSize = -1
 
-    /// Uploads whatever the atlas rasterized since the last frame.
+    /// Uploads whatever the atlas rasterized since the last frame. With the atlas locked.
     func sync(_ atlas: GhosttyGlyphAtlas, device: MTLDevice) {
         mask = sync(atlas.maskPage, texture: mask, seen: &maskSize, format: .r8Unorm, device: device)
         color = sync(atlas.colorPage, texture: color, seen: &colorSize, format: .bgra8Unorm, device: device)
     }
 
+    /// Only the box that changed goes up: a new glyph is a few hundred bytes, not the page. A
+    /// new texture (first use, or the page grew) takes the rows in use; the shader reads exact
+    /// texels inside glyph boxes, so the rest is never looked at.
     private func sync(_ page: GhosttyAtlasPage, texture: MTLTexture?, seen: inout Int, format: MTLPixelFormat,
                       device: MTLDevice) -> MTLTexture? {
         var texture = texture
-        var from = page.dirtyMinY, to = page.dirtyMaxY
         if texture == nil || seen != page.sizeGeneration {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: page.width, height: page.height, mipmapped: false)
             d.usage = .shaderRead
             texture = device.makeTexture(descriptor: d)
             seen = page.sizeGeneration
-            from = 0
-            to = page.height
+            page.markUsedDirty()
         }
-        if let texture, from < to {
-            texture.replace(region: MTLRegionMake2D(0, from, page.width, to - from), mipmapLevel: 0,
-                            withBytes: page.pixels + from * page.bytesPerRow, bytesPerRow: page.bytesPerRow)
+        let x = page.dirtyMinX, y = page.dirtyMinY, w = page.dirtyMaxX - x, h = page.dirtyMaxY - y
+        if let texture, w > 0, h > 0 {
+            texture.replace(region: MTLRegionMake2D(x, y, w, h), mipmapLevel: 0,
+                            withBytes: page.pixels + y * page.bytesPerRow + x * page.bytesPerPixel, bytesPerRow: page.bytesPerRow)
         }
         page.clearDirty()
         return texture
@@ -88,9 +90,10 @@ private struct GhosttyUniforms {
 
 /// Draws one pane. Configuration comes from the main thread; everything else runs on the render thread.
 ///
-/// `@unchecked Sendable`: `configLock` guards the configuration block below. The frame builder, its
-/// atlas, the buffers and the counters are only touched on the render thread (or, in tests, on the
-/// one thread that calls `renderOffscreen` for a renderer no thread draws).
+/// `@unchecked Sendable`: `configLock` guards the configuration block below. The frame builder, the
+/// buffers and the counters are only touched on the render thread (or, in tests, on the one thread
+/// that calls `renderOffscreen` for a renderer no thread draws). The atlas has a lock of its own,
+/// taken for the row build and for the texture upload (`GhosttyGlyphAtlas`).
 final class GhosttyRenderer: @unchecked Sendable {
     let core: GhosttyCore
     /// Render thread only.
@@ -102,6 +105,8 @@ final class GhosttyRenderer: @unchecked Sendable {
     private(set) var framesDrawn = 0
     private(set) var lastBuildSeconds: CFTimeInterval = 0
     private(set) var lastEncodeSeconds: CFTimeInterval = 0
+    /// When the last frame was handed to the GPU. The render thread paces by it.
+    private(set) var lastPresent: CFTimeInterval = 0
 
     // Configuration. Guarded by `configLock`.
     private let configLock = GhosttyLock()
@@ -123,6 +128,8 @@ final class GhosttyRenderer: @unchecked Sendable {
     private final class Buffers {
         var rects: MTLBuffer?
         var glyphs: MTLBuffer?
+        /// The `frame.rowsVersion` whose row instances the buffers hold. -1: none.
+        var rowsVersion = -1
     }
 
     init(core: GhosttyCore, atlas: GhosttyGlyphAtlas) {
@@ -167,34 +174,57 @@ final class GhosttyRenderer: @unchecked Sendable {
 
     // MARK: Drawing (render thread)
 
-    /// Draws a frame if anything changed. Returns false if it should be tried again on the next tick.
-    func render(now: CFTimeInterval) -> Bool {
+    /// What a call to `render` did.
+    enum Outcome {
+        /// Nothing new to draw, or the pane is hidden.
+        case idle
+        /// A frame was handed to the GPU.
+        case presented
+        /// No drawable was free. Try again on the next tick.
+        case retry
+    }
+
+    /// Draws a frame if anything changed.
+    func render(now: CFTimeInterval) -> Outcome {
         configLock.lock()
         let layer = layer, size = drawableSize, visible = visible
         configLock.unlock()
-        guard visible, let layer, size.x > 0, size.y > 0, let metal = GhosttyMetal.shared else { return true }
-        guard prepare(now: now) else {
-            PerfProbe.active?.ghosttyPass(self, built: now, presented: false)  // PERF: nothing new to draw
-            return true
+        guard visible, let layer, size.x > 0, size.y > 0, let metal = GhosttyMetal.shared else { return .idle }
+        // On screen a frame never waits for CoreText: glyphs that need font fallback come a
+        // frame or two later (`GhosttyRenderThread.glyphsReady`).
+        frame.defersSlowGlyphs = true
+        let drawn = prepare(now: now)
+        // PERF: a frame that still lacks glyphs doesn't show the state it was built from, so it
+        // decides no mark (the probe takes passes that began at or after a mark's time).
+        let built = frame.rowsAwaitingGlyphs > 0 ? 0 : now
+        guard drawn else {
+            PerfProbe.active?.ghosttyPass(self, built: built, presented: false)  // PERF: nothing new to draw
+            return .idle
         }
-        guard inFlight.wait(timeout: .now()) == .success else { return false }
+        guard inFlight.wait(timeout: .now()) == .success else {
+            markRedraw()
+            return .retry
+        }
         guard let drawable = layer.nextDrawable() else {
             inFlight.signal()
             markRedraw()
-            return false
+            return .retry
         }
         let start = CACurrentMediaTime()
         guard let commands = encode(metal: metal, target: drawable.texture, origin: SIMD2(0, 0)) else {
+            // Nothing was drawn (the atlas was wiped under the rows, or Metal gave no buffer).
             inFlight.signal()
-            return true
+            markRedraw()
+            return .retry
         }
         commands.addCompletedHandler { [inFlight] _ in inFlight.signal() }
         commands.present(drawable)
         commands.commit()
-        lastEncodeSeconds = CACurrentMediaTime() - start
+        lastPresent = CACurrentMediaTime()
+        lastEncodeSeconds = lastPresent - start
         framesDrawn += 1
-        PerfProbe.active?.ghosttyPass(self, built: now, presented: true)  // PERF: frame handed to the GPU
-        return true
+        PerfProbe.active?.ghosttyPass(self, built: built, presented: true)  // PERF: frame handed to the GPU
+        return .presented
     }
 
     /// Draws the current state into `target` and waits for the GPU. For tests and benchmarks.
@@ -202,6 +232,7 @@ final class GhosttyRenderer: @unchecked Sendable {
     func renderOffscreen(into target: MTLTexture, now: CFTimeInterval = CACurrentMediaTime()) -> Bool {
         guard let metal = GhosttyMetal.shared else { return false }
         markRedraw()
+        frame.defersSlowGlyphs = false
         _ = prepare(now: now)
         let start = CACurrentMediaTime()
         guard let commands = encode(metal: metal, target: target, origin: SIMD2(0, 0)) else { return false }
@@ -276,49 +307,64 @@ final class GhosttyRenderer: @unchecked Sendable {
         let cursor = effectiveCursor()
 
         // Rect pass A: backgrounds, block cursor, underlines. Pass B: overlays and thin cursors.
-        var countA = 0, countB = 0, glyphCount = 0
+        // The block cursor always has its slot (an empty rect when there is none), so the rows'
+        // instances sit at the same place whatever the cursor does.
+        var backgroundCount = 0, underlineCount = 0, countB = 0, glyphCount = 0
         for row in rows {
-            countA += row.backgrounds.count + row.underlines.count
+            backgroundCount += row.backgrounds.count
+            underlineCount += row.underlines.count
             countB += row.overlays.count
             glyphCount += row.glyphs.count + row.underGlyphs.count
         }
+        let firstB = backgroundCount + 1 + underlineCount
         let stride = MemoryLayout<GhosttyRectInstance>.stride
         let glyphStride = MemoryLayout<GhosttyGlyphInstance>.stride
         let set = buffers[bufferIndex]
         bufferIndex = (bufferIndex + 1) % buffers.count
-        let rectBytes = (countA + countB + 8) * stride
+        let rectBytes = (firstB + countB + 8) * stride
         if (set.rects?.length ?? 0) < rectBytes {
             set.rects = metal.device.makeBuffer(length: max(4096, rectBytes * 2), options: .storageModeShared)
+            set.rowsVersion = -1
         }
         if (set.glyphs?.length ?? 0) < max(1, glyphCount) * glyphStride {
             set.glyphs = metal.device.makeBuffer(length: max(16384, glyphCount * glyphStride * 2), options: .storageModeShared)
+            set.rowsVersion = -1
         }
         guard let rectBuffer = set.rects, let glyphBuffer = set.glyphs else { return nil }
 
-        let rects = rectBuffer.contents().bindMemory(to: GhosttyRectInstance.self, capacity: countA + countB + 8)
+        // A frame in which only the cursor or the scroll offset moved (a blink, a smooth scroll
+        // between two rows) finds the rows' instances already in this buffer.
+        let copyRows = set.rowsVersion != frame.rowsVersion
+        set.rowsVersion = frame.rowsVersion
+        let rects = rectBuffer.contents().bindMemory(to: GhosttyRectInstance.self, capacity: firstB + countB + 8)
         var n = 0
-        for row in rows where row.backgrounds.count > 0 {
-            (rects + n).update(from: row.backgrounds.base, count: row.backgrounds.count)
-            n += row.backgrounds.count
+        if copyRows {
+            for row in rows where row.backgrounds.count > 0 {
+                (rects + n).update(from: row.backgrounds.base, count: row.backgrounds.count)
+                n += row.backgrounds.count
+            }
+            n += 1
+            for row in rows where row.underlines.count > 0 {
+                (rects + n).update(from: row.underlines.base, count: row.underlines.count)
+                n += row.underlines.count
+            }
+            for row in rows where row.overlays.count > 0 {
+                (rects + n).update(from: row.overlays.base, count: row.overlays.count)
+                n += row.overlays.count
+            }
         }
         var cursorCell = SIMD2<UInt32>(0xffff, 0xffff)
         let cursorWidth = m.cellWidth * (cursor.wide ? 2 : 1)
         let isBlock = cursor.visible && cursor.style == GHOSTTY_CURSOR_STYLE_BLOCK.rawValue
         if isBlock {
-            rects[n] = GhosttyRectInstance(x: Int16(clamping: cursor.x * m.cellWidth), y: 0, w: UInt16(clamping: cursorWidth),
-                                           h: UInt16(clamping: m.cellHeight), color: cursor.color, row: UInt16(clamping: cursor.y))
-            n += 1
+            rects[backgroundCount] = GhosttyRectInstance(
+                x: Int16(clamping: cursor.x * m.cellWidth), y: 0, w: UInt16(clamping: cursorWidth),
+                h: UInt16(clamping: m.cellHeight), color: cursor.color, row: UInt16(clamping: cursor.y))
             cursorCell = SIMD2(UInt32(cursor.x), UInt32(cursor.y))
+        } else {
+            rects[backgroundCount] = GhosttyRectInstance(x: 0, y: 0, w: 0, h: 0, color: 0, row: 0)
         }
-        for row in rows where row.underlines.count > 0 {
-            (rects + n).update(from: row.underlines.base, count: row.underlines.count)
-            n += row.underlines.count
-        }
-        let firstB = n
-        for row in rows where row.overlays.count > 0 {
-            (rects + n).update(from: row.overlays.base, count: row.overlays.count)
-            n += row.overlays.count
-        }
+        n = firstB + countB
         if cursor.visible && !isBlock {
             let x = Int16(clamping: cursor.x * m.cellWidth), y = UInt16(clamping: cursor.y)
             let t = max(1, m.boxThickness)
@@ -342,17 +388,27 @@ final class GhosttyRenderer: @unchecked Sendable {
         }
         let totalRects = n
 
-        let glyphs = glyphBuffer.contents().bindMemory(to: GhosttyGlyphInstance.self, capacity: max(1, glyphCount))
-        var g = 0
-        for row in rows where row.underGlyphs.count > 0 {
-            (glyphs + g).update(from: row.underGlyphs.base, count: row.underGlyphs.count)
-            g += row.underGlyphs.count
-        }
-        for row in rows where row.glyphs.count > 0 {
-            (glyphs + g).update(from: row.glyphs.base, count: row.glyphs.count)
-            g += row.glyphs.count
+        let g = glyphCount
+        if copyRows {
+            let glyphs = glyphBuffer.contents().bindMemory(to: GhosttyGlyphInstance.self, capacity: max(1, glyphCount))
+            var at = 0
+            for row in rows where row.underGlyphs.count > 0 {
+                (glyphs + at).update(from: row.underGlyphs.base, count: row.underGlyphs.count)
+                at += row.underGlyphs.count
+            }
+            for row in rows where row.glyphs.count > 0 {
+                (glyphs + at).update(from: row.glyphs.base, count: row.glyphs.count)
+                at += row.glyphs.count
+            }
         }
 
+        atlas.lock()
+        // The glyph worker filled the pages and wiped them after the rows were built: their
+        // glyph positions are stale. The next pass rebuilds them.
+        guard atlas.generation == frame.atlasGeneration else {
+            atlas.unlock()
+            return nil
+        }
         let textures: GhosttyAtlasTextures
         if let existing = atlas.rendererResources as? GhosttyAtlasTextures {
             textures = existing
@@ -361,6 +417,7 @@ final class GhosttyRenderer: @unchecked Sendable {
             atlas.rendererResources = textures
         }
         textures.sync(atlas, device: metal.device)
+        atlas.unlock()
 
         // Smooth scrolling: the grid is shifted up by the part of a row scrolled past (the overscan
         // row fills the bottom edge), and by the rubber band past either end.
@@ -384,7 +441,7 @@ final class GhosttyRenderer: @unchecked Sendable {
         guard let commands = metal.queue.makeCommandBuffer(),
               let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<GhosttyUniforms>.stride, index: 1)
-        if firstB > 0 {
+        if firstB > 1 || isBlock {
             encoder.setRenderPipelineState(metal.rectPipeline)
             encoder.setVertexBuffer(rectBuffer, offset: 0, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: firstB)
@@ -408,16 +465,31 @@ final class GhosttyRenderer: @unchecked Sendable {
 
 /// One thread and one display link for every Ghostty pane.
 ///
-/// The link runs only while some pane has something to draw. When a tick finds nothing dirty it
-/// pauses the link, and the next `wake()` resumes it, so idle panes cost nothing. The thread
-/// itself exits when the last pane is removed.
+/// Pacing follows Ghostty's renderer thread (`renderer/Thread.zig`, `generic.zig`): a wake-up
+/// updates and draws at once, and the display link only runs while there is something to draw.
+///
+/// - A pane that has not presented in the current display interval draws as soon as it is woken.
+///   The frame reaches the screen at the next vsync, instead of waiting for the tick after it.
+/// - A pane that already presented in this interval waits for the next tick, so a pane never
+///   hands over more than one frame per refresh, however fast output arrives.
+/// - The link keeps ticking for `idleGrace` after the last output frame, then pauses. An idle
+///   pane schedules nothing: no ticks, no passes. The thread exits with the last pane.
 final class GhosttyRenderThread: Sendable {
     static let shared = GhosttyRenderThread()
     /// Cursor blink period, as in Ghostty.
     static let blinkInterval: TimeInterval = 0.6
+    /// How long the display link keeps running after the last frame drawn for output. Long
+    /// enough to span the frames of a redraw loop, so the link isn't paused and resumed between
+    /// them (the first callback after a resume can come late).
+    static let idleGrace: TimeInterval = 0.1
 
     /// Display link callbacks so far. An idle app must not increase this.
     let ticks = Atomic<Int>(0)
+    /// Times the thread looked for something to draw: ticks plus wake-ups. An idle app must not
+    /// increase this either.
+    let passes = Atomic<Int>(0)
+    /// Frames drawn straight from a wake-up, without waiting for a tick.
+    let immediateFrames = Atomic<Int>(0)
     /// True while the thread exists.
     let alive = Atomic<Bool>(false)
 
@@ -452,10 +524,17 @@ final class GhosttyRenderThread: Sendable {
         worker.perform { worker.remove(renderer, stop: last) }
     }
 
-    /// Asks for a tick. Cheap when the link is already running. Any thread.
+    /// Asks for a pass over the panes. Set the pane's `needsFrame` first. Cheap when a pass is
+    /// already on its way. Any thread.
     func wake() {
-        guard let worker = state.withLock({ $0.worker }), !worker.linkRunning.load(ordering: .relaxed) else { return }
-        worker.perform { worker.resumeLink() }
+        state.withLock({ $0.worker })?.wake()
+    }
+
+    /// An atlas has glyphs that frames were drawn without, or its pages were wiped: every pane
+    /// looks again. (A pane with nothing to add finds that out in its row build.) Any thread.
+    func glyphsReady() {
+        guard let worker = state.withLock({ $0.worker }) else { return }
+        worker.perform { worker.redrawAll() }
     }
 
     /// A worker's thread is about to exit.
@@ -471,11 +550,16 @@ final class GhosttyRenderThread: Sendable {
     /// Each run has its own state, so a thread that is shutting down (last pane removed) and the
     /// thread started for the next pane never touch the same link or pane list.
     ///
-    /// `@unchecked Sendable`: `panes`, `link` and `blinkTimer` are only touched on this worker's
-    /// own thread (blocks performed on `loop`, the link and the timer). `loop` is written once,
+    /// `@unchecked Sendable`: everything but `passQueued` is only touched on this worker's own
+    /// thread (blocks performed on `loop`, the link and the timer). `loop` is written once,
     /// before `start` returns the worker.
     private final class Worker: NSObject, @unchecked Sendable {
-        let linkRunning = Atomic<Bool>(false)
+        /// A pass is queued on the run loop and has not started. Any thread.
+        private let passQueued = Atomic<Bool>(false)
+        /// Until this time (`CACurrentMediaTime`, as bits) a wake-up needs no pass of its own:
+        /// every pane has its frame for this display interval and the link is running, so the
+        /// next tick draws what is new. Written on this thread, read on any.
+        private let quietUntil = Atomic<UInt64>(0)
         private let owner: GhosttyRenderThread
         private var loop: CFRunLoop?
 
@@ -483,6 +567,14 @@ final class GhosttyRenderThread: Sendable {
         private var panes: [GhosttyRenderer] = []
         private var link: CADisplayLink?
         private var blinkTimer: Timer?
+        private var linkRunning = false
+        /// The vsync that began the display interval of the last tick, and the interval's length.
+        /// Until the first tick after the link was resumed, `vsync` is when it was resumed.
+        private var vsync: CFTimeInterval = 0
+        private var period: CFTimeInterval = 1.0 / 60
+        private var tickedSinceResume = false
+        /// When output last gave a pane something to draw.
+        private var lastOutput: CFTimeInterval = 0
 
         private init(owner: GhosttyRenderThread) { self.owner = owner }
 
@@ -515,10 +607,22 @@ final class GhosttyRenderThread: Sendable {
             CFRunLoopWakeUp(loop)
         }
 
+        /// Any thread. One queued pass serves every wake-up that comes before it starts.
+        func wake() {
+            guard CACurrentMediaTime() >= Double(bitPattern: quietUntil.load(ordering: .relaxed)),
+                  !passQueued.exchange(true, ordering: .acquiring) else { return }
+            perform { self.pass(tick: nil) }
+        }
+
         func add(_ renderer: GhosttyRenderer) {
             panes.append(renderer)
             renderer.needsFrame.store(true, ordering: .relaxed)
-            resumeLink()
+            pass(tick: nil)
+        }
+
+        func redrawAll() {
+            for pane in panes { pane.needsFrame.store(true, ordering: .relaxed) }
+            pass(tick: nil)
         }
 
         func remove(_ renderer: GhosttyRenderer, stop: Bool) {
@@ -528,32 +632,76 @@ final class GhosttyRenderThread: Sendable {
             link = nil
             blinkTimer?.invalidate()
             blinkTimer = nil
-            linkRunning.store(false, ordering: .relaxed)
+            linkRunning = false
             CFRunLoopStop(CFRunLoopGetCurrent())
         }
 
-        func resumeLink() {
-            guard let link else { return }
-            linkRunning.store(true, ordering: .relaxed)
-            link.isPaused = false
+        private func setLinkRunning(_ run: Bool) {
+            guard let link, run != linkRunning else { return }
+            linkRunning = run
+            tickedSinceResume = false
+            link.isPaused = !run
         }
 
         @objc private func tick(_ link: CADisplayLink) {
             owner.ticks.add(1, ordering: .relaxed)
+            let length = link.targetTimestamp - link.timestamp
+            pass(tick: (link.timestamp, length > 0 ? length : period))
+        }
+
+        /// Draws every pane that has something new and may present now. `tick` is the display
+        /// interval of the link callback this runs in; nil for a pass a wake-up asked for.
+        private func pass(tick: (start: CFTimeInterval, length: CFTimeInterval)?, blink: Bool = false) {
+            // Cleared before the panes are read: a wake-up after this point queues the next pass.
+            passQueued.store(false, ordering: .releasing)
+            guard link != nil else { return }
+            owner.passes.add(1, ordering: .relaxed)
             let now = CACurrentMediaTime()
-            var retry = false
-            for pane in panes where pane.needsFrame.exchange(false, ordering: .relaxed) {
-                if !pane.render(now: now) {
+            if let tick {
+                vsync = tick.start
+                period = tick.length
+                tickedSinceResume = true
+            }
+            // When the display interval that `now` falls in began.
+            let interval: CFTimeInterval
+            if !linkRunning {
+                // Nothing was presented for `idleGrace`: every pane may draw. A pane drawn in this
+                // pass then waits for the first tick.
+                interval = now
+                vsync = now
+            } else if tickedSinceResume {
+                // Counted on from the last tick. (A late callback may be past its own interval.)
+                interval = vsync + ((now - vsync) / period).rounded(.down) * period
+            } else {
+                interval = vsync
+            }
+            var waiting = false, drew = false
+            // Before the panes are read, so a wake-up that finds it set is seen by this pass.
+            quietUntil.store(0, ordering: .relaxed)
+            for pane in panes where pane.needsFrame.load(ordering: .relaxed) {
+                if pane.lastPresent >= interval {
+                    // This interval already has a frame of this pane. The next tick draws.
+                    waiting = true
+                    continue
+                }
+                pane.needsFrame.store(false, ordering: .relaxed)
+                switch pane.render(now: now) {
+                case .presented:
+                    drew = true
+                    if tick == nil { owner.immediateFrames.add(1, ordering: .relaxed) }
+                case .retry:
                     pane.needsFrame.store(true, ordering: .relaxed)
-                    retry = true
+                    waiting = true
+                case .idle:
+                    break
                 }
             }
             updateBlinkTimer()
-            if !retry {
-                // Nothing left to draw: stop ticking. Re-check afterwards so a wake that raced us isn't lost.
-                link.isPaused = true
-                linkRunning.store(false, ordering: .relaxed)
-                if panes.contains(where: { $0.needsFrame.load(ordering: .relaxed) }) { resumeLink() }
+            // A blink is one frame every 0.6 s: it needs no link.
+            if drew && !blink { lastOutput = now }
+            setLinkRunning(waiting || now - lastOutput < GhosttyRenderThread.idleGrace)
+            if linkRunning, tickedSinceResume, panes.allSatisfy({ $0.lastPresent >= interval }) {
+                quietUntil.store((interval + period).bitPattern, ordering: .relaxed)
             }
         }
 
@@ -577,7 +725,7 @@ final class GhosttyRenderThread: Sendable {
                 pane.toggleBlink()
                 any = true
             }
-            if any { resumeLink() } else { updateBlinkTimer() }
+            if any { pass(tick: nil, blink: true) } else { updateBlinkTimer() }
         }
     }
 }
