@@ -56,6 +56,18 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     }
     // END PHASE 2
 
+    // PHASE 2 (selection): stored state for GhosttyTerminalView+Selection.swift.
+    var selectionState = GhosttySelectionState()
+    /// The fixed end of the drag under way.
+    lazy var selectionAnchor = GhosttySelectionAnchor(core: core)
+    /// The long press the host retargets. No target of its own.
+    lazy var selectionPress: UILongPressGestureRecognizer = {
+        let press = UILongPressGestureRecognizer()
+        addGestureRecognizer(press)
+        return press
+    }()
+    // END PHASE 2 (selection)
+
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
     private var gridEpoch = 0

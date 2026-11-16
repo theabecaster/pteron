@@ -235,6 +235,13 @@ final class GhosttyRowBuilder {
         if ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS {
             selStart = Int(selection.start_x)
             selEnd = Int(selection.end_x)
+            // A selection that ends on a wide character covers both of its cells. (The render
+            // state already widens a start on the right half.)
+            if selEnd >= 0, selEnd + 1 < count {
+                var endWide = GHOSTTY_CELL_WIDE_NARROW
+                ghostty_cell_get(raws[selEnd], GHOSTTY_CELL_DATA_WIDE, &endWide)
+                if endWide == GHOSTTY_CELL_WIDE_WIDE { selEnd += 1 }
+            }
         }
 
         let m = atlas.metrics

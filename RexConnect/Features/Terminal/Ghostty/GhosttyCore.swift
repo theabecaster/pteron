@@ -121,7 +121,9 @@ final class GhosttyCore: @unchecked Sendable {
     private var frameHandler: (@Sendable (GhosttyTerminal) -> Void)?
 
     let queue = DispatchQueue(label: "rex.ghostty.feed", qos: .userInitiated)
-    private let rendererWaiting = Atomic<Bool>(false)
+    /// Threads waiting for `termLock` that the feed queue lets in between slices: the renderer
+    /// and the main thread (selection, and anything else that goes through `withTerminal`).
+    private let lockWaiters = Atomic<Int>(0)
 
     // The grid last asked for. Guarded by `termLock`.
     private(set) var cols: Int
@@ -285,9 +287,10 @@ final class GhosttyCore: @unchecked Sendable {
             var off = 0
             while off < buf.count {
                 let n = min(Self.sliceSize, buf.count - off)
-                // os_unfair_lock isn't fair: without this a long burst could starve the renderer.
+                // os_unfair_lock isn't fair: without this a long burst could starve the renderer
+                // and make the main thread wait many slices for a short read.
                 var spins = 0
-                while rendererWaiting.load(ordering: .relaxed), spins < 2000 {
+                while lockWaiters.load(ordering: .relaxed) > 0, spins < 2000 {
                     sched_yield()
                     spins += 1
                 }
@@ -490,9 +493,7 @@ final class GhosttyCore: @unchecked Sendable {
     /// The terminal lock is held only for `begin_update`. `end_update` and all reads happen
     /// while the feed queue is free to parse.
     func lockFrame(now: CFTimeInterval) -> GhosttyRenderState? {
-        rendererWaiting.store(true, ordering: .relaxed)
-        termLock.lock()
-        rendererWaiting.store(false, ordering: .relaxed)
+        lockTerminal()
         stateLock.lock()
         guard let t = terminal, let rs = renderState else {
             stateLock.unlock()
@@ -521,10 +522,18 @@ final class GhosttyCore: @unchecked Sendable {
         stateLock.unlock()
     }
 
+    /// Takes `termLock` ahead of the feed queue's next slice, so the wait is one slice
+    /// (`sliceSize` bytes) even in the middle of a burst. Not for the feed queue itself.
+    func lockTerminal() {
+        lockWaiters.add(1, ordering: .relaxed)
+        termLock.lock()
+        lockWaiters.subtract(1, ordering: .relaxed)
+    }
+
     /// Runs `body` with the terminal locked. For short reads and writes (phase 2: encoders,
     /// selection, scrolling).
     func withTerminal<R>(_ body: (GhosttyTerminal) -> R) -> R? {
-        termLock.lock()
+        lockTerminal()
         defer { termLock.unlock() }
         guard let t = terminal else { return nil }
         return body(t)
