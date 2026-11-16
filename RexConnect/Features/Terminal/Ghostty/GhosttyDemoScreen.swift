@@ -98,5 +98,6 @@ final class GhosttyDemoView: UIView {
             terminal.feed(text: "ghosttyDemo: snapshot did not decode\r\n")
         })
         if !restoring { core.feed(GhosttyDemo.stripRexMessages(bytes[...])) }
+        GhosttySelectionDemo.applyIfRequested(to: terminal)
     }
 }
