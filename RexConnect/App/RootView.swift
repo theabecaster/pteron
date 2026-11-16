@@ -85,7 +85,8 @@ struct RootView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
-                layout(theme, fake: .some(sim.division))
+                layout(theme, fake: .some(sim.rootDivision))
+                    .safeAreaPadding(sim.safeArea)
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
                     .environment(\.horizontalSizeClass, sim.horizontal)

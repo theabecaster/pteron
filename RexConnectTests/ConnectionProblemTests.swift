@@ -139,13 +139,23 @@ struct ConnectionProblemTests {
             == "This iPhone is on a private network, but your Mac isn't on it.")
     }
 
+    @Test func copyNeverNamesAVPNApp() {
+        for kind in ConnectionProblem.Kind.allCases {
+            let c = OfflineCopy.of(kind, server: "Studio", address: "x")
+            for text in [c.title, c.message, c.hint ?? ""] {
+                #expect(!text.localizedCaseInsensitiveContains("tailscale"))
+                #expect(!text.contains("ts.net"))
+            }
+        }
+    }
+
     // MARK: Actions
 
     @Test func secondaryActions() {
-        #expect(OfflineAction.secondary(for: .offPrivateNetwork, tailscaleInstalled: true) == .openTailscale)
-        #expect(OfflineAction.secondary(for: .offPrivateNetwork, tailscaleInstalled: false) == nil)
-        #expect(OfflineAction.secondary(for: .noInternet, tailscaleInstalled: true) == .openSettings)
-        #expect(OfflineAction.secondary(for: .insecure, tailscaleInstalled: true) == .serverSettings)
-        #expect(OfflineAction.secondary(for: .notAnswering, tailscaleInstalled: true) == nil)
+        #expect(OfflineAction.secondary(for: .offPrivateNetwork) == .openSettings)
+        #expect(OfflineAction.secondary(for: .noInternet) == .openSettings)
+        #expect(OfflineAction.secondary(for: .insecure) == .serverSettings)
+        #expect(OfflineAction.secondary(for: .notAllowed) == nil)
+        #expect(OfflineAction.secondary(for: .notAnswering) == nil)
     }
 }

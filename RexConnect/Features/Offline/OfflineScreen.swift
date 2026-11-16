@@ -20,8 +20,8 @@ struct OfflineCopy: Equatable {
                                message: "This iPhone is offline right now. Rex DUO reconnects as soon as a network is back.")
         case .offPrivateNetwork:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
-                               message: "This iPhone can't see your Mac's private network right now.",
-                               hint: "Connect it to the same private network as the Mac, and Rex DUO picks up from there.")
+                               message: "Can't reach \(server) from this network.",
+                               hint: "Make sure this iPhone is on the same network or VPN as the Mac.")
         case .hostNotFound:
             return OfflineCopy(symbol: "network.slash", title: "Can't find \(server)",
                                message: "This iPhone is on a private network, but \(server) isn't on it.",
@@ -37,11 +37,11 @@ struct OfflineCopy: Equatable {
         case .insecure:
             return OfflineCopy(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify \(server)",
                                message: "The secure connection failed, so Rex DUO stopped there.",
-                               hint: "Use the Mac's full https://….ts.net address in Settings.")
+                               hint: "Use the Mac's full https:// address in Settings.")
         case .badAddress:
             return OfflineCopy(symbol: "link", title: "That address won't work",
                                message: "“\(address)” isn't a server address.",
-                               hint: "Use https://<name>.<tailnet>.ts.net in Settings.")
+                               hint: "Use the full https:// address of the Mac in Settings.")
         case .unknown:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't reach \(server)",
                                message: "Something interrupted the connection. Rex DUO keeps trying.")
@@ -68,25 +68,21 @@ struct OfflineCopy: Equatable {
 
 /// The second button, when the problem has one.
 enum OfflineAction: Equatable {
-    case openTailscale, openSettings, serverSettings
+    /// iOS Settings, where Wi-Fi, cellular and VPNs live; or the app's server list.
+    case openSettings, serverSettings
 
     var title: String {
         switch self {
-        case .openTailscale: return "Open Tailscale"
         case .openSettings: return "Open Settings"
         case .serverSettings: return "Server Settings"
         }
     }
 
-    static let tailscaleURL = URL(string: "tailscale://")!
-
-    /// `tailscaleInstalled`: `canOpenURL` for Tailscale's scheme (listed in LSApplicationQueriesSchemes).
-    static func secondary(for kind: ConnectionProblem.Kind, tailscaleInstalled: Bool) -> OfflineAction? {
+    static func secondary(for kind: ConnectionProblem.Kind) -> OfflineAction? {
         switch kind {
-        case .noInternet: return .openSettings
-        case .offPrivateNetwork, .notAllowed: return tailscaleInstalled ? .openTailscale : nil
+        case .noInternet, .offPrivateNetwork: return .openSettings
         case .hostNotFound, .insecure: return .serverSettings
-        case .badAddress, .notAnswering, .unknown: return nil
+        case .badAddress, .notAllowed, .notAnswering, .unknown: return nil
         }
     }
 }
@@ -95,6 +91,11 @@ enum OfflineAction: Equatable {
 /// The card never moves or flickers; only the backdrop and the glyph's color ghosts animate. Retries
 /// run in the background and don't touch it, Try Again shows "Trying…" while its attempt runs, and
 /// once the server is back the static settles and the card says so until the sessions are in.
+///
+/// Unfolded, it is two pages (`OfflineLayout`): the static spans both, the glyph sits large on the
+/// leading or top page and the card on the other, each centered in its page and clear of the crease.
+/// Elsewhere it is one card, centered, tighter in short windows. It fills the tab, so with the sidebar
+/// inline it sits beside it.
 struct OfflineScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
@@ -107,7 +108,6 @@ struct OfflineScreen: View {
     @Binding var sidebarVisible: Bool
 
     @State private var showDetails = false
-    @State private var tailscaleInstalled = false
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -124,19 +124,37 @@ struct OfflineScreen: View {
             GeometryReader { geo in
                 let global = geo.frame(in: .global).origin
                 let origin = CGPoint(x: global.x - rootOrigin.x, y: global.y - rootOrigin.y)
-                let page = Self.page(size: geo.size, origin: origin, division)
-                ScrollView {
-                    card(problem, theme)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 24)
-                        .frame(maxWidth: .infinity, minHeight: geo.size.height - page.top - page.bottom)
-                        .padding(EdgeInsets(top: page.top, leading: page.leading, bottom: page.bottom, trailing: page.trailing))
+                let layout = OfflineLayout.decide(size: geo.size, origin: origin, division: division)
+                ZStack(alignment: .topLeading) {
+                    if let art = layout.art {
+                        illustration(problem, theme, fits: art.size)
+                            .frame(width: art.width, height: art.height)
+                            .transaction { $0.animation = nil }
+                            .offset(x: art.minX, y: art.minY)
+                            .transition(.opacity)
+                    }
+                    // A short window (iPhone on its side, the keyboard up) gets the tighter card, so it
+                    // fits without scrolling.
+                    let compact = !layout.isPaged && layout.card.height < 480
+                    ScrollView {
+                        card(problem, theme, withGlyph: !layout.isPaged, compact: compact)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, compact ? 12 : 24)
+                            .frame(maxWidth: .infinity, minHeight: layout.card.height)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(width: layout.card.width, height: layout.card.height)
+                    // Only the position animates. An animated resize leaves the scroll view's content
+                    // where it was, off the new page.
+                    .transaction { $0.animation = nil }
+                    .offset(x: layout.card.minX, y: layout.card.minY)
                 }
-                .scrollBounceBehavior(.basedOnSize)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                // A fold, an unfold or the sidebar moves the parts to their new pages.
+                .animation(.smooth(duration: 0.35), value: layout)
             }
         }
         .contentShape(Rectangle())
-        .onAppear { tailscaleInstalled = UIApplication.shared.canOpenURL(OfflineAction.tailscaleURL) }
         .onChange(of: server.retrying) { was, now in
             // The attempt the person asked for failed: a soft bump, the card stays as it was.
             if was, !now, server.phase.problem != nil { Haptic.bump() }
@@ -144,39 +162,66 @@ struct OfflineScreen: View {
         .onChange(of: problem == nil) { _, back in if back { Haptic.selection() } }
     }
 
-    /// Insets that keep the card on one page of an unfolded Duo, the larger one, instead of across the
-    /// crease. No insets when there's no crease here, or the larger page is too small for the card.
-    static func page(size: CGSize, origin: CGPoint, _ division: Division?) -> EdgeInsets {
-        guard let d = division else { return EdgeInsets() }
-        if d.isVertical {
-            let lo = d.frame.minX - origin.x, hi = d.frame.maxX - origin.x
-            guard lo > 0, hi < size.width else { return EdgeInsets() }
-            let left = lo, right = size.width - hi
-            guard max(left, right) >= 300 else { return EdgeInsets() }
-            return right >= left ? EdgeInsets(top: 0, leading: hi, bottom: 0, trailing: 0)
-                                 : EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: size.width - lo)
-        }
-        let lo = d.frame.minY - origin.y, hi = d.frame.maxY - origin.y
-        guard lo > 0, hi < size.height else { return EdgeInsets() }
-        let above = lo, below = size.height - hi
-        guard max(above, below) >= 420 else { return EdgeInsets() }
-        return above >= below ? EdgeInsets(top: 0, leading: 0, bottom: size.height - lo, trailing: 0)
-                              : EdgeInsets(top: hi, leading: 0, bottom: 0, trailing: 0)
+    private func copy(_ problem: ConnectionProblem?) -> OfflineCopy {
+        problem.map { OfflineCopy.of($0.kind, server: server.config.name, address: server.config.url) } ?? .restoring
     }
 
-    private func card(_ problem: ConnectionProblem?, _ theme: TermTheme) -> some View {
-        let copy = problem.map { OfflineCopy.of($0.kind, server: server.config.name, address: server.config.url) } ?? .restoring
+    private func signalLabel(_ problem: ConnectionProblem?, _ theme: TermTheme, size: CGFloat) -> some View {
+        Text(problem == nil ? "SIGNAL FOUND" : "SIGNAL LOST")
+            .font(.system(size: size, weight: .semibold, design: .monospaced))
+            .tracking(size * 0.22)
+            .foregroundStyle(problem == nil ? theme.chrome.done : theme.accent)
+            .accessibilityHidden(true)
+    }
+
+    /// Two pages: the page opposite the card. The glyph large in a solid disc, like a dial that lost
+    /// its station, with the status and the server's name under it.
+    private func illustration(_ problem: ConnectionProblem?, _ theme: TermTheme, fits size: CGSize) -> some View {
+        let d = max(96, min(208, size.width - 64, size.height - 150))
+        return VStack(spacing: 18) {
+            ZStack {
+                Circle().fill(theme.bg)
+                Circle().stroke(theme.chrome.divider, lineWidth: 1)
+                Circle()
+                    .inset(by: d * 0.12)
+                    .stroke(theme.chrome.divider, style: StrokeStyle(lineWidth: 1, dash: [2, 5]))
+                GlitchGlyph(symbol: copy(problem).symbol, theme: theme, size: d * 0.34)
+                    .frame(width: d * 0.56, height: d * 0.44)
+            }
+            .frame(width: d, height: d)
+            VStack(spacing: 6) {
+                signalLabel(problem, theme, size: 13)
+                Text(server.config.name)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(theme.chrome.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                Capsule().fill(theme.bg)
+                    .overlay(Capsule().stroke(theme.chrome.divider, lineWidth: 1))
+            )
+            .frame(maxWidth: size.width - 32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityHidden(true)
+    }
+
+    /// The message and what to do. `withGlyph`: the glyph and status sit on top (one page); with two
+    /// pages they are the illustration instead. `compact`: tighter, wider, with the buttons in rows.
+    private func card(_ problem: ConnectionProblem?, _ theme: TermTheme, withGlyph: Bool, compact: Bool) -> some View {
+        let copy = copy(problem)
         return VStack(spacing: 0) {
-            GlitchGlyph(symbol: copy.symbol, theme: theme, size: 34)
-                .frame(width: 56, height: 44)
-                .padding(.bottom, 14)
-                .accessibilityHidden(true)
-            Text(problem == nil ? "SIGNAL FOUND" : "SIGNAL LOST")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .tracking(2.4)
-                .foregroundStyle(problem == nil ? theme.chrome.done : theme.accent)
-                .padding(.bottom, 8)
-                .accessibilityHidden(true)
+            if withGlyph {
+                GlitchGlyph(symbol: copy.symbol, theme: theme, size: compact ? 26 : 34)
+                    .frame(width: compact ? 44 : 56, height: compact ? 34 : 44)
+                    .padding(.bottom, compact ? 8 : 14)
+                    .accessibilityHidden(true)
+                signalLabel(problem, theme, size: 11)
+                    .padding(.bottom, compact ? 6 : 8)
+            }
             Text(copy.title)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(theme.fg)
@@ -197,10 +242,10 @@ struct OfflineScreen: View {
                     .padding(.top, 10)
             }
             if let problem {
-                actions(problem, theme)
-                    .padding(.top, 20)
-                details(problem, theme)
-                    .padding(.top, 8)
+                actions(problem, theme, compact: compact)
+                    .padding(.top, compact ? 16 : 20)
+                details(problem, theme, compact: compact)
+                    .padding(.top, compact ? 4 : 8)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -209,9 +254,9 @@ struct OfflineScreen: View {
             }
         }
         .padding(.horizontal, 24)
-        .padding(.top, 24)
-        .padding(.bottom, 14)
-        .frame(maxWidth: 360)
+        .padding(.top, compact ? 16 : 24)
+        .padding(.bottom, compact ? 8 : 14)
+        .frame(maxWidth: compact ? 440 : 360)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(theme.bg)
@@ -220,9 +265,11 @@ struct OfflineScreen: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// The main button and the second one: stacked, or side by side in the compact card.
     @ViewBuilder
-    private func actions(_ problem: ConnectionProblem, _ theme: TermTheme) -> some View {
-        VStack(spacing: 4) {
+    private func actions(_ problem: ConnectionProblem, _ theme: TermTheme, compact: Bool) -> some View {
+        let layout = compact ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(spacing: 4))
+        layout {
             if problem.kind == .badAddress {
                 PrimaryButton(title: "Server Settings", busy: false, theme: theme) { model.showSettings = true }
             } else {
@@ -230,42 +277,37 @@ struct OfflineScreen: View {
                     Haptic.tap()
                     server.retryNow()
                 }
-                if let a = OfflineAction.secondary(for: problem.kind, tailscaleInstalled: tailscaleInstalled) {
+                if let a = OfflineAction.secondary(for: problem.kind) {
                     Button(a.title) { perform(a) }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.accent)
-                        .frame(minWidth: 200, minHeight: 44)
+                        .padding(.horizontal, compact ? 12 : 0)
+                        .frame(minWidth: compact ? 0 : 200, minHeight: 44)
                         .contentShape(Rectangle())
                 }
             }
-            // The tab's title bar, with the sidebar toggle, is under this screen.
-            if !sidebarVisible {
-                Button("Show Sidebar") { sidebarVisible = true }
-                    .font(.footnote)
-                    .foregroundStyle(theme.chrome.secondary)
-                    .frame(minHeight: 44)
-            }
+            if !compact { showSidebar(theme, height: 44) }
         }
     }
 
-    private func details(_ problem: ConnectionProblem, _ theme: TermTheme) -> some View {
+    /// The tab's title bar, with the sidebar toggle, is under this screen.
+    @ViewBuilder
+    private func showSidebar(_ theme: TermTheme, height: CGFloat) -> some View {
+        if !sidebarVisible {
+            Button("Show Sidebar") { sidebarVisible = true }
+                .font(.footnote)
+                .foregroundStyle(theme.chrome.secondary)
+                .frame(minHeight: height)
+        }
+    }
+
+    /// Details, and in the compact card Show Sidebar beside it.
+    private func details(_ problem: ConnectionProblem, _ theme: TermTheme, compact: Bool) -> some View {
         VStack(spacing: 2) {
-            Button {
-                showDetails.toggle()
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Details")
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(showDetails ? 90 : 0))
-                }
-                .font(.caption)
-                .foregroundStyle(theme.chrome.tertiary)
-                .frame(minWidth: 88, minHeight: 32)
-                .contentShape(Rectangle())
+            HStack(spacing: 20) {
+                if compact { showSidebar(theme, height: 36) }
+                detailsToggle(theme)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(showDetails ? "Hide Details" : "Show Details")
             if showDetails {
                 Text("\(server.config.url)\n\(problem.detail)")
                     .font(.system(size: 11, design: .monospaced))
@@ -277,10 +319,28 @@ struct OfflineScreen: View {
         }
     }
 
+    private func detailsToggle(_ theme: TermTheme) -> some View {
+        Button {
+            showDetails.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Text("Details")
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(showDetails ? 90 : 0))
+            }
+            .font(.caption)
+            .foregroundStyle(theme.chrome.tertiary)
+            .frame(minWidth: 88, minHeight: 32)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showDetails ? "Hide Details" : "Show Details")
+    }
+
     private func perform(_ a: OfflineAction) {
         Haptic.tap()
         switch a {
-        case .openTailscale: UIApplication.shared.open(OfflineAction.tailscaleURL)
         case .openSettings:
             if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
         case .serverSettings: model.showSettings = true
