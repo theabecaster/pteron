@@ -3,8 +3,8 @@ import UIKit
 import Darwin
 
 extension View {
-    /// Covers the app with the launch splash, then turns the app icon into a hole and flies the app
-    /// out of it (iris-out). Apply once, to the root view.
+    /// Covers the app with the launch splash, then peels Rexie off the screen like a paper cutout and
+    /// flies the app out of the Rexie-shaped hole it leaves (iris-out). Apply once, to the root view.
     func launchTransition() -> some View { modifier(LaunchTransition()) }
 }
 
@@ -59,26 +59,84 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
 /// UIKit splash drawn with plain layers so the whole transition runs in the render server
 /// (Core Animation), unaffected by main-thread work while the app connects underneath.
 ///
-/// Layers (bottom to top): `cover` (the background with an icon-shaped hole, drawn as a huge rounded
-/// border so it needs no mask or offscreen pass) and `icon` (the Rex icon). The icon is the same image
-/// as the static launch screen (`SplashIcon`), centered on the same pixel grid, so the first frame
-/// matches the launch screen exactly.
+/// Layers (bottom to top):
+/// - `cover`: the background with a Rexie-shaped hole. A huge border frames `hole`, a bitmap of the
+///   background with Rexie cut out, so it needs no mask or offscreen pass. Zooming only scales `cover`.
+/// - `shadow`: a flat, path-only shadow on the "screen" under the peeling cutout.
+/// - `piece`: the Rexie art, the same image as the static launch screen (`LaunchRexie`) on the same
+///   pixel grid, so the first frame matches it exactly. `shade` darkens it as it tilts.
+///
+/// The cutout peels forward about its bottom edge and drops past the viewer, leaving the hole; the
+/// hole then grows around a point deep inside Rexie's head until the app fills the screen.
 final class LaunchSplashView: UIView {
     private enum Metric {
-        static let icon: CGFloat = 128
-        static let iconRadius: CGFloat = 128 * 0.2237
-        static let holeStart: CGFloat = 0.9   // hole hides under the icon until the icon shrinks to it
+        /// Point size of `LaunchRexie`; the art is the icon's "Rexie Neue Color" layer, 448 x 457 SVG units.
+        static let size = CGSize(width: 150, height: 153)
+        static let svg = CGSize(width: 448, height: 457)
+        /// Centre and radius of the largest circle inside the silhouette (SVG units): the zoom pivot.
+        /// Once that circle covers the screen, nothing of the cover is left on screen.
+        static let pivot = CGPoint(x: 232, y: 184)
+        static let pivotRadius: CGFloat = 140
+        /// Hole bitmap pixels per point: sharp up to a few times zoom; past that the edges move fast.
+        static let holeScale: CGFloat = 8
+        static let holeMargin: CGFloat = 6
+        static let perspective: CGFloat = 1 / 500
     }
 
     private let cover = CALayer()
-    private let icon = CALayer()
-    private var border: CGFloat = 0
+    private let hole = CALayer()
+    private let shadow = CALayer()
+    private let piece = CALayer()
+    private let shade = CALayer()
 
     /// Minimum time from process start to the transition, so the splash never lingers.
     static let minimumSplash: CFTimeInterval = 0.6
     /// Minimum time after our first frame: iOS cross-fades from the launch screen to the app's first
-    /// frame, and starting the dip inside that fade shows both icons at once.
+    /// frame, and starting inside that fade shows both at once.
     static let handoff: CFTimeInterval = 0.3
+
+    /// Rexie's outline in points (origin at the art's top-left): the body plus the mouth that fills
+    /// its notch, from the icon's "Rexie Neue Color" and "Mouth Neue" vectors.
+    static let silhouette: CGPath = {
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: x * Metric.size.width / Metric.svg.width, y: y * Metric.size.height / Metric.svg.height)
+        }
+        let b = CGMutablePath()
+        b.move(to: p(165.10, 20.20))
+        b.addCurve(to: p(209.05, 46.33), control1: p(177.76, 14.20), control2: p(199.03, 31.90))
+        b.addCurve(to: p(219.03, 44.55), control1: p(212.34, 45.67), control2: p(215.67, 45.08))
+        b.addCurve(to: p(423.81, 154.72), control1: p(320.02, 28.62), control2: p(411.70, 77.94))
+        b.addCurve(to: p(297.37, 314.53), control1: p(434.49, 222.42), control2: p(379.71, 288.85))
+        b.addLine(to: p(297.37, 314.56))
+        b.addCurve(to: p(201.94, 328.17), control1: p(275.21, 320.53), control2: p(237.14, 326.79))
+        b.addCurve(to: p(201.11, 333.46), control1: p(198.62, 328.30), control2: p(197.92, 332.55))
+        b.addCurve(to: p(294.57, 345.42), control1: p(223.96, 340.02), control2: p(261.11, 347.29))
+        b.addCurve(to: p(294.62, 345.72), control1: p(294.58, 345.52), control2: p(294.60, 345.62))
+        b.addCurve(to: p(204.14, 428.36), control1: p(284.02, 387.43), control2: p(246.97, 421.60))
+        b.addCurve(to: p(83.67, 358.60), control1: p(151.73, 436.63), control2: p(102.10, 406.43))
+        b.addCurve(to: p(47.26, 331.22), control1: p(62.91, 351.82), control2: p(48.18, 342.99))
+        b.addCurve(to: p(70.39, 290.35), control1: p(45.48, 308.60), control2: p(73.81, 312.04))
+        b.addCurve(to: p(24.03, 249.37), control1: p(66.67, 266.77), control2: p(26.17, 276.57))
+        b.addCurve(to: p(56.99, 202.23), control1: p(22.13, 225.19), control2: p(58.68, 229.32))
+        b.addCurve(to: p(23.59, 149.63), control1: p(55.63, 180.35), control2: p(16.85, 172.79))
+        b.addCurve(to: p(80.79, 124.23), control1: p(30.61, 125.53), control2: p(68.02, 142.32))
+        b.addCurve(to: p(80.95, 67.54), control1: p(93.43, 106.33), control2: p(65.73, 83.54))
+        b.addCurve(to: p(142.66, 70.35), control1: p(97.84, 49.78), control2: p(123.33, 80.99))
+        b.addCurve(to: p(165.10, 20.20), control1: p(162.10, 59.64), control2: p(146.04, 29.24))
+        b.closeSubpath()
+        let m = CGMutablePath()
+        m.move(to: p(296.68, 314.21))
+        m.addLine(to: p(296.69, 314.25))
+        m.addCurve(to: p(293.93, 345.55), control1: p(292.80, 324.22), control2: p(292.25, 334.81))
+        m.addCurve(to: p(293.48, 347.28), control1: p(293.79, 346.13), control2: p(293.64, 346.70))
+        m.addCurve(to: p(200.46, 335.20), control1: p(260.09, 349.07), control2: p(223.18, 341.78))
+        m.addCurve(to: p(197.73, 331.13), control1: p(198.37, 334.60), control2: p(197.46, 332.81))
+        m.addCurve(to: p(201.51, 327.92), control1: p(197.99, 329.46), control2: p(199.38, 328.00))
+        m.addCurve(to: p(296.74, 314.19), control1: p(236.71, 326.53), control2: p(274.78, 320.18))
+        m.addCurve(to: p(296.68, 314.21), control1: p(296.72, 314.19), control2: p(296.70, 314.20))
+        m.closeSubpath()
+        return b.union(m)
+    }()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -87,16 +145,38 @@ final class LaunchSplashView: UIView {
         backgroundColor = .clear
         accessibilityElementsHidden = true
 
+        var perspective = CATransform3DIdentity
+        perspective.m34 = -Metric.perspective
+        layer.sublayerTransform = perspective
+
         let bg = UIColor(named: "LaunchBackground") ?? UIColor(red: 0x22 / 255, green: 0x27 / 255, blue: 0x2e / 255, alpha: 1)
         cover.borderColor = bg.cgColor
-        cover.cornerCurve = .circular
-        if let img = UIImage(named: "SplashIcon") {
-            icon.contents = img.cgImage
-            icon.contentsScale = img.scale
+        hole.contents = Self.holeImage(color: bg)
+        hole.contentsGravity = .resize
+        cover.addSublayer(hole)
+
+        shadow.shadowPath = Self.silhouette
+        shadow.shadowColor = UIColor.black.cgColor
+        shadow.shadowOpacity = 0.5
+        shadow.shadowRadius = 8
+        shadow.shadowOffset = CGSize(width: 0, height: 8)
+        shadow.opacity = 0
+
+        piece.anchorPoint = CGPoint(x: 0.5, y: 1)   // peels about its bottom edge
+        piece.contentsGravity = .resize
+        shade.contentsGravity = .resize
+        shade.opacity = 0
+        if let img = UIImage(named: "LaunchRexie") {
+            piece.contents = img.cgImage
+            piece.contentsScale = img.scale
+            shade.contents = Self.silhouetteImage(of: img)
+            shade.contentsScale = img.scale
         }
-        icon.contentsGravity = .resize
+        piece.addSublayer(shade)
+
         layer.addSublayer(cover)
-        layer.addSublayer(icon)
+        layer.addSublayer(shadow)
+        layer.addSublayer(piece)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -105,34 +185,84 @@ final class LaunchSplashView: UIView {
         super.layoutSubviews()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let c = CGPoint(x: bounds.midX, y: bounds.midY)
-        // bounds + position, not frame: frame would fold in the icon's scale transform once it runs.
-        place(icon, pixelRect(center: c, size: CGSize(width: Metric.icon, height: Metric.icon)))
-        // The hole is the inside of a border this wide; its outer edge stays past the screen corners
-        // even at the smallest hole scale.
-        border = hypot(bounds.width, bounds.height)
-        let side = Metric.icon + border * 2
+        let art = artRect
+        // bounds + position, not frame: frame would fold in the transforms once they run.
+        piece.bounds = CGRect(origin: .zero, size: art.size)
+        piece.position = CGPoint(x: art.midX, y: art.maxY)
+        shade.frame = piece.bounds
+        shadow.bounds = piece.bounds
+        shadow.position = CGPoint(x: art.midX, y: art.midY)
+
+        // The hole bitmap sits inside a border wide enough to reach past the screen corners at any
+        // scale; the border overlaps the bitmap's edge so no seam shows. Scaling pivots on the
+        // inscribed circle's centre, so the solid inside of Rexie is what ends up covering the screen.
+        let border = hypot(bounds.width, bounds.height)
+        let m = Metric.holeMargin
         let t = cover.transform
         cover.transform = CATransform3DIdentity
-        cover.bounds = CGRect(x: 0, y: 0, width: side, height: side)
-        cover.position = icon.position
+        cover.bounds = CGRect(x: 0, y: 0, width: art.width + 2 * (m + border), height: art.height + 2 * (m + border))
         cover.borderWidth = border
-        cover.cornerRadius = border + Metric.iconRadius
-        cover.transform = CATransform3DEqualToTransform(t, CATransform3DIdentity)
-            ? CATransform3DMakeScale(Metric.holeStart, Metric.holeStart, 1) : t
+        hole.frame = CGRect(x: border - m, y: border - m, width: art.width + 4 * m, height: art.height + 4 * m)
+        let pivot = pivotPoint(in: art)
+        let local = CGPoint(x: border + m + pivot.x - art.minX, y: border + m + pivot.y - art.minY)
+        cover.anchorPoint = CGPoint(x: local.x / cover.bounds.width, y: local.y / cover.bounds.height)
+        cover.position = pivot
+        cover.transform = t
         CATransaction.commit()
     }
 
-    private func place(_ l: CALayer, _ r: CGRect) {
-        l.bounds = CGRect(origin: .zero, size: r.size)
-        l.position = CGPoint(x: r.midX, y: r.midY)
+    /// Where iOS draws `LaunchRexie` on the static launch screen: centered, on the pixel grid.
+    private var artRect: CGRect {
+        let s = max(traitCollection.displayScale, 1)
+        let size = Metric.size
+        let x = ((bounds.midX - size.width / 2) * s).rounded() / s
+        let y = ((bounds.midY - size.height / 2) * s).rounded() / s
+        return CGRect(origin: CGPoint(x: x, y: y), size: size)
     }
 
-    private func pixelRect(center: CGPoint, size: CGSize) -> CGRect {
-        let s = max(traitCollection.displayScale, 1)
-        let x = ((center.x - size.width / 2) * s).rounded() / s
-        let y = ((center.y - size.height / 2) * s).rounded() / s
-        return CGRect(origin: CGPoint(x: x, y: y), size: size)
+    private func pivotPoint(in art: CGRect) -> CGPoint {
+        CGPoint(x: art.minX + Metric.pivot.x * art.width / Metric.svg.width,
+                y: art.minY + Metric.pivot.y * art.height / Metric.svg.height)
+    }
+
+    /// The background with Rexie cut out, drawn once (with `holeMargin * 2` of background around the
+    /// art). The outline is stroked back in by 0.75 pt so the hole's anti-aliased edge stays under the
+    /// art's edge on the first frame.
+    private static func holeImage(color: UIColor) -> CGImage? {
+        let m = Metric.holeMargin * 2
+        let size = CGSize(width: Metric.size.width + 2 * m, height: Metric.size.height + 2 * m)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = Metric.holeScale
+        format.opaque = false
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            let cg = ctx.cgContext
+            color.setFill()
+            cg.fill(CGRect(origin: .zero, size: size))
+            cg.translateBy(x: m, y: m)
+            cg.addPath(silhouette)
+            cg.setBlendMode(.clear)
+            cg.fillPath()
+            cg.setBlendMode(.normal)
+            cg.addPath(silhouette)
+            color.setStroke()
+            cg.setLineWidth(1.5)
+            cg.strokePath()
+        }.cgImage
+    }
+
+    /// Black where the art is opaque: the overlay that darkens the cutout as it tilts away from the light.
+    private static func silhouetteImage(of img: UIImage) -> CGImage? {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = img.scale
+        format.opaque = false
+        return UIGraphicsImageRenderer(size: img.size, format: format).image { ctx in
+            img.draw(at: .zero)
+            let cg = ctx.cgContext
+            cg.setBlendMode(.sourceIn)
+            cg.setFillColor(UIColor.black.cgColor)
+            cg.fill(CGRect(origin: .zero, size: img.size))
+        }.cgImage
     }
 
     /// Schedules the whole transition up front on Core Animation's clock, then removes itself.
@@ -154,11 +284,17 @@ final class LaunchSplashView: UIView {
         }
 
         // Timeline (seconds after t0):
-        //   0.00–0.20  icon dips to the hole size
-        //   0.10–0.26  icon fades, leaving an icon-shaped hole onto the live app (at 1.2x)
-        //   0.22–0.84  hole irises out past the screen corners; app settles 1.2x -> 1.0x
-        let holeEnd = hypot(bounds.width, bounds.height) / (Metric.icon * 0.98) + 0.2
-        let irisStart = 0.22, irisDuration = 0.62
+        //   0.00–0.60  cutout folds forward about its bottom edge (top toward the viewer), darkening
+        //   0.25–0.65  ...and drops past the bottom of the screen, leaving a Rexie-shaped hole
+        //   0.45–1.30  hole grows around the pivot until the app fills the screen; app settles 1.2x -> 1.0x
+        let peel = 0.60, dropStart = 0.25, dropDuration = 0.40
+        let irisStart = 0.45, irisDuration = 0.85
+        let art = artRect
+        let pivot = pivotPoint(in: art)
+        let corners = [CGPoint.zero, CGPoint(x: bounds.maxX, y: 0), CGPoint(x: 0, y: bounds.maxY),
+                       CGPoint(x: bounds.maxX, y: bounds.maxY)]
+        let reach = corners.map { hypot($0.x - pivot.x, $0.y - pivot.y) }.max() ?? 1
+        let holeEnd = reach / (Metric.pivotRadius * art.width / Metric.svg.width) * 1.06
 
         if let content {
             CATransaction.begin()
@@ -179,21 +315,50 @@ final class LaunchSplashView: UIView {
             completion()
         }
 
-        let dip = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
-        icon.add(anim("transform.scale", from: 1, to: Metric.holeStart, start: t0, duration: 0.2, dip), forKey: "dip")
-        icon.add(anim("opacity", from: 1, to: 0, start: t0 + 0.1, duration: 0.16, .easeIn), forKey: "fade")
-        icon.transform = CATransform3DMakeScale(Metric.holeStart, Metric.holeStart, 1)
-        icon.opacity = 0
+        // The cutout folds forward on its bottom edge like a hinged flap (top toward the viewer), then
+        // falls off the bottom of the screen whole, still tipping (no fade). Negative x-rotation brings
+        // the top edge toward the viewer.
+        let folded = -CGFloat.pi * 0.2, tilt = -CGFloat.pi * 0.36, lift: CGFloat = 150
+        let tip = CAKeyframeAnimation(keyPath: "transform.rotation.x")
+        tip.values = [0, folded, tilt]
+        tip.keyTimes = [0, 0.5, 1]
+        tip.timingFunctions = [CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0.6), CAMediaTimingFunction(name: .linear)]
+        tip.beginTime = t0
+        tip.duration = peel
+        tip.fillMode = .backwards
+        piece.add(tip, forKey: "tip")
+        let fall = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.9, 0.55)
+        let drop = bounds.maxY - art.maxY + art.height * 2
+        // Lifting toward the camera is what makes it grow as it falls past the viewer. The top edge
+        // peaks at lift + height * sin(-tilt), about 270 pt, well short of the 500 pt eye distance.
+        piece.add(anim("transform.translation.z", from: 0, to: lift, start: t0, duration: peel,
+                       CAMediaTimingFunction(controlPoints: 0.4, 0, 0.8, 0.6)), forKey: "lift")
+        piece.add(anim("transform.translation.y", from: 0, to: drop, start: t0 + dropStart, duration: dropDuration, fall),
+                  forKey: "drop")
+        piece.transform = CATransform3DRotate(CATransform3DMakeTranslation(0, drop, lift), tilt, 1, 0, 0)
+        shade.add(anim("opacity", from: 0, to: 0.5, start: t0, duration: peel, .easeIn), forKey: "shade")
+        shade.opacity = 0.5
 
+        // Its shadow on the screen: appears as the top lifts, slides down with it, then thins out.
+        let shadowLife = CAKeyframeAnimation(keyPath: "opacity")
+        shadowLife.values = [0, 1, 0]
+        shadowLife.keyTimes = [0, 0.4, 1]
+        shadowLife.beginTime = t0
+        shadowLife.duration = 0.5
+        shadowLife.fillMode = .backwards
+        shadow.add(shadowLife, forKey: "life")
+        shadow.add(anim("transform.translation.y", from: 0, to: art.height * 0.5, start: t0, duration: 0.5, .easeIn),
+                   forKey: "slide")
+        shadow.transform = CATransform3DMakeTranslation(0, art.height * 0.5, 0)
 
         // Zooming reads as constant speed when the scale moves evenly in log space, so the keyframes ease
         // the exponent (smoothstep): the hole opens gently, rushes through the screen edges, then lands.
         let iris = CAKeyframeAnimation(keyPath: "transform.scale")
         let steps = 48
-        let span = log(holeEnd / Metric.holeStart)
+        let span = log(holeEnd)
         iris.values = (0...steps).map { i -> CGFloat in
             let u = CGFloat(i) / CGFloat(steps)
-            return Metric.holeStart * exp(span * u * u * (3 - 2 * u))
+            return exp(span * u * u * (3 - 2 * u))
         }
         iris.calculationMode = .linear
         iris.beginTime = t0 + irisStart
@@ -201,6 +366,10 @@ final class LaunchSplashView: UIView {
         iris.fillMode = .backwards
         cover.add(iris, forKey: "iris")
         cover.transform = CATransform3DMakeScale(holeEnd, holeEnd, 1)
+        // The bitmap edge softens at large scale; by then it is leaving the screen, so fade the last bit.
+        cover.add(anim("opacity", from: 1, to: 0, start: t0 + irisStart + irisDuration * 0.85,
+                       duration: irisDuration * 0.15, .linear), forKey: "fade")
+        cover.opacity = 0
         CATransaction.commit()
     }
 
