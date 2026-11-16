@@ -6,6 +6,27 @@ struct SessionEntry: Identifiable, Equatable {
     var label: String
 }
 
+/// One block's metadata, observed on its own.
+@MainActor
+@Observable
+final class BlockMetaBox {
+    var value: BlockMeta?
+}
+
+/// `server.meta[blockID]` reads and writes a block's metadata through its own observable box.
+@MainActor
+struct MetaTable {
+    let server: ServerConnection
+
+    subscript(id: String) -> BlockMeta? {
+        get { server.metaBox(id).value }
+        nonmutating set {
+            let box = server.metaBox(id)
+            if box.value != newValue { box.value = newValue }
+        }
+    }
+}
+
 struct HostEntry: Identifiable, Equatable {
     var id: String
     var label: String
@@ -13,6 +34,14 @@ struct HostEntry: Identifiable, Equatable {
 }
 
 /// Everything known about one Rex server: its sessions, their layouts, and live block metadata.
+///
+/// Sync rules, kept simple:
+/// - The server is the truth. A full resync (sessions, views, meta) replaces local state on first
+///   connect, on every reconnect, on return to the foreground and when an event `seq` gap shows we
+///   missed something. Every action ends by re-reading the server's view of the session.
+/// - The UI stays calm: per-block events are coalesced into one update per ~150 ms, a status is held
+///   on screen for at least a second (a new "blocked" shows at once), and connection drops only show
+///   once they last more than a second.
 @MainActor
 @Observable
 final class ServerConnection: Identifiable {
@@ -22,33 +51,81 @@ final class ServerConnection: Identifiable {
     var id: UUID { config.id }
     let control: RexControl
 
+    /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
     var sessions: [SessionEntry] = []
     var views: [String: SessionView] = [:]
-    var meta: [String: BlockMeta] = [:]
+    /// Live per-block metadata. Each block has its own observable box, so a status change in one pane
+    /// only re-renders the views that read that pane (not every view that touches the server).
+    var meta: MetaTable { MetaTable(server: self) }
     var hosts: [HostEntry] = []
     var hostName: String?
     var lastError: String?
 
-    private var refreshScheduled: Set<String> = []
-    private var started = false
+    @ObservationIgnored fileprivate var metaBoxes: [String: BlockMetaBox] = [:]
+    @ObservationIgnored private var rawPhase: Phase = .idle
+    @ObservationIgnored private var phaseTask: Task<Void, Never>?
+    @ObservationIgnored private var refreshScheduled: Set<String> = []
+    @ObservationIgnored private var started = false
+    // Resync bookkeeping.
+    @ObservationIgnored private var lastSeq = 0
+    @ObservationIgnored private var resyncTask: Task<Void, Never>?
+    @ObservationIgnored private var syncing = false
+    @ObservationIgnored private var syncAgain = false
+    @ObservationIgnored private var touchedBlocks: Set<String> = []
+    @ObservationIgnored private var touchedSessions: Set<String> = []
+    // Coalescing and status hold.
+    @ObservationIgnored private var pendingMeta: [String: BlockMeta] = [:]
+    @ObservationIgnored private var statusShownAt: [String: Date] = [:]
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
+
+    static let phaseGrace: Double = 1.0
+    static let coalesce: Double = 0.15
+    static let minStatusHold: Double = 1.0
+
+    fileprivate func metaBox(_ id: String) -> BlockMetaBox {
+        if let b = metaBoxes[id] { return b }
+        let b = BlockMetaBox()
+        metaBoxes[id] = b
+        return b
+    }
 
     init(config: ServerConfig) {
         self.config = config
         let url = URL(string: config.url.trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "https://invalid.local")!
         control = RexControl(baseURL: url)
-        control.onEvent = { [weak self] seq, ev in self?.handle(event: ev) }
+        control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
         control.onStateChange = { [weak self] st in
             guard let self else { return }
             switch st {
-            case .connecting: if self.phase != .online { self.phase = .connecting }
-            case .connected: self.phase = .online
-            case .failed(let m): self.phase = .offline(m)
-            case .idle: self.phase = .idle
+            case .connecting: self.setPhase(.connecting)
+            case .connected: self.setPhase(.online)
+            case .failed(let m): self.setPhase(.offline(m))
+            case .idle: self.setPhase(.idle)
             }
         }
         control.onReconnected = { [weak self] _ in
-            Task { await self?.bootstrap() }
+            // Events that happened while disconnected are lost: start over from the server's state.
+            self?.scheduleResync(after: 0)
+        }
+    }
+
+    // MARK: Connection
+
+    private func setPhase(_ p: Phase) {
+        rawPhase = p
+        phaseTask?.cancel()
+        phaseTask = nil
+        // Coming online, going idle, or still on the first connect: show it now.
+        if p == .online || p == .idle || phase != .online {
+            if phase != p { phase = p }
+            return
+        }
+        // A drop from online: wait out short blips.
+        phaseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.phaseGrace * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.rawPhase != .online else { return }
+            self.phase = self.rawPhase
         }
     }
 
@@ -57,16 +134,17 @@ final class ServerConnection: Identifiable {
         started = true
         Task {
             do {
-                phase = .connecting
+                setPhase(.connecting)
                 try await control.connect()
+                lastSeq = 0
                 await bootstrap()
             } catch {
-                phase = .offline(error.localizedDescription)
+                setPhase(.offline(error.localizedDescription))
                 lastError = error.localizedDescription
                 // RexControl only auto-retries after a successful first connect; retry here.
                 started = false
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
-                if case .offline = phase { start() }
+                if case .offline = rawPhase { start() }
             }
         }
     }
@@ -74,25 +152,78 @@ final class ServerConnection: Identifiable {
     func stop() {
         control.disconnect()
         started = false
-        phase = .idle
+        setPhase(.idle)
     }
 
+    /// Back in the foreground: reconnect if needed (which resyncs), or resync the live connection.
+    func resume() {
+        start()
+        if rawPhase == .online { scheduleResync(after: 0) }
+    }
+
+    /// Pull to refresh: reload everything when online, otherwise reconnect.
+    func refresh() async {
+        if rawPhase == .online {
+            await bootstrap()
+        } else {
+            stop()
+            start()
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+        }
+    }
+
+    // MARK: Full sync
+
+    func scheduleResync(after delay: Double = 0.25) {
+        resyncTask?.cancel()
+        resyncTask = Task { [weak self] in
+            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            guard !Task.isCancelled, let self else { return }
+            await self.bootstrap()
+        }
+    }
+
+    /// Reads the whole server state and replaces the local copy with it.
     func bootstrap() async {
+        if syncing { syncAgain = true; return }
+        syncing = true
+        touchedBlocks = []
+        touchedSessions = []
+        defer {
+            syncing = false
+            if syncAgain { syncAgain = false; scheduleResync(after: 0.1) }
+        }
         do {
             let r = try await control.call("session.bootstrap", ["event_scope": "all", "attach_session_ids": [String]()])
             if let st = r.obj("server_status"), let ts = st.obj("tailscale") {
                 hostName = ts.str("dns_name")
             }
-            let list = r.obj("attach_all")?.arr("sessions") ?? []
-            sessions = list.map { SessionEntry(id: $0.str("session_id") ?? "", label: $0.str("label") ?? "") }
-            await withTaskGroup(of: Void.self) { g in
-                for s in sessions { g.addTask { await self.attach(s.id) } }
+            let list = (r.obj("attach_all")?.arr("sessions") ?? []).map {
+                SessionEntry(id: $0.str("session_id") ?? "", label: $0.str("label") ?? "")
             }
+            var fresh: [String: SessionView] = [:]
+            await withTaskGroup(of: SessionView?.self) { g in
+                for s in list { g.addTask { await self.fetchView(s.id) } }
+                for await v in g { if let v { fresh[v.sessionID] = v } }
+            }
+            // Replace, don't merge. Sessions changed by events during the sync get one more read.
+            sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
+            views = fresh
+            for sid in touchedSessions { refreshView(sid) }
+            let blocks = fresh.values.flatMap { v in
+                v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (v.sessionID, $0.id) }
+            }
+            await loadMeta(blocks)
             await loadHosts()
             lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func fetchView(_ sessionID: String) async -> SessionView? {
+        guard let r = try? await control.call("session.attach", ["session_id": sessionID]), let v = r.obj("view") else { return nil }
+        return SessionView(v)
     }
 
     func loadHosts() async {
@@ -102,31 +233,29 @@ final class ServerConnection: Identifiable {
         }
     }
 
+    /// Attaches one new session (for `session_created`).
     func attach(_ sessionID: String) async {
-        do {
-            let r = try await control.call("session.attach", ["session_id": sessionID])
-            if let v = r.obj("view") { apply(view: SessionView(v)) }
-            await loadMeta(sessionID)
-        } catch {
-            lastError = error.localizedDescription
-        }
+        guard let v = await fetchView(sessionID) else { return }
+        apply(view: v)
+        await loadMeta(v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (sessionID, $0.id) })
     }
 
     private func apply(view: SessionView) {
         if let old = views[view.sessionID], old.revision > view.revision { return }
         views[view.sessionID] = view
         if let i = sessions.firstIndex(where: { $0.id == view.sessionID }) {
-            sessions[i].label = view.label
+            if sessions[i].label != view.label { sessions[i].label = view.label }
         } else {
             sessions.append(SessionEntry(id: view.sessionID, label: view.label))
         }
     }
 
+    /// Re-reads a session's layout from the server. Bursts of calls collapse into one read.
     func refreshView(_ sessionID: String) {
         guard !refreshScheduled.contains(sessionID) else { return }
         refreshScheduled.insert(sessionID)
         Task {
-            try? await Task.sleep(nanoseconds: 60_000_000)
+            try? await Task.sleep(nanoseconds: 80_000_000)
             refreshScheduled.remove(sessionID)
             if let r = try? await control.call("session.view", ["session_id": sessionID]) {
                 let v = r.obj("view") ?? r
@@ -135,30 +264,34 @@ final class ServerConnection: Identifiable {
         }
     }
 
-    private func loadMeta(_ sessionID: String) async {
-        guard let v = views[sessionID] else { return }
-        let blocks = v.windows.flatMap(\.allBlocks).filter(\.isTerminal)
-        await withTaskGroup(of: (String, BlockMeta).self) { g in
-            for b in blocks {
+    /// Reads status, title and process for the blocks and replaces what we had for them.
+    private func loadMeta(_ blocks: [(session: String, block: String)]) async {
+        await withTaskGroup(of: (String, BlockMeta?, String??, String??).self) { g in
+            for (sid, bid) in blocks {
                 g.addTask { @MainActor in
-                    var m = BlockMeta()
-                    async let st = try? self.control.blockCall("com.superlogical.terminal.program_status", session: sessionID, block: b.id)
-                    async let ti = try? self.control.blockCall("com.superlogical.terminal.title", session: sessionID, block: b.id)
-                    async let pr = try? self.control.blockCall("com.superlogical.terminal.process", session: sessionID, block: b.id)
+                    async let st = try? self.control.blockCall("com.superlogical.terminal.program_status", session: sid, block: bid)
+                    async let ti = try? self.control.blockCall("com.superlogical.terminal.title", session: sid, block: bid)
+                    async let pr = try? self.control.blockCall("com.superlogical.terminal.process", session: sid, block: bid)
+                    var statuses: BlockMeta?
                     if let st = await st {
+                        var m = BlockMeta()
                         for rec in st.arr("records") { m.statuses[rec.str("id") ?? ""] = ProgramStatus(rec) }
+                        statuses = m
                     }
-                    m.title = await ti?.str("title")
-                    if let fg = await pr?.obj("foreground") { m.foreground = Self.processLabel(fg) }
-                    return (b.id, m)
+                    // Outer nil: the call failed, keep what we had. Inner nil: the server has none.
+                    let title: String?? = await ti.map { $0.str("title") }
+                    let fg: String?? = await pr.map { $0.obj("foreground").map(Self.processLabel) }
+                    return (bid, statuses, title, fg)
                 }
             }
-            for await (id, m) in g {
-                var cur = meta[id] ?? BlockMeta()
-                cur.title = m.title ?? cur.title
-                cur.foreground = m.foreground ?? cur.foreground
-                if !m.statuses.isEmpty { cur.statuses = m.statuses }
-                meta[id] = cur
+            for await (bid, statuses, title, fg) in g where !touchedBlocks.contains(bid) {
+                var cur = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
+                if let statuses { cur.statuses = statuses.statuses }
+                if let title { cur.title = title }
+                if let fg { cur.foreground = fg }
+                pendingMeta[bid] = nil
+                statusShownAt[bid] = Date()
+                meta[bid] = cur
             }
         }
     }
@@ -173,6 +306,15 @@ final class ServerConnection: Identifiable {
 
     // MARK: Events
 
+    private func receive(seq: Int, event: JSONObject) {
+        if seq > 0 {
+            // seq counts events on this connection from 1, with no gaps. A jump means we missed some.
+            if seq > 1, lastSeq > 0, seq > lastSeq + 1 { scheduleResync() }
+            lastSeq = seq
+        }
+        handle(event: event)
+    }
+
     private func handle(event: JSONObject) {
         let type = event.str("type") ?? ""
         let p = event.obj("payload") ?? [:]
@@ -180,6 +322,7 @@ final class ServerConnection: Identifiable {
         case "session_created":
             if let s = p.obj("session"), let id = s.str("session_id") {
                 if !sessions.contains(where: { $0.id == id }) { sessions.append(SessionEntry(id: id, label: s.str("label") ?? "")) }
+                touchedSessions.insert(id)
                 Task { await attach(id) }
             }
         case "session_destroyed":
@@ -209,18 +352,22 @@ final class ServerConnection: Identifiable {
         switch type {
         case "session_view_changed":
             let rev = p.int("revision") ?? Int.max
-            if rev > (views[sid]?.revision ?? -1) { refreshView(sid) }
+            if rev > (views[sid]?.revision ?? -1) { touchedSessions.insert(sid); refreshView(sid) }
         case "session_label_changed":
             if let l = p.str("label") {
                 views[sid]?.label = l
                 if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].label = l }
             }
         case "block_created":
+            touchedSessions.insert(sid)
             refreshView(sid)
-            Task { try? await Task.sleep(nanoseconds: 300_000_000); await loadMeta(sid) }
+            if let bid = p.str("block_id") {
+                Task { try? await Task.sleep(nanoseconds: 300_000_000); await loadMeta([(sid, bid)]) }
+            }
         case "block_event":
             handleBlockEvent(sessionID: sid, p)
         case "window_created", "window_closed", "window_label_changed", "active_window_changed", "block_closed", "block_owner_changed":
+            touchedSessions.insert(sid)
             refreshView(sid)
         default:
             break
@@ -231,7 +378,7 @@ final class ServerConnection: Identifiable {
         guard let bid = p.str("block_id") else { return }
         let name = p.str("name") ?? ""
         let e = p.obj("payload") ?? [:]
-        var m = meta[bid] ?? BlockMeta()
+        var m = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
         switch name {
         case "title_changed":
             m.title = e.str("title")
@@ -256,10 +403,47 @@ final class ServerConnection: Identifiable {
         case "desktop_notification":
             postLocal(title: e.str("title").flatMap { $0.isEmpty ? nil : $0 } ?? label(for: sid, block: bid),
                       body: e.str("body") ?? "")
+            return
         default:
             return
         }
-        meta[bid] = m
+        if syncing { touchedBlocks.insert(bid) }
+        pendingMeta[bid] = m
+        scheduleFlush(after: Self.coalesce)
+    }
+
+    // MARK: Coalescing
+
+    private func scheduleFlush(after delay: Double) {
+        guard flushTask == nil else { return }
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.01) * 1_000_000_000))
+            self?.flush()
+        }
+    }
+
+    /// Applies the buffered block updates in one go. A status that changed less than `minStatusHold`
+    /// ago stays on screen a little longer, so badges don't flicker; a new "blocked" shows at once.
+    private func flush() {
+        flushTask = nil
+        let now = Date()
+        var wait: Double?
+        for (bid, m) in pendingMeta {
+            let old = meta[bid]?.topStatus?.state
+            let new = m.topStatus?.state
+            if old != new {
+                let age = now.timeIntervalSince(statusShownAt[bid] ?? .distantPast)
+                if new != "blocked", age < Self.minStatusHold {
+                    let rest = Self.minStatusHold - age
+                    wait = min(wait ?? rest, rest)
+                    continue
+                }
+                statusShownAt[bid] = now
+            }
+            meta[bid] = m
+            pendingMeta[bid] = nil
+        }
+        if let wait { scheduleFlush(after: wait) }
     }
 
     private func notifyBlocked(_ sid: String, _ bid: String, _ st: ProgramStatus, _ m: BlockMeta) {
@@ -292,12 +476,35 @@ final class ServerConnection: Identifiable {
     }
 
     // MARK: Actions
+    //
+    // Each action asks the server, then re-reads the server's view of the session. Nothing guesses a
+    // layout locally. A failure shows a short notice and the view is re-read, so the screen matches
+    // the server either way.
+
+    @discardableResult
+    private func act(_ what: String, session sid: String?, _ body: () async throws -> JSONObject) async -> JSONObject? {
+        do {
+            let r = try await body()
+            if let sid { refreshView(sid) }
+            return r
+        } catch {
+            Notice.shared.show("Couldn't \(what). \(Self.short(error))")
+            if let sid { refreshView(sid) }
+            return nil
+        }
+    }
+
+    private static func short(_ error: Error) -> String {
+        let s = (error as? RexError).map { $0.message } ?? error.localizedDescription
+        return s.count > 80 ? String(s.prefix(80)) : s
+    }
 
     @discardableResult
     func createSession(label: String?) async -> String? {
         var p: JSONObject = ["initial_windows": [["layout": ["block": ["flavor": "com.superlogical.terminal.shell"]]]]]
         if let label, !label.isEmpty { p["label"] = label }
-        guard let r = try? await control.call("session.create", p), let id = r.str("session_id") else { return nil }
+        guard let r = await act("create the session", session: nil, { try await self.control.call("session.create", p) }),
+              let id = r.str("session_id") else { return nil }
         if !sessions.contains(where: { $0.id == id }) { sessions.append(SessionEntry(id: id, label: label ?? "")) }
         await attach(id)
         return id
@@ -306,43 +513,42 @@ final class ServerConnection: Identifiable {
     func newWindow(_ sid: String, label: String? = nil) async {
         var p: JSONObject = ["session_id": sid, "layout": ["block": ["flavor": "com.superlogical.terminal.shell"]], "focus": true]
         if let label, !label.isEmpty { p["window_label"] = label }
-        _ = try? await control.call("session.new_window", p)
-        refreshView(sid)
+        await act("open a tab", session: sid) { try await self.control.call("session.new_window", p) }
     }
 
     func split(_ sid: String, anchor: String, vertical: Bool) async {
-        _ = try? await control.call("session.new_split", [
-            "session_id": sid, "anchor_id": anchor, "direction": vertical ? "vertical" : "horizontal",
-            "side": "after", "ratio": 0.5, "focus": true,
-            "layout": ["block": ["flavor": "com.superlogical.terminal.shell"]],
-        ])
-        refreshView(sid)
+        await act("split the pane", session: sid) {
+            try await self.control.call("session.new_split", [
+                "session_id": sid, "anchor_id": anchor, "direction": vertical ? "vertical" : "horizontal",
+                "side": "after", "ratio": 0.5, "focus": true,
+                "layout": ["block": ["flavor": "com.superlogical.terminal.shell"]],
+            ])
+        }
     }
 
     func closeBlock(_ sid: String, _ bid: String) async {
-        _ = try? await control.call("block.close", ["session_id": sid, "block_id": bid])
-        refreshView(sid)
+        await act("close the pane", session: sid) { try await self.control.call("block.close", ["session_id": sid, "block_id": bid]) }
     }
 
     func closeWindow(_ sid: String, _ wid: String) async {
-        _ = try? await control.call("session.close_window", ["session_id": sid, "window_id": wid])
-        refreshView(sid)
+        await act("close the tab", session: sid) { try await self.control.call("session.close_window", ["session_id": sid, "window_id": wid]) }
     }
 
     func destroySession(_ sid: String) async {
-        _ = try? await control.call("session.destroy", ["session_id": sid])
+        // Only drop it locally once the server agrees.
+        guard await act("close the session", session: nil, { try await self.control.call("session.destroy", ["session_id": sid]) }) != nil else { return }
         sessions.removeAll { $0.id == sid }
         views[sid] = nil
     }
 
     func renameSession(_ sid: String, _ label: String) async {
-        _ = try? await control.call("session.set_label", ["session_id": sid, "label": label])
-        refreshView(sid)
+        await act("rename the session", session: sid) { try await self.control.call("session.set_label", ["session_id": sid, "label": label]) }
     }
 
     func renameWindow(_ sid: String, _ wid: String, _ label: String) async {
-        _ = try? await control.call("session.set_window_label", ["session_id": sid, "window_id": wid, "label": label])
-        refreshView(sid)
+        await act("rename the tab", session: sid) {
+            try await self.control.call("session.set_window_label", ["session_id": sid, "window_id": wid, "label": label])
+        }
     }
 
     func focus(_ sid: String, block: String) async {
@@ -356,19 +562,57 @@ final class ServerConnection: Identifiable {
     func zoom(_ sid: String, block: String, on: Bool?) async {
         var p: JSONObject = ["session_id": sid, "block_id": block]
         if let on { p["zoom"] = on }
-        _ = try? await control.call("session.zoom_block", p)
-        refreshView(sid)
+        await act("zoom the pane", session: sid) { try await self.control.call("session.zoom_block", p) }
     }
 
     func resizePane(_ sid: String, direction: String, before: String, after: String, ratio: Double) async {
-        _ = try? await control.call("session.resize_pane", [
-            "session_id": sid, "direction": direction, "before_block_id": before, "after_block_id": after,
-            "ratio": min(max(ratio, 0.05), 0.95),
-        ])
+        await act("resize the pane", session: sid) {
+            try await self.control.call("session.resize_pane", [
+                "session_id": sid, "direction": direction, "before_block_id": before, "after_block_id": after,
+                "ratio": min(max(ratio, 0.05), 0.95),
+            ])
+        }
+    }
+
+    /// Types text into a pane (quick replies). Escape sequences work: "\u{1b}" is Esc, "\r" is Enter.
+    func write(_ sid: String, _ bid: String, _ text: String) async {
+        await act("send to the pane", session: nil) {
+            try await self.control.blockCall("com.superlogical.terminal.write", session: sid, block: bid, args: ["data": text])
+        }
+    }
+
+    /// Sends a composed message: the text, then Enter as a separate write so agents don't treat the
+    /// Enter as part of a paste. Multi-line text goes in as a bracketed paste.
+    func submit(_ sid: String, _ bid: String, _ text: String) async {
+        if !text.isEmpty {
+            let body = text.contains("\n") ? "\u{1b}[200~" + text + "\u{1b}[201~" : text
+            await write(sid, bid, body)
+            try? await Task.sleep(nanoseconds: 40_000_000)
+        }
+        await write(sid, bid, "\r")
+    }
+
+    /// The last lines of a pane as plain text (tab overview cards).
+    func preview(_ sid: String, _ bid: String, lines: Int = 16) async -> String? {
+        let window = 6000
+        guard let r = try? await control.blockCall("com.superlogical.terminal.format", session: sid, block: bid,
+                                                   args: ["format": "text", "trim": true, "max_bytes": window]) else { return nil }
+        var text = r.str("content") ?? ""
+        if let id = r.int("id"), let total = r.int("total"), total > window,
+           let tail = try? await control.blockCall("com.superlogical.terminal.blob_read", session: sid, block: bid,
+                                                   args: ["id": id, "offset": total - window, "max_bytes": window]) {
+            text = tail.str("data") ?? text
+        }
+        let rows = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var trimmed = rows[...]
+        while let last = trimmed.last, last.trimmingCharacters(in: .whitespaces).isEmpty { trimmed = trimmed.dropLast() }
+        return trimmed.suffix(lines).joined(separator: "\n")
     }
 
     func clear(_ sid: String, _ bid: String) async {
-        _ = try? await control.blockCall("com.superlogical.terminal.clear", session: sid, block: bid)
+        await act("clear the pane", session: nil) {
+            try await self.control.blockCall("com.superlogical.terminal.clear", session: sid, block: bid)
+        }
     }
 
     // MARK: Derived
