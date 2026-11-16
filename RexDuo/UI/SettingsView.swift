@@ -109,12 +109,33 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Layout", selection: Binding(
+                        get: { KeyBarPreset.matching(p.keyBar)?.rawValue ?? "custom" },
+                        set: { if let preset = KeyBarPreset(rawValue: $0) { p.keyBar = preset.keys } }
+                    )) {
+                        ForEach(KeyBarPreset.allCases) { Text($0.title).tag($0.rawValue) }
+                        if KeyBarPreset.matching(p.keyBar) == nil { Text("Custom").tag("custom") }
+                    }
                     NavigationLink("Edit Keys") { KeyBarEditor() }
                     Toggle("Haptics", isOn: $p.haptics)
                 } header: {
                     Text("Key Bar")
                 } footer: {
-                    Text(p.keyBar.joined(separator: "  "))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(p.keyBar.map(KeyBarEditor.label).joined(separator: "  "))
+                            .font(Font(RexFont.ui(12)))
+                        Text("Hold an arrow to repeat it. Drag the ✥ key to move through menus and history. Tap ctrl or alt for the next key; double-tap to lock it.")
+                    }
+                }
+
+                Section {
+                    GestureRow(symbol: "hand.tap", title: "Tap", detail: "Show the keyboard")
+                    GestureRow(symbol: "arrow.up.and.down", title: "Swipe up or down", detail: "Scroll")
+                    GestureRow(symbol: "arrow.left.and.right", title: "Swipe left or right", detail: "Switch pane")
+                    GestureRow(symbol: "arrow.up.left.and.arrow.down.right", title: "Pinch", detail: "Font size")
+                    GestureRow(symbol: "text.cursor", title: "Long-press", detail: "Select and copy")
+                } header: {
+                    Text("Gestures")
                 }
 
                 Section("Agents") {
@@ -181,6 +202,26 @@ struct ThemePicker: View {
     }
 }
 
+private struct GestureRow: View {
+    let symbol: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 17))
+                .frame(width: 28)
+                .foregroundStyle(.tint)
+            Text(title)
+            Spacer()
+            Text(detail).foregroundStyle(.secondary)
+        }
+        .frame(minHeight: 36)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct KeyBarEditor: View {
     @State private var keys: [String] = Prefs.shared.keyBar
 
@@ -188,34 +229,54 @@ struct KeyBarEditor: View {
         List {
             Section("In the bar (drag to reorder)") {
                 ForEach(keys, id: \.self) { k in
-                    Text(label(k)).font(Font(RexFont.ui(15)))
+                    Text(Self.label(k)).font(Font(RexFont.ui(15)))
                 }
                 .onMove { keys.move(fromOffsets: $0, toOffset: $1); save() }
                 .onDelete { keys.remove(atOffsets: $0); save() }
             }
+            Section {
+                ForEach(KeyBarPreset.allCases) { preset in
+                    Button { keys = preset.keys; save() } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(preset.title).foregroundStyle(.primary)
+                                Spacer()
+                                if keys == preset.keys { Image(systemName: "checkmark") }
+                            }
+                            Text(preset.keys.map(Self.label).joined(separator: "  "))
+                                .font(Font(RexFont.ui(11)))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            } header: {
+                Text("Presets")
+            } footer: {
+                Text("Picking a preset replaces the keys above.")
+            }
             Section("Add") {
                 ForEach(Prefs.allKeys.filter { !keys.contains($0) }, id: \.self) { k in
                     Button { keys.append(k); save() } label: {
-                        HStack { Text(label(k)).font(Font(RexFont.ui(15))); Spacer(); Image(systemName: "plus.circle") }
+                        HStack { Text(Self.label(k)).font(Font(RexFont.ui(15))); Spacer(); Image(systemName: "plus.circle") }
+                            .frame(minHeight: 32)
                     }
                 }
-            }
-            Section {
-                Button("Reset to Default") { keys = Prefs.defaultKeyBar; save() }
             }
         }
         .environment(\.editMode, .constant(.active))
         .navigationTitle("Key Bar")
+        .onAppear { keys = Prefs.shared.keyBar }
     }
 
-    private func label(_ k: String) -> String {
+    static func label(_ k: String) -> String {
         let names = ["left": "←", "right": "→", "up": "↑", "down": "↓", "paste": "Paste", "enter": "⏎ Return",
-                     "tab": "⇥ Tab", "shift-tab": "⇤ Shift-Tab"]
+                     "tab": "⇥ Tab", "shift-tab": "⇤ Shift-Tab", "arrows": "✥ Arrow Trackpad"]
         return names[k] ?? KeyBar.titles[k] ?? k
     }
 
     private func save() {
         Prefs.shared.keyBar = keys
-        NotificationCenter.default.post(name: .keyBarChanged, object: nil)
     }
 }

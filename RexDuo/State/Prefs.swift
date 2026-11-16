@@ -24,6 +24,33 @@ enum WideLayout: String, CaseIterable, Identifiable {
     }
 }
 
+/// Ready-made key bar layouts. "arrows" is the drag-to-move trackpad key.
+enum KeyBarPreset: String, CaseIterable, Identifiable {
+    case agents, shell, vim
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .agents: return "Agents"
+        case .shell: return "Shell"
+        case .vim: return "Vim"
+        }
+    }
+    var keys: [String] {
+        switch self {
+        case .agents:
+            return ["esc", "shift-tab", "tab", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl", "paste"]
+        case .shell:
+            return ["esc", "tab", "ctrl", "alt", "arrows", "up", "down", "left", "right", "ctrl-r", "ctrl-c",
+                    "|", "~", "/", "-", "paste"]
+        case .vim:
+            return ["esc", ":", "ctrl", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
+                    "$", "~", "paste"]
+        }
+    }
+    /// The preset this exact layout matches, if any.
+    static func matching(_ keys: [String]) -> KeyBarPreset? { allCases.first { $0.keys == keys } }
+}
+
 struct ServerConfig: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var name: String
@@ -43,7 +70,12 @@ final class Prefs {
     var fontSize: Double { didSet { d.set(fontSize, forKey: "fontSize") } }
     var sizing: SizingMode { didSet { d.set(sizing.rawValue, forKey: "sizing") } }
     var wideLayout: WideLayout { didSet { d.set(wideLayout.rawValue, forKey: "wideLayout") } }
-    var keyBar: [String] { didSet { d.set(keyBar, forKey: "keyBar") } }
+    var keyBar: [String] {
+        didSet {
+            d.set(keyBar, forKey: "keyBar")
+            NotificationCenter.default.post(name: .keyBarChanged, object: nil)
+        }
+    }
     var haptics: Bool { didSet { d.set(haptics, forKey: "haptics") } }
     var showAgentStatus: Bool { didSet { d.set(showAgentStatus, forKey: "showAgentStatus") } }
     var notifyOnBlocked: Bool { didSet { d.set(notifyOnBlocked, forKey: "notifyOnBlocked") } }
@@ -53,11 +85,15 @@ final class Prefs {
     }
     var hostURLs: [String: String] { didSet { d.set(hostURLs, forKey: "hostURLs") } }
 
-    static let defaultKeyBar = ["esc", "tab", "ctrl", "alt", "left", "up", "down", "right", "|", "~", "/", "-", "ctrl-c", "paste"]
-    static let allKeys = ["esc", "tab", "ctrl", "alt", "left", "up", "down", "right", "home", "end", "pgup", "pgdn",
+    /// Fresh installs start with the Agents layout.
+    static var defaultKeyBar: [String] { KeyBarPreset.agents.keys }
+    static let allKeys = ["esc", "tab", "shift-tab", "enter", "ctrl", "alt", "arrows", "left", "up", "down", "right",
+                          "home", "end", "pgup", "pgdn", "paste",
+                          "ctrl-c", "ctrl-d", "ctrl-z", "ctrl-r", "ctrl-l", "ctrl-a", "ctrl-e", "ctrl-u", "ctrl-w", "ctrl-o",
+                          "1", "2", "3", "y", "n",
                           "|", "~", "/", "\\", "-", "_", "`", "*", "$", "&", ";", ":", "\"", "'", "<", ">",
-                          "[", "]", "{", "}", "(", ")", "ctrl-c", "ctrl-d", "ctrl-z", "ctrl-r", "ctrl-l", "shift-tab",
-                          "enter", "paste", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"]
+                          "[", "]", "{", "}", "(", ")",
+                          "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"]
 
     private init() {
         themeID = d.string(forKey: "themeID") ?? "github-dark-dimmed"
