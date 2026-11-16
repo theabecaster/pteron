@@ -26,7 +26,7 @@ same user.
 
 ```sh
 brew install xcodegen
-scripts/build-ghostty.sh   # once: builds Vendor/GhosttyVt.xcframework (libghostty-vt, not committed)
+scripts/build-ghostty.sh   # once, before xcodegen: builds Vendor/GhosttyVt.xcframework (not committed)
 xcodegen generate          # the Xcode project is generated, not committed
 xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<simulator id> \
   -skipPackagePluginValidation -skipMacroValidation build
@@ -34,6 +34,17 @@ swift test --package-path Packages/RexKit
 ```
 
 Or open `RexConnect.xcodeproj` in Xcode 27.2 after `xcodegen generate`.
+
+`scripts/build-ghostty.sh` builds the Ghostty terminal engine (libghostty-vt) from the commit pinned
+in `scripts/ghostty.version`. It needs an Apple silicon Mac. The first run downloads the Zig
+compiler (51 MB) and Ghostty with its dependencies, takes about 130 seconds and leaves 1.3 GB in
+`Vendor/`, which is gitignored; nothing is installed system-wide. Later runs do nothing unless the
+pins changed. `scripts/build-ghostty.sh --force` rebuilds. To move to another Ghostty commit, edit
+`scripts/ghostty.version` and run the script again. A build with a missing or out-of-date framework
+stops with a message that says to run it.
+
+Licences of the bundled open source code are in `RexConnect/Resources/Acknowledgements.txt`, shown
+in the app under Settings → About → Acknowledgements.
 
 ## More
 
