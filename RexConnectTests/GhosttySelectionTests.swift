@@ -179,7 +179,7 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertEqual(core.rowText(0), "line 6")
         XCTAssertTrue(core.selectAll())
         XCTAssertEqual(core.selectedText, (1...9).map { "line \($0)" }.joined(separator: "\n"))
-        XCTAssertEqual(core.selectionExtent, GhosttySelectionExtent(cols: 20, rows: 4, startCol: 0, startRow: 0, endCol: 5, endRow: 3),
+        XCTAssertEqual(core.selectionExtent, GhosttySelectionExtent(cols: 20, rows: 4, startCol: 0, startRow: 0, endCol: 5, endRow: 3, startClipped: true),
                        "clipped to the rows in view")
         XCTAssertFalse(GhosttyCore(cols: 10, rows: 2).selectAll(), "nothing to select on an empty screen")
     }
