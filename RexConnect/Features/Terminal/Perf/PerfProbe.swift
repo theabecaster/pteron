@@ -322,8 +322,10 @@ final class PerfProbe: Sendable {
             s.peak = s.flowSample?.footprint ?? 0
             return s.core
         }
-        // Ghostty parses elsewhere: this runs on its feed queue once the first chunk is parsed.
-        if let core = first { holdsWhenParsed(.firstOutput, core: core) }
+        // Ghostty parses elsewhere: the mark is set on its feed queue once the first chunk is
+        // parsed. The host calls this before it hands the bytes to the core, so the mark is
+        // queued from the next main-queue turn: behind the first chunk, ahead of the second.
+        if let core = first { DispatchQueue.main.async { self.holdsWhenParsed(.firstOutput, core: core) } }
     }
 
     /// The host parsed `count` bytes on the main thread (an engine that doesn't parse elsewhere).
@@ -410,7 +412,9 @@ final class PerfProbe: Sendable {
             var any = false
             for i in s.targets.indices {
                 guard let t = s.targets[i], t.shown == nil, t.at <= built else { continue }
-                s.targets[i]?.shown = s.lastPresent ?? now
+                // A pass with nothing to draw means the state was on screen before it was marked
+                // (it changed nothing visible): no later than T, and never before it.
+                s.targets[i]?.shown = max(s.lastPresent ?? now, t.at)
                 any = true
             }
             return any && s.closeIfComplete(now)
