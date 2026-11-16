@@ -37,9 +37,27 @@ final class Notice {
     func dismiss() { hide?.cancel(); message = nil }
 }
 
+/// App-wide actions triggered by keyboard shortcuts, gestures and menus.
+/// Senders call `AppModel.perform(_:)`; the visible WindowScreen/RootView executes them.
+enum RexCommand: Equatable {
+    case newTab, newSession, splitRight, splitDown, closePane, closeTab, renameTab
+    case nextTab, previousTab, goToTab(Int), nextPane, previousPane
+    case toggleZoom, clear, toggleSidebar, tabOverview, jumpToWaiting
+    case fontBigger, fontSmaller, fontReset, settings
+}
+
+struct CommandRequest: Equatable {
+    let id = UUID()
+    let command: RexCommand
+}
+
 @MainActor
 @Observable
 final class AppModel {
+    /// Latest requested command; observe with `.onChange(of: model.lastCommand)`.
+    var lastCommand: CommandRequest?
+    func perform(_ command: RexCommand) { lastCommand = CommandRequest(command: command) }
+
     var servers: [ServerConnection] = []
     var selection: Selection?
     /// The pane shown when only one pane fits (compact width), per window.
