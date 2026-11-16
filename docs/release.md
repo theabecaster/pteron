@@ -15,6 +15,12 @@ keychain. Run these only when asked: they install on a real phone or upload to A
 Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsyncs the tree to
 `macdesk:~/rexconnect-build/` (or `remote-dir`). `-n` is a dry run.
 
+- The copy uses `rsync --delete`, so the script refuses any `remote-dir` that is not a single
+  folder name starting with `rexconnect-build` under macdesk's home.
+- Keys never go across: `.asc.env` and other `.env` files, `Relay/dist` and `Relay/.stage` (both
+  hold the APNs key), and any `*.p8`, `*.p12`, `*.pem`, `*.key`, `*.cer`, `*.mobileprovision` or
+  `*.provisionprofile`.
+
 - libghostty-vt is built on this Mac by `scripts/build-ghostty.sh` and copied; macdesk never
   builds it. The binary that ships is then the one the tests and benchmarks ran against, and
   macdesk needs no Zig, no Ghostty checkout and no network access to them. Building on macdesk
@@ -27,7 +33,8 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
   others would need a rewritten `Info.plist` in a second copy of the framework, to save 38 MB once
   per re-pin.
 - `ship-macdesk.sh` and the app target's pre-build phase run the same check on macdesk, so a copy
-  with a missing or stale framework fails with one line instead of a link error.
+  with a missing or stale framework fails with one line instead of a link error. The check also
+  fails if `project.yml`'s iOS deployment target is below 17.4, which the framework needs.
 
 ## Install on the iPhone Duo
 
@@ -45,6 +52,11 @@ ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc '~/rexconnec
 `ship-macdesk.sh` archives, exports with `destination=upload` (set `DEST=export` to only export) and
 logs to `macdesk:~/rexconnect-build/build/ship.log`. Builds appear in TestFlight 5–15 minutes later.
 
+The build number is required; without one the script prints its usage and exits 2. It exits 0
+only when the export or upload succeeded, and the log then ends with `== done … rc=0`. A failed
+step exits 1 and ends the log with `== ARCHIVE_FAILED`, `== SYMBOLS_FAILED` or `== EXPORT_FAILED`
+and xcodebuild's status.
+
 It runs `scripts/check-symbols.sh` twice: on the framework before archiving (a failure prints to
 the caller) and on the archived app before export (`== SYMBOLS_FAILED` in the log, with the
 symbols above it). Nothing is exported or uploaded when the app imports a private system symbol,
@@ -55,9 +67,10 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 - libghostty-vt is linked statically: no `Frameworks/` folder, nothing embedded, arm64 only. It
   adds 1.48 MB to the app binary (6.46 MB stripped; the IPA is 13.4 MB).
 - Its objects carry DWARF, so `RexConnect.app.dSYM` covers it. Bitcode is not involved.
-- Zig's standard library calls `__ulock_wait` and `__ulock_wake`, which libSystem exports but no
-  SDK header declares. Apple's upload checks have not been run against a build with them. If an
-  upload is rejected for non-public symbols, this is the cause.
+- No private system symbols: Zig's standard library called `__ulock_wait` and `__ulock_wake`,
+  and `scripts/ghostty-patches/0001-tinyio-public-darwin-futex.patch` replaces them with the
+  public `os_sync_wait_on_address` calls (iOS 17.4). `check-symbols.sh` guards it. No build with
+  the patch has been uploaded yet, so Apple's own check has not seen it.
 - Third-party licence notices ship in the bundle as `Acknowledgements.txt`.
 
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;

@@ -8,7 +8,7 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
 |---|---|---|
 | `Packages/RexKit` | sockets, RPC, JSON → models, terminal byte stream | import UIKit or SwiftUI, read settings |
 | `RexConnect/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` | build views |
-| `RexConnect/Features` | screens, and UIKit where SwiftTerm needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
+| `RexConnect/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
 | `RexConnect/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
 
 `Relay/` is a separate Swift package (the Mac helper). It depends on RexKit for JSON and

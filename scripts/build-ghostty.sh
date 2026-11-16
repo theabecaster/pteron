@@ -16,13 +16,10 @@ OUT=$VENDOR/GhosttyVt.xcframework
 # scripts/check-ghostty.sh compares it with the pins before every build, sync and archive.
 STAMP=$VENDOR/GhosttyVt.stamp
 CHECK=$ROOT/scripts/check-ghostty.sh
-# Frameworks built before the stamp existed recorded a hash of the same inputs here.
-OLD_STAMP=$VENDOR/.ghostty-built
-OLD_WANT="$(cat $ROOT/scripts/ghostty.version $ROOT/scripts/ghostty-patches/*.patch(N) | shasum -a 256 | cut -c1-16)"
-if [[ -d $OUT && ! -f $STAMP && -f $OLD_STAMP && "$(<$OLD_STAMP)" == "$OLD_WANT" ]]; then
-  $CHECK --expected > $STAMP
-fi
-if [[ "${1:-}" != "--force" ]] && $CHECK 2>/dev/null; then
+# What this run builds from, read once: pins or patches edited while it runs are not stamped.
+EXPECTED=$($CHECK --expected)
+# Up to date only with a matching stamp, and the stamp is written last, after every check below.
+if [[ "${1:-}" != "--force" && -f $OUT/Info.plist && -f $STAMP && "$(<$STAMP)" == "$EXPECTED" ]]; then
   exit 0
 fi
 
@@ -65,10 +62,23 @@ START=$SECONDS
 $ZIG build -Demit-lib-vt=true -Demit-xcframework=true -Doptimize=ReleaseFast
 echo "zig build took $(( SECONDS - START ))s"
 
-rm -rf $STAMP $OUT
-cp -R $SRC/zig-out/lib/ghostty-vt.xcframework $OUT
-# No stamp for a framework that references private system symbols (App Store review rejects
-# those): a re-pin that brings one back stops here, and the app won't build against it.
-$ROOT/scripts/check-symbols.sh $OUT
-$CHECK --expected > $STAMP
+# 4. Check the framework where nothing uses it yet, then put it in place, the stamp last.
+# The stamp says "this framework passed the checks and came from these pins". So a framework
+# that fails stays in the staging folder and is deleted, the old stamp goes before the old
+# framework does, and the new stamp is written only after the new framework is in place.
+# Whatever stops the script, a framework without a stamp is all it can leave, and both
+# check-ghostty.sh and the next run treat that as not built.
+STAGE=$(mktemp -d $VENDOR/.GhosttyVt.stage.XXXXXX)
+trap 'rm -rf $STAGE' EXIT
+cp -R $SRC/zig-out/lib/ghostty-vt.xcframework $STAGE/GhosttyVt.xcframework
+[[ -f $STAGE/GhosttyVt.xcframework/Info.plist ]] || { echo "build-ghostty.sh: zig build left no xcframework" >&2; exit 1; }
+# A framework that references private system symbols (App Store review rejects those) is never
+# installed: a re-pin that brings one back stops here.
+$ROOT/scripts/check-symbols.sh $STAGE/GhosttyVt.xcframework
+print -r -- $EXPECTED > $STAGE/GhosttyVt.stamp
+# `.ghostty-built` is the marker of builds before the stamp existed. Nothing reads it any more.
+rm -f $STAMP $VENDOR/.ghostty-built
+rm -rf $OUT
+mv $STAGE/GhosttyVt.xcframework $OUT
+mv $STAGE/GhosttyVt.stamp $STAMP
 du -sh $OUT

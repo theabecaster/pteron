@@ -1,0 +1,122 @@
+import Network
+import XCTest
+@testable import RexKit
+
+/// `RexControl` against a WebSocket server in this process: what it tells its observers when it
+/// connects again, and how a call fails before and after it left.
+@MainActor
+final class ControlReconnectTests: XCTestCase {
+    /// Answers a hello with a welcome and nothing else, so calls stay open until it drops them.
+    final class Server: @unchecked Sendable {
+        // Everything runs on `queue`.
+        private let queue = DispatchQueue(label: "test.control.server")
+        private let listener: NWListener
+        private var connections: [NWConnection] = []
+        private var requests = 0
+
+        init() throws {
+            let ws = NWProtocolWebSocket.Options()
+            ws.autoReplyPing = true
+            ws.setClientRequestHandler(queue) { protocols, _ in
+                NWProtocolWebSocket.Response(status: .accept, subprotocol: protocols.first)
+            }
+            let params = NWParameters.tcp
+            params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
+            listener = try NWListener(using: params, on: .any)
+            listener.newConnectionHandler = { [weak self] c in
+                guard let self else { return }
+                self.connections.append(c)
+                c.start(queue: self.queue)
+                self.receive(c)
+            }
+        }
+
+        func start() async -> UInt16 {
+            await withCheckedContinuation { done in
+                listener.stateUpdateHandler = { [listener] state in
+                    if case .ready = state {
+                        listener.stateUpdateHandler = nil
+                        done.resume(returning: listener.port?.rawValue ?? 0)
+                    }
+                }
+                listener.start(queue: queue)
+            }
+        }
+
+        private func receive(_ c: NWConnection) {
+            c.receiveMessage { [weak self] data, _, _, error in
+                guard let self, error == nil, let data else { return }
+                let text = String(decoding: data, as: UTF8.self)
+                if text.contains("\"hello\"") {
+                    let welcome = #"{"type":"welcome","protocol":"rex.control.v1","limits":{"max_message_bytes":1048576},"client":{"id":"client:test","reconnect_token":"t"}}"#
+                    let meta = NWProtocolWebSocket.Metadata(opcode: .text)
+                    let ctx = NWConnection.ContentContext(identifier: "welcome", metadata: [meta])
+                    c.send(content: Data(welcome.utf8), contentContext: ctx, completion: .idempotent)
+                } else {
+                    self.requests += 1
+                }
+                self.receive(c)
+            }
+        }
+
+        var requestCount: Int { queue.sync { requests } }
+
+        /// Cuts every connection, as a network that went away does.
+        func dropAll() {
+            queue.sync {
+                for c in connections { c.cancel() }
+                connections = []
+            }
+        }
+
+        func stop() { queue.sync { listener.cancel(); for c in connections { c.cancel() } } }
+    }
+
+    func testObserversHearEveryConnectAndCallsFailByWhetherTheyLeft() async throws {
+        let server = try Server()
+        let port = await server.start()
+        defer { server.stop() }
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        defer { control.disconnect() }
+
+        var connects = 0
+        var once = 0
+        control.observeConnected { connects += 1; return true }
+        control.observeConnected { once += 1; return false }
+
+        // Not connected yet: the call never leaves.
+        do {
+            try await control.call("session.list")
+            XCTFail("a call without a connection must fail")
+        } catch {
+            XCTAssertEqual((error as? RexError)?.neverSent, true)
+        }
+
+        try await control.connect()
+        XCTAssertEqual(control.state, .connected)
+        XCTAssertEqual(connects, 1)
+        XCTAssertEqual(once, 1)
+
+        // A call that is out when the connection breaks: sent, with no answer.
+        let lost = Task { @MainActor () -> Error? in
+            do { try await control.call("session.list"); return nil } catch { return error }
+        }
+        let arrived = await eventually { server.requestCount == 1 }
+        XCTAssertTrue(arrived)
+        server.dropAll()
+        let error = await lost.value
+        XCTAssertNotNil(error)
+        XCTAssertEqual((error as? RexError)?.neverSent, false, "it left: sending it again could run it twice")
+        XCTAssertNotEqual(control.state, .connected)
+
+        // `RexControl` retries by itself (after 1 s); the observer hears when it is back.
+        var back = false
+        for _ in 0..<500 where !back {
+            back = connects == 2
+            if !back { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        XCTAssertEqual(connects, 2)
+        XCTAssertEqual(once, 1, "an observer that returned false is gone")
+        XCTAssertEqual(control.state, .connected)
+    }
+}

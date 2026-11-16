@@ -345,6 +345,21 @@ extension TerminalSink {
 ///   `streamResized`, `streamSnapshot`, and output again. Messages (`streamResized` and the
 ///   others) still arrive meanwhile. From then on this stream behaves as if
 ///   `restoresGhosttySnapshot` were off.
+///
+/// Reconnecting. `RexControl` is the only thing that retries a lost connection. The stream:
+///
+/// - When its data socket drops, sends one RESUME after `resumeDelay`, if the server can still
+///   have the stream (`canResume`). A RESUME needs no control connection.
+/// - If that fails, or can't be tried, makes a fresh start (ticket, HELLO), which needs the control
+///   connection. Without one it does nothing but wait (`waitingForControl`), showing
+///   `.reconnecting`; `RexControl` tells it when it is connected again (`observeConnected`), and
+///   it then makes exactly one start: a RESUME if the server still keeps the stream, else a fresh
+///   one.
+/// - If a fresh start fails although the control connection is up (the server refused the ticket
+///   or the HELLO, the data socket failed), tries again after `retryDelays`: 3 s, doubling, at most
+///   30 s, back to 3 s after the next WELCOME. It reports `.failed` meanwhile.
+///
+/// `stop()` and `restart()` end whatever was waiting: every wait checks `gen` when it wakes.
 @MainActor
 public final class TerminalStream {
     public enum Status: Equatable { case connecting, live, reconnecting, ended(String), failed(String) }
@@ -353,26 +368,42 @@ public final class TerminalStream {
     public static let snapshotLimit = 1 << 20
 
     public let control: RexControl
+    /// `control`, or a fake in tests. Everything the stream does on the control connection goes
+    /// through here.
+    private let link: any StreamLink
     public let sessionID: String
     public let blockID: String
     public weak var sink: TerminalSink?
-    /// Called with a short message when a key-bound server action fails.
+    /// Called with a short message for the user when a key-bound server action fails, or when
+    /// typed input was dropped because the connection broke while it was being sent (see `send`).
     public var onActionFailed: (@MainActor (String) -> Void)?
 
     public private(set) var serverCols = 80
     public private(set) var serverRows = 24
     public private(set) var owner: String?
-    private var ws: URLSessionWebSocketTask?
+    private var ws: (any StreamSocket)?
     /// Counts starts and stops. Work begun under an older value is stale and must do nothing.
     private(set) var gen = 0
     private var filter: APCFilter?
     /// True while a chunk is being split: the filter is in use and can't be changed.
     private var consuming = false
+    /// The latest WELCOME's reconnect token; nil once the server can't resume the stream.
     private var token: [UInt8]?
     private var nonce: UInt64 = 0
     private var received: UInt64 = 0
     private var stopped = false
-    private var resumeAttempts = 0
+    /// True from a WELCOME until the socket drops or the stream is stopped or restarted.
+    private var live = false
+    /// How long the server keeps a dropped stream for a RESUME (from the WELCOME).
+    private var resumeWindow: Duration = .zero
+    /// When the data socket dropped.
+    private var droppedAt: ContinuousClock.Instant?
+    /// A start is owed as soon as the control connection is back. (Internal for tests.)
+    private(set) var waitingForControl = false
+    /// Counts the control connection's connects, to tell a start that failed on an old connection.
+    private var connectEpoch = 0
+    /// Fresh starts that failed in a row with the control connection up; indexes `retryDelays`.
+    private var failedStarts = 0
     /// True while a resync reads the screen; stream output is dropped meanwhile.
     private var resyncing = false
     private var resyncSeq = 0
@@ -405,44 +436,91 @@ public final class TerminalStream {
     static func retriesHello(reason: UInt8, attempt: Int) -> Bool {
         reason == busyReason && attempt < busyRetryLimit
     }
+    /// The pause before the one RESUME after a drop, so a network that is changing can settle.
+    var resumeDelay: Duration = .milliseconds(400)
+    /// The pause before each further fresh start while the control connection is up and starts
+    /// keep failing; the last one repeats. A terminal that stays busy (REJECT 0x02) costs
+    /// `busyRetryLimit + 1` tickets on the first start and one on each later one.
+    static let retryDelays: [Duration] = [.seconds(3), .seconds(6), .seconds(12), .seconds(24), .seconds(30)]
+    static func retryDelay(afterFailures n: Int) -> Duration { retryDelays[min(max(n, 1), retryDelays.count) - 1] }
+    /// Every wait goes through here, so tests can see the waits and skip them.
+    var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
-    // Input is sent one write at a time; block methods are not ordered by the server.
-    private var inputBuffer: [UInt8] = []
-    private var writing = false
-    private var inputRetry: Task<Void, Never>?
-    /// Server actions bound to keys, each run after the keys typed before it.
-    private var orderedWork: [@MainActor () async -> Void] = []
-    private var runningWork = false
-    private var workToken = 0
+    public convenience init(control: RexControl, sessionID: String, blockID: String) {
+        self.init(control: control, link: control, sessionID: sessionID, blockID: blockID)
+    }
 
-    public init(control: RexControl, sessionID: String, blockID: String) {
+    /// `link` stands in for `control` in tests.
+    init(control: RexControl, link: any StreamLink, sessionID: String, blockID: String) {
         self.control = control
+        self.link = link
         self.sessionID = sessionID
         self.blockID = blockID
+        link.observeConnected { [weak self] in
+            guard let self else { return false }
+            self.controlConnected()
+            return true
+        }
     }
 
     public func start() {
         stopped = false
+        failedStarts = 0
         Task { await self.fullStart() }
     }
 
+    /// Ends the stream for a pane that is closed or off screen. Input still queued is dropped:
+    /// keys typed for a pane must not go out when it is opened again later.
     public func stop() {
         stopped = true
-        inputRetry?.cancel()
-        inputRetry = nil
-        orderedWork.removeAll()
         gen += 1
-        ws?.cancel(with: .normalClosure, reason: nil)
+        live = false
+        waitingForControl = false
+        token = nil
+        failedStarts = 0
+        dropInput()
+        ws?.close()
         ws = nil
     }
 
-    /// Re-read the whole screen and open a fresh stream.
+    /// Re-read the whole screen and open a fresh stream. Queued input is kept.
     public func restart() {
         gen += 1
-        ws?.cancel(with: .normalClosure, reason: nil)
+        live = false
+        waitingForControl = false
+        // The old stream is over: a status 1000 close ends it on the server.
+        token = nil
+        ws?.close()
         ws = nil
         stopped = false
         Task { await self.fullStart() }
+    }
+
+    /// The control connection is connected (again).
+    private func controlConnected() {
+        connectEpoch += 1
+        if waitingForControl, !stopped {
+            waitingForControl = false
+            let myGen = gen
+            Task {
+                guard myGen == self.gen, !self.stopped else { return }
+                if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+            }
+        }
+        pump()
+    }
+
+    /// Nothing can be done until the control connection is back; `controlConnected()` goes on.
+    private func waitForControl() {
+        waitingForControl = true
+        sink?.streamStatus(.reconnecting)
+    }
+
+    /// Whether the server can still have the dropped stream: there was a WELCOME, no refusal
+    /// since, and the time it keeps a stream for hasn't passed.
+    private var canResume: Bool {
+        guard token != nil, let droppedAt else { return false }
+        return ContinuousClock.now - droppedAt < resumeWindow
     }
 
     /// Re-read the screen (and scrollback) and redraw it, keeping the data stream open.
@@ -460,9 +538,12 @@ public final class TerminalStream {
     /// taken beside a running stream can drop or repeat output around it, and is cut to
     /// `snapshotLimit`. The old stream is closed first: the server refuses a second connection to
     /// the same terminal (REJECT 0x02), and a close with status 1000 ends the old stream.
+    ///
+    /// It does nothing while the stream isn't live. A start that is under way, or owed once the
+    /// connection is back, draws everything anyway, and a second one would only cost a ticket.
     public func resync() {
         guard !stopped, ws != nil else { return }
-        if usesGhosttySnapshot { restart() } else { readScreenAndRedraw() }
+        if !usesGhosttySnapshot { readScreenAndRedraw() } else if live { restart() }
     }
 
     /// The sink could not restore a Ghostty snapshot it had accepted. Redraws from
@@ -520,7 +601,7 @@ public final class TerminalStream {
         Task {
             defer { if mySeq == self.resyncSeq { self.resyncing = false } }
             do {
-                let size = try await control.blockCall("com.superlogical.terminal.size", session: sessionID, block: blockID)
+                let size = try await blockCall("com.superlogical.terminal.size")
                 let screen = try await readScreen()
                 // A newer resync or a full restart supersedes this one.
                 guard myGen == gen, mySeq == resyncSeq, !stopped else { return }
@@ -543,14 +624,22 @@ public final class TerminalStream {
         gen += 1
         resyncing = false
         snapshotState = .none
+        live = false
+        waitingForControl = false
         let myGen = gen
         // The stream's own snapshot replaces step 1; the size comes from the `resize` after it.
         let fromSnapshot = usesGhosttySnapshot
+        // Step 1 redraws the sink, so the old stream can't go on after it. With a snapshot the
+        // sink is untouched until the HELLO, and the old stream stays resumable until then.
+        if !fromSnapshot { token = nil }
+        // A fresh start needs a ticket, and so the control connection. It isn't tried without.
+        guard link.isConnected else { waitForControl(); return }
+        let epoch = connectEpoch
         sink?.streamStatus(.connecting)
         do {
             if !fromSnapshot {
                 // 1. Size and current contents, as escape sequences.
-                let size = try await control.blockCall("com.superlogical.terminal.size", session: sessionID, block: blockID)
+                let size = try await blockCall("com.superlogical.terminal.size")
                 serverCols = max(size.int("columns") ?? 80, 2)
                 serverRows = max(size.int("rows") ?? 24, 2)
                 owner = size.str("owner")
@@ -564,7 +653,7 @@ public final class TerminalStream {
             // 2. Ticket, then the data WebSocket.
             var busyRetries = 0
             while true {
-                let t = try await control.call("data.connect", [
+                let t = try await link.call("data.connect", [
                     "session_id": sessionID, "block_id": blockID,
                     "data_ref_id": "terminal", "subprotocol": "rex.data.terminal.v1",
                 ])
@@ -572,24 +661,55 @@ public final class TerminalStream {
                     throw RexError.local("bad ticket")
                 }
                 guard myGen == gen, !stopped else { return }
+                // A HELLO ends the stream the server may still keep for a RESUME.
+                token = nil
                 do {
                     try await openData(hello: hello, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
                     break
-                } catch let refused as Refused where Self.retriesHello(reason: refused.reason, attempt: busyRetries) {
+                } catch let refused as Refused
+                            where failedStarts == 0 && Self.retriesHello(reason: refused.reason, attempt: busyRetries) {
                     // The old socket's close hasn't reached the server yet. A refused HELLO used
-                    // up its ticket, so each try gets a new one. Past the limit it is a failure.
+                    // up its ticket, so each try gets a new one. Past the limit it is a failure,
+                    // and the starts that follow a failure ask once each: a terminal that is
+                    // still busy seconds later isn't waiting for a close.
                     busyRetries += 1
-                    try await Task.sleep(nanoseconds: Self.busyRetryDelay)
+                    await sleep(.nanoseconds(Int64(Self.busyRetryDelay)))
                     guard myGen == gen, !stopped else { return }
                 }
             }
         } catch {
-            guard myGen == gen, !stopped else { return }
-            sink?.streamStatus(.failed(error.localizedDescription))
-            // Retry later.
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if myGen == gen, !stopped, control.state == .connected { await fullStart() }
+            startFailed(error, gen: myGen, epoch: epoch)
         }
+    }
+
+    /// A fresh start failed. Decides who tries next: `RexControl` (the stream waits for it), or,
+    /// with the control connection up, the stream itself after a growing pause.
+    private func startFailed(_ error: Error, gen myGen: Int, epoch: Int) {
+        guard myGen == gen, !stopped else { return }
+        if link.isConnected, epoch != connectEpoch {
+            // The control connection came back while this start was failing on the old one.
+            // Nothing was waiting for that, so this is the one start it is owed.
+            Task {
+                guard myGen == self.gen, !self.stopped else { return }
+                await self.fullStart()
+            }
+            return
+        }
+        guard link.isConnected else { waitForControl(); return }
+        failedStarts += 1
+        sink?.streamStatus(.failed(error.localizedDescription))
+        let delay = Self.retryDelay(afterFailures: failedStarts)
+        let sleep = self.sleep
+        Task { [weak self] in
+            await sleep(delay)
+            guard let self, myGen == self.gen, !self.stopped else { return }
+            // Still not connected by now: `fullStart` waits for the control connection.
+            await self.fullStart()
+        }
+    }
+
+    private func blockCall(_ method: String, args: JSONObject = [:]) async throws -> JSONObject {
+        try await link.call(method, ["session_id": sessionID, "block_id": blockID, "args": args])
     }
 
     /// The screen and the newest scrollback as escape sequences (`format` vt).
@@ -600,7 +720,7 @@ public final class TerminalStream {
                   "extra_modes", "extra_palette", "extra_protection", "extra_scrolling_region", "extra_style", "extra_tabstops"] {
             args[k] = true
         }
-        let r = try await control.blockCall("com.superlogical.terminal.format", session: sessionID, block: blockID, args: args)
+        let r = try await blockCall("com.superlogical.terminal.format", args: args)
         var content = r.str("content") ?? ""
         guard let id = r.int("id") else { return content }
         let total = r.int("total") ?? 0
@@ -613,8 +733,8 @@ public final class TerminalStream {
         }
         var tail = ""
         for _ in 0..<40 {
-            let more = try await control.blockCall("com.superlogical.terminal.blob_read", session: sessionID, block: blockID,
-                                                   args: ["id": id, "offset": offset, "max_bytes": 900_000])
+            let more = try await blockCall("com.superlogical.terminal.blob_read",
+                                           args: ["id": id, "offset": offset, "max_bytes": 900_000])
             let data = more.str("data") ?? ""
             tail += data
             offset += data.utf8.count
@@ -645,27 +765,23 @@ public final class TerminalStream {
     }
 
     private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool = false) async throws {
-        guard let base = control.wsBase else { throw RexError.local("invalid server address") }
-        let url = base.appendingPathComponent("api/data")
-        let task = control.session.webSocketTask(with: url, protocols: ["rex.data.terminal.v1"])
-        task.maximumMessageSize = 1 << 20
-        ws = task
-        task.resume()
+        let socket = try link.openDataSocket()
+        ws = socket
         do {
             // `stop()` or `restart()` may run during either wait. A handshake that finishes
             // after that must change nothing.
-            try await task.send(.data(Data(hello)))
+            try await socket.send(Data(hello))
             guard myGen == gen, !stopped else { throw CancellationError() }
-            let first = try await task.receive()
-            guard case .data(let d) = first else { throw RexError.local("bad handshake") }
+            guard let d = try await socket.receive() else { throw RexError.local("bad handshake") }
             try acceptWelcome([UInt8](d), gen: myGen, fresh: fresh, collectSnapshot: collectSnapshot)
         } catch {
             // This socket is of no use, to this start or a newer one. Status 1000 also ends a
             // stream the server may have opened for it.
-            task.cancel(with: .normalClosure, reason: nil)
+            socket.close()
+            if ws === socket { ws = nil }
             throw error
         }
-        receive(task, gen: myGen)
+        receive(socket, gen: myGen)
     }
 
     /// Takes the server's answer to a HELLO or RESUME. Throws `Refused` for a REJECT, and
@@ -677,28 +793,33 @@ public final class TerminalStream {
         if b.first == 0x82 { throw Refused(reason: b.count > 1 ? b[1] : 0) }
         let welcome = try DataFrame.welcome(b)
         token = welcome.token
+        resumeWindow = .milliseconds(Int64(welcome.resumeWindowMs))
+        droppedAt = nil
         // A resume keeps its filter: it may be partway through the snapshot or a message.
         if fresh { beginStream(nonce: welcome.nonce, collectSnapshot: collectSnapshot) }
-        resumeAttempts = 0
+        failedStarts = 0
+        live = true
         sink?.streamStatus(.live)
     }
 
-    private func receive(_ task: URLSessionWebSocketTask, gen myGen: Int) {
-        task.receive { [weak self] result in
-            Task { @MainActor in
-                guard let self, myGen == self.gen else { return }
-                switch result {
-                case .success(.data(let d)):
-                    self.received += UInt64(d.count)
-                    self.consume(d)
-                    // The sink may have stopped or restarted the stream from inside a callback.
-                    guard myGen == self.gen else { return }
-                    self.receive(task, gen: myGen)
-                case .success:
-                    self.receive(task, gen: myGen)
-                case .failure:
-                    self.handleDataDrop(task, gen: myGen)
+    /// Reads the socket until it fails or the stream moves on (`gen`).
+    private func receive(_ socket: any StreamSocket, gen myGen: Int) {
+        Task { [weak self] in
+            while true {
+                let message: Data?
+                do {
+                    message = try await socket.receive()
+                } catch {
+                    self?.handleDataDrop(socket, gen: myGen)
+                    return
                 }
+                guard let self, myGen == self.gen else { return }
+                guard let message else { continue }
+                // Counted as it is used: a RESUME must give exactly the bytes taken so far.
+                self.received += UInt64(message.count)
+                self.consume(message)
+                // The sink may have stopped or restarted the stream from inside a callback.
+                guard myGen == self.gen else { return }
             }
         }
     }
@@ -751,134 +872,252 @@ public final class TerminalStream {
         })
     }
 
-    private func handleDataDrop(_ task: URLSessionWebSocketTask, gen myGen: Int) {
+    private func handleDataDrop(_ socket: any StreamSocket, gen myGen: Int) {
         guard !stopped, myGen == gen else { return }
-        if task.closeCode.rawValue == 4000 {
+        live = false
+        if ws === socket { ws = nil }
+        let code = socket.closeCode
+        if code == 4000 {
+            token = nil
             sink?.streamStatus(.ended("pane closed"))
             return
         }
         sink?.streamStatus(.reconnecting)
-        resumeAttempts += 1
+        droppedAt = .now
         // 1013: the server dropped the stream (e.g. too much output piled up); a resume can't work.
-        // Any failed resume (stale token, byte count off) also ends in a fresh read of the screen.
-        guard let tok = token, resumeAttempts <= 3, task.closeCode.rawValue != 1013 else {
-            Task {
-                guard myGen == self.gen, !self.stopped else { return }
-                await self.fullStart()
-            }
-            return
-        }
+        if code == 1013 { token = nil }
+        let sleep = self.sleep, delay = resumeDelay
         Task {
-            try? await Task.sleep(nanoseconds: UInt64(400_000_000 * resumeAttempts))
-            guard myGen == self.gen, !self.stopped else { return }
-            do {
-                try await self.openData(hello: DataFrame.resumeHello(token: tok, received: self.received), gen: myGen, fresh: false)
-            } catch {
-                // Not after `stop()`, and not on top of a newer start.
+            if self.canResume {
+                await sleep(delay)
+                guard myGen == self.gen, !self.stopped else { return }
+                await self.resume(gen: myGen)
+            } else {
                 guard myGen == self.gen, !self.stopped else { return }
                 await self.fullStart()
             }
+        }
+    }
+
+    /// One RESUME. It needs no ticket and no control connection. If it fails, for any reason
+    /// (the network is still down, a stale token, a byte count the server doesn't accept), a fresh
+    /// start follows, which reads the whole screen again and waits for the control connection if
+    /// it has to. There is no second RESUME: after a refusal the server has ended the stream.
+    private func resume(gen myGen: Int) async {
+        guard myGen == gen, !stopped, let tok = token else { return }
+        do {
+            try await openData(hello: DataFrame.resumeHello(token: tok, received: received), gen: myGen, fresh: false)
+        } catch {
+            // Not after `stop()`, and not on top of a newer start.
+            guard myGen == gen, !stopped else { return }
+            if error is Refused { token = nil }
+            await fullStart()
         }
     }
 
     // MARK: Input
 
-    public func send(_ bytes: [UInt8]) {
-        inputBuffer.append(contentsOf: bytes)
+    // What `com.superlogical.terminal.write` gives us to work with (Rex API revision 14):
+    //
+    // - It takes `data`, a string, and nothing else. JSON strings hold Unicode text, so only
+    //   valid UTF-8 can be typed; there is no bytes or base64 form.
+    // - It has no sequence number or idempotency key, and the server doesn't order block methods:
+    //   "To type text in two calls, wait for the first call's response before you send the second".
+    //   `client.key` and `client.action` do run in the order they arrive, but not relative to a
+    //   write.
+    //
+    // So input and the server actions bound to keys go through one queue, in the order they were
+    // made, one request at a time, and each is sent at most once after it has left this client:
+    //
+    // - Not sent (no connection, or the socket didn't take the message; `RexError.neverSent`):
+    //   the item stays at the front and goes out when the control connection is back.
+    // - Refused by the server (the pane closed, say): dropped; sending it again can't help.
+    // - Sent, and the connection broke before the answer: nobody can know whether the server ran
+    //   it. Sending it again could run `rm x⏎` twice, which is worse than losing a keystroke the
+    //   user can see is missing and type again. So it is dropped, together with everything that
+    //   was queued behind it (typed on the assumption that it had arrived), and the user is told
+    //   (`onActionFailed`).
+
+    private enum InputItem {
+        case text(String)
+        case work(Work)
+    }
+    /// A server call bound to a key (`client.action`, `client.key`).
+    private struct Work {
+        /// The action's name, for the message when it fails; nil for a forwarded key.
+        let action: String?
+        let run: @MainActor () async throws -> Void
+    }
+    private enum Fate { case unsent, refused, unknown }
+
+    /// What is still to send, oldest first. Text typed in a row is one item.
+    private var inputQueue: [InputItem] = []
+    /// True while an item's request is out; the next one waits for it.
+    private var inFlight = false
+    private var flightID = 0
+    /// Counts `stop()`s. An answer for an item sent before the last one changes nothing.
+    private var inputEpoch = 0
+    private var inputRetryScheduled = false
+    /// A slow action (a Lua function may run for seconds) holds typing back at most this long.
+    var actionHold: Duration = .milliseconds(1500)
+    static let inputLostMessage = "The connection dropped while sending. Check the pane before typing that again."
+
+    /// Types `bytes` into the terminal. Returns false if they were dropped, which happens in two
+    /// cases: the stream is stopped, or the bytes aren't valid UTF-8.
+    ///
+    /// `terminal.write` takes a JSON string, so bytes that aren't UTF-8 can't be sent at all, and
+    /// decoding them loosely would type U+FFFD (three other bytes) in their place: a report the
+    /// program then reads as garbage. They are legacy encodings a program must ask for (an X10
+    /// mouse report past column 95, 8-bit meta keys). The whole call is dropped instead, so a
+    /// caller passes one key, report or paste per call. The mouse encoder uses the SGR or UTF-8
+    /// format whenever the program has asked for one, and both are plain UTF-8.
+    ///
+    /// Keys typed while a request is out go together right after it. Input typed without a
+    /// connection waits and goes out, in order, once the server is back. See the note above for
+    /// what happens when the connection breaks in the middle of a write.
+    @discardableResult
+    public func send(_ bytes: [UInt8]) -> Bool {
+        guard !bytes.isEmpty else { return true }
+        guard !stopped, let text = String(bytes: bytes, encoding: .utf8) else { return false }
+        if case .text(let have)? = inputQueue.last {
+            inputQueue[inputQueue.count - 1] = .text(have + text)
+        } else {
+            inputQueue.append(.text(text))
+        }
         pump()
+        return true
     }
 
-    public func send(text: String) { send(Array(text.utf8)) }
+    @discardableResult
+    public func send(text: String) -> Bool { send(Array(text.utf8)) }
 
-    /// Sends typed input now. Keys typed while a write is in flight go out together right after it.
-    /// Input is never dropped by a lost connection: it waits and goes out once the server is back.
+    /// Sends the next item, unless one is out, the queue is empty or there is no connection
+    /// (`controlConnected()` pumps again).
     private func pump() {
-        guard !writing, !runningWork, !stopped else { return }
-        guard !inputBuffer.isEmpty else { runOrderedWork(); return }
-        guard control.state == .connected else { retryInput(); return }
-        writing = true
-        let chunk = inputBuffer
-        inputBuffer.removeAll()
-        let text = String(decoding: chunk, as: UTF8.self)
-        Task {
-            do {
-                _ = try await control.blockCall("com.superlogical.terminal.write", session: sessionID, block: blockID, args: ["data": text])
-            } catch let e as RexError where e.code != "client" {
-                // The server refused it (e.g. the pane closed); resending won't help.
-            } catch {
-                // Connection trouble: keep the keys, in order, ahead of anything typed since.
-                self.inputBuffer.insert(contentsOf: chunk, at: 0)
-                self.writing = false
-                self.retryInput()
-                return
+        guard !inFlight, !stopped, !inputQueue.isEmpty, link.isConnected else { return }
+        let item = inputQueue.removeFirst()
+        inFlight = true
+        flightID += 1
+        let id = flightID, epoch = inputEpoch
+        switch item {
+        case .text(let text):
+            Task {
+                var failure: Error?
+                do {
+                    _ = try await self.blockCall("com.superlogical.terminal.write", args: ["data": text])
+                } catch { failure = error }
+                self.finished(item, failure: failure, id: id, epoch: epoch)
             }
-            self.writing = false
-            self.pump()
+        case .work(let work):
+            Task {
+                var failure: Error?
+                do { try await work.run() } catch { failure = error }
+                self.finished(item, failure: failure, id: id, epoch: epoch)
+            }
+            // Typing goes on after `actionHold` even if the action hasn't answered.
+            let sleep = self.sleep, hold = actionHold
+            Task { [weak self] in
+                await sleep(hold)
+                guard let self, self.inFlight, self.flightID == id else { return }
+                self.inFlight = false
+                self.pump()
+            }
         }
     }
 
-    /// Runs `work` once every key typed before it has been written; keys typed after wait for it.
-    private func afterInput(_ work: @escaping @MainActor () async -> Void) {
-        orderedWork.append(work)
+    /// The request for `item` ended.
+    private func finished(_ item: InputItem, failure: Error?, id: Int, epoch: Int) {
+        // False for an action that `actionHold` gave up waiting for: later items have gone out.
+        let current = inFlight && flightID == id
+        if current { inFlight = false }
+        // After `stop()` there is nothing to keep or to report; the queue is already empty.
+        guard let failure, epoch == inputEpoch else {
+            if current { pump() }
+            return
+        }
+        switch Self.fate(of: failure) {
+        case .unsent where current:
+            // It never left, so it goes first again, ahead of anything typed since.
+            if case .text(let text) = item, case .text(let next)? = inputQueue.first {
+                inputQueue[0] = .text(text + next)
+            } else {
+                inputQueue.insert(item, at: 0)
+            }
+            // Normally the connection is down and `controlConnected()` sends it. If the socket
+            // refused one message and the connection still stands, try again shortly.
+            if link.isConnected { retryInputSoon() }
+        case .unsent, .refused:
+            if case .work(let work) = item, let action = work.action {
+                onActionFailed?("Couldn't run \(action). \((failure as? RexError)?.message ?? failure.localizedDescription)")
+            }
+            if current { pump() }
+        case .unknown:
+            if current { inputQueue.removeAll() }
+            if case .work(let work) = item, let action = work.action {
+                onActionFailed?("Couldn't run \(action). The connection dropped.")
+            } else {
+                onActionFailed?(Self.inputLostMessage)
+            }
+            if current { pump() }
+        }
+    }
+
+    private static func fate(of error: Error) -> Fate {
+        guard let e = error as? RexError else { return .unknown }
+        if e.neverSent { return .unsent }
+        return e.code == "client" ? .unknown : .refused
+    }
+
+    private func retryInputSoon() {
+        guard !inputRetryScheduled else { return }
+        inputRetryScheduled = true
+        let sleep = self.sleep
+        Task { [weak self] in
+            await sleep(.milliseconds(250))
+            self?.inputRetryScheduled = false
+            self?.pump()
+        }
+    }
+
+    private func dropInput() {
+        inputEpoch += 1
+        inputQueue.removeAll()
+    }
+
+    /// Queues `work` behind every key typed before it; keys typed after it wait for it. It is
+    /// held, like typed text, until there is a connection to run it on.
+    private func enqueue(_ work: Work) {
+        guard !stopped else { return }
+        inputQueue.append(.work(work))
         pump()
-    }
-
-    private func runOrderedWork() {
-        guard !runningWork, !writing, inputBuffer.isEmpty, !orderedWork.isEmpty, !stopped else { return }
-        runningWork = true
-        workToken += 1
-        let token = workToken
-        let work = orderedWork.removeFirst()
-        // A slow action (a Lua function may run for seconds) holds typing back at most this long.
-        let release = { @MainActor in
-            guard self.runningWork, self.workToken == token else { return }
-            self.runningWork = false
-            self.pump()
-        }
-        Task { await work(); release() }
-        Task { try? await Task.sleep(nanoseconds: 1_500_000_000); release() }
     }
 
     /// Runs a block or configuration-file action on this pane (`client.action`), as a key binding
     /// does on the Mac. Returns the client actions the server asks this client to perform.
     public func perform(action: String, args: JSONObject?, then: @escaping @MainActor ([JSONObject]) -> Void) {
-        afterInput { [sessionID, blockID, control, weak self] in
+        enqueue(Work(action: action) { [sessionID, blockID, link] in
             var p: JSONObject = ["action": action, "origin": "key", "session_id": sessionID, "block_id": blockID]
             if let args, !args.isEmpty { p["args"] = args }
-            do {
-                let r = try await control.call("client.action", p)
-                then(r.arr("client_actions"))
-            } catch {
-                self?.onActionFailed?("Couldn't run \(action). \((error as? RexError)?.message ?? error.localizedDescription)")
-            }
-        }
+            let r = try await link.call("client.action", p)
+            then(r.arr("client_actions"))
+        })
     }
 
     /// Sends a key to the server's Lua key bindings (`client.key`); unhandled, it reaches this pane.
     public func forward(key: JSONObject) {
-        afterInput { [sessionID, blockID, control] in
-            _ = try? await control.call("client.key", ["session_id": sessionID, "block_id": blockID, "key": key])
-        }
-    }
-
-    private func retryInput() {
-        guard inputRetry == nil, !stopped else { return }
-        inputRetry = Task {
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            self.inputRetry = nil
-            self.pump()
-        }
+        enqueue(Work(action: nil) { [sessionID, blockID, link] in
+            _ = try await link.call("client.key", ["session_id": sessionID, "block_id": blockID, "key": key])
+        })
     }
 
     // MARK: Ownership / sizing
 
     public func claimAndResize(cols: Int, rows: Int) async {
-        _ = try? await control.call("session.own_block", ["session_id": sessionID, "block_ids": [blockID], "mode": "take"])
-        _ = try? await control.blockCall("com.superlogical.terminal.resize", session: sessionID, block: blockID,
-                                         args: ["columns": cols, "rows": rows])
+        _ = try? await link.call("session.own_block", ["session_id": sessionID, "block_ids": [blockID], "mode": "take"])
+        _ = try? await blockCall("com.superlogical.terminal.resize", args: ["columns": cols, "rows": rows])
     }
 
     public func release() async {
-        _ = try? await control.call("session.disown_block", ["session_id": sessionID, "block_ids": [blockID]])
+        _ = try? await link.call("session.disown_block", ["session_id": sessionID, "block_ids": [blockID]])
     }
 }

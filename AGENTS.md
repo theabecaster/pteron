@@ -1,29 +1,29 @@
 # Rex Connect
 
 iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's control API and
-terminal data stream over the server's Tailscale HTTPS address, draws panes with SwiftTerm or
-libghostty-vt (two engines behind one seam), and
-creates, splits, resizes and types into real Rex sessions. It is built for the iPhone Duo (unfolded,
+terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt
+and its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built for the iPhone Duo (unfolded,
 it shows the sidebar beside the tab's splits) and works on any iPhone. `Relay/` holds Rex Connect
 Helper, a signed Mac app that sends push notifications for Rex events.
 
 Stack: Swift 6 language mode (app and RexKit; Relay is still Swift 5 mode), SwiftUI + UIKit,
-iOS 18, Xcode 27.2, XcodeGen, SwiftTerm 1.99.3 (exact pin), libghostty-vt (static xcframework built
-by `scripts/build-ghostty.sh`), Swift Testing (the engine and stream-snapshot tests are XCTest).
+iOS 18, Xcode 27.2, XcodeGen, libghostty-vt (static xcframework built by
+`scripts/build-ghostty.sh`), Swift Testing (the engine and stream tests are XCTest).
 Bundle id `dev.abrahamgonzalez.rexduo` predates the name and stays: App Store Connect and the
 APNs topic depend on it.
 
 ## Map
 
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
-  `TerminalStream` (data socket, `APCFilter`, `DataFrame`). Foundation only, so it tests on macOS.
+  `TerminalStream` (data socket, reconnect, the input queue, `APCFilter`, `DataFrame`). Foundation
+  only, so it tests on macOS.
   Relay uses its JSON helpers too.
 - `RexConnect/State`: `AppModel` (selection, servers), one `ServerConnection` per server
   (sessions, layouts, block metadata, server events, actions), `Prefs`, `AgentNotifier`,
   `PushRegistrar` (push registration with the Mac helper).
 - `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures,
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → `TerminalEngineView`: `Engine/` has the
-  seam and the SwiftTerm adapter, `Ghostty/` the libghostty-vt engine), KeyBar, Keyboard
+  seam, `Ghostty/` the libghostty-vt engine), KeyBar, Keyboard
   (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card),
   Offline (the "signal lost" screen and its static backdrop).
 - `RexConnect/App`: entry point, `RootView` (sidebar + tab for the window's width and the fold, `Arrangement`
@@ -58,23 +58,29 @@ swift test --package-path Relay                 # helper and push policy tests
     system-wide): Zig from ziglang.org (51 MB download, SHA-256 checked) in `Vendor/zig-<version>/`,
     the Ghostty checkout in `Vendor/ghostty/`, Zig's package cache in `Vendor/zig-global-cache/`.
   - It records what it built in `Vendor/GhosttyVt.stamp` and does nothing when that matches the
-    pins. `scripts/build-ghostty.sh --force` rebuilds anyway.
+    pins. `scripts/build-ghostty.sh --force` rebuilds anyway. A new framework is checked in a
+    staging folder first and the stamp is written last, so a build that fails a check never
+    replaces a good framework or gets a stamp.
   - To re-pin: change `GHOSTTY_COMMIT` in `scripts/ghostty.version` (and the Zig version and hash,
     if Ghostty's `minimum_zig_version` moved), run the script, and check
     `RexConnect/Resources/Acknowledgements.txt` against the entries marked `"use": "linked"` in
     `Vendor/ghostty/deps/libghostty-vt-third-party.json`.
-  - `scripts/check-ghostty.sh` compares the stamp with the pins. The app target runs it before
-    compiling and the macdesk scripts run it before copying or archiving, so a missing or stale
-    framework stops the build with one line that says to run `scripts/build-ghostty.sh`.
+  - `scripts/check-ghostty.sh` compares the stamp with the pins, and checks that the iOS
+    deployment target in `project.yml` is 17.4 or later, which the patched library needs. The
+    app target runs it on every build, before compiling, and the macdesk scripts run it before
+    copying or archiving, so a missing or stale framework stops the build with one line that
+    says to run `scripts/build-ghostty.sh`.
   - `scripts/ghostty-patches/*.patch` are applied to the checkout and are part of the stamp, so
     a new patch makes every existing framework stale. List each patch file in `project.yml`
-    (the check's `inputFiles`). What each patch does: docs/ghostty-engine.md, Patches.
+    (the check's `inputFiles`): the script sandbox lets the check read only listed files, and
+    the build stops with that instruction until it is. What each patch does:
+    docs/ghostty-engine.md, Patches.
   - `scripts/check-symbols.sh` fails when the framework (or an app or archive given as argument)
     imports a private system symbol, which App Store review rejects. The build script runs it
     on the framework, `ship-macdesk.sh` on the framework and on the archived app.
   - An agent worktree can symlink another checkout's `Vendor` instead of building its own.
-- Use a concrete simulator id and pass `-skipPackagePluginValidation -skipMacroValidation`.
-  SwiftTerm's build plugin fails validation in command-line builds otherwise, and
+- Use a concrete simulator id and pass `-skipPackagePluginValidation -skipMacroValidation`: a
+  package build plugin fails validation in command-line builds otherwise, and
   `generic/platform=iOS Simulator` fails with it.
 - The app builds with zero warnings from our code; keep it that way.
 - After a change, run the tests for the layer you touched. For UI changes, run the app and look at a
@@ -89,10 +95,9 @@ Each is a UserDefaults key for that run only.
 
 - `-autoOpen <session label>`: open that session's first tab. A label that doesn't exist opens nothing.
 - `-sizing mirror`: keep the Mac's pane sizes for this run instead of fitting panes to the phone.
-- `-terminalEngine ghostty|swiftTerm`: pick the terminal engine for this run (Ghostty by default).
 - `-ghosttyDemo <path>`: no server; replay a capture file in a full-screen Ghostty view
   (`GhosttyDemoScreen`).
-- `-replay <file>`: no server; feed a capture or scenario file to a real pane, either engine
+- `-replay <file>`: no server; feed a capture or scenario file to a real pane
   (`ReplayScreen`; more arguments there). `-perfLog <name>`: measure the pane and write
   `Documents/perf/<name>.json` (`PerfProbe`). `scripts/bench/run.sh` uses both.
 - `-selectionDemo <steps>`: play a selection gesture by program, for screenshots of the loupe and
@@ -100,7 +105,7 @@ Each is a UserDefaults key for that run only.
 - `-typeTest 'text\n'`: type the text into the active pane once it is live. With `-scrollBackTest
   <seconds>`, scroll two pages into the scrollback first and type that much later (checks that input
   returns the view to the bottom).
-- `-tapTest col,row[;col,row…]` (Debug builds, Ghostty engine): tap those viewport cells as a
+- `-tapTest col,row[;col,row…]` (Debug builds): tap those viewport cells as a
   focused finger would, `-tapTestAfter` seconds after the pane is live (default 3), and write what
   each did to `Documents/tapTest.txt`. `-tapTestType <text>` types the text after the last tap.
 - `-hinge closed|partial|full`: pretend the hinge reports this. Layout never reads it.
@@ -134,11 +139,14 @@ shell. So:
   afterwards. Don't open, type into, resize, rename, split or close any other session.
 - For a launch check that touches no panes, use `-autoOpen zz-none -sizing mirror`.
 - Unit tests run inside the app, which doesn't connect while it hosts tests.
-- `scripts/install-duo.sh`, `scripts/ship-macdesk.sh` and `Relay/package.sh` (without
-  `--no-notarize`) install, upload or notarize. Run them only when asked. `scripts/sync-macdesk.sh`
-  overwrites the build copy on macdesk; `-n` only lists what it would change.
+- `scripts/install-duo.sh`, `scripts/ship-macdesk.sh <build>` and `Relay/package.sh` (without
+  `--no-notarize`) install, upload or notarize. Run them only when asked. `ship-macdesk.sh`
+  with any well-formed build number archives for real; only a missing or malformed one stops it
+  early. `scripts/sync-macdesk.sh` overwrites the build copy on macdesk (a `rexconnect-build*`
+  folder in its home, nothing else); `-n` only lists what it would change.
 - `.asc.env` and `~/.appstoreconnect/private_keys/` hold App Store Connect and APNs keys. Don't
-  print, copy or commit them. `Relay/dist` holds a build with the APNs key inside; it is gitignored.
+  print, copy or commit them. `Relay/dist` holds a build with the APNs key inside, and so does
+  `Relay/.stage` while `Relay/package.sh` runs; both are gitignored and never copied to macdesk.
 
 ## Conventions
 
@@ -150,8 +158,12 @@ shell. So:
   or `nonisolated(unsafe)` unless a comment says why it is safe.
 - Socket callbacks check they still belong to the current connection (generation counters) before
   touching state; a stale socket would otherwise overwrite fresh state after a reconnect.
-- Send terminal input through `TerminalStream.send`. It keeps one `terminal.write` in flight because
-  Rex doesn't order concurrent block calls, so parallel writes reorder keystrokes.
+- Send terminal input through `TerminalStream.send`, and key-bound server calls through its
+  `perform(action:)` and `forward(key:)`. They share one queue with one request in flight,
+  because Rex doesn't order concurrent block calls, and a request that left is never sent again,
+  because `terminal.write` has no sequence number (docs/terminal.md, Input).
+- `RexControl` is the only thing that retries a lost connection. Code that depends on it waits
+  for `observeConnected` instead of polling or looping.
 - Other sessions work in parallel worktrees (Ghostty engine work is on branch `ghostty-engine`).
   Keep diffs to what the task needs, and move files with `git mv`.
 - Commits: imperative subject, plain message, no AI attribution or trailers (no `Co-Authored-By`,
@@ -165,9 +177,10 @@ Read the one for the area you touch:
 
 - [docs/architecture.md](docs/architecture.md): data flow, state, concurrency, where new code goes.
 - [docs/rex-protocol.md](docs/rex-protocol.md): control API methods and events the app uses.
-- [docs/terminal.md](docs/terminal.md): data stream, engines, fit and mirror, gestures, keyboard input.
+- [docs/terminal.md](docs/terminal.md): data stream, reconnect, fit and mirror, gestures, input.
 - [docs/selection.md](docs/selection.md): touch selection (loupe, handles, haptics): research, design, seam.
-- [docs/ghostty-engine.md](docs/ghostty-engine.md): the Ghostty engine's plan, design and status;
+- [docs/ghostty-engine.md](docs/ghostty-engine.md): the terminal engine: architecture, threads and
+  locks, snapshot restore, toolchain and patches, gotchas, measurements;
   [docs/ghostty-api-notes.md](docs/ghostty-api-notes.md): libghostty-vt API notes.
 - [docs/notifications.md](docs/notifications.md): local notifications, the helper, the relay contract.
 - [docs/release.md](docs/release.md): device installs, TestFlight via macdesk, helper packaging.

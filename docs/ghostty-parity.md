@@ -1,5 +1,8 @@
 # Ghostty engine: parity with SwiftTerm
 
+A record: the audit that let Ghostty replace SwiftTerm as the only engine. It describes both
+engines as they were on 2026-11-16 and is not kept up to date.
+
 Phase 3 audit (2026-11-16) of the Ghostty engine against the SwiftTerm adapter
 (`Engine/SwiftTermEngine.swift`, SwiftTerm 1.99.3), member by member of `TerminalEngineView` and
 `TerminalKeyTarget`, and for every call `TerminalHost`, `KeyBar` and the hardware keymap make.
