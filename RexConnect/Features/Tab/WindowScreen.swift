@@ -26,6 +26,7 @@ struct WindowScreen: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
 
     let server: ServerConnection
@@ -52,7 +53,7 @@ struct WindowScreen: View {
     private var zoomedHere: Bool { PhoneState.shared.zoomed.contains(windowID) }
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
+        let theme = prefs.theme(for: scheme)
         VStack(spacing: 0) {
             if let w = window {
                 if case .dual(let split, let vertical) = mode, dualShown(w) {
@@ -135,7 +136,7 @@ struct WindowScreen: View {
         case .compact, .dual: return false
         case .page, .full: break
         }
-        switch Prefs.shared.wideLayout {
+        switch prefs.wideLayout {
         case .single: return false
         case .splits: return true
         // A single Duo page is too narrow for splits; show them once the tab has the whole width.
@@ -439,10 +440,10 @@ struct WindowScreen: View {
                 }
                 Button { Task { await server.clear(sessionID, block) } } label: { Label("Clear", systemImage: "eraser") }
                 Button {
-                    let p = Prefs.shared
+                    let p = prefs
                     p.sizing = p.sizing == .fit ? .mirror : .fit
                 } label: {
-                    Label(Prefs.shared.sizing == .fit ? "Mirror Mac Size" : "Fit to Phone", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                    Label(prefs.sizing == .fit ? "Mirror Mac Size" : "Fit to Phone", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                 }
                 Button { rename() } label: { Label("Rename Tab…", systemImage: "pencil") }
             }
@@ -657,6 +658,7 @@ struct BlockBadge: View {
 struct PaneDock: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
 
     let server: ServerConnection
     let sessionID: String
@@ -678,7 +680,7 @@ struct PaneDock: View {
     static let rowHeight: CGFloat = 48
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
+        let theme = prefs.theme(for: scheme)
         let st = server.meta[block]?.topStatus
         let sig = Self.signature(st)
         let dismissed = sig != nil && model.dismissedReplies[block] == sig
@@ -991,6 +993,7 @@ struct PagerDot: View {
 /// Every tab on the server as cards with a live text preview, like Safari's tab overview.
 struct TabOverview: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
 
     let server: ServerConnection
@@ -999,7 +1002,7 @@ struct TabOverview: View {
     let onOpen: (Selection) -> Void
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
+        let theme = prefs.theme(for: scheme)
         let order = server.sessions.filter { $0.id == currentSessionID } + server.sessions.filter { $0.id != currentSessionID }
         NavigationStack {
             ScrollView {

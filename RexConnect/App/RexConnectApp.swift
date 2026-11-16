@@ -3,14 +3,22 @@ import UserNotifications
 
 @main
 struct RexConnectApp: App {
-    @State private var model = AppModel()
+    @State private var prefs: Prefs
+    @State private var model: AppModel
     @Environment(\.scenePhase) private var phase
+
+    init() {
+        let prefs = Prefs.shared
+        _prefs = State(initialValue: prefs)
+        _model = State(initialValue: AppModel(prefs: prefs))
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .launchTransition()
                 .environment(model)
+                .environment(prefs)
                 .onAppear {
                     UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
                 }

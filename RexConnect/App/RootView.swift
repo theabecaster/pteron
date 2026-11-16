@@ -10,13 +10,14 @@ import UIKit
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @State private var sidebarVisible = true
     @State private var path: [Selection] = []
     /// Width ≥ 600 pt: sidebar and tab side by side (or two pages), no navigation stack in view.
     @State private var wide = false
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
+        let theme = prefs.theme(for: scheme)
         GeometryReader { geo in
             let ins = geo.safeAreaInsets
             let full = CGSize(width: geo.size.width + ins.leading + ins.trailing,
@@ -106,8 +107,8 @@ struct RootView: View {
         case .toggleSidebar: toggleSidebar()
         case .jumpToWaiting: jumpToWaiting()
         case .settings: model.showSettings = true
-        case .fontBigger: setFont(Prefs.shared.fontSize + 1)
-        case .fontSmaller: setFont(Prefs.shared.fontSize - 1)
+        case .fontBigger: setFont(prefs.fontSize + 1)
+        case .fontSmaller: setFont(prefs.fontSize - 1)
         case .fontReset: setFont(11)
         default: break
         }
@@ -115,9 +116,9 @@ struct RootView: View {
 
     private func setFont(_ size: Double) {
         let v = min(max((size * 2).rounded() / 2, 7), 20)
-        guard v != Prefs.shared.fontSize else { Haptic.bump(); return }
+        guard v != prefs.fontSize else { Haptic.bump(); return }
         Haptic.selection()
-        Prefs.shared.fontSize = v
+        prefs.fontSize = v
     }
 
     private func toggleSidebar() {
@@ -293,10 +294,11 @@ struct RootView: View {
 struct EmptyState: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @Binding var sidebarVisible: Bool
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
+        let theme = prefs.theme(for: scheme)
         VStack(spacing: 14) {
             Image(systemName: "terminal")
                 .font(.system(size: 40, weight: .light))

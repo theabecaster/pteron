@@ -4,13 +4,14 @@ import RexKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
     @State private var newName = ""
     @State private var newURL = ""
 
     var body: some View {
-        @Bindable var p = Prefs.shared
-        let theme = ThemeStore.current(scheme)
+        @Bindable var p = prefs
+        let theme = prefs.theme(for: scheme)
         NavigationStack {
             Form {
                 Section {
@@ -224,7 +225,8 @@ private struct GestureRow: View {
 }
 
 struct KeyBarEditor: View {
-    @State private var keys: [String] = Prefs.shared.keyBar
+    @Environment(Prefs.self) private var prefs
+    @State private var keys: [String] = []
 
     var body: some View {
         List {
@@ -268,7 +270,7 @@ struct KeyBarEditor: View {
         }
         .environment(\.editMode, .constant(.active))
         .navigationTitle("Key Bar")
-        .onAppear { keys = Prefs.shared.keyBar }
+        .onAppear { keys = prefs.keyBar }
     }
 
     static func label(_ k: String) -> String {
@@ -278,6 +280,6 @@ struct KeyBarEditor: View {
     }
 
     private func save() {
-        Prefs.shared.keyBar = keys
+        prefs.keyBar = keys
     }
 }

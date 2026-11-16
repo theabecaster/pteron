@@ -55,6 +55,7 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored let keymap: KeymapStore
     /// Local notifications and haptics for agents; shared by every server.
     @ObservationIgnored let notifier: AgentNotifier
+    @ObservationIgnored let prefs: Prefs
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
@@ -95,7 +96,8 @@ final class ServerConnection: Identifiable {
         return b
     }
 
-    init(config: ServerConfig, notifier: AgentNotifier) {
+    init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier) {
+        self.prefs = prefs
         self.config = config
         self.notifier = notifier
         control = RexControl(address: config.url, client: ClientInfo(
@@ -466,7 +468,7 @@ final class ServerConnection: Identifiable {
     }
 
     private func notifyBlocked(_ sid: String, _ bid: String, _ st: ProgramStatus, _ m: BlockMeta) {
-        guard Prefs.shared.notifyOnBlocked else { return }
+        guard prefs.notifyOnBlocked else { return }
         let who = m.agentKind?.displayName ?? st.app ?? "A program"
         let why: String
         switch st.waitingFor {
@@ -476,7 +478,7 @@ final class ServerConnection: Identifiable {
         default: why = "is waiting for you"
         }
         notifier.post(title: "\(who) \(why)", body: [label(for: sid, block: bid), st.text].compactMap { $0 }.joined(separator: " — "))
-        if Prefs.shared.haptics { notifier.waitingHaptic() }
+        if prefs.haptics { notifier.waitingHaptic() }
     }
 
     func label(for sid: String, block bid: String) -> String {

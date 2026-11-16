@@ -58,11 +58,15 @@ struct ServerConfig: Codable, Identifiable, Hashable {
 }
 
 /// User preferences. Stored in UserDefaults.
+///
+/// SwiftUI views read the app's instance from the environment (`@Environment(Prefs.self)`) and
+/// state types get it in `init`. `shared` is that same instance, for the few places SwiftUI
+/// doesn't reach: the UIKit key bar and terminal host, and the static `Haptic` helper.
 @MainActor
 @Observable
 final class Prefs {
     static let shared = Prefs()
-    private let d = UserDefaults.standard
+    @ObservationIgnored private let d: UserDefaults
 
     var themeID: String { didSet { d.set(themeID, forKey: "themeID") } }
     var lightThemeID: String { didSet { d.set(lightThemeID, forKey: "lightThemeID") } }
@@ -95,7 +99,10 @@ final class Prefs {
                           "[", "]", "{", "}", "(", ")",
                           "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"]
 
-    private init() {
+    /// Tests pass `UserDefaults(suiteName:)` to stay isolated.
+    init(defaults: UserDefaults = .standard) {
+        let d = defaults
+        self.d = d
         themeID = d.string(forKey: "themeID") ?? "github-dark-dimmed"
         lightThemeID = d.string(forKey: "lightThemeID") ?? "github-light-default"
         followSystemAppearance = d.object(forKey: "followSystem") as? Bool ?? false
@@ -119,5 +126,12 @@ final class Prefs {
             servers = []
             #endif
         }
+    }
+
+    /// The terminal theme for the system appearance: the light theme only when following the
+    /// system and it's light.
+    func theme(for scheme: ColorScheme) -> TermTheme {
+        if followSystemAppearance && scheme == .light { return ThemeStore.theme(lightThemeID) }
+        return ThemeStore.theme(themeID)
     }
 }

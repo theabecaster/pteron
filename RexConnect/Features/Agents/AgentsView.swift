@@ -5,11 +5,12 @@ import RexKit
 struct AgentsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
     var onOpen: (Selection) -> Void
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
+        let theme = prefs.theme(for: scheme)
         NavigationStack {
             List {
                 ForEach(model.servers) { server in

@@ -6,6 +6,7 @@ import RexKit
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     var onSelect: (Selection) -> Void
 
     @State private var renaming: RenameTarget?
@@ -24,8 +25,8 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        let theme = ThemeStore.current(scheme)
-        let p = Prefs.shared
+        let theme = prefs.theme(for: scheme)
+        let p = prefs
         VStack(spacing: 0) {
             List {
                 agentsSummary(theme)
@@ -110,7 +111,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func agentsSummary(_ theme: TermTheme) -> some View {
-        if Prefs.shared.showAgentStatus {
+        if prefs.showAgentStatus {
             styled(
                 Button { showAgents = true } label: {
                     AgentsSummaryLabel(servers: model.servers, theme: theme)

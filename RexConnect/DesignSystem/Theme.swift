@@ -58,13 +58,6 @@ enum ThemeStore {
                                            "#636e7b", "#ff938a", "#6bc46d", "#daaa3f", "#6cb6ff", "#dcbdfb", "#56d4dd", "#cdd9e5"])
 
     static func theme(_ id: String) -> TermTheme { all.first { $0.id == id } ?? all.first ?? fallback }
-
-    @MainActor
-    static func current(_ scheme: ColorScheme) -> TermTheme {
-        let s = Prefs.shared
-        if s.followSystemAppearance && scheme == .light { return theme(s.lightThemeID) }
-        return theme(s.themeID)
-    }
 }
 
 enum RexFont {

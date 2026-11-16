@@ -65,6 +65,7 @@ final class AppModel {
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false
+    @ObservationIgnored let prefs: Prefs
     @ObservationIgnored let notifier = AgentNotifier()
 
     /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
@@ -78,7 +79,8 @@ final class AppModel {
     /// Composer drafts, per pane. Kept outside the observed state so typing doesn't re-render the screen.
     @ObservationIgnored var drafts: [String: String] = [:]
 
-    init() {
+    init(prefs: Prefs) {
+        self.prefs = prefs
         dualPages = UserDefaults.standard.bool(forKey: "dualPages")
         rebuildServers()
     }
@@ -98,14 +100,14 @@ final class AppModel {
     }
 
     func rebuildServers() {
-        let configs = Prefs.shared.servers + Prefs.shared.hostURLs.compactMap { label, url in
+        let configs = prefs.servers + prefs.hostURLs.compactMap { label, url in
             url.isEmpty ? nil : ServerConfig(id: Self.stableID(label), name: label, url: url)
         }
         let old = Dictionary(uniqueKeysWithValues: servers.map { ($0.config.id, $0) })
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
-            return ServerConnection(config: cfg, notifier: notifier)
+            return ServerConnection(config: cfg, prefs: prefs, notifier: notifier)
         }
         for s in servers { s.start() }
     }

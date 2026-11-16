@@ -15,6 +15,7 @@ struct PaneView: UIViewRepresentable {
     var onCommand: ((RexCommand) -> Void)? = nil
 
     @Environment(\.colorScheme) private var scheme
+    @Environment(Prefs.self) private var prefs
     @Environment(AppModel.self) private var model: AppModel?
 
     private var commandHandler: ((RexCommand) -> Void)? {
@@ -24,10 +25,10 @@ struct PaneView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> TerminalHost {
-        let p = Prefs.shared
+        let p = prefs
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
         stream.onActionFailed = { Notice.shared.show($0) }
-        let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: ThemeStore.current(scheme))
+        let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
         host.onCommand = commandHandler
         host.isActive = active
@@ -37,8 +38,8 @@ struct PaneView: UIViewRepresentable {
     }
 
     func updateUIView(_ host: TerminalHost, context: Context) {
-        let p = Prefs.shared
-        let theme = ThemeStore.current(scheme)
+        let p = prefs
+        let theme = prefs.theme(for: scheme)
         if host.theme != theme { host.applyTheme(theme) }
         host.setFontSize(p.fontSize)
         host.setSizing(p.sizing)
