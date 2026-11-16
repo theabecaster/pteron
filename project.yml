@@ -1,4 +1,6 @@
-name: RexDuo
+# Source of truth for RexConnect.xcodeproj, which is generated and not tracked.
+# Run `xcodegen generate` after cloning and after adding, moving or deleting files.
+name: RexConnect
 options:
   bundleIdPrefix: dev.abrahamgonzalez
   deploymentTarget:
@@ -6,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.0"
+    SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: R2PVQ496X7
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
@@ -16,52 +18,59 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.99.3
+  RexKit:
+    path: Packages/RexKit
 targets:
-  RexDuo:
+  RexConnect:
     type: application
     platform: iOS
     sources:
-      - path: RexDuo
+      - path: RexConnect
     dependencies:
       - package: SwiftTerm
         product: SwiftTerm
+      - package: RexKit
+        product: RexKit
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
     settings:
       base:
+        # The bundle id predates the rename. App Store Connect and the APNs topic depend on it.
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo
-        PRODUCT_NAME: RexDuo
+        PRODUCT_NAME: RexConnect
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_FILE: RexDuo/Info.plist
+        INFOPLIST_FILE: RexConnect/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         # libghostty-vt's simdutf and highway are C++.
         OTHER_LDFLAGS: "-lc++"
-  RexDuoTests:
+  # Pure app logic (keymap, key encoding, layout math, prefs). Runs inside the app, which doesn't
+  # connect while it hosts tests. Protocol tests live in Packages/RexKit (`swift test`).
+  RexConnectTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: RexDuoTests
+      - path: RexConnectTests
     dependencies:
-      - target: RexDuo
+      - target: RexConnect
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.tests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexDuo.app/RexDuo"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexConnect.app/RexConnect"
         BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
-  RexDuo:
+  RexConnect:
     build:
       targets:
-        RexDuo: all
-        RexDuoTests: [test]
+        RexConnect: all
+        RexConnectTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - RexDuoTests
+        - RexConnectTests
     archive:
       config: Release

@@ -1,53 +1,42 @@
-# Rex Duo
+# Rex Connect
 
-A native iOS remote for [Rex](https://rex.superlogical.com) servers, built for the iPhone Duo
-(works on any iPhone). It speaks Rex's own documented API (`/llms.txt` on any Rex server) over
-the server's built-in Tailscale HTTPS address.
+A native iOS remote for [Rex](https://rex.superlogical.com) terminal servers, built for the iPhone
+Duo and fine on any iPhone. It speaks Rex's documented API (`/llms.txt` on any Rex server) over the
+server's built-in Tailscale HTTPS address.
 
-## What it does
+- Rex-style sidebar (hosts → sessions → tabs) with agent icons and live status (working, waiting,
+  done) from OSC 7501 program status.
+- Live terminals with SwiftTerm, Rex's themes and MesloLGS Nerd Font.
+- Unfolded Duo: sidebar beside the tab, splits laid out as Rex lays them out, draggable borders.
+  Folded or other iPhones: one pane at a time.
+- Fit to phone: the pane you view is resized to the phone and handed back to the Mac when you
+  leave. Mirror mode keeps the Mac's size.
+- Sessions, tabs and splits; zoom, rename, clear; a customizable key bar; hardware keyboard
+  shortcuts from your Rex keymap; an Agents screen; a notification when an agent waits for you.
+- **Rex Connect Helper** (`Relay/`): a small Mac app that sends push notifications while the app is
+  closed.
 
-- Rex-style sidebar: hosts → sessions → tabs, with agent icons (Claude, Codex, …) and live
-  status (working / waiting / done) from OSC 7501 program status.
-- Live terminals rendered with SwiftTerm, Rex's theme (GitHub Dark Dimmed by default, plus all
-  of Rex's built-in themes) and MesloLGS Nerd Font.
-- Unfolded Duo (≥ 600 pt wide): sidebar beside the tab, splits drawn the way Rex lays them out,
-  draggable split borders. Folded / other iPhones: one pane at a time with a pane strip.
-- Fit to phone: while you view a pane, Rex Duo owns it and resizes it to the phone; leaving the
-  pane or backgrounding the app hands it back to the Mac. Mirror mode keeps the Mac's size.
-- Create/close sessions, tabs, splits; zoom, rename, clear; customizable key bar (esc, ctrl,
-  alt, arrows, …); Agents screen; local notification when an agent starts waiting for you.
+## Connect a server
 
-## How it talks to Rex
-
-| Piece | Endpoint |
-| --- | --- |
-| Control (JSON, `rex.control.v1`) | `wss://<server>/api/control` |
-| Terminal output (`rex.data.terminal.v1`) | `wss://<server>/api/data` with a ticket from `data.connect` |
-| Typing | `com.superlogical.terminal.write`, one write at a time |
-
-The data stream starts with a binary Ghostty snapshot. Rex Duo skips it up to the first
-`ESC _ rex1;<nonce>;…` marker and seeds the screen with `terminal.format` (`vt`) instead.
-
-## Reaching other machines
-
-Only servers with Rex's built-in Tailscale on are reachable from the phone. On each machine:
-`rex server tailscale enable`, sign in, then add `https://<name>.<tailnet>.ts.net` in
-Settings → Servers. The phone must run Tailscale as the same user.
+On each machine: `rex server tailscale enable` and sign in. In the app, add
+`https://<name>.<tailnet>.ts.net` under Settings → Servers. The phone must run Tailscale as the
+same user.
 
 ## Build
 
 ```sh
-xcodegen generate
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination 'id=<simulator id>' \
+brew install xcodegen
+scripts/build-ghostty.sh   # once: builds Vendor/GhosttyVt.xcframework (libghostty-vt, not committed)
+xcodegen generate          # the Xcode project is generated, not committed
+xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<simulator id> \
   -skipPackagePluginValidation -skipMacroValidation build
+swift test --package-path Packages/RexKit
 ```
 
-Use a concrete simulator id: SwiftTerm's build-tool plugin fails with `generic/platform=iOS Simulator`.
-Debug launch args: `-autoOpen <session label>`, `-sizing fit|mirror`, `-typeTest 'text\n'`.
+Or open `RexConnect.xcodeproj` in Xcode 27.2 after `xcodegen generate`.
 
-## Ship (macdesk)
+## More
 
-`scripts/ship-macdesk.sh` archives and uploads. Code signing needs the GUI login session, so
-run it through `sudo launchctl asuser $(id -u) sudo -u $USER zsh -lc '~/rexduo-build/ship.sh <build>'`.
-`scripts/testflight-when-ready.sh <build>` waits for the App Store Connect record, uploads, then
-deletes macdesk's copy. `.asc.env` (gitignored) holds the API issuer id.
+- [AGENTS.md](AGENTS.md): working conventions, commands, debug launch arguments and safety rules.
+- [docs/](docs/): architecture, Rex protocol, terminal, notifications, release.
+- [Relay/README.md](Relay/README.md): the helper app.

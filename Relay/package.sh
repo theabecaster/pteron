@@ -31,7 +31,7 @@ ASC_KEY_ID="${ASC_KEY_ID:-2M674J7J7N}"
 ASC_KEY="${ASC_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8}"
 ASC_ENV="${ASC_ENV:-$HOME/rexduo/.asc.env}"
 
-ICON_SRC="$HERE/../RexDuo/Resources/Assets.xcassets/AppIcon.appiconset/icon.png"
+ICON_SRC="$HERE/../RexConnect/Resources/Assets.xcassets/AppIcon.appiconset/icon.png"
 STAGE="$HERE/.stage"
 DIST="$HERE/dist"
 APP="$STAGE/$APP_NAME.app"

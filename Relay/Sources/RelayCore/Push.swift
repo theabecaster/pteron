@@ -1,4 +1,5 @@
 import Foundation
+import RexKit
 
 /// Names the relay looks up for a block, to make a push readable.
 public struct BlockContext: Sendable {

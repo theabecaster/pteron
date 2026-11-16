@@ -1,0 +1,128 @@
+import CoreGraphics
+import Foundation
+import Testing
+@testable import RexKit
+
+private func json(_ s: String) -> JSONObject { JSONCodec.decode(s)! }
+
+/// Two panes side by side; the right one split top and bottom.
+private var nestedLayout: JSONObject { json("""
+{"rect": [0, 0, 1, 1], "split": {"split_id": "s1", "direction": "horizontal", "ratio": 0.6,
+  "before": {"block_id": "A", "rect": [0, 0, 0.6, 1]},
+  "after": {"rect": [0.6, 0, 0.4, 1], "split": {"split_id": "s2", "direction": "vertical", "ratio": 0.5,
+    "before": {"block_id": "B", "rect": [0.6, 0, 0.4, 0.5]},
+    "after": {"block_id": "C", "rect": [0.6, 0.5, 0.4, 0.5]}}}}}
+""") }
+
+struct LayoutTests {
+    @Test func parsesNestedSplitsInReadingOrder() throws {
+        let node = try #require(LayoutNode.parse(nestedLayout))
+        #expect(node.leaves.map(\.id) == ["A", "B", "C"])
+        #expect(node.leaves[2].rect == CGRect(x: 0.6, y: 0.5, width: 0.4, height: 0.5))
+    }
+
+    @Test func splitsNameTheBlocksBesideEachDivider() throws {
+        let splits = try #require(LayoutNode.parse(nestedLayout)).splits
+        #expect(splits.map(\.id) == ["s1", "s2"])
+        #expect(splits[0].beforeFirst == "A" && splits[0].afterFirst == "B")
+        #expect(splits[1].direction == "vertical")
+        #expect(splits[1].beforeFirst == "B" && splits[1].afterFirst == "C")
+        #expect(splits[0].ratio == 0.6)
+    }
+
+    @Test func badRectFallsBackToUnit() {
+        #expect(LayoutNode.rect([1, 2]) == CGRect(x: 0, y: 0, width: 1, height: 1))
+        #expect(LayoutNode.rect(nil) == CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    @Test func splitMissingASideIsNil() {
+        #expect(LayoutNode.parse(json(#"{"split": {"before": {"block_id": "A"}}}"#)) == nil)
+        #expect(LayoutNode.parse(nil) == nil)
+    }
+}
+
+struct SessionTests {
+    @Test func orderedBlockIDsAppendFloatingBlocks() {
+        let w = WindowInfo(json("""
+        {"window_id": "w1", "label": "api", "layers": [
+          {"layer_id": "t", "kind": "tiled", "layout": {"block_id": "A"},
+           "blocks": [{"block_id": "A", "creator_name": "com.superlogical.terminal"}]},
+          {"layer_id": "f", "kind": "floating", "blocks": [{"block_id": "F"}]}]}
+        """))
+        #expect(w.orderedBlockIDs == ["A", "F"])
+        #expect(w.block("A")?.isTerminal == true)
+        #expect(w.block("F")?.isTerminal == false)
+    }
+
+    @Test func activeWindowFallsBackToFirst() {
+        let v = SessionView(json(#"{"revision": 3, "session_id": "s", "active_window_id": "gone", "windows": [{"window_id": "w1"}, {"window_id": "w2", "layers": [{"blocks": [{"block_id": "B"}]}]}]}"#))
+        #expect(v.revision == 3)
+        #expect(v.activeWindow?.id == "w1")
+        #expect(v.windowContaining(block: "B")?.id == "w2")
+        #expect(v.window(nil) == nil)
+    }
+}
+
+struct StatusTests {
+    private func status(_ state: String, app: String? = nil) -> ProgramStatus {
+        var o: JSONObject = ["state": state]
+        if let app { o["app"] = app }
+        return ProgramStatus(o)
+    }
+
+    @Test func topStatusIsTheMostUrgent() {
+        var m = BlockMeta()
+        m.statuses = ["a": status("done"), "b": status("blocked"), "c": status("working"), "d": status("error")]
+        #expect(m.topStatus?.state == "blocked")
+        m.statuses["b"] = nil
+        #expect(m.topStatus?.state == "error")
+        m.statuses["d"] = nil
+        #expect(m.topStatus?.state == "working")
+    }
+
+    @Test func effectiveAppWins() {
+        let s = ProgramStatus(["state": "working", "app": "node", "effective_app": "claude", "kind": "question"])
+        #expect(s.app == "claude")
+        #expect(s.waitingFor == "question")
+    }
+
+    @Test func agentKindFromStatusThenProcessThenTitle() {
+        var m = BlockMeta()
+        m.title = "gemini"
+        #expect(m.agentKind == .gemini)
+        m.foreground = "codex"
+        #expect(m.agentKind == .codex)
+        m.statuses = ["x": status("working", app: "claude")]
+        #expect(m.agentKind == .claude)
+    }
+
+    @Test(arguments: [
+        ("Claude Code", AgentKind.claude), ("amp", .amp), ("amp --resume", .amp), ("cursor-agent", .cursor),
+        ("aider", .aider), ("opencode", .opencode),
+    ])
+    func detectsAgents(name: String, kind: AgentKind) {
+        #expect(AgentKind.detect(name) == kind)
+    }
+
+    @Test(arguments: ["sample", "campaign", "cursor", "zsh", ""])
+    func ignoresLookalikes(name: String) {
+        #expect(AgentKind.detect(name) == nil)
+    }
+}
+
+struct AddressTests {
+    @Test(arguments: [
+        ("https://mac.tail.ts.net", "wss://mac.tail.ts.net"),
+        ("  https://mac.tail.ts.net/some/path?x=1 ", "wss://mac.tail.ts.net"),
+        ("http://localhost:8080", "ws://localhost:8080"),
+        ("wss://host", "wss://host"),
+    ])
+    func webSocketBase(address: String, expected: String) {
+        #expect(RexControl.webSocketBase(for: address)?.absoluteString == expected)
+    }
+
+    @Test(arguments: ["", "mac.tail.ts.net", "ftp://host", "https://", "not a url"])
+    func rejectsBadAddresses(address: String) {
+        #expect(RexControl.webSocketBase(for: address) == nil)
+    }
+}

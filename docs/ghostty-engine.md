@@ -1,7 +1,8 @@
 # Ghostty engine (handoff)
 
-Status: research done, toolchain done, engine seam started. Nothing is wired into the app yet.
-The app still builds and runs on SwiftTerm.
+Status: phases 0 and 1 are done and merged with `main`'s layout (RexConnect, feature folders,
+RexKit, Swift 6). Both engines run behind `TerminalEngineView`. The Ghostty engine draws output and
+restores Rex's snapshot; its input, scrolling and selection are `// PHASE 2` stubs.
 
 ## Decision
 
@@ -64,13 +65,31 @@ Tools in `scripts/ghostty-tools/`:
 
 ## Done in code
 
-- `RexDuo/Terminal/TerminalEngine.swift`: compiles standalone, not yet used.
+- `RexConnect/Features/Terminal/Engine/TerminalEngine.swift`: the seam.
   - `TerminalEngineKind`: Ghostty or SwiftTerm, stored in UserDefaults `terminalEngine`, default
-    Ghostty.
+    Ghostty. `makeView` is the factory.
   - `TerminalKeyTarget`: what `KeyBar` needs. `SwiftTerm.TerminalView` conforms as is.
   - `TerminalEngineDelegate`.
-  - `TerminalEngineView`: the seam protocol, modeled on the calls `TerminalHost` makes on `term`
-    today, so the `TerminalHost` diff stays small.
+  - `TerminalEngineView`: the seam protocol. `TerminalHost` holds `any TerminalEngineView` and
+    doesn't import SwiftTerm. It owns the gestures, the clipboard, the copy-on-select shimmer,
+    the edit menu and the hardware keymap; the engine owns the selected range, scrolling and
+    key encoding (`beginSelection(at:word:)`, `extendSelection(to:autoscroll:)`,
+    `selectionRects`, `selectedText`, `scrollPage`, `scrollToPrompt`, `keyHook`, …).
+- `RexConnect/Features/Terminal/Engine/SwiftTermEngine.swift`: `RexTerminalView`, the SwiftTerm
+  adapter and the reference for what each seam member does.
+- `RexConnect/Features/Terminal/Ghostty/`: core, render thread, Metal renderer, glyph atlas,
+  sprites, `GhosttyTerminalView` (output side) and its `+Input`, `+Scroll`, `+Selection` files,
+  where every member still to implement is marked `// PHASE 2`. `GhosttyDemoScreen` is the
+  offline replay (`-ghosttyDemo <path>`).
+- `Packages/RexKit/Sources/RexKit/TerminalStream.swift`: `GhosttySnapshotPart`, `APCFilter`'s
+  snapshot framing, `restoresGhosttySnapshot`, `snapshotRestoreFailed()`.
+- Tests: `RexConnectTests/SeamTests.swift` and `RexConnectTests/Ghostty*.swift` (fixtures in
+  `RexConnectTests/Fixtures`) run in the simulator with the app scheme;
+  `Packages/RexKit/Tests/RexKitTests/Stream*.swift` (fixtures in `Tests/RexKitTests/Fixtures`)
+  run with `swift test --package-path Packages/RexKit`. Tests reach libghostty-vt only through
+  the app's Swift types: the static library is linked into the app, not the test bundle.
+- Build: `scripts/build-ghostty.sh`, `xcodegen generate`, then the `RexConnect` scheme (see
+  AGENTS.md).
 
 ## Plan (2026-11-16)
 
@@ -82,14 +101,14 @@ SwiftTerm stays as the fallback behind `TerminalEngineView`. Nothing ships to a 
 
 | # | Chunk | Owner | Files (exclusive) | Gate to merge |
 | --- | --- | --- | --- | --- |
-| 0 | Link `GhosttyVt`, add `RexDuoTests`, build green | lead | `project.yml`, `.gitignore`, `RexDuoTests/` | app builds, empty test passes |
-| 1a | Seam + UI: SwiftTerm adapter, `TerminalHost` on `any TerminalEngineView`, engine picker, pane-menu label | agent | `TerminalHost.swift`, `KeyBar.swift`, `SettingsView.swift`, `WindowScreen.swift`, `Terminal/SwiftTermEngine.swift`, `Terminal/TerminalEngine.swift` | SwiftTerm behaves as before (manual checklist in a `zz-` session) |
-| 1b | Core + renderer: `GhosttyCore`, render thread, Metal renderer, glyph atlas, sprites, output-only `GhosttyTerminalView` | agent | `Terminal/Ghostty/*`, `RexDuoTests/Ghostty*` | unit tests; offline replay of a capture matches a reference screenshot |
-| 1c | Stream: snapshot handoff in `APCFilter`, `restoresGhosttySnapshot`, fallback to `resync()` | agent | `Protocol/TerminalStream.swift`, `RexDuoTests/APCFilter*` | unit tests on real captures, split at every chunk boundary |
+| 0 | Link `GhosttyVt`, add a test target, build green | lead | `project.yml`, `.gitignore`, `RexConnectTests/` | app builds, empty test passes |
+| 1a | Seam + UI: SwiftTerm adapter, `TerminalHost` on `any TerminalEngineView`, engine picker, pane-menu label | agent | `TerminalHost.swift`, `KeyBar.swift`, `SettingsView.swift`, `WindowScreen.swift`, `Features/Terminal/Engine/SwiftTermEngine.swift`, `Engine/TerminalEngine.swift` | SwiftTerm behaves as before (manual checklist in a `zz-` session) |
+| 1b | Core + renderer: `GhosttyCore`, render thread, Metal renderer, glyph atlas, sprites, output-only `GhosttyTerminalView` | agent | `Features/Terminal/Ghostty/*`, `RexConnectTests/Ghostty*` | unit tests; offline replay of a capture matches a reference screenshot |
+| 1c | Stream: snapshot handoff in `APCFilter`, `restoresGhosttySnapshot`, fallback to `resync()` | agent | `Packages/RexKit/Sources/RexKit/TerminalStream.swift`, `Packages/RexKit/Tests/RexKitTests/Stream*` | unit tests on real captures, split at every chunk boundary |
 | 2a | Input: `UIKeyInput`, hardware keys through the key encoder, key bar modifiers, paste, marked text | agent | `Ghostty/GhosttyTerminalView+Input.swift`, `GhosttyCore+Input.swift` | key-encoding tests against SwiftTerm's bytes |
 | 2b | Scroll + mouse: native scroll, scrollbar, wheel and arrow drags, tap click | agent | `Ghostty/…+Scroll.swift`, `GhosttyCore+Scroll.swift` | tests on mouse bytes; manual scroll check |
 | 2c | Selection: long press word, drag, copy, edit menu, copy-on-select shimmer | agent | `Ghostty/…+Selection.swift`, `GhosttyCore+Selection.swift` | selection-text tests |
-| 2d | Benchmarks: `PerfProbe`, offline replay mode, `scripts/bench/` | agent | `Terminal/PerfProbe.swift`, `Terminal/ReplayScreen.swift`, `scripts/bench/*` | SwiftTerm baseline table in this doc |
+| 2d | Benchmarks: `PerfProbe`, offline replay mode, `scripts/bench/` | agent | `Features/Terminal/PerfProbe.swift`, `Features/Terminal/ReplayScreen.swift`, `scripts/bench/*` | SwiftTerm baseline table in this doc |
 | 3 | Parity run, tuning from benchmark results, review, `git merge main` | lead | all | checklist all green; Ghostty wins every metric |
 
 Phase 1 chunks run in parallel, then phase 2 chunks. Each agent works in its own git worktree
@@ -97,14 +116,14 @@ Phase 1 chunks run in parallel, then phase 2 chunks. Each agent works in its own
 (`zz-gh-<chunk>`), and deletes all three when done. The lead merges each chunk after a focused
 review, and runs `git merge main` before every phase.
 
-Main is being restructured (feature folders, a `RexKit` package, RexDuo renamed to RexConnect,
-generated xcodeproj untracked, its own test target). When that lands: one `git merge main`, move
-our new files to the matching `Features/Terminal/…` and `RexKit` places, and adopt main's test
-target in place of `RexDuoTests`.
+Main's restructure (feature folders, the `RexKit` package, RexConnect, generated xcodeproj
+untracked, Swift 6) is merged: engine files live under `RexConnect/Features/Terminal/`, the
+stream's snapshot code in RexKit, and the tests in `RexConnectTests` and RexKit's `swift test`.
+The phase 2 file names below are under `RexConnect/Features/Terminal/Ghostty/`.
 
 ### Quality gates
 
-1. **Unit tests** (`RexDuoTests`, seconds to run): core feed and resize, snapshot restore from
+1. **Unit tests** (`RexConnectTests` and RexKit's `swift test`, seconds to run): core feed and resize, snapshot restore from
    fixtures, row building, key and mouse bytes, selection text, `APCFilter`.
 2. **Offline replay** (`-replay <capture> -terminalEngine <kind>`): feeds a recorded stream into
    an engine with no server. It is the deterministic benchmark and the screenshot check. It never
@@ -142,7 +161,7 @@ foreground.
 ## Design
 
 1. **project.yml**
-   - Add `- framework: Vendor/GhosttyVt.xcframework` (`embed: false`) to the RexDuo target.
+   - Add `- framework: Vendor/GhosttyVt.xcframework` (`embed: false`) to the RexConnect target.
    - Add `OTHER_LDFLAGS: -lc++`. simdutf and highway are C++.
    - Document in README that you run `scripts/build-ghostty.sh` once first.
 2. **SwiftTerm adapter (new file)**
@@ -170,7 +189,7 @@ foreground.
    - Optional: render after READY for huge scrollback. Use the record framing in the guide
      (`Vendor/ghostty/dist/doxygen/pages/guides/snapshots.md`): decode the prefix through READY
      for the first frame, then the full snapshot at FINISH, and swap.
-5. **`RexDuo/Terminal/Ghostty/` engine**
+5. **`RexConnect/Features/Terminal/Ghostty/` engine**
    - **GhosttyCore**:
      - Owns the terminal, render state and encoders.
      - Uses an `os_unfair_lock` and a serial feed queue. Bytes are copied, then

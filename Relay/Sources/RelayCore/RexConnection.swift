@@ -1,4 +1,5 @@
 import Foundation
+import RexKit
 
 /// A minimal Rex control-API client (`/api/control`, subprotocol `rex.control.v1`).
 /// It finds the server, connects, and reconnects forever with backoff.
