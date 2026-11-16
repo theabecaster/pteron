@@ -19,6 +19,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     static let barHeight: CGFloat = 50
     static let keyHeight: CGFloat = 42
+    /// Under a short window (landscape iPhone) the bar is thinner, to leave rows for the panes.
+    static let compactBarHeight: CGFloat = 40
+    static let compactKeyHeight: CGFloat = 34
+
+    private var barHeightConstraint: NSLayoutConstraint?
+    private var compact: Bool { traitCollection.verticalSizeClass == .compact }
 
     private let scroll = KeyScroll()
     private let stack = UIStackView()
@@ -60,8 +66,10 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         scroll.addSubview(stack)
         // One-pixel lines; the scale is known once the bar is on screen (see didMoveToWindow).
         hairlines = [topLine.heightAnchor.constraint(equalToConstant: 0.5), divider.widthAnchor.constraint(equalToConstant: 0.5)]
+        let barHeight = heightAnchor.constraint(equalToConstant: Self.barHeight)
+        barHeightConstraint = barHeight
         NSLayoutConstraint.activate(hairlines + [
-            heightAnchor.constraint(equalToConstant: Self.barHeight),
+            barHeight,
             topLine.topAnchor.constraint(equalTo: topAnchor),
             topLine.leadingAnchor.constraint(equalTo: leadingAnchor),
             topLine.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -84,6 +92,15 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         ])
         rebuild()
         NotificationCenter.default.addObserver(self, selector: #selector(prefsChanged), name: .keyBarChanged, object: nil)
+        registerForTraitChanges([UITraitVerticalSizeClass.self]) { (bar: KeyBar, _) in bar.applySize() }
+    }
+
+    /// Thinner bar and keys under a short window.
+    private func applySize() {
+        let c = compact
+        barHeightConstraint?.constant = c ? Self.compactBarHeight : Self.barHeight
+        for cap in caps + [hideKey] { cap.heightConstraint?.constant = c ? Self.compactKeyHeight : Self.keyHeight }
+        invalidateIntrinsicContentSize()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -121,6 +138,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         hideKey.theme = theme
         hideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
         refreshModifiers()
+        applySize()
     }
 
     static func kind(of key: String) -> KeyCap.Kind {
@@ -368,6 +386,8 @@ final class KeyCap: UIControl {
     var onDrag: ((Int, Int) -> Void)?
     var theme: TermTheme = ThemeStore.fallback { didSet { configure() } }
     var modState: KeyBar.ModState = .off { didSet { if modState != oldValue { restyle() } } }
+    /// The key's height; the bar sets it (thinner under a short window).
+    private(set) var heightConstraint: NSLayoutConstraint?
 
     private let face = UIView()
     private let label = UILabel()
@@ -405,8 +425,10 @@ final class KeyCap: UIControl {
         face.addSubview(icon)
         face.addSubview(lockBar)
         let minW: CGFloat = kind == .trackpad ? 60 : 44
+        let height = heightAnchor.constraint(equalToConstant: KeyBar.keyHeight)
+        heightConstraint = height
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: KeyBar.keyHeight),
+            height,
             widthAnchor.constraint(greaterThanOrEqualToConstant: minW),
             face.leadingAnchor.constraint(equalTo: leadingAnchor),
             face.trailingAnchor.constraint(equalTo: trailingAnchor),
