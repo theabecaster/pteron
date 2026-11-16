@@ -1,4 +1,5 @@
 import Foundation
+import RexKit
 
 /// The relay: watches the Rex server (found automatically, or the ones in the config), turns
 /// agent and notification events into pushes, and serves the `register_push` /

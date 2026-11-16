@@ -1,4 +1,5 @@
 import AppKit
+import RexKit
 import RelayCore
 import ServiceManagement
 

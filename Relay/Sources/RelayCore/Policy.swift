@@ -1,4 +1,5 @@
 import Foundation
+import RexKit
 
 /// Where an event came from: one block on one server.
 public struct BlockRef: Hashable, Sendable {

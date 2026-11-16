@@ -1,4 +1,5 @@
 import Foundation
+import RexKit
 
 /// Finds the Rex server on this Mac without any configuration.
 ///

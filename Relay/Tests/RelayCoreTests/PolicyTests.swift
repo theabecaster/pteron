@@ -1,4 +1,5 @@
 import XCTest
+import RexKit
 @testable import RelayCore
 
 final class PolicyTests: XCTestCase {

@@ -13,8 +13,10 @@ which is what the iOS app looks for), watches every session, and sends APNs push
 It skips a phone while Rex Connect is open on it, since the app shows its own toasts then.
 Device tokens reach the relay through Rex itself (client actions), so it opens no ports.
 
-macOS 14+, no dependencies. The protocol code (`RexConnection.swift`, `WebSocket.swift`) is
-deliberately small and will move into a shared `RexKit` package later.
+macOS 14+, no third-party dependencies. JSON helpers and `RexError` come from the repo's local
+`Packages/RexKit`, shared with the iOS app. The connection code (`RexConnection.swift`,
+`WebSocket.swift`) stays here: it speaks the control protocol over Rex's Unix socket with
+Network.framework, which the app's `URLSession` client can't do.
 
 ## Install (for a friend)
 

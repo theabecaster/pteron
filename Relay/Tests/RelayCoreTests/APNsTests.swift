@@ -1,4 +1,5 @@
 import CryptoKit
+import RexKit
 import XCTest
 @testable import RelayCore
 
