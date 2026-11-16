@@ -18,10 +18,10 @@ APNs topic depend on it.
   Relay uses its JSON helpers too.
 - `RexConnect/State`: `AppModel` (selection, servers), one `ServerConnection` per server
   (sessions, layouts, block metadata, server events, actions), `Prefs`, `AgentNotifier`.
-- `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, pane dock, title bar gestures,
+- `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures,
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → SwiftTerm), KeyBar, Keyboard
   (hardware keys and Rex's keymap), Agents, Settings.
-- `RexConnect/App`: entry point, `RootView` (layout by width and hinge), launch transition.
+- `RexConnect/App`: entry point, `RootView` (layout by size class and the fold, `Arrangement` in `State/Posture.swift`), launch transition.
 - `RexConnect/DesignSystem`: terminal themes and chrome colors derived from them, fonts.
 - `RexConnectTests`: app logic tests. `Relay/Tests`: relay tests.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane, *layer* is a tiled or floating
@@ -48,7 +48,9 @@ swift test --package-path Relay                 # helper and push policy tests
   `generic/platform=iOS Simulator` fails with it.
 - The app builds with zero warnings from our code; keep it that way.
 - After a change, run the tests for the layer you touched. For UI changes, run the app and look at a
-  screenshot (`xcrun simctl io <id> screenshot --display=1 out.png` on the Duo simulator).
+  screenshot (`xcrun simctl io <id> screenshot --display=LCD out.png` on the Duo simulator; it shows
+  the folded screen only). For other layouts use `-simulateDuo` on an iPad simulator, building with
+  `TARGETED_DEVICE_FAMILY=1,2` on the command line so the app runs at full size there.
 
 ## Debug launch arguments
 
@@ -58,9 +60,15 @@ Each is a UserDefaults key for that run only.
 - `-autoOpen <session label>`: open that session's first tab. A label that doesn't exist opens nothing.
 - `-sizing fit|mirror`: override the Pane Size setting.
 - `-typeTest 'text\n'`: type the text into the active pane once it is live.
-- `-hinge closed|partial|full`: pretend the hinge reports this.
-- `-dualPages YES|NO`: two panes, one per page, on the unfolded Duo.
-- `-tips off|show`: hide or show every TipKit tip.
+- `-hinge closed|partial|full`: pretend the hinge reports this. It only tints the crease; layout never reads it.
+- `-simulateDuo <posture>[,<posture>…]` (Debug builds): lay the root out at that window size, with its
+  size classes and a fake fold drawn as a red dashed line, at the bottom-left of a bigger screen.
+  Postures: `unfolded` (951×669, flat crease), `book` (951×669, bent), `unfoldedPortrait` (669×951),
+  `tabletop` (669×951, bent), `folded` (466×678), `halfWindow` (475×669, one half of the unfolded
+  screen), `iPhone` (402×874), `iPhoneLandscape` (874×402), `proMaxLandscape` (956×440). A list
+  cycles every `-simulateDuoEvery` seconds (default 10), to check what a fold keeps.
+- `-focus none` (Debug builds): don't give the active pane the keyboard at launch.
+- `-overlaySidebar YES` (Debug builds): start with the unfolded-portrait sidebar overlay open.
 
 ## Safety: the app drives real sessions
 

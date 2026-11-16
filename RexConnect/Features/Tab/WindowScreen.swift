@@ -1,21 +1,21 @@
 import SwiftUI
 import RexKit
 import UIKit
-import TipKit
 
-/// One Rex tab (window): a header, its panes, and a dock with a message composer, pane pager and
-/// agent quick replies.
+/// One Rex tab (window), as the Mac app shows it: a thin title bar and the tab's terminal panes.
+/// The terminal is the input: tap it and type, with the key bar above the keyboard.
 struct WindowScreen: View {
     /// How the tab is placed on screen.
     enum Mode: Equatable {
-        /// Folded / regular iPhone: one pane at a time, full-bleed, back button.
+        /// Folded / any other iPhone: full screen with a back button. Splits show when every pane
+        /// stays legible; otherwise one pane at a time, a swipe away from the next.
         case compact
-        /// Beside the sidebar (one page of the unfolded Duo).
+        /// The second page of the unfolded Duo, beside the sidebar.
         case page
-        /// The whole width (sidebar hidden) or the top half in laptop posture.
-        case full
-        /// Two panes, one per page. `split` is the first page's width (or height when `vertical`).
-        case dual(split: CGFloat, vertical: Bool)
+        /// The whole width, sidebar as an overlay (unfolded portrait). Partly folded (tabletop), `top`
+        /// is the height above the crease, which holds the title bar and the panes; the keyboard goes
+        /// below the crease, which is `gap` tall.
+        case full(top: CGFloat? = nil, gap: CGFloat = 0)
     }
 
     /// A close that needs a second tap because an agent would stop.
@@ -28,6 +28,7 @@ struct WindowScreen: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.verticalSizeClass) private var vSize
 
     let server: ServerConnection
     let sessionID: String
@@ -44,8 +45,9 @@ struct WindowScreen: View {
     @State private var keyboardUp = false
     @State private var showOverview = false
     @State private var confirm: Confirm?
-
-    private let zoomTip = ZoomGestureTip()
+    /// The panes' area with the keyboard down, for the folded legibility check: typing must not
+    /// flip splits to one pane.
+    @State private var canvasSize: CGSize = .zero
 
     private var view: SessionView? { server.views[sessionID] }
     private var window: WindowInfo? { view?.window(windowID) }
@@ -56,18 +58,20 @@ struct WindowScreen: View {
         let theme = prefs.theme(for: scheme)
         VStack(spacing: 0) {
             if let w = window {
-                if case .dual(let split, let vertical) = mode, dualShown(w) {
-                    dualPages(w, theme, split: split, vertical: vertical)
-                } else {
-                    header(w, theme)
-                    canvas(w, theme)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                    if let b = activeBlock(w) {
-                        PaneDock(server: server, sessionID: sessionID, window: w, block: b, keyboardUp: keyboardUp,
-                                 actions: actions(w, block: b), splitDownByDefault: mode == .compact, stepIDs: w.orderedBlockIDs,
-                                 onPick: { pick(w, $0) }, onStep: { switchPane(w, by: $0) })
+                if case .full(let top?, let gap) = mode {
+                    // Tabletop: title bar and panes above the crease, read at a distance; the keyboard
+                    // comes up below it. The top region gives way only if the keyboard needs it.
+                    VStack(spacing: 0) {
+                        if showsHeader { header(w, theme) }
+                        panes(w, theme)
                     }
+                    .frame(maxHeight: top)
+                    .layoutPriority(1)
+                    Color.clear.frame(height: gap)
+                    Spacer(minLength: 0)
+                } else {
+                    if showsHeader { header(w, theme) }
+                    panes(w, theme)
                 }
             } else {
                 header(nil, theme)
@@ -108,12 +112,29 @@ struct WindowScreen: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { n in
             let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
-            keyboardUp = f.height > 150  // the key bar alone (hardware keyboard) is shorter
+            // How much of the screen the keyboard covers: a split or floating keyboard (the unfolded
+            // Duo) has another height and place. The key bar alone (hardware keyboard) is shorter.
+            let covered = (n.object as? UIScreen).map { f.intersection($0.bounds).height } ?? f.height
+            let up = covered > 150
+            if up != keyboardUp { keyboardUp = up }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardUp = false
+            if keyboardUp { keyboardUp = false }
         }
     }
+
+    private func panes(_ w: WindowInfo, _ theme: TermTheme) -> some View {
+        canvas(w, theme)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
+                if !keyboardUp, s != canvasSize { canvasSize = s }
+            }
+    }
+
+    /// Under compact height (landscape iPhone, folded Duo on its side) the title bar steps aside while
+    /// the keyboard is up, so the terminal keeps its rows. The edge swipe still goes back.
+    private var showsHeader: Bool { !(vSize == .compact && keyboardUp) }
 
     private var confirmTitle: String {
         if case .tab = confirm { return "Close this tab?" }
@@ -122,46 +143,29 @@ struct WindowScreen: View {
 
     // MARK: State helpers
 
-    private var isDual: Bool { if case .dual = mode { return true } else { return false } }
-
-    /// Two panes, one per page, are on screen (not zoomed).
-    private func dualShown(_ w: WindowInfo) -> Bool {
-        isDual && w.orderedBlockIDs.count >= 2 && !zoomedHere
-    }
-
-    /// Splits as the Mac lays them out would show, zoom aside.
+    /// Splits as the Mac lays them out would show, zoom aside. Wide (unfolded), always; folded, only
+    /// while every pane keeps a legible grid.
     private func splitsFit(_ w: WindowInfo) -> Bool {
-        guard w.layout != nil, w.orderedBlockIDs.count > 1 else { return false }
-        switch mode {
-        case .compact, .dual: return false
-        case .page, .full: break
-        }
+        guard let layout = w.layout, w.orderedBlockIDs.count > 1 else { return false }
         switch prefs.wideLayout {
         case .single: return false
         case .splits: return true
-        // A single Duo page is too narrow for splits; show them once the tab has the whole width.
-        case .auto: return w.zoomedBlockID == nil && mode == .full
+        case .auto:
+            guard w.zoomedBlockID == nil else { return false }
+            guard mode == .compact else { return true }
+            return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
         }
     }
 
     private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
 
     /// Zoom means something only while more than one pane is on screen.
-    private func canZoom(_ w: WindowInfo) -> Bool {
-        zoomedHere || (w.orderedBlockIDs.count >= 2 && (isDual || splitsFit(w)))
-    }
+    private func canZoom(_ w: WindowInfo) -> Bool { zoomedHere || splitsFit(w) }
 
     private func activeBlock(_ w: WindowInfo) -> String? {
         if let f = model.focusedPane[w.id], w.allBlocks.contains(where: { $0.id == f }) { return f }
         if let z = w.zoomedBlockID { return z }
         return w.focusedBlockID ?? w.orderedBlockIDs.first
-    }
-
-    /// The pane commands act on: the active pane, or in two pages the active page's pane.
-    private func currentBlock(_ w: WindowInfo) -> String? {
-        guard dualShown(w) else { return activeBlock(w) }
-        let pair = dualPair(w)
-        return activeBlock(w).flatMap { pair.contains($0) ? $0 : nil } ?? pair[0]
     }
 
     /// Shows pane `id` with a slide in the direction of travel.
@@ -174,7 +178,7 @@ struct WindowScreen: View {
         Task { await server.focus(sessionID, block: id) }
     }
 
-    /// Terminal or dock swipe: +1 next pane, -1 previous pane. No wrap: at either end, a bump.
+    /// Terminal swipe or pane command: +1 next pane, -1 previous pane. No wrap: at either end, a bump.
     private func switchPane(_ w: WindowInfo, by dir: Int) {
         let ids = w.orderedBlockIDs
         guard let cur = activeBlock(w), let i = ids.firstIndex(of: cur) else { return }
@@ -189,19 +193,6 @@ struct WindowScreen: View {
 
     // MARK: Actions
 
-    private func actions(_ w: WindowInfo, block b: String, page: Int? = nil) -> PaneActions {
-        PaneActions(
-            split: { split(vertical: $0, anchor: b) },
-            newTab: { newTab() },
-            zoom: canZoom(w) ? { toggleZoom() } : nil,
-            zoomed: zoomedHere,
-            swapPages: page.map { p in { if let w = window { setDual(w, page: 1 - p, b) } } },
-            clear: { Task { await server.clear(sessionID, b) } },
-            renameTab: { rename() },
-            close: { requestClose(b) },
-            overview: { openOverview() })
-    }
-
     private func openOverview() {
         Haptic.tap()
         showOverview = true
@@ -212,7 +203,7 @@ struct WindowScreen: View {
         renaming = true
     }
 
-    /// Phone-only zoom: show the active pane alone, or go back to splits / two pages.
+    /// Phone-only zoom: show the active pane alone, or go back to splits.
     private func toggleZoom() {
         guard let w = window, canZoom(w) else { Haptic.bump(); return }
         let st = PhoneState.shared
@@ -221,25 +212,23 @@ struct WindowScreen: View {
             if st.zoomed.contains(windowID) {
                 st.zoomed.remove(windowID)
             } else {
-                if let b = currentBlock(w) { model.focusedPane[w.id] = b }
+                if let b = activeBlock(w) { model.focusedPane[w.id] = b }
                 st.zoomed.insert(windowID)
             }
         }
     }
 
-    /// Splits `anchor` (default: the pane commands act on), then shows the new pane
-    /// (on the other page with two pages).
+    /// Splits `anchor` (default: the active pane), then shows the new pane.
     private func split(vertical: Bool, anchor a: String? = nil) {
-        guard let w = window, let anchor = a ?? currentBlock(w) else { return }
+        guard let w = window, let anchor = a ?? activeBlock(w) else { return }
         let before = Set(w.orderedBlockIDs)
-        let page = dualShown(w) ? dualPair(w).firstIndex(of: anchor) : nil
         let server = server, sid = sessionID, wid = windowID
         Haptic.tap()
         Task {
             await server.split(sid, anchor: anchor, vertical: vertical)
             guard let new = await Poll.until({ server.views[sid]?.window(wid)?.orderedBlockIDs.first { !before.contains($0) } }),
                   let w = window else { return }
-            if let page, dualShown(w) { setDual(w, page: 1 - page, new) } else { pick(w, new, forward: true) }
+            pick(w, new, forward: true)
         }
     }
 
@@ -294,15 +283,6 @@ struct WindowScreen: View {
         onOpen(Selection(serverID: server.id, sessionID: sessionID, windowID: ws[i].id))
     }
 
-    private func stepPane(_ d: Int) {
-        guard let w = window else { return }
-        if dualShown(w), let b = currentBlock(w), let page = dualPair(w).firstIndex(of: b) {
-            cycleDual(w, page: page, by: d)
-        } else {
-            switchPane(w, by: d)
-        }
-    }
-
     private func jump(_ item: Waiting.Item) {
         onOpen(Waiting.prepare(model, item))
     }
@@ -315,23 +295,24 @@ struct WindowScreen: View {
         case .newTab: newTab()
         case .splitRight: split(vertical: false)
         case .splitDown: split(vertical: true)
-        case .closePane: if let b = currentBlock(w) { requestClose(b) }
+        case .closePane: if let b = activeBlock(w) { requestClose(b) }
         case .closeTab: requestCloseTab()
         case .renameTab: rename()
         case .nextTab: switchTab(by: 1)
         case .previousTab: switchTab(by: -1)
         case .goToTab(let n): goToTab(n)
-        case .nextPane: stepPane(1)
-        case .previousPane: stepPane(-1)
+        case .nextPane: switchPane(w, by: 1)
+        case .previousPane: switchPane(w, by: -1)
         case .toggleZoom: toggleZoom()
-        case .clear: if let b = currentBlock(w) { Task { await server.clear(sessionID, b) } }
+        case .clear: if let b = activeBlock(w) { Task { await server.clear(sessionID, b) } }
         case .tabOverview: openOverview()
         case .newSession, .toggleSidebar, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
         }
     }
 
-    // MARK: Header
+    // MARK: Title bar
 
+    /// Thin, like the Mac's title bar: back (or sidebar), the tab's title, then status and one menu.
     private func header(_ w: WindowInfo?, _ theme: TermTheme) -> some View {
         HStack(spacing: 0) {
             leadingButton()
@@ -345,21 +326,23 @@ struct WindowScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let w, let b = activeBlock(w) {
-                WaitingPill(visible: [b], theme: theme, onJump: jump)
+                let single = !useSplits(w)
+                WaitingPill(visible: single ? [b] : Set(w.orderedBlockIDs), theme: theme, onJump: jump)
                 BlockBadge(server: server, block: b, theme: theme)
                     .padding(.horizontal, 6)
+                if single, w.orderedBlockIDs.count > 1 {
+                    PaneDots(server: server, ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
+                }
                 if zoomedHere { unzoomButton(theme) }
-                if mode != .compact, w.orderedBlockIDs.count >= 2 { dualToggle(theme) }
-                // Beside the sidebar every tab is already listed; the title menu and a swipe up on
-                // the pager still open the overview. Leaves the title room on a 334 pt Duo page.
-                if mode != .page { overviewButton }
                 paneMenu(w, block: b)
             }
         }
         .font(.system(size: 17))
         .foregroundStyle(theme.fg)
         .frame(minHeight: 44)
-        .padding(.horizontal, 4)
+        // On the second page the title starts clear of the crease.
+        .padding(.leading, mode == .page ? 12 : 4)
+        .padding(.trailing, 4)
         .background(theme.chrome.canvas)
         .animation(.snappy(duration: 0.2), value: zoomedHere)
     }
@@ -379,10 +362,6 @@ struct WindowScreen: View {
         return model.servers.count > 1 ? "\(server.config.name) · \(session)" : session
     }
 
-    private var overviewButton: some View {
-        IconButton(symbol: "square.on.square", label: "All Tabs") { openOverview() }
-    }
-
     private func unzoomButton(_ theme: TermTheme) -> some View {
         IconButton(symbol: "arrow.down.right.and.arrow.up.left", label: "Unzoom") { toggleZoom() }
             .foregroundStyle(theme.accent)
@@ -395,44 +374,27 @@ struct WindowScreen: View {
         case .compact:
             IconButton(symbol: "chevron.left", label: "Back") { dismiss() }
                 .fontWeight(.semibold)
-        case .dual:
-            IconButton(symbol: "sidebar.left", label: "Show Sidebar") {
-                withAnimation(.snappy(duration: 0.25)) {
-                    model.dualPages = false
-                    sidebarVisible = true
-                }
-            }
-        case .page, .full:
+        case .page:
+            // The sidebar is on the other page.
+            EmptyView()
+        case .full:
             IconButton(symbol: "sidebar.left", label: sidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
                 sidebarVisible.toggle()
             }
         }
     }
 
-    private func dualToggle(_ theme: TermTheme) -> some View {
-        let on = isDual
-        let vertical: Bool = { if case .dual(_, let v) = mode { return v } else { return false } }()
-        return IconButton(symbol: vertical ? "rectangle.split.1x2" : "rectangle.split.2x1",
-                          label: on ? "One Pane" : "Two Panes, One per Page") {
-            Haptic.tap()
-            withAnimation(.snappy(duration: 0.25)) { model.dualPages.toggle() }
-        }
-        .foregroundStyle(on ? theme.accent : theme.fg)
-    }
-
     private func paneMenu(_ w: WindowInfo, block: String) -> some View {
         Menu {
             Section {
-                Button { GestureTips.donate(PlusMenuTip.splitFromMenu); split(vertical: false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-                Button { GestureTips.donate(PlusMenuTip.splitFromMenu); split(vertical: true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
+                Button { split(vertical: false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
+                Button { split(vertical: true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
                 Button { newTab() } label: { Label("New Tab", systemImage: "plus.square") }
+                Button { openOverview() } label: { Label("All Tabs", systemImage: "square.on.square") }
             }
             Section {
                 if canZoom(w) {
-                    Button {
-                        if !zoomedHere { GestureTips.donate(ZoomGestureTip.zoomedFromMenu) }
-                        toggleZoom()
-                    } label: {
+                    Button { toggleZoom() } label: {
                         Label(zoomedHere ? "Unzoom" : "Zoom Pane",
                               systemImage: zoomedHere ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                         Text("or tap with two fingers")
@@ -457,10 +419,9 @@ struct WindowScreen: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("Pane Actions")
-        .popoverTip(zoomTip, arrowEdge: .top)
     }
 
-    // MARK: Canvas
+    // MARK: Panes
 
     @ViewBuilder
     private func canvas(_ w: WindowInfo, _ theme: TermTheme) -> some View {
@@ -507,113 +468,6 @@ struct WindowScreen: View {
             .padding(3)
         }
     }
-
-    // MARK: Dual pages (one pane per page)
-
-    private func dualPair(_ w: WindowInfo) -> [String] {
-        let ids = w.orderedBlockIDs
-        if let p = model.dualPair[w.id], p.count == 2, p[0] != p[1], ids.contains(p[0]), ids.contains(p[1]) { return p }
-        let a = activeBlock(w) ?? ids[0]
-        let i = ids.firstIndex(of: a) ?? 0
-        return i + 1 < ids.count ? [a, ids[i + 1]] : [ids[i - 1], a]
-    }
-
-    /// Puts pane `id` on page `page`; picking the pane shown on the other page swaps them.
-    private func setDual(_ w: WindowInfo, page: Int, _ id: String, forward fw: Bool = true) {
-        var p = dualPair(w)
-        guard p[page] != id else { return }
-        if p[1 - page] == id { p.swapAt(0, 1) } else { p[page] = id }
-        forward = fw
-        Haptic.selection()
-        withAnimation(.snappy(duration: 0.24)) {
-            model.dualPair[w.id] = p
-            model.focusedPane[w.id] = id
-        }
-        Task { await server.focus(sessionID, block: id) }
-    }
-
-    /// Swipe on a page: step that page through the panes the other page isn't showing. No wrap.
-    private func cycleDual(_ w: WindowInfo, page: Int, by dir: Int) {
-        let p = dualPair(w)
-        let pool = w.orderedBlockIDs.filter { $0 != p[1 - page] }
-        guard let i = pool.firstIndex(of: p[page]) else { return }
-        guard pool.indices.contains(i + dir) else { Haptic.bump(); return }
-        setDual(w, page: page, pool[i + dir], forward: dir > 0)
-    }
-
-    private func dualPages(_ w: WindowInfo, _ theme: TermTheme, split: CGFloat, vertical: Bool) -> some View {
-        let pair = dualPair(w)
-        let active = activeBlock(w).flatMap { pair.contains($0) ? $0 : nil } ?? pair[0]
-        let stack = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
-        return stack {
-            dualPage(w, theme, pair: pair, page: 0, active: active)
-                .frame(width: vertical ? nil : split, height: vertical ? split : nil)
-                .overlay(alignment: vertical ? .bottom : .trailing) {
-                    Rectangle().fill(theme.chrome.divider)
-                        .frame(width: vertical ? nil : 1, height: vertical ? 1 : nil)
-                }
-            dualPage(w, theme, pair: pair, page: 1, active: active)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private func dualPage(_ w: WindowInfo, _ theme: TermTheme, pair: [String], page: Int, active: String) -> some View {
-        let b = pair[page]
-        let isActive = b == active
-        return VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                if page == 0 { leadingButton() }
-                VStack(alignment: .leading, spacing: 1) {
-                    PaneName(server: server, window: w, block: b)
-                        .font(.subheadline.weight(.semibold))
-                    Text(page == 0
-                         ? [w.label.isEmpty ? nil : w.label, view?.label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-                         : "Pane \((w.orderedBlockIDs.firstIndex(of: b) ?? 0) + 1) of \(w.orderedBlockIDs.count)")
-                        .font(.caption2)
-                        .foregroundStyle(theme.chrome.tertiary)
-                        .lineLimit(1)
-                }
-                .padding(.leading, page == 0 ? 2 : 12)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .contentShape(Rectangle())
-                .contextMenu { PaneMenuItems(actions: actions(w, block: b, page: page)) }
-                if page == 0 { WaitingPill(visible: Set(pair), theme: theme, onJump: jump) }
-                BlockBadge(server: server, block: b, theme: theme)
-                    .padding(.horizontal, 6)
-                if page == 1 {
-                    dualToggle(theme)
-                    overviewButton
-                    paneMenu(w, block: active)
-                }
-            }
-            .font(.system(size: 17))
-            .foregroundStyle(theme.fg)
-            .frame(minHeight: 44)
-            .padding(.horizontal, 4)
-
-            ZStack {
-                PaneView(server: server, sessionID: sessionID, blockID: b, active: isActive,
-                         onFocus: {
-                             guard model.focusedPane[w.id] != b else { return }
-                             model.focusedPane[w.id] = b
-                             Task { await server.focus(sessionID, block: b) }
-                         },
-                         onSwipe: { dir in cycleDual(w, page: page, by: dir) })
-                    .id(b)
-                    .transition(slide)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .stroke(isActive ? theme.chrome.activeBorder : theme.chrome.divider, lineWidth: isActive ? 1.5 : 1))
-            .padding(4)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            PaneDock(server: server, sessionID: sessionID, window: w, block: b, keyboardUp: keyboardUp,
-                     actions: actions(w, block: b, page: page), splitDownByDefault: false,
-                     stepIDs: w.orderedBlockIDs.filter { $0 != pair[1 - page] },
-                     onPick: { setDual(w, page: page, $0) }, onStep: { cycleDual(w, page: page, by: $0) })
-        }
-    }
 }
 
 // MARK: - Observation-scoped pieces
@@ -623,18 +477,12 @@ struct TabTitle: View {
     let server: ServerConnection
     let window: WindowInfo
     var body: some View {
-        Text(WindowTitle.of(window, server: server))
+        let title = WindowTitle.of(window, server: server)
+        Text(title)
             .font(.subheadline.weight(.semibold))
-            .lineLimit(2)
-    }
-}
-
-struct PaneName: View {
-    let server: ServerConnection
-    let window: WindowInfo
-    let block: String
-    var body: some View {
-        Text(PaneDock.title(server, window, block)).lineLimit(2)
+            // One line, like the Mac's title bar. A path keeps both ends; a name keeps its start.
+            .lineLimit(1)
+            .truncationMode(title.contains("/") ? .middle : .tail)
     }
 }
 
@@ -648,343 +496,38 @@ struct BlockBadge: View {
     }
 }
 
-// MARK: - Dock
-
-/// The thumb-reach dock under a pane, like a chat app's input area:
-/// - an accessory row: quick replies while the agent is blocked, key chips while composing,
-///   otherwise a pager (‹ dots ›, swipe it to change pane) with an interrupt button while an agent works;
-/// - a composer that types a message and presses Enter, with a per-pane draft.
-/// While the terminal's own keyboard is up, the dock steps aside (except for quick replies).
-struct PaneDock: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.colorScheme) private var scheme
-    @Environment(Prefs.self) private var prefs
-
+/// Where the shown pane sits among the tab's panes, when one shows at a time (folded, splits too
+/// narrow). Blocked panes show in the "waiting" color. Swipe the terminal to move between them.
+struct PaneDots: View {
     let server: ServerConnection
-    let sessionID: String
-    let window: WindowInfo
-    let block: String
-    let keyboardUp: Bool
-    let actions: PaneActions
-    /// "+" splits down when folded (one narrow pane), right when unfolded.
-    let splitDownByDefault: Bool
-    /// The panes the pager steps through.
-    let stepIDs: [String]
-    let onPick: (String) -> Void
+    let ids: [String]
+    let current: String
+    let theme: TermTheme
     let onStep: (Int) -> Void
 
-    @State private var text = ""
-    @FocusState private var composing: Bool
-    private let plusTip = PlusMenuTip()
-
-    static let rowHeight: CGFloat = 48
-
     var body: some View {
-        let theme = prefs.theme(for: scheme)
-        let st = server.meta[block]?.topStatus
-        let sig = Self.signature(st)
-        let dismissed = sig != nil && model.dismissedReplies[block] == sig
-        let blocked = st?.state == "blocked" && !dismissed
-        let rawKeyboard = keyboardUp && !composing
-        VStack(spacing: 0) {
-            if blocked || !rawKeyboard {
-                Group {
-                    if let st, blocked {
-                        ViewThatFits(in: .horizontal) {
-                            replies(st, theme, caption: true, wideEnter: true)
-                            replies(st, theme, caption: false, wideEnter: true)
-                            replies(st, theme, caption: false, wideEnter: false)
-                        }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    } else if composing {
-                        keyChips(theme).transition(.opacity)
-                    } else {
-                        pager(theme, working: st?.state == "working" && !dismissed, sig: sig).transition(.opacity)
+        let idx = ids.firstIndex(of: current) ?? 0
+        Group {
+            if ids.count <= 6 {
+                HStack(spacing: 4) {
+                    ForEach(ids, id: \.self) { bid in
+                        let blocked = server.meta[bid]?.topStatus?.state == "blocked"
+                        Circle()
+                            .fill(blocked ? theme.chrome.blocked : bid == current ? theme.accent : theme.chrome.tertiary)
+                            .frame(width: 5, height: 5)
                     }
                 }
-                .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
-            }
-            if !rawKeyboard { composer(theme) }
-        }
-        .background(theme.chrome.canvas)
-        .overlay(alignment: .top) { Rectangle().fill(theme.chrome.divider).frame(height: 1) }
-        .animation(.snappy(duration: 0.2), value: sig)
-        .animation(.snappy(duration: 0.2), value: dismissed)
-        .animation(.snappy(duration: 0.2), value: composing)
-        .onAppear { text = model.drafts[block] ?? "" }
-        .onChange(of: block) { old, new in
-            model.drafts[old] = text
-            text = model.drafts[new] ?? ""
-        }
-    }
-
-    /// A pane's name: a label the user gave it, else the agent, else the terminal title.
-    @MainActor
-    static func title(_ server: ServerConnection, _ w: WindowInfo, _ b: String) -> String {
-        let l = w.block(b)?.label ?? ""
-        if !l.isEmpty, l != "shell" { return l }
-        let m = server.meta[b]
-        if let a = m?.agentKind { return a.displayName }
-        if let t = m?.title, !t.isEmpty { return WindowTitle.condense(t) }
-        return l.isEmpty ? "pane" : l
-    }
-
-    static func signature(_ st: ProgramStatus?) -> String? {
-        guard let st else { return nil }
-        return [st.state, st.waitingFor ?? "", st.text ?? "", st.label ?? ""].joined(separator: "|")
-    }
-
-    private func send(_ bytes: String) {
-        Haptic.tap()
-        Task { await server.write(sessionID, block, bytes) }
-    }
-
-    /// Stop: a hard, distinct haptic so the user feels it.
-    private func interrupt(_ bytes: String) {
-        Haptic.interrupt()
-        Task { await server.write(sessionID, block, bytes) }
-    }
-
-    private func dismiss(_ sig: String?) {
-        Haptic.tap()
-        model.dismissedReplies[block] = sig
-    }
-
-    // MARK: Composer
-
-    private func submit() {
-        let t = text
-        text = ""
-        model.drafts[block] = ""
-        Haptic.tap()
-        Task { await server.submit(sessionID, block, t) }
-    }
-
-    private func composer(_ theme: TermTheme) -> some View {
-        let isAgent = server.meta[block]?.agentKind != nil
-        return HStack(alignment: .bottom, spacing: 6) {
-            TextField(isAgent ? "Message \(Self.title(server, window, block))" : "Command", text: $text, axis: .vertical)
-                .font(.body)
-                .lineLimit(1...5)
-                .textInputAutocapitalization(isAgent ? .sentences : .never)
-                .autocorrectionDisabled(!isAgent)
-                .focused($composing)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .frame(minHeight: 38)
-                .background(RoundedRectangle(cornerRadius: 19).fill(theme.fg.opacity(0.07)))
-                .overlay(RoundedRectangle(cornerRadius: 19).stroke(composing ? theme.accent.opacity(0.5) : theme.chrome.divider, lineWidth: 1))
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-                .onTapGesture { composing = true }
-                .onChange(of: text) { _, new in
-                    // Return sends, like a terminal prompt. Pasted multi-line text stays as is.
-                    if new.hasSuffix("\n"), !new.dropLast().contains("\n") {
-                        text = String(new.dropLast())
-                        submit()
-                    } else {
-                        model.drafts[block] = new
-                    }
-                }
-            Button(action: submit) {
-                Image(systemName: text.isEmpty ? "return" : "arrow.up")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(text.isEmpty ? theme.fg : theme.bg)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(text.isEmpty ? theme.fg.opacity(0.1) : theme.accent))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressScale())
-            .accessibilityLabel(text.isEmpty ? "Press Enter" : "Send")
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 2)
-        .padding(.vertical, 3)
-    }
-
-    private func keyChips(_ theme: TermTheme) -> some View {
-        let keys: [(String, String, String)] = [
-            ("esc", "\u{1b}", "Escape"), ("tab", "\t", "Tab"), ("↑", "\u{1b}[A", "Up"), ("↓", "\u{1b}[B", "Down"),
-            ("^C", "\u{3}", "Control C"), ("⏎", "\r", "Enter"),
-        ]
-        return HStack(spacing: 6) {
-            ForEach(keys, id: \.0) { k in
-                key(k.0, theme, tint: theme.accent, small: true) { send(k.1) }
-                    .accessibilityLabel("Send \(k.2)")
-            }
-            Spacer(minLength: 0)
-            Button { composing = false } label: {
-                Image(systemName: "keyboard.chevron.compact.down")
-                    .foregroundStyle(theme.chrome.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Hide Keyboard")
-        }
-        .padding(.horizontal, 8)
-    }
-
-    // MARK: Pager
-
-    private func pager(_ theme: TermTheme, working: Bool, sig: String?) -> some View {
-        let step = stepIDs.firstIndex(of: block) ?? 0
-        let many = window.orderedBlockIDs.count > 1
-        return HStack(spacing: 0) {
-            if many {
-                chevron("chevron.left", "Previous Pane", enabled: step > 0, theme) { onStep(-1) }
-            }
-            PagerCenter(server: server, window: window, block: block, stepIDs: stepIDs, theme: theme, actions: actions,
-                        onPick: onPick, onStep: onStep, onNewPane: { actions.split(splitDownByDefault) })
-            if many {
-                chevron("chevron.right", "Next Pane", enabled: step < stepIDs.count - 1, theme) { onStep(1) }
-            }
-            if working {
-                interrupt(theme, sig: sig).transition(.opacity)
             } else {
-                newMenu(theme)
+                Text("\(idx + 1)/\(ids.count)").font(.caption2.weight(.semibold)).monospacedDigit()
+                    .foregroundStyle(theme.chrome.tertiary)
             }
         }
-        .padding(.horizontal, 2)
-    }
-
-    /// Pane arrows dim at either end: paging doesn't wrap.
-    private func chevron(_ symbol: String, _ label: String, enabled: Bool, _ theme: TermTheme,
-                         action: @escaping () -> Void) -> some View {
-        IconButton(symbol: symbol, label: label, action: action)
-            .foregroundStyle(enabled ? theme.chrome.secondary : theme.chrome.tertiary.opacity(0.4))
-            .disabled(!enabled)
-    }
-
-    /// Stop. Tap sends Esc to an agent (Ctrl-C to a shell); touch and hold for the other ways to stop.
-    private func interrupt(_ theme: TermTheme, sig: String?) -> some View {
-        let agent = server.meta[block]?.agentKind != nil
-        return HStack(spacing: 0) {
-            Menu {
-                Button { interrupt("\u{1b}") } label: { Label("Esc", systemImage: "escape"); Text("Interrupt the agent") }
-                Button { interrupt("\u{3}") } label: { Label("Ctrl-C", systemImage: "control") }
-                Button(role: .destructive) { interrupt("\u{3}\u{3}") } label: { Label("Ctrl-C Twice", systemImage: "xmark.octagon"); Text("Exits most agents") }
-            } label: {
-                Text(agent ? "Esc · interrupt" : "^C · interrupt")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(theme.chrome.working)
-                    .padding(.leading, 12).padding(.trailing, 4)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-            } primaryAction: {
-                interrupt(agent ? "\u{1b}" : "\u{3}")
-            }
-            .accessibilityLabel(agent ? "Interrupt: send Escape" : "Interrupt: send Control C")
-            .accessibilityHint("Touch and hold for more ways to stop.")
-            Button { dismiss(sig) } label: {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
-                    .frame(width: 30, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Hide Interrupt")
-        }
-        .foregroundStyle(theme.chrome.working)
-        .background(Capsule().fill(theme.chrome.working.opacity(0.16)).frame(height: 32))
-        .fixedSize()
-        .padding(.trailing, 4)
-    }
-
-    /// "+": tap splits (down when folded, right when unfolded); touch and hold for the menu.
-    private func newMenu(_ theme: TermTheme) -> some View {
-        Menu {
-            Button { actions.split(false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-            Button { actions.split(true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
-            Button { actions.newTab() } label: { Label("New Tab", systemImage: "plus.square") }
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(theme.chrome.secondary)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        } primaryAction: {
-            actions.split(splitDownByDefault)
-        }
-        .accessibilityLabel(splitDownByDefault ? "Split Down" : "Split Right")
-        .accessibilityHint("Touch and hold for more.")
-        .popoverTip(plusTip, arrowEdge: .bottom)
-    }
-
-    // MARK: Quick replies
-
-    private func replies(_ st: ProgramStatus, _ theme: TermTheme, caption: Bool, wideEnter: Bool) -> some View {
-        let numbers = st.waitingFor == "auth" ? [] : ["1", "2", "3"]
-        return HStack(spacing: 6) {
-            if caption {
-                HStack(spacing: 5) {
-                    Image(systemName: "hand.raised.fill").font(.system(size: 12))
-                    Text(Self.why(st)).font(.caption.weight(.semibold)).lineLimit(1)
-                }
-                .foregroundStyle(theme.chrome.blocked)
-                .fixedSize()
-                .padding(.trailing, 2)
-            }
-            ForEach(numbers, id: \.self) { n in
-                key(n, theme, tint: theme.chrome.blocked) { send(n) }.accessibilityLabel("Send \(n)")
-            }
-            key(wideEnter ? "⏎ Enter" : "⏎", theme, tint: theme.chrome.blocked, prominent: true) { send("\r") }
-                .accessibilityLabel("Send Enter")
-            key("Esc", theme, tint: theme.chrome.blocked) { send("\u{1b}") }.accessibilityLabel("Send Escape")
-            Button { dismiss(Self.signature(st)) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(theme.chrome.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Hide Quick Replies")
-        }
-        .padding(.horizontal, 8)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private func key(_ title: String, _ theme: TermTheme, tint: Color, prominent: Bool = false, small: Bool = false,
-                     action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(small ? .subheadline : .callout, design: .monospaced, weight: .semibold))
-                .foregroundStyle(theme.fg)
-                .padding(.horizontal, small ? 6 : 10)
-                .frame(minWidth: 44, minHeight: small ? 36 : 44)
-                .background(RoundedRectangle(cornerRadius: 9)
-                    .fill(prominent ? tint.opacity(0.22) : theme.fg.opacity(0.08)))
-                .overlay(RoundedRectangle(cornerRadius: 9)
-                    .stroke(tint.opacity(prominent ? 0.6 : 0.25), lineWidth: 1))
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressScale())
-    }
-
-    static func why(_ st: ProgramStatus) -> String {
-        switch st.waitingFor {
-        case "permission": return "Permission"
-        case "question": return "Question"
-        case "auth": return "Password"
-        default: return "Waiting"
-        }
-    }
-}
-
-/// One pager dot. Blocked panes show in the "waiting" color so you can see where to go.
-struct PagerDot: View {
-    let server: ServerConnection
-    let block: String
-    let selected: Bool
-    let theme: TermTheme
-    var body: some View {
-        let state = server.meta[block]?.topStatus?.state
-        Circle()
-            .fill(state == "blocked" ? theme.chrome.blocked : selected ? theme.accent : theme.chrome.tertiary)
-            .frame(width: selected ? 7 : 6, height: selected ? 7 : 6)
-            .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")
+        .accessibilityHint("Swipe the terminal sideways to change pane.")
+        .accessibilityAdjustableAction { d in onStep(d == .increment ? 1 : -1) }
     }
 }
 
@@ -995,6 +538,7 @@ struct TabOverview: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.division) private var division
 
     let server: ServerConnection
     let currentSessionID: String
@@ -1016,7 +560,7 @@ struct TabOverview: View {
                                     .lineLimit(2)
                                     .padding(.leading, 4)
                                     .padding(.top, 8)
-                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+                                LazyVGrid(columns: columns, spacing: 12) {
                                     ForEach(v.windows) { w in
                                         TabCard(server: server, sessionID: s.id, window: w,
                                                 selected: w.id == currentWindowID, theme: theme) {
@@ -1039,6 +583,14 @@ struct TabOverview: View {
             }
         }
         .foregroundStyle(theme.fg)
+    }
+
+    /// Across a vertical crease, an even number of columns, so the crease falls between two cards.
+    private var columns: [GridItem] {
+        guard let d = division, d.isVertical else { return [GridItem(.adaptive(minimum: 150), spacing: 12)] }
+        let gap = max(12, d.frame.width + 8)
+        return [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: gap),
+                GridItem(.flexible(), spacing: 12), GridItem(.flexible())]
     }
 
     /// Opens a tab in that session and goes straight to it.

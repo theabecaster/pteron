@@ -70,19 +70,10 @@ final class AppModel {
 
     /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
     var hinge: HingeInfo?
-    /// Unfolded Duo: show two panes of the tab, one per page, instead of sidebar + tab.
-    var dualPages: Bool { didSet { UserDefaults.standard.set(dualPages, forKey: "dualPages") } }
-    /// Dual pages: which pane sits on each page, per window.
-    var dualPair: [String: [String]] = [:]
-    /// Quick-reply bars the user dismissed, keyed by block, holding the status they dismissed.
-    var dismissedReplies: [String: String] = [:]
-    /// Composer drafts, per pane. Kept outside the observed state so typing doesn't re-render the screen.
-    @ObservationIgnored var drafts: [String: String] = [:]
 
     /// `connect: false` builds no servers (unit tests and the test host).
     init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
-        dualPages = UserDefaults.standard.bool(forKey: "dualPages")
         if connect { rebuildServers() }
     }
 

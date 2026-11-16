@@ -1,90 +1,205 @@
 import SwiftUI
 import UIKit
 
-/// iPhone Duo first.
-/// - Folded (or any regular iPhone): a navigation stack with one pane at a time.
-/// - Unfolded portrait: two pages split at the crease. Sidebar fills the left page, the tab the right;
-///   or, with dual pages on, one pane per page.
-/// - Unfolded landscape (laptop posture): the tab on the top half, the sidebar on the bottom half.
-/// - Wide with no crease known (iPad landscape, hinge info missing): a narrow sidebar beside the tab.
+/// iPhone Duo first. The layout comes from size classes and the fold's reserved region
+/// (`Arrangement.decide`), never from orientation or the hinge:
+/// - Folded, any other iPhone, any landscape iPhone (compact width or height): a navigation stack,
+///   sidebar then tab, one pane at a time.
+/// - Unfolded (inner screen, landscape, vertical crease): two pages split at the crease. The sidebar
+///   fills the left page and the tab's panes, split as the Mac lays them out, the right.
+/// - Unfolded portrait (horizontal crease): the tab the full width, the sidebar as an overlay. Partly
+///   folded (tabletop), the terminal sits above the crease and the controls below it.
+/// The hinge (`model.hinge`) only tints the crease while the device is partly open.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
     @Environment(Prefs.self) private var prefs
-    @State private var sidebarVisible = true
+    /// Unfolded portrait: the sidebar overlay is open.
+    @State private var overlaySidebar = false
     @State private var path: [Selection] = []
-    /// Width ≥ 600 pt: sidebar and tab side by side (or two pages), no navigation stack in view.
-    @State private var wide = false
+    /// The navigation stack is in use (folded or any other iPhone). Mirrors the arrangement for commands.
+    @State private var stacked = true
+    /// The root's height without the keyboard.
+    @State private var keyboardFreeHeight: CGFloat = 0
+    /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
+    @State private var hostPool = TerminalHostPool()
+    #if DEBUG
+    @State private var simIndex = 0
+    @State private var simKeyboard: CGFloat = 0
+    private let simulations = DuoSimulation.sequence
+    #endif
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
-        GeometryReader { geo in
-            let ins = geo.safeAreaInsets
-            let full = CGSize(width: geo.size.width + ins.leading + ins.trailing,
-                              height: geo.size.height + ins.top + ins.bottom)
-            Group {
-                switch arrangement(geo.size, full: full) {
-                case .compact:
-                    compactLayout(theme: theme)
-                case .pages:
-                    pagedLayout(theme: theme, firstPage: max(full.width / 2 - ins.leading, 200))
-                        .background(edgeReveal)
-                case .sidebar:
-                    pagedLayout(theme: theme, firstPage: min(max(geo.size.width * 0.28, 240), 320))
-                        .background(edgeReveal)
-                case .stacked:
-                    stackedLayout(theme: theme, firstPage: max(full.height / 2 - ins.top, 200))
-                        .background(edgeReveal)
-                }
+        rootContent(theme)
+            .environment(hostPool)
+            .overlay(alignment: .top) { NoticeBanner(theme: theme) }
+            .background(CommandListener { handle($0) })
+            .background(WaitingWatcher())
+            .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
+            .background(HingeObserver { h in
+                // Layout never reads the hinge. Only a status change matters (the crease tint), so an
+                // angle change alone invalidates nothing.
+                let new = AppModel.hingeOverride ?? h
+                if model.hinge?.status != new?.status { model.hinge = new }
+            })
+            .tint(theme.accent)
+            .preferredColorScheme(theme.isDark ? .dark : .light)
+            .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 })) {
+                SettingsView().environment(model)
             }
-            .background(theme.chrome.canvas.ignoresSafeArea())
-            .onChange(of: geo.size.width >= 600, initial: true) { _, w in wide = w }
-        }
-        .overlay(alignment: .top) { NoticeBanner(theme: theme) }
-        .background(CommandListener { handle($0) })
-        .background(WaitingWatcher())
-        .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
-        .task { GestureTips.configure() }
-        .background(HingeObserver { model.hinge = AppModel.hingeOverride ?? $0 })
-        .tint(theme.accent)
-        .preferredColorScheme(theme.isDark ? .dark : .light)
-        .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 })) {
-            SettingsView().environment(model)
-        }
-        .onChange(of: model.servers.map { $0.views.count }) { _, _ in
-            model.autoSelect()
-        }
-        .onChange(of: model.autoOpenTarget(), initial: true) { _, t in
-            if path.isEmpty, let t { path = [t] }
-        }
-        .onAppear { if let h = AppModel.hingeOverride { model.hinge = h } }
+            .onChange(of: model.servers.map { $0.views.count }) { _, _ in
+                model.autoSelect()
+            }
+            .onChange(of: model.autoOpenTarget(), initial: true) { _, t in
+                if path.isEmpty, let t { path = [t] }
+            }
+            .onAppear {
+                if let h = AppModel.hingeOverride { model.hinge = h }
+                #if DEBUG
+                // `-overlaySidebar YES` (testing): start with the unfolded-portrait sidebar open.
+                if UserDefaults.standard.bool(forKey: "overlaySidebar") { overlaySidebar = true }
+                #endif
+            }
     }
 
-    private enum Arrangement { case compact, pages, sidebar, stacked }
+    @ViewBuilder
+    private func rootContent(_ theme: TermTheme) -> some View {
+        #if DEBUG
+        if !simulations.isEmpty {
+            simulated(simulations[simIndex % simulations.count], theme)
+        } else {
+            layout(theme, h: hSize, v: vSize)
+        }
+        #else
+        layout(theme, h: hSize, v: vSize)
+        #endif
+    }
 
-    /// Picks the layout from the size and the hinge. The crease is assumed to sit at the screen's center:
-    /// vertical in portrait, horizontal in landscape.
-    private func arrangement(_ size: CGSize, full: CGSize) -> Arrangement {
-        guard size.width >= 600 else { return .compact }
-        let landscape = full.width > full.height
-        switch model.hinge {
-        case .some(let h) where h.isOpen:
-            return landscape ? .stacked : .pages
-        case .some(let h) where h.status == .closed:
-            return .sidebar
-        default:
-            // No hinge info: portrait wide screens are treated as two pages; landscape gets a narrow sidebar.
-            return landscape ? .sidebar : .pages
+    #if DEBUG
+    /// `-simulateDuo`: the root in that posture's size at the bottom-leading corner of a bigger
+    /// simulator screen, with that posture's size classes and a fake fold, drawn as a dashed red line.
+    /// The keyboard shrinks it from below by its height, as on the device.
+    private func simulated(_ sim: DuoSimulation, _ theme: TermTheme) -> some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                layout(theme, h: sim.horizontal, v: sim.vertical, fake: .some(sim.division))
+                    .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
+                    .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
+                    .environment(\.horizontalSizeClass, sim.horizontal)
+                    .environment(\.verticalSizeClass, sim.vertical)
+                    .overlay(alignment: .topLeading) {
+                        if let d = sim.division {
+                            Path { p in
+                                if d.isVertical {
+                                    p.move(to: CGPoint(x: d.frame.midX, y: 0))
+                                    p.addLine(to: CGPoint(x: d.frame.midX, y: sim.size.height))
+                                } else {
+                                    p.move(to: CGPoint(x: 0, y: d.frame.midY))
+                                    p.addLine(to: CGPoint(x: sim.size.width, y: d.frame.midY))
+                                }
+                            }
+                            .stroke(Color.red.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .allowsHitTesting(false)
+                        }
+                    }
+                    .border(Color.gray)
+                Spacer(minLength: 0)
+            }
+        }
+        .background(Color(white: 0.45).ignoresSafeArea())
+        .ignoresSafeArea(.keyboard)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
+            let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
+            simKeyboard = (n.object as? UIScreen).map { f.intersection($0.bounds).height } ?? 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            simKeyboard = 0
+        }
+        .task(id: simulations.count) {
+            guard simulations.count > 1 else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(DuoSimulation.interval * 1_000_000_000))
+                if Task.isCancelled { break }
+                simIndex += 1
+            }
         }
     }
 
-    private var paneCount: Int { model.current?.window.orderedBlockIDs.count ?? 0 }
-    private var dual: Bool { model.dualPages && paneCount >= 2 }
+    #endif
+
+    /// Lays out the sidebar and tab for the size classes and the fold. `fake` replaces the fold
+    /// (debug simulation).
+    private func layout(_ theme: TermTheme, h: UserInterfaceSizeClass?, v: UserInterfaceSizeClass?,
+                        fake: Division?? = nil) -> some View {
+        GeometryReader { geo in
+            let division = fake ?? Self.division(geo)
+            // The keyboard shrinks the height; the arrangement must not change when it shows.
+            let size = CGSize(width: geo.size.width, height: max(geo.size.height, keyboardFreeHeight))
+            arranged(Arrangement.decide(size: size, horizontal: h, vertical: v, division: division),
+                     division: division, theme: theme)
+        }
+        .background {
+            Color.clear
+                .ignoresSafeArea(.keyboard)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { keyboardFreeHeight = $0 }
+        }
+    }
+
+    /// The fold, from the reserved regions (iOS 27.1+). Inactive regions count: a flat device still
+    /// has a crease, and two pages split at it read better than one page across it.
+    private static func division(_ geo: GeometryProxy) -> Division? {
+        if #available(iOS 27.1, *) {
+            guard let r = geo.reservedRegions(kind: .division, options: .includeInactive).first else { return nil }
+            return Division(frame: r.frame, isActive: r.isActive)
+        }
+        return nil
+    }
+
+    private func arranged(_ arr: Arrangement, division: Division?, theme: TermTheme) -> some View {
+        Group {
+            switch arr {
+            case .stack:
+                stackLayout(theme: theme)
+            case .pages(let first, let gap):
+                pagesLayout(theme: theme, first: first, gap: gap)
+            case .overlay:
+                overlayLayout(theme: theme, mode: .full())
+                    .background(edgeReveal(arr))
+            case .tabletop(let top, let gap):
+                overlayLayout(theme: theme, mode: .full(top: top, gap: gap))
+                    .background(edgeReveal(arr))
+            }
+        }
+        .environment(\.division, division)
+        .background(theme.chrome.canvas.ignoresSafeArea())
+        .onChange(of: arr, initial: true) { old, new in
+            stacked = new.isStack
+            if old.isStack != new.isStack { folded(into: new.isStack) }
+        }
+    }
+
+    /// A fold or an unfold switched between the stack and a wide layout. Keeps what was on screen:
+    /// folding while a tab shows pushes that tab, so the outer screen shows it rather than the sidebar.
+    private func folded(into stack: Bool) {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            if stack {
+                if let sel = model.selection, model.current != nil { path = [sel] }
+            } else {
+                overlaySidebar = false
+            }
+        }
+    }
 
     // MARK: Commands
 
     /// Is a tab on screen (so its WindowScreen runs the tab commands)?
-    private var tabShown: Bool { wide ? model.current != nil : !path.isEmpty }
+    private var tabShown: Bool { stacked ? !path.isEmpty : model.current != nil }
 
     /// Runs the app-wide `RexCommand`s. Tab commands go to the visible WindowScreen; with no tab on
     /// screen, tab commands open the selected tab first.
@@ -121,28 +236,20 @@ struct RootView: View {
         prefs.fontSize = v
     }
 
+    /// Stack: back to the sidebar, or into the selected tab. One column: the overlay opens or closes.
+    /// Two pages: the sidebar always has its page.
     private func toggleSidebar() {
-        guard wide else {
+        guard !stacked else {
             if !path.isEmpty { path = [] } else if let sel = model.selection { path = [sel] }
             return
         }
-        withAnimation(.snappy(duration: 0.25)) {
-            if dual {
-                model.dualPages = false
-                sidebarVisible = true
-            } else {
-                sidebarVisible.toggle()
-            }
-        }
+        withAnimation(.snappy(duration: 0.25)) { overlaySidebar.toggle() }
     }
 
-    /// Wide layouts: the left-edge swipe brings the sidebar back (leaving two pages if they're on).
+    /// One column: the left-edge swipe brings the sidebar overlay in.
     private func revealSidebar() {
         Haptic.threshold()
-        withAnimation(.snappy(duration: 0.25)) {
-            model.dualPages = false
-            sidebarVisible = true
-        }
+        withAnimation(.snappy(duration: 0.25)) { overlaySidebar = true }
     }
 
     private func jumpToWaiting() {
@@ -190,72 +297,63 @@ struct RootView: View {
     /// Selects a tab and puts it on screen, pushing it when the sidebar is all that shows.
     private func show(_ sel: Selection) {
         open(sel)
-        if path.isEmpty, !wide { path = [sel] }
+        if path.isEmpty, stacked { path = [sel] }
     }
 
     // MARK: Wide
 
-    private var edgeReveal: some View {
-        EdgeReveal(enabled: dual || !sidebarVisible) { revealSidebar() }
+    private func edgeReveal(_ arr: Arrangement) -> some View {
+        EdgeReveal(enabled: !overlaySidebar) { revealSidebar() }
     }
 
-    @ViewBuilder
-    private func pagedLayout(theme: TermTheme, firstPage: CGFloat) -> some View {
-        if dual {
-            tab(mode: .dual(split: firstPage, vertical: false))
-        } else {
-            HStack(spacing: 0) {
-                if sidebarVisible {
-                    sidebar(theme)
-                        .frame(width: firstPage)
+    /// Two pages split at the crease, like the Mac app's window: the sidebar, then the tab's panes.
+    /// Nothing interactive or textual sits on the crease.
+    private func pagesLayout(theme: TermTheme, first: CGFloat, gap: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            sidebar(theme) { _ in }
+                .frame(width: first)
+            Crease(gap: gap, theme: theme)
+            tab(mode: .page, sidebarVisible: .constant(true))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// One column the full width (unfolded portrait), the sidebar as an overlay from the leading edge.
+    private func overlayLayout(theme: TermTheme, mode: WindowScreen.Mode) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                tab(mode: mode, sidebarVisible: $overlaySidebar)
+                if overlaySidebar {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture { withAnimation(.snappy(duration: 0.25)) { overlaySidebar = false } }
+                        .accessibilityLabel("Hide Sidebar")
+                        .accessibilityAddTraits(.isButton)
+                        .transition(.opacity)
+                    sidebar(theme) { _ in withAnimation(.snappy(duration: 0.25)) { overlaySidebar = false } }
+                        .frame(width: min(320, geo.size.width * 0.6))
                         .overlay(alignment: .trailing) {
                             Rectangle().fill(theme.chrome.divider).frame(width: 1).ignoresSafeArea()
                         }
+                        .shadow(color: .black.opacity(0.25), radius: 12)
                         .transition(.move(edge: .leading))
                 }
-                tab(mode: sidebarVisible ? .page : .full)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .animation(.snappy(duration: 0.25), value: sidebarVisible)
         }
     }
 
-    /// Laptop posture: the terminal stays on the top half; the keyboard and sidebar share the bottom half.
-    @ViewBuilder
-    private func stackedLayout(theme: TermTheme, firstPage: CGFloat) -> some View {
-        Group {
-            if dual {
-                tab(mode: .dual(split: firstPage, vertical: true))
-            } else {
-                VStack(spacing: 0) {
-                    tab(mode: .full)
-                        .frame(height: sidebarVisible ? firstPage : nil)
-                        .frame(maxHeight: sidebarVisible ? nil : .infinity)
-                    if sidebarVisible {
-                        sidebar(theme)
-                            .overlay(alignment: .top) { Rectangle().fill(theme.chrome.divider).frame(height: 1) }
-                            .frame(maxHeight: .infinity)
-                            .transition(.move(edge: .bottom))
-                    }
-                }
-                .animation(.snappy(duration: 0.25), value: sidebarVisible)
-            }
-        }
-        .ignoresSafeArea(.keyboard)
-    }
-
-    private func sidebar(_ theme: TermTheme) -> some View {
-        SidebarView(onSelect: { _ in })
+    private func sidebar(_ theme: TermTheme, onSelect: @escaping (Selection) -> Void) -> some View {
+        SidebarView(onSelect: onSelect)
             .background(theme.chrome.sidebar.ignoresSafeArea())
     }
 
     @ViewBuilder
-    private func tab(mode: WindowScreen.Mode) -> some View {
+    private func tab(mode: WindowScreen.Mode, sidebarVisible: Binding<Bool>) -> some View {
         if let cur = model.current {
             WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
-                         mode: mode, sidebarVisible: $sidebarVisible, onOpen: open)
+                         mode: mode, sidebarVisible: sidebarVisible, onOpen: open)
         } else {
-            EmptyState(sidebarVisible: $sidebarVisible)
+            EmptyState(sidebarVisible: sidebarVisible, showsSidebarButton: mode != .page)
         }
     }
 
@@ -270,10 +368,10 @@ struct RootView: View {
         }
     }
 
-    // MARK: Compact
+    // MARK: Stack
 
     @ViewBuilder
-    private func compactLayout(theme: TermTheme) -> some View {
+    private func stackLayout(theme: TermTheme) -> some View {
         NavigationStack(path: $path) {
             SidebarView(onSelect: { sel in path = [sel] })
                 .background(theme.chrome.sidebar.ignoresSafeArea())
@@ -291,11 +389,34 @@ struct RootView: View {
     }
 }
 
+/// The crease between two pages. Flat, a hairline; partly folded, the region's width (its tap
+/// margins included), so nothing interactive sits there. The hinge only strengthens the line, and
+/// this view is the only one that reads it.
+struct Crease: View {
+    @Environment(AppModel.self) private var model
+    let gap: CGFloat
+    let theme: TermTheme
+
+    var body: some View {
+        let bent = model.hinge?.status == .partial
+        Rectangle()
+            .fill(theme.chrome.canvas)
+            .frame(width: max(gap, 1))
+            .overlay {
+                Rectangle().fill(bent ? theme.chrome.activeBorder.opacity(0.6) : theme.chrome.divider).frame(width: 1)
+            }
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
+    }
+}
+
 struct EmptyState: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Binding var sidebarVisible: Bool
+    /// Beside the sidebar, there's no sidebar to show.
+    var showsSidebarButton = true
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -311,7 +432,7 @@ struct EmptyState: View {
             if model.servers.isEmpty {
                 Button("Add a Server") { model.showSettings = true }
                     .frame(minHeight: 44)
-            } else if !sidebarVisible {
+            } else if showsSidebarButton, !sidebarVisible {
                 Button("Show Sidebar") { sidebarVisible = true }
                     .frame(minHeight: 44)
             }

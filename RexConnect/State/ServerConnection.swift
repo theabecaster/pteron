@@ -599,22 +599,11 @@ final class ServerConnection: Identifiable {
         }
     }
 
-    /// Types text into a pane (quick replies). Escape sequences work: "\u{1b}" is Esc, "\r" is Enter.
+    /// Types text into a pane. Escape sequences work: "\u{1b}" is Esc, "\r" is Enter.
     func write(_ sid: String, _ bid: String, _ text: String) async {
         await act("send to the pane", session: nil) {
             try await self.control.blockCall("com.superlogical.terminal.write", session: sid, block: bid, args: ["data": text])
         }
-    }
-
-    /// Sends a composed message: the text, then Enter as a separate write so agents don't treat the
-    /// Enter as part of a paste. Multi-line text goes in as a bracketed paste.
-    func submit(_ sid: String, _ bid: String, _ text: String) async {
-        if !text.isEmpty {
-            let body = text.contains("\n") ? "\u{1b}[200~" + text + "\u{1b}[201~" : text
-            await write(sid, bid, body)
-            try? await Task.sleep(nanoseconds: 40_000_000)
-        }
-        await write(sid, bid, "\r")
     }
 
     /// The last lines of a pane as plain text (tab overview cards).
