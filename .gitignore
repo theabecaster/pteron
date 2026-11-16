@@ -1,6 +1,9 @@
+.asc.env
+.claude/worktrees/
+.DS_Store
+*.xcuserstate
 build/
 DerivedData/
-*.xcuserstate
+Relay/.build/
+Relay/dist/
 xcuserdata/
-.DS_Store
-.asc.env
