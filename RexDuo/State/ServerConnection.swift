@@ -48,8 +48,10 @@ final class ServerConnection: Identifiable {
     enum Phase: Equatable { case idle, connecting, online, offline(String) }
 
     let config: ServerConfig
-    var id: UUID { config.id }
+    nonisolated var id: UUID { config.id }
     let control: RexControl
+    /// What each hardware key does: Rex's defaults under the user's init.lua (`client.keymap`).
+    @ObservationIgnored let keymap: KeymapStore
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
@@ -94,6 +96,7 @@ final class ServerConnection: Identifiable {
         self.config = config
         let url = URL(string: config.url.trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "https://invalid.local")!
         control = RexControl(baseURL: url)
+        keymap = KeymapStore(control: control)
         control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
         control.onStateChange = { [weak self] st in
             guard let self else { return }
@@ -215,6 +218,7 @@ final class ServerConnection: Identifiable {
             }
             await loadMeta(blocks)
             await loadHosts()
+            await keymap.load()
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -338,6 +342,8 @@ final class ServerConnection: Identifiable {
             }
         case "hosts_changed":
             Task { await loadHosts() }
+        case "keymap_changed":
+            keymap.configChanged(hash: p.str("hash"))
         case "session_event":
             guard let sid = p.str("session_id"), let ev = p.obj("event") else { return }
             handle(sessionID: sid, event: ev)

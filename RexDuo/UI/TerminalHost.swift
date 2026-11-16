@@ -1,4 +1,5 @@
 import UIKit
+import GameController
 import SwiftTerm
 
 /// SwiftTerm's view with hooks that let TerminalHost arbitrate gestures.
@@ -12,6 +13,15 @@ final class RexTerminalView: SwiftTerm.TerminalView {
     var panGate: ((UIPanGestureRecognizer) -> Bool)?
     /// Asked before SwiftTerm's own single tap fires.
     var tapGate: (() -> Bool)?
+    /// Sees each hardware key press before SwiftTerm does; true consumes it (a key binding ran).
+    var keyHook: ((UIKey) -> Bool)?
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard let hook = keyHook else { return super.pressesBegan(presses, with: event) }
+        let rest = presses.filter { p in p.key.map { !hook($0) } ?? true }
+        // SwiftTerm's pressesEnded isn't overridable; it ignores releases of keys it never saw.
+        if !rest.isEmpty { super.pressesBegan(rest, with: event) }
+    }
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         // UIKit also asks the touched view about its ancestors' recognizers; gate only our own.
@@ -40,7 +50,8 @@ final class ZoomScrollView: UIScrollView {
 /// size changed, at that point in the stream. Fit mode asks the server for the size that fits and
 /// keeps the stream open; the program redraws itself.
 @MainActor
-final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate,
+    @preconcurrency UIEditMenuInteractionDelegate {
     static let fontRange: ClosedRange<CGFloat> = 7...20
 
     let stream: TerminalStream
@@ -52,11 +63,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     var sizing: SizingMode
     var fontSize: CGFloat
     var theme: TermTheme
-    var isActive = false
+    var isActive = false {
+        didSet { if isActive && !oldValue { claimHardwareKeyboard() } }
+    }
     var onFocus: (() -> Void)?
     var onTitle: ((String) -> Void)?
     /// Horizontal swipe: +1 = next pane, -1 = previous pane.
     var onSwipe: ((Int) -> Void)?
+    /// App-level commands (keyboard shortcuts, two-finger tap); the window screen performs them.
+    var onCommand: ((RexCommand) -> Void)?
+    /// The server's keymap; hardware keys bound in it run their action instead of reaching the terminal.
+    var keymap: KeymapStore?
 
     private var claimedSize: (Int, Int)?
     private var claimTask: Task<Void, Never>?
@@ -77,9 +94,25 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var pinchBase: CGFloat = 0
     /// Our tap already focused the keyboard; skip SwiftTerm's delayed single tap for the same touch.
     private var swallowSingleTap = false
-    /// Long-press focused the terminal for the edit menu without raising the keyboard.
-    private var quietInput = false
     private var selectAnchor: Position?
+    /// The far end of a drag selection (nil: a long press that selected one word).
+    private var selectHead: Position?
+    /// What is selected now, when Rex Duo selected it (SwiftTerm keeps its own bounds private).
+    private var selection: SelRange?
+    /// Copy and Paste at the selection, after a long press.
+    private lazy var editMenu = UIEditMenuInteraction(delegate: self)
+    private var menuTarget: CGRect?
+    /// A long-press or pointer selection drag is under way: nothing else may scroll or swipe.
+    private var selecting = false
+    private var pointerSelectGR: UIPanGestureRecognizer!
+    private var twoTapGR: UITapGestureRecognizer!
+    /// The latest touch came from a mouse or trackpad (its drags select instead of scrolling).
+    private var touchIsPointer = false
+
+    // Hardware keys.
+    private var cachedCommands: (generation: Int, commands: [UIKeyCommand])?
+    private var repeatTimer: Timer?
+    private var repeatKey: UIKeyboardHIDUsage?
 
     // Output pacing: heavy output is parsed in slices, a frame's budget at a time.
     static let directFeedLimit = 8 * 1024
@@ -145,6 +178,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardConnected),
+                                               name: .GCKeyboardDidConnect, object: nil)
+        term.keyHook = { [weak self] key in self?.handleKey(key) ?? false }
         setupGestures()
     }
 
@@ -173,6 +209,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
             lp.removeTarget(nil, action: nil)
             lp.addTarget(self, action: #selector(longPressed(_:)))
             lp.minimumPressDuration = 0.45
+            // A pointer selects by dragging; holding the button must not start a touch selection.
+            lp.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         }
 
         tapGR = UITapGestureRecognizer(target: self, action: #selector(tapped))
@@ -181,14 +219,32 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         if let lp { tapGR.require(toFail: lp) }  // releasing a long press is not a tap
         addGestureRecognizer(tapGR)
 
+        // Fingers only: a mouse or trackpad drag selects text instead.
+        let direct = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         swipeGR = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
         swipeGR.maximumNumberOfTouches = 1
+        swipeGR.allowedTouchTypes = direct
         swipeGR.delegate = self
         addGestureRecognizer(swipeGR)
 
         pinchGR = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
         pinchGR.delegate = self
         addGestureRecognizer(pinchGR)
+
+        twoTapGR = UITapGestureRecognizer(target: self, action: #selector(twoFingerTapped))
+        twoTapGR.numberOfTouchesRequired = 2
+        twoTapGR.cancelsTouchesInView = false
+        twoTapGR.delegate = self
+        addGestureRecognizer(twoTapGR)
+
+        // Pointer drag selects at once, like a Mac. Wheel and trackpad scrolls still scroll.
+        term.panGestureRecognizer.allowedTouchTypes = direct
+        pointerSelectGR = UIPanGestureRecognizer(target: self, action: #selector(pointerDragged(_:)))
+        pointerSelectGR.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        pointerSelectGR.maximumNumberOfTouches = 1
+        pointerSelectGR.delegate = self
+        term.addGestureRecognizer(pointerSelectGR)
+        term.addInteraction(editMenu)
     }
 
     /// Mostly-horizontal motion of a pan that is about to begin.
@@ -202,13 +258,26 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var canvasOverflowsY: Bool { zoomer.contentSize.height > zoomer.bounds.height + 1 }
 
     private func canvasPanShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
-        guard !fitted, !term.hasActiveSelection else { return false }
+        guard !fitted, !selecting else { return false }
+        if pan.numberOfTouches > 0, touchIsPointer { return false }
         return isHorizontal(pan) ? canvasOverflowsX : canvasOverflowsY
     }
 
+    /// SwiftTerm's own selection pan, which it adds while a selection exists. It would turn the next
+    /// scroll into a selection change (or arrow keys), so it never runs: only a long press or a
+    /// pointer drag selects.
+    private func isSwiftTermSelectionPan(_ pan: UIPanGestureRecognizer) -> Bool {
+        pan !== term.panGestureRecognizer && pan !== pointerSelectGR && !pan.allowedTouchTypes.isEmpty
+            && pan.maximumNumberOfTouches > 1
+    }
+
     private func termPanShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
-        // Leave trackpad scrolls, multi-finger drags and selection drags to SwiftTerm.
-        if pan.allowedTouchTypes.isEmpty || pan.numberOfTouches > 1 || term.hasActiveSelection { return true }
+        if pan === pointerSelectGR { return !selecting }
+        if selecting || isSwiftTermSelectionPan(pan) { return false }
+        // Trackpad and wheel scrolls (no touches) and multi-finger drags go to SwiftTerm.
+        if pan.allowedTouchTypes.isEmpty || pan.numberOfTouches == 0 || pan.numberOfTouches > 1 { return true }
+        // A pointer drag selects (pointerSelectGR); it never scrolls or reports a wheel.
+        if touchIsPointer { return false }
         let horizontal = isHorizontal(pan)
         // Mirror mode: the zoomed canvas pans first when it has room to in that direction.
         if !fitted, horizontal ? canvasOverflowsX : canvasOverflowsY { return false }
@@ -217,7 +286,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     private func swipeShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
-        guard onSwipe != nil, !term.hasActiveSelection, isHorizontal(pan) else { return false }
+        guard onSwipe != nil, !selecting, isHorizontal(pan) else { return false }
         if !fitted && canvasOverflowsX { return false }
         // Leave the screen's left edge to the system's swipe back.
         if let w = window {
@@ -229,7 +298,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         if g === swipeGR { return swipeShouldBegin(swipeGR) }
-        if g === pinchGR { return fitted && !term.hasActiveSelection }
+        if g === pinchGR { return fitted && !selecting }
+        if g === twoTapGR { return onCommand != nil && !selecting }
+        return true
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
+        if g === tapGR { touchIsPointer = touch.type == .indirectPointer }
         return true
     }
 
@@ -238,49 +314,195 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         g === tapGR || other === tapGR
     }
 
-    /// Tap: focus this pane and raise the keyboard on the first tap.
+    /// Tap: focus this pane, clear a selection, and raise the keyboard on the first tap.
     @objc private func tapped() {
         onFocus?()
-        restoreInputViews()
+        var skipTermTap = false
+        editMenu.dismissMenu()
+        if term.hasActiveSelection {
+            clearSelection()
+            skipTermTap = true
+        }
         if !term.isFirstResponder {
             // SwiftTerm would wait for its double-tap timeout, and with a mouse-tracking program it
             // would send a click instead of focusing. Focus now and skip its tap for this touch.
-            swallowSingleTap = true
+            skipTermTap = true
             _ = term.becomeFirstResponder()
+        }
+        if skipTermTap {
+            swallowSingleTap = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.swallowSingleTap = false }
         }
     }
 
+    /// Two-finger tap: zoom this pane (or unzoom).
+    @objc private func twoFingerTapped() {
+        guard let onCommand else { return }
+        onFocus?()
+        Haptic.tap()
+        onCommand(.toggleZoom)
+    }
+
+    /// Long press selects the word under the finger; dragging on extends the selection. On release
+    /// the selection is copied (copy-on-select), shimmers, and the edit menu offers Copy and Paste.
+    /// Nothing here takes the keyboard focus, so the keyboard never pops up for a selection.
     @objc private func longPressed(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: term)
         switch g.state {
         case .began:
             onFocus?()
-            if !term.isFirstResponder {
-                // The edit menu needs first responder; don't let that raise the keyboard and resize.
-                quietInput = true
-                term.inputView = UIView(frame: .zero)
-                term.inputAccessoryView = nil
+            selecting = true
+            editMenu.dismissMenu()
+            let a = cell(at: p)
+            selectAnchor = a
+            selectHead = nil
+            if let w = wordRange(at: a) {
+                setSelection(w)
+            } else {
+                clearSelection()
             }
-            selectAnchor = cell(at: p)
-            term.showStandardContextMenu(at: p)  // focuses and records the press position
-            UIMenuController.shared.hideMenu()    // not that menu: the selection's own, with Copy
-            term.select(nil)                      // selects the word there and shows Copy
         case .changed:
-            guard let a = selectAnchor else { return }
-            let h = cell(at: p)
-            if h.row != a.row || h.col != a.col {
-                let forward = h.row > a.row || (h.row == a.row && h.col >= a.col)
-                term.setSelectionRange(start: forward ? a : h, end: forward ? h : a)
-            }
+            guard selecting, let a = selectAnchor else { return }
+            autoscroll(p)
+            let h = cell(at: g.location(in: term))
+            if h != a || selectHead != nil { extendSelection(to: h) }
         case .ended:
-            if let a = selectAnchor, cell(at: p) != a {
-                term.showStandardContextMenu(at: p)
-            }
-            selectAnchor = nil
+            guard selecting else { return }
+            finishSelection(menuAt: p)
         default:
-            selectAnchor = nil
+            endSelection()
         }
+    }
+
+    /// Mouse or trackpad drag: select from where the button went down, copy on release.
+    @objc private func pointerDragged(_ g: UIPanGestureRecognizer) {
+        let p = g.location(in: term)
+        switch g.state {
+        case .began:
+            onFocus?()
+            selecting = true
+            editMenu.dismissMenu()
+            let t = g.translation(in: term)
+            selectAnchor = cell(at: CGPoint(x: p.x - t.x, y: p.y - t.y))
+            selectHead = nil
+            clearSelection()
+            extendSelection(to: cell(at: p))
+        case .changed:
+            autoscroll(p)
+            extendSelection(to: cell(at: g.location(in: term)))
+        case .ended:
+            finishSelection(menuAt: nil)
+        default:
+            clearSelection()
+            endSelection()
+        }
+    }
+
+    /// Selects from the anchor cell to cell `h`, both included, in reading order.
+    private func extendSelection(to h: Position) {
+        guard let a = selectAnchor else { return }
+        if h == a, selectHead == nil { return }
+        selectHead = h
+        let forward = h.row > a.row || (h.row == a.row && h.col >= a.col)
+        let (s, e) = forward ? (a, h) : (h, a)
+        setSelection(SelRange(start: s, end: Position(col: e.col + 1, row: e.row)))
+    }
+
+    /// A selection: `start` included, `end` excluded (SwiftTerm draws and copies it that way).
+    struct SelRange {
+        var start: Position
+        var end: Position
+    }
+
+    private func setSelection(_ r: SelRange) {
+        selection = r
+        // SwiftTerm counts the end as excluded, except that an end in the last column takes it in.
+        let last = max(localGrid.0 - 1, 0)
+        let end = r.end.col > last ? Position(col: last, row: r.end.row) : r.end
+        term.setSelectionRange(start: r.start, end: end)
+    }
+
+    private func clearSelection() {
+        selection = nil
+        if term.hasActiveSelection { term.clearSelection() }
+    }
+
+    /// Scrolls a line when a selection drag reaches the top or bottom edge.
+    private func autoscroll(_ p: CGPoint) {
+        let ch = cellSize().height
+        var off = term.contentOffset
+        let maxY = max(0, term.contentSize.height - term.bounds.height)
+        if p.y < off.y + ch * 0.5 {
+            off.y = max(0, off.y - ch)
+        } else if p.y > off.y + term.bounds.height - ch * 0.5 {
+            off.y = min(maxY, off.y + ch)
+        } else {
+            return
+        }
+        if off != term.contentOffset { term.contentOffset = off }
+    }
+
+    private func endSelection() {
+        selecting = false
+        selectAnchor = nil
+        selectHead = nil
+    }
+
+    /// Release: copy the selection to the clipboard (copy-on-select), play the shimmer, and for touch
+    /// show the edit menu at the selection (Paste alone when nothing was selected).
+    private func finishSelection(menuAt point: CGPoint?) {
+        endSelection()
+        let text = term.hasActiveSelection ? term.getSelection() ?? "" : ""
+        var target: CGRect?
+        if let r = selection, !text.isEmpty {
+            UIPasteboard.general.string = text
+            Haptic.tap()
+            let rects = selectionRects(r)
+            SelectionShimmer.play(on: term.layer, rects: rects, dark: theme.isDark)
+            target = rects.dropFirst().reduce(rects.first) { $0?.union($1) }
+        } else {
+            clearSelection()
+        }
+        guard let point else { return }
+        let rect = target ?? CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4)
+        menuTarget = rect
+        editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: CGPoint(x: rect.midX, y: rect.minY)))
+    }
+
+    /// The word (or path, URL, …: anything between spaces and brackets) on the cell at `p`.
+    private func wordRange(at p: Position) -> SelRange? {
+        let cols = max(localGrid.0, 1)
+        // SwiftTerm doesn't expose the buffer; read the line through a selection of it.
+        term.setSelectionRange(start: Position(col: 0, row: p.row), end: Position(col: cols - 1, row: p.row))
+        let line = Array(term.getSelection() ?? "")
+        term.clearSelection()
+        let breaks = Set(" \t\"'`()[]{}<>|;,│")
+        guard p.col < line.count, !breaks.contains(line[p.col]) else { return nil }
+        var s = p.col, e = p.col + 1
+        while s > 0, !breaks.contains(line[s - 1]) { s -= 1 }
+        while e < line.count, !breaks.contains(line[e]) { e += 1 }
+        // Trailing punctuation reads as sentence, not word.
+        while e - 1 > s, ".:!?".contains(line[e - 1]) { e -= 1 }
+        return SelRange(start: Position(col: s, row: p.row), end: Position(col: e, row: p.row))
+    }
+
+    /// One rectangle per selected line, in the terminal's content coordinates.
+    private func selectionRects(_ r: SelRange) -> [CGRect] {
+        let c = cellSize()
+        let cols = max(localGrid.0, 1)
+        let s = r.start, e = r.end
+        func rect(_ row: Int, _ from: Int, _ to: Int) -> CGRect {
+            CGRect(x: CGFloat(from) * c.width, y: CGFloat(row) * c.height, width: CGFloat(to - from) * c.width, height: c.height)
+        }
+        let endCol = min(e.col, cols)
+        if s.row == e.row { return [rect(s.row, s.col, endCol)] }
+        var out = [rect(s.row, s.col, cols)]
+        if e.row - s.row > 1 {
+            out.append(CGRect(x: 0, y: CGFloat(s.row + 1) * c.height, width: CGFloat(cols) * c.width,
+                              height: CGFloat(e.row - s.row - 1) * c.height))
+        }
+        if endCol > 0 { out.append(rect(e.row, 0, endCol)) }
+        return out
     }
 
     /// Buffer cell (scrollback included) under a point in the terminal view.
@@ -289,12 +511,30 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         return Position(col: max(0, min(Int(p.x / c.width), max(localGrid.0 - 1, 0))), row: max(0, Int(p.y / c.height)))
     }
 
-    private func restoreInputViews() {
-        guard quietInput else { return }
-        quietInput = false
-        term.inputView = nil
-        term.inputAccessoryView = keyBar
-        if term.isFirstResponder { term.reloadInputViews() }
+    // MARK: Edit menu
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration,
+                             suggestedActions: [UIMenuElement]) -> UIMenu? {
+        var items: [UIMenuElement] = []
+        if term.hasActiveSelection {
+            items.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                guard let self else { return }
+                if let s = self.term.getSelection(), !s.isEmpty { UIPasteboard.general.string = s }
+                self.clearSelection()
+            })
+        }
+        if UIPasteboard.general.hasStrings {
+            items.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
+                guard let self else { return }
+                self.clearSelection()
+                if let s = UIPasteboard.general.string { self.paste(s) }
+            })
+        }
+        return items.isEmpty ? nil : UIMenu(children: items)
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, targetRectFor configuration: UIEditMenuConfiguration) -> CGRect {
+        menuTarget ?? .null
     }
 
     @objc private func swiped(_ g: UIPanGestureRecognizer) {
@@ -346,6 +586,165 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
 
     private func clampFont(_ s: CGFloat) -> CGFloat { min(max(s, Self.fontRange.lowerBound), Self.fontRange.upperBound) }
 
+    // MARK: Hardware keyboard
+
+    /// ⌘ shortcuts, titled for the shortcut overlay shown while ⌘ is held. Keys without ⌘ (ctrl+tab,
+    /// shift+enter, …) are caught in `handleKey` instead, before SwiftTerm turns them into bytes.
+    override var keyCommands: [UIKeyCommand]? {
+        guard let keymap else { return nil }
+        if let c = cachedCommands, c.generation == keymap.generation { return c.commands }
+        var taken = Set<String>()
+        var out: [UIKeyCommand] = []
+        func add(_ title: String, _ input: String, _ flags: UIKeyModifierFlags, _ payload: String, physical: Bool, repeats: Bool) {
+            let id = "\(input)|\(flags.rawValue)"
+            guard !taken.contains(id) else { return }
+            taken.insert(id)
+            let cmd = UIKeyCommand(title: title, action: #selector(keyCommandFired(_:)), input: input,
+                                   modifierFlags: flags, propertyList: payload)
+            cmd.discoverabilityTitle = title
+            // Ahead of the text system's own ⌘ keys (⌘←, ⌘⌫, ⌘↩).
+            cmd.wantsPriorityOverSystemBehavior = true
+            if physical { cmd.allowsAutomaticLocalization = false }
+            if #available(iOS 26.0, *) { cmd.repeatBehavior = repeats ? .repeatable : .nonRepeatable }
+            out.append(cmd)
+        }
+        var decided = Set<KeyChord>()
+        for b in keymap.bindings where b.chord.mods.contains(.cmd) && !decided.contains(b.chord) {
+            // The first binding on a key that Rex Duo can perform runs; one it can't falls through.
+            guard DuoAction.resolve(b.action, b.args) != nil else { continue }
+            decided.insert(b.chord)
+            guard let input = KeyInput.commandInput(b.chord) else { continue }
+            add(KeyActions.title(b), input, KeyInput.flags(b.chord.mods), b.chord.spelling,
+                physical: b.chord.isPhysical, repeats: KeyActions.repeats(b.action))
+        }
+        // The Edit menu's keys, as on the Mac (unless the keymap took them).
+        add("Copy", "c", .command, "edit:copy", physical: false, repeats: false)
+        add("Paste", "v", .command, "edit:paste", physical: false, repeats: false)
+        add("Select All", "a", .command, "edit:selectAll", physical: false, repeats: false)
+        cachedCommands = (keymap.generation, out)
+        return out
+    }
+
+    @objc private func keyCommandFired(_ sender: UIKeyCommand) {
+        guard let payload = sender.propertyList as? String else { return }
+        switch payload {
+        case "edit:copy": perform(.copy, key: nil)
+        case "edit:paste": perform(.paste, key: nil)
+        case "edit:selectAll": perform(.selectAll, key: nil)
+        default:
+            guard let chord = KeyChord(spelling: payload), let (_, action) = keymap?.resolve([chord]) else { return }
+            perform(action, key: nil)
+        }
+    }
+
+    /// A hardware key press, before SwiftTerm. True when a binding ran (the key doesn't reach the
+    /// terminal). Only keys the keymap binds are taken; every other key is typed as usual.
+    private func handleKey(_ key: UIKey) -> Bool {
+        guard let keymap, !KeyInput.isModifierKey(key.keyCode) else { return false }
+        guard let (binding, action) = keymap.resolve(KeyInput.chords(for: key)) else { return false }
+        perform(action, key: key)
+        if KeyActions.repeats(binding.action) {
+            startRepeat(key.keyCode) { [weak self] in self?.perform(action, key: key) }
+        }
+        return true
+    }
+
+    private func perform(_ action: DuoAction, key: UIKey?) {
+        switch action {
+        case .command(let c):
+            onCommand?(c)
+        case .splitAuto:
+            // Split along the longer side, as the Mac does.
+            onCommand?(bounds.width >= bounds.height ? .splitRight : .splitDown)
+        case .sendKey(let chord):
+            if let bytes = KeyInput.bytes(chord) { term.send(bytes) }
+        case .copy:
+            if term.hasActiveSelection, let s = term.getSelection(), !s.isEmpty { UIPasteboard.general.string = s }
+        case .paste:
+            if let s = UIPasteboard.general.string { paste(s) }
+        case .selectAll:
+            term.selectAll(nil)
+        case .pageUp:
+            term.pageUp()
+        case .pageDown:
+            term.pageDown()
+        case .promptPrevious:
+            if let r = term.previousSemanticPromptRow() { term.scrollTo(row: r) }
+        case .promptNext:
+            if let r = term.nextSemanticPromptRow() { term.scrollTo(row: r) }
+        case .server(let name, let args):
+            stream.perform(action: name, args: args) { [weak self] queued in
+                // A configuration-file action may ask this client to perform its own actions.
+                for q in queued {
+                    guard let n = q.str("action"), let a = DuoAction.resolve(n, q.obj("args")) else { continue }
+                    if case .server = a { continue }
+                    self?.perform(a, key: nil)
+                }
+            }
+        case .forwardKey:
+            if let key { stream.forward(key: KeyInput.clientKeyEvent(key)) }
+        }
+    }
+
+    /// Key repeat for keys taken from SwiftTerm (it repeats only the keys it handles itself).
+    private func startRepeat(_ code: UIKeyboardHIDUsage, _ fire: @escaping @MainActor () -> Void) {
+        stopRepeat()
+        repeatKey = code
+        var count = 0
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.repeatKey == code else { return }
+                self.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        count += 1
+                        guard count < 2000, self.keyIsDown(code), self.term.isFirstResponder else { self.stopRepeat(); return }
+                        fire()
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopRepeat() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatKey = nil
+    }
+
+    /// Whether a key is still held. A release can miss us (focus moved), so ask the keyboard itself.
+    private func keyIsDown(_ code: UIKeyboardHIDUsage) -> Bool {
+        guard let input = GCKeyboard.coalesced?.keyboardInput,
+              let button = input.button(forKeyCode: GCKeyCode(rawValue: code.rawValue)) else { return true }
+        return button.isPressed
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let k = repeatKey, presses.contains(where: { $0.key?.keyCode == k }) { stopRepeat() }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let k = repeatKey, presses.contains(where: { $0.key?.keyCode == k }) { stopRepeat() }
+        super.pressesCancelled(presses, with: event)
+    }
+
+    @objc private func keyboardConnected() { claimHardwareKeyboard() }
+
+    /// With a hardware keyboard, the active pane takes the keyboard focus at once, as on a Mac:
+    /// keys go to the pane on screen without a tap first. Never steals focus from a text field.
+    private func claimHardwareKeyboard() {
+        guard isActive, window != nil, GCKeyboard.coalesced != nil, !term.isFirstResponder else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isActive, self.window != nil, !self.term.isFirstResponder,
+                  UIApplication.shared.applicationState == .active else { return }
+            let current = UIResponder.rexCurrentFirstResponder()
+            // SwiftTerm declines unknown actions, so a focused terminal reports its host.
+            guard current == nil || current is TerminalHost || current is RexTerminalView else { return }
+            _ = self.term.becomeFirstResponder()
+        }
+    }
+
     // MARK: App state
 
     /// Hand fitted panes back to the Mac while the app is in the background.
@@ -381,7 +780,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     func focusKeyboard() {
-        restoreInputViews()
         _ = term.becomeFirstResponder()
     }
 
@@ -448,6 +846,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
             // GPU rendering keeps scrolling and heavy output at the display rate; CoreGraphics is the fallback.
             if !metalTried { metalTried = true; try? term.setUseMetal(true) }
             yieldContentSwipeBack()
+            claimHardwareKeyboard()
         }
     }
 
@@ -471,6 +870,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
 
 
     func stop() {
+        stopRepeat()
         claimTask?.cancel()
         resyncTask?.cancel()
         outputLink?.invalidate()
