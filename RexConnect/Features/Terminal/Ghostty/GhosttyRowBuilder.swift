@@ -84,6 +84,29 @@ final class GhosttyRow {
     /// Columns that start a wide character (the cursor needs to know).
     var wideColumns: [UInt16] = []
 
+    // What the instances were built from, kept so a scroll step can tell that a row it has
+    // already built is still right (`GhosttyRowBuilder.matches`).
+    private(set) var source: UnsafeMutablePointer<GhosttyCell>?
+    private(set) var sourceCount = 0
+    private var sourceCapacity = 0
+    var selectionStart = -1
+    var selectionEnd = -1
+    /// The row has cells whose text lives outside the cell (grapheme clusters), which the raw
+    /// cells can't vouch for.
+    var hasClusters = false
+
+    deinit { source?.deallocate() }
+
+    func remember(_ cells: UnsafePointer<GhosttyCell>, count: Int) {
+        if count > sourceCapacity {
+            source?.deallocate()
+            source = .allocate(capacity: count)
+            sourceCapacity = count
+        }
+        source?.update(from: cells, count: count)
+        sourceCount = count
+    }
+
     func removeAll() {
         backgrounds.removeAll()
         underlines.removeAll()
@@ -91,6 +114,10 @@ final class GhosttyRow {
         glyphs.removeAll()
         overlays.removeAll()
         if !wideColumns.isEmpty { wideColumns.removeAll(keepingCapacity: true) }
+        sourceCount = 0
+        selectionStart = -1
+        selectionEnd = -1
+        hasClusters = false
     }
 
     /// Moves a built row to another viewport row without rebuilding it.
@@ -98,11 +125,23 @@ final class GhosttyRow {
         guard newY != y else { return }
         y = newY
         let r = UInt16(clamping: newY)
-        for i in 0..<backgrounds.count { backgrounds.base[i].row = r }
-        for i in 0..<underlines.count { underlines.base[i].row = r }
-        for i in 0..<underGlyphs.count { underGlyphs.base[i].row = r }
-        for i in 0..<glyphs.count { glyphs.base[i].row = r }
-        for i in 0..<overlays.count { overlays.base[i].row = r }
+        // `while`, not `for in`: an unoptimized build allocates for every range iterator, and
+        // this runs for every row of every scroll step.
+        var i = 0
+        var rects = backgrounds.base
+        while i < backgrounds.count { rects[i].row = r; i += 1 }
+        i = 0
+        rects = underlines.base
+        while i < underlines.count { rects[i].row = r; i += 1 }
+        i = 0
+        rects = overlays.base
+        while i < overlays.count { rects[i].row = r; i += 1 }
+        i = 0
+        var quads = underGlyphs.base
+        while i < underGlyphs.count { quads[i].row = r; i += 1 }
+        i = 0
+        quads = glyphs.base
+        while i < glyphs.count { quads[i].row = r; i += 1 }
     }
 }
 
@@ -219,6 +258,35 @@ final class GhosttyRowBuilder {
         }
     }
 
+    /// The iterator's current row's selected columns, both included, or (-1, -1).
+    @inline(__always)
+    private func selection(_ iterator: GhosttyRenderStateRowIterator) -> (Int, Int) {
+        var selection = GhosttyRenderStateRowSelection()
+        selection.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
+        guard ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS else {
+            return (-1, -1)
+        }
+        return (Int(selection.start_x), Int(selection.end_x))
+    }
+
+    /// True if `row`, built earlier, is exactly what building the iterator's current row would
+    /// give now. The caller has already matched the row id.
+    ///
+    /// Upstream marks every row dirty after the viewport scrolls ("the dirty flag is
+    /// conservative"), so the flag can't tell a scrolled row from a changed one. This can: a
+    /// row's instances are a function of its cells, the styles those cells name, its selection,
+    /// the colors and the atlas. Colors and atlas changes rebuild everything before we get here.
+    /// A style id is fixed while a cell of the same row still uses it, so equal cells mean equal
+    /// styles. Grapheme clusters live outside the cells, so rows that have any are rebuilt.
+    func matches(_ row: GhosttyRow, iterator: GhosttyRenderStateRowIterator) -> Bool {
+        guard !row.hasClusters, let source = row.source else { return false }
+        var view = GhosttyCellsView()
+        guard ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW, &view) == GHOSTTY_SUCCESS,
+              let raws = view.ptr, view.len == row.sourceCount,
+              memcmp(raws, source, view.len * MemoryLayout<GhosttyCell>.stride) == 0 else { return false }
+        return selection(iterator) == (row.selectionStart, row.selectionEnd)
+    }
+
     /// Builds `row` from the iterator's current row. `cells` is the shared cells handle.
     func build(_ row: GhosttyRow, y: Int, iterator: GhosttyRenderStateRowIterator, cells: GhosttyRenderStateRowCells) {
         row.removeAll()
@@ -228,14 +296,11 @@ final class GhosttyRowBuilder {
         guard ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW, &view) == GHOSTTY_SUCCESS,
               let raws = view.ptr, view.len > 0 else { return }
         let count = view.len
+        row.remember(raws, count: count)
 
-        var selStart = -1, selEnd = -1
-        var selection = GhosttyRenderStateRowSelection()
-        selection.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
-        if ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS {
-            selStart = Int(selection.start_x)
-            selEnd = Int(selection.end_x)
-        }
+        let (selStart, selEnd) = selection(iterator)
+        row.selectionStart = selStart
+        row.selectionEnd = selEnd
 
         let m = atlas.metrics
         let cellW = m.cellWidth, cellH = m.cellHeight
@@ -403,6 +468,7 @@ final class GhosttyRowBuilder {
                     var glyph: GhosttyGlyph
                     if tag == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME {
                         // Extra codepoints live outside the cell, so equal cells can differ here.
+                        row.hasClusters = true
                         glyph = GhosttyGlyph()
                         if !cellsLoaded {
                             cellsLoaded = ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) == GHOSTTY_SUCCESS
@@ -501,8 +567,16 @@ final class GhosttyFrameBuilder {
     /// Rows rebuilt by the last `update` (for tests and tuning).
     private(set) var rowsBuilt = 0
     private(set) var rowsReused = 0
+    /// Pixels the grid is drawn shifted up: the sub-row scroll offset plus the rubber band.
+    private(set) var scrollOffset = 0
+    /// Rows captured below the viewport by the last update (0 or 1).
+    private(set) var overscanBelow = 0
+    /// Off only to measure what row reuse saves on a scroll step.
+    var reusesRowsOnScroll = true
 
     private var spare: [GhosttyRow] = []
+    /// The previous frame's rows while a full frame is rebuilt. Kept to avoid allocating.
+    private var previous: [GhosttyRow?] = []
     private var seenStateGeneration = -1
     private var seenAtlasGeneration = -1
     private var seenAtlas: ObjectIdentifier?
@@ -555,17 +629,31 @@ final class GhosttyFrameBuilder {
             // Row identity: on a full redraw, a row whose id we already built and whose dirty flag
             // is clear can be reused as is. Not when we forced the rebuild ourselves.
             let reuse = !full && dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL
+            // A scroll step marks every row dirty. Then a row with a known id is reused if its
+            // cells still match what it was built from.
+            let scrolled = reusesRowsOnScroll && core.scroll.movedViewport
             var attempts = 0
             repeat {
                 attempts += 1
                 seenAtlas = ObjectIdentifier(atlas)
                 seenAtlasGeneration = atlas.generation
                 rebuild(state, iterator: iterator, cells: cells, everything: full || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL,
-                        reuse: reuse && attempts == 1)
+                        reuse: reuse && attempts == 1, verifyDirty: scrolled)
                 // The atlas filled up and was wiped while we built: earlier rows point at stale slots.
                 full = true
             } while seenAtlasGeneration != atlas.generation && attempts < 3
             ghostty_render_state_clean(state)
+        }
+
+        // Upstream: don't shift the grid toward a side where nothing was captured.
+        var captured = GhosttyRenderStateOverscan()
+        ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_OVERSCAN, &captured)
+        overscanBelow = Int(captured.below)
+        if captured.below == 0 { core.scroll.clearRenderFraction() }
+        let offset = core.scroll.renderFraction + core.scroll.renderBounce
+        if offset != scrollOffset {
+            scrollOffset = offset
+            changed = true
         }
 
         var info = GhosttyRenderStateCursor()
@@ -597,16 +685,24 @@ final class GhosttyFrameBuilder {
     }
 
     private func rebuild(_ state: GhosttyRenderState, iterator: GhosttyRenderStateRowIterator, cells: GhosttyRenderStateRowCells,
-                         everything: Bool, reuse: Bool) {
+                         everything: Bool, reuse: Bool, verifyDirty: Bool) {
         var iterator = Optional(iterator)
         guard ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iterator) == GHOSTTY_SUCCESS,
               let iterator else { return }
-        var old: [GhosttyRow] = []
         if everything {
-            old = rows
+            previous.removeAll(keepingCapacity: true)
+            var i = 0
+            while i < rows.count {
+                previous.append(rows[i])
+                i += 1
+            }
             rows.removeAll(keepingCapacity: true)
         }
+        // Rows come top to bottom (viewport rows, then the overscan row below), so the index is
+        // the viewport row.
         var y = 0
+        // Where the last reused row sat. After a scroll the next one sits right after it.
+        var hint = 0
         while ghostty_render_state_row_iterator_next(iterator) {
             var rowDirty = true
             ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &rowDirty)
@@ -615,18 +711,33 @@ final class GhosttyFrameBuilder {
                 ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_ID, &id)
                 let key = (id.bits.0, id.bits.1)
                 var row: GhosttyRow?
-                if reuse, !rowDirty, key != (0, 0), let i = old.firstIndex(where: { $0.id == key }) {
-                    row = old.remove(at: i)
-                    row?.restamp(y)
+                if reuse, !rowDirty || verifyDirty, key != (0, 0) {
+                    let n = previous.count
+                    var k = 0
+                    while k < n {
+                        let i = hint + k < n ? hint + k : hint + k - n
+                        if let candidate = previous[i], candidate.id == key {
+                            if !rowDirty || builder.matches(candidate, iterator: iterator) {
+                                row = candidate
+                                previous[i] = nil
+                                hint = i + 1 < n ? i + 1 : 0
+                            }
+                            break
+                        }
+                        k += 1
+                    }
+                }
+                if let row {
+                    row.restamp(y)
                     rowsReused += 1
+                    rows.append(row)
                 } else {
                     let fresh = spare.popLast() ?? GhosttyRow()
                     builder.build(fresh, y: y, iterator: iterator, cells: cells)
                     fresh.id = key
-                    row = fresh
                     rowsBuilt += 1
+                    rows.append(fresh)
                 }
-                rows.append(row!)
             } else if rowDirty, y < rows.count {
                 builder.build(rows[y], y: y, iterator: iterator, cells: cells)
                 rowsBuilt += 1
@@ -634,7 +745,12 @@ final class GhosttyFrameBuilder {
             y += 1
         }
         if everything {
-            spare.append(contentsOf: old.prefix(max(0, 256 - spare.count)))
+            var i = 0
+            while i < previous.count {
+                if let row = previous[i], spare.count < 256 { spare.append(row) }
+                i += 1
+            }
+            previous.removeAll(keepingCapacity: true)
         }
     }
 }

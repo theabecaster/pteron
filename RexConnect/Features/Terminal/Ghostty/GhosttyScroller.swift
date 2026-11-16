@@ -1,0 +1,393 @@
+import UIKit
+
+/// The scroll view laid over the terminal. It has no content of its own: it supplies UIKit's
+/// scroll physics (pan, deceleration, rubber band, trackpad and wheel scrolling) and the scroll
+/// indicator, while the Metal view under it stays put and draws the rows for the offset.
+final class GhosttyScrollSurface: UIScrollView {
+    weak var scroller: GhosttyScroller?
+    private var laidOut = CGSize.zero
+
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        // UIKit also asks the touched view about its ancestors' recognizers; decide only our own.
+        if g.view === self, let scroller, !scroller.shouldBegin(g) { return false }
+        return super.gestureRecognizerShouldBegin(g)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Runs on every scroll step too; only a new size matters.
+        guard bounds.size != laidOut else { return }
+        laidOut = bounds.size
+        scroller?.layoutChanged()
+    }
+}
+
+/// Scrolling and mouse reporting for one `GhosttyTerminalView`.
+///
+/// Structure: the terminal view stays a plain view. It holds the Metal view and, above it, a
+/// transparent `GhosttyScrollSurface` of the same size. TerminalHost keeps laying out, zooming
+/// and transforming the terminal view as one piece, and every recognizer here sits on the
+/// surface, where the terminal view's `panGate` and `tapGate` decide whether it may begin.
+///
+/// Scrolling never takes the terminal lock on the main thread. A scroll step leaves the new
+/// offset in `GhosttyScrollState`; the render thread moves the viewport and draws in one step.
+/// What comes back (`apply`) is coalesced and only arrives when the scrollable area changed or
+/// the terminal moved by itself.
+@MainActor
+final class GhosttyScroller: NSObject, UIScrollViewDelegate {
+    let surface = GhosttyScrollSurface()
+    let mouse = GhosttyMouseReporter()
+    /// One finger, while the program gets drags (mouse tracking or alternate screen): wheel
+    /// reports or arrow keys. The scroll view's own pan then needs two fingers.
+    let programPan = UIPanGestureRecognizer()
+    /// Trackpad (continuous) and mouse wheel (discrete) scrolls for the program.
+    private(set) var pointerScrolls: [UIPanGestureRecognizer] = []
+    /// A click for a program that tracks the mouse.
+    let tap = UITapGestureRecognizer()
+    let hover = UIHoverGestureRecognizer()
+
+    private weak var view: GhosttyTerminalView?
+    private let core: GhosttyCore
+
+    /// The last state the render thread sent over.
+    private(set) var state = GhosttyScrollState.Snapshot()
+    private var appliedRebase = 0
+    private var lastRequest = 0
+    private var applying = false
+    private var animating = false
+
+    private var dragAccumulator = GhosttyWheelAccumulator()
+    private var pointerAccumulator = GhosttyWheelAccumulator()
+    private var budget = GhosttyWheelBudget()
+
+    /// Scroll steps handled and the time they took, for tuning (`measures` on).
+    var measures = false
+    private(set) var scrollSteps = 0
+    private(set) var scrollStepSeconds: CFTimeInterval = 0
+    /// Updates received from the render thread.
+    private(set) var updates = 0
+
+    init(view: GhosttyTerminalView) {
+        self.view = view
+        core = view.core
+        super.init()
+
+        surface.scroller = self
+        surface.frame = view.bounds
+        surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        surface.backgroundColor = .clear
+        surface.isOpaque = false
+        surface.delegate = self
+        surface.scrollsToTop = false
+        surface.contentInsetAdjustmentBehavior = .never
+        surface.showsHorizontalScrollIndicator = false
+        surface.showsVerticalScrollIndicator = true
+        surface.alwaysBounceHorizontal = false
+        surface.delaysContentTouches = false
+        surface.isDirectionalLockEnabled = true
+        surface.contentSize = view.bounds.size
+        view.addSubview(surface)
+
+        programPan.addTarget(self, action: #selector(programPanned(_:)))
+        programPan.maximumNumberOfTouches = 1
+        programPan.isEnabled = false
+        surface.addGestureRecognizer(programPan)
+
+        for type: UIScrollTypeMask in [.continuous, .discrete] {
+            let scroll = UIPanGestureRecognizer(target: self, action: #selector(pointerScrolled(_:)))
+            scroll.allowedScrollTypesMask = type
+            scroll.allowedTouchTypes = []
+            surface.addGestureRecognizer(scroll)
+            // The program gets pointer scrolls first. Ones it doesn't take scroll locally.
+            surface.panGestureRecognizer.require(toFail: scroll)
+            pointerScrolls.append(scroll)
+        }
+
+        tap.addTarget(self, action: #selector(tapped(_:)))
+        surface.addGestureRecognizer(tap)
+
+        hover.addTarget(self, action: #selector(hovered(_:)))
+        surface.addGestureRecognizer(hover)
+
+        updateIndicator()
+        core.scroll.setPublishHandler { [weak self] snapshot in self?.apply(snapshot) }
+        core.onDirty?()
+    }
+
+    // MARK: Scroll view ↔ terminal
+
+    private var scale: CGFloat { max(1, view?.displayScale ?? 1) }
+
+    private var interacting: Bool {
+        surface.isTracking || surface.isDragging || surface.isDecelerating || animating
+    }
+
+    /// Takes the render thread's news: a new scrollable height, and how far the terminal moved
+    /// by itself since the last time (the rebase), which shifts the offset without a jump on
+    /// screen and without stopping a drag or a deceleration.
+    func apply(_ snapshot: GhosttyScrollState.Snapshot) {
+        updates += 1
+        refresh(snapshot)
+    }
+
+    private func refresh(_ snapshot: GhosttyScrollState.Snapshot) {
+        state = snapshot
+        applying = true
+        defer { applying = false }
+        let scale = scale
+        let size = CGSize(width: surface.bounds.width,
+                          height: CGFloat(snapshot.maxRow * snapshot.cellHeight) / scale + surface.bounds.height)
+        if surface.contentSize != size { surface.contentSize = size }
+        let moved = snapshot.rebase - appliedRebase
+        appliedRebase = snapshot.rebase
+        var y = surface.contentOffset.y + CGFloat(moved) / scale
+        // At rest, and with nothing of ours still on its way, the terminal is simply right.
+        if !interacting, snapshot.appliedSequence >= lastRequest { y = CGFloat(snapshot.position) / scale }
+        if abs(y - surface.contentOffset.y) > 0.01 { surface.contentOffset = CGPoint(x: 0, y: y) }
+
+        // Like SwiftTerm: while the program takes one-finger drags, scrollback needs two.
+        let pan = surface.panGestureRecognizer
+        let fingers = snapshot.programScroll ? 2 : 1
+        if pan.minimumNumberOfTouches != fingers { pan.minimumNumberOfTouches = fingers }
+        if programPan.isEnabled != snapshot.programScroll { programPan.isEnabled = snapshot.programScroll }
+        updateIndicator()
+    }
+
+    func layoutChanged() { refresh(state) }
+
+    /// A scroll indicator that shows on the theme's background.
+    private func updateIndicator() {
+        let style: UIScrollView.IndicatorStyle = (view?.theme?.isDark ?? true) ? .white : .black
+        if surface.indicatorStyle != style { surface.indicatorStyle = style }
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !applying else { return }
+        if measures {
+            let start = CACurrentMediaTime()
+            sendOffset()
+            scrollStepSeconds += CACurrentMediaTime() - start
+            scrollSteps += 1
+        } else {
+            sendOffset()
+        }
+    }
+
+    private func sendOffset() {
+        let px = Int((surface.contentOffset.y * scale).rounded())
+        lastRequest = core.scrollViewport(.position(px: px, rebaseSeen: appliedRebase))
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { updateIndicator() }
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { animating = false }
+
+    /// Scrolls like a finger would, for the demo and tests. `y` is a scroll view offset in points.
+    func setOffset(_ y: CGFloat, animated: Bool) {
+        animating = animated && abs(y - surface.contentOffset.y) > 0.01
+        surface.setContentOffset(CGPoint(x: 0, y: y), animated: animated)
+    }
+
+    /// A jump that isn't a drag: lines, pages, prompts, top or bottom. Ends a deceleration.
+    func jump(_ request: GhosttyScrollState.Request) {
+        if surface.isDecelerating || animating {
+            applying = true
+            surface.setContentOffset(surface.contentOffset, animated: false)
+            applying = false
+            animating = false
+        }
+        lastRequest = core.scrollViewport(request)
+    }
+
+    // MARK: Gates
+
+    func shouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        guard let view else { return false }
+        if let pan = g as? UIPanGestureRecognizer {
+            if let gate = view.panGate, !gate(pan) { return false }
+            // Shift on a hardware keyboard keeps a pointer scroll local.
+            if pointerScrolls.contains(pan) { return state.programScroll && !pan.modifierFlags.contains(.shift) }
+            return true
+        }
+        if g === tap {
+            // Lifting a long press that selected is not a tap.
+            if let press = view.selectionPressRecognizer, press.state == .began || press.state == .changed || press.state == .ended {
+                return false
+            }
+            return view.tapGate?() ?? true
+        }
+        return true
+    }
+
+    // MARK: Wheel and arrows
+
+    @objc private func programPanned(_ g: UIPanGestureRecognizer) {
+        guard let view else { return }
+        switch g.state {
+        case .began:
+            dragAccumulator.reset()
+        case .changed:
+            let travelled = g.translation(in: view).y
+            g.setTranslation(.zero, in: view)
+            forwardWheel(distance: travelled, at: g.location(in: view), flags: g.modifierFlags, accumulator: &dragAccumulator)
+        default:
+            dragAccumulator.reset()
+        }
+    }
+
+    @objc private func pointerScrolled(_ g: UIPanGestureRecognizer) {
+        guard let view else { return }
+        switch g.state {
+        case .began, .changed:
+            if g.state == .began { pointerAccumulator.reset() }
+            let travelled = g.translation(in: view).y
+            g.setTranslation(.zero, in: view)
+            forwardWheel(distance: travelled, at: g.location(in: view), flags: g.modifierFlags, accumulator: &pointerAccumulator,
+                         precise: g.allowedScrollTypesMask != .discrete)
+        default:
+            pointerAccumulator.reset()
+        }
+    }
+
+    /// Sends drag distance to the program: whole lines as wheel reports where it tracks the
+    /// mouse, or as arrow keys on an alternate screen with alternate scroll. Positive is up.
+    /// Returns what was sent.
+    @discardableResult
+    func forwardWheel(distance: CGFloat, at point: CGPoint, flags: UIKeyModifierFlags = [],
+                      accumulator: inout GhosttyWheelAccumulator, precise: Bool = true) -> [UInt8] {
+        guard let view else { return [] }
+        let cellHeight = view.cellSize.height
+        let modes = core.programScrollModes()
+        let route = GhosttyScrollRouting.route(mouseTracking: modes.mouseTracking, alternateScreen: modes.alternateScreen,
+                                               alternateScroll: modes.alternateScroll, shiftBypass: flags.contains(.shift))
+        guard route != .none, cellHeight > 0 else {
+            accumulator.reset()
+            return []
+        }
+        let lines: Int
+        if precise {
+            lines = accumulator.takeWholeLines(distance: distance, cellHeight: cellHeight, route: route)
+        } else {
+            accumulator.reset()
+            lines = distance == 0 ? 0 : (distance > 0 ? 1 : -1)
+        }
+        guard lines != 0 else { return [] }
+        var bytes: [UInt8] = []
+        switch route {
+        case .mouse:
+            guard view.bounds.contains(point), let position = mousePosition(point) else { return [] }
+            var modifiers = Self.modifiers(flags)
+            if view.controlModifier { modifiers.insert(.control) }
+            let count = budget.grant(GhosttyWheelBudget.requested(lines: lines, precise: precise))
+            bytes = mouse.mouse(.press, button: lines > 0 ? .wheelUp : .wheelDown, at: position, modifiers: modifiers,
+                                buttonHeld: false, geometry: geometry, count: count, core: core)
+        case .cursorKeys:
+            let count = budget.grant(GhosttyWheelBudget.requested(lines: lines))
+            bytes = mouse.key(lines > 0 ? .arrowUp : .arrowDown, count: count, core: core)
+        case .none:
+            break
+        }
+        send(bytes)
+        return bytes
+    }
+
+    // MARK: Clicks and motion
+
+    @objc private func tapped(_ g: UITapGestureRecognizer) {
+        guard g.state == .ended, let view else { return }
+        // The host focuses an unfocused pane with its own tap; that tap is never also a click.
+        guard view.isFirstResponder, !g.modifierFlags.contains(.shift) else { return }
+        guard core.programScrollModes().mouseTracking else { return }
+        if view.hasActiveSelection {
+            // SwiftTerm: with a selection up, the tap dismisses it instead of clicking.
+            view.clearSelectedRange()
+            return
+        }
+        forwardTap(at: g.location(in: view))
+    }
+
+    /// A left click at `point` (this view's coordinates): press, then release if the program's
+    /// tracking mode reports releases. Uses up a one-shot ctrl from the key bar, as SwiftTerm does.
+    @discardableResult
+    func forwardTap(at point: CGPoint) -> [UInt8] {
+        guard let view, let position = mousePosition(point) else { return [] }
+        var modifiers: GhosttyMouseReporter.Modifiers = []
+        if view.controlModifier { modifiers.insert(.control) }
+        var bytes = mouse.mouse(.press, button: .left, at: position, modifiers: modifiers, buttonHeld: true,
+                                geometry: geometry, core: core)
+        bytes += mouse.mouse(.release, button: .left, at: position, modifiers: modifiers, buttonHeld: false,
+                             geometry: geometry, core: core)
+        if view.controlModifier {
+            view.controlModifier = false
+            NotificationCenter.default.post(name: .terminalEngineControlModifierReset, object: view)
+        }
+        send(bytes)
+        return bytes
+    }
+
+    @objc private func hovered(_ g: UIHoverGestureRecognizer) {
+        guard let view, state.programScroll else { return }
+        switch g.state {
+        case .began:
+            mouse.resetMotion()
+            forwardMotion(at: g.location(in: view), flags: g.modifierFlags, buttonHeld: false)
+        case .changed:
+            forwardMotion(at: g.location(in: view), flags: g.modifierFlags, buttonHeld: false)
+        default:
+            break
+        }
+    }
+
+    /// Pointer motion. The encoder reports it only where the program asked: with no button in
+    /// any-event tracking (1003), with a button also in button-event tracking (1002), and once
+    /// per cell.
+    @discardableResult
+    func forwardMotion(at point: CGPoint, flags: UIKeyModifierFlags = [], buttonHeld: Bool) -> [UInt8] {
+        guard let view, view.bounds.contains(point), !flags.contains(.shift), let position = mousePosition(point) else { return [] }
+        let bytes = mouse.mouse(.motion, button: buttonHeld ? .left : .none, at: position, modifiers: Self.modifiers(flags),
+                                buttonHeld: buttonHeld, geometry: geometry, core: core)
+        // Motion is not typing: it doesn't bring a scrolled-up view back down.
+        if !bytes.isEmpty { view.engineDelegate?.engineSend(bytes) }
+        return bytes
+    }
+
+    // MARK: Geometry
+
+    /// The view in device pixels, as the mouse encoder wants it.
+    var geometry: GhosttyMouseReporter.Geometry {
+        guard let view else { return .init(width: 0, height: 0, cellWidth: 0, cellHeight: 0) }
+        let m = view.atlas.metrics
+        return .init(width: Int((view.bounds.width * scale).rounded()), height: Int((view.bounds.height * scale).rounded()),
+                     cellWidth: m.cellWidth, cellHeight: m.cellHeight)
+    }
+
+    /// A point in the view as pixels on the active screen, or nil if it is on a scrollback row
+    /// (the program can't be told about those).
+    func mousePosition(_ point: CGPoint) -> CGPoint? {
+        let s = core.scroll.snapshot
+        let y = point.y * scale + CGFloat(s.fraction + (s.offset - s.maxRow) * s.cellHeight)
+        guard y >= 0 else { return nil }
+        return CGPoint(x: point.x * scale, y: y)
+    }
+
+    private static func modifiers(_ flags: UIKeyModifierFlags) -> GhosttyMouseReporter.Modifiers {
+        var m: GhosttyMouseReporter.Modifiers = []
+        if flags.contains(.shift) { m.insert(.shift) }
+        if flags.contains(.control) { m.insert(.control) }
+        if flags.contains(.alternate) { m.insert(.alt) }
+        return m
+    }
+
+    /// Bytes for the program. Like typing, they bring a scrolled-up view back to the bottom.
+    func send(_ bytes: [UInt8]) {
+        guard !bytes.isEmpty, let view else { return }
+        view.engineDelegate?.engineSend(bytes)
+        scrollToBottomForInput()
+    }
+
+    /// SwiftTerm's rule for input (`ensureCaretIsVisible`): anything sent to the program while
+    /// the view is scrolled up jumps back to the bottom. Output alone never moves the view.
+    func scrollToBottomForInput() {
+        let bottom = surface.contentSize.height - surface.bounds.height
+        if !core.scroll.snapshot.active || surface.contentOffset.y < bottom - 0.5 { jump(.bottom) }
+    }
+}

@@ -85,6 +85,8 @@ final class GhosttyCore: @unchecked Sendable {
     /// Scroll position at the last frame's update. Guarded by `stateLock`. Phase 2 (scroll view).
     var scrollbar = GhosttyTerminalScrollbar()
     var viewportActive = true
+    /// PHASE 2 (scroll): pending scroll requests and the position each frame was drawn at.
+    let scroll = GhosttyScrollState()
 
     /// Runs after anything that can change what's on screen. Called on any thread.
     var onDirty: (@Sendable () -> Void)? {
@@ -505,7 +507,9 @@ final class GhosttyCore: @unchecked Sendable {
             ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE, &cfg)
             held = false
         }
-        if !held {
+        // Upstream: a hold may be ignored when someone scrolls.
+        if !held || scroll.hasPending {
+            scroll.prepareFrame(terminal: t, renderState: rs, cellHeightPx: Int(cellHeightPx), generation: stateGeneration)
             ghostty_render_state_begin_update(rs, t)
             // Read in the same critical section so they describe the same moment as the rows.
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
