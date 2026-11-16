@@ -80,7 +80,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private static let lostText = "Resized elsewhere · tap to fit here"
 
     init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme,
-         engine: TerminalEngineKind = .current) {
+         engine: TerminalEngineKind) {
         self.stream = stream
         self.sizing = sizing
         self.fontSize = fontSize
@@ -243,7 +243,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .ended:
             term.endSelection(at: p)
         default:
-            break
+            term.cancelSelection()
         }
     }
 
@@ -550,7 +550,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>) {
         // An engine that parses off the main thread takes everything at once.
         guard pacesOutput else {
-            feed(ArraySlice(bytes))
+            term.feed(buffer: bytes)
             return
         }
         // Light output (echo, prompts) goes straight in for the lowest latency.

@@ -94,6 +94,9 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     /// True when changing the font loses terminal modes, so the host should redraw from the server.
     var fontChangeResetsModes: Bool { get }
     func feed(byteArray: ArraySlice<UInt8>)
+    /// The hot path for live output. The buffer is only valid during the call; an engine that
+    /// parses elsewhere copies it once.
+    func feed(buffer: UnsafeBufferPointer<UInt8>)
     func feed(text: String)
     /// Restores a `GHOSTSNP` snapshot. Returns false if this engine can't; `failed` runs on the
     /// main thread if decoding fails later.
@@ -116,6 +119,8 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     func beginSelection(at p: CGPoint)
     func extendSelection(to p: CGPoint)
     func endSelection(at p: CGPoint)
+    /// The press was cancelled: stop tracking the drag. An existing selection stays.
+    func cancelSelection()
 
     // Input
     func send(txt: String)

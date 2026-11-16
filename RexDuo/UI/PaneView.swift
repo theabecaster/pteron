@@ -15,7 +15,8 @@ struct PaneView: View {
         PaneHostView(server: server, sessionID: sessionID, blockID: blockID, active: active,
                      engine: engine, onFocus: onFocus, onSwipe: onSwipe)
             // An engine can't be swapped inside a live pane: a new engine is a new pane.
-            .id(engine)
+            // Keyed on what really runs, so a pick that falls back doesn't rebuild the pane.
+            .id(engine.implemented)
     }
 }
 

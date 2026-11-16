@@ -128,6 +128,10 @@ final class RexTerminalView: SwiftTerm.TerminalView, TerminalEngineView, Termina
         select(nil)                         // selects the word there and shows Copy
     }
 
+    func cancelSelection() { selectAnchor = nil }
+
+    func feed(buffer: UnsafeBufferPointer<UInt8>) { feed(byteArray: ArraySlice(buffer)) }
+
     func extendSelection(to p: CGPoint) {
         guard let a = selectAnchor else { return }
         let h = cell(at: p)
