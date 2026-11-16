@@ -17,9 +17,10 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
 
 - libghostty-vt is built on this Mac by `scripts/build-ghostty.sh` and copied; macdesk never
   builds it. The binary that ships is then the one the tests and benchmarks ran against, and
-  macdesk needs no Zig, no Ghostty checkout and no network access to them. In exchange the archive
-  is only reproducible from the pin through the Mac that ran the build. `Vendor/GhosttyVt.stamp`
-  travels with the framework and records the Ghostty commit, Zig version and patches it came from.
+  macdesk needs no Zig, no Ghostty checkout and no network access to them. Building on macdesk
+  would not make the binary reproducible either: `build-ghostty.sh` runs there (92 s cold), but
+  two builds of the same pin differ byte for byte. `Vendor/GhosttyVt.stamp` travels with the
+  framework and records the Ghostty commit, Zig version and patches it came from.
 - From `Vendor/` only `GhosttyVt.xcframework` and `GhosttyVt.stamp` are sent, 51 MB once per
   rebuild; unchanged files are skipped. The copy works when `Vendor` is a symlink (agent worktrees).
 - All three slices are sent although device builds link only `ios-arm64` (13 MB). Dropping the
