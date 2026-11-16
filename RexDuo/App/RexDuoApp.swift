@@ -8,12 +8,17 @@ struct RexDuoApp: App {
 
     var body: some Scene {
         WindowGroup {
+            // Offline replay of a capture file (development): `-ghosttyDemo <path>`.
+            if let demo = GhosttyDemo.path {
+                GhosttyDemoScreen(path: demo).ignoresSafeArea()
+            } else {
             RootView()
                 .launchTransition()
                 .environment(model)
                 .onAppear {
                     UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
                 }
+            }
         }
         .onChange(of: phase) { _, p in
             if p == .active { model.foregroundResumed() }
