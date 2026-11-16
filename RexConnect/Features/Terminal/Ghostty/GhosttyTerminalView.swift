@@ -35,15 +35,20 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     private(set) var theme: TermTheme?
     private(set) var displayScale: CGFloat
 
-    // PHASE 2 (input): stored state for GhosttyTerminalView+Input.swift.
+    // Input: stored state for GhosttyTerminalView+Input.swift and GhosttyInputText.swift, which
+    // hold the first-responder overrides and the UIKeyInput / UITextInput conformance.
     var panGate: ((UIPanGestureRecognizer) -> Bool)?
     var tapGate: (() -> Bool)?
-    /// PHASE 2 (input): never called yet. Offer each hardware key press to it before encoding;
-    /// true means a key binding ran and the key must not reach the program.
+    /// Sees each hardware key press before it is encoded; true means a key binding ran and the
+    /// key must not reach the program.
     var keyHook: ((UIKey) -> Bool)?
     var controlModifier = false
     var metaModifier = false
     var keyboardAppearance: UIKeyboardAppearance = .dark
+    let inputState = GhosttyInputState()
+    weak var inputDelegate: (any UITextInputDelegate)?
+    var markedTextStyle: [NSAttributedString.Key: Any]?
+    private(set) lazy var tokenizer: any UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
     private var storedInputView: UIView?
     private var storedInputAccessoryView: UIView?
     override var inputView: UIView? {
@@ -54,7 +59,7 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         get { storedInputAccessoryView }
         set { storedInputAccessoryView = newValue }
     }
-    // END PHASE 2
+    // END input
 
     // PHASE 2 (selection): stored state for GhosttyTerminalView+Selection.swift.
     var selectionState = GhosttySelectionState()

@@ -88,6 +88,10 @@ final class GhosttyCore: @unchecked Sendable {
     /// PHASE 2 (scroll): pending scroll requests and the position each frame was drawn at.
     let scroll = GhosttyScrollState()
 
+    /// The key encoder and the input modes, synced under `termLock` after every change to the
+    /// terminal that can change a mode, so typing never waits for that lock (GhosttyCore+Input.swift).
+    let input = GhosttyInputMirror()
+
     /// Runs after anything that can change what's on screen. Called on any thread.
     var onDirty: (@Sendable () -> Void)? {
         get {
@@ -159,6 +163,7 @@ final class GhosttyCore: @unchecked Sendable {
             // server runs. A restored terminal brings the server's real modes instead.
             var clustering = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2027, false), value: true)
             ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &clustering)
+            input.sync(from: t)
         }
         makeRenderState()
     }
@@ -297,7 +302,10 @@ final class GhosttyCore: @unchecked Sendable {
                     spins += 1
                 }
                 termLock.lock()
-                if let t = terminal { ghostty_terminal_vt_write(t, base + off, n) }
+                if let t = terminal {
+                    ghostty_terminal_vt_write(t, base + off, n)
+                    input.sync(from: t)
+                }
                 termLock.unlock()
                 off += n
                 bytesParsed += n
@@ -385,7 +393,10 @@ final class GhosttyCore: @unchecked Sendable {
     func reset() {
         enqueue { [self] in
             termLock.lock()
-            if let t = terminal { ghostty_terminal_reset(t) }
+            if let t = terminal {
+                ghostty_terminal_reset(t)
+                input.sync(from: t)
+            }
             termLock.unlock()
             onDirty?()
         }
@@ -454,6 +465,7 @@ final class GhosttyCore: @unchecked Sendable {
             if ghostty_terminal_get(restored, GHOSTTY_TERMINAL_DATA_MODE, &mode) == GHOSTTY_SUCCESS, mode.value {
                 renderHoldChanged(true)
             }
+            input.sync(from: restored)
             termLock.unlock()
             if let old {
                 ghostty_terminal_free(old)
