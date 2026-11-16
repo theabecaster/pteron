@@ -53,6 +53,12 @@ struct CommandRequest: Equatable {
     let command: RexCommand
 }
 
+/// A request to put a tab on screen (a tapped push or toast). RootView shows it.
+struct OpenRequest: Equatable {
+    let id = UUID()
+    let selection: Selection
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -67,22 +73,19 @@ final class AppModel {
     var showSettings = false
     @ObservationIgnored let prefs: Prefs
     @ObservationIgnored let notifier = AgentNotifier()
+    /// Push registration with each server's Rex Connect Helper.
+    @ObservationIgnored let push: PushRegistrar
+    /// Latest request to show a tab; RootView observes it.
+    var openRequest: OpenRequest?
 
     /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
     var hinge: HingeInfo?
-    /// Unfolded Duo: show two panes of the tab, one per page, instead of sidebar + tab.
-    var dualPages: Bool { didSet { UserDefaults.standard.set(dualPages, forKey: "dualPages") } }
-    /// Dual pages: which pane sits on each page, per window.
-    var dualPair: [String: [String]] = [:]
-    /// Quick-reply bars the user dismissed, keyed by block, holding the status they dismissed.
-    var dismissedReplies: [String: String] = [:]
-    /// Composer drafts, per pane. Kept outside the observed state so typing doesn't re-render the screen.
-    @ObservationIgnored var drafts: [String: String] = [:]
 
     /// `connect: false` builds no servers (unit tests and the test host).
     init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
-        dualPages = UserDefaults.standard.bool(forKey: "dualPages")
+        push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor))
+        push.servers = { [weak self] in self?.servers ?? [] }
         if connect { rebuildServers() }
     }
 
@@ -108,7 +111,7 @@ final class AppModel {
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
-            return ServerConnection(config: cfg, prefs: prefs, notifier: notifier)
+            return ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, deviceID: push.deviceID)
         }
         for s in servers { s.start() }
     }
@@ -137,6 +140,39 @@ final class AppModel {
     /// Back in the foreground: reconnect where needed and resync every server with its real state.
     func foregroundResumed() {
         for s in servers { s.resume() }
+        push.becameActive()
+    }
+
+    // MARK: Opening a pane from a push or toast
+
+    /// Opens the pane a push points at. After a cold launch the server may still be connecting, so
+    /// this waits up to `timeout` for the session to load. False if it never did.
+    @discardableResult
+    func open(_ route: PushRoute, timeout: Double = 30) async -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while true {
+            if let s = servers.first(where: { route.matches(serverURL: $0.config.url, hostName: $0.hostName) }),
+               openPane(s, session: route.sessionID, window: route.windowID, block: route.blockID) {
+                return true
+            }
+            guard Date() < end else { return false }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+    }
+
+    /// Puts a pane on screen: its tab, with the pane shown when only one fits. With no window given,
+    /// the tab holding the block. False while the session or tab isn't loaded.
+    @discardableResult
+    func openPane(_ s: ServerConnection, session sid: String, window wid: String?, block bid: String?) -> Bool {
+        guard let v = s.views[sid] else { return false }
+        let w = v.window(wid) ?? bid.flatMap { v.windowContaining(block: $0) } ?? (wid == nil && bid == nil ? v.activeWindow : nil)
+        guard let w else { return false }
+        if let bid, w.allBlocks.contains(where: { $0.id == bid }) {
+            focusedPane[w.id] = bid
+            Task { await s.focus(sid, block: bid) }
+        }
+        openRequest = OpenRequest(selection: Selection(serverID: s.id, sessionID: sid, windowID: w.id))
+        return true
     }
 
     /// `-autoOpen <session label>` launch argument (testing): open that session's first tab.

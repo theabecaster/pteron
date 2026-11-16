@@ -34,6 +34,14 @@ targets:
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
+    # Push from Rex Connect Helper. Development signing keeps "development" (sandbox tokens);
+    # exporting for App Store Connect switches it to production. Blocked-agent pushes use the
+    # time-sensitive interruption level, which needs its own entitlement.
+    entitlements:
+      path: RexConnect/RexConnect.entitlements
+      properties:
+        aps-environment: development
+        com.apple.developer.usernotifications.time-sensitive: true
     settings:
       base:
         # The bundle id predates the rename. App Store Connect and the APNs topic depend on it.

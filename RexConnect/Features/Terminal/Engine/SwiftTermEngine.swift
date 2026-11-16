@@ -76,6 +76,7 @@ final class RexTerminalView: SwiftTerm.TerminalView, TerminalEngineView, Termina
     var parsesOffMainThread: Bool { false }
     /// `setFonts` resizes to the frame and soft-resets.
     var fontChangeResetsModes: Bool { true }
+    var reflowsLikeServer: Bool { false }
 
     func restoreSnapshot(_ bytes: [UInt8], failed: @escaping @MainActor () -> Void) -> Bool { false }
 
@@ -124,6 +125,13 @@ final class RexTerminalView: SwiftTerm.TerminalView, TerminalEngineView, Termina
     }
 
     func feed(buffer: UnsafeBufferPointer<UInt8>) { feed(byteArray: ArraySlice(buffer)) }
+
+    /// PERF (PerfProbe): SwiftTerm's own counters. `frames` are frames prepared, `renders` frames drawn
+    /// (handed to the GPU with Metal).
+    var perfCounters: (frames: Int, renders: Int) {
+        let d = diagnostics
+        return (d.frames, d.renders)
+    }
 
     /// GPU rendering keeps scrolling and heavy output at the display rate; CoreGraphics is the fallback.
     func enableGPU() { try? setUseMetal(true) }

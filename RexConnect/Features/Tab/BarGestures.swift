@@ -1,52 +1,5 @@
 import SwiftUI
 import RexKit
-import TipKit
-
-// MARK: - Pane actions
-
-/// What a pane's menus can do. WindowScreen fills it in; the ⋯ menu, the pager's context menu and
-/// the dock's buttons all run the same closures.
-struct PaneActions {
-    var split: (_ vertical: Bool) -> Void
-    var newTab: () -> Void
-    /// Nil when there's nothing to zoom (one pane fills the screen already).
-    var zoom: (() -> Void)?
-    var zoomed: Bool
-    /// Two pages: put this pane on the other page.
-    var swapPages: (() -> Void)?
-    var clear: () -> Void
-    var renameTab: () -> Void
-    var close: () -> Void
-    var overview: () -> Void
-}
-
-/// The pane context menu (touch and hold the pager): split, zoom, clear, rename, close last.
-struct PaneMenuItems: View {
-    let actions: PaneActions
-
-    var body: some View {
-        Section {
-            Button { actions.split(false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-            Button { actions.split(true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
-        }
-        Section {
-            if let z = actions.zoom {
-                Button(action: z) {
-                    Label(actions.zoomed ? "Unzoom" : "Zoom Pane",
-                          systemImage: actions.zoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                }
-            }
-            if let s = actions.swapPages {
-                Button(action: s) { Label("Swap Pages", systemImage: "arrow.left.arrow.right") }
-            }
-            Button(action: actions.clear) { Label("Clear", systemImage: "eraser") }
-            Button(action: actions.renameTab) { Label("Rename Tab…", systemImage: "pencil") }
-        }
-        Section {
-            Button(role: .destructive, action: actions.close) { Label("Close Pane", systemImage: "xmark.square") }
-        }
-    }
-}
 
 // MARK: - Header title: tap for the tab menu, swipe for the next tab
 
@@ -71,7 +24,6 @@ struct TabTitleBar: View {
     @State private var armed = false
     @State private var bumped = false
     @State private var showMenu = false
-    private let tip = TabSwipeTip()
 
     private static let commit: CGFloat = 64
 
@@ -92,8 +44,6 @@ struct TabTitleBar: View {
             TabMenu(server: server, sessionID: sessionID, currentWindowID: window.id, theme: theme,
                     close: { showMenu = false },
                     onPick: { sel in
-                        GestureTips.donate(TabSwipeTip.switchedTabs)
-                        GestureTips.donate(OverviewGestureTip.switchedFromTitleMenu)
                         onPick(sel)
                     },
                     onOverview: onOverview, onNewTab: onNewTab, onRename: onRename)
@@ -105,7 +55,6 @@ struct TabTitleBar: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = max($0, 1) }
         .onTapGesture { Haptic.tap(); showMenu = true }
         .gesture(drag)
-        .popoverTip(tip, arrowEdge: .top)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { showMenu = true }
@@ -263,156 +212,5 @@ struct TabMenu: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Dock pager: swipe sideways for panes, up for all tabs, past the end for a new pane
-
-/// The middle of the dock pager: the pane's name and dots. Drags here pick their direction from the
-/// first movement: up opens the tab overview, sideways changes pane, and past the last pane a
-/// "New Pane" card slides in and commits on release. Touch and hold for the pane menu.
-struct PagerCenter: View {
-    let server: ServerConnection
-    let window: WindowInfo
-    let block: String
-    /// The panes a swipe steps through (two pages: not the one on the other page).
-    let stepIDs: [String]
-    let theme: TermTheme
-    let actions: PaneActions
-    let onPick: (String) -> Void
-    let onStep: (Int) -> Void
-    let onNewPane: () -> Void
-
-    @State private var dx: CGFloat = 0
-    @State private var dy: CGFloat = 0
-    @State private var axis: Axis?
-    @State private var armed = false
-    @State private var bumped = false
-    private let tip = OverviewGestureTip()
-
-    private static let upCommit: CGFloat = 36
-    private static let newCommit: CGFloat = 100
-    private static let newDamping: CGFloat = 0.4
-
-    var body: some View {
-        let ids = window.orderedBlockIDs
-        let idx = ids.firstIndex(of: block) ?? 0
-        let step = stepIDs.firstIndex(of: block) ?? 0
-        let newProgress = (axis == .horizontal && step == stepIDs.count - 1 && dx < 0)
-            ? min(1, -dx / (Self.newCommit * Self.newDamping)) : 0
-        ZStack {
-            VStack(spacing: 2) {
-                Image(systemName: "chevron.compact.up")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(axis == .vertical && armed ? theme.accent : theme.chrome.tertiary.opacity(0.7))
-                    .frame(height: 7)
-                    .accessibilityHidden(true)
-                PaneName(server: server, window: window, block: block)
-                    .font(.caption.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(theme.fg)
-                if ids.count > 1 { dots(ids, idx) }
-            }
-            .offset(x: dx, y: dy)
-            if newProgress > 0 {
-                newPaneCard
-                    .opacity(newProgress)
-                    .scaleEffect(0.85 + 0.15 * newProgress)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.trailing, 4)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .contentShape(Rectangle())
-        .gesture(drag(stepIDs, step))
-        .contextMenu { PaneMenuItems(actions: actions) }
-        .popoverTip(tip, arrowEdge: .bottom)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")
-        .accessibilityHint("Swipe up or down to change pane.")
-        .accessibilityAdjustableAction { d in onStep(d == .increment ? 1 : -1) }
-        .accessibilityAction(named: "All Tabs", actions.overview)
-        .accessibilityAction(named: "New Pane", onNewPane)
-        .accessibilityAction(named: "Clear", actions.clear)
-        .accessibilityAction(named: "Close Pane", actions.close)
-    }
-
-    private var newPaneCard: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "plus").font(.system(size: 11, weight: .bold))
-            Text("New Pane").font(.caption.weight(.semibold))
-        }
-        .foregroundStyle(armed ? theme.bg : theme.fg)
-        .padding(.horizontal, 10)
-        .frame(height: 28)
-        .background(Capsule().fill(armed ? theme.accent : theme.fg.opacity(0.1)))
-        .fixedSize()
-        .accessibilityHidden(true)
-    }
-
-    private func dots(_ ids: [String], _ idx: Int) -> some View {
-        Group {
-            if ids.count <= 9 {
-                HStack(spacing: 5) {
-                    ForEach(Array(ids.enumerated()), id: \.element) { i, bid in
-                        PagerDot(server: server, block: bid, selected: i == idx, theme: theme)
-                            .onTapGesture { onPick(bid) }
-                    }
-                }
-            } else {
-                Text("\(idx + 1) / \(ids.count)").font(.caption2.weight(.semibold)).foregroundStyle(theme.chrome.tertiary)
-            }
-        }
-    }
-
-    private func setArmed(_ on: Bool) {
-        guard on != armed else { return }
-        armed = on
-        if on { Haptic.threshold() }
-    }
-
-    private func drag(_ ids: [String], _ idx: Int) -> some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { v in
-                let t = v.translation
-                if axis == nil {
-                    axis = t.height < 0 && abs(t.height) > 2 * abs(t.width) ? .vertical : .horizontal
-                }
-                if axis == .vertical {
-                    dy = max(min(0, t.height) * 0.35, -18)
-                    setArmed(t.height < -Self.upCommit)
-                    return
-                }
-                let d = t.width < 0 ? 1 : -1
-                if ids.indices.contains(idx + d) {
-                    dx = t.width * 0.6
-                    setArmed(false)
-                } else if d == 1 {
-                    // Past the last pane: the New Pane card slides in.
-                    dx = t.width * Self.newDamping
-                    setArmed(-t.width > Self.newCommit)
-                } else {
-                    // Before the first pane: nothing there.
-                    dx = t.width * 0.2
-                    if !bumped, t.width > 30 { bumped = true; Haptic.bump() }
-                }
-            }
-            .onEnded { v in
-                let t = v.translation
-                if axis == .vertical {
-                    if armed { actions.overview() }
-                } else {
-                    let d = t.width < 0 ? 1 : -1
-                    if ids.indices.contains(idx + d) {
-                        if abs(t.width) > 36 || abs(v.predictedEndTranslation.width) > 90 { onStep(d) }
-                    } else if d == 1, armed {
-                        onNewPane()
-                    }
-                }
-                axis = nil
-                armed = false
-                bumped = false
-                withAnimation(.snappy(duration: 0.22)) { dx = 0; dy = 0 }
-            }
     }
 }

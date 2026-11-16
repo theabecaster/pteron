@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import RexKit
 
 /// One live terminal pane.
@@ -27,7 +28,7 @@ struct PaneView: View {
 }
 
 /// SwiftUI wrapper for the UIKit terminal host.
-private struct PaneHostView: UIViewRepresentable {
+struct PaneHostView: UIViewRepresentable {
     let server: ServerConnection
     let sessionID: String
     let blockID: String
@@ -40,6 +41,7 @@ private struct PaneHostView: UIViewRepresentable {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Environment(AppModel.self) private var model: AppModel?
+    @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
 
     private var commandHandler: ((RexCommand) -> Void)? {
         if let onCommand { return onCommand }
@@ -47,21 +49,43 @@ private struct PaneHostView: UIViewRepresentable {
         return { [weak model] in model?.perform($0) }
     }
 
-    func makeUIView(context: Context) -> TerminalHost {
+    func makeUIView(context: Context) -> Container {
+        let key = TerminalHostPool.Key(server: server.id, session: sessionID, block: blockID)
+        // A fold or unfold rebuilt the layout: take over the pane's live host instead of starting over.
+        if let pool, let host = pool.host(for: key), host.term.engineKind != engine.implemented {
+            // The engine setting changed: this pane's pooled host runs the old engine. Let it go;
+            // the new host below takes its place in the pool.
+            host.stop()
+        } else if let pool, let host = pool.host(for: key) {
+            let c = Container(host, key: key, pool: pool)
+            pool.attach(c)
+            apply(host)
+            return c
+        }
         let p = prefs
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
         stream.onActionFailed = { Notice.shared.show($0) }
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme),
                                 engine: engine)
         host.keymap = server.keymap
-        host.onCommand = commandHandler
-        host.isActive = active
-        host.onFocus = onFocus
-        host.onSwipe = onSwipe
-        return host
+        apply(host)
+        let c = Container(host, key: key, pool: pool)
+        if let pool {
+            pool.add(host, for: key)
+            pool.attach(c)
+        } else {
+            c.adopt()
+        }
+        return c
     }
 
-    func updateUIView(_ host: TerminalHost, context: Context) {
+    func updateUIView(_ c: Container, context: Context) {
+        // A newer PaneView shows this host now; this one is on its way out.
+        guard c.owns else { return }
+        apply(c.host)
+    }
+
+    private func apply(_ host: TerminalHost) {
         let p = prefs
         let theme = prefs.theme(for: scheme)
         if host.theme != theme { host.applyTheme(theme) }
@@ -73,7 +97,97 @@ private struct PaneHostView: UIViewRepresentable {
         host.onSwipe = onSwipe
     }
 
-    static func dismantleUIView(_ host: TerminalHost, coordinator: ()) {
-        host.stop()
+    static func dismantleUIView(_ c: Container, coordinator: ()) {
+        if let pool = c.pool {
+            pool.detach(c)
+        } else {
+            c.host.scheduleStop()
+        }
+    }
+
+    /// Each PaneView gets its own container; the host moves between containers. SwiftUI may build a
+    /// view and drop it again while it swaps layouts, and may tear an old container down after a new
+    /// one took the host; neither may take the host from the container on screen.
+    final class Container: UIView {
+        let host: TerminalHost
+        let key: TerminalHostPool.Key
+        weak var pool: TerminalHostPool?
+
+        init(_ host: TerminalHost, key: TerminalHostPool.Key, pool: TerminalHostPool?) {
+            self.host = host
+            self.key = key
+            self.pool = pool
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        /// This container shows the host now.
+        var owns: Bool { host.superview === self }
+
+        func adopt() {
+            guard !owns else { return }
+            host.removeFromSuperview()
+            host.frame = bounds
+            addSubview(host)
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            if owns { host.frame = bounds }
+        }
+    }
+}
+
+/// The live terminal hosts, one per pane on screen. A fold or an unfold swaps the layout's view tree
+/// (navigation stack, pages); the new `PaneView` takes the pane's host from here, so the stream, the
+/// screen, the scroll position and the keyboard carry over instead of reconnecting. The newest
+/// container shows the host; when it goes, the host moves back to the newest one left, and with none
+/// left it lets go of its stream once it has been off screen for half a second
+/// (`TerminalHost.scheduleStop`). Owned by `RootView`.
+@MainActor
+@Observable
+final class TerminalHostPool {
+    struct Key: Hashable {
+        var server: UUID
+        var session: String
+        var block: String
+    }
+
+    private final class Weak {
+        weak var c: PaneHostView.Container?
+        init(_ c: PaneHostView.Container) { self.c = c }
+    }
+
+    @ObservationIgnored private var hosts: [Key: TerminalHost] = [:]
+    @ObservationIgnored private var containers: [Key: [Weak]] = [:]
+
+    func host(for key: Key) -> TerminalHost? { hosts[key] }
+
+    func add(_ host: TerminalHost, for key: Key) {
+        hosts[key] = host
+        host.onStopped = { [weak self, weak host] in
+            guard let self, let host, self.hosts[key] === host else { return }
+            self.hosts[key] = nil
+            self.containers[key] = nil
+        }
+    }
+
+    /// The newest container shows the host.
+    func attach(_ c: PaneHostView.Container) {
+        containers[c.key, default: []].removeAll { $0.c == nil || $0.c === c }
+        containers[c.key, default: []].append(Weak(c))
+        c.adopt()
+    }
+
+    /// A container went away. If it showed the host, the host goes back to the newest one left.
+    func detach(_ c: PaneHostView.Container) {
+        containers[c.key]?.removeAll { $0.c == nil || $0.c === c }
+        guard c.owns else { return }
+        if let prev = containers[c.key]?.last?.c {
+            prev.adopt()
+        } else {
+            c.host.scheduleStop()
+        }
     }
 }

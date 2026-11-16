@@ -93,6 +93,9 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     var parsesOffMainThread: Bool { get }
     /// True when changing the font loses terminal modes, so the host should redraw from the server.
     var fontChangeResetsModes: Bool { get }
+    /// True when a resize reflows lines exactly as the Rex server's terminal does, so a new width
+    /// needs no redraw from the server.
+    var reflowsLikeServer: Bool { get }
     func feed(byteArray: ArraySlice<UInt8>)
     /// The hot path for live output. The buffer is only valid during the call; an engine that
     /// parses elsewhere copies it once.
