@@ -57,16 +57,21 @@ private final class GhosttyAtlasTextures {
     }
 
     /// Only the box that changed goes up: a new glyph is a few hundred bytes, not the page. A
-    /// new texture (first use, or the page grew) takes the rows in use; the shader reads exact
-    /// texels inside glyph boxes, so the rest is never looked at.
+    /// new texture (first use, the page grew, or the page was wiped) takes the rows in use; the
+    /// shader reads exact texels inside glyph boxes, so the rest is never looked at.
+    ///
+    /// A texture is only ever added to. After a wipe the page puts new glyphs where old ones
+    /// were, and panes that share the atlas may have frames with the GPU that still read the
+    /// old ones: those frames keep the old texture (a command buffer retains what it uses)
+    /// and this one starts over.
     private func sync(_ page: GhosttyAtlasPage, texture: MTLTexture?, seen: inout Int, format: MTLPixelFormat,
                       device: MTLDevice) -> MTLTexture? {
         var texture = texture
-        if texture == nil || seen != page.sizeGeneration {
+        if texture == nil || seen != page.textureGeneration {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: page.width, height: page.height, mipmapped: false)
             d.usage = .shaderRead
             texture = device.makeTexture(descriptor: d)
-            seen = page.sizeGeneration
+            seen = page.textureGeneration
             page.markUsedDirty()
         }
         let x = page.dirtyMinX, y = page.dirtyMinY, w = page.dirtyMaxX - x, h = page.dirtyMaxY - y
@@ -103,8 +108,13 @@ final class GhosttyRenderer: @unchecked Sendable {
     /// Mirrors `visible`, for the feed queue: a pane that can't draw has no use for a tick.
     let isVisible = Atomic<Bool>(false)
 
+    /// Frames drawn so far. Written on the render thread, read anywhere (tests, the demo's log).
+    var framesDrawn: Int { frameCount.load(ordering: .relaxed) }
+    private let frameCount = Atomic<Int>(0)
+    /// Calls to `nextDrawable` that came back empty or late. Read anywhere.
+    var drawableMisses: Int { misses.load(ordering: .relaxed) }
+    private let misses = Atomic<Int>(0)
     /// Counters for tests and tuning. Render thread writes.
-    private(set) var framesDrawn = 0
     private(set) var lastBuildSeconds: CFTimeInterval = 0
     private(set) var lastEncodeSeconds: CFTimeInterval = 0
     /// When the last frame was handed to the GPU. The render thread paces by it.
@@ -119,11 +129,33 @@ final class GhosttyRenderer: @unchecked Sendable {
     private var pendingAtlas: GhosttyGlyphAtlas?
     private var pendingSelection: UInt32?
     private var redraw = true
+    /// The layer, its size or its visibility changed: what was learned about its drawables
+    /// (`drawableRetryAt`) no longer holds.
+    private var drawableChanged = false
 
     // Render thread state.
     private var buffers: [Buffers] = []
+    /// The buffer set the next frame fills. It moves on only when a frame is committed: a set
+    /// filled for a frame that never went to the GPU is filled again, and a set a committed
+    /// frame reads comes round again three commits later, when that frame has finished:
+    /// `inFlight` lets at most three be under way, and frames finish in the order committed.
     private var bufferIndex = 0
+    /// One count per frame handed to the GPU and not finished. Taken in `render` before a
+    /// drawable is asked for; given back by the command buffer's completion handler, or at once
+    /// on every path that commits nothing.
     private let inFlight = DispatchSemaphore(value: 3)
+    /// `nextDrawable` blocks while the layer has no free drawable, and every pane draws on this
+    /// thread. A layer that showed none of its frames (clipped away, hidden by an ancestor) has
+    /// none free. After a call that came back empty or late, the pane asks for no drawable
+    /// until `drawableRetryAt`: the other panes go on drawing, and each further miss doubles
+    /// the wait, up to `drawableBackoffLimit`.
+    static let drawableBackoffStart: CFTimeInterval = 0.25
+    static let drawableBackoffLimit: CFTimeInterval = 4
+    /// A wait for a drawable longer than this counts as a miss. A healthy layer answers within
+    /// a refresh or two.
+    static let slowDrawable: CFTimeInterval = 0.1
+    private(set) var drawableRetryAt: CFTimeInterval = 0
+    private var drawableBackoff: CFTimeInterval = 0
     private(set) var blinkOn = true
     private var drawnCursor = GhosttyCursorState()
 
@@ -151,13 +183,41 @@ final class GhosttyRenderer: @unchecked Sendable {
         GhosttyRenderThread.shared.wake()
     }
 
-    func setLayer(_ l: CAMetalLayer?) { configure { layer = l } }
-    func setDrawableSize(width: Int, height: Int) { configure { drawableSize = SIMD2(Int32(width), Int32(height)) } }
+    func setLayer(_ l: CAMetalLayer?) {
+        configure {
+            layer = l
+            drawableChanged = true
+        }
+    }
+    /// A size of zero stops drawing: a layer without area never shows a drawable.
+    func setDrawableSize(width: Int, height: Int) {
+        let size = SIMD2(Int32(width), Int32(height))
+        configLock.lock()
+        let same = drawableSize == size
+        configLock.unlock()
+        if same { return }
+        configure {
+            drawableSize = size
+            drawableChanged = true
+        }
+    }
     /// False while the view is off-window or the app is in the background: no Metal work at all,
     /// and output doesn't wake the render thread (`isVisible`). Becoming visible draws a frame.
     func setVisible(_ v: Bool) {
         isVisible.store(v, ordering: .relaxed)
-        configure { visible = v }
+        configure {
+            visible = v
+            drawableChanged = true
+        }
+    }
+    /// The view is going away: no pass may ask its layer for a drawable from now on. A frame
+    /// being drawn at this moment is finished. Any thread.
+    func retire() {
+        isVisible.store(false, ordering: .relaxed)
+        configLock.lock()
+        visible = false
+        layer = nil
+        configLock.unlock()
     }
     /// An unfocused pane shows a hollow cursor, like Ghostty.
     func setFocused(_ f: Bool) {
@@ -197,16 +257,27 @@ final class GhosttyRenderer: @unchecked Sendable {
         case idle
         /// A frame was handed to the GPU.
         case presented
-        /// No drawable was free. Try again on the next tick.
+        /// Nothing was handed over (three frames are still with the GPU, or the frame could
+        /// not be encoded). Try again on the next tick.
         case retry
+        /// The layer gave no drawable in time. Try again at `drawableRetryAt`, not before.
+        case blocked
     }
 
     /// Draws a frame if anything changed.
     func render(now: CFTimeInterval) -> Outcome {
         configLock.lock()
         let layer = layer, size = drawableSize, visible = visible
+        if drawableChanged {
+            drawableChanged = false
+            drawableRetryAt = 0
+            drawableBackoff = 0
+        }
         configLock.unlock()
+        // Hidden, or no area: nothing is built, and above all no drawable is asked for.
         guard visible, let layer, size.x > 0, size.y > 0, let metal = GhosttyMetal.shared else { return .idle }
+        // Before any work: a pane that waits for its layer costs the others' passes nothing.
+        guard now >= drawableRetryAt else { return .blocked }
         // On screen a frame never waits for CoreText: glyphs that need font fallback come a
         // frame or two later (`GhosttyRenderThread.glyphsReady`).
         frame.defersSlowGlyphs = true
@@ -222,14 +293,24 @@ final class GhosttyRenderer: @unchecked Sendable {
             markRedraw()
             return .retry
         }
-        guard let drawable = layer.nextDrawable() else {
+        let asked = CACurrentMediaTime()
+        let drawable = layer.nextDrawable()
+        let start = CACurrentMediaTime()
+        if drawable == nil || start - asked > Self.slowDrawable {
+            misses.add(1, ordering: .relaxed)
+            drawableBackoff = min(Self.drawableBackoffLimit, max(Self.drawableBackoffStart, drawableBackoff * 2))
+            drawableRetryAt = start + drawableBackoff
+        } else {
+            drawableBackoff = 0
+        }
+        guard let drawable else {
             inFlight.signal()
             markRedraw()
-            return .retry
+            return .blocked
         }
-        let start = CACurrentMediaTime()
         guard let commands = encode(metal: metal, target: drawable.texture, origin: SIMD2(0, 0)) else {
             // Nothing was drawn (the atlas was wiped under the rows, or Metal gave no buffer).
+            // The drawable goes back to its layer unused.
             inFlight.signal()
             markRedraw()
             return .retry
@@ -237,9 +318,10 @@ final class GhosttyRenderer: @unchecked Sendable {
         commands.addCompletedHandler { [inFlight] _ in inFlight.signal() }
         commands.present(drawable)
         commands.commit()
+        advanceBuffers()
         lastPresent = CACurrentMediaTime()
         lastEncodeSeconds = lastPresent - start
-        framesDrawn += 1
+        frameCount.add(1, ordering: .relaxed)
         PerfProbe.active?.ghosttyPass(self, built: built, presented: true)  // PERF: frame handed to the GPU
         return .presented
     }
@@ -254,10 +336,32 @@ final class GhosttyRenderer: @unchecked Sendable {
         let start = CACurrentMediaTime()
         guard let commands = encode(metal: metal, target: target, origin: SIMD2(0, 0)) else { return false }
         commands.commit()
+        advanceBuffers()
         lastEncodeSeconds = CACurrentMediaTime() - start
         commands.waitUntilCompleted()
-        framesDrawn += 1
+        frameCount.add(1, ordering: .relaxed)
         return true
+    }
+
+    /// Test hook: builds and encodes the current state into `target` like `renderOffscreen`, but
+    /// leaves the commit to the caller, who stands in for a GPU that has not run the frame yet.
+    /// Call `offscreenCommitted()` after committing.
+    func encodeOffscreen(into target: MTLTexture, now: CFTimeInterval = CACurrentMediaTime()) -> MTLCommandBuffer? {
+        guard let metal = GhosttyMetal.shared else { return nil }
+        markRedraw()
+        frame.defersSlowGlyphs = false
+        _ = prepare(now: now)
+        return encode(metal: metal, target: target, origin: SIMD2(0, 0))
+    }
+
+    func offscreenCommitted() { advanceBuffers() }
+
+    /// Which buffer set the next frame fills (for tests).
+    var nextBufferIndex: Int { bufferIndex }
+
+    /// A frame was committed with the current buffer set: the next frame takes the next one.
+    private func advanceBuffers() {
+        bufferIndex = (bufferIndex + 1) % buffers.count
     }
 
     private func markRedraw() {
@@ -336,8 +440,8 @@ final class GhosttyRenderer: @unchecked Sendable {
         let firstB = backgroundCount + 1 + underlineCount
         let stride = MemoryLayout<GhosttyRectInstance>.stride
         let glyphStride = MemoryLayout<GhosttyGlyphInstance>.stride
+        // Not advanced here: only a commit uses the set up (`advanceBuffers`).
         let set = buffers[bufferIndex]
-        bufferIndex = (bufferIndex + 1) % buffers.count
         let rectBytes = (firstB + countB + 8) * stride
         if (set.rects?.length ?? 0) < rectBytes {
             set.rects = metal.device.makeBuffer(length: max(4096, rectBytes * 2), options: .storageModeShared)
@@ -383,7 +487,8 @@ final class GhosttyRenderer: @unchecked Sendable {
         }
         n = firstB + countB
         if cursor.visible && !isBlock {
-            let x = Int16(clamping: cursor.x * m.cellWidth), y = UInt16(clamping: cursor.y)
+            let left = cursor.x * m.cellWidth
+            let x = Int16(clamping: left), y = UInt16(clamping: cursor.y)
             let t = max(1, m.boxThickness)
             let w = UInt16(clamping: cursorWidth), h = UInt16(clamping: m.cellHeight)
             switch cursor.style {
@@ -399,7 +504,9 @@ final class GhosttyRenderer: @unchecked Sendable {
                 rects[n] = GhosttyRectInstance(x: x, y: 0, w: w, h: tt, color: cursor.color, row: y)
                 rects[n + 1] = GhosttyRectInstance(x: x, y: Int16(clamping: m.cellHeight - t), w: w, h: tt, color: cursor.color, row: y)
                 rects[n + 2] = GhosttyRectInstance(x: x, y: 0, w: tt, h: h, color: cursor.color, row: y)
-                rects[n + 3] = GhosttyRectInstance(x: x + Int16(clamping: cursorWidth - t), y: 0, w: tt, h: h, color: cursor.color, row: y)
+                // The sum is clamped, not its parts: on a very wide grid `x` is already at the limit.
+                rects[n + 3] = GhosttyRectInstance(x: Int16(clamping: left + cursorWidth - t), y: 0, w: tt, h: h,
+                                                   color: cursor.color, row: y)
                 n += 4
             }
         }
@@ -587,6 +694,9 @@ final class GhosttyRenderThread: Sendable {
         private var panes: [GhosttyRenderer] = []
         private var link: CADisplayLink?
         private var blinkTimer: Timer?
+        /// Fires when the first pane that waits for its layer may ask for a drawable again.
+        private var retryTimer: Timer?
+        private var retryTime = CFTimeInterval.infinity
         private var linkRunning = false
         /// The vsync that began the display interval of the last tick, and the interval's length.
         /// Until the first tick after the link was resumed, `vsync` is when it was resumed.
@@ -652,6 +762,9 @@ final class GhosttyRenderThread: Sendable {
             link = nil
             blinkTimer?.invalidate()
             blinkTimer = nil
+            retryTimer?.invalidate()
+            retryTimer = nil
+            retryTime = .infinity
             linkRunning = false
             CFRunLoopStop(CFRunLoopGetCurrent())
         }
@@ -696,6 +809,8 @@ final class GhosttyRenderThread: Sendable {
                 interval = vsync
             }
             var waiting = false, drew = false
+            // The earliest time a pane that waits for its layer may try again.
+            var retryAt = CFTimeInterval.infinity
             // Before the panes are read, so a wake-up that finds it set is seen by this pass.
             quietUntil.store(0, ordering: .relaxed)
             for pane in panes where pane.needsFrame.load(ordering: .relaxed) {
@@ -712,10 +827,15 @@ final class GhosttyRenderThread: Sendable {
                 case .retry:
                     pane.needsFrame.store(true, ordering: .relaxed)
                     waiting = true
+                case .blocked:
+                    // Not `waiting`: the link doesn't tick for a pane whose layer gives nothing.
+                    pane.needsFrame.store(true, ordering: .relaxed)
+                    retryAt = min(retryAt, pane.drawableRetryAt)
                 case .idle:
                     break
                 }
             }
+            scheduleRetry(at: retryAt, now: now)
             updateBlinkTimer()
             // A blink is one frame every 0.6 s: it needs no link.
             if drew && !blink { lastOutput = now }
@@ -723,6 +843,23 @@ final class GhosttyRenderThread: Sendable {
             if linkRunning, tickedSinceResume, panes.allSatisfy({ $0.lastPresent >= interval }) {
                 quietUntil.store((interval + period).bitPattern, ordering: .relaxed)
             }
+        }
+
+        /// One timer for the panes that wait for their layer. None while no pane does.
+        private func scheduleRetry(at time: CFTimeInterval, now: CFTimeInterval) {
+            // Most passes change nothing here: no pane waits, or the same one still does.
+            if time == retryTime, retryTimer != nil || time.isInfinite { return }
+            retryTimer?.invalidate()
+            retryTimer = nil
+            retryTime = time
+            guard time.isFinite else { return }
+            let timer = Timer(timeInterval: max(0.001, time - now), repeats: false) { [weak self] _ in
+                self?.retryTimer = nil
+                self?.retryTime = .infinity
+                self?.pass(tick: nil)
+            }
+            RunLoop.current.add(timer, forMode: .common)
+            retryTimer = timer
         }
 
         /// The blink timer exists only while some visible, focused pane has a blinking cursor.

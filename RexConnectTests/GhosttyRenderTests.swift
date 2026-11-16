@@ -260,6 +260,114 @@ final class GhosttyRenderTests: XCTestCase {
         XCTAssertEqual(pixel(texture, 2 * m.cellWidth, cy), [0x2e, 0x27, 0x22, 0xff])
     }
 
+    private func bytes(_ texture: MTLTexture) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: texture.width * texture.height * 4)
+        texture.getBytes(&out, bytesPerRow: texture.width * 4, from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
+        return out
+    }
+
+    /// What a pane with an atlas of its own draws for `core`.
+    private func reference(_ core: GhosttyCore, device: MTLDevice, width: Int, height: Int) throws -> [UInt8] {
+        let texture = try target(device, width: width, height: height)
+        XCTAssertTrue(GhosttyRenderer(core: core, atlas: GhosttyGlyphAtlas(pointSize: 12, scale: 2)).renderOffscreen(into: texture))
+        return bytes(texture)
+    }
+
+    /// Two panes share an atlas. The page fills up and is wiped while one pane's frame is with
+    /// the GPU and not drawn yet: that frame must still show its own glyphs, not the ones the
+    /// other pane put in their place.
+    func testAWipeLeavesFramesAlreadyHandedOverIntact() throws {
+        let metal = try XCTUnwrap(GhosttyMetal.shared)
+        let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
+        let m = atlas.metrics
+        let width = 12 * m.cellWidth, height = 2 * m.cellHeight
+        let first = GhosttyCore(cols: 12, rows: 2), second = GhosttyCore(cols: 12, rows: 2)
+        first.feed(Array("ABCDEFGH\u{1b}[?25l".utf8))
+        second.feed(Array("stuvwxyz\u{1b}[?25l".utf8))
+        first.sync()
+        second.sync()
+        let wanted = try reference(first, device: metal.device, width: width, height: height)
+        let wantedSecond = try reference(second, device: metal.device, width: width, height: height)
+        XCTAssertFalse(wanted == wantedSecond)
+
+        let one = GhosttyRenderer(core: first, atlas: atlas), two = GhosttyRenderer(core: second, atlas: atlas)
+        let textureOne = try target(metal.device, width: width, height: height)
+        let textureTwo = try target(metal.device, width: width, height: height)
+        // The first pane's frame is encoded, its glyphs are uploaded; the GPU has not run it.
+        let waiting = try XCTUnwrap(one.encodeOffscreen(into: textureOne))
+        // The pages are wiped, and the second pane's build puts its glyphs where the first's were.
+        atlas.lock()
+        atlas.wipeForTesting()
+        atlas.unlock()
+        XCTAssertTrue(two.renderOffscreen(into: textureTwo))
+        XCTAssertTrue(bytes(textureTwo) == wantedSecond)
+        // Now the GPU gets to the first pane's frame.
+        waiting.commit()
+        one.offscreenCommitted()
+        waiting.waitUntilCompleted()
+        XCTAssertTrue(bytes(textureOne) == wanted, "a frame handed over before the wipe draws the glyphs it was built with")
+        // And its next frame is built from the new pages.
+        XCTAssertTrue(one.renderOffscreen(into: textureOne))
+        XCTAssertTrue(bytes(textureOne) == wanted)
+        XCTAssertEqual(one.frame.rowsBuilt, 2, "rows built before the wipe are built again")
+    }
+
+    /// A frame that was encoded and never committed must not use up a buffer set: the sets after
+    /// it may still be read by the GPU.
+    func testOnlyACommittedFrameUsesUpItsBuffers() throws {
+        let metal = try XCTUnwrap(GhosttyMetal.shared)
+        let core = GhosttyCore(cols: 12, rows: 2)
+        core.feed(Array("first\u{1b}[?25l".utf8))
+        core.sync()
+        let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
+        let m = atlas.metrics
+        let width = 12 * m.cellWidth, height = 2 * m.cellHeight
+        let renderer = GhosttyRenderer(core: core, atlas: atlas)
+        let texture = try target(metal.device, width: width, height: height)
+        XCTAssertEqual(renderer.nextBufferIndex, 0)
+        XCTAssertTrue(renderer.renderOffscreen(into: texture))
+        XCTAssertEqual(renderer.nextBufferIndex, 1)
+        // Encoded twice and thrown away, as when a frame can't be handed over.
+        XCTAssertNotNil(renderer.encodeOffscreen(into: texture))
+        XCTAssertEqual(renderer.nextBufferIndex, 1)
+        core.feed(Array("\rsecond".utf8))
+        core.sync()
+        XCTAssertNotNil(renderer.encodeOffscreen(into: texture))
+        XCTAssertEqual(renderer.nextBufferIndex, 1)
+        // The retry fills the same set again, with what is on screen now.
+        let commands = try XCTUnwrap(renderer.encodeOffscreen(into: texture))
+        commands.commit()
+        renderer.offscreenCommitted()
+        commands.waitUntilCompleted()
+        XCTAssertEqual(renderer.nextBufferIndex, 2)
+        XCTAssertTrue(bytes(texture) == (try reference(core, device: metal.device, width: width, height: height)))
+        XCTAssertTrue(renderer.renderOffscreen(into: texture))
+        XCTAssertEqual(renderer.nextBufferIndex, 0)
+    }
+
+    /// Pixel positions are 16 bits wide. Far to the right of a very wide grid they are clamped,
+    /// part by part and as sums.
+    func testACursorFarToTheRightOfAVeryWideGridIsDrawnClamped() throws {
+        let metal = try XCTUnwrap(GhosttyMetal.shared)
+        let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
+        let cols = Int(Int16.max) / atlas.metrics.cellWidth + 200
+        let core = GhosttyCore(cols: cols, rows: 2)
+        core.feed(Array("\u{1b}[4mleft\u{1b}[0m\u{1b}[1;\(cols)H\u{1b}[41;4;9mX\u{1b}[0m\u{1b}[1;\(cols)H".utf8))
+        core.sync()
+        XCTAssertEqual(core.cursorPosition.x, cols - 1)
+        let texture = try target(metal.device, width: 64, height: 64)
+        // Every cursor shape: the hollow block of an unfocused pane adds a width to the position.
+        for (focused, style) in [(false, "2"), (true, "2"), (true, "4"), (true, "6")] {
+            let renderer = GhosttyRenderer(core: core, atlas: atlas)
+            renderer.setFocused(focused)
+            core.feed(Array("\u{1b}[\(style) q".utf8))
+            core.sync()
+            XCTAssertTrue(renderer.renderOffscreen(into: texture))
+            XCTAssertEqual(renderer.frame.cursor.x, cols - 1)
+        }
+        XCTAssertEqual(pixel(texture, 2, 2)[3], 0xff)
+    }
+
     /// Row rebuild plus encode for a frame where every row is dirty, which is what scrolling output is.
     private func measureFullDirty(cols: Int, rows: Int) throws {
         let metal = try XCTUnwrap(GhosttyMetal.shared)
@@ -357,6 +465,198 @@ final class GhosttyRenderTests: XCTestCase {
         let deadline = Date().addingTimeInterval(3)
         while thread.alive.load(ordering: .relaxed) && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertFalse(thread.alive.load(ordering: .relaxed), "render thread still running")
+    }
+
+    @MainActor
+    private func makeWindow(_ size: CGSize = CGSize(width: 320, height: 240)) -> UIWindow {
+        let window = UIWindow(frame: CGRect(origin: .zero, size: size))
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
+        window.isHidden = false
+        return window
+    }
+
+    /// Waits until `condition` holds, for at most `seconds`.
+    @MainActor
+    private func eventually(_ seconds: TimeInterval = 3, _ condition: () -> Bool) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        return condition()
+    }
+
+    /// A pane's view is let go while it still has megabytes to parse, a restore queued, a hold
+    /// that is never released and a selection drag: the render thread's pane, the terminal and
+    /// the core all go, with nothing left that ticks.
+    @MainActor
+    func testAViewDroppedInTheMiddleOfWorkLetsEverythingGo() async throws {
+        let thread = GhosttyRenderThread.shared
+        let quiet = try await eventually { thread.paneCount == 0 }
+        XCTAssertTrue(quiet, "panes left over from another test")
+        let terminals = GhosttyCore.liveTerminals.load(ordering: .relaxed)
+        let snapshot = try ghosttyFixture("ghostty-history")
+        weak var core: GhosttyCore?
+        weak var renderer: GhosttyRenderer?
+        weak var gone: GhosttyTerminalView?
+        do {
+            let window = makeWindow()
+            let view = GhosttyTerminalView(frame: window.bounds, fontSize: 12, cols: 40, rows: 10)
+            view.apply(theme: ThemeStore.fallback)
+            window.addSubview(view)
+            view.layoutIfNeeded()
+            core = view.core
+            renderer = view.renderer
+            gone = view
+            let drew = try await eventually { view.renderer.framesDrawn > 0 }
+            XCTAssertTrue(drew)
+            XCTAssertEqual(thread.paneCount, 1)
+            view.feed(text: String(repeating: "a line of output that scrolls\r\n", count: 100_000))
+            XCTAssertTrue(view.restoreSnapshot(snapshot, failed: {}))
+            view.feed(text: "more\u{1b}[?2026hheld and never released")
+            view.beginSelection(at: CGPoint(x: 20, y: 8), word: true)
+            view.extendSelection(to: CGPoint(x: 120, y: 40), autoscroll: false)
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        let freed = try await eventually(10) {
+            gone == nil && core == nil && renderer == nil && thread.paneCount == 0
+                && GhosttyCore.liveTerminals.load(ordering: .relaxed) <= terminals
+        }
+        XCTAssertNil(gone, "something holds the view")
+        XCTAssertNil(renderer, "something holds the renderer")
+        XCTAssertNil(core, "something holds the core")
+        XCTAssertEqual(thread.paneCount, 0)
+        XCTAssertTrue(freed)
+        let stopped = try await eventually { !thread.alive.load(ordering: .relaxed) }
+        XCTAssertTrue(stopped, "render thread still running")
+        // Nothing left that wakes: the hold's timer finds no core.
+        let passes = thread.passes.load(ordering: .relaxed)
+        try await Task.sleep(nanoseconds: UInt64((GhosttyCore.renderHoldTimeout + 0.2) * 1e9))
+        XCTAssertEqual(thread.passes.load(ordering: .relaxed), passes)
+    }
+
+    /// A layer without area never shows a drawable, so none comes back to its pool and the
+    /// fourth request for one would block the thread every pane draws on.
+    @MainActor
+    func testAPaneWithoutAreaAsksForNoDrawable() async throws {
+        let window = makeWindow()
+        var view: GhosttyTerminalView? = GhosttyTerminalView(frame: window.bounds, fontSize: 12, cols: 40, rows: 10)
+        let renderer = view!.renderer
+        view!.apply(theme: ThemeStore.fallback)
+        window.addSubview(view!)
+        view!.layoutIfNeeded()
+        view!.feed(text: "shown\u{1b}[2 q")
+        let drew = try await eventually { renderer.framesDrawn > 0 }
+        XCTAssertTrue(drew)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        view!.frame = .zero
+        view!.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let frames = renderer.framesDrawn
+        let start = CACurrentMediaTime()
+        for i in 0..<12 {
+            view!.feed(text: "\r\nwritten while there is nothing to draw on \(i)")
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        view!.core.sync()
+        XCTAssertEqual(renderer.framesDrawn, frames, "no frame for a layer without area")
+        XCTAssertEqual(renderer.drawableMisses, 0)
+        XCTAssertLessThan(CACurrentMediaTime() - start, 0.9)
+
+        // With area again, it draws what was written meanwhile.
+        view!.frame = window.bounds
+        view!.layoutIfNeeded()
+        let again = try await eventually { renderer.framesDrawn > frames }
+        XCTAssertTrue(again)
+        XCTAssertEqual(renderer.drawableMisses, 0)
+        view!.removeFromSuperview()
+        view = nil
+        window.isHidden = true
+    }
+
+    /// A pane whose layer shows nothing (here: an ancestor is hidden, which the view can't see)
+    /// runs out of drawables. Once a request for one came back late, the pane is left alone
+    /// for a while and the other panes draw at their pace.
+    @MainActor
+    func testAPaneWhoseLayerGivesNoDrawableLeavesTheOthersDrawing() async throws {
+        let window = makeWindow(CGSize(width: 320, height: 480))
+        let holder = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        holder.isHidden = true
+        window.addSubview(holder)
+        var covered: GhosttyTerminalView? = GhosttyTerminalView(frame: holder.bounds, fontSize: 12, cols: 40, rows: 10)
+        var shown: GhosttyTerminalView? = GhosttyTerminalView(frame: CGRect(x: 0, y: 240, width: 320, height: 240), fontSize: 12, cols: 40, rows: 10)
+        let stuck = covered!.renderer, free = shown!.renderer
+        for view in [covered!, shown!] { view.apply(theme: ThemeStore.fallback) }
+        holder.addSubview(covered!)
+        window.addSubview(shown!)
+        covered!.layoutIfNeeded()
+        shown!.layoutIfNeeded()
+        // Output for the covered pane until its layer has no drawable left.
+        var i = 0
+        let deadline = Date().addingTimeInterval(4)
+        while stuck.drawableMisses == 0 && Date() < deadline {
+            covered!.feed(text: "\r\ncovered \(i)")
+            i += 1
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        if stuck.drawableMisses > 0 {
+            // It has more to draw, and is not asked to for the time being.
+            covered!.feed(text: "\r\nmore")
+            let before = free.framesDrawn, stuckFrames = stuck.framesDrawn, misses = stuck.drawableMisses
+            let start = CACurrentMediaTime()
+            for n in 0..<10 {
+                shown!.feed(text: "\r\nshown \(n)")
+                covered!.feed(text: "\r\nstill covered \(n)")
+                try await Task.sleep(nanoseconds: 18_000_000)
+            }
+            let took = CACurrentMediaTime() - start
+            XCTAssertLessThan(took, GhosttyRenderer.drawableBackoffStart + 0.15, "the main thread was not held up either")
+            XCTAssertGreaterThanOrEqual(free.framesDrawn - before, 5, "the visible pane kept drawing")
+            if took < GhosttyRenderer.drawableBackoffStart {
+                XCTAssertEqual(stuck.drawableMisses, misses, "no drawable asked for during the wait")
+                XCTAssertLessThanOrEqual(stuck.framesDrawn - stuckFrames, 1)
+            }
+        }
+        // (A simulator or device whose layer never runs dry has nothing to show here.)
+        covered!.removeFromSuperview()
+        shown!.removeFromSuperview()
+        covered = nil
+        shown = nil
+        window.isHidden = true
+    }
+
+    /// The page of a shared atlas is wiped: every pane that uses it draws again, also one with
+    /// nothing new of its own, because its rows name places that hold other glyphs now.
+    @MainActor
+    func testAWipeMakesEveryPaneOfTheAtlasDrawAgain() async throws {
+        let window = makeWindow(CGSize(width: 320, height: 480))
+        var one: GhosttyTerminalView? = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: 12, cols: 40, rows: 10)
+        var two: GhosttyTerminalView? = GhosttyTerminalView(frame: CGRect(x: 0, y: 240, width: 320, height: 240), fontSize: 12, cols: 40, rows: 10)
+        XCTAssertTrue(one!.atlas === two!.atlas, "same font and scale: one atlas")
+        let atlas = one!.atlas
+        let first = one!.renderer, second = two!.renderer
+        for view in [one!, two!] {
+            view.apply(theme: ThemeStore.fallback)
+            window.addSubview(view)
+            view.layoutIfNeeded()
+            view.feed(text: "idle pane\u{1b}[2 q")
+        }
+        let drew = try await eventually { first.framesDrawn > 0 && second.framesDrawn > 0 }
+        XCTAssertTrue(drew)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let a = first.framesDrawn, b = second.framesDrawn
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(first.framesDrawn, a, "idle")
+        XCTAssertEqual(second.framesDrawn, b, "idle")
+
+        atlas.lock()
+        atlas.wipeForTesting()
+        atlas.unlock()
+        let both = try await eventually { first.framesDrawn > a && second.framesDrawn > b }
+        XCTAssertTrue(both, "\(first.framesDrawn - a) and \(second.framesDrawn - b) frames after the wipe")
+        for view in [one!, two!] { view.removeFromSuperview() }
+        one = nil
+        two = nil
+        window.isHidden = true
     }
 }
 

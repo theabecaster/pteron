@@ -109,6 +109,10 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         layer.isOpaque = true
         layer.contentsScale = displayScale
         layer.maximumDrawableCount = 3
+        // `nextDrawable` runs on the render thread every pane shares. With the timeout it comes
+        // back with nil after a second when no drawable is free; without it, it never would.
+        // The renderer then leaves the pane alone for a while (`GhosttyRenderer.drawableRetryAt`).
+        layer.allowsNextDrawableTimeout = true
         addSubview(metalView)
 
         let renderer = renderer
@@ -130,16 +134,20 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// The one teardown: the host keeps a pane's view while the pane may come back on screen
+    /// (`TerminalHostPool`) and lets go of it when the pane is closed.
+    ///
+    /// What can outlive the view, and for how long:
+    /// - The render thread holds the renderer (and through it the core) until its `remove`
+    ///   block has run. A pass that is drawing this pane right now finishes its frame; after
+    ///   `retire` no other pass asks the layer for a drawable.
+    /// - Blocks on the feed queue hold the core until they have run: bytes still to parse and a
+    ///   restore under way finish, then the core frees its terminal there.
+    /// - The compression steps and the hold timer hold the core weakly and stop by themselves.
+    /// Nothing holds the view: the core's handlers capture the renderer or the scroller weakly.
     deinit {
+        renderer.retire()
         if registered { GhosttyRenderThread.shared.remove(renderer) }
-    }
-
-    /// Stops drawing for good and lets the render thread go. Also happens on deinit.
-    func shutdown() {
-        guard registered else { return }
-        registered = false
-        renderer.setVisible(false)
-        GhosttyRenderThread.shared.remove(renderer)
     }
 
     // MARK: Output
@@ -271,7 +279,12 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     private func updateDrawable() {
         let w = Int((bounds.width * displayScale).rounded()), h = Int((bounds.height * displayScale).rounded())
-        guard w > 0, h > 0 else { return }
+        guard w > 0, h > 0 else {
+            // A layer with no area shows no drawable, so none would come back to its pool: the
+            // renderer must not ask for one (it draws nothing at size zero).
+            renderer.setDrawableSize(width: 0, height: 0)
+            return
+        }
         let size = CGSize(width: w, height: h)
         if metalView.metalLayer.drawableSize != size { metalView.metalLayer.drawableSize = size }
         renderer.setDrawableSize(width: w, height: h)
