@@ -2,83 +2,86 @@ import Foundation
 
 /// Splits Rex's own APC messages (`ESC _ rex1;<nonce>;<json> ESC \`) out of a terminal stream,
 /// and drops the leading Ghostty snapshot (everything before the first Rex message).
+/// Output and messages are reported in stream order, so a resize applies exactly where the server
+/// put it. Output is handed out as views into the received chunk, without copying.
 struct APCFilter {
     private let marker: [UInt8]
     private(set) var skippingSnapshot = true
+    /// The start of a message split across chunks.
     private var pending: [UInt8] = []
 
     init(nonce: UInt64) {
         marker = Array("\u{1b}_rex1;\(nonce);".utf8)
     }
 
-    mutating func process(_ chunk: [UInt8]) -> (out: [UInt8], messages: [JSONObject]) {
-        var data = pending
-        data.append(contentsOf: chunk)
-        pending.removeAll(keepingCapacity: true)
-        var out: [UInt8] = []
-        out.reserveCapacity(data.count)
-        var msgs: [JSONObject] = []
-        var i = 0
-        let n = data.count
-        var cursor = 0  // start of bytes not yet emitted/dropped
-
-        func emit(_ upTo: Int) {
-            if upTo > cursor {
-                if !skippingSnapshot { out.append(contentsOf: data[cursor..<upTo]) }
+    mutating func process(_ chunk: Data,
+                          output: (UnsafeBufferPointer<UInt8>) -> Void,
+                          message: (JSONObject) -> Void) {
+        if pending.isEmpty {
+            chunk.withUnsafeBytes { raw in
+                scan(raw.bindMemory(to: UInt8.self), output: output, message: message)
             }
-            cursor = upTo
-        }
-
-        while i < n {
-            if data[i] == 0x1b {
-                // Potential marker.
-                let remain = n - i
-                if remain < marker.count {
-                    if Array(data[i..<n]) == Array(marker[0..<remain]) {
-                        emit(i)
-                        pending = Array(data[i..<n])
-                        return (out, msgs)
-                    }
-                    i += 1
-                    continue
-                }
-                if data[i..<(i + marker.count)].elementsEqual(marker) {
-                    // Find ST (ESC \) after the JSON.
-                    var j = i + marker.count
-                    var end = -1
-                    while j + 1 < n {
-                        if data[j] == 0x1b && data[j + 1] == 0x5c { end = j; break }
-                        j += 1
-                    }
-                    if end < 0 {
-                        emit(i)
-                        pending = Array(data[i..<n])
-                        if pending.count > 4 * 1024 * 1024 { pending.removeAll() }  // malformed; give up
-                        return (out, msgs)
-                    }
-                    emit(i)
-                    let json = Data(data[(i + marker.count)..<end])
-                    if let m = JSONCodec.decode(json) { msgs.append(m) }
-                    skippingSnapshot = false
-                    i = end + 2
-                    cursor = i
-                    continue
-                }
-            }
-            i += 1
-        }
-        if skippingSnapshot {
-            cursor = n  // drop snapshot bytes
         } else {
-            emit(n)
+            var data = pending
+            pending = []
+            data.append(contentsOf: chunk)
+            data.withUnsafeBufferPointer { scan($0, output: output, message: message) }
         }
-        return (out, msgs)
+    }
+
+    private mutating func scan(_ buf: UnsafeBufferPointer<UInt8>,
+                               output: (UnsafeBufferPointer<UInt8>) -> Void,
+                               message: (JSONObject) -> Void) {
+        guard let base = buf.baseAddress, !buf.isEmpty else { return }
+        let n = buf.count
+        let m = marker.count
+        var cursor = 0  // start of bytes not yet emitted/dropped
+        var i = 0
+        while i < n {
+            // Jump to the next ESC.
+            guard let hit = memchr(base + i, 0x1b, n - i) else { break }
+            i = UnsafeRawPointer(base).distance(to: UnsafeRawPointer(hit))
+            let remain = n - i
+            let isMarker = marker.withUnsafeBufferPointer { mk in
+                memcmp(base + i, mk.baseAddress!, min(remain, m)) == 0
+            }
+            guard isMarker else { i += 1; continue }
+            if remain < m {
+                // A marker may continue in the next chunk.
+                if i > cursor, !skippingSnapshot { output(UnsafeBufferPointer(rebasing: buf[cursor..<i])) }
+                pending = Array(buf[i..<n])
+                return
+            }
+            // Find ST (ESC \) after the JSON.
+            var end = -1
+            var j = i + m
+            while j + 1 < n, let e = memchr(base + j, 0x1b, n - j - 1) {
+                let k = UnsafeRawPointer(base).distance(to: UnsafeRawPointer(e))
+                if base[k + 1] == 0x5c { end = k; break }
+                j = k + 1
+            }
+            if i > cursor, !skippingSnapshot { output(UnsafeBufferPointer(rebasing: buf[cursor..<i])) }
+            if end < 0 {
+                pending = Array(buf[i..<n])
+                if pending.count > 4 * 1024 * 1024 { pending.removeAll() }  // malformed; give up
+                return
+            }
+            if let msg = JSONCodec.decode(Data(bytes: base + i + m, count: end - i - m)) { message(msg) }
+            skippingSnapshot = false
+            i = end + 2
+            cursor = i
+        }
+        if !skippingSnapshot, n > cursor { output(UnsafeBufferPointer(rebasing: buf[cursor..<n])) }
     }
 }
 
 protocol TerminalSink: AnyObject {
+    /// Clears the terminal and sets the server's grid; a snapshot follows.
     @MainActor func streamReset(cols: Int, rows: Int)
-    @MainActor func streamFeed(_ bytes: [UInt8])
+    /// The screen and scrollback as escape sequences, applied at once.
+    @MainActor func streamSnapshot(_ text: String)
+    /// Live program output. The buffer is only valid during the call.
+    @MainActor func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>)
     @MainActor func streamResized(cols: Int, rows: Int, owner: String?)
     @MainActor func streamTheme(_ theme: JSONObject)
     @MainActor func streamExited(code: Int?)
@@ -90,6 +93,9 @@ protocol TerminalSink: AnyObject {
 @MainActor
 final class TerminalStream {
     enum Status: Equatable { case connecting, live, reconnecting, ended(String), failed(String) }
+
+    /// The most scrollback (bytes of escape sequences) a snapshot reads; older history is skipped.
+    static let snapshotLimit = 1 << 20
 
     let control: RexControl
     let sessionID: String
@@ -107,10 +113,14 @@ final class TerminalStream {
     private var received: UInt64 = 0
     private var stopped = false
     private var resumeAttempts = 0
+    /// True while a resync reads the screen; stream output is dropped meanwhile.
+    private var resyncing = false
+    private var resyncSeq = 0
 
     // Input is sent one write at a time; block methods are not ordered by the server.
     private var inputBuffer: [UInt8] = []
     private var writing = false
+    private var inputRetry: Task<Void, Never>?
 
     init(control: RexControl, sessionID: String, blockID: String) {
         self.control = control
@@ -125,6 +135,8 @@ final class TerminalStream {
 
     func stop() {
         stopped = true
+        inputRetry?.cancel()
+        inputRetry = nil
         gen += 1
         ws?.cancel(with: .normalClosure, reason: nil)
         ws = nil
@@ -139,8 +151,37 @@ final class TerminalStream {
         Task { await self.fullStart() }
     }
 
+    /// Re-read the screen (and scrollback) and redraw it, keeping the data stream open.
+    /// Stream output that arrives while the read is in flight is dropped: the snapshot already holds it.
+    func resync() {
+        guard !stopped, ws != nil else { return }
+        let myGen = gen
+        resyncSeq += 1
+        let mySeq = resyncSeq
+        resyncing = true
+        Task {
+            defer { if mySeq == self.resyncSeq { self.resyncing = false } }
+            do {
+                let size = try await control.blockCall("com.superlogical.terminal.size", session: sessionID, block: blockID)
+                let screen = try await readScreen()
+                // A newer resync or a full restart supersedes this one.
+                guard myGen == gen, mySeq == resyncSeq, !stopped else { return }
+                serverCols = max(size.int("columns") ?? serverCols, 2)
+                serverRows = max(size.int("rows") ?? serverRows, 2)
+                owner = size.str("owner")
+                sink?.streamReset(cols: serverCols, rows: serverRows)
+                sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
+                sink?.streamSnapshot(screen)
+            } catch {
+                guard myGen == gen, mySeq == resyncSeq, !stopped else { return }
+                restart()
+            }
+        }
+    }
+
     private func fullStart() async {
         gen += 1
+        resyncing = false
         let myGen = gen
         sink?.streamStatus(.connecting)
         do {
@@ -153,7 +194,7 @@ final class TerminalStream {
             guard myGen == gen, !stopped else { return }
             sink?.streamReset(cols: serverCols, rows: serverRows)
             sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
-            sink?.streamFeed(Array(initial.utf8))
+            sink?.streamSnapshot(initial)
 
             // 2. Ticket, then the data WebSocket.
             let t = try await control.call("data.connect", [
@@ -174,24 +215,56 @@ final class TerminalStream {
         }
     }
 
+    /// The screen and the newest scrollback as escape sequences (`format` vt).
+    /// A long history is cut to its last `snapshotLimit` bytes, keeping the leading palette.
     private func readScreen() async throws -> String {
-        var args: JSONObject = ["format": "vt", "max_bytes": 900_000]
+        var args: JSONObject = ["format": "vt", "max_bytes": 65_536]
         for k in ["extra_charsets", "extra_cursor", "extra_hyperlink", "extra_keyboard", "extra_kitty_keyboard",
                   "extra_modes", "extra_palette", "extra_protection", "extra_scrolling_region", "extra_style", "extra_tabstops"] {
             args[k] = true
         }
         let r = try await control.blockCall("com.superlogical.terminal.format", session: sessionID, block: blockID, args: args)
         var content = r.str("content") ?? ""
-        var id = r.int("id")
-        var guardCount = 0
-        while let blob = id, guardCount < 40 {
-            guardCount += 1
-            let more = try await control.blockCall("com.superlogical.terminal.blob_read", session: sessionID, block: blockID,
-                                                   args: ["id": blob, "offset": content.utf8.count, "max_bytes": 900_000])
-            content += more.str("data") ?? ""
-            if more.bool("eof") == true || (more.str("data") ?? "").isEmpty { id = nil }
+        guard let id = r.int("id") else { return content }
+        let total = r.int("total") ?? 0
+        var offset = content.utf8.count
+        var skipPartialLine = false
+        if total - offset > Self.snapshotLimit {
+            content = Self.leadingOSC(content) + "\u{1b}[0m"
+            offset = total - Self.snapshotLimit
+            skipPartialLine = true
         }
-        return content
+        var tail = ""
+        for _ in 0..<40 {
+            let more = try await control.blockCall("com.superlogical.terminal.blob_read", session: sessionID, block: blockID,
+                                                   args: ["id": id, "offset": offset, "max_bytes": 900_000])
+            let data = more.str("data") ?? ""
+            tail += data
+            offset += data.utf8.count
+            if more.bool("eof") == true || data.isEmpty { break }
+        }
+        if skipPartialLine, let nl = tail.firstIndex(of: "\n") {
+            tail = String(tail[tail.index(after: nl)...])
+        }
+        return content + tail
+    }
+
+    /// The OSC sequences (palette and the like) at the start of a vt snapshot.
+    private static func leadingOSC(_ s: String) -> String {
+        let u = Array(s.utf8)
+        var i = 0
+        while i + 1 < u.count, u[i] == 0x1b, u[i + 1] == 0x5d {
+            var j = i + 2
+            var next = -1
+            while j < u.count {
+                if u[j] == 0x07 { next = j + 1; break }
+                if u[j] == 0x1b, j + 1 < u.count, u[j + 1] == 0x5c { next = j + 2; break }
+                j += 1
+            }
+            guard next > 0 else { break }
+            i = next
+        }
+        return String(decoding: u[0..<i], as: UTF8.self)
     }
 
     private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool) async throws {
@@ -228,7 +301,7 @@ final class TerminalStream {
                 switch result {
                 case .success(.data(let d)):
                     self.received += UInt64(d.count)
-                    self.consume([UInt8](d))
+                    self.consume(d)
                     self.receive(task, gen: myGen)
                 case .success:
                     self.receive(task, gen: myGen)
@@ -239,27 +312,27 @@ final class TerminalStream {
         }
     }
 
-    private func consume(_ bytes: [UInt8]) {
-        guard var f = filter else { return }
-        let (out, msgs) = f.process(bytes)
-        filter = f
-        for m in msgs {
+    private func consume(_ chunk: Data) {
+        guard filter != nil else { return }
+        let sink = self.sink
+        // In order: a resize applies between the bytes written before and after it.
+        filter!.process(chunk, output: { out in
+            // While a resync reads the screen, its snapshot replaces this output.
+            if !self.resyncing { sink?.streamFeed(out) }
+        }, message: { m in
             switch m.str("type") {
             case "resize":
-                let c = m.int("cols") ?? serverCols, r = m.int("rows") ?? serverRows
-                owner = m["owner"] as? String
-                if c != serverCols || r != serverRows || true {
-                    serverCols = max(c, 2); serverRows = max(r, 2)
-                    sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
-                }
+                let c = m.int("cols") ?? self.serverCols, r = m.int("rows") ?? self.serverRows
+                self.owner = m["owner"] as? String
+                self.serverCols = max(c, 2); self.serverRows = max(r, 2)
+                sink?.streamResized(cols: self.serverCols, rows: self.serverRows, owner: self.owner)
             case "theme":
                 sink?.streamTheme(m)
             case "child_exited":
                 sink?.streamExited(code: m.int("exit_code"))
             default: break
             }
-        }
-        if !out.isEmpty { sink?.streamFeed(out) }
+        })
     }
 
     private func handleDataDrop(_ task: URLSessionWebSocketTask, gen myGen: Int) {
@@ -270,7 +343,9 @@ final class TerminalStream {
         }
         sink?.streamStatus(.reconnecting)
         resumeAttempts += 1
-        guard let tok = token, resumeAttempts <= 3 else {
+        // 1013: the server dropped the stream (e.g. too much output piled up); a resume can't work.
+        // Any failed resume (stale token, byte count off) also ends in a fresh read of the screen.
+        guard let tok = token, resumeAttempts <= 3, task.closeCode.rawValue != 1013 else {
             Task { await self.fullStart() }
             return
         }
@@ -297,15 +372,37 @@ final class TerminalStream {
 
     func send(text: String) { send(Array(text.utf8)) }
 
+    /// Sends typed input now. Keys typed while a write is in flight go out together right after it.
+    /// Input is never dropped by a lost connection: it waits and goes out once the server is back.
     private func pump() {
-        guard !writing, !inputBuffer.isEmpty else { return }
+        guard !writing, !inputBuffer.isEmpty, !stopped else { return }
+        guard control.state == .connected else { retryInput(); return }
         writing = true
         let chunk = inputBuffer
         inputBuffer.removeAll()
         let text = String(decoding: chunk, as: UTF8.self)
         Task {
-            _ = try? await control.blockCall("com.superlogical.terminal.write", session: sessionID, block: blockID, args: ["data": text])
+            do {
+                _ = try await control.blockCall("com.superlogical.terminal.write", session: sessionID, block: blockID, args: ["data": text])
+            } catch let e as RexError where e.code != "client" {
+                // The server refused it (e.g. the pane closed); resending won't help.
+            } catch {
+                // Connection trouble: keep the keys, in order, ahead of anything typed since.
+                self.inputBuffer.insert(contentsOf: chunk, at: 0)
+                self.writing = false
+                self.retryInput()
+                return
+            }
             self.writing = false
+            self.pump()
+        }
+    }
+
+    private func retryInput() {
+        guard inputRetry == nil, !stopped else { return }
+        inputRetry = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            self.inputRetry = nil
             self.pump()
         }
     }
