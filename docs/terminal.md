@@ -71,10 +71,11 @@ ghostty|swiftTerm` for one run); changing it rebuilds the open panes. Plan, desi
   Design, haptics and the seam: [selection.md](selection.md).
 - Pinch: in fit mode changes the font size (one resize claim at the end); in mirror mode zooms.
 - Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%.
-- A tab shows its splits as the Mac lays them out on wide windows. On compact ones (folded, half
-  the unfolded screen, iPhone portrait) splits show only while every pane keeps 40×8 cells
+- A tab shows its splits as the Mac lays them out while every pane keeps 40×8 cells
   (`SplitGeometry.legible`); otherwise one pane shows at a time, with dots in the title bar and a
   sideways swipe on the terminal to move between panes.
+- Resizing or toggling the sidebar changes the tab's frame once (on release, or after the slide),
+  never per frame, so fit mode claims one new size ([duo-layout.md](duo-layout.md)).
 - A width change (fold, unfold, rotation, resize) makes fit mode redraw from the server once the
   new size is claimed: SwiftTerm resizes without reflowing, so old lines would stay cut off.
 - `TerminalHostPool` keeps each pane's `TerminalHost` alive while a fold or unfold swaps the view

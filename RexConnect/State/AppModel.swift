@@ -2,7 +2,7 @@ import CryptoKit
 import SwiftUI
 import RexKit
 
-struct Selection: Hashable {
+struct Selection: Hashable, Codable {
     var serverID: UUID
     var sessionID: String
     var windowID: String
@@ -67,7 +67,8 @@ final class AppModel {
     func perform(_ command: RexCommand) { lastCommand = CommandRequest(command: command) }
 
     var servers: [ServerConnection] = []
-    var selection: Selection?
+    /// The tab on screen. Remembered, so the next launch opens it again.
+    var selection: Selection? { didSet { if let selection, selection != oldValue { prefs.lastSelection = selection } } }
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false
@@ -196,6 +197,11 @@ final class AppModel {
         }
         guard UserDefaults.standard.string(forKey: "autoOpen") == nil else { return }
         guard selection == nil else { return }
+        // The tab open when the app last ran, while it still exists.
+        if let last = prefs.lastSelection, server(last.serverID)?.views[last.sessionID]?.window(last.windowID) != nil {
+            selection = last
+            return
+        }
         for s in servers {
             for e in s.sessions {
                 if let v = s.views[e.id], let w = v.activeWindow {

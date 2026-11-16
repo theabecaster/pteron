@@ -25,7 +25,9 @@ APNs topic depend on it.
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → `TerminalEngineView`: `Engine/` has the
   seam and the SwiftTerm adapter, `Ghostty/` the libghostty-vt engine), KeyBar, Keyboard
   (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card).
-- `RexConnect/App`: entry point, `RootView` (layout by size class and the fold, `Arrangement` in `State/Posture.swift`), launch transition.
+- `RexConnect/App`: entry point, `RootView` (sidebar + tab for the window's width and the fold, `Arrangement`
+  and `SidebarWidth` in `State/Posture.swift`, `SidebarSplit` in Features/Sidebar), launch transition.
+  Bars and the Duo's vertical bar: [docs/duo-layout.md](docs/duo-layout.md).
 - `RexConnect/DesignSystem`: terminal themes and chrome colors derived from them, fonts.
 - `RexConnectTests`: app logic tests. `Relay/Tests`: relay tests.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane, *layer* is a tiled or floating
@@ -91,15 +93,15 @@ Each is a UserDefaults key for that run only.
 - `-typeTest 'text\n'`: type the text into the active pane once it is live. With `-scrollBackTest
   <seconds>`, scroll two pages into the scrollback first and type that much later (checks that input
   returns the view to the bottom).
-- `-hinge closed|partial|full`: pretend the hinge reports this. It only tints the crease; layout never reads it.
+- `-hinge closed|partial|full`: pretend the hinge reports this. Layout never reads it.
 - `-simulateDuo <posture>[,<posture>…]` (Debug builds): lay the root out at that window size, with its
   size classes and a fake fold drawn as a red dashed line, at the bottom-left of a bigger screen.
   Postures: `unfolded` (951×669, flat crease), `book` (951×669, bent), `unfoldedPortrait` (669×951),
-  `tabletop` (669×951, bent), `folded` (466×678), `halfWindow` (475×669, one half of the unfolded
+  `tabletop` (669×951, bent), `folded` (466×678), `foldedLandscape` (678×466), `halfWindow` (475×669, one half of the unfolded
   screen), `iPhone` (402×874), `iPhoneLandscape` (874×402), `proMaxLandscape` (956×440). A list
   cycles every `-simulateDuoEvery` seconds (default 10), to check what a fold keeps.
 - `-focus none` (Debug builds): don't give the active pane the keyboard at launch.
-- `-overlaySidebar YES` (Debug builds): start with the unfolded-portrait sidebar overlay open.
+- `-sidebar closed` (Debug builds): start with the sidebar hidden (it starts open).
 - `-pushToken <hex>` (debug builds): use this APNs token and skip the permission check, to test
   push registration in a simulator.
 
