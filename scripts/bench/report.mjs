@@ -47,6 +47,7 @@ const flowColumns = [
   ['parsed ms', 'flow.parseMs'],
   ['drawn ms', 'flow.drawnMs'],
   ['frames/s', 'presents.perSecond'],
+  ['frame gaps >25 ms', 'presents.gapsOver25'],
   ['main gaps >25 ms', 'mainLink.gapsOver25'],
   ['worst main gap ms', 'mainLink.worstGapMs'],
   ['main busy ms', 'mainBusy.totalMs'],
@@ -105,6 +106,9 @@ const within10 = (g, s) => g <= s * 1.1;
 if (live) judge('first frame', 'live', live, 'firstFrame.presentedMs', less, 'lower');
 for (const s of scenarios) {
   judge('main gaps >25 ms', s, runs[s], 'mainLink.gapsOver25', notMore, 'not more');
+  // Gaps between frames only mean a stall while output keeps coming: not for `top`, which
+  // draws twice a second.
+  if (s !== 'top') judge('frame gaps >25 ms', s, runs[s], 'presents.gapsOver25', notMore, 'not more');
   judge('worst main gap', s, runs[s], 'mainLink.worstGapMs', (g, st) => g <= Math.max(st, 25), 'not worse, or under 25 ms');
   judge('main-thread time', s, runs[s], 'mainBusy.totalMs', less, 'lower');
   judge('memory peak', s, runs[s], 'memory.peakMB', within10, 'within 10%');

@@ -2,30 +2,44 @@
 # Runs the terminal engine benchmark in a simulator and prints the report.
 #
 #   scripts/bench/run.sh <simulator id> [--live <session label>] [--runs N] [--only a,b]
-#                        [--out <dir>] [--skip-build]
+#                        [--out <dir>] [--fresh] [--skip-build]
 #
 # Builds the app once (Release), then for every scenario, engine and run launches it with
 # `-replay <file> -perfLog <name>`, waits for the result file in the app's Documents/perf and
-# copies it to <out>/results. Replay runs touch no server.
+# copies it to <out>/results. Replay runs touch no server. About 8 minutes for the 42 replay
+# runs after the build; --live adds about 2.
+#
+# Results land in <out>/results, one JSON per run (default <out>: build/bench in the repo,
+# an ignored directory). The report is printed at the end; `node scripts/bench/report.mjs
+# <out>/results` prints it again.
+#
+# Resumable: a run whose result file is already there is skipped, so after an interruption the
+# same command goes on where it stopped. --fresh deletes the old results first; use it after
+# changing the code.
 #
 # --live <session label> also measures time to first frame on a real pane: 5 cold launches per
 # engine with `-autoOpen <label> -sizing mirror`, after `seq 1 3000` in that session's pane.
 # The app then connects to the local Rex server and opens that session, so the label must be a
-# throwaway session of your own (`rex session new zz-…`). Mirror sizing never resizes the pane.
+# throwaway session of your own (`rex session new zz-…`). Mirror sizing never claims or
+# resizes the pane.
 #
-# Environment: BENCH_DD (derived data, default $TMPDIR/rex-bench-dd).
+# The app is terminated after every run and when the script ends or is interrupted, which also
+# drops its connection to the server.
+#
+# Environment: BENCH_DD (derived data, default build/dd-bench).
 set -euo pipefail
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
-live=""; runs=3; only=""; out=""; build=1
+live=""; runs=3; only=""; out=""; build=1; fresh=0
 while [[ $# -gt 0 ]]; do
   case $1 in
     --live) live=$2; shift 2 ;;
     --runs) runs=$2; shift 2 ;;
     --only) only=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
+    --fresh) fresh=1; shift ;;
     --skip-build) build=0; shift ;;
     *) usage ;;
   esac
@@ -34,10 +48,16 @@ done
 here=${0:A:h}
 root=${here:h:h}
 bundle=dev.abrahamgonzalez.rexduo
-dd=${BENCH_DD:-${TMPDIR:-/tmp}/rex-bench-dd}
-out=${out:-${TMPDIR:-/tmp}/rex-bench-$(date +%Y%m%d-%H%M%S)}
+dd=${BENCH_DD:-$root/build/dd-bench}
+out=${out:-$root/build/bench}
+if (( fresh )); then rm -rf "$out/results"; fi
 cols=60; rows=50   # fits an iPhone 17 at the default 11 pt font, so the terminal is drawn 1:1
 mkdir -p "$out/results" "$out/scenarios"
+
+# Never leave the app running (it may hold a connection to a real pane).
+cleanup() { xcrun simctl terminate "$sim" $bundle >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 if (( build )); then
   echo "Building Release into $dd …" >&2
@@ -59,6 +79,11 @@ node "$here/gen.mjs" "$out/scenarios" --cols $cols --rows $rows >&2
 # One run: launches with the given arguments and waits for the probe's file.
 run_one() {
   local name=$1 limit=$2; shift 2
+  if [[ -f "$out/results/$name.json" ]]; then
+    echo "  $name: done before, skipped" >&2
+    return 0
+  fi
+  echo "$name" >&2
   xcrun simctl terminate "$sim" $bundle >/dev/null 2>&1 || true
   local data; data=$(xcrun simctl get_app_container "$sim" $bundle data)
   local file="$data/Documents/perf/$name.json"
@@ -99,7 +124,6 @@ for run in $(seq 1 $runs); do
     # Alternate which engine goes first, so drift over the session doesn't favour one.
     order=($engines); (( run % 2 == 0 )) && order=(${(Oa)engines})
     for engine in $order; do
-      echo "run $run: $name $engine" >&2
       run_one "${name}__${engine}__${run}" 60 -replay "$out/scenarios/$file" -terminalEngine $engine \
         -replayCols $cols -replayRows $rows ${=extra}
     done
@@ -121,7 +145,6 @@ print("<" + s.encode().hex() + ">")')
   for run in $(seq 1 5); do
     order=($engines); (( run % 2 == 0 )) && order=(${(Oa)engines})
     for engine in $order; do
-      echo "live $run: $engine" >&2
       run_one "live__${engine}__${run}" 45 -autoOpen "$live" -sizing mirror -terminalEngine $engine -servers "$servers"
     done
   done
