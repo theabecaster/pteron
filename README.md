@@ -6,7 +6,8 @@ server's built-in Tailscale HTTPS address.
 
 - Rex-style sidebar (hosts → sessions → tabs) with agent icons and live status (working, waiting,
   done) from OSC 7501 program status.
-- Live terminals with SwiftTerm, Rex's themes and MesloLGS Nerd Font.
+- Live terminals drawn by Ghostty's terminal core (libghostty-vt) and a Metal renderer, with Rex's
+  themes and MesloLGS Nerd Font.
 - Unfolded Duo: sidebar beside the tab, splits laid out as Rex lays them out, draggable borders.
   Folded or other iPhones: one pane at a time.
 - Fit to phone: the pane you view is resized to the phone and handed back to the Mac when you
@@ -41,7 +42,8 @@ compiler (51 MB) and Ghostty with its dependencies, takes about 130 seconds and 
 `Vendor/`, which is gitignored; nothing is installed system-wide. Later runs do nothing unless the
 pins changed. `scripts/build-ghostty.sh --force` rebuilds. To move to another Ghostty commit, edit
 `scripts/ghostty.version` and run the script again. A build with a missing or out-of-date framework
-stops with a message that says to run it.
+stops with a message that says to run it. The engine needs iOS 17.4 or later; the app's target is
+iOS 18.
 
 Licences of the bundled open source code are in `RexConnect/Resources/Acknowledgements.txt`, shown
 in the app under Settings → About → Acknowledgements.
