@@ -9,6 +9,7 @@ struct RexDuoApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .launchTransition()
                 .environment(model)
                 .onAppear {
                     UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
