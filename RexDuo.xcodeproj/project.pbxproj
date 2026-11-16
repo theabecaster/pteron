@@ -31,6 +31,7 @@
 		E230480A186CEEEA3D460A74 /* MesloLGS NF Bold Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7FDEF5304A507E55668C7764 /* MesloLGS NF Bold Italic.ttf */; };
 		E2DBF4278E1B27E665567126 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E842F7EED38AB887CA95A142 /* Models.swift */; };
 		E4377E6CF44A7DD29F474F84 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 36EACA01B130B7317BA01A95 /* SwiftTerm */; };
+		F42C7274F19FE0B1672560D7 /* LaunchTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D344A7771508EA552910BC1 /* LaunchTransition.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +47,7 @@
 		7D15038E6F4BB703628C8577 /* themes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = themes.json; sourceTree = "<group>"; };
 		7FDEF5304A507E55668C7764 /* MesloLGS NF Bold Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Bold Italic.ttf"; sourceTree = "<group>"; };
 		83D9382C1B610CA4DDB693E3 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		8D344A7771508EA552910BC1 /* LaunchTransition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchTransition.swift; sourceTree = "<group>"; };
 		8D6F8B22DCCD9BA958DE880D /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
 		8EE82B2C7A94534A2C834AED /* ServerConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConnection.swift; sourceTree = "<group>"; };
 		A055753C27DEA288961D8FB4 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -137,6 +139,7 @@
 			children = (
 				E457CA66E64CDD73211FC4E7 /* AgentsView.swift */,
 				B22673A3DDD733ABB237BC3A /* KeyBar.swift */,
+				8D344A7771508EA552910BC1 /* LaunchTransition.swift */,
 				A3283DC3428ED2FF39CB3E79 /* PaneView.swift */,
 				37F109CEE782779190FC8C61 /* RootView.swift */,
 				83D9382C1B610CA4DDB693E3 /* SettingsView.swift */,
@@ -261,6 +264,7 @@
 				1A96C1E14C301C9DF5EA2329 /* AppModel.swift in Sources */,
 				44AECC9EF612BB3B143BCEBC /* JSON.swift in Sources */,
 				997E54C894ED1100A5A8BD0D /* KeyBar.swift in Sources */,
+				F42C7274F19FE0B1672560D7 /* LaunchTransition.swift in Sources */,
 				E2DBF4278E1B27E665567126 /* Models.swift in Sources */,
 				75CBDA7DC81C707CF21FADB8 /* PaneView.swift in Sources */,
 				47CEE5C2E8E574FF2C3AB0C6 /* Prefs.swift in Sources */,
