@@ -241,17 +241,45 @@ final class GhosttySelectionTests: XCTestCase {
         core.endSelection(anchor: anchor)
     }
 
-    func testADragAtTheEdgeScrollsTheViewportAndKeepsTheAnchor() {
+    /// The viewport is the scroller's to move. After it did, the anchor is still on its cell.
+    func testTheAnchorKeepsItsCellWhenTheViewportScrolls() {
         let core = makeCore((1...9).map { "line \($0)" }.joined(separator: "\r\n"), rows: 4)
+        let frame = GhosttyFrameBuilder(atlas: GhosttyGlyphAtlas(pointSize: 12, scale: 2))
         let anchor = GhosttySelectionAnchor(core: core)
         core.beginSelection(col: 3, row: 1, word: false, anchor: anchor)  // on "line 7"
-        XCTAssertEqual(core.extendSelection(col: 0, row: 0, anchor: anchor, scrollRows: -1, keepOnAnchor: true), .extended(changed: true))
+        XCTAssertEqual(core.extendSelection(col: 0, row: 0, anchor: anchor, keepOnAnchor: true), .extended(changed: true))
+        XCTAssertEqual(core.rowText(0), "line 6", "extending never scrolls")
+        core.scrollViewport(.lines(-1))
+        _ = frame.update(core: core)
         XCTAssertEqual(core.rowText(0), "line 5", "the viewport went up a row")
+        XCTAssertEqual(core.extendSelection(col: 0, row: 0, anchor: anchor, keepOnAnchor: false), .extended(changed: true))
         XCTAssertEqual(core.selectedText, "line 5\nline 6\nline")
-        XCTAssertEqual(core.extendSelection(col: 0, row: 0, anchor: anchor, scrollRows: -1, keepOnAnchor: false), .extended(changed: true))
+        core.scrollViewport(.lines(-1))
+        _ = frame.update(core: core)
+        XCTAssertEqual(core.extendSelection(col: 0, row: 0, anchor: anchor, keepOnAnchor: false), .extended(changed: true))
         XCTAssertEqual(core.selectedText, "line 4\nline 5\nline 6\nline")
         XCTAssertEqual(core.selectionExtent, GhosttySelectionExtent(cols: 20, rows: 4, startCol: 0, startRow: 0, endCol: 3, endRow: 3))
         core.endSelection(anchor: anchor)
+    }
+
+    /// A selection made during a render hold is drawn at once (upstream: a hold may be ignored
+    /// while the user selects), and the hold goes on afterwards.
+    func testASelectionChangeIsDrawnDuringARenderHold() {
+        let core = makeCore("alpha one")
+        let frame = GhosttyFrameBuilder(atlas: GhosttyGlyphAtlas(pointSize: 12, scale: 2))
+        XCTAssertTrue(frame.update(core: core))
+        feed(core, "\u{1b}[?2026h\r\nheld text")
+        XCTAssertFalse(frame.update(core: core), "held: the frame stays")
+        func highlighted() -> Int {
+            frame.rows.reduce(0) { $0 + $1.backgrounds.array.filter { $0.color == frame.builder.selectionColor }.count }
+        }
+        XCTAssertEqual(word(core, 1), "alpha")
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(highlighted(), 1)
+        feed(core, "\r\nmore")
+        XCTAssertFalse(frame.update(core: core), "still held")
+        feed(core, "\u{1b}[?2026l")
+        XCTAssertTrue(frame.update(core: core))
     }
 
     func testADragStopsWhenTheProgramSwitchesScreens() {
@@ -341,57 +369,34 @@ final class GhosttySelectionTests: XCTestCase {
         core.endSelection(anchor: anchor)
     }
 
-    // MARK: Geometry
-
-    func testPointToCell() {
-        let g = GhosttySelectionGeometry(cell: CGSize(width: 8, height: 16), cols: 10, rows: 5,
-                                         viewport: CGRect(x: 0, y: 0, width: 80, height: 80))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 0, y: 0)) == (0, 0))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 7.9, y: 15.9)) == (0, 0))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 8, y: 16)) == (1, 1))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 79, y: 79)) == (9, 4))
-        XCTAssertTrue(g.cell(at: CGPoint(x: -20, y: -20)) == (0, 0), "clamped")
-        XCTAssertTrue(g.cell(at: CGPoint(x: 900, y: 900)) == (9, 4), "clamped")
-    }
-
-    /// A view that scrolls natively reports points with its content offset in them.
-    func testPointToCellWithAScrolledViewportAndAFractionalRow() {
-        var g = GhosttySelectionGeometry(cell: CGSize(width: 8, height: 16), cols: 10, rows: 5,
-                                         viewport: CGRect(x: 0, y: 1600, width: 80, height: 80))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 9, y: 1600)) == (1, 0))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 9, y: 1633)) == (1, 2))
-        g.scrollShift = 6  // the grid is drawn 6 points up
-        XCTAssertTrue(g.cell(at: CGPoint(x: 9, y: 1609)) == (1, 0))
-        XCTAssertTrue(g.cell(at: CGPoint(x: 9, y: 1610)) == (1, 1))
-        let e = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 2, startRow: 0, endCol: 4, endRow: 0)
-        XCTAssertEqual(g.rects(for: e), [CGRect(x: 16, y: 1600, width: 24, height: 10)], "the top row is cut by the viewport")
-    }
-
-    func testAutoscrollEdges() {
-        let g = GhosttySelectionGeometry(cell: CGSize(width: 8, height: 16), cols: 10, rows: 5,
-                                         viewport: CGRect(x: 0, y: 100, width: 80, height: 80))
-        XCTAssertEqual(g.autoscrollRows(at: CGPoint(x: 5, y: 107)), -1)
-        XCTAssertEqual(g.autoscrollRows(at: CGPoint(x: 5, y: 90)), -1)
-        XCTAssertEqual(g.autoscrollRows(at: CGPoint(x: 5, y: 108)), 0)
-        XCTAssertEqual(g.autoscrollRows(at: CGPoint(x: 5, y: 172)), 0)
-        XCTAssertEqual(g.autoscrollRows(at: CGPoint(x: 5, y: 173)), 1)
-    }
+    // MARK: Rect shapes
 
     func testRectsForOneRowAndForSeveral() {
-        let g = GhosttySelectionGeometry(cell: CGSize(width: 8, height: 16), cols: 10, rows: 5,
-                                         viewport: CGRect(x: 0, y: 0, width: 80, height: 80))
+        let bounds = CGRect(x: 0, y: 0, width: 80, height: 80)
+        func rects(_ e: GhosttySelectionExtent, shift: CGFloat = 0) -> [CGRect] {
+            GhosttySelectionRects.make(e, bounds: bounds) { row, columns in
+                CGRect(x: CGFloat(columns.lowerBound) * 8, y: CGFloat(row) * 16 - shift, width: CGFloat(columns.count) * 8, height: 16)
+            }
+        }
         let one = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 2, startRow: 1, endCol: 4, endRow: 1)
-        XCTAssertEqual(g.rects(for: one), [CGRect(x: 16, y: 16, width: 24, height: 16)])
+        XCTAssertEqual(rects(one), [CGRect(x: 16, y: 16, width: 24, height: 16)])
         let two = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 7, startRow: 1, endCol: 0, endRow: 2)
-        XCTAssertEqual(g.rects(for: two), [CGRect(x: 56, y: 16, width: 24, height: 16), CGRect(x: 0, y: 32, width: 8, height: 16)])
+        XCTAssertEqual(rects(two), [CGRect(x: 56, y: 16, width: 24, height: 16), CGRect(x: 0, y: 32, width: 8, height: 16)])
         let four = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 7, startRow: 0, endCol: 3, endRow: 3)
-        XCTAssertEqual(g.rects(for: four), [
+        XCTAssertEqual(rects(four), [
             CGRect(x: 56, y: 0, width: 24, height: 16),
             CGRect(x: 0, y: 16, width: 80, height: 32),
             CGRect(x: 0, y: 48, width: 32, height: 16),
         ])
         let block = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 6, startRow: 1, endCol: 2, endRow: 3, rectangle: true)
-        XCTAssertEqual(g.rects(for: block), [CGRect(x: 16, y: 16, width: 40, height: 48)])
+        XCTAssertEqual(rects(block), [CGRect(x: 16, y: 16, width: 40, height: 48)])
+        // The grid drawn 6 points up: the top row is cut by the view, a row under the grid shows.
+        XCTAssertEqual(rects(one, shift: 6), [CGRect(x: 16, y: 10, width: 24, height: 16)])
+        let top = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 2, startRow: 0, endCol: 4, endRow: 0)
+        XCTAssertEqual(rects(top, shift: 6), [CGRect(x: 16, y: 0, width: 24, height: 10)])
+        let under = GhosttySelectionExtent(cols: 10, rows: 5, startCol: 0, startRow: 5, endCol: 9, endRow: 5)
+        XCTAssertEqual(rects(under, shift: 6), [CGRect(x: 0, y: 74, width: 80, height: 6)])
+        XCTAssertEqual(rects(under), [], "nothing of it shows without the shift")
     }
 
     // MARK: The seam, as TerminalHost drives it
@@ -404,6 +409,14 @@ final class GhosttySelectionTests: XCTestCase {
         view.feed(text: text)
         view.core.sync()
         return view
+    }
+
+    /// Rects are built from device pixels, so they match to a rounding error.
+    private func assertRects(_ got: [CGRect], _ want: [CGRect], _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
+        let same = got.count == want.count && zip(got, want).allSatisfy { a, b in
+            abs(a.minX - b.minX) < 0.01 && abs(a.minY - b.minY) < 0.01 && abs(a.width - b.width) < 0.01 && abs(a.height - b.height) < 0.01
+        }
+        XCTAssertTrue(same, "\(got) is not \(want). \(message)", file: file, line: line)
     }
 
     /// The middle of a cell, in the view's coordinates.
@@ -422,6 +435,8 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertTrue(press?.view === view)
         XCTAssertTrue(view.selectionPressRecognizer === press, "one recognizer, not one per call")
         XCTAssertFalse(view.isBuiltInSelectionPan(UIPanGestureRecognizer()))
+        XCTAssertFalse(view.isBuiltInSelectionPan(view.scroller.surface.panGestureRecognizer))
+        XCTAssertFalse(view.isBuiltInSelectionPan(view.scroller.programPan))
         XCTAssertFalse(view.hasActiveSelection)
         XCTAssertNil(view.selectedText)
         XCTAssertEqual(view.selectionRects, [])
@@ -437,7 +452,7 @@ final class GhosttySelectionTests: XCTestCase {
         view.endSelectionDrag()
         XCTAssertTrue(view.hasActiveSelection)
         XCTAssertEqual(view.selectedText, "two")
-        XCTAssertEqual(view.selectionRects, [CGRect(x: 6 * cell.width, y: cell.height, width: 3 * cell.width, height: cell.height)])
+        assertRects(view.selectionRects, [CGRect(x: 6 * cell.width, y: cell.height, width: 3 * cell.width, height: cell.height)])
         view.clearSelectedRange()
         XCTAssertFalse(view.hasActiveSelection)
         XCTAssertNil(view.selectedText)
@@ -466,7 +481,7 @@ final class GhosttySelectionTests: XCTestCase {
         view.extendSelection(to: point(view, 2, 2), autoscroll: false)
         XCTAssertEqual(view.selectedText, "ne\nbravo two\ncha")
         view.endSelectionDrag()
-        XCTAssertEqual(view.selectionRects, [
+        assertRects(view.selectionRects, [
             CGRect(x: 7 * cell.width, y: 0, width: 13 * cell.width, height: cell.height),
             CGRect(x: 0, y: cell.height, width: 20 * cell.width, height: cell.height),
             CGRect(x: 0, y: 2 * cell.height, width: 3 * cell.width, height: cell.height),
@@ -493,24 +508,129 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertFalse(view.core.hasSelection)
     }
 
+    /// Runs one frame the way the render thread would, and hands its state to the scroller.
     @MainActor
-    func testDraggingToTheTopEdgeScrollsALinePerMove() {
+    private func frame(_ view: GhosttyTerminalView) {
+        view.core.sync()
+        _ = view.renderer.frame.update(core: view.core)
+        view.scroller.apply(view.core.scroll.snapshot)
+    }
+
+    /// The scroller moves the viewport (never the selection code), one line per move at an edge,
+    /// and the selection reaches the row that came under the finger once that frame is drawn.
+    @MainActor
+    func testDraggingToTheTopEdgeScrollsALinePerMoveThroughTheScroller() {
         let view = makeView((1...9).map { "line \($0)" }.joined(separator: "\r\n"))
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        let calls = view.core.scroll.viewportCalls
         view.beginSelection(at: point(view, 3, 2), word: false)  // on "line 8"
         view.extendSelection(to: CGPoint(x: 2, y: 1), autoscroll: false)
+        frame(view)
         XCTAssertEqual(view.core.rowText(0), "line 6", "no scrolling unless asked")
+        XCTAssertEqual(view.core.scroll.viewportCalls, calls)
+
         view.extendSelection(to: CGPoint(x: 2, y: 2), autoscroll: true)
+        XCTAssertEqual(view.core.rowText(0), "line 6", "the viewport moves with the next frame, not under the terminal lock here")
+        XCTAssertEqual(view.selectedText, "line 6\nline 7\nline")
+        frame(view)
         XCTAssertEqual(view.core.rowText(0), "line 5")
+        XCTAssertEqual(view.core.scroll.viewportCalls, calls + 1, "one scroll, made by the scroll state")
+        XCTAssertEqual(view.selectedText, "line 5\nline 6\nline 7\nline", "extended to the row that scrolled under the finger")
+        XCTAssertEqual(view.scroller.surface.contentOffset.y, 4 * cell.height, accuracy: 0.01, "the scroll surface went along")
+
         view.extendSelection(to: CGPoint(x: 2, y: 1), autoscroll: true)
+        frame(view)
         XCTAssertEqual(view.core.rowText(0), "line 4")
+        XCTAssertEqual(view.scroller.surface.contentOffset.y, 3 * cell.height, accuracy: 0.01)
         view.endSelectionDrag()
         XCTAssertEqual(view.selectedText, "line 4\nline 5\nline 6\nline 7\nline")
-        let cell = view.cellSize
-        XCTAssertEqual(view.selectionRects, [
+        assertRects(view.selectionRects, [
             CGRect(x: 0, y: 0, width: 20 * cell.width, height: cell.height),
             CGRect(x: 0, y: cell.height, width: 20 * cell.width, height: 2 * cell.height),
             CGRect(x: 0, y: 3 * cell.height, width: 20 * cell.width, height: cell.height),
         ], "the rows in view; the last selected row is below the viewport")
+        // A frame after the drag ended changes nothing.
+        view.scrollLines(1)
+        frame(view)
+        XCTAssertEqual(view.selectedText, "line 4\nline 5\nline 6\nline 7\nline")
+    }
+
+    /// Scrolled into history by half a row: a press selects the word under the finger, and its
+    /// rect is where that word is drawn.
+    @MainActor
+    func testHitTestingAndRectsAtAFractionalScrollOffsetInHistory() {
+        let view = makeView((1...40).map { "row\($0) word\($0)" }.joined(separator: "\r\n"), rows: 6)
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        view.scroller.setOffset(10.5 * cell.height, animated: false)
+        frame(view)
+        let scroll = view.scrollSnapshot
+        XCTAssertEqual(scroll.offset, 10)
+        XCTAssertGreaterThan(scroll.fraction, 0)
+        let shift = CGFloat(scroll.fraction) / view.displayScale
+        XCTAssertEqual(view.core.rowText(0), "row11 word11")
+
+        // A point three quarters of a cell down is on the second viewport row (row12).
+        view.beginSelection(at: CGPoint(x: cell.width * 7.5, y: cell.height * 0.75), word: true)
+        view.endSelectionDrag()
+        XCTAssertEqual(view.selectedText, "word12")
+        var rects = view.selectionRects
+        XCTAssertEqual(rects.count, 1)
+        XCTAssertEqual(rects[0].minX, 6 * cell.width, accuracy: 0.01)
+        XCTAssertEqual(rects[0].width, 6 * cell.width, accuracy: 0.01)
+        XCTAssertEqual(rects[0].minY, cell.height - shift, accuracy: 0.01)
+        XCTAssertEqual(rects[0].height, cell.height, accuracy: 0.01)
+
+        // The first row is half scrolled past: its rect is cut at the top of the view.
+        view.beginSelection(at: CGPoint(x: cell.width * 1.5, y: 1), word: true)
+        view.endSelectionDrag()
+        XCTAssertEqual(view.selectedText, "row11")
+        rects = view.selectionRects
+        XCTAssertEqual(rects.first?.minY ?? -1, 0, accuracy: 0.01)
+        XCTAssertEqual(rects.first?.height ?? -1, cell.height - shift, accuracy: 0.01)
+
+        // A drag from row14 down to the bottom edge of the view.
+        view.beginSelection(at: CGPoint(x: cell.width * 0.5, y: cell.height * 2.75), word: false)
+        view.extendSelection(to: CGPoint(x: cell.width * 30, y: view.bounds.height - 1), autoscroll: false)
+        XCTAssertEqual(view.selectedText, "row14 word14\nrow15 word15\nrow16 word16")
+        // The view scrolls two lines up mid-drag: the selection stays on its text, and its rects
+        // move down with it.
+        view.scrollLines(-2)
+        frame(view)
+        XCTAssertEqual(view.core.rowText(0), "row9 word9")
+        let nowShift = CGFloat(view.scrollSnapshot.fraction) / view.displayScale
+        XCTAssertEqual(view.selectionRects.first?.minY ?? -1, 5 * cell.height - nowShift, accuracy: 0.01, "row14 is the last row in view now")
+        view.endSelectionDrag()
+    }
+
+    /// With the view scrolled to a fraction, the row under the grid shows at the bottom edge; a
+    /// selection that covers it has a rect for the part in view.
+    @MainActor
+    func testTheRowUnderTheGridHasARectForItsVisiblePart() {
+        let view = makeView((1...40).map { "row\($0)" }.joined(separator: "\r\n"), rows: 6)
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        view.scroller.setOffset(10.5 * cell.height, animated: false)
+        frame(view)
+        let shift = CGFloat(view.scrollSnapshot.fraction) / view.displayScale
+        // Rows 11 to 16 are the viewport; row17 is under it. Select row15 to row17 by scrolling
+        // down a line mid-drag, then go back.
+        view.beginSelection(at: CGPoint(x: 1, y: cell.height * 3.75), word: false)  // row15
+        view.scroller.setOffset(11.5 * cell.height, animated: false)
+        frame(view)
+        view.extendSelection(to: CGPoint(x: cell.width * 3.5, y: cell.height * 4.75), autoscroll: false)  // "row1" of row17
+        view.endSelectionDrag()
+        XCTAssertEqual(view.selectedText, "row15\nrow16\nrow1")
+        view.scroller.setOffset(10.5 * cell.height, animated: false)
+        frame(view)
+        let rects = view.selectionRects
+        XCTAssertEqual(rects.last?.maxY ?? -1, view.bounds.height, accuracy: 0.01)
+        XCTAssertEqual(rects.last?.minY ?? -1, 6 * cell.height - shift, accuracy: 0.01)
+        XCTAssertEqual(rects.last?.width ?? -1, 4 * cell.width, accuracy: 0.01)
     }
 
     @MainActor
@@ -548,6 +668,98 @@ final class GhosttySelectionTests: XCTestCase {
         view.feed(text: "\r\nfive")
         view.core.sync()
         XCTAssertEqual(view.selectedText, "target")
-        XCTAssertEqual(view.selectionRects, [CGRect(x: 4 * cell.width, y: cell.height, width: 6 * cell.width, height: cell.height)])
+        assertRects(view.selectionRects, [CGRect(x: 4 * cell.width, y: cell.height, width: 6 * cell.width, height: cell.height)])
+    }
+
+    // MARK: Hit-testing: point to cell to rect
+
+    /// For every row and several columns of the grid, at 2x and 3x and every font size the pinch
+    /// allows, at every sub-row scroll offset: a point anywhere inside the rect a cell is drawn
+    /// in maps back to that cell. (A cell is a whole number of pixels, a fraction of a point.)
+    func testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction() {
+        for scale in [2, 3] as [CGFloat] {
+            var size: CGFloat = 7
+            while size <= 20 {
+                let m = GhosttyGlyphAtlas(pointSize: size, scale: scale).metrics
+                let cols = 80, rows = 60
+                for shift in Set([0, 1, m.cellHeight / 3, m.cellHeight / 2, m.cellHeight - 1]) {
+                    let g = GhosttyGridGeometry(cellWidth: m.cellWidth, cellHeight: m.cellHeight, scale: scale, cols: cols, rows: rows, shift: shift)
+                    var wrong = 0
+                    for row in 0..<rows {
+                        for col in [0, 1, 39, 79] {
+                            let r = g.rect(row: row, columns: col..<(col + 1))
+                            // Just inside each corner and the middle, half a pixel from the edges.
+                            let d = 0.5 / scale
+                            for p in [CGPoint(x: r.minX + d, y: r.minY + d), CGPoint(x: r.maxX - d, y: r.maxY - d), CGPoint(x: r.midX, y: r.midY)]
+                            where p.y >= 0 {
+                                let hit = g.cell(at: p)
+                                if hit.col != col || hit.row != row { wrong += 1 }
+                            }
+                        }
+                    }
+                    XCTAssertEqual(wrong, 0, "\(size) pt at \(scale)x, shifted \(shift) px")
+                    // Rows are drawn edge to edge: the last row's bottom is exactly rows cells down.
+                    XCTAssertEqual(g.rect(row: rows - 1, columns: 0..<1).maxY, CGFloat(rows * m.cellHeight - shift) / scale, accuracy: 0.0001)
+                }
+                size += 0.5
+            }
+        }
+    }
+
+    /// The bug of build 7a0d37c: with the view resting at a fraction of a row (any scroll does
+    /// that), a touch low in a row selected the row above, because the point was mapped without
+    /// the scroll shift. Every row, pressed near its bottom edge, selects itself.
+    @MainActor
+    func testAPressLowInARowSelectsThatRowAtAnyScrollFraction() {
+        let view = makeView((1...60).map { "w\($0)" }.joined(separator: "\r\n"), rows: 12)
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        for fraction in [0.0, 0.25, 0.5, 0.9] as [CGFloat] {
+            view.scroller.setOffset((20 + fraction) * cell.height, animated: false)
+            frame(view)
+            let shift = CGFloat(view.scrollSnapshot.fraction) / view.displayScale
+            for row in 0..<12 {
+                // The row is drawn from row * height - shift; press a pixel above its bottom edge.
+                let y = CGFloat(row + 1) * cell.height - shift - 1 / view.displayScale
+                guard y >= 0, y < view.bounds.height else { continue }
+                view.beginSelection(at: CGPoint(x: cell.width * 0.5, y: y), word: true)
+                view.endSelectionDrag()
+                XCTAssertEqual(view.selectedText, "w\(21 + row)", "row \(row) at fraction \(fraction)")
+                let rect = view.selectionRects.first ?? .null
+                XCTAssertTrue(rect.insetBy(dx: -0.01, dy: -0.01).contains(CGPoint(x: cell.width * 0.5, y: y)), "the rect is under the finger: \(rect)")
+            }
+        }
+    }
+
+    /// Fit mode puts the engine view at a negative y while the server catches up with a shorter
+    /// pane (bottom rows kept in view), and mirror mode scales it. The host reads the press in
+    /// the engine view's coordinates, so every row still selects itself.
+    @MainActor
+    func testHitTestingWhenTheViewIsBottomAnchoredOrScaled() {
+        let view = makeView((1...12).map { "w\($0)" }.joined(separator: "\r\n"), rows: 12)
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        let host = UIView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 7.4 * cell.height))
+        host.clipsToBounds = true
+        host.addSubview(view)
+        for (name, transform) in [("bottom anchored", CGAffineTransform.identity), ("scaled", CGAffineTransform(scaleX: 0.6, y: 0.6))] {
+            view.transform = .identity
+            view.frame.origin = CGPoint(x: 0, y: host.bounds.height - view.bounds.height)  // negative: the top rows are cut off
+            view.transform = transform
+            for row in 0..<12 {
+                let inView = CGPoint(x: cell.width * 0.5, y: (CGFloat(row) + 0.9) * cell.height)
+                let inHost = host.convert(inView, from: view)
+                // What the host's recognizer reports: the touch, in the engine view's coordinates.
+                let p = view.convert(inHost, from: host)
+                view.beginSelection(at: p, word: true)
+                view.endSelectionDrag()
+                XCTAssertEqual(view.selectedText, "w\(row + 1)", "\(name), row \(row)")
+                let rect = host.convert(view.selectionRects.first ?? .null, from: view)
+                XCTAssertTrue(rect.insetBy(dx: -0.01, dy: -0.01).contains(inHost), "\(name), row \(row)")
+            }
+        }
+        view.transform = .identity
     }
 }

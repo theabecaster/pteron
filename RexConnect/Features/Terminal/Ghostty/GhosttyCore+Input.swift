@@ -231,24 +231,3 @@ final class GhosttyInputMirror: @unchecked Sendable {
         return out
     }
 }
-
-extension GhosttyCore {
-    /// Shows live output again if the view is scrolled into history. The library never does this
-    /// by itself (paste.h: "The viewport is not scrolled; that is up to you, as for key input");
-    /// Ghostty does it on every keystroke. Runs on the feed queue so typing doesn't wait for the
-    /// terminal lock.
-    func followOutput() {
-        enqueue { [self] in
-            let moved = withTerminal { t -> Bool in
-                var following = true
-                ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &following)
-                if following { return false }
-                var bottom = GhosttyTerminalScrollViewport()
-                bottom.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
-                ghostty_terminal_scroll_viewport(t, bottom)
-                return true
-            } ?? false
-            if moved { onDirty?() }
-        }
-    }
-}

@@ -113,31 +113,24 @@ extension GhosttyCore {
             }
         }
         termLock.unlock()
-        if changed { onDirty?() }
+        if changed { selectionChanged() }
         return selected
     }
 
     /// Selects from the anchor to a viewport cell, both included, in reading order.
     ///
-    /// - `scrollRows`: scrolls the viewport first (negative is up), for a drag at an edge. The
-    ///   cell is then the one that ends up under the finger.
-    /// - `keepOnAnchor`: while the finger hasn't left the cell it pressed, leave the press's
-    ///   selection (a word, or nothing) alone.
-    func extendSelection(col: Int, row: Int, anchor: GhosttySelectionAnchor, scrollRows: Int = 0,
+    /// `keepOnAnchor`: while the finger hasn't left the cell it pressed, leave the press's
+    /// selection (a word, or nothing) alone.
+    ///
+    /// Never scrolls: the viewport belongs to `GhosttyScrollState`. A drag at an edge asks the
+    /// scroller for a line and extends again once that frame is drawn.
+    func extendSelection(col: Int, row: Int, anchor: GhosttySelectionAnchor,
                          keepOnAnchor: Bool) -> GhosttySelectionExtendResult {
         var result = GhosttySelectionExtendResult.noAnchor
         var dirty = false
         lockTerminal()
         if let t = terminal, let tracked = anchor.ref, ghostty_tracked_grid_ref_has_value(tracked),
            anchor.screen == Self.activeScreen(t) {
-            if scrollRows != 0 {
-                var scroll = GhosttyTerminalScrollViewport()
-                scroll.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA
-                scroll.value.delta = scrollRows
-                ghostty_terminal_scroll_viewport(t, scroll)
-                dirty = true
-            }
-            // Scrolling changed the terminal: take every reference after it.
             let cell = Self.clamp(t, col: col, row: row)
             var start = GhosttyGridRef()
             if ghostty_tracked_grid_ref_snapshot(tracked, &start) == GHOSTTY_SUCCESS, var head = Self.ref(t, cell) {
@@ -171,7 +164,7 @@ extension GhosttyCore {
             }
         }
         termLock.unlock()
-        if dirty { onDirty?() }
+        if dirty { selectionChanged() }
         return result
     }
 
@@ -180,6 +173,13 @@ extension GhosttyCore {
         lockTerminal()
         anchor.release()
         termLock.unlock()
+    }
+
+    /// Asks for a frame that shows the new selection, also while the program holds the screen
+    /// (upstream: a hold may be ignored while the user selects).
+    private func selectionChanged() {
+        selectionDirty.store(true, ordering: .relaxed)
+        onDirty?()
     }
 
     // MARK: The terminal's selection
@@ -194,7 +194,7 @@ extension GhosttyCore {
             changed = true
         }
         termLock.unlock()
-        if changed { onDirty?() }
+        if changed { selectionChanged() }
         return changed
     }
 
@@ -212,7 +212,7 @@ extension GhosttyCore {
             }
         }
         termLock.unlock()
-        if selected { onDirty?() }
+        if selected { selectionChanged() }
         return selected
     }
 
@@ -249,7 +249,11 @@ extension GhosttyCore {
 
     /// The part of the selection the viewport shows, or nil if there is no selection or none of
     /// it is in view. Covers the same cells the renderer highlights.
-    var selectionExtent: GhosttySelectionExtent? {
+    var selectionExtent: GhosttySelectionExtent? { selectionExtent(rowsBelow: 0) }
+
+    /// `rowsBelow`: rows drawn under the viewport that count as in view (the overscan row a
+    /// smooth scroll shows part of). Their row numbers continue past the grid's last row.
+    func selectionExtent(rowsBelow: Int) -> GhosttySelectionExtent? {
         withTerminal { t -> GhosttySelectionExtent? in
             guard var selection = Self.currentSelection(t) else { return nil }
             var ordered = GhosttySelection()
@@ -289,13 +293,14 @@ extension GhosttyCore {
                 }
             }
 
-            guard extent.endRow >= 0, extent.startRow < size.rows else { return nil }
+            let lastRow = size.rows - 1 + max(0, rowsBelow)
+            guard extent.endRow >= 0, extent.startRow <= lastRow else { return nil }
             if extent.startRow < 0 {
                 extent.startRow = 0
                 if !extent.rectangle { extent.startCol = 0 }
             }
-            if extent.endRow >= size.rows {
-                extent.endRow = size.rows - 1
+            if extent.endRow > lastRow {
+                extent.endRow = lastRow
                 if !extent.rectangle { extent.endCol = size.cols - 1 }
             }
             return extent

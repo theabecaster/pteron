@@ -52,8 +52,12 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// The last state the render thread sent over.
     private(set) var state = GhosttyScrollState.Snapshot()
     private var appliedRebase = 0
-    private var lastRequest = 0
+    /// The newest scroll request this view made (`GhosttyScrollState.Snapshot.appliedSequence`
+    /// says which a frame had applied).
+    private(set) var lastRequest = 0
     private var applying = false
+    /// The surface size the content size and offset were last set for.
+    private var contentLaidOutFor = CGSize.zero
     private var animating = false
 
     private var dragAccumulator = GhosttyWheelAccumulator()
@@ -86,10 +90,14 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         surface.delaysContentTouches = false
         surface.isDirectionalLockEnabled = true
         surface.contentSize = view.bounds.size
+        contentLaidOutFor = view.bounds.size
         view.addSubview(surface)
 
         programPan.addTarget(self, action: #selector(programPanned(_:)))
         programPan.maximumNumberOfTouches = 1
+        // Fingers only, like the scroll pan once the host has set it up: a mouse or trackpad drag
+        // selects (the host's pointer pan) and never reports a wheel.
+        programPan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         programPan.isEnabled = false
         surface.addGestureRecognizer(programPan)
 
@@ -128,6 +136,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     func apply(_ snapshot: GhosttyScrollState.Snapshot) {
         updates += 1
         refresh(snapshot)
+        view?.selectionScrollApplied(snapshot)
     }
 
     private func refresh(_ snapshot: GhosttyScrollState.Snapshot) {
@@ -153,7 +162,10 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         updateIndicator()
     }
 
-    func layoutChanged() { refresh(state) }
+    func layoutChanged() {
+        contentLaidOutFor = surface.bounds.size
+        refresh(state)
+    }
 
     /// A scroll indicator that shows on the theme's background.
     private func updateIndicator() {
@@ -162,7 +174,11 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !applying else { return }
+        // A new size (keyboard, fold, a pane moved to another place) makes UIKit pull the offset
+        // back inside the old content before `layoutChanged` runs. That isn't the user scrolling:
+        // sent on, it would leave a taller view scrolled into history. `layoutChanged` puts the
+        // offset where the terminal is.
+        guard !applying, surface.bounds.size == contentLaidOutFor else { return }
         if measures {
             let start = CACurrentMediaTime()
             sendOffset()
@@ -280,13 +296,14 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             let count = budget.grant(GhosttyWheelBudget.requested(lines: lines, precise: precise))
             bytes = mouse.mouse(.press, button: lines > 0 ? .wheelUp : .wheelDown, at: position, modifiers: modifiers,
                                 buttonHeld: false, geometry: geometry, count: count, core: core)
+            sendReport(bytes)
         case .cursorKeys:
             let count = budget.grant(GhosttyWheelBudget.requested(lines: lines))
             bytes = mouse.key(lines > 0 ? .arrowUp : .arrowDown, count: count, core: core)
+            sendKeys(bytes)
         case .none:
             break
         }
-        send(bytes)
         return bytes
     }
 
@@ -320,7 +337,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             view.controlModifier = false
             NotificationCenter.default.post(name: .terminalEngineControlModifierReset, object: view)
         }
-        send(bytes)
+        sendReport(bytes)
         return bytes
     }
 
@@ -345,8 +362,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         guard let view, view.bounds.contains(point), !flags.contains(.shift), let position = mousePosition(point) else { return [] }
         let bytes = mouse.mouse(.motion, button: buttonHeld ? .left : .none, at: position, modifiers: Self.modifiers(flags),
                                 buttonHeld: buttonHeld, geometry: geometry, core: core)
-        // Motion is not typing: it doesn't bring a scrolled-up view back down.
-        if !bytes.isEmpty { view.engineDelegate?.engineSend(bytes) }
+        sendReport(bytes)
         return bytes
     }
 
@@ -377,15 +393,23 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         return m
     }
 
-    /// Bytes for the program. Like typing, they bring a scrolled-up view back to the bottom.
-    func send(_ bytes: [UInt8]) {
+    /// A mouse report (click, wheel, motion). Like SwiftTerm, it leaves a scrolled-up view where
+    /// it is: only keys and pastes bring it back to the bottom.
+    private func sendReport(_ bytes: [UInt8]) {
+        guard !bytes.isEmpty, let view else { return }
+        view.engineDelegate?.engineSend(bytes)
+    }
+
+    /// Keys for the program. Like typing, they bring a scrolled-up view back to the bottom.
+    func sendKeys(_ bytes: [UInt8]) {
         guard !bytes.isEmpty, let view else { return }
         view.engineDelegate?.engineSend(bytes)
         scrollToBottomForInput()
     }
 
-    /// SwiftTerm's rule for input (`ensureCaretIsVisible`): anything sent to the program while
-    /// the view is scrolled up jumps back to the bottom. Output alone never moves the view.
+    /// SwiftTerm's rule for input (`ensureCaretIsVisible`, run for everything its `send(data:)`
+    /// carries): keys and pastes sent while the view is scrolled up jump back to the bottom.
+    /// Output, mouse reports and focus reports never move the view.
     func scrollToBottomForInput() {
         let bottom = surface.contentSize.height - surface.bounds.height
         if !core.scroll.snapshot.active || surface.contentOffset.y < bottom - 0.5 { jump(.bottom) }

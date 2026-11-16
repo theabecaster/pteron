@@ -12,7 +12,8 @@ terminal engine view. Output arrives on a data socket; input goes over the contr
   This document describes its behavior.
 - Ghostty: `Features/Terminal/Ghostty/` (libghostty-vt for terminal state, our Metal renderer).
   It restores the stream's snapshot directly (`restoresGhosttySnapshot`) and parses off the main
-  thread. Output works; input, scrolling and selection are `// PHASE 2` stubs.
+  thread. Input, scrolling and selection work; how each compares with SwiftTerm is in
+  [ghostty-parity.md](ghostty-parity.md).
 
 Settings → Terminal → Engine picks one (UserDefaults `terminalEngine`, or `-terminalEngine
 ghostty|swiftTerm` for one run); changing it rebuilds the open panes. Plan, design and status:

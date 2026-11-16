@@ -13,8 +13,9 @@ extension GhosttyTerminalView {
     /// Bytes for the program from something the user did. Typing shows live output again.
     private func sendInput(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
-        core.followOutput()
         engineDelegate?.engineSend(bytes)
+        // The scroller owns the viewport: it jumps to the bottom if the view is scrolled up.
+        scrollToBottomForInput()
     }
 
     /// Takes the key bar's one-shot ctrl / alt for the key being typed and tells the bar.
@@ -113,8 +114,9 @@ extension GhosttyTerminalView {
 
     override func willMove(toWindow newWindow: UIWindow?) {
         super.willMove(toWindow: newWindow)
-        // A pane that never had the keyboard draws the hollow cursor too.
-        if newWindow != nil { renderer.setFocused(isFirstResponder) }
+        // The solid cursor needs the keyboard, and the keyboard needs a window: a pane that never
+        // had the keyboard, or is off screen, draws the hollow cursor.
+        renderer.setFocused(newWindow != nil && isFirstResponder)
         if newWindow == nil { stopKeyRepeat() }
     }
 
@@ -157,7 +159,20 @@ extension GhosttyTerminalView {
             inputState.down[pending.usage] = key
         }
         keys[0].mods |= takeOneShotModifiers()
+        keys[0] = legacyControl(keys[0])
         sendTyped(keys)
+    }
+
+    /// The key bar's ctrl with Return or Tab from the system keyboard, for a program that asked
+    /// for no keyboard protocol: the plain key. Ctrl+M and Ctrl+I already are Return and Tab
+    /// there, while the encoder's `CSI 27 ; 5 ; 13 ~` would show up as text in a shell. (SwiftTerm
+    /// sends nothing at all.) A hardware Ctrl+Return stays what Ghostty sends.
+    private func legacyControl(_ key: GhosttyInputKey) -> GhosttyInputKey {
+        guard key.mods & GhosttyInputKey.ctrl != 0, key.key == GHOSTTY_KEY_ENTER.rawValue || key.key == GHOSTTY_KEY_TAB.rawValue,
+              core.input.modes.kittyFlags == 0 else { return key }
+        var plain = key
+        plain.mods &= ~GhosttyInputKey.ctrl
+        return plain
     }
 
     func deleteBackward() {

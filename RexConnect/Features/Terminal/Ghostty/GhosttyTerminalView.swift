@@ -5,10 +5,9 @@ import GhosttyVt
 ///
 /// This file is the output side: feeding, snapshot restore, grid, font, theme, cursor and the
 /// drawable's lifetime. Input, scrolling and selection live in the `+Input`, `+Scroll` and
-/// `+Selection` extension files (phase 2).
+/// `+Selection` extension files.
 final class GhosttyTerminalView: UIView, TerminalEngineView {
-    /// Hosts the CAMetalLayer, so the terminal view itself stays free to become a scroll
-    /// container in phase 2.
+    /// Hosts the CAMetalLayer. The scroll surface (`GhosttyScroller`) lies over it.
     final class MetalView: UIView {
         override class var layerClass: AnyClass { CAMetalLayer.self }
         // swiftlint:disable:next force_cast
@@ -63,7 +62,7 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     }
     // END input
 
-    // PHASE 2 (selection): stored state for GhosttyTerminalView+Selection.swift.
+    // Selection: stored state for GhosttyTerminalView+Selection.swift.
     var selectionState = GhosttySelectionState()
     /// The fixed end of the drag under way.
     lazy var selectionAnchor = GhosttySelectionAnchor(core: core)
@@ -73,12 +72,12 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         addGestureRecognizer(press)
         return press
     }()
-    // END PHASE 2 (selection)
+    // END selection
 
-    // PHASE 2 (scroll): stored state for GhosttyTerminalView+Scroll.swift. Created on first use
+    // Scroll: stored state for GhosttyTerminalView+Scroll.swift. Created on first use
     // (`didMoveToSuperview`, or any scroll member).
     lazy var scroller = GhosttyScroller(view: self)
-    // END PHASE 2 (scroll)
+    // END scroll
 
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
@@ -111,7 +110,9 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         core.onDirty = { [weak renderer] in
             guard let renderer else { return }
             renderer.needsFrame.store(true, ordering: .relaxed)
-            GhosttyRenderThread.shared.wake()
+            // Off screen or in the background nothing is drawn: don't start the display link for
+            // every chunk of output. `setVisible(true)` asks for the frame that was skipped.
+            if renderer.isVisible.load(ordering: .relaxed) { GhosttyRenderThread.shared.wake() }
         }
         renderer.setLayer(layer)
         core.resize(cols: cols, rows: rows, cellWidthPx: atlas.metrics.cellWidth, cellHeightPx: atlas.metrics.cellHeight)
