@@ -110,7 +110,9 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         core.onDirty = { [weak renderer] in
             guard let renderer else { return }
             renderer.needsFrame.store(true, ordering: .relaxed)
-            GhosttyRenderThread.shared.wake()
+            // Off screen or in the background nothing is drawn: don't start the display link for
+            // every chunk of output. `setVisible(true)` asks for the frame that was skipped.
+            if renderer.isVisible.load(ordering: .relaxed) { GhosttyRenderThread.shared.wake() }
         }
         renderer.setLayer(layer)
         core.resize(cols: cols, rows: rows, cellWidthPx: atlas.metrics.cellWidth, cellHeightPx: atlas.metrics.cellHeight)

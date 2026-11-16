@@ -296,4 +296,165 @@ final class GhosttyIntegrationTests: XCTestCase {
         frame(view)
         XCTAssertFalse(renderer.wantsBlink)
     }
+
+    // MARK: Leaving the window and coming back (TerminalHostPool moves a live pane on a fold)
+
+    private func wait(_ seconds: TimeInterval) {
+        let done = expectation(description: "waited")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
+        wait(for: [done], timeout: seconds + 5)
+    }
+
+    private func makeWindow() -> UIWindow {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
+        window.isHidden = false
+        return window
+    }
+
+    /// Off its window the pane draws nothing and output doesn't tick the render thread. Back in a
+    /// window, in another superview and at another size, it draws at once what arrived meanwhile,
+    /// without waiting for new output.
+    func testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached() {
+        let window = makeWindow()
+        defer { window.isHidden = true }
+        let view = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 300, height: 200), fontSize: 12, cols: 40, rows: 12)
+        let renderer = view.renderer
+        let first = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
+        window.addSubview(first)
+        first.addSubview(view)
+        view.feed(text: (1...50).map { "\($0) line\r\n" }.joined())
+        wait(0.4)
+        XCTAssertGreaterThan(renderer.framesDrawn, 0)
+        XCTAssertTrue(renderer.isVisible.load(ordering: .relaxed))
+
+        // Detached: the stream goes on, drawing doesn't.
+        view.removeFromSuperview()
+        XCTAssertFalse(renderer.isVisible.load(ordering: .relaxed))
+        wait(0.2)
+        let drawn = renderer.framesDrawn, ticks = GhosttyRenderThread.shared.ticks.load(ordering: .relaxed)
+        for i in 0..<20 {
+            view.feed(text: "detached \(i)\r\n")
+            view.core.sync()
+        }
+        wait(0.3)
+        XCTAssertEqual(renderer.framesDrawn, drawn, "nothing is drawn off screen")
+        XCTAssertEqual(GhosttyRenderThread.shared.ticks.load(ordering: .relaxed), ticks, "and output doesn't start the display link")
+
+        // Back, somewhere else and bigger. No new output arrives.
+        let second = UIView(frame: CGRect(x: 20, y: 20, width: 360, height: 300))
+        window.addSubview(second)
+        view.frame = second.bounds
+        second.addSubview(view)
+        view.layoutIfNeeded()
+        wait(0.4)
+        XCTAssertGreaterThan(renderer.framesDrawn, drawn, "a frame without waiting for output")
+        let scale = view.displayScale
+        XCTAssertEqual(view.metalView.frame, view.bounds)
+        XCTAssertEqual(view.metalView.metalLayer.drawableSize, CGSize(width: (360 * scale).rounded(), height: (300 * scale).rounded()))
+        XCTAssertEqual(view.metalView.metalLayer.contentsScale, scale)
+        // What was fed while detached is what the frame shows, and the scroll surface knows it.
+        let surface = view.scroller.surface
+        XCTAssertEqual(surface.frame, view.bounds)
+        let s = view.core.scroll.snapshot
+        XCTAssertEqual(s.total, 71, "50 + 20 lines and the cursor's row")
+        XCTAssertTrue(s.active)
+        XCTAssertEqual(surface.contentSize.height, CGFloat(s.maxRow) * view.cellSize.height + surface.bounds.height, accuracy: 0.01)
+        XCTAssertEqual(surface.contentOffset.y, CGFloat(s.maxRow) * view.cellSize.height, accuracy: 0.01)
+        let idle = renderer.framesDrawn
+        wait(0.3)
+        XCTAssertEqual(renderer.framesDrawn, idle, "and then it rests")
+        view.removeFromSuperview()
+    }
+
+    /// A pane that had the keyboard and a selection keeps the selection through the move; the
+    /// cursor is hollow while it is off screen and solid again once the host gives the keyboard back.
+    func testSelectionAndCursorSurviveTheMove() throws {
+        let window = makeWindow()
+        defer { window.isHidden = true }
+        let view = GhosttyTerminalView(frame: .zero, fontSize: 12, cols: 40, rows: 12)
+        let cell = view.cellSize
+        view.frame = CGRect(x: 0, y: 0, width: 40 * cell.width, height: 12 * cell.height)
+        let first = UIView(frame: view.frame)
+        window.addSubview(first)
+        first.addSubview(view)
+        view.feed(text: "alpha bravo\r\ncharlie")
+        view.core.sync()
+        wait(0.2)
+        try XCTSkipUnless(view.becomeFirstResponder(), "the test host gave no first responder")
+        view.beginSelection(at: CGPoint(x: cell.width * 7.5, y: cell.height * 0.5), word: true)
+        view.endSelectionDrag()
+        let rects = view.selectionRects
+        XCTAssertEqual(view.selectedText, "bravo")
+
+        view.removeFromSuperview()
+        XCTAssertFalse(view.isFirstResponder)
+        XCTAssertFalse(view.renderer.isFocused)
+        let second = UIView(frame: CGRect(x: 30, y: 40, width: view.frame.width, height: view.frame.height))
+        window.addSubview(second)
+        second.addSubview(view)
+        XCTAssertFalse(view.renderer.isFocused, "hollow until it has the keyboard again")
+        XCTAssertTrue(view.becomeFirstResponder())
+        XCTAssertTrue(view.renderer.isFocused)
+        wait(0.2)
+        XCTAssertTrue(view.hasActiveSelection)
+        XCTAssertEqual(view.selectedText, "bravo")
+        XCTAssertEqual(view.selectionRects, rects, "in the view's own coordinates, wherever the view is")
+        view.removeFromSuperview()
+    }
+
+    /// When the last pane goes, so do its terminal, its place on the render thread, and the thread.
+    func testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane() {
+        let window = makeWindow()
+        defer { window.isHidden = true }
+        // Panes of earlier tests may still be on their way out.
+        wait(0.3)
+        let before = GhosttyCore.liveTerminals.load(ordering: .relaxed)
+        let panesBefore = GhosttyRenderThread.shared.paneCount
+        autoreleasepool {
+            let view = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 300, height: 200), fontSize: 12, cols: 40, rows: 12)
+            window.addSubview(view)
+            view.feed(text: "hello\r\n")
+            _ = view.scroller
+            XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore + 1)
+            XCTAssertEqual(GhosttyCore.liveTerminals.load(ordering: .relaxed), before + 1)
+            view.removeFromSuperview()
+            XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore + 1, "still registered: it may come back")
+        }
+        wait(0.5)
+        XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore)
+        XCTAssertEqual(GhosttyCore.liveTerminals.load(ordering: .relaxed), before)
+        if panesBefore == 0 { XCTAssertFalse(GhosttyRenderThread.shared.alive.load(ordering: .relaxed)) }
+    }
+
+    /// A view that grows (the keyboard goes, an unfold) while it follows the bottom still follows
+    /// the bottom: UIKit's own offset fix-up for the new size is not a scroll.
+    func testResizingTheViewNeverScrollsTheTerminal() {
+        let (view, _) = make(100)
+        let cell = view.cellSize.height
+        let calls = view.core.scroll.viewportCalls
+        for height in [16, 10, 24, 7, 10] as [CGFloat] {
+            view.frame.size.height = height * cell
+            view.layoutIfNeeded()
+            XCTAssertFalse(view.core.scroll.hasPending, "\(height) rows tall: no scroll asked for")
+            frame(view)
+            XCTAssertTrue(view.core.scroll.snapshot.active)
+            XCTAssertEqual(view.scroller.surface.contentOffset.y, 91 * cell, accuracy: 0.01)
+            XCTAssertEqual(view.scroller.surface.contentSize.height, 91 * cell + height * cell, accuracy: 0.01)
+        }
+        XCTAssertEqual(view.core.scroll.viewportCalls, calls)
+        // Scrolled up, a new size keeps the position too.
+        view.scroller.setOffset(30 * cell, animated: false)
+        frame(view)
+        view.frame.size.height = 20 * cell
+        view.layoutIfNeeded()
+        frame(view)
+        XCTAssertEqual(view.core.scroll.snapshot.offset, 30)
+        XCTAssertEqual(view.scroller.surface.contentOffset.y, 30 * cell, accuracy: 0.01)
+        // And the grid resize that goes with a new size, as the host applies it.
+        view.setGrid(cols: 40, rows: 20, force: false)
+        frame(view)
+        XCTAssertEqual(view.core.scroll.snapshot.len, 20)
+        XCTAssertEqual(view.scroller.surface.contentOffset.y, CGFloat(view.core.scroll.snapshot.offset) * cell, accuracy: 0.01)
+    }
 }

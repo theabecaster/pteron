@@ -56,6 +56,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// says which a frame had applied).
     private(set) var lastRequest = 0
     private var applying = false
+    /// The surface size the content size and offset were last set for.
+    private var contentLaidOutFor = CGSize.zero
     private var animating = false
 
     private var dragAccumulator = GhosttyWheelAccumulator()
@@ -88,6 +90,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         surface.delaysContentTouches = false
         surface.isDirectionalLockEnabled = true
         surface.contentSize = view.bounds.size
+        contentLaidOutFor = view.bounds.size
         view.addSubview(surface)
 
         programPan.addTarget(self, action: #selector(programPanned(_:)))
@@ -159,7 +162,10 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         updateIndicator()
     }
 
-    func layoutChanged() { refresh(state) }
+    func layoutChanged() {
+        contentLaidOutFor = surface.bounds.size
+        refresh(state)
+    }
 
     /// A scroll indicator that shows on the theme's background.
     private func updateIndicator() {
@@ -168,7 +174,11 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !applying else { return }
+        // A new size (keyboard, fold, a pane moved to another place) makes UIKit pull the offset
+        // back inside the old content before `layoutChanged` runs. That isn't the user scrolling:
+        // sent on, it would leave a taller view scrolled into history. `layoutChanged` puts the
+        // offset where the terminal is.
+        guard !applying, surface.bounds.size == contentLaidOutFor else { return }
         if measures {
             let start = CACurrentMediaTime()
             sendOffset()

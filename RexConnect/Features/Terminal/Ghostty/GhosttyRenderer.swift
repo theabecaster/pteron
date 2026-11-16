@@ -97,6 +97,8 @@ final class GhosttyRenderer: @unchecked Sendable {
     let frame: GhosttyFrameBuilder
     /// Set when there is something new to draw. Any thread.
     let needsFrame = Atomic<Bool>(false)
+    /// Mirrors `visible`, for the feed queue: a pane that can't draw has no use for a tick.
+    let isVisible = Atomic<Bool>(false)
 
     /// Counters for tests and tuning. Render thread writes.
     private(set) var framesDrawn = 0
@@ -144,8 +146,12 @@ final class GhosttyRenderer: @unchecked Sendable {
 
     func setLayer(_ l: CAMetalLayer?) { configure { layer = l } }
     func setDrawableSize(width: Int, height: Int) { configure { drawableSize = SIMD2(Int32(width), Int32(height)) } }
-    /// False while the view is off-window or the app is in the background: no Metal work at all.
-    func setVisible(_ v: Bool) { configure { visible = v } }
+    /// False while the view is off-window or the app is in the background: no Metal work at all,
+    /// and output doesn't wake the render thread (`isVisible`). Becoming visible draws a frame.
+    func setVisible(_ v: Bool) {
+        isVisible.store(v, ordering: .relaxed)
+        configure { visible = v }
+    }
     /// An unfocused pane shows a hollow cursor, like Ghostty.
     func setFocused(_ f: Bool) {
         configLock.lock()
@@ -462,6 +468,9 @@ final class GhosttyRenderThread: Sendable {
         guard let worker else { return }
         worker.perform { worker.remove(renderer, stop: last) }
     }
+
+    /// Panes registered now (visible or not). Tests use it to check teardown.
+    var paneCount: Int { state.withLock { $0.paneCount } }
 
     /// Asks for a tick. Cheap when the link is already running. Any thread.
     func wake() {

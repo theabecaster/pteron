@@ -159,7 +159,20 @@ extension GhosttyTerminalView {
             inputState.down[pending.usage] = key
         }
         keys[0].mods |= takeOneShotModifiers()
+        keys[0] = legacyControl(keys[0])
         sendTyped(keys)
+    }
+
+    /// The key bar's ctrl with Return or Tab from the system keyboard, for a program that asked
+    /// for no keyboard protocol: the plain key. Ctrl+M and Ctrl+I already are Return and Tab
+    /// there, while the encoder's `CSI 27 ; 5 ; 13 ~` would show up as text in a shell. (SwiftTerm
+    /// sends nothing at all.) A hardware Ctrl+Return stays what Ghostty sends.
+    private func legacyControl(_ key: GhosttyInputKey) -> GhosttyInputKey {
+        guard key.mods & GhosttyInputKey.ctrl != 0, key.key == GHOSTTY_KEY_ENTER.rawValue || key.key == GHOSTTY_KEY_TAB.rawValue,
+              core.input.modes.kittyFlags == 0 else { return key }
+        var plain = key
+        plain.mods &= ~GhosttyInputKey.ctrl
+        return plain
     }
 
     func deleteBackward() {
