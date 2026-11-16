@@ -66,7 +66,8 @@ Each is a UserDefaults key for that run only.
 - `-typeTest 'text\n'`: type the text into the active pane once it is live.
 - `-hinge closed|partial|full`: pretend the hinge reports this. Layout never reads it.
 - `-simulateDuo <posture>[,<posture>…]` (Debug builds): lay the root out at that window size, with its
-  size classes and a fake fold drawn as a red dashed line, at the bottom-left of a bigger screen.
+  size classes, rough safe-area insets (the 84 pt vertical bar on the trailing edge, status bar, home
+  indicator) and a fake fold drawn as a red dashed line, at the bottom-left of a bigger screen.
   Postures: `unfolded` (951×669, flat crease), `book` (951×669, bent), `unfoldedPortrait` (669×951),
   `tabletop` (669×951, bent), `folded` (466×678), `foldedLandscape` (678×466), `halfWindow` (475×669, one half of the unfolded
   screen), `iPhone` (402×874), `iPhoneLandscape` (874×402), `proMaxLandscape` (956×440). A list

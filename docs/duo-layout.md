@@ -53,6 +53,12 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   The panes stay inside the safe area, so no terminal text sits under system UI.
 - **Short windows** (landscape iPhone): the title bar is 34 pt with no subtitle, and the key bar is
   40 pt.
+- **Offline screen** (`OfflineLayout`). It fills the tab, so an inline sidebar stays beside it. Where
+  the crease crosses it with room on both sides, it is two pages: the glyph large on the left (or top)
+  page, the card on the other, each centered in its page and 12 pt clear of the crease. With room for
+  the card on one page only (sidebar over the left page, keyboard up), the card sits alone on that
+  page. Elsewhere it is one centered card, tighter in windows under 480 pt tall. Pages are measured
+  inside the safe area, so the vertical bar never tips the choice to the wrong page.
 
 [hig]: https://developer.apple.com/design/human-interface-guidelines/designing-for-iphone-duo
 [bar]: https://developer.apple.com/videos/play/tech-talks/111462/
