@@ -45,7 +45,8 @@ targets:
         inputFiles:
           - $(SRCROOT)/scripts/check-ghostty.sh
           - $(SRCROOT)/scripts/ghostty.version
-          - $(SRCROOT)/scripts/ghostty-patches
+          # Every patch by name: the script sandbox lets the check read only listed files.
+          - $(SRCROOT)/scripts/ghostty-patches/0001-tinyio-public-darwin-futex.patch
           - $(SRCROOT)/Vendor/GhosttyVt.stamp
           - $(SRCROOT)/Vendor/GhosttyVt.xcframework/Info.plist
         outputFiles:
