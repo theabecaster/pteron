@@ -7,8 +7,8 @@ Two paths, one per app state.
 `ServerConnection` watches block events. A program status record turning `blocked` posts an
 `AgentAlert` ("<Agent> needs permission / has a question / needs a password / is waiting for you")
 to `AgentNotifier` (one instance, shared by all servers), which also plays a warning haptic at most
-once every 3 s (`AgentNotifier.hapticInterval`). Settings → Notifications → "Alerts in the App"
-turns both off. Desktop notifications (OSC 9 / 777) show nothing in the app.
+once every 3 s (`AgentNotifier.hapticInterval`). Both are always on; iOS's System Haptics setting
+mutes the haptic. Desktop notifications (OSC 9 / 777) show nothing in the app.
 
 `Features/Notifications` turns alerts into a toast. `.agentToasts()` is applied once, in
 `RexConnectApp`. The rules are in `ToastPolicy` (tested):

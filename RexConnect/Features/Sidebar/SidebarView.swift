@@ -26,7 +26,6 @@ struct SidebarView: View {
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
-        let p = prefs
         VStack(spacing: 0) {
             List {
                 agentsSummary(theme)
@@ -39,7 +38,7 @@ struct SidebarView: View {
                             .opacity(dim)
                         if let v = server.views[s.id] {
                             ForEach(v.windows) { w in
-                                windowRow(server, v, w, theme, textSize: p.sidebarTextSize)
+                                windowRow(server, v, w, theme)
                                     .opacity(dim)
                             }
                         }
@@ -113,17 +112,14 @@ struct SidebarView: View {
             )
     }
 
-    @ViewBuilder
     private func agentsSummary(_ theme: TermTheme) -> some View {
-        if prefs.showAgentStatus {
-            styled(
-                Button { showAgents = true } label: {
-                    AgentsSummaryLabel(servers: model.servers, theme: theme)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 6).padding(.bottom, 4),
-                theme)
-        }
+        styled(
+            Button { showAgents = true } label: {
+                AgentsSummaryLabel(servers: model.servers, theme: theme)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6).padding(.bottom, 4),
+            theme)
     }
 
     private func hostHeader(_ server: ServerConnection, _ theme: TermTheme) -> some View {
@@ -223,7 +219,7 @@ struct SidebarView: View {
             theme)
     }
 
-    private func windowRow(_ server: ServerConnection, _ v: SessionView, _ w: WindowInfo, _ theme: TermTheme, textSize: Double) -> some View {
+    private func windowRow(_ server: ServerConnection, _ v: SessionView, _ w: WindowInfo, _ theme: TermTheme) -> some View {
         let selected = model.selection == Selection(serverID: server.id, sessionID: v.sessionID, windowID: w.id)
         let rename = { renameText = w.label; renaming = RenameTarget(server: server, sessionID: v.sessionID, windowID: w.id) }
         // Destructive: never a full swipe, and a confirmation when an agent would stop.
@@ -240,7 +236,7 @@ struct SidebarView: View {
                 model.select(server, session: v.sessionID, window: w.id)
                 onSelect(sel)
             } label: {
-                TabRowLabel(server: server, window: w, textSize: textSize, theme: theme)
+                TabRowLabel(server: server, window: w, theme: theme)
             }
             .buttonStyle(.plain)
             .contextMenu {
@@ -385,10 +381,10 @@ struct AgentsSummaryLabel: View {
 struct TabRowLabel: View {
     let server: ServerConnection
     let window: WindowInfo
-    let textSize: Double
+    var textSize: Double = 14
     let theme: TermTheme
-    /// Scales the user's sidebar text size with Dynamic Type.
-    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
+    /// Scales the text size with Dynamic Type.
+    @ScaledMetric(relativeTo: .subheadline) private var scale: CGFloat = 1
 
     var body: some View {
         let agent = server.windowAgent(window)

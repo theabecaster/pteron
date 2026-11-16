@@ -618,7 +618,6 @@ final class ServerConnection: Identifiable {
     }
 
     private func notifyBlocked(_ sid: String, _ bid: String, _ st: ProgramStatus, _ m: BlockMeta) {
-        guard prefs.notifyOnBlocked else { return }
         let who = m.agentKind?.displayName ?? st.app ?? "A program"
         let why: String
         switch st.waitingFor {
@@ -632,7 +631,7 @@ final class ServerConnection: Identifiable {
                                  blockID: bid, title: "\(who) \(why)",
                                  body: [place.isEmpty ? nil : place, st.text].compactMap { $0 }.joined(separator: " — "),
                                  date: Date()))
-        if prefs.haptics { notifier.waitingHaptic() }
+        notifier.waitingHaptic()
     }
 
     func label(for sid: String, block bid: String) -> String {

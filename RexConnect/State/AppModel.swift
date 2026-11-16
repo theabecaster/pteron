@@ -93,6 +93,10 @@ final class AppModel {
         push.servers = { [weak self] in self?.servers ?? [] }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
         if connect { rebuildServers() }
+        #if DEBUG
+        // `-settings <page>` (testing): open Settings at launch, at that page.
+        if connect, SettingsPage.debugLaunch != nil { showSettings = true }
+        #endif
     }
 
     /// Pull to refresh: re-bootstrap every server (reconnect the ones that are down).
@@ -110,11 +114,10 @@ final class AppModel {
     }
 
     func rebuildServers() {
-        var configs = prefs.servers + prefs.hostURLs.compactMap { label, url in
-            url.isEmpty ? nil : ServerConfig(id: Self.stableID(label), name: label, url: url)
-        }
         #if DEBUG
-        if let debug = Self.debugServers { configs = debug }
+        let configs = Self.debugServers ?? prefs.servers
+        #else
+        let configs = prefs.servers
         #endif
         let old = Dictionary(uniqueKeysWithValues: servers.map { ($0.config.id, $0) })
         servers = configs.map { cfg in

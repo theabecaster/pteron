@@ -148,13 +148,8 @@ struct WindowScreen: View {
     /// while every pane keeps a legible grid.
     private func splitsFit(_ w: WindowInfo) -> Bool {
         guard let layout = w.layout, w.orderedBlockIDs.count > 1 else { return false }
-        switch prefs.wideLayout {
-        case .single: return false
-        case .splits: return true
-        case .auto:
-            guard w.zoomedBlockID == nil else { return false }
-            return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
-        }
+        guard w.zoomedBlockID == nil else { return false }
+        return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
     }
 
     private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
@@ -413,12 +408,6 @@ struct WindowScreen: View {
                     }
                 }
                 Button { Task { await server.clear(sessionID, block) } } label: { Label("Clear", systemImage: "eraser") }
-                Button {
-                    let p = prefs
-                    p.sizing = p.sizing == .fit ? .mirror : .fit
-                } label: {
-                    Label(prefs.sizing == .fit ? "Mirror Mac Size" : "Fit to Phone", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-                }
                 Button { rename() } label: { Label("Rename Tab…", systemImage: "pencil") }
             }
             Section {
@@ -752,7 +741,7 @@ struct PressScale: ButtonStyle {
     }
 }
 
-/// System haptics, each used for its documented meaning. All behind the Haptics setting.
+/// System haptics, each used for its documented meaning. iOS mutes them when System Haptics is off.
 @MainActor
 enum Haptic {
     private static let light = UIImpactFeedbackGenerator(style: .light)
@@ -761,21 +750,19 @@ enum Haptic {
     private static let select = UISelectionFeedbackGenerator()
     private static var lastBump = Date.distantPast
 
-    private static var on: Bool { Prefs.shared.haptics }
-
     /// A button press.
-    static func tap() { if on { light.impactOccurred() } }
+    static func tap() { light.impactOccurred() }
     /// A value changed: pane, tab, font size, split detent.
-    static func selection() { if on { select.selectionChanged() } }
+    static func selection() { select.selectionChanged() }
     /// A gesture crossed its commit point. Played once, at the threshold.
-    static func threshold() { if on { medium.impactOccurred() } }
+    static func threshold() { medium.impactOccurred() }
     /// Zoom toggled: the layout snapping into place.
-    static func zoom() { if on { medium.impactOccurred() } }
+    static func zoom() { medium.impactOccurred() }
     /// Interrupt sent.
-    static func interrupt() { if on { rigid.impactOccurred() } }
+    static func interrupt() { rigid.impactOccurred() }
     /// Nothing there (end of panes or tabs). At most once a second.
     static func bump() {
-        guard on, Date().timeIntervalSince(lastBump) > 1 else { return }
+        guard Date().timeIntervalSince(lastBump) > 1 else { return }
         lastBump = Date()
         light.impactOccurred(intensity: 0.6)
     }

@@ -62,7 +62,7 @@ Pass after the bundle id: `xcrun simctl launch <id> dev.abrahamgonzalez.rexduo -
 Each is a UserDefaults key for that run only.
 
 - `-autoOpen <session label>`: open that session's first tab. A label that doesn't exist opens nothing.
-- `-sizing fit|mirror`: override the Pane Size setting.
+- `-sizing mirror`: keep the Mac's pane sizes for this run instead of fitting panes to the phone.
 - `-typeTest 'text\n'`: type the text into the active pane once it is live.
 - `-hinge closed|partial|full`: pretend the hinge reports this. Layout never reads it.
 - `-simulateDuo <posture>[,<posture>…]` (Debug builds): lay the root out at that window size, with its
@@ -81,6 +81,7 @@ Each is a UserDefaults key for that run only.
   `badAddress`, `unknown`. Add `-simulateRetrying YES` to hold Try Again in its "Trying…" state.
 - `-simulateNetwork offline|offPrivate|onPrivate` (Debug builds): pretend the phone's network is in that
   state (no path, off the tailnet, on it), so real connection errors classify as they would there.
+- `-settings main|addServer|darkTheme|lightTheme` (Debug builds): open Settings at launch, at that page.
 - `-pushToken <hex>` (debug builds): use this APNs token and skip the permission check, to test
   push registration in a simulator.
 

@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Settings → Notifications: the push toggle, quiet explanations when something stands in the way
-/// (iOS permission, the Mac helper), and the in-app toast toggle.
+/// Settings → Notifications: one toggle for push, and a quiet line when something stands in the way
+/// (iOS permission, the Mac helper). In-app banners for waiting agents are always on.
 struct NotificationSettingsSection: View {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
@@ -10,11 +10,10 @@ struct NotificationSettingsSection: View {
     let theme: TermTheme
 
     var body: some View {
-        @Bindable var p = prefs
         let push = model.push
         let denied = push.authorization == .denied
         Section {
-            Toggle("Push Notifications", isOn: Binding(
+            Toggle("Allow Notifications", isOn: Binding(
                 get: { prefs.pushEnabled && !denied },
                 set: { $0 ? push.enable() : push.disable() }))
                 .disabled(denied)
@@ -27,16 +26,16 @@ struct NotificationSettingsSection: View {
             let missing = push.missingHelpers
             if !missing.isEmpty { helperSteps(missing) }
             if push.wantsPush, model.servers.contains(where: { push.helpers[$0.id] == .running(pushEnabled: false) }) {
-                Text("The Mac helper is running in test mode and won't send pushes.")
+                Text("Rex Connect Helper on the Mac is in test mode and won't send notifications.")
                     .font(.footnote)
                     .foregroundStyle(theme.chrome.secondary)
             }
-            Toggle("Alerts in the App", isOn: $p.notifyOnBlocked)
         } header: {
-            Text("Notifications")
+            SettingsHeader("Notifications", theme)
         } footer: {
-            Text("Push notifications come from Rex Connect Helper on your Mac while this app is closed: when an agent needs you, finishes, or a terminal asks for attention. In the app, a small banner shows only when an agent you aren't looking at is waiting.")
+            SettingsFooter("Rex Connect Helper on your Mac sends them while this app is closed: when an agent needs you, finishes, or a terminal asks for attention.", theme)
         }
+        .settingsRows(theme)
     }
 
     private func note(_ text: String, button: String) -> some View {

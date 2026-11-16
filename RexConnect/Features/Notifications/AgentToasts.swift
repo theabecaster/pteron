@@ -74,7 +74,7 @@ private struct AgentToasts: ViewModifier {
     }
 
     private func consider(_ a: AgentAlert) {
-        let ctx = ToastPolicy.Context(enabled: prefs.notifyOnBlocked, appActive: phase == .active,
+        let ctx = ToastPolicy.Context(appActive: phase == .active,
                                       visibleBlocks: ScreenInspector.visibleBlocks(),
                                       modalPresented: ScreenInspector.modalPresented())
         switch ToastPolicy.decide(a, context: ctx, current: toast, lastShown: lastShown, now: Date()) {

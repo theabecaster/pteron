@@ -17,8 +17,7 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
 ## Data flow
 
 1. `RexConnectApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
-2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers, plus hosts
-   from `hostURLs`). Each owns one `RexControl` and a `KeymapStore`.
+2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl` and a `KeymapStore`.
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
    loads block metadata (program status, title, process), hosts and the keymap.
 4. Server events update `ServerConnection`. Block events are coalesced (about 150 ms) and a status
@@ -69,5 +68,7 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
   `refreshView`. Add it to [rex-protocol.md](rex-protocol.md).
 - New server event: `ServerConnection.handle(event:)` or `handle(sessionID:event:)`.
 - New screen: `RexConnect/Features/<Name>/`. Shared view pieces: `DesignSystem/`.
-- New setting: a property on `Prefs` (saved in `didSet`), read with `@Environment(Prefs.self)`.
+- New setting: only for a choice a user would understand and want to make; otherwise pick the best
+  value and add it to "Fixed choices" in `Prefs`. A setting is a property on `Prefs` (saved in
+  `didSet`), read with `@Environment(Prefs.self)`; clear a removed one's key in `Prefs.migrate`.
 - Pure logic: its own type, with tests in `RexConnectTests` or `Packages/RexKit/Tests`.

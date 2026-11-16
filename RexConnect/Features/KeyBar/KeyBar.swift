@@ -1,7 +1,7 @@
 import UIKit
 import SwiftTerm
 
-/// The row of extra keys above the software keyboard. Keys come from Prefs.keyBar.
+/// The row of extra keys above the software keyboard. Keys come from Settings (`Prefs.keyBarLayout`).
 ///
 /// - Keys send on release; a horizontal drag scrolls the bar instead.
 /// - Arrows and PgUp/PgDn auto-repeat while held.
@@ -222,16 +222,14 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         case .once: s = quick ? .locked : .off
         case .locked: s = .off
         }
-        if s == .locked, Prefs.shared.haptics { lockImpact.impactOccurred() }
+        if s == .locked { lockImpact.impactOccurred() }
         if key == "ctrl" { ctrl = s } else { alt = s }
     }
 
     // MARK: Input
 
     private func touchDown(_ key: String) {
-        if Prefs.shared.haptics {
-            if Self.kind(of: key) == .trackpad { tick.prepare() } else { impact.impactOccurred(intensity: 0.7) }
-        }
+        if Self.kind(of: key) == .trackpad { tick.prepare() } else { impact.impactOccurred(intensity: 0.7) }
         UIDevice.current.playInputClick()
     }
 
@@ -251,7 +249,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         for (n, pos, neg) in steps where n != 0 {
             for _ in 0..<abs(n) { sendRaw(n > 0 ? pos : neg); sent = true }
         }
-        if sent, Prefs.shared.haptics { tick.selectionChanged(); tick.prepare() }
+        if sent { tick.selectionChanged(); tick.prepare() }
     }
 
     /// Sends one key with the bar's modifiers, then ends one-shot modifiers.

@@ -41,6 +41,7 @@ its plan is `docs/ghostty-engine.md` on that branch.
   its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
   tap to fit here".
 - Mirror: never claims or resizes. Shows the server's grid scaled to the view; pinch zooms, drag pans.
+  Users always get fit; mirror is only for the `-sizing mirror` launch argument.
 - Fit really resizes panes on the Mac. Test it only in `zz-` sessions you created.
 
 ## Gestures
@@ -69,7 +70,7 @@ its plan is `docs/ghostty-engine.md` on that branch.
   sends keys typed meanwhile as the next write. Rex doesn't order concurrent block calls, so
   parallel writes would reorder keystrokes. Input waits out a dropped connection.
 - Paste goes through SwiftTerm's `pasteText`, so programs that asked for bracketed paste get it.
-- Key bar (`KeyBar`): keys from Settings; ctrl/alt tap for one key, double-tap to lock; the
+- Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt tap for one key, double-tap to lock; the
   "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`.
 - Hardware keyboard: `RexTerminalView.keyHook` sees each press first. `KeymapStore` matches it
   against Rex's keymap (`KeyChord` spellings like `shift+cmd+d` or `cmd+[Digit1]`), and

@@ -10,8 +10,8 @@ server's built-in Tailscale HTTPS address.
 - Unfolded Duo: sidebar beside the tab, splits laid out as Rex lays them out, draggable borders.
   Folded or other iPhones: one pane at a time.
 - Fit to phone: the pane you view is resized to the phone and handed back to the Mac when you
-  leave. Mirror mode keeps the Mac's size.
-- Sessions, tabs and splits; zoom, rename, clear; a customizable key bar; hardware keyboard
+  leave.
+- Sessions, tabs and splits; zoom, rename, clear; a key bar with Agents, Shell and Vim layouts; hardware keyboard
   shortcuts from your Rex keymap; an Agents screen; a notification when an agent waits for you.
 - **Rex Connect Helper** (`Relay/`): a small Mac app that sends push notifications while the app is
   closed.
