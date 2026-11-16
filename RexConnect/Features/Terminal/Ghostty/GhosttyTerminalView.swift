@@ -158,26 +158,41 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     }
 
     func restoreSnapshot(_ bytes: [UInt8], failed: @escaping @MainActor () -> Void) -> Bool {
-        restoreSnapshot(bytes, consumed: nil, failed: failed)
+        restoreSnapshot(bytes, trailing: nil, failed: failed)
     }
 
-    /// Like `restoreSnapshot(_:failed:)`. `consumed` runs on the feed queue, before anything fed
-    /// later is parsed, with the number of bytes the snapshot took. Bytes after that belong to
-    /// the stream and are the caller's to feed.
-    func restoreSnapshot(_ bytes: [UInt8], consumed: (@Sendable (Int) -> Void)?, failed: @escaping @MainActor () -> Void) -> Bool {
+    /// Like `restoreSnapshot(_:failed:)`, for bytes that go on after the snapshot (a capture of
+    /// a stream): once the snapshot is restored, `trailing` gets the bytes behind it and what it
+    /// returns is parsed before anything fed later (`GhosttyCore.restore`).
+    func restoreSnapshot(_ bytes: [UInt8], trailing: (@Sendable (ArraySlice<UInt8>) -> [UInt8])?,
+                         failed: @escaping @MainActor () -> Void) -> Bool {
         guard GhosttyCore.isSnapshot(bytes) else { return false }
         restoreEpoch = gridEpoch
-        core.restore(snapshot: bytes) { [weak self, core] used in
-            if let used {
+        core.restore(snapshot: bytes, trailing: trailing) { [weak self, core] used in
+            if used != nil {
                 PerfProbe.active?.ghosttyRestored(core)  // PERF: the restored terminal is in place
-                consumed?(used)
-                // The restored terminal has the snapshot's grid.
-                DispatchQueue.main.async { [weak self] in self?.adoptCoreGrid() }
+                DispatchQueue.main.async { [weak self] in self?.terminalRestored() }
             } else {
                 DispatchQueue.main.async { failed() }
             }
         }
         return true
+    }
+
+    /// A snapshot replaced the terminal.
+    private func terminalRestored() {
+        // The selection went with the old terminal: forget it here too, so the host's next
+        // question (`hasActiveSelection`, `selectionRects`) is answered "none" without a lock.
+        // A drag still under way stays a drag, with nothing to extend. Not if the user has
+        // already selected on the new terminal.
+        if !core.hasSelection {
+            selectionState.active = false
+            selectionState.fromGesture = false
+            selectionState.moved = false
+            selectionState.autoscrollRequest = nil
+        }
+        // The restored terminal has the snapshot's grid.
+        adoptCoreGrid()
     }
 
     /// Takes over the grid a snapshot restore gave the terminal, unless a later `setGrid` is

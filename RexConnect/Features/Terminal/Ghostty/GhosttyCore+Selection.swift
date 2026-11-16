@@ -23,16 +23,14 @@ import GhosttyVt
 // not one burst. Grid references and selection values are snapshots that die on the next call
 // that changes the terminal: each is made and used inside one critical section.
 
-/// The fixed end of a selection drag: a tracked grid reference, so the anchor stays on its cell
-/// while output scrolls the screen or the drag scrolls the viewport.
+/// The fixed end of a selection drag. It names a tracked grid reference, so the anchor stays on
+/// its cell while output scrolls the screen or the drag scrolls the viewport.
 ///
-/// `@unchecked Sendable`: its state is guarded by the core's `termLock`.
-final class GhosttySelectionAnchor: @unchecked Sendable {
+/// The reference itself is the core's (`GhosttyCore.trackedRefs`, under `termLock`), because it
+/// borrows the terminal: a snapshot restore frees it with the terminal it was made on, and the
+/// anchor then names nothing.
+final class GhosttySelectionAnchor: Sendable {
     private let core: GhosttyCore
-    /// Guarded by `core.termLock`.
-    fileprivate var ref: GhosttyTrackedGridRef?
-    /// The screen (primary or alternate) the reference belongs to. Guarded by `core.termLock`.
-    fileprivate var screen: UInt32 = 0
 
     init(core: GhosttyCore) {
         self.core = core
@@ -41,14 +39,8 @@ final class GhosttySelectionAnchor: @unchecked Sendable {
     deinit {
         // Freeing touches the terminal's page list while the terminal is alive.
         core.lockTerminal()
-        release()
+        core.releaseTrackedRef(of: ObjectIdentifier(self))
         core.termLock.unlock()
-    }
-
-    /// Call with `core.termLock` held. Safe after the terminal the reference came from is gone.
-    fileprivate func release() {
-        if let ref { ghostty_tracked_grid_ref_free(ref) }
-        ref = nil
     }
 }
 
@@ -97,14 +89,13 @@ extension GhosttyCore {
         var changed = false
         lockTerminal()
         if let t = terminal {
-            anchor.release()
+            releaseTrackedRef(of: ObjectIdentifier(anchor))
             var cell = Self.clamp(t, col: col, row: row)
             // The right half of a wide character belongs to the cell on its left.
             if Self.wide(t, cell) == GHOSTTY_CELL_WIDE_SPACER_TAIL, cell.col > 0 { cell.col -= 1 }
             var tracked: GhosttyTrackedGridRef?
-            if ghostty_terminal_grid_ref_track(t, Self.viewportPoint(cell), &tracked) == GHOSTTY_SUCCESS {
-                anchor.ref = tracked
-                anchor.screen = Self.activeScreen(t)
+            if ghostty_terminal_grid_ref_track(t, Self.viewportPoint(cell), &tracked) == GHOSTTY_SUCCESS, let tracked {
+                trackedRefs[ObjectIdentifier(anchor)] = GhosttyTrackedRef(ref: tracked, screen: Self.activeScreen(t))
             }
             let had = Self.currentSelection(t) != nil
             if word, var ref = Self.ref(t, cell), var selection = Self.wordSelection(t, &ref) {
@@ -133,8 +124,9 @@ extension GhosttyCore {
         var result = GhosttySelectionExtendResult.noAnchor
         var dirty = false
         lockTerminal()
-        if let t = terminal, let tracked = anchor.ref, ghostty_tracked_grid_ref_has_value(tracked),
-           anchor.screen == Self.activeScreen(t) {
+        if let t = terminal, let held = trackedRefs[ObjectIdentifier(anchor)], ghostty_tracked_grid_ref_has_value(held.ref),
+           held.screen == Self.activeScreen(t) {
+            let tracked = held.ref
             let cell = Self.clamp(t, col: col, row: row)
             var start = GhosttyGridRef()
             if ghostty_tracked_grid_ref_snapshot(tracked, &start) == GHOSTTY_SUCCESS, var head = Self.ref(t, cell) {
@@ -175,8 +167,13 @@ extension GhosttyCore {
     /// The gesture is over: drop the anchor. The selection stays.
     func endSelection(anchor: GhosttySelectionAnchor) {
         lockTerminal()
-        anchor.release()
+        releaseTrackedRef(of: ObjectIdentifier(anchor))
         termLock.unlock()
+    }
+
+    /// Frees the tracked reference an anchor names, if it names one. Call with `termLock` held.
+    func releaseTrackedRef(of anchor: ObjectIdentifier) {
+        if let held = trackedRefs.removeValue(forKey: anchor) { ghostty_tracked_grid_ref_free(held.ref) }
     }
 
     /// Asks for a frame that shows the new selection, also while the program holds the screen
@@ -323,7 +320,7 @@ extension GhosttyCore {
         var began = false
         lockTerminal()
         if let t = terminal, var selection = Self.currentSelection(t) {
-            anchor.release()
+            releaseTrackedRef(of: ObjectIdentifier(anchor))
             var ordered = GhosttySelection()
             if ghostty_terminal_selection_ordered(t, &selection, GHOSTTY_SELECTION_ORDER_FORWARD, &ordered) == GHOSTTY_SUCCESS {
                 var fixed = movingStart ? ordered.end : ordered.start
@@ -333,9 +330,8 @@ extension GhosttyCore {
                 point.tag = GHOSTTY_POINT_TAG_SCREEN
                 var tracked: GhosttyTrackedGridRef?
                 if ghostty_terminal_point_from_grid_ref(t, &fixed, GHOSTTY_POINT_TAG_SCREEN, &point.value.coordinate) == GHOSTTY_SUCCESS,
-                   ghostty_terminal_grid_ref_track(t, point, &tracked) == GHOSTTY_SUCCESS {
-                    anchor.ref = tracked
-                    anchor.screen = Self.activeScreen(t)
+                   ghostty_terminal_grid_ref_track(t, point, &tracked) == GHOSTTY_SUCCESS, let tracked {
+                    trackedRefs[ObjectIdentifier(anchor)] = GhosttyTrackedRef(ref: tracked, screen: Self.activeScreen(t))
                     began = true
                 }
             }
