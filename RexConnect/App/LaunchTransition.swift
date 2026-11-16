@@ -3,9 +3,13 @@ import UIKit
 import Darwin
 
 extension View {
-    /// Covers the app with the launch splash, then peels Rexie off the screen like a paper cutout and
+    /// Covers the app with the launch splash, then peels Rexie off the screen like a sticker and
     /// flies the app out of the Rexie-shaped hole it leaves (iris-out). Apply once, to the root view.
-    func launchTransition() -> some View { modifier(LaunchTransition()) }
+    /// The first call, during the app's first body, starts compiling the peel's shaders.
+    func launchTransition() -> some View {
+        StickerPeel.prewarm()
+        return modifier(LaunchTransition())
+    }
 }
 
 struct LaunchTransition: ViewModifier {
@@ -56,18 +60,22 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
     }
 }
 
-/// UIKit splash drawn with plain layers so the whole transition runs in the render server
-/// (Core Animation), unaffected by main-thread work while the app connects underneath.
+/// UIKit splash. Everything but the sticker runs in the render server (Core Animation); the sticker
+/// draws with Metal on its own thread (`StickerPeelRenderer`). Neither waits on the main thread
+/// while the app connects underneath.
 ///
 /// Layers (bottom to top):
 /// - `cover`: the background with a Rexie-shaped hole. A huge border frames `hole`, a bitmap of the
 ///   background with Rexie cut out, so it needs no mask or offscreen pass. Zooming only scales `cover`.
-/// - `shadow`: a flat, path-only shadow on the "screen" under the peeling cutout.
+/// - `shadow`: a flat, path-only shadow on the "screen" under the folding cutout (fallback only).
 /// - `piece`: the Rexie art, the same image as the static launch screen (`LaunchRexie`) on the same
 ///   pixel grid, so the first frame matches it exactly. `shade` darkens it as it tilts.
+/// - the peel's `CAMetalLayer`, whose first frame is the same pixels as `piece`; the two swap in one
+///   transaction.
 ///
-/// The cutout peels forward about its bottom edge and drops past the viewer, leaving the hole; the
-/// hole then grows around a point deep inside Rexie's head until the app fills the screen.
+/// Rexie peels off from the bottom-left corner and flies away, leaving the hole; the hole then grows
+/// around a point deep inside Rexie's head until the app fills the screen. Without Metal in time, the
+/// flat cutout folds forward about its bottom edge and drops past the viewer instead.
 final class LaunchSplashView: UIView {
     private enum Metric {
         /// Point size of `LaunchRexie`; the art is the icon's "Rexie Neue Color" layer, 448 x 457 SVG units.
@@ -94,6 +102,33 @@ final class LaunchSplashView: UIView {
     /// Minimum time after our first frame: iOS cross-fades from the launch screen to the app's first
     /// frame, and starting inside that fade shows both at once.
     static let handoff: CFTimeInterval = 0.3
+    /// The Metal kit must arrive this long before the start, or the Core Animation fold runs.
+    static let metalLead: CFTimeInterval = 0.1
+
+    private struct Pending {
+        let content: UIView?
+        let completion: () -> Void
+        let t0: CFTimeInterval
+    }
+
+    /// Set between `run` and the choice of peel.
+    private var pending: Pending?
+    /// The Metal peel while it runs.
+    private var peel: StickerPeelRenderer?
+
+    /// Debug-build launch arguments: `-launchPeel fold` forces the Core Animation fold,
+    /// `-launchSlow 5` plays the transition five times slower, `-launchHold 2` waits 2 s longer first.
+    private enum Debug {
+        #if DEBUG
+        static var foldOnly: Bool { UserDefaults.standard.string(forKey: "launchPeel") == "fold" }
+        static var slow: Double { max(UserDefaults.standard.double(forKey: "launchSlow"), 1) }
+        static var hold: Double { max(UserDefaults.standard.double(forKey: "launchHold"), 0) }
+        #else
+        static let foldOnly = false
+        static let slow = 1.0
+        static let hold = 0.0
+        #endif
+    }
 
     /// Rexie's outline in points (origin at the art's top-left): the body plus the mouth that fills
     /// its notch, from the icon's "Rexie Neue Color" and "Mouth Neue" vectors.
@@ -265,10 +300,12 @@ final class LaunchSplashView: UIView {
         }.cgImage
     }
 
-    /// Schedules the whole transition up front on Core Animation's clock, then removes itself.
+    /// Schedules the whole transition up front, then removes itself. The sticker peel draws with
+    /// Metal when its kit is ready a little before the start; otherwise Core Animation folds the
+    /// cutout. Everything else (iris, app zoom) runs on Core Animation's clock either way.
     func run(content: UIView?, completion: @escaping () -> Void) {
         let elapsed = Self.processUptime() ?? 0
-        let delay = max(Self.minimumSplash - elapsed, Self.handoff)
+        let delay = max(Self.minimumSplash - elapsed, Self.handoff) + Debug.hold
         let t0 = CACurrentMediaTime() + delay
 
         if UIAccessibility.isReduceMotionEnabled {
@@ -283,18 +320,125 @@ final class LaunchSplashView: UIView {
             return
         }
 
+        pending = Pending(content: content, completion: completion, t0: t0)
+        if Debug.foldOnly {
+            begin(with: nil)
+            return
+        }
+        // Once the kit is built, draw the renderer's first frame off the main thread, then decide.
+        let timeline = StickerPeelTimeline(art: artRect, size: bounds.size, outline: Self.silhouette)
+        let scale = traitCollection.displayScale, slow = Debug.slow
+        let finished: @Sendable (StickerPeelStats) -> Void = { [weak self] stats in
+            Task { @MainActor in self?.peelFinished(stats) }
+        }
+        StickerPeel.take { [weak self] outcome in
+            DispatchQueue.global(qos: .userInteractive).async {
+                let made: Result<StickerPeelRenderer, StickerPeelError>
+                switch outcome {
+                case .ready(let kit):
+                    do {
+                        made = .success(try StickerPeelRenderer.make(kit: kit, timeline: timeline, scale: scale, t0: t0,
+                                                                     slow: slow, onFinish: finished))
+                    } catch {
+                        made = .failure(error as? StickerPeelError ?? StickerPeelError(description: "\(error)"))
+                    }
+                case .failed(let why):
+                    made = .failure(StickerPeelError(description: why))
+                }
+                Task { @MainActor in self?.begin(with: made) }
+            }
+        }
+        let wait = max(t0 - Self.metalLead - CACurrentMediaTime(), 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in self?.begin(with: nil) }
+    }
+
+    /// Picks the peel once: Metal if its renderer arrived in time, else the Core Animation fold.
+    private func begin(with made: Result<StickerPeelRenderer, StickerPeelError>?) {
+        guard let p = pending else { return }   // already decided; a late renderer is simply dropped
+        pending = nil
+        let now = CACurrentMediaTime()
+        var renderer: StickerPeelRenderer?
+        switch made {
+        case .success(let r)? where now < p.t0 - Self.metalLead / 2:
+            renderer = r
+        case .failure(let e)?:
+            StickerPeel.log.debug("peel: Core Animation fold (\(e.description, privacy: .public))")
+        default:
+            StickerPeel.log.debug("peel: Core Animation fold (Metal not ready in time, or forced)")
+        }
+        // A main thread blocked past the start would skip the beginning: start a beat later instead.
+        animate(t0: max(p.t0, now + 0.03), renderer: renderer, content: p.content, completion: p.completion)
+    }
+
+    private func peelFinished(_ stats: StickerPeelStats) {
+        StickerPeel.log.debug("peel: \(stats.summary, privacy: .public)")
+        peel?.layer.removeFromSuperlayer()
+        peel = nil
+    }
+
+    private func animate(t0: CFTimeInterval, renderer: StickerPeelRenderer?, content: UIView?,
+                         completion: @escaping () -> Void) {
+        let k = Debug.slow
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock { [weak self] in
+            self?.peel?.cancel()
+            self?.removeFromSuperview()
+            completion()
+        }
+
+        // Metal: swap the static art for the renderer's identical first frame in this transaction,
+        // then let the render thread take over.
+        let metal = renderer
+        let swapStart = CACurrentMediaTime()
+        if let metal {
+            layer.insertSublayer(metal.layer, above: piece)
+            metal.presentFirstFrame()
+            piece.isHidden = true
+            shadow.isHidden = true
+        }
+
         // Timeline (seconds after t0):
-        //   0.00–0.60  cutout folds forward about its bottom edge (top toward the viewer), darkening
-        //   0.25–0.65  ...and drops past the bottom of the screen, leaving a Rexie-shaped hole
-        //   0.45–1.30  hole grows around the pivot until the app fills the screen; app settles 1.2x -> 1.0x
-        let peel = 0.60, dropStart = 0.25, dropDuration = 0.40
-        let irisStart = 0.45, irisDuration = 0.85
+        //   Metal peel (StickerPeelTimeline):
+        //     0.00–0.76  Rexie peels from the bottom-left corner toward the top right, curling over itself
+        //     0.62–1.00  the loose sticker flies off toward the top right; its shadow fades by 0.92
+        //     0.62–1.40  hole grows around the pivot until the app fills the screen; app settles 1.2x -> 1.0x
+        //   Core Animation fold (fallback):
+        //     0.00–0.60  cutout folds forward about its bottom edge (top toward the viewer), darkening
+        //     0.25–0.65  ...and drops past the bottom of the screen, leaving a Rexie-shaped hole
+        //     0.45–1.30  hole grows as above
+        let irisStart = (metal == nil ? 0.45 : StickerPeelTimeline.flightStart) * k
+        let irisDuration = (metal == nil ? 0.85 : 0.78) * k
+        if metal == nil { fold(t0: t0) }
+
         let art = artRect
         let pivot = pivotPoint(in: art)
         let corners = [CGPoint.zero, CGPoint(x: bounds.maxX, y: 0), CGPoint(x: 0, y: bounds.maxY),
                        CGPoint(x: bounds.maxX, y: bounds.maxY)]
         let reach = corners.map { hypot($0.x - pivot.x, $0.y - pivot.y) }.max() ?? 1
         let holeEnd = reach / (Metric.pivotRadius * art.width / Metric.svg.width) * 1.06
+
+        // Zooming reads as constant speed when the scale moves evenly in log space, so the keyframes ease
+        // the exponent (smoothstep): the hole opens gently, rushes through the screen edges, then lands.
+        let iris = CAKeyframeAnimation(keyPath: "transform.scale")
+        let steps = 48
+        let span = log(holeEnd)
+        iris.values = (0...steps).map { i -> CGFloat in
+            let u = CGFloat(i) / CGFloat(steps)
+            return exp(span * u * u * (3 - 2 * u))
+        }
+        iris.calculationMode = .linear
+        iris.beginTime = t0 + irisStart
+        iris.duration = irisDuration
+        iris.fillMode = .backwards
+        cover.add(iris, forKey: "iris")
+        cover.transform = CATransform3DMakeScale(holeEnd, holeEnd, 1)
+        // The bitmap edge softens at large scale; by then it is leaving the screen, so fade the last bit.
+        cover.add(anim("opacity", from: 1, to: 0, start: t0 + irisStart + irisDuration * 0.85,
+                       duration: irisDuration * 0.15, .linear), forKey: "fade")
+        cover.opacity = 0
+        CATransaction.commit()
+        metal?.noteSwap(CACurrentMediaTime() - swapStart)
 
         if let content {
             CATransaction.begin()
@@ -309,15 +453,17 @@ final class LaunchSplashView: UIView {
             CATransaction.commit()
         }
 
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            self?.removeFromSuperview()
-            completion()
-        }
+        metal?.start()
+        peel = metal
+    }
 
-        // The cutout folds forward on its bottom edge like a hinged flap (top toward the viewer), then
-        // falls off the bottom of the screen whole, still tipping (no fade). Negative x-rotation brings
-        // the top edge toward the viewer.
+    /// The fallback peel: the flat cutout folds forward on its bottom edge like a hinged flap (top
+    /// toward the viewer), then falls off the bottom of the screen whole, still tipping (no fade).
+    private func fold(t0: CFTimeInterval) {
+        let k = Debug.slow
+        let peel = 0.60 * k, dropStart = 0.25 * k, dropDuration = 0.40 * k
+        let art = artRect
+        // Negative x-rotation brings the top edge toward the viewer.
         let folded = -CGFloat.pi * 0.2, tilt = -CGFloat.pi * 0.36, lift: CGFloat = 150
         let tip = CAKeyframeAnimation(keyPath: "transform.rotation.x")
         tip.values = [0, folded, tilt]
@@ -344,33 +490,12 @@ final class LaunchSplashView: UIView {
         shadowLife.values = [0, 1, 0]
         shadowLife.keyTimes = [0, 0.4, 1]
         shadowLife.beginTime = t0
-        shadowLife.duration = 0.5
+        shadowLife.duration = 0.5 * k
         shadowLife.fillMode = .backwards
         shadow.add(shadowLife, forKey: "life")
-        shadow.add(anim("transform.translation.y", from: 0, to: art.height * 0.5, start: t0, duration: 0.5, .easeIn),
+        shadow.add(anim("transform.translation.y", from: 0, to: art.height * 0.5, start: t0, duration: 0.5 * k, .easeIn),
                    forKey: "slide")
         shadow.transform = CATransform3DMakeTranslation(0, art.height * 0.5, 0)
-
-        // Zooming reads as constant speed when the scale moves evenly in log space, so the keyframes ease
-        // the exponent (smoothstep): the hole opens gently, rushes through the screen edges, then lands.
-        let iris = CAKeyframeAnimation(keyPath: "transform.scale")
-        let steps = 48
-        let span = log(holeEnd)
-        iris.values = (0...steps).map { i -> CGFloat in
-            let u = CGFloat(i) / CGFloat(steps)
-            return exp(span * u * u * (3 - 2 * u))
-        }
-        iris.calculationMode = .linear
-        iris.beginTime = t0 + irisStart
-        iris.duration = irisDuration
-        iris.fillMode = .backwards
-        cover.add(iris, forKey: "iris")
-        cover.transform = CATransform3DMakeScale(holeEnd, holeEnd, 1)
-        // The bitmap edge softens at large scale; by then it is leaving the screen, so fade the last bit.
-        cover.add(anim("opacity", from: 1, to: 0, start: t0 + irisStart + irisDuration * 0.85,
-                       duration: irisDuration * 0.15, .linear), forKey: "fade")
-        cover.opacity = 0
-        CATransaction.commit()
     }
 
     private func anim(_ key: String, from: CGFloat, to: CGFloat, start: CFTimeInterval, duration: CFTimeInterval,
