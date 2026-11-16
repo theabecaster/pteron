@@ -330,6 +330,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         let point = tapGR.location(in: term)
         // TAP HOOK (links, prompts): a tap that hit an OSC 8 link or an OSC 133 prompt is handled
         // here and returns, before the selection and focus logic below.
+        if term.tapOpensLinkOrMovesCursor(at: point, focused: term.isFirstResponder, shift: tapGR.modifierFlags.contains(.shift)) {
+            onFocus?()
+            editMenu.dismissMenu()
+            // No click for the program and no Paste menu; counted, so a second tap still selects the word.
+            swallowTermTap()
+            _ = selectionUI.tap(at: point, focused: true)
+            return
+        }
 
         // SELECTION UI: a tap on a handle is not a tap; a second or third tap selects a word or a line.
         let tap = selectionUI.tap(at: point, focused: term.isFirstResponder)
@@ -1091,6 +1099,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         switch status {
         case .live:
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
+            #if DEBUG
+            if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
+            #endif
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true
                 let text = t.replacingOccurrences(of: "\\n", with: "\r")

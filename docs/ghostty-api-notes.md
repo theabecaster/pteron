@@ -80,7 +80,8 @@ block and must not call `vt_write` on the same terminal (`G/effects.md:38-58`).
 | `RENDER_HOLD` | **Yes** | Needed for correct synchronized output |
 | `TITLE_CHANGED`, `PWD_CHANGED`, `BELL` | Optional | No reply involved |
 | `DEVICE_ATTRIBUTES`, `ENQUIRY`, `XTVERSION`, `SIZE`, `COLOR_SCHEME` | No | They only shape replies. With `WRITE_PTY` NULL nothing is sent anyway: the trampoline returns when it is unset (`S/terminal/c/terminal.zig:473-477`) |
-| `CLIPBOARD_WRITE` | Product decision | OSC 52 copy to the iOS pasteboard. No reply for OSC 52. Unconfirmed: whether the Rex server also handles OSC 52 |
+| `CLIPBOARD_WRITE` | **Yes** (`GhosttyClipboard.swift`) | OSC 52 copy to the iOS pasteboard. No reply for OSC 52. The Rex server's terminal handles OSC 52 too (it set the Mac's clipboard in a live run) |
+| `RESET` | **Yes** (`GhosttyPrompts.swift`) | Sends nothing. Forgets the prompt click mode, which the C API doesn't expose and we read from the stream with `ghostty_terminal_vt_write_until` |
 | `CLIPBOARD_READ` | No | Its answer goes to the program through `WRITE_PTY`. It also switches paste to Kitty paste events under mode 5522 (`G/input.md:172-183`) |
 | `PROGRAM_STATUS`, `UNKNOWN_SEQUENCE`, `RESIZE_WINDOW`, `DESKTOP_NOTIFICATION`, `PROGRESS_REPORT`, `SEMANTIC_PROMPT`, `RESET` | Not needed now | `PROGRAM_STATUS` makes the terminal answer `OSC 7501;?` through `WRITE_PTY` (`H/terminal.h:2623-2644`) |
 

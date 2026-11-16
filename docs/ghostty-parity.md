@@ -52,9 +52,9 @@ How it was verified:
 | 26 | Gesture arbitration: scroll, drag-select, pane swipe, mirror canvas pan, pinch, two-finger tap | same | `GhosttyIntegrationTests.testEveryPanOfTheEngineAsksThePanGate`, `GhosttyScrollViewTests.testGatesDecideWhetherPansAndTheTapBegin`; hand | Every pan of the engine asks `panGate`; the tap asks `tapGate`. `isBuiltInSelectionPan` is false for all of them: the engine has no pan that selects. |
 | 27 | Double tap (word), triple tap (line) | intentional difference | `SelectionUITests.testDoubleTapSelectsAWordAndTripleTapTheLine`, `testSelectionEndsAdjustAndLine`; hand (Selection 7) | The host counts taps (`TerminalSelectionController.tap`), so the first tap acts at once instead of waiting for a second. Both copy, and show handles and the edit menu. Ghostty's line follows soft wraps. |
 | 28 | Tap near the cursor shows a Paste menu | same | `SelectionUITests.testATapByTheCursorOffersPaste`, `testRules`; hand (Selection 8) | SwiftTerm's trigger (`SelectionRules.tapShowsPaste`): within 3 columns and 1 row of the cursor, terminal focused, no selection cleared by the tap, no mouse tracking, no menu up. Shown with `UIEditMenuInteraction`. |
-| 29 | Tap on an OSC 8 hyperlink opens it | gap | read of SwiftTerm's `singleTap` / `requestOpenLink` | Not wired in Ghostty. |
-| 30 | Tap on a prompt line moves the cursor (OSC 133 click) | gap | read of SwiftTerm's `handleSemanticPromptClick` | Not wired in Ghostty. |
-| 31 | OSC 52 copy to the pasteboard | gap | read of the adapter's `clipboardCopy` | SwiftTerm sets the iOS pasteboard. Ghostty installs no clipboard callback. |
+| 29 | Tap on a link opens it | intentional difference | `GhosttyLinkLookupTests`, `GhosttyTapRoutingTests`; live (`-tapTest` on an OSC 8 link and on a web address, Safari opened); hand (a real finger) | A tap on a focused pane opens an OSC 8 hyperlink (any scheme, `UIApplication.open`, as the adapter's `requestOpenLink`), also in a mouse-tracking program, and an `http(s)` address written as text (soft-wrapped ones too) unless the program tracks the mouse. SwiftTerm 1.99.3 opens a link only while a pointer hovers over it (`linkHighlightMode` is `.hover`), so a finger tap never opened one. See "Taps" below. |
+| 30 | Tap on a prompt line moves the cursor (OSC 133 click) | same | `GhosttyPromptClickTests`, `GhosttyTapRoutingTests`; live (`-tapTest`, then a typed character landed at the tapped cell); hand | Same rules: the shell must announce `cl=…` or `click_events=…`, the cursor must be at a prompt, primary screen, no mouse tracking, no selection, not within 3 columns and 1 row of the cursor. Arrow keys go through the key encoder (DECCKM). Like Ghostty, every `cl` value moves within one input line; SwiftTerm also sends up/down for `cl=v` and `w`. See "Taps" below. |
+| 31 | OSC 52 copy to the pasteboard | same | `GhosttyClipboardTests`; live (`printf '\e]52;c;…'`, then `xcrun simctl pbpaste`) | Every destination is the iOS pasteboard, only valid UTF-8 text, an empty write empties it, silent (no haptic, no shimmer), as with SwiftTerm. A query is never answered. Ghostty takes one-letter destinations only (`52;pc;…` is dropped; SwiftTerm takes it). |
 | 32 | Theme: foreground, background, cursor, selection, ANSI 16, keyboard appearance, indicator | same | `GhosttyParityTests.testThemeReachesEveryPartOnBothEngines`, `GhosttyScrollViewTests.testThemeStylesTheIndicator`, `GhosttyRenderTests.testExplicitAndPaletteColors`; live (dark theme) | Light themes: by test only. |
 | 33 | Colour rendering | intentional difference | live (screenshots of both engines, same pane) | Ghostty draws the theme's hex values as they are. SwiftTerm's Metal output of the same prompt is visibly paler (blue and yellow segments). Not investigated on the SwiftTerm side. |
 | 34 | Fonts: MesloLGS NF regular, bold, italic, bold italic; fallback | same | `GhosttyRenderTests.testBoldItalicFaintInvisible`, `testWideCharactersAndGraphemes`, `testEmojiUsesTheColorAtlas`; live (regular, bold) | Italic and bold italic were not looked at live in this audit. |
@@ -75,7 +75,47 @@ How it was verified:
 | 49 | Reset and resync fallback | same | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `Stream*` tests | `streamReset` feeds RIS and clear-scrollback as text to both; a snapshot that doesn't decode falls back to `terminal.format`. |
 | 50 | Teardown | same | `GhosttyIntegrationTests.testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane` | No terminal, render-thread pane or thread left. |
 
-Counts: 36 same, 10 intentional differences, 5 gaps (rows 27 to 31).
+Counts: 39 same, 12 intentional differences, no gaps.
+
+## Taps: links, prompt clicks, OSC 52 (rows 29 to 31)
+
+Code: `Ghostty/GhosttyTap.swift` (the order of things a tap does, as a table with a test),
+`GhosttyLinks.swift`, `GhosttyPrompts.swift`, `GhosttyClipboard.swift`. The host's tap asks the
+engine (`tapOpensLinkOrMovesCursor`, at `TAP HOOK` in `TerminalHost.tapped`) before the selection
+UI and the focus logic see the tap; one hold of the terminal lock reads everything. A tap that
+opened a link or moved the cursor is used up: it is no click for the program and shows no menu.
+
+Order, from SwiftTerm's `singleTap` and the host's focus tap: an unfocused pane is only focused;
+a selection is only cleared; an OSC 8 hyperlink opens; a mouse-tracking program gets its click; a
+web address in the text opens; next to the cursor nothing moves (the Paste menu, row 28);
+a tap on the prompt moves the cursor.
+
+With the selection UI (rows 27 and 28):
+
+- **Paste by the cursor wins over a prompt click.** Both use the same zone (within 3 columns and
+  1 row of the cursor): inside it the tap offers Paste and moves nothing, outside it the tap moves
+  the cursor and shows no menu. SwiftTerm draws the line in the same place.
+- **A double or triple tap still selects.** A used-up tap is counted as the first tap, and a tap
+  that follows one within 0.5 s in the same place is never a link or prompt tap (the shell may not
+  have moved its cursor yet, and the keys would go out twice). So a double tap on a word of the
+  prompt moves the cursor there and selects the word; on a link it opens the link once.
+
+- **Links.** The hyperlink of a cell is `ghostty_grid_ref_hyperlink_uri`. A plain address is
+  looked for in the cell's logical line, built from the rows' wrap flags, in view only. Only
+  `http` and `https` are found in text; an OSC 8 link opens with whatever scheme it has, as before.
+  Links are not underlined: Ghostty underlines them only under a hovering pointer with a modifier.
+- **Prompt click.** libghostty-vt has the grid data (input cells, prompt rows, "cursor at prompt")
+  but its C API has neither the click mode the shell announced nor `promptClickMove`. The mode is
+  read from the stream with `ghostty_terminal_vt_write_until` at OSC boundaries (upstream's way to
+  see a string's bytes); the move is `Screen.promptClickLine` again, with a wide character
+  counted once (upstream counts both cells). A snapshot doesn't carry the mode, so after opening a
+  pane a click works from the next prompt the shell draws. SwiftTerm, seeded from
+  `terminal.format`, has the same limit.
+- **OSC 52.** `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE`. The callback copies the text and leaves; a
+  burst becomes one hop to the main actor and the last write wins. No clipboard-read and no
+  write-pty callback exist, so nothing can be sent back. OSC 1337 Copy and OSC 5522 writes arrive
+  the same way and are taken too. Live: the Rex server's terminal also set the Mac's clipboard
+  from the same sequence.
 
 ## The row-above bug (build 7a0d37c)
 
@@ -155,13 +195,14 @@ Accepted, with the bound:
 
 1. **Row height (row 3).** Keep Ghostty's device-pixel line height (more rows, the Mac's pane is
    resized to more rows than with SwiftTerm), or round up to whole points to give the same grid.
-2. **The three gaps (rows 29 to 31).** Which of OSC 8 links, prompt click and OSC 52 copy are wanted
-   before Ghostty is the default. (Rows 27 and 28 are done: [selection.md](selection.md).)
+2. **Link taps (row 29).** No gaps are left (rows 27 and 28: [selection.md](selection.md); rows 29
+   to 31: "Taps" above). Two choices in row 29 are yours to undo: a finger tap opens links at all
+   (SwiftTerm needed a hovering pointer), and web addresses in plain text open too.
 3. **Row 7.** Ctrl+Return from the key bar sends Return (SwiftTerm sends nothing).
 
 ## Manual script (about 5 minutes)
 
-Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 39, 41, 42, 44, 45, 48.
+Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 29, 30, 39, 41, 42, 44, 45, 48.
 
 Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In the app choose
 Settings → Terminal → Engine → Ghostty, Pane Size → Fit, and open `zz-manual`. Close the session
@@ -193,7 +234,13 @@ when done.
 9. **Mirror (42, 44).** Pane Size → Mirror: the pane shows the Mac's grid; pinch zooms, drag pans,
    a long press still selects the right word. Back in Fit, resize the pane on the Mac: the chip
    "Resized elsewhere · tap to fit here" appears; tap it.
-10. **Background (48).** Send the app to the background for a few seconds and return: the screen is
+10. **Taps (29, 30).** With the keyboard up, run
+    `printf '\e]8;;https://example.com\e\\LINK\e]8;;\e\\ https://example.org\n'` and tap `LINK`,
+    then the address: each opens in Safari. Hide the keyboard and tap `LINK`: only the keyboard
+    comes back. In a shell with Ghostty's shell integration (`OSC 133;A;cl=line`), type
+    `echo abcdefghij` and tap the `c`: the cursor goes there; a tap within 3 columns of the cursor
+    moves nothing.
+11. **Background (48).** Send the app to the background for a few seconds and return: the screen is
     there at once and current. On a device, scrolling should run at 120 Hz (41).
 
 ## Selection (about 5 minutes, on a device)

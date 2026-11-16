@@ -164,6 +164,10 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     var cursorGridCell: TerminalGridCell? { get }
     /// The program tracks the mouse: a tap is a click for it.
     var sendsTapsToProgram: Bool { get }
+    /// A single tap at `p`, asked before the host does anything else with it. True if the engine
+    /// used it up: it opened the link under it or moved the shell's cursor on its prompt.
+    /// `focused`: the view had the keyboard when the tap came. Default (Ghostty/GhosttyTap.swift): false.
+    func tapOpensLinkOrMovesCursor(at p: CGPoint, focused: Bool, shift: Bool) -> Bool
 
     // Scrolling
     /// The engine's own one-finger scroll pan, if it has one; the host limits it to direct touches.
