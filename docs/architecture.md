@@ -30,6 +30,24 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
    Settings and theme are pushed into the host from `updateUIView`.
 7. Reconnects, returning to the foreground and an event `seq` gap all trigger a full resync.
 
+## Offline
+
+- `RexControl` owns retries: after any failure, the first connect included, it backs off 1 s → 15 s
+  and reports each failure as a `ConnectionFailure` (error domain and code, the POSIX or TLS code
+  under it, the upgrade's HTTP status, the close code). `kick()` retries now.
+- `ServerConnection` turns failures into `ConnectionProblem`s (`State/ConnectionProblem.swift`):
+  no internet, off the private network, host not on the tailnet, not answering (asleep, refused, or
+  not Rex), not allowed, insecure, bad address, unknown. `NetworkWatch` (`NWPathMonitor` off the main
+  thread) says whether there's a path and whether the phone has a Tailscale address; a path change
+  retries every down server.
+- Offline holds still: retries never show as "connecting", only a real connection leaves `.offline`,
+  and `ProblemGate` changes the message only for a decisive kind or the same new kind twice.
+  `recovering` keeps the screen up, saying the signal is back, until the sessions have reloaded.
+- `Features/Offline`: `OfflineScreen` takes over the tab area only when no server is up (one down
+  server among several is a line in the sidebar). Over a tab whose server dropped, it dims the stale
+  tab and blocks touches. `SignalStatic` is Core Animation only (one noise texture, discrete
+  `contentsRect` jumps, looping keyframes), off while not in a window, still with Reduce Motion.
+
 Phone-only view state (zoomed tabs, when agents started waiting) lives in `PhoneState` and never
 goes to the server, so the Mac's layout doesn't change because of the phone.
 

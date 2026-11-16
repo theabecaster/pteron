@@ -42,10 +42,24 @@ struct HostEntry: Identifiable, Equatable {
 /// - The UI stays calm: per-block events are coalesced into one update per ~150 ms, a status is held
 ///   on screen for at least a second (a new "blocked" shows at once), and connection drops only show
 ///   once they last more than a second.
+/// - Offline holds still. `RexControl` retries in the background, but a retry never shows as
+///   "connecting" once the server is offline; only a real connection leaves `.offline`. The problem
+///   shown changes only through `ProblemGate`, so alternating errors don't swap the message.
 @MainActor
 @Observable
 final class ServerConnection: Identifiable {
-    enum Phase: Equatable { case idle, connecting, online, offline(String) }
+    enum Phase: Equatable {
+        case idle
+        /// The first attempt since start. Retries after a failure stay `.offline`.
+        case connecting
+        case online
+        case offline(ConnectionProblem)
+
+        var problem: ConnectionProblem? {
+            if case .offline(let p) = self { return p }
+            return nil
+        }
+    }
 
     let config: ServerConfig
     nonisolated var id: UUID { config.id }
@@ -71,10 +85,30 @@ final class ServerConnection: Identifiable {
     var hosts: [HostEntry] = []
     var hostName: String?
     var lastError: String?
+    /// The user asked to try again and that attempt hasn't finished: the offline screen's feedback.
+    var retrying = false
+    /// The first full sync since the latest connect has finished, so sessions are loaded. The offline
+    /// screen stays up until then, instead of flashing an empty sidebar.
+    var synced = false
+    /// Offline was shown and the sessions haven't reloaded since. The offline screen stays up for
+    /// this, saying the signal is back, so it hands over to the app in one step.
+    var recovering = false
+    /// The offline screen is up for this server.
+    var showsOffline: Bool { phase.problem != nil || recovering }
 
     @ObservationIgnored fileprivate var metaBoxes: [String: BlockMetaBox] = [:]
-    @ObservationIgnored private var rawPhase: Phase = .idle
-    @ObservationIgnored private var phaseTask: Task<Void, Never>?
+    /// The phone's network, to classify failures and retry when it changes. Nil in tests.
+    @ObservationIgnored private let network: NetworkWatch?
+    @ObservationIgnored private var gate = ProblemGate()
+    /// A drop from online waits out `phaseGrace` before it shows.
+    @ObservationIgnored private var graceTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingProblem: ConnectionProblem?
+    @ObservationIgnored private var retryStarted = Date.distantPast
+    @ObservationIgnored private var retryEnd: Task<Void, Never>?
+    #if DEBUG
+    /// `-simulateOffline`: shown instead of connecting.
+    @ObservationIgnored private var simulated: ConnectionProblem.Kind?
+    #endif
     @ObservationIgnored private var refreshScheduled: Set<String> = []
     @ObservationIgnored private var started = false
     // Resync bookkeeping.
@@ -90,6 +124,8 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored private var flushTask: Task<Void, Never>?
 
     static let phaseGrace: Double = 1.0
+    /// "Trying…" stays up at least this long, so a fast failure still reads as an attempt.
+    static let minRetryShow: Double = 0.9
     static let coalesce: Double = 0.15
     static let minStatusHold: Double = 1.0
 
@@ -101,28 +137,20 @@ final class ServerConnection: Identifiable {
     }
 
     /// `deviceID` ends the client label (` #<id>`), which is how the helper recognizes this phone.
-    init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier, push: PushRegistrar? = nil, deviceID: String) {
+    init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier, push: PushRegistrar? = nil,
+         network: NetworkWatch? = nil, deviceID: String) {
         self.prefs = prefs
         self.config = config
         self.notifier = notifier
         self.push = push
+        self.network = network
         control = RexControl(address: config.url, client: ClientInfo(
             name: "Rex Connect",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)))
         keymap = KeymapStore(control: control)
         control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
-        control.onStateChange = { [weak self] st in
-            guard let self else { return }
-            switch st {
-            case .connecting: self.setPhase(.connecting)
-            case .connected:
-                self.connectionSerial += 1
-                self.setPhase(.online)
-            case .failed(let m): self.setPhase(.offline(m))
-            case .idle: self.setPhase(.idle)
-            }
-        }
+        control.onStateChange = { [weak self] st in self?.controlChanged(st) }
         control.onReconnected = { [weak self] _ in
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)
@@ -131,46 +159,80 @@ final class ServerConnection: Identifiable {
 
     // MARK: Connection
 
-    private func setPhase(_ p: Phase) {
-        rawPhase = p
-        phaseTask?.cancel()
-        phaseTask = nil
-        // Coming online, going idle, or still on the first connect: show it now.
-        if p == .online || p == .idle || phase != .online {
-            if phase != p { phase = p }
-            return
+    /// Turns the socket's state into the phase on screen. Called for every attempt, so it must stay
+    /// cheap and must not change `phase` unless the screen should change.
+    private func controlChanged(_ st: RexControl.State) {
+        switch st {
+        case .connected:
+            connectionSerial += 1
+            show(.online)
+            endRetry()
+        case .connecting:
+            // Only the first attempt shows. A retry while offline keeps the offline screen as it is.
+            if phase == .idle { show(.connecting) }
+        case .failed(let f):
+            let p = ConnectionProblem.classify(f, network: network?.snapshot ?? .unknown)
+            if phase == .online {
+                pendingProblem = p
+                waitOutDrop()
+            } else if graceTask == nil {
+                show(.offline(gate.observe(p)))
+            } else {
+                pendingProblem = p
+            }
+            endRetry()
+        case .idle:
+            show(.idle)
         }
-        // A drop from online: wait out short blips.
-        phaseTask = Task { [weak self] in
+    }
+
+    private func show(_ p: Phase) {
+        if p == .online || p == .idle {
+            graceTask?.cancel()
+            graceTask = nil
+            pendingProblem = nil
+            gate.reset()
+        }
+        if p != .online { synced = false }
+        if p.problem != nil, !recovering { recovering = true }
+        if p == .idle, recovering { recovering = false }
+        if phase != p { phase = p }
+    }
+
+    /// A drop from online shows only if it outlasts `phaseGrace`, so a blip that reconnects at once
+    /// never reaches the screen.
+    private func waitOutDrop() {
+        guard graceTask == nil else { return }
+        graceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.phaseGrace * 1_000_000_000))
-            guard !Task.isCancelled, let self, self.rawPhase != .online else { return }
-            self.phase = self.rawPhase
+            guard !Task.isCancelled, let self else { return }
+            self.graceTask = nil
+            guard self.control.state != .connected, let p = self.pendingProblem else { return }
+            self.show(.offline(self.gate.observe(p)))
         }
     }
 
     func start() {
+        #if DEBUG
+        if simulated != nil { return }
+        #endif
         guard !started else { control.kick(); return }
         guard control.wsBase != nil else {
             // A typo in Settings: say so, and don't retry an address that can't work.
-            let msg = "“\(config.url)” isn't a server address."
-            setPhase(.offline(msg))
-            lastError = msg
+            let f = ConnectionFailure.invalidAddress(config.url)
+            show(.offline(gate.observe(ConnectionProblem.classify(f, network: .unknown))))
+            lastError = f.message
             return
         }
         started = true
         Task {
             do {
-                setPhase(.connecting)
                 try await control.connect()
                 lastSeq = 0
                 await bootstrap()
             } catch {
-                setPhase(.offline(error.localizedDescription))
-                lastError = error.localizedDescription
-                // RexControl only auto-retries after a successful first connect; retry here.
-                started = false
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                if case .offline = rawPhase { start() }
+                // RexControl keeps retrying with backoff; a later connect resyncs via `onReconnected`.
+                lastError = ConnectionFailure(error).message
             }
         }
     }
@@ -178,22 +240,77 @@ final class ServerConnection: Identifiable {
     func stop() {
         control.disconnect()
         started = false
-        setPhase(.idle)
+        show(.idle)
     }
 
     /// Back in the foreground: reconnect if needed (which resyncs), or resync the live connection.
     func resume() {
         start()
-        if rawPhase == .online { scheduleResync(after: 0) }
+        if control.state == .connected { scheduleResync(after: 0) }
     }
 
-    /// Pull to refresh: reload everything when online, otherwise reconnect.
-    func refresh() async {
-        if rawPhase == .online {
-            await bootstrap()
-        } else {
+    /// The phone's network changed: whatever failed may work now, so try at once.
+    func networkChanged() {
+        gate.networkChanged()
+        guard started, control.state != .connected else { return }
+        control.kick()
+    }
+
+    /// Try Again: retry now, with `retrying` set until the attempt ends.
+    func retryNow() {
+        guard phase != .online else { return }
+        retrying = true
+        retryStarted = Date()
+        retryEnd?.cancel()
+        #if DEBUG
+        if simulated != nil {
+            retryEnd = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_400_000_000)
+                guard !Task.isCancelled else { return }
+                self?.retrying = false
+            }
+            return
+        }
+        #endif
+        if started { control.kick() } else { start() }
+    }
+
+    /// Reconnect from the sidebar: a fresh connection when online, else a retry that keeps the
+    /// offline screen steady.
+    func reconnect() {
+        if control.state == .connected {
             stop()
             start()
+        } else {
+            retryNow()
+        }
+    }
+
+    private func endRetry() {
+        guard retrying else { return }
+        let left = Self.minRetryShow - Date().timeIntervalSince(retryStarted)
+        retryEnd?.cancel()
+        retryEnd = Task { [weak self] in
+            if left > 0 { try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000)) }
+            guard !Task.isCancelled else { return }
+            self?.retrying = false
+        }
+    }
+
+    #if DEBUG
+    /// `-simulateOffline <kind>`: show that problem and never connect.
+    func simulate(_ kind: ConnectionProblem.Kind) {
+        simulated = kind
+        show(.offline(ConnectionProblem(kind: kind, detail: "Simulated: -simulateOffline \(kind.rawValue)")))
+    }
+    #endif
+
+    /// Pull to refresh: reload everything when online, otherwise try again.
+    func refresh() async {
+        if control.state == .connected {
+            await bootstrap()
+        } else {
+            retryNow()
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
     }
@@ -235,6 +352,11 @@ final class ServerConnection: Identifiable {
             // Replace, don't merge. Sessions changed by events during the sync get one more read.
             sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
             views = fresh
+            // Sessions and tabs are in: the app can show them while metadata loads.
+            if !synced, control.state == .connected {
+                synced = true
+                recovering = false
+            }
             for sid in touchedSessions { refreshView(sid) }
             let blocks = fresh.values.flatMap { v in
                 v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (v.sessionID, $0.id) }
@@ -246,6 +368,9 @@ final class ServerConnection: Identifiable {
             push?.serverReady(self)
         } catch {
             lastError = error.localizedDescription
+            // Connected but the server refused the sync: show the app with what it has rather than
+            // holding the "back in range" card forever.
+            if control.state == .connected { recovering = false }
         }
     }
 

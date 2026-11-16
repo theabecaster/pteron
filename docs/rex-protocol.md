@@ -11,8 +11,10 @@ app relies on; update it when you use a new method or event.
   (`kind`, `platform`, `name` "Rex Connect", `version`, `label` = device name) and
   `reconnect_token` when resuming. The server answers `welcome` with `client.id`,
   `client.reconnect_token` and `limits.max_message_bytes`. No welcome in 8 s fails the connect.
-- The app pings every 30 s. On a drop it backs off 1 s → 15 s, reconnects with the token, then
-  resyncs, since events may have been missed.
+- The app pings every 30 s. On a drop, or a failed first connect, it backs off 1 s → 15 s,
+  reconnects with the token, then resyncs, since events may have been missed. A refused upgrade's
+  HTTP status (401/403: not allowed; 404/5xx: not Rex) and close code 1008 are kept for the offline
+  screen.
 
 ## Messages
 
