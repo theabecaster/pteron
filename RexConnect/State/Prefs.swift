@@ -7,7 +7,7 @@ enum SizingMode: String, CaseIterable, Identifiable {
     var title: String { self == .fit ? "Fit to phone" : "Mirror Mac size" }
     var detail: String {
         self == .fit
-            ? "While you view a pane, Rex Duo owns it and resizes it to fit this screen. Leaving the pane hands it back to the Mac."
+            ? "While you view a pane, Rex Connect owns it and resizes it to fit this screen. Leaving the pane hands it back to the Mac."
             : "Panes keep the size the Mac gave them. Pinch to zoom, drag to pan."
     }
 }

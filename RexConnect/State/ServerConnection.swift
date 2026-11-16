@@ -97,7 +97,7 @@ final class ServerConnection: Identifiable {
         self.config = config
         let url = URL(string: config.url.trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "https://invalid.local")!
         control = RexControl(baseURL: url, client: ClientInfo(
-            name: "Rex Duo",
+            name: "Rex Connect",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: String(UIDevice.current.name.prefix(40))))
         keymap = KeymapStore(control: control)

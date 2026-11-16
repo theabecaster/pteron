@@ -2,7 +2,7 @@ import SwiftUI
 import UserNotifications
 
 @main
-struct RexDuoApp: App {
+struct RexConnectApp: App {
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var phase
 

@@ -98,7 +98,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var selectAnchor: Position?
     /// The far end of a drag selection (nil: a long press that selected one word).
     private var selectHead: Position?
-    /// What is selected now, when Rex Duo selected it (SwiftTerm keeps its own bounds private).
+    /// What is selected now, when Rex Connect selected it (SwiftTerm keeps its own bounds private).
     private var selection: SelRange?
     /// Copy and Paste at the selection, after a long press.
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
@@ -611,8 +611,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         }
         var decided = Set<KeyChord>()
         for b in keymap.bindings where b.chord.mods.contains(.cmd) && !decided.contains(b.chord) {
-            // The first binding on a key that Rex Duo can perform runs; one it can't falls through.
-            guard DuoAction.resolve(b.action, b.args) != nil else { continue }
+            // The first binding on a key that Rex Connect can perform runs; one it can't falls through.
+            guard AppAction.resolve(b.action, b.args) != nil else { continue }
             decided.insert(b.chord)
             guard let input = KeyInput.commandInput(b.chord) else { continue }
             add(KeyActions.title(b), input, KeyInput.flags(b.chord.mods), b.chord.spelling,
@@ -650,7 +650,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         return true
     }
 
-    private func perform(_ action: DuoAction, key: UIKey?) {
+    private func perform(_ action: AppAction, key: UIKey?) {
         switch action {
         case .command(let c):
             onCommand?(c)
@@ -677,7 +677,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
             stream.perform(action: name, args: args) { [weak self] queued in
                 // A configuration-file action may ask this client to perform its own actions.
                 for q in queued {
-                    guard let n = q.str("action"), let a = DuoAction.resolve(n, q.obj("args")) else { continue }
+                    guard let n = q.str("action"), let a = AppAction.resolve(n, q.obj("args")) else { continue }
                     if case .server = a { continue }
                     self?.perform(a, key: nil)
                 }

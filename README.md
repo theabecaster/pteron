@@ -1,4 +1,4 @@
-# Rex Duo
+# Rex Connect
 
 A native iOS remote for [Rex](https://rex.superlogical.com) servers, built for the iPhone Duo
 (works on any iPhone). It speaks Rex's own documented API (`/llms.txt` on any Rex server) over
@@ -12,7 +12,7 @@ the server's built-in Tailscale HTTPS address.
   of Rex's built-in themes) and MesloLGS Nerd Font.
 - Unfolded Duo (≥ 600 pt wide): sidebar beside the tab, splits drawn the way Rex lays them out,
   draggable split borders. Folded / other iPhones: one pane at a time with a pane strip.
-- Fit to phone: while you view a pane, Rex Duo owns it and resizes it to the phone; leaving the
+- Fit to phone: while you view a pane, Rex Connect owns it and resizes it to the phone; leaving the
   pane or backgrounding the app hands it back to the Mac. Mirror mode keeps the Mac's size.
 - Create/close sessions, tabs, splits; zoom, rename, clear; customizable key bar (esc, ctrl,
   alt, arrows, …); Agents screen; local notification when an agent starts waiting for you.
@@ -25,7 +25,7 @@ the server's built-in Tailscale HTTPS address.
 | Terminal output (`rex.data.terminal.v1`) | `wss://<server>/api/data` with a ticket from `data.connect` |
 | Typing | `com.superlogical.terminal.write`, one write at a time |
 
-The data stream starts with a binary Ghostty snapshot. Rex Duo skips it up to the first
+The data stream starts with a binary Ghostty snapshot. Rex Connect skips it up to the first
 `ESC _ rex1;<nonce>;…` marker and seeds the screen with `terminal.format` (`vt`) instead.
 
 ## Reaching other machines
@@ -38,7 +38,7 @@ Settings → Servers. The phone must run Tailscale as the same user.
 
 ```sh
 xcodegen generate
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination 'id=<simulator id>' \
+xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination 'id=<simulator id>' \
   -skipPackagePluginValidation -skipMacroValidation build
 ```
 

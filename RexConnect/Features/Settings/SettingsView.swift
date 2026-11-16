@@ -55,7 +55,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Servers")
                 } footer: {
-                    Text("Rex Duo talks to each Rex server over its built-in Tailscale address. Turn it on for a machine with `rex server tailscale enable` there; the phone must be on the same tailnet and signed in as the same Tailscale user.")
+                    Text("Rex Connect talks to each Rex server over its built-in Tailscale address. Turn it on for a machine with `rex server tailscale enable` there; the phone must be on the same tailnet and signed in as the same Tailscale user.")
                 }
 
                 Section("Appearance") {
@@ -106,7 +106,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Panes")
                 } footer: {
-                    Text(p.sizing.detail + " Unfolded, Rex Duo draws a tab's splits the way Rex lays them out.")
+                    Text(p.sizing.detail + " Unfolded, Rex Connect draws a tab's splits the way Rex lays them out.")
                 }
 
                 Section {

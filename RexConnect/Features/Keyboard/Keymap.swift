@@ -78,8 +78,8 @@ struct KeyBinding {
     let args: JSONObject?
 }
 
-/// What Rex Duo does for a Rex action name.
-enum DuoAction {
+/// What Rex Connect does for a Rex action name.
+enum AppAction {
     /// App-level: the visible window screen performs it.
     case command(RexCommand)
     /// Split along the pane's longer side.
@@ -94,8 +94,8 @@ enum DuoAction {
     /// A key bound to a Lua function: send the key itself with `client.key`.
     case forwardKey
 
-    /// Nil when Rex Duo can't perform the action; the next binding on the key, or the terminal, gets it.
-    static func resolve(_ name: String, _ args: JSONObject?) -> DuoAction? {
+    /// Nil when Rex Connect can't perform the action; the next binding on the key, or the terminal, gets it.
+    static func resolve(_ name: String, _ args: JSONObject?) -> AppAction? {
         let a = args ?? [:]
         switch name {
         case "client.tab.new": return .command(.newTab)
@@ -146,7 +146,7 @@ enum DuoAction {
         case "client.prompt.next": return .promptNext
         case "client.key.forward": return .forwardKey
         default:
-            // Rex's own client actions that Rex Duo doesn't have (find, palette, resize, …).
+            // Rex's own client actions that Rex Connect doesn't have (find, palette, resize, …).
             if name.hasPrefix("client.") || name.hasPrefix("pane.") || name.hasPrefix("session.") { return nil }
             // Dotted: a block action (com.superlogical.terminal.clear). No dot: a config-file action.
             return .server(name, args)
@@ -154,7 +154,7 @@ enum DuoAction {
     }
 }
 
-/// The actions Rex Duo declares to the server, with the Rex Mac app's titles.
+/// The actions Rex Connect declares to the server, with the Rex Mac app's titles.
 enum KeyActions {
     struct Info {
         let name: String
@@ -246,7 +246,7 @@ enum KeyActions {
     }
 }
 
-/// The Rex Mac app's default shortcuts (for the actions Rex Duo performs), plus Rex Duo's own.
+/// The Rex Mac app's default shortcuts (for the actions Rex Connect performs), plus Rex Connect's own.
 /// Sent to the server as the lowest layer; also the fallback when the server can't be asked.
 enum KeyDefaults {
     static let layer: [(String, String, JSONObject?)] = {
@@ -288,7 +288,7 @@ enum KeyDefaults {
         bind(["cmd+[Digit0]"], "client.font.reset")
         bind(["cmd+/"], "client.sidebar.toggle")
         bind(["cmd+."], "client.sidebar.activity.toggle")
-        // Rex Duo's own (Safari's Show All Tabs).
+        // Rex Connect's own (Safari's Show All Tabs).
         bind(["shift+cmd+\\"], "client.tab.overview")
         return b
     }()
@@ -335,10 +335,10 @@ final class KeymapStore {
         return idx.sorted().map { bindings[$0] }
     }
 
-    /// The binding a key runs: the first one Rex Duo can perform.
-    func resolve(_ chords: [KeyChord]) -> (KeyBinding, DuoAction)? {
+    /// The binding a key runs: the first one Rex Connect can perform.
+    func resolve(_ chords: [KeyChord]) -> (KeyBinding, AppAction)? {
         for b in bindings(for: chords) {
-            if let a = DuoAction.resolve(b.action, b.args) { return (b, a) }
+            if let a = AppAction.resolve(b.action, b.args) { return (b, a) }
         }
         return nil
     }

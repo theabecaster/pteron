@@ -594,5 +594,5 @@ private extension UIColor {
 }
 
 extension Notification.Name {
-    static let keyBarChanged = Notification.Name("RexDuo.keyBarChanged")
+    static let keyBarChanged = Notification.Name("RexConnect.keyBarChanged")
 }

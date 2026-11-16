@@ -8,3 +8,16 @@ DerivedData/
 .swiftpm/
 Relay/dist/
 xcuserdata/
+
+# XcodeGen output: run `xcodegen generate` after cloning and after adding, moving or deleting
+# files. Only the SwiftPM lockfile inside it is tracked, so package versions stay pinned.
+RexConnect.xcodeproj/*
+!RexConnect.xcodeproj/project.xcworkspace/
+RexConnect.xcodeproj/project.xcworkspace/*
+!RexConnect.xcodeproj/project.xcworkspace/xcshareddata/
+RexConnect.xcodeproj/project.xcworkspace/xcshareddata/*
+!RexConnect.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+RexConnect.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!RexConnect.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+# The project's name before the rename; old checkouts may still have it.
+RexDuo.xcodeproj/
