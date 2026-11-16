@@ -114,6 +114,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var cachedCommands: (generation: Int, commands: [UIKeyCommand])?
     private var repeatTimer: Timer?
     private var repeatKey: UIKeyboardHIDUsage?
+    private var repeatCount = 0
 
     // Output pacing: heavy output is parsed in slices, a frame's budget at a time.
     static let directFeedLimit = 8 * 1024
@@ -691,15 +692,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private func startRepeat(_ code: UIKeyboardHIDUsage, _ fire: @escaping @MainActor () -> Void) {
         stopRepeat()
         repeatKey = code
-        var count = 0
+        repeatCount = 0
         repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.repeatKey == code else { return }
                 self.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
                     MainActor.assumeIsolated {
                         guard let self else { return }
-                        count += 1
-                        guard count < 2000, self.keyIsDown(code), self.term.isFirstResponder else { self.stopRepeat(); return }
+                        self.repeatCount += 1
+                        guard self.repeatCount < 2000, self.keyIsDown(code), self.term.isFirstResponder else { self.stopRepeat(); return }
                         fire()
                     }
                 }
@@ -1062,11 +1063,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     /// Display-link target that doesn't keep the host alive.
+    /// Main-actor isolated: the link runs on the main run loop.
+    @MainActor
     private final class WeakTarget: NSObject {
         weak var host: TerminalHost?
         init(_ host: TerminalHost) { self.host = host }
         @objc func tick(_ link: CADisplayLink) {
-            MainActor.assumeIsolated { host?.drainOutput(all: false) }
+            host?.drainOutput(all: false)
         }
     }
 

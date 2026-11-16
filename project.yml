@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.0"
+    SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: R2PVQ496X7
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"

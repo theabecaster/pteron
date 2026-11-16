@@ -248,6 +248,7 @@ enum KeyActions {
 
 /// The Rex Mac app's default shortcuts (for the actions Rex Connect performs), plus Rex Connect's own.
 /// Sent to the server as the lowest layer; also the fallback when the server can't be asked.
+@MainActor
 enum KeyDefaults {
     static let layer: [(String, String, JSONObject?)] = {
         var b: [(String, String, JSONObject?)] = []

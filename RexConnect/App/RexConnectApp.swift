@@ -37,7 +37,9 @@ struct RexConnectApp: App {
     }
 }
 
-final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+/// Shows notifications while the app is open. It has no state, so it is Sendable and iOS may call it
+/// on any queue.
+final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, Sendable {
     static let shared = NotificationDelegate()
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {

@@ -9,7 +9,7 @@ let package = Package(
     platforms: [.iOS(.v18), .macOS(.v14)],
     products: [.library(name: "RexKit", targets: ["RexKit"])],
     targets: [
-        .target(name: "RexKit", swiftSettings: [.swiftLanguageMode(.v5)]),
+        .target(name: "RexKit"),
         .testTarget(name: "RexKitTests", dependencies: ["RexKit"]),
     ]
 )

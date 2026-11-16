@@ -57,7 +57,7 @@ enum KeyInput {
     }
 
     /// The spellings a press can match: by what the key types (following the layout), then by position.
-    static func chords(for key: UIKey) -> [KeyChord] {
+    @MainActor static func chords(for key: UIKey) -> [KeyChord] {
         let m = mods(key.modifierFlags)
         let info = info(key.keyCode)
         var out: [KeyChord] = []
@@ -198,7 +198,7 @@ enum KeyInput {
     // MARK: client.key
 
     /// A key event for `client.key` (keys bound to a Lua function).
-    static func clientKeyEvent(_ key: UIKey, action: String = "press") -> JSONObject {
+    @MainActor static func clientKeyEvent(_ key: UIKey, action: String = "press") -> JSONObject {
         let f = key.modifierFlags
         var mods: [String] = []
         if f.contains(.shift) { mods.append("shift") }

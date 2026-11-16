@@ -31,6 +31,7 @@ struct KeyChordTests {
     }
 }
 
+@MainActor
 struct AppActionTests {
     @Test func tabAndPaneActions() {
         #expect(AppAction.resolve("client.tab.new", nil).isCommand(.newTab))

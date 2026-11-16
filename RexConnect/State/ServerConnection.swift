@@ -283,25 +283,38 @@ final class ServerConnection: Identifiable {
         }
     }
 
+    /// One block's status, title and process, read in parallel. Each read parses its reply on the
+    /// main actor and hands back plain values. Outer nil: the call failed, keep what we had.
+    /// Inner nil: the server has none.
+    private func readMeta(_ sid: String, _ bid: String) async -> (String, BlockMeta?, String??, String??) {
+        async let st = readStatuses(sid, bid)
+        async let ti = readTitle(sid, bid)
+        async let pr = readProcess(sid, bid)
+        return (bid, await st, await ti, await pr)
+    }
+
+    private func readStatuses(_ sid: String, _ bid: String) async -> BlockMeta? {
+        guard let r = try? await control.blockCall("com.superlogical.terminal.program_status", session: sid, block: bid) else { return nil }
+        var m = BlockMeta()
+        for rec in r.arr("records") { m.statuses[rec.str("id") ?? ""] = ProgramStatus(rec) }
+        return m
+    }
+
+    private func readTitle(_ sid: String, _ bid: String) async -> String?? {
+        guard let r = try? await control.blockCall("com.superlogical.terminal.title", session: sid, block: bid) else { return nil }
+        return .some(r.str("title"))
+    }
+
+    private func readProcess(_ sid: String, _ bid: String) async -> String?? {
+        guard let r = try? await control.blockCall("com.superlogical.terminal.process", session: sid, block: bid) else { return nil }
+        return .some(r.obj("foreground").map(Self.processLabel))
+    }
+
     /// Reads status, title and process for the blocks and replaces what we had for them.
     private func loadMeta(_ blocks: [(session: String, block: String)]) async {
         await withTaskGroup(of: (String, BlockMeta?, String??, String??).self) { g in
             for (sid, bid) in blocks {
-                g.addTask { @MainActor in
-                    async let st = try? self.control.blockCall("com.superlogical.terminal.program_status", session: sid, block: bid)
-                    async let ti = try? self.control.blockCall("com.superlogical.terminal.title", session: sid, block: bid)
-                    async let pr = try? self.control.blockCall("com.superlogical.terminal.process", session: sid, block: bid)
-                    var statuses: BlockMeta?
-                    if let st = await st {
-                        var m = BlockMeta()
-                        for rec in st.arr("records") { m.statuses[rec.str("id") ?? ""] = ProgramStatus(rec) }
-                        statuses = m
-                    }
-                    // Outer nil: the call failed, keep what we had. Inner nil: the server has none.
-                    let title: String?? = await ti.map { $0.str("title") }
-                    let fg: String?? = await pr.map { $0.obj("foreground").map(Self.processLabel) }
-                    return (bid, statuses, title, fg)
-                }
+                g.addTask { await self.readMeta(sid, bid) }
             }
             for await (bid, statuses, title, fg) in g where !touchedBlocks.contains(bid) {
                 var cur = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()

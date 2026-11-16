@@ -62,9 +62,9 @@ struct TabTitleBar: View {
     /// A committed swipe: +1 next tab, -1 previous tab.
     let onSwipe: (Int) -> Void
     let onPick: (Selection) -> Void
-    let onOverview: () -> Void
+    let onOverview: @MainActor () -> Void
     let onNewTab: () -> Void
-    let onRename: () -> Void
+    let onRename: @MainActor () -> Void
 
     @State private var dx: CGFloat = 0
     @State private var width: CGFloat = 200
@@ -183,9 +183,10 @@ struct TabMenu: View {
     let theme: TermTheme
     let close: () -> Void
     let onPick: (Selection) -> Void
-    let onOverview: () -> Void
+    // Main-actor closures are Sendable, so `later` can run them after the menu closes.
+    let onOverview: @MainActor () -> Void
     let onNewTab: () -> Void
-    let onRename: () -> Void
+    let onRename: @MainActor () -> Void
 
     var body: some View {
         let v = server.views[sessionID]
@@ -241,9 +242,12 @@ struct TabMenu: View {
     }
 
     /// Runs `f` once the menu has closed, so a sheet or alert can open.
-    private func later(_ f: @escaping () -> Void) {
+    private func later(_ f: @escaping @MainActor () -> Void) {
         close()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: f)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            f()
+        }
     }
 
     private func row(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
