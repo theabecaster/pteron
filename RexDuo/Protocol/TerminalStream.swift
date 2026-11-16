@@ -1,22 +1,106 @@
 import Foundation
 
+/// One step of a Ghostty snapshot (`GHOSTSNP`) on its way from the stream to whatever restores it.
+/// A snapshot is `begin`, `bytes` one or more times, `ready` once among them, then `end`.
+enum GhosttySnapshotPart {
+    /// A snapshot starts. Anything left of an earlier, unfinished one is to be thrown away.
+    case begin
+    /// The snapshot's next bytes, in order. The buffer is only valid during the call.
+    case bytes(UnsafeBufferPointer<UInt8>)
+    /// The bytes so far end exactly after the READY record: they hold the screen, the modes and
+    /// unfinished input, enough for `ghostty_snapshot_decoder_ready()`. Older history follows.
+    case ready
+    /// No more bytes. `complete` is true when the bytes ended exactly after the FINISH record, and
+    /// false when the snapshot was cut short or grew past the limit and can't be restored.
+    case end(complete: Bool)
+}
+
 /// Splits Rex's own APC messages (`ESC _ rex1;<nonce>;<json> ESC \`) out of a terminal stream,
 /// and drops the leading Ghostty snapshot (everything before the first Rex message).
 /// Output and messages are reported in stream order, so a resize applies exactly where the server
 /// put it. Output is handed out as views into the received chunk, without copying.
+///
+/// With `passesSnapshot`, the leading snapshot is passed on instead of dropped, as
+/// `GhosttySnapshotPart`s, all of them before the first message and before any output. Its bytes
+/// are views into the received chunks too: the filter keeps none of them, so a restore can start
+/// while the history is still arriving. (Only a 10-byte header cut by a chunk boundary is joined.)
+///
+/// Where the snapshot ends comes from its own framing, not from the first Rex message. Ghostty's
+/// snapshot guide gives the layout: a 10-byte envelope (`GHOSTSNP`, then a u16 version), then
+/// records of `tag u16 | payload_len u32 | CRC32C u32 | payload`, all little-endian, with an empty
+/// READY record (tag 5) after the renderable state and an empty FINISH record (tag 6) at the end.
+/// "Bytes after FINISH belong to the containing transport."
+/// Walking the record lengths is exact, needs no scan of the payload, and can't be fooled by
+/// payload bytes: a CONTINUATION record holds unfinished program input verbatim, which may be the
+/// start of an APC. (A program can't guess the 64-bit nonce, so the marker scan is safe in
+/// practice too; the framing is simply the stronger and cheaper test.) CRCs are left to the
+/// decoder.
+///
+/// The snapshot ends with `end(complete: false)`, and the filter goes back to dropping everything
+/// before the first Rex message, in three cases: the stream doesn't start with a version 1
+/// envelope (then there is no `begin` either); a record would take the snapshot past
+/// `snapshotLimit` (known from the record's header, before its payload); or a Rex message starts
+/// where a record should (a snapshot cut short has no FINISH).
 struct APCFilter {
+    /// The largest snapshot passed on, in bytes. The filter holds none of it; the limit protects
+    /// whoever restores it.
+    static let defaultSnapshotLimit = 64 << 20
+
     private let marker: [UInt8]
     private(set) var skippingSnapshot = true
     /// The start of a message split across chunks.
     private var pending: [UInt8] = []
 
-    init(nonce: UInt64) {
+    // Snapshot framing.
+    private var inSnapshot: Bool
+    private let snapshotLimit: Int
+    /// True until the envelope has been read.
+    private var atEnvelope = true
+    /// Bytes of the current record's payload still to come.
+    private var need = 0
+    /// What the current record's end means.
+    private var recordEnd = RecordEnd.nothing
+    /// The snapshot's length so far, counting the current record in full.
+    private var snapshotBytes = 0
+    /// A header cut by a chunk boundary, held until it is whole and checked.
+    private var header: [UInt8] = []
+
+    private enum RecordEnd { case nothing, ready, finish }
+    private static let headerSize = 10  // the envelope and a record header are both 10 bytes
+    private static let magic = Array("GHOSTSNP".utf8)
+    private static let version: UInt16 = 1
+    private static let readyTag: UInt16 = 5
+    private static let finishTag: UInt16 = 6
+
+    init(nonce: UInt64, passesSnapshot: Bool = false, snapshotLimit: Int = APCFilter.defaultSnapshotLimit) {
         marker = Array("\u{1b}_rex1;\(nonce);".utf8)
+        inSnapshot = passesSnapshot
+        self.snapshotLimit = snapshotLimit
     }
 
+    /// `snapshot` is only called by a filter made with `passesSnapshot`.
     mutating func process(_ chunk: Data,
+                          snapshot: (GhosttySnapshotPart) -> Void = { _ in },
                           output: (UnsafeBufferPointer<UInt8>) -> Void,
                           message: (JSONObject) -> Void) {
+        if inSnapshot {
+            chunk.withUnsafeBytes { raw in
+                let buf = raw.bindMemory(to: UInt8.self)
+                let used = passSnapshot(buf, snapshot: snapshot)
+                guard used < buf.count else { return }
+                // What follows the snapshot in this chunk is scanned in place.
+                let rest = UnsafeBufferPointer(rebasing: buf[used...])
+                if pending.isEmpty {
+                    scan(rest, output: output, message: message)
+                } else {
+                    var data = pending
+                    pending = []
+                    data.append(contentsOf: rest)
+                    data.withUnsafeBufferPointer { scan($0, output: output, message: message) }
+                }
+            }
+            return
+        }
         if pending.isEmpty {
             chunk.withUnsafeBytes { raw in
                 scan(raw.bindMemory(to: UInt8.self), output: output, message: message)
@@ -27,6 +111,98 @@ struct APCFilter {
             data.append(contentsOf: chunk)
             data.withUnsafeBufferPointer { scan($0, output: output, message: message) }
         }
+    }
+
+    /// Passes on the snapshot bytes at the front of `buf`, walking the records.
+    /// Returns how many bytes of `buf` belonged to the snapshot; it is over if any are left.
+    private mutating func passSnapshot(_ buf: UnsafeBufferPointer<UInt8>, snapshot: (GhosttySnapshotPart) -> Void) -> Int {
+        guard let base = buf.baseAddress else { return 0 }
+        let n = buf.count
+        var off = 0
+        var sent = 0  // bytes of `buf` before this have been passed on
+        func flush(_ to: Int) {
+            if to > sent { snapshot(.bytes(UnsafeBufferPointer(rebasing: buf[sent..<to]))) }
+            sent = to
+        }
+        while true {
+            if need > 0 {
+                let take = min(need, n - off)
+                off += take
+                need -= take
+                if need > 0 { break }
+            }
+            // A record has just ended.
+            switch recordEnd {
+            case .nothing: break
+            case .ready:
+                flush(off)
+                recordEnd = .nothing
+                snapshot(.ready)
+            case .finish:
+                // Everything after FINISH is the stream.
+                flush(off)
+                inSnapshot = false
+                skippingSnapshot = false
+                snapshot(.end(complete: true))
+                return off
+            }
+            // The next header: read in place when this chunk has all of it, joined otherwise.
+            // Its bytes are passed on only once it has been checked.
+            if header.isEmpty, n - off >= Self.headerSize {
+                let wasEnvelope = atEnvelope
+                guard let payload = readHeader(base + off) else {
+                    // The bytes from here on are scanned as the old path would.
+                    flush(off)
+                    inSnapshot = false
+                    snapshot(.end(complete: false))
+                    return off
+                }
+                if wasEnvelope { snapshot(.begin) }
+                off += Self.headerSize
+                need = payload
+            } else {
+                flush(off)
+                let take = min(Self.headerSize - header.count, n - off)
+                header.append(contentsOf: UnsafeBufferPointer(rebasing: buf[off..<off + take]))
+                off += take
+                sent = off
+                if header.count < Self.headerSize { return off }
+                let wasEnvelope = atEnvelope
+                guard let payload = header.withUnsafeBufferPointer({ readHeader($0.baseAddress!) }) else {
+                    pending = header
+                    header = []
+                    inSnapshot = false
+                    snapshot(.end(complete: false))
+                    return off
+                }
+                if wasEnvelope { snapshot(.begin) }
+                header.withUnsafeBufferPointer { snapshot(.bytes($0)) }
+                header.removeAll(keepingCapacity: true)
+                need = payload
+            }
+        }
+        flush(off)
+        return off
+    }
+
+    /// Checks the 10 bytes at `p` as the envelope or a record header. Returns the payload length
+    /// that follows, or nil if the snapshot can't go on from here.
+    private mutating func readHeader(_ p: UnsafePointer<UInt8>) -> Int? {
+        if atEnvelope {
+            guard memcmp(p, Self.magic, Self.magic.count) == 0,
+                  UInt16(p[8]) | UInt16(p[9]) << 8 == Self.version else { return nil }
+            atEnvelope = false
+            snapshotBytes = Self.headerSize
+            return 0
+        }
+        // A Rex message where a record should start: the snapshot was cut short.
+        if memcmp(p, marker, min(Self.headerSize, marker.count)) == 0 { return nil }
+        let tag = UInt16(p[0]) | UInt16(p[1]) << 8
+        let len = Int(p[2]) | Int(p[3]) << 8 | Int(p[4]) << 16 | Int(p[5]) << 24
+        snapshotBytes += Self.headerSize + len
+        if snapshotBytes > snapshotLimit { return nil }
+        recordEnd = tag == Self.finishTag ? .finish : tag == Self.readyTag ? .ready : .nothing
+        return len
     }
 
     private mutating func scan(_ buf: UnsafeBufferPointer<UInt8>,
@@ -80,6 +256,31 @@ protocol TerminalSink: AnyObject {
     @MainActor func streamReset(cols: Int, rows: Int)
     /// The screen and scrollback as escape sequences, applied at once.
     @MainActor func streamSnapshot(_ text: String)
+    /// The whole terminal as a Ghostty snapshot (`GHOSTSNP`), in parts as it arrives. Only sent
+    /// when the stream's `restoresGhosttySnapshot` is set. The parts come in this order: `begin`;
+    /// `bytes` as often as chunks arrive; `ready` once, right after the bytes that end the READY
+    /// record; more `bytes` (older history); `end`.
+    ///
+    /// The snapshot replaces everything: screen, scrollback, modes and the grid size (the restore
+    /// makes a new terminal). No `streamReset` comes first, so at `begin` the sink drops output it
+    /// still has queued, and anything left of an earlier snapshot that never got its `end`.
+    /// Nothing else is sent between `begin` and `end`. The server's size and owner follow `end`
+    /// in `streamResized`.
+    ///
+    /// A sink can show the terminal at `ready` (`ghostty_snapshot_decoder_ready()` on the bytes so
+    /// far), before a long history has come down the wire, or just join the bytes and decode them
+    /// at `end(complete: true)`.
+    ///
+    /// Return false from any part if the snapshot can't be restored. The sink then gets no more
+    /// parts of it; once the snapshot's bytes have gone by, the stream sends `streamReset`,
+    /// `streamResized` and `streamSnapshot` (from `terminal.format`) instead, as it does after
+    /// `end(complete: false)`. If a restore fails after `end`, call `snapshotRestoreFailed()`.
+    ///
+    /// The bytes are borrowed views of the received chunks. The filter copies nothing, and the
+    /// sink makes the one copy a restore needs: into the buffer its decoder reads, which has to
+    /// outlive the call anyway. One array at the end would cost the same copy and hide `ready`;
+    /// `Data` would add an allocation per chunk.
+    @MainActor func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool
     /// Live program output. The buffer is only valid during the call.
     @MainActor func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>)
     @MainActor func streamResized(cols: Int, rows: Int, owner: String?)
@@ -88,8 +289,35 @@ protocol TerminalSink: AnyObject {
     @MainActor func streamStatus(_ status: TerminalStream.Status)
 }
 
+extension TerminalSink {
+    /// A sink that restores no snapshots refuses the first part.
+    @MainActor func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool { false }
+}
+
 /// Streams one terminal block's output over `GET /api/data` (subprotocol rex.data.terminal.v1)
 /// and sends typed input back over the control connection.
+///
+/// What the sink sees, after `streamStatus(.connecting)` and `streamStatus(.live)`:
+///
+/// - Normally (`restoresGhosttySnapshot` off): `streamReset`, `streamResized` and `streamSnapshot`
+///   (from `terminal.format`, all three before `.live`), then `streamFeed` and messages in stream
+///   order.
+/// - With `restoresGhosttySnapshot`, on a fresh stream (HELLO: `start()`, `restart()`, `resync()`,
+///   or a reconnect that could not resume): `streamGhosttySnapshot` with `begin`, `bytes`…,
+///   `ready`, `bytes`…, `end(complete: true)`; then `streamResized` from the `resize` message that
+///   follows the snapshot, then `streamTheme` if the server sends one, then `streamFeed` and
+///   messages in stream order. There is no `streamReset`, and nothing is fed between `.live` and
+///   the snapshot's `end`. Until `begin` the sink keeps showing what it had.
+/// - On a resume (RESUME), either way: `streamStatus(.reconnecting)`, `streamStatus(.live)`, then
+///   the stream goes on from the first byte not yet received, which may be in the middle of the
+///   snapshot. No reset and no new snapshot.
+/// - If the Ghostty snapshot can't be used (the sink returns false for a part, the snapshot ends
+///   with `end(complete: false)` or never begins, or `snapshotRestoreFailed()` is called): the
+///   data stream stays open. Once the snapshot's bytes have gone by, the stream's output is
+///   dropped while `terminal.size` and `terminal.format` are read, then come `streamReset`,
+///   `streamResized`, `streamSnapshot`, and output again. Messages (`streamResized` and the
+///   others) still arrive meanwhile. From then on this stream behaves as if
+///   `restoresGhosttySnapshot` were off.
 @MainActor
 final class TerminalStream {
     enum Status: Equatable { case connecting, live, reconnecting, ended(String), failed(String) }
@@ -116,6 +344,20 @@ final class TerminalStream {
     /// True while a resync reads the screen; stream output is dropped meanwhile.
     private var resyncing = false
     private var resyncSeq = 0
+
+    /// Restore the terminal from the Ghostty snapshot that starts every fresh data stream, instead
+    /// of reading it as escape sequences with `terminal.format`. Set it before `start()`.
+    /// It saves the `terminal.size`, `terminal.format` and `blob_read` round trips, and the server
+    /// places the snapshot exactly in the stream, so no output is lost or repeated around it.
+    var restoresGhosttySnapshot = false
+    /// True once a Ghostty snapshot could not be restored. The stream then reads the screen with
+    /// `terminal.format` for the rest of its life.
+    private(set) var ghosttySnapshotFailed = false
+    /// Where a fresh stream's snapshot stands: expected, being passed to the sink, or going by
+    /// unused (the old path takes over at its end).
+    private enum SnapshotState { case none, awaiting, restoring, refused }
+    private var snapshotState = SnapshotState.none
+    private var usesGhosttySnapshot: Bool { restoresGhosttySnapshot && !ghosttySnapshotFailed }
 
     // Input is sent one write at a time; block methods are not ordered by the server.
     private var inputBuffer: [UInt8] = []
@@ -153,7 +395,53 @@ final class TerminalStream {
 
     /// Re-read the screen (and scrollback) and redraw it, keeping the data stream open.
     /// Stream output that arrives while the read is in flight is dropped: the snapshot already holds it.
+    ///
+    /// With `restoresGhosttySnapshot` it opens a fresh data stream instead (`restart()`), whose
+    /// snapshot redraws everything. That costs a ticket and a WebSocket handshake where the read
+    /// costs two or three calls on the open control connection (about 5 to 16 ms against 2 ms on
+    /// the same host), but it is the one that is exact: the snapshot holds all history, both
+    /// screens, every mode and unfinished input, and sits at a known place in the stream. A read
+    /// taken beside a running stream can drop or repeat output around it, and is cut to
+    /// `snapshotLimit`. The old stream is closed first: the server refuses a second connection to
+    /// the same terminal (REJECT 0x02), and a close with status 1000 ends the old stream.
     func resync() {
+        guard !stopped, ws != nil else { return }
+        if usesGhosttySnapshot { restart() } else { readScreenAndRedraw() }
+    }
+
+    /// The sink could not restore a Ghostty snapshot it had accepted. Redraws from
+    /// `terminal.format` on the open data stream (no reconnect), and stops using snapshots.
+    func snapshotRestoreFailed() {
+        guard !ghosttySnapshotFailed else { return }
+        ghosttySnapshotFailed = true
+        // A snapshot still on its way gets no more parts and ends in the old path by itself.
+        guard snapshotState == .none else { return }
+        readScreenAndRedraw()
+    }
+
+    /// Passes one part of the stream's snapshot to the sink, or lets it go by after a refusal.
+    private func handleSnapshot(_ part: GhosttySnapshotPart, sink: TerminalSink?) {
+        var offer = snapshotState == .restoring
+        if snapshotState == .awaiting, case .begin = part { offer = true }
+        if offer {
+            if !ghosttySnapshotFailed, sink?.streamGhosttySnapshot(part) == true {
+                snapshotState = .restoring
+            } else {
+                snapshotState = .refused
+                ghosttySnapshotFailed = true
+            }
+        }
+        guard case .end(let complete) = part else { return }
+        let restored = snapshotState == .restoring && complete && !ghosttySnapshotFailed
+        snapshotState = .none
+        if !restored {
+            // Draw the screen the old way, on this same stream.
+            ghosttySnapshotFailed = true
+            readScreenAndRedraw()
+        }
+    }
+
+    private func readScreenAndRedraw() {
         guard !stopped, ws != nil else { return }
         let myGen = gen
         resyncSeq += 1
@@ -182,19 +470,24 @@ final class TerminalStream {
     private func fullStart() async {
         gen += 1
         resyncing = false
+        snapshotState = .none
         let myGen = gen
+        // The stream's own snapshot replaces step 1; the size comes from the `resize` after it.
+        let fromSnapshot = usesGhosttySnapshot
         sink?.streamStatus(.connecting)
         do {
-            // 1. Size and current contents, as escape sequences.
-            let size = try await control.blockCall("com.superlogical.terminal.size", session: sessionID, block: blockID)
-            serverCols = max(size.int("columns") ?? 80, 2)
-            serverRows = max(size.int("rows") ?? 24, 2)
-            owner = size.str("owner")
-            let initial = try await readScreen()
-            guard myGen == gen, !stopped else { return }
-            sink?.streamReset(cols: serverCols, rows: serverRows)
-            sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
-            sink?.streamSnapshot(initial)
+            if !fromSnapshot {
+                // 1. Size and current contents, as escape sequences.
+                let size = try await control.blockCall("com.superlogical.terminal.size", session: sessionID, block: blockID)
+                serverCols = max(size.int("columns") ?? 80, 2)
+                serverRows = max(size.int("rows") ?? 24, 2)
+                owner = size.str("owner")
+                let initial = try await readScreen()
+                guard myGen == gen, !stopped else { return }
+                sink?.streamReset(cols: serverCols, rows: serverRows)
+                sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
+                sink?.streamSnapshot(initial)
+            }
 
             // 2. Ticket, then the data WebSocket.
             let t = try await control.call("data.connect", [
@@ -205,7 +498,7 @@ final class TerminalStream {
                 throw RexError.local("bad ticket")
             }
             guard myGen == gen, !stopped else { return }
-            try await openData(hello: [0x01] + ticket, gen: myGen, fresh: true)
+            try await openData(hello: [0x01] + ticket, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
         } catch {
             guard myGen == gen, !stopped else { return }
             sink?.streamStatus(.failed(error.localizedDescription))
@@ -267,7 +560,7 @@ final class TerminalStream {
         return String(decoding: u[0..<i], as: UTF8.self)
     }
 
-    private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool) async throws {
+    private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool = false) async throws {
         let url = control.wsBase.appendingPathComponent("api/data")
         let task = URLSession.shared.webSocketTask(with: url, protocols: ["rex.data.terminal.v1"])
         task.maximumMessageSize = 1 << 20
@@ -284,11 +577,8 @@ final class TerminalStream {
         token = Array(b[1..<17])
         var nn: UInt64 = 0
         for k in 0..<8 { nn |= UInt64(b[24 + k]) << (8 * UInt64(k)) }
-        if fresh {
-            nonce = nn
-            received = 0
-            filter = APCFilter(nonce: nn)
-        }
+        // A resume keeps its filter: it may be partway through the snapshot or a message.
+        if fresh { beginStream(nonce: nn, collectSnapshot: collectSnapshot) }
         resumeAttempts = 0
         sink?.streamStatus(.live)
         receive(task, gen: myGen)
@@ -312,11 +602,22 @@ final class TerminalStream {
         }
     }
 
-    private func consume(_ chunk: Data) {
+    /// A fresh stream starts: byte count zero and a new filter. (Internal for tests.)
+    func beginStream(nonce nn: UInt64, collectSnapshot: Bool) {
+        nonce = nn
+        received = 0
+        filter = APCFilter(nonce: nn, passesSnapshot: collectSnapshot)
+        snapshotState = collectSnapshot ? .awaiting : .none
+    }
+
+    /// Splits a chunk of the stream and passes it on. (Internal for tests.)
+    func consume(_ chunk: Data) {
         guard filter != nil else { return }
         let sink = self.sink
         // In order: a resize applies between the bytes written before and after it.
-        filter!.process(chunk, output: { out in
+        filter!.process(chunk, snapshot: { part in
+            self.handleSnapshot(part, sink: sink)
+        }, output: { out in
             // While a resync reads the screen, its snapshot replaces this output.
             if !self.resyncing { sink?.streamFeed(out) }
         }, message: { m in
