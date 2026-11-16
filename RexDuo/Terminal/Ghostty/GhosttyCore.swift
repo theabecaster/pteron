@@ -361,8 +361,7 @@ final class GhosttyCore: @unchecked Sendable {
     ///
     /// The decoder builds a new terminal (upstream: "You get back a terminal that you own"), so
     /// this swaps it in and frees the old one. History is compressed as it is restored. The
-    /// restored terminal is then resized to the grid last set with `resize`, so the host's idea
-    /// of the grid always holds.
+    /// restored terminal keeps the snapshot's grid; read it with `gridSize`.
     ///
     /// `completion` runs on the feed queue with the number of bytes the snapshot used (bytes after
     /// that are not part of it and are left to the caller), or nil if decoding failed. On failure
@@ -405,16 +404,17 @@ final class GhosttyCore: @unchecked Sendable {
             makeRenderState()
             held = false
             stateLock.unlock()
-            if Int(c) != cols || Int(r) != rows {
-                // A resize also ends any hold the snapshot carried.
-                ghostty_terminal_resize(restored, UInt16(clamping: cols), UInt16(clamping: rows), cellWidthPx, cellHeightPx)
-            } else {
-                // The snapshot carries mode 2026, but the decoder made the terminal before our
-                // callback existed, so no "hold began" call arrives. Seed the hold from the mode.
-                var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2026, false), value: false)
-                if ghostty_terminal_get(restored, GHOSTTY_TERMINAL_DATA_MODE, &mode) == GHOSTTY_SUCCESS, mode.value {
-                    renderHoldChanged(true)
-                }
+            // Keep the snapshot's grid. Resizing to the old local grid and back would cut an
+            // alternate screen, and the server's `resize` message follows the snapshot anyway.
+            cols = max(1, Int(c))
+            rows = max(1, Int(r))
+            // Same grid, our cell pixel size (for pixel-based mouse and size reports).
+            ghostty_terminal_resize(restored, c, r, cellWidthPx, cellHeightPx)
+            // The snapshot carries mode 2026, but the decoder made the terminal before our
+            // callback existed, so no "hold began" call arrives. Seed the hold from the mode.
+            var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2026, false), value: false)
+            if ghostty_terminal_get(restored, GHOSTTY_TERMINAL_DATA_MODE, &mode) == GHOSTTY_SUCCESS, mode.value {
+                renderHoldChanged(true)
             }
             termLock.unlock()
             if let old {

@@ -318,7 +318,7 @@ final class GhosttyRenderTests: XCTestCase {
         XCTAssertEqual(grid.last?.0, 30)
         XCTAssertEqual(grid.last?.1, 8)
         view!.setGrid(cols: 30, rows: 8, force: false)
-        XCTAssertEqual(grid.count, 1, "an unchanged grid isn't reported again")
+        XCTAssertEqual(grid.count, 2, "once on setting the delegate, once for the change; an unchanged grid isn't reported again")
         view!.feed(text: "hello \u{1b}[2 q")
         view!.feed(byteArray: Array("world".utf8)[...])
         view!.core.sync()

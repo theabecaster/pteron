@@ -10,4 +10,5 @@ extension GhosttyTerminalView {
     func beginSelection(at p: CGPoint) {}
     func extendSelection(to p: CGPoint) {}
     func endSelection(at p: CGPoint) {}
+    func cancelSelection() {}
 }

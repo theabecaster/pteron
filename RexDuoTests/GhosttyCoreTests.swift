@@ -93,13 +93,14 @@ final class GhosttyCoreTests: XCTestCase {
         XCTAssertGreaterThan(core.scrollbackRows, 1900)
     }
 
-    func testRestoredTerminalTakesTheGridLastAskedFor() throws {
+    /// Resizing to the old local grid and back would cut an alternate screen.
+    func testRestoredTerminalKeepsTheSnapshotGrid() throws {
         let capture = try ghosttyFixture("ghostty-history")
         let core = GhosttyCore(cols: 60, rows: 10)
         core.restore(snapshot: capture) { _ in }
         core.sync()
-        XCTAssertEqual(core.gridSize.cols, 60)
-        XCTAssertEqual(core.gridSize.rows, 10)
+        XCTAssertEqual(core.gridSize.cols, 80)
+        XCTAssertEqual(core.gridSize.rows, 24)
     }
 
     func testBadSnapshotFailsAndKeepsTheTerminal() throws {

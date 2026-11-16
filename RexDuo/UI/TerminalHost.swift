@@ -69,6 +69,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     static let backlogCatchUp = 2 << 20
     private var output: [UInt8] = []
     private var outputLink: CADisplayLink?
+    /// A Ghostty snapshot being received.
+    private var snapshot: [UInt8] = []
 
     /// Background longer than this re-reads the screen on return.
     static let staleAfterBackground: CFTimeInterval = 30
@@ -117,6 +119,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         clipsToBounds = true
         applyTheme(theme)
         stream.sink = self
+        // Ghostty restores Rex's own snapshot; no terminal.format round trip.
+        stream.restoresGhosttySnapshot = term.engineKind == .ghostty
 
         NotificationCenter.default.addObserver(self, selector: #selector(didBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -540,6 +544,24 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         serverSize = (cols, rows)
         applyLocalGrid(cols, rows)
         positionTerm()
+    }
+
+    func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool {
+        guard term.engineKind == .ghostty else { return false }
+        switch part {
+        case .begin:
+            snapshot.removeAll(keepingCapacity: true)
+        case .bytes(let b):
+            snapshot.append(contentsOf: b)
+        case .ready:
+            break
+        case .end(let complete):
+            let bytes = snapshot
+            snapshot = []
+            guard complete else { return true }
+            return term.restoreSnapshot(bytes) { [weak self] in self?.stream.snapshotRestoreFailed() }
+        }
+        return true
     }
 
     func streamSnapshot(_ text: String) {

@@ -24,8 +24,7 @@ enum TerminalEngineKind: String, CaseIterable, Identifiable {
 
     /// The engine a pane made for this kind really runs.
     var implemented: TerminalEngineKind {
-        // TODO(merge): return `self` once GhosttyTerminalView exists.
-        .swiftTerm
+        self
     }
 
     /// Makes the view for a new pane. Read `engineKind` on the result for what it really is.
@@ -33,8 +32,9 @@ enum TerminalEngineKind: String, CaseIterable, Identifiable {
     func makeView(fontSize: CGFloat, theme: TermTheme) -> any TerminalEngineView {
         switch implemented {
         case .ghostty:
-            // TODO(merge): GhosttyTerminalView(fontSize: fontSize, theme: theme)
-            return RexTerminalView(fontSize: fontSize, theme: theme)
+            let v = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: fontSize)
+            v.apply(theme: theme)
+            return v
         case .swiftTerm:
             return RexTerminalView(fontSize: fontSize, theme: theme)
         }

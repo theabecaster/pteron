@@ -19,7 +19,9 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     let parsesOffMainThread = true
     let fontChangeResetsModes = false
 
-    weak var engineDelegate: TerminalEngineDelegate?
+    weak var engineDelegate: (any TerminalEngineDelegate)? {
+        didSet { engineDelegate?.engineGridChanged(cols: cols, rows: rows) }
+    }
 
     // MARK: State shared with the phase 2 extensions
 
@@ -52,6 +54,9 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     // END PHASE 2
 
     private var registered = false
+    /// Counts `setGrid` calls; a restore remembers the count it was queued at.
+    private var gridEpoch = 0
+    private var restoreEpoch = -1
     private var inForeground = true
 
     init(frame: CGRect, fontSize: CGFloat, cols: Int = 80, rows: Int = 24) {
@@ -110,6 +115,10 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         byteArray.withUnsafeBytes { core.feed($0) }
     }
 
+    func feed(buffer: UnsafeBufferPointer<UInt8>) {
+        core.feed(UnsafeRawBufferPointer(buffer))
+    }
+
     func feed(text: String) {
         var t = text
         t.withUTF8 { core.feed(UnsafeRawBufferPointer($0)) }
@@ -124,14 +133,28 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     /// the stream and are the caller's to feed.
     func restoreSnapshot(_ bytes: [UInt8], consumed: (@Sendable (Int) -> Void)?, failed: @escaping @MainActor () -> Void) -> Bool {
         guard GhosttyCore.isSnapshot(bytes) else { return false }
+        restoreEpoch = gridEpoch
         core.restore(snapshot: bytes) { used in
             if let used {
                 consumed?(used)
+                // The restored terminal has the snapshot's grid.
+                DispatchQueue.main.async { [weak self] in self?.adoptCoreGrid() }
             } else {
                 DispatchQueue.main.async { failed() }
             }
         }
         return true
+    }
+
+    /// Takes over the grid a snapshot restore gave the terminal, unless a later `setGrid` is
+    /// already queued behind it (then that one wins and the two agree again).
+    private func adoptCoreGrid() {
+        guard gridEpoch == restoreEpoch else { return }
+        let g = core.gridSize
+        guard g.cols != cols || g.rows != rows else { return }
+        cols = g.cols
+        rows = g.rows
+        engineDelegate?.engineGridChanged(cols: cols, rows: rows)
     }
 
     // MARK: Geometry
@@ -143,6 +166,7 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         guard force || c != self.cols || r != self.rows else { return }
         self.cols = c
         self.rows = r
+        gridEpoch &+= 1
         core.resize(cols: c, rows: r, cellWidthPx: atlas.metrics.cellWidth, cellHeightPx: atlas.metrics.cellHeight)
         engineDelegate?.engineGridChanged(cols: c, rows: r)
     }
