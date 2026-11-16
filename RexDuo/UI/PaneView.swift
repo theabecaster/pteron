@@ -7,6 +7,8 @@ struct PaneView: UIViewRepresentable {
     let blockID: String
     let active: Bool
     let onFocus: () -> Void
+    /// Horizontal swipe on the terminal: +1 = next pane, -1 = previous pane.
+    var onSwipe: ((Int) -> Void)? = nil
 
     @Environment(\.colorScheme) private var scheme
 
@@ -16,6 +18,7 @@ struct PaneView: UIViewRepresentable {
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: ThemeStore.current(scheme))
         host.isActive = active
         host.onFocus = onFocus
+        host.onSwipe = onSwipe
         return host
     }
 
@@ -27,6 +30,7 @@ struct PaneView: UIViewRepresentable {
         host.setSizing(p.sizing)
         host.isActive = active
         host.onFocus = onFocus
+        host.onSwipe = onSwipe
     }
 
     static func dismantleUIView(_ host: TerminalHost, coordinator: ()) {

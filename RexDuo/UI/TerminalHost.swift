@@ -17,6 +17,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     var isActive = false
     var onFocus: (() -> Void)?
     var onTitle: ((String) -> Void)?
+    /// Horizontal swipe: +1 = next pane, -1 = previous pane.
+    var onSwipe: ((Int) -> Void)?
 
     private var claimedSize: (Int, Int)?
     private var claimTask: Task<Void, Never>?
