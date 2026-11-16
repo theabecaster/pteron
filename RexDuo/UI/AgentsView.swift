@@ -4,6 +4,7 @@ import SwiftUI
 struct AgentsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dismiss) private var dismiss
     var onOpen: (Selection) -> Void
 
     var body: some View {
@@ -20,15 +21,29 @@ struct AgentsView: View {
                                     onOpen(Selection(serverID: server.id, sessionID: row.sessionID, windowID: row.windowID))
                                 } label: {
                                     agentRow(row, theme)
+                                        .frame(minHeight: 44)
+                                        .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                                 .listRowBackground(theme.chrome.sidebar)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    let state = row.status?.state
+                                    if state == "blocked" || state == "working" {
+                                        Button { send(server, row, "\u{1b}") } label: { Label("Esc", systemImage: "escape") }
+                                            .tint(theme.chrome.error)
+                                    }
+                                    if state == "blocked" {
+                                        Button { send(server, row, "\r") } label: { Label("Enter", systemImage: "return") }
+                                            .tint(theme.chrome.blocked)
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 if model.servers.allSatisfy({ $0.agents.isEmpty }) {
                     Text("No agents are running. Agents such as Claude Code and Codex show up here, with whether they're working or waiting for you.")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(theme.chrome.secondary)
                         .listRowBackground(Color.clear)
                 }
@@ -37,8 +52,18 @@ struct AgentsView: View {
             .background(theme.chrome.canvas)
             .navigationTitle("Agents")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
         .foregroundStyle(theme.fg)
+    }
+
+    private func send(_ server: ServerConnection, _ row: ServerConnection.AgentRow, _ text: String) {
+        Haptic.tap()
+        Task { await server.write(row.sessionID, row.blockID, text) }
     }
 
     private func agentRow(_ row: ServerConnection.AgentRow, _ theme: TermTheme) -> some View {
@@ -49,15 +74,15 @@ struct AgentsView: View {
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Text(row.kind?.displayName ?? row.status?.app ?? "Program").font(.system(size: 14, weight: .semibold))
+                    Text(row.kind?.displayName ?? row.status?.app ?? "Program").font(.subheadline.weight(.semibold))
                     Spacer()
                     stateLabel(row.status, theme)
                 }
-                Text(row.title).font(.system(size: 12)).lineLimit(1).foregroundStyle(theme.chrome.secondary)
+                Text(WindowTitle.condense(row.title)).font(.caption).lineLimit(2).foregroundStyle(theme.chrome.secondary)
                 if let t = row.status?.text, !t.isEmpty {
-                    Text(t).font(.system(size: 12)).lineLimit(2).foregroundStyle(theme.fg.opacity(0.8))
+                    Text(t).font(.caption).lineLimit(2).foregroundStyle(theme.fg.opacity(0.8))
                 }
-                Text(row.place).font(.system(size: 11)).foregroundStyle(theme.chrome.tertiary)
+                Text(row.place).font(.caption2).foregroundStyle(theme.chrome.tertiary)
             }
         }
         .padding(.vertical, 3)
@@ -80,7 +105,7 @@ struct AgentsView: View {
             default: return ("Idle", theme.chrome.tertiary)
             }
         }()
-        return Text(text).font(.system(size: 11, weight: .semibold))
+        return Text(text).font(.caption2.weight(.semibold))
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.18)))
             .foregroundStyle(color)
