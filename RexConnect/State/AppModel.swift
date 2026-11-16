@@ -79,10 +79,11 @@ final class AppModel {
     /// Composer drafts, per pane. Kept outside the observed state so typing doesn't re-render the screen.
     @ObservationIgnored var drafts: [String: String] = [:]
 
-    init(prefs: Prefs) {
+    /// `connect: false` builds no servers (unit tests and the test host).
+    init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
         dualPages = UserDefaults.standard.bool(forKey: "dualPages")
-        rebuildServers()
+        if connect { rebuildServers() }
     }
 
     /// Pull to refresh: re-bootstrap every server (reconnect the ones that are down).

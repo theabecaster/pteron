@@ -7,21 +7,29 @@ struct RexConnectApp: App {
     @State private var model: AppModel
     @Environment(\.scenePhase) private var phase
 
+    /// Unit tests run inside this app. The test host must not connect: fit mode would claim and
+    /// resize real panes on the owner's servers.
+    static let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
     init() {
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
-        _model = State(initialValue: AppModel(prefs: prefs))
+        _model = State(initialValue: AppModel(prefs: prefs, connect: !Self.isTestHost))
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .launchTransition()
-                .environment(model)
-                .environment(prefs)
-                .onAppear {
-                    UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
-                }
+            if Self.isTestHost {
+                Color.clear
+            } else {
+                RootView()
+                    .launchTransition()
+                    .environment(model)
+                    .environment(prefs)
+                    .onAppear {
+                        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+                    }
+            }
         }
         .onChange(of: phase) { _, p in
             if p == .active { model.foregroundResumed() }

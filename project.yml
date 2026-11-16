@@ -40,12 +40,32 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: RexConnect/Info.plist
         GENERATE_INFOPLIST_FILE: NO
+  # Pure app logic (keymap, key encoding, layout math, prefs). Runs inside the app, which doesn't
+  # connect while it hosts tests. Protocol tests live in Packages/RexKit (`swift test`).
+  RexConnectTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: RexConnectTests
+    dependencies:
+      - target: RexConnect
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexConnect.app/RexConnect"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   RexConnect:
     build:
       targets:
         RexConnect: all
+        RexConnectTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - RexConnectTests
     archive:
       config: Release

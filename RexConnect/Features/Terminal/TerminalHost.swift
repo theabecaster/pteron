@@ -922,10 +922,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
 
     /// Largest grid that fits the view at the current font.
     private func fitGrid() -> (Int, Int) {
-        let cell = cellSize()
-        let c = max(Int((bounds.width + 0.01) / max(cell.width, 1)), 12)
-        let r = max(Int((bounds.height + 0.01) / max(cell.height, 1)), 4)
-        return (c, r)
+        let g = TerminalLayout.fitGrid(in: bounds.size, cell: cellSize())
+        return (g.cols, g.rows)
     }
 
     /// Sizes SwiftTerm to a grid without its `resize`, which soft-resets modes the program set.

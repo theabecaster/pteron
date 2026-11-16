@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// A node of a window's layout tree. Every node carries its normalized rect [x, y, w, h].
-public indirect enum LayoutNode {
+public indirect enum LayoutNode: Sendable {
     case block(id: String, rect: CGRect)
     case split(id: String, direction: String, ratio: Double, before: LayoutNode, after: LayoutNode, rect: CGRect)
 
@@ -52,7 +52,7 @@ public indirect enum LayoutNode {
     }
 }
 
-public struct BlockInfo: Identifiable, Equatable {
+public struct BlockInfo: Identifiable, Equatable, Sendable {
     public var id: String
     public var label: String
     public var creator: String
@@ -71,7 +71,7 @@ public struct BlockInfo: Identifiable, Equatable {
     public var isTerminal: Bool { creator == "com.superlogical.terminal" }
 }
 
-public struct LayerInfo: Identifiable {
+public struct LayerInfo: Identifiable, Sendable {
     public var id: String
     public var kind: String
     public var bounds: CGRect
@@ -89,7 +89,7 @@ public struct LayerInfo: Identifiable {
     }
 }
 
-public struct WindowInfo: Identifiable {
+public struct WindowInfo: Identifiable, Sendable {
     public var id: String
     public var label: String
     public var focusedBlockID: String?
@@ -115,7 +115,7 @@ public struct WindowInfo: Identifiable {
     public func block(_ id: String) -> BlockInfo? { allBlocks.first { $0.id == id } }
 }
 
-public struct SessionView {
+public struct SessionView: Sendable {
     public var revision: Int
     public var sessionID: String
     public var label: String
@@ -141,7 +141,7 @@ public struct SessionView {
 }
 
 /// A program status record reported with OSC 7501 (agents such as Claude Code report these).
-public struct ProgramStatus: Equatable {
+public struct ProgramStatus: Equatable, Sendable {
     public var state: String      // idle | working | done | blocked | error
     public var app: String?
     public var text: String?
@@ -160,7 +160,7 @@ public struct ProgramStatus: Equatable {
 }
 
 /// Live, per-block metadata gathered from events.
-public struct BlockMeta: Equatable {
+public struct BlockMeta: Equatable, Sendable {
     public var title: String?
     public var pwd: String?
     public var foreground: String?
@@ -184,7 +184,7 @@ public struct BlockMeta: Equatable {
     }
 }
 
-public enum AgentKind: String {
+public enum AgentKind: String, Sendable {
     case claude, codex, gemini, opencode, amp, aider, cursor
 
     public static func detect(_ s: String) -> AgentKind? {

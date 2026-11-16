@@ -1211,32 +1211,26 @@ struct SplitHandle: View {
     @State private var inDetent = false
 
     var body: some View {
-        let r = split.rect
-        let horizontal = split.direction != "vertical"  // side by side
-        let x = (r.minX + (horizontal ? r.width * split.ratio : 0)) * canvas.width
-        let y = (r.minY + (horizontal ? 0 : r.height * split.ratio)) * canvas.height
-        let len = (horizontal ? r.height * canvas.height : r.width * canvas.width)
+        let g = SplitGeometry(rect: split.rect, ratio: split.ratio, direction: split.direction, canvas: canvas)
+        let horizontal = g.sideBySide
+        let len = g.length
         Capsule()
             .fill(drag != 0 ? theme.accent : Color.clear)
             .frame(width: horizontal ? 4 : len * 0.9, height: horizontal ? len * 0.9 : 4)
             .contentShape(Rectangle().inset(by: -20))
-            .position(x: x + (horizontal ? drag : len / 2), y: y + (horizontal ? len / 2 : drag))
+            .position(x: g.origin.x + (horizontal ? drag : len / 2), y: g.origin.y + (horizontal ? len / 2 : drag))
             .gesture(DragGesture(minimumDistance: 4)
                 .onChanged { v in
                     // A detent at 50%: the split snaps there with a tick, so an even split is easy to hit.
-                    let total = max(horizontal ? r.width * canvas.width : r.height * canvas.height, 1)
-                    var t = horizontal ? v.translation.width : v.translation.height
-                    let snap = abs(split.ratio + t / total - 0.5) < 0.025
-                    if snap { t = (0.5 - split.ratio) * total }
-                    if snap != inDetent {
-                        inDetent = snap
-                        if snap { Haptic.selection() }
+                    let d = g.detent(horizontal ? v.translation.width : v.translation.height)
+                    if d.snapped != inDetent {
+                        inDetent = d.snapped
+                        if d.snapped { Haptic.selection() }
                     }
-                    drag = t
+                    drag = d.offset
                 }
                 .onEnded { _ in
-                    let total = max(horizontal ? r.width * canvas.width : r.height * canvas.height, 1)
-                    let ratio = split.ratio + drag / total
+                    let ratio = g.ratio(after: drag)
                     drag = 0
                     inDetent = false
                     onCommit(ratio)
