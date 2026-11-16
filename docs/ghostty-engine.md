@@ -72,7 +72,68 @@ Tools in `scripts/ghostty-tools/`:
   - `TerminalEngineView`: the seam protocol, modeled on the calls `TerminalHost` makes on `term`
     today, so the `TerminalHost` diff stays small.
 
-## Next (planned design)
+## Plan (2026-11-16)
+
+Goal: a Ghostty engine that beats SwiftTerm on every benchmark below with no parity regressions.
+SwiftTerm stays as the fallback behind `TerminalEngineView`. Nothing ships to a device or to
+`main` without the user's yes.
+
+### Phases
+
+| # | Chunk | Owner | Files (exclusive) | Gate to merge |
+| --- | --- | --- | --- | --- |
+| 0 | Link `GhosttyVt`, add `RexDuoTests`, build green | lead | `project.yml`, `.gitignore`, `RexDuoTests/` | app builds, empty test passes |
+| 1a | Seam + UI: SwiftTerm adapter, `TerminalHost` on `any TerminalEngineView`, engine picker, pane-menu label | agent | `TerminalHost.swift`, `KeyBar.swift`, `SettingsView.swift`, `WindowScreen.swift`, `Terminal/SwiftTermEngine.swift`, `Terminal/TerminalEngine.swift` | SwiftTerm behaves as before (manual checklist in a `zz-` session) |
+| 1b | Core + renderer: `GhosttyCore`, render thread, Metal renderer, glyph atlas, sprites, output-only `GhosttyTerminalView` | agent | `Terminal/Ghostty/*`, `RexDuoTests/Ghostty*` | unit tests; offline replay of a capture matches a reference screenshot |
+| 1c | Stream: snapshot handoff in `APCFilter`, `restoresGhosttySnapshot`, fallback to `resync()` | agent | `Protocol/TerminalStream.swift`, `RexDuoTests/APCFilter*` | unit tests on real captures, split at every chunk boundary |
+| 2a | Input: `UIKeyInput`, hardware keys through the key encoder, key bar modifiers, paste, marked text | agent | `Ghostty/GhosttyTerminalView+Input.swift`, `GhosttyCore+Input.swift` | key-encoding tests against SwiftTerm's bytes |
+| 2b | Scroll + mouse: native scroll, scrollbar, wheel and arrow drags, tap click | agent | `Ghostty/…+Scroll.swift`, `GhosttyCore+Scroll.swift` | tests on mouse bytes; manual scroll check |
+| 2c | Selection: long press word, drag, copy, edit menu, copy-on-select shimmer | agent | `Ghostty/…+Selection.swift`, `GhosttyCore+Selection.swift` | selection-text tests |
+| 2d | Benchmarks: `PerfProbe`, offline replay mode, `scripts/bench/` | agent | `Terminal/PerfProbe.swift`, `Terminal/ReplayScreen.swift`, `scripts/bench/*` | SwiftTerm baseline table in this doc |
+| 3 | Parity run, tuning from benchmark results, review, `git merge main` | lead | all | checklist all green; Ghostty wins every metric |
+
+Phase 1 chunks run in parallel, then phase 2 chunks. Each agent works in its own git worktree
+(with `Vendor` symlinked), its own simulator (`zz-gh-<chunk>`) and its own Rex session
+(`zz-gh-<chunk>`), and deletes all three when done. The lead merges each chunk after a focused
+review, and runs `git merge main` before every phase.
+
+### Quality gates
+
+1. **Unit tests** (`RexDuoTests`, seconds to run): core feed and resize, snapshot restore from
+   fixtures, row building, key and mouse bytes, selection text, `APCFilter`.
+2. **Offline replay** (`-replay <capture> -terminalEngine <kind>`): feeds a recorded stream into
+   an engine with no server. It is the deterministic benchmark and the screenshot check. It never
+   touches a real pane.
+3. **Live run** in a `zz-` session: only for what replay can't cover (fit claim, input round
+   trip, reconnect).
+4. **Review** of each chunk's diff before merge.
+
+### Benchmarks
+
+`PerfProbe` (launch argument `-perfLog`) writes one JSON file per run:
+- time to first frame: pane open to the first presented frame with content.
+- frame gaps over 25 ms, from a main-thread display link and from the renderer's presents.
+- main-thread busy time, from a run-loop observer.
+- memory: `phys_footprint` peak and at rest.
+
+Scenarios, each on both engines, 3 runs, median reported:
+`seq 1 200000`, `yes | head -n 200000`, 10 s of htop, and a Claude Code-style redraw loop
+(synchronized output, full-screen repaints, spinner). Captures of these feed the offline replay.
+Simulator numbers compare the engines; a device run needs the user's yes.
+
+Pass: Ghostty is better on first frame, gaps and main-thread time in every scenario, and within
+10% on memory with the same scrollback budget.
+
+### Parity checklist
+
+Tracked in `docs/ghostty-parity.md` (created in phase 2), one row per item with its test:
+feed and resize; system keyboard; key bar; hardware keyboard; scroll and scrollback; pinch font;
+long-press selection, drag, copy, copy-on-select shimmer; theme colors; MesloLGS NF in four
+styles; box-drawing and block sprites; cursor styles and blink; mouse and wheel reports; 120 Hz;
+mirror-mode zoom; fit-mode claim and "resized elsewhere"; reconnect and resume; background and
+foreground.
+
+## Design
 
 1. **project.yml**
    - Add `- framework: Vendor/GhosttyVt.xcframework` (`embed: false`) to the RexDuo target.

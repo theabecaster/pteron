@@ -25,6 +25,9 @@ targets:
     dependencies:
       - package: SwiftTerm
         product: SwiftTerm
+      # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
+      - framework: Vendor/GhosttyVt.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo
@@ -33,3 +36,32 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: RexDuo/Info.plist
         GENERATE_INFOPLIST_FILE: NO
+        # libghostty-vt's simdutf and highway are C++.
+        OTHER_LDFLAGS: "-lc++"
+  RexDuoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: RexDuoTests
+    dependencies:
+      - target: RexDuo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexDuo.app/RexDuo"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  RexDuo:
+    build:
+      targets:
+        RexDuo: all
+        RexDuoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - RexDuoTests
+    archive:
+      config: Release

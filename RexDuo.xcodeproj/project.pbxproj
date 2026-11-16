@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00554B4D26028BBFCF9CB84C /* GhosttyVt.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6B61D7E9523E1F465727A967 /* GhosttyVt.xcframework */; };
 		06E0B6EAC1EA139F38D8D180 /* MesloLGS NF Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 6FC8AE73DE5CA232DA3C7C4A /* MesloLGS NF Regular.ttf */; };
 		1A96C1E14C301C9DF5EA2329 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A9B3893057528BAEB973F0 /* AppModel.swift */; };
 		3F0E6807720F0C79E564DA3C /* EdgeReveal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FCA9276E5DB8EAA679BC71F /* EdgeReveal.swift */; };
@@ -23,12 +24,15 @@
 		5B97DC1DE802D8A4EF38391F /* WindowScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0D8DE77633FDB71FF54DCA /* WindowScreen.swift */; };
 		64C9ECB22164DB5A45348BC9 /* themes.json in Resources */ = {isa = PBXBuildFile; fileRef = 7D15038E6F4BB703628C8577 /* themes.json */; };
 		75CBDA7DC81C707CF21FADB8 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3283DC3428ED2FF39CB3E79 /* PaneView.swift */; };
+		75EC7F7F351C4F2E1A9865D6 /* GhosttyLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F9F22FC22238A73CB17137F /* GhosttyLinkTests.swift */; };
 		8F47BCE5DDC1486F2F825258 /* RexDuoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52A8A3B01CD6A86DE56B129A /* RexDuoApp.swift */; };
 		92FBA60A03D1CEA32B8E990C /* BarGestures.swift in Sources */ = {isa = PBXBuildFile; fileRef = C36D0789E38A499E44EC7DC4 /* BarGestures.swift */; };
 		997E54C894ED1100A5A8BD0D /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22673A3DDD733ABB237BC3A /* KeyBar.swift */; };
 		99B2E8F084A93A68B01DA4A0 /* RexControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B100EBBEB938BA419C66C79 /* RexControl.swift */; };
+		A0A380ADFEC8B3938CE98BD4 /* TerminalEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F754D530BD25EBF96D87FC9 /* TerminalEngine.swift */; };
 		A2FC5D047559BCED8E620209 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 40A5A6C20B3CC18CCF321DC9 /* Assets.xcassets */; };
 		B1D53F83CD1CA0C8B58D7E93 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D9382C1B610CA4DDB693E3 /* SettingsView.swift */; };
+		CAC5A1FE9F7DC64720A4DF12 /* GhosttyBuild.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E015867E1CD3671F6D01E9 /* GhosttyBuild.swift */; };
 		D51DD020F32E348160AD44C0 /* TerminalHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD8035F573FBF207BAC58480 /* TerminalHost.swift */; };
 		DE68D5292683AD8C083CA7E3 /* MesloLGS NF Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CB06DDCBADF73246589AE682 /* MesloLGS NF Bold.ttf */; };
 		E230480A186CEEEA3D460A74 /* MesloLGS NF Bold Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7FDEF5304A507E55668C7764 /* MesloLGS NF Bold Italic.ttf */; };
@@ -38,16 +42,29 @@
 		F42C7274F19FE0B1672560D7 /* LaunchTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D344A7771508EA552910BC1 /* LaunchTransition.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		A7D17FAA4BEA793E566DC9B0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7D434C88AB661CAC405940C7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 03736AAA803521C5919C97D0;
+			remoteInfo = RexDuo;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		01A9B3893057528BAEB973F0 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		0F754D530BD25EBF96D87FC9 /* TerminalEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEngine.swift; sourceTree = "<group>"; };
 		3652D45242D6A369CD903F62 /* Prefs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prefs.swift; sourceTree = "<group>"; };
 		37F109CEE782779190FC8C61 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		3F9F22FC22238A73CB17137F /* GhosttyLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyLinkTests.swift; sourceTree = "<group>"; };
 		40A5A6C20B3CC18CCF321DC9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		450DE0047F69FD77BB7A05B6 /* PhoneState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneState.swift; sourceTree = "<group>"; };
 		52A8A3B01CD6A86DE56B129A /* RexDuoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RexDuoApp.swift; sourceTree = "<group>"; };
 		5C0D8DE77633FDB71FF54DCA /* WindowScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowScreen.swift; sourceTree = "<group>"; };
 		68164475A5C9FB02AB10EDB5 /* MesloLGS NF Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Italic.ttf"; sourceTree = "<group>"; };
 		6B100EBBEB938BA419C66C79 /* RexControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RexControl.swift; sourceTree = "<group>"; };
+		6B61D7E9523E1F465727A967 /* GhosttyVt.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyVt.xcframework; path = Vendor/GhosttyVt.xcframework; sourceTree = "<group>"; };
 		6FC8AE73DE5CA232DA3C7C4A /* MesloLGS NF Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Regular.ttf"; sourceTree = "<group>"; };
 		7D15038E6F4BB703628C8577 /* themes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = themes.json; sourceTree = "<group>"; };
 		7FDEF5304A507E55668C7764 /* MesloLGS NF Bold Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Bold Italic.ttf"; sourceTree = "<group>"; };
@@ -65,6 +82,8 @@
 		BD8035F573FBF207BAC58480 /* TerminalHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHost.swift; sourceTree = "<group>"; };
 		C36D0789E38A499E44EC7DC4 /* BarGestures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarGestures.swift; sourceTree = "<group>"; };
 		CB06DDCBADF73246589AE682 /* MesloLGS NF Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Bold.ttf"; sourceTree = "<group>"; };
+		D4E015867E1CD3671F6D01E9 /* GhosttyBuild.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyBuild.swift; sourceTree = "<group>"; };
+		D54FF7C555F4053C51C95578 /* RexDuoTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RexDuoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E457CA66E64CDD73211FC4E7 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		E55AEC756ACCD56BAF3F0766 /* GestureTips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureTips.swift; sourceTree = "<group>"; };
 		E842F7EED38AB887CA95A142 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -77,6 +96,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E4377E6CF44A7DD29F474F84 /* SwiftTerm in Frameworks */,
+				00554B4D26028BBFCF9CB84C /* GhosttyVt.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -101,10 +121,27 @@
 				D04060AC7FB80079D9E1C88C /* Protocol */,
 				DE8EE9AF35F78FA74C968804 /* Resources */,
 				20EDF043C83ACEFF8688D2CF /* State */,
+				9FA9683E523424E512EF7FDE /* Terminal */,
 				50335CC37E83AFBA1464B84B /* Theme */,
 				BD85ACB451C24D0EFA35C60E /* UI */,
 			);
 			path = RexDuo;
+			sourceTree = "<group>";
+		};
+		2E39B54684E140A7A674AF40 /* Ghostty */ = {
+			isa = PBXGroup;
+			children = (
+				D4E015867E1CD3671F6D01E9 /* GhosttyBuild.swift */,
+			);
+			path = Ghostty;
+			sourceTree = "<group>";
+		};
+		4FFBE352A89E87A646AAD45C /* RexDuoTests */ = {
+			isa = PBXGroup;
+			children = (
+				3F9F22FC22238A73CB17137F /* GhosttyLinkTests.swift */,
+			);
+			path = RexDuoTests;
 			sourceTree = "<group>";
 		};
 		50335CC37E83AFBA1464B84B /* Theme */ = {
@@ -134,10 +171,29 @@
 			path = Fonts;
 			sourceTree = "<group>";
 		};
+		9858A84625386FBDCD473628 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				6B61D7E9523E1F465727A967 /* GhosttyVt.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		9FA9683E523424E512EF7FDE /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				0F754D530BD25EBF96D87FC9 /* TerminalEngine.swift */,
+				2E39B54684E140A7A674AF40 /* Ghostty */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
 		B052DF50C960CA8933592409 = {
 			isa = PBXGroup;
 			children = (
 				21373853058B5489C29EB9C0 /* RexDuo */,
+				4FFBE352A89E87A646AAD45C /* RexDuoTests */,
+				9858A84625386FBDCD473628 /* Frameworks */,
 				BD98333F47FC190B51FF3296 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -166,6 +222,7 @@
 			isa = PBXGroup;
 			children = (
 				BC5FCF0AAEEA7001A3D49613 /* RexDuo.app */,
+				D54FF7C555F4053C51C95578 /* RexDuoTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -214,6 +271,24 @@
 			productReference = BC5FCF0AAEEA7001A3D49613 /* RexDuo.app */;
 			productType = "com.apple.product-type.application";
 		};
+		799D95A69C5108FABA8A0AF5 /* RexDuoTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7AB8CBFA7D09B160B69AA7F9 /* Build configuration list for PBXNativeTarget "RexDuoTests" */;
+			buildPhases = (
+				0EE71EBD6E2045CEAF352828 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				96AEFCE520AF39463EABA17E /* PBXTargetDependency */,
+			);
+			name = RexDuoTests;
+			packageProductDependencies = (
+			);
+			productName = RexDuoTests;
+			productReference = D54FF7C555F4053C51C95578 /* RexDuoTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -224,6 +299,10 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					03736AAA803521C5919C97D0 = {
+						DevelopmentTeam = R2PVQ496X7;
+						ProvisioningStyle = Automatic;
+					};
+					799D95A69C5108FABA8A0AF5 = {
 						DevelopmentTeam = R2PVQ496X7;
 						ProvisioningStyle = Automatic;
 					};
@@ -247,6 +326,7 @@
 			projectRoot = "";
 			targets = (
 				03736AAA803521C5919C97D0 /* RexDuo */,
+				799D95A69C5108FABA8A0AF5 /* RexDuoTests */,
 			);
 		};
 /* End PBXProject section */
@@ -268,6 +348,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		0EE71EBD6E2045CEAF352828 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				75EC7F7F351C4F2E1A9865D6 /* GhosttyLinkTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		10AC3379D26B050B3C932F7D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -277,6 +365,7 @@
 				92FBA60A03D1CEA32B8E990C /* BarGestures.swift in Sources */,
 				3F0E6807720F0C79E564DA3C /* EdgeReveal.swift in Sources */,
 				4E5E329ABF8F806FE6168CCC /* GestureTips.swift in Sources */,
+				CAC5A1FE9F7DC64720A4DF12 /* GhosttyBuild.swift in Sources */,
 				44AECC9EF612BB3B143BCEBC /* JSON.swift in Sources */,
 				997E54C894ED1100A5A8BD0D /* KeyBar.swift in Sources */,
 				F42C7274F19FE0B1672560D7 /* LaunchTransition.swift in Sources */,
@@ -290,6 +379,7 @@
 				46F16E0111A1B9536929F9B4 /* ServerConnection.swift in Sources */,
 				B1D53F83CD1CA0C8B58D7E93 /* SettingsView.swift in Sources */,
 				4FFAC817B5E2F8D1A32E5F14 /* SidebarView.swift in Sources */,
+				A0A380ADFEC8B3938CE98BD4 /* TerminalEngine.swift in Sources */,
 				D51DD020F32E348160AD44C0 /* TerminalHost.swift in Sources */,
 				4E4DAE909AB7AC0913DDC06F /* TerminalStream.swift in Sources */,
 				563F4F3F91FDC44B7D4099BD /* Theme.swift in Sources */,
@@ -298,6 +388,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		96AEFCE520AF39463EABA17E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 03736AAA803521C5919C97D0 /* RexDuo */;
+			targetProxy = A7D17FAA4BEA793E566DC9B0 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		62FCD80A51FECC711E25E86D /* Debug */ = {
@@ -368,17 +466,56 @@
 			};
 			name = Debug;
 		};
+		7681682E67BF06C46F87B7B4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.abrahamgonzalez.rexduo.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RexDuo.app/RexDuo";
+			};
+			name = Debug;
+		};
+		7B496AB8B2AA10143F63F6B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.abrahamgonzalez.rexduo.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RexDuo.app/RexDuo";
+			};
+			name = Release;
+		};
 		B604254E3E8976B111568191 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Vendor\"",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RexDuo/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = "-lc++";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.abrahamgonzalez.rexduo;
 				PRODUCT_NAME = RexDuo;
 				SDKROOT = iphoneos;
@@ -391,12 +528,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Vendor\"",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RexDuo/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = "-lc++";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.abrahamgonzalez.rexduo;
 				PRODUCT_NAME = RexDuo;
 				SDKROOT = iphoneos;
@@ -473,6 +615,15 @@
 			buildConfigurations = (
 				62FCD80A51FECC711E25E86D /* Debug */,
 				F50612B5BE011B6F228D0B2D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7AB8CBFA7D09B160B69AA7F9 /* Build configuration list for PBXNativeTarget "RexDuoTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7681682E67BF06C46F87B7B4 /* Debug */,
+				7B496AB8B2AA10143F63F6B1 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
