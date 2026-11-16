@@ -1,2 +1,6 @@
 .build/
 .swiftpm/
+# package.sh output and staging. The staging bundle holds the APNs key: never commit it.
+/dist/
+/.stage/
+*.p8

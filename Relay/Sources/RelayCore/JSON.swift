@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public typealias JSONObject = [String: Any]
 
@@ -42,9 +43,12 @@ public struct RexError: LocalizedError {
     static func local(_ msg: String) -> RexError { RexError(code: "client", message: msg) }
 }
 
-/// Timestamped line logging to stdout. Under launchd, stdout goes to the log file.
+/// Logs to the unified log (subsystem `dev.abrahamgonzalez.rexconnect.helper`) and, with a
+/// timestamp, to stdout. Read the app's log with
+/// `log show --last 1h --predicate 'subsystem == "dev.abrahamgonzalez.rexconnect.helper"'`.
 public enum Log {
     nonisolated(unsafe) public static var verbose = false
+    private static let logger = Logger(subsystem: "dev.abrahamgonzalez.rexconnect.helper", category: "relay")
     nonisolated(unsafe) private static let fmt: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
@@ -54,6 +58,7 @@ public enum Log {
     public static func info(_ s: String) { emit(s) }
     public static func debug(_ s: String) { if verbose { emit(s) } }
     private static func emit(_ s: String) {
+        logger.notice("\(s, privacy: .public)")
         print("\(fmt.string(from: Date())) \(s)")
         fflush(stdout)
     }

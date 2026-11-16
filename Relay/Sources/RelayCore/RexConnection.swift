@@ -1,8 +1,12 @@
 import Foundation
 
 /// A minimal Rex control-API client (`/api/control`, subprotocol `rex.control.v1`).
-/// It connects, keeps the connection alive, and reconnects forever with backoff.
+/// It finds the server, connects, and reconnects forever with backoff.
 /// Protocol reference: the server's `/llms.txt`.
+///
+/// It's event driven: while connected, nothing runs until the server sends something. The
+/// server pings every 120 s and `WebSocket` answers; a local server that goes away closes the
+/// socket, and a remote one is caught by TCP keepalive.
 @MainActor
 public final class RexConnection {
     public static let apiRevision = 14
@@ -10,14 +14,18 @@ public final class RexConnection {
     public struct Identity {
         public var kind = "other"
         public var platform = "macos"
+        /// Rex Connect finds the relay by this name in `client.list`. Don't change it.
         public var name = "rex-push-relay"
         public var version = "0.1.0"
         public var label = "rex-push-relay"
         public init() {}
     }
 
-    public let baseURL: URL
+    /// Finds the server's address; called before every connection attempt. Nil means "no server".
+    public typealias Resolver = @MainActor () async -> RexEndpoint?
+
     public let identity: Identity
+    public private(set) var endpoint: RexEndpoint?
     public private(set) var isConnected = false
     public private(set) var clientID: String?
 
@@ -27,29 +35,31 @@ public final class RexConnection {
     public var onEvent: ((JSONObject) -> Void)?
     public var onDisconnected: ((String) -> Void)?
 
-    private let session: URLSession
-    private var task: URLSessionWebSocketTask?
+    private let resolve: Resolver
+    private var socket: WebSocket?
     private var pending: [String: CheckedContinuation<Any, Error>] = [:]
+    private var timeouts: [String: Task<Void, Never>] = [:]
     private var nextID = 0
     private var reconnectToken: String?
     private var running = false
     private var loop: Task<Void, Never>?
 
-    public init(baseURL: URL, identity: Identity = Identity()) {
-        self.baseURL = baseURL
+    public init(resolve: @escaping Resolver, identity: Identity = Identity()) {
+        self.resolve = resolve
         self.identity = identity
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.waitsForConnectivity = false
-        cfg.timeoutIntervalForRequest = 30
-        self.session = URLSession(configuration: cfg)
     }
 
-    var controlURL: URL {
-        var c = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        if c.scheme == "https" { c.scheme = "wss" } else if c.scheme == "http" { c.scheme = "ws" }
-        c.path = "/api/control"
-        c.query = nil
-        return c.url!
+    public convenience init(endpoint: RexEndpoint, identity: Identity = Identity()) {
+        self.init(resolve: { endpoint }, identity: identity)
+    }
+
+    /// Short name for log lines.
+    public var host: String {
+        switch endpoint {
+        case .unix?: return "local"
+        case .url(let u)?: return u.host ?? u.absoluteString
+        case nil: return "rex"
+        }
     }
 
     public func start() {
@@ -58,9 +68,10 @@ public final class RexConnection {
         loop = Task { await self.runForever() }
     }
 
+    /// Closes the connection with a close frame, so Rex drops this client at once.
     public func stop() {
         running = false
-        task?.cancel(with: .normalClosure, reason: nil)
+        socket?.close(code: 1000)
         loop?.cancel()
     }
 
@@ -68,25 +79,30 @@ public final class RexConnection {
 
     private func runForever() async {
         var delay: Double = 1
+        var lastReason = ""
         while running && !Task.isCancelled {
             let began = Date()
             var reason = "closed"
-            do {
-                let t = try await open()
-                let receiver = Task { await self.receiveLoop(t) }
-                let pinger = Task { await self.pingLoop(t) }
+            if let ep = await resolve() {
+                endpoint = ep
                 do {
-                    try await onConnected?()
+                    let ws = try await open(ep)
+                    let receiver = Task { await self.receiveLoop(ws) }
+                    do {
+                        try await onConnected?()
+                    } catch {
+                        Log.info("[\(host)] setup failed: \(error.localizedDescription)")
+                        ws.close(code: 1001)
+                    }
+                    reason = await receiver.value
                 } catch {
-                    Log.info("[\(host)] setup failed: \(error.localizedDescription)")
-                    t.cancel(with: .goingAway, reason: nil)
+                    reason = error.localizedDescription
                 }
-                reason = await receiver.value
-                pinger.cancel()
-            } catch {
-                reason = error.localizedDescription
+            } else {
+                reason = "no Rex server found"
             }
-            task = nil
+            socket?.cancel()
+            socket = nil
             let wasConnected = isConnected
             isConnected = false
             failAll(RexError.local("connection lost"))
@@ -95,19 +111,26 @@ public final class RexConnection {
             // A connection that stayed up a while starts the backoff over.
             if Date().timeIntervalSince(began) > 60 { delay = 1 }
             let wait = delay * Double.random(in: 0.8...1.2)
-            Log.info("[\(host)] disconnected (\(reason)); retrying in \(Int(wait.rounded()))s")
+            // While Rex is down this repeats every minute; say it once.
+            if reason != lastReason || wasConnected {
+                Log.info("[\(host)] disconnected (\(reason)); retrying with backoff up to 60s")
+            }
+            lastReason = reason
             try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             delay = min(delay * 2, 60)
         }
     }
 
-    var host: String { baseURL.host ?? baseURL.absoluteString }
-
-    private func open() async throws -> URLSessionWebSocketTask {
-        let t = session.webSocketTask(with: controlURL, protocols: ["rex.control.v1"])
-        t.maximumMessageSize = 16 * 1024 * 1024
-        task = t
-        t.resume()
+    private func open(_ ep: RexEndpoint) async throws -> WebSocket {
+        let ws = WebSocket(endpoint: ep)
+        socket = ws
+        // Connect, upgrade, hello and welcome must all finish within 8 s.
+        let timeout = Task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if !Task.isCancelled { ws.cancel() }
+        }
+        defer { timeout.cancel() }
+        try await ws.open(path: "/api/control", subprotocol: "rex.control.v1")
 
         var client: JSONObject = [
             "kind": identity.kind, "platform": identity.platform,
@@ -116,17 +139,11 @@ public final class RexConnection {
         client = client.filter { !(($0.value as? String) ?? "x").isEmpty }
         var hello: JSONObject = ["type": "hello", "api_revision": Self.apiRevision, "client": client]
         if let tok = reconnectToken { hello["reconnect_token"] = tok }
-        try await t.send(.string(JSONCodec.encode(hello)))
+        try await ws.send(text: JSONCodec.encode(hello))
 
-        // The welcome is always the first message. Give up after 8 s.
-        let timeout = Task {
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            if !Task.isCancelled { t.cancel(with: .goingAway, reason: nil) }
-        }
-        defer { timeout.cancel() }
-        let first = try await t.receive()
-        guard let m = Self.decode(first), m.str("type") == "welcome" else {
-            t.cancel(with: .protocolError, reason: nil)
+        // The welcome is always the first message.
+        guard let m = JSONCodec.decode(try await ws.receive()), m.str("type") == "welcome" else {
+            ws.close(code: 1002)
             throw RexError.local("expected welcome")
         }
         if let c = m.obj("client") {
@@ -135,45 +152,17 @@ public final class RexConnection {
         }
         isConnected = true
         let resumed = m.obj("client")?.bool("resumed") ?? false
-        Log.info("[\(host)] connected as \(clientID ?? "?")\(resumed ? " (resumed)" : "")")
-        return t
+        Log.info("[\(host)] connected to \(ep) as \(clientID ?? "?")\(resumed ? " (resumed)" : "")")
+        return ws
     }
 
-    private static func decode(_ msg: URLSessionWebSocketTask.Message) -> JSONObject? {
-        switch msg {
-        case .string(let s): return JSONCodec.decode(s)
-        case .data(let d): return JSONCodec.decode(d)
-        @unknown default: return nil
-        }
-    }
-
-    private func receiveLoop(_ t: URLSessionWebSocketTask) async -> String {
+    private func receiveLoop(_ ws: WebSocket) async -> String {
         while true {
             do {
-                let msg = try await t.receive()
-                guard let m = Self.decode(msg) else { continue }
+                guard let m = JSONCodec.decode(try await ws.receive()) else { continue }
                 handle(m)
             } catch {
-                if t.closeCode != .invalid { return "closed \(t.closeCode.rawValue)" }
                 return error.localizedDescription
-            }
-        }
-    }
-
-    /// The server pings every 120 s; we ping too so we notice a dead server.
-    private func pingLoop(_ t: URLSessionWebSocketTask) async {
-        final class Flag: @unchecked Sendable { var ok = false }
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 45_000_000_000)
-            guard !Task.isCancelled else { return }
-            let flag = Flag()
-            t.sendPing { err in if err == nil { flag.ok = true } }
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            guard !Task.isCancelled else { return }
-            if !flag.ok {
-                Log.info("[\(host)] ping timed out")
-                t.cancel(with: .goingAway, reason: nil)
-                return
             }
         }
     }
@@ -182,6 +171,7 @@ public final class RexConnection {
         switch m.str("type") {
         case "response":
             guard let id = m.str("id"), let c = pending.removeValue(forKey: id) else { return }
+            timeouts.removeValue(forKey: id)?.cancel()
             if let e = m.obj("error") {
                 c.resume(throwing: RexError(code: e.str("code") ?? "internal", message: e.str("message") ?? "error"))
             } else {
@@ -197,6 +187,8 @@ public final class RexConnection {
     private func failAll(_ err: Error) {
         let p = pending
         pending.removeAll()
+        for t in timeouts.values { t.cancel() }
+        timeouts.removeAll()
         for (_, c) in p { c.resume(throwing: err) }
     }
 
@@ -208,7 +200,7 @@ public final class RexConnection {
     }
 
     public func callAny(_ method: String, _ payload: JSONObject? = nil, timeout: Double = 20) async throws -> Any {
-        guard let t = task, isConnected else { throw RexError.local("not connected") }
+        guard let ws = socket, isConnected else { throw RexError.local("not connected") }
         nextID += 1
         let id = "r\(nextID)"
         var req: JSONObject = ["type": "request", "id": id, "method": method]
@@ -216,12 +208,13 @@ public final class RexConnection {
         let text = JSONCodec.encode(req)
         return try await withCheckedThrowingContinuation { (c: CheckedContinuation<Any, Error>) in
             pending[id] = c
-            t.send(.string(text)) { err in
-                guard let err else { return }
-                Task { @MainActor in self.pending.removeValue(forKey: id)?.resume(throwing: err) }
-            }
             Task { @MainActor in
+                do { try await ws.send(text: text) } catch { self.pending.removeValue(forKey: id)?.resume(throwing: error) }
+            }
+            timeouts[id] = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self.timeouts[id] = nil
                 self.pending.removeValue(forKey: id)?.resume(throwing: RexError.local("\(method) timed out"))
             }
         }
