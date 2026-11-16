@@ -2,7 +2,8 @@
 # Builds Vendor/GhosttyVt.xcframework (libghostty-vt: macOS, iOS and iOS Simulator slices).
 # Everything stays under Vendor/ (gitignored): Zig, its caches and the Ghostty checkout.
 # Nothing is installed system-wide. Pins live in scripts/ghostty.version.
-#   scripts/build-ghostty.sh           build if the pins changed
+# A cold run downloads Zig (51 MB) and Ghostty with its dependencies: about 130 s, 1.3 GB.
+#   scripts/build-ghostty.sh           build if the pins or patches changed
 #   scripts/build-ghostty.sh --force   rebuild
 set -euo pipefail
 
@@ -11,10 +12,17 @@ VENDOR=$ROOT/Vendor
 source $ROOT/scripts/ghostty.version
 
 OUT=$VENDOR/GhosttyVt.xcframework
-STAMP=$VENDOR/.ghostty-built
-WANT="$(cat $ROOT/scripts/ghostty.version $ROOT/scripts/ghostty-patches/*.patch(N) | shasum -a 256 | cut -c1-16)"
-if [[ -d $OUT && -f $STAMP && "$(cat $STAMP)" == "$WANT" && "${1:-}" != "--force" ]]; then
-  echo "GhosttyVt.xcframework is up to date ($GHOSTTY_COMMIT)"
+# What the framework was built from: Ghostty commit, Zig version and a hash of our patches.
+# scripts/check-ghostty.sh compares it with the pins before every build, sync and archive.
+STAMP=$VENDOR/GhosttyVt.stamp
+CHECK=$ROOT/scripts/check-ghostty.sh
+# Frameworks built before the stamp existed recorded a hash of the same inputs here.
+OLD_STAMP=$VENDOR/.ghostty-built
+OLD_WANT="$(cat $ROOT/scripts/ghostty.version $ROOT/scripts/ghostty-patches/*.patch(N) | shasum -a 256 | cut -c1-16)"
+if [[ -d $OUT && ! -f $STAMP && -f $OLD_STAMP && "$(<$OLD_STAMP)" == "$OLD_WANT" ]]; then
+  $CHECK --expected > $STAMP
+fi
+if [[ "${1:-}" != "--force" ]] && $CHECK 2>/dev/null; then
   exit 0
 fi
 
@@ -57,7 +65,7 @@ START=$SECONDS
 $ZIG build -Demit-lib-vt=true -Demit-xcframework=true -Doptimize=ReleaseFast
 echo "zig build took $(( SECONDS - START ))s"
 
-rm -rf $OUT
+rm -rf $STAMP $OUT
 cp -R $SRC/zig-out/lib/ghostty-vt.xcframework $OUT
-echo "$WANT" > $STAMP
+$CHECK --expected > $STAMP
 du -sh $OUT

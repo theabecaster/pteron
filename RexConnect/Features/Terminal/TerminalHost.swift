@@ -75,6 +75,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Copy and Paste at the selection, after a long press.
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
     private var menuTarget: CGRect?
+    /// SELECTION UI: the loupe, handles, haptics, double and triple tap (Selection/, docs/selection.md).
+    private var selectionUI: TerminalSelectionController!
     /// A long-press or pointer selection drag is under way: nothing else may scroll or swipe.
     private var selecting = false
     private var pointerSelectGR: UIPanGestureRecognizer!
@@ -220,6 +222,43 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         pointerSelectGR.delegate = self
         term.addGestureRecognizer(pointerSelectGR)
         term.addInteraction(editMenu)
+        setupSelectionUI()
+    }
+
+    /// SELECTION UI: everything the controller needs from the host. It owns no recognizer but
+    /// the handles' own press.
+    private func setupSelectionUI() {
+        let ui = TerminalSelectionController(term: term)
+        ui.install(in: self, above: zoomer)
+        ui.apply(tint: theme.uiCursor, rim: theme.uiBG)
+        ui.playShimmer = { [weak self] rects in
+            guard let self else { return }
+            SelectionShimmer.play(on: self.term.layer, rects: rects, dark: self.theme.isDark)
+        }
+        ui.presentMenu = { [weak self] rect in self?.presentEditMenu(at: rect) }
+        ui.dismissMenu = { [weak self] in self?.editMenu.dismissMenu() }
+        ui.trackingChanged = { [weak self] tracking in self?.selecting = tracking }
+        selectionUI = ui
+    }
+
+    /// Shows the edit menu around `rect` (engine view coordinates), or moves the one on screen.
+    private func presentEditMenu(at rect: CGRect) {
+        menuTarget = rect
+        if selectionUI.menuVisible {
+            editMenu.reloadVisibleMenu()
+            editMenu.updateVisibleMenuPosition(animated: false)
+        } else {
+            let configuration = UIEditMenuConfiguration(identifier: nil, sourcePoint: CGPoint(x: rect.midX, y: rect.minY))
+            // Above the selection when there is room: the end handle hangs below it.
+            configuration.preferredArrowDirection = .down
+            editMenu.presentEditMenu(with: configuration)
+        }
+    }
+
+    /// Clears the selection and its handles.
+    private func clearSelection() {
+        term.clearSelectedRange()
+        selectionUI.selectionCleared()
     }
 
     /// Mostly-horizontal motion of a pan that is about to begin.
@@ -273,7 +312,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
-        if g === tapGR { touchIsPointer = touch.type == .indirectPointer }
+        if g === tapGR {
+            touchIsPointer = touch.type == .indirectPointer
+            // SELECTION UI: a long press may follow; wake the haptics now so its start has no lag.
+            if !touchIsPointer { selectionUI.touchDown() }
+        }
         return true
     }
 
@@ -284,11 +327,30 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// Tap: focus this pane, clear a selection, and raise the keyboard on the first tap.
     @objc private func tapped() {
+        let point = tapGR.location(in: term)
+        // TAP HOOK (links, prompts): a tap that hit an OSC 8 link or an OSC 133 prompt is handled
+        // here and returns, before the selection and focus logic below.
+        if term.tapOpensLinkOrMovesCursor(at: point, focused: term.isFirstResponder, shift: tapGR.modifierFlags.contains(.shift)) {
+            onFocus?()
+            editMenu.dismissMenu()
+            // No click for the program and no Paste menu; counted, so a second tap still selects the word.
+            swallowTermTap()
+            _ = selectionUI.tap(at: point, focused: true)
+            return
+        }
+
+        // SELECTION UI: a tap on a handle is not a tap; a second or third tap selects a word or a line.
+        let tap = selectionUI.tap(at: point, focused: term.isFirstResponder)
+        if tap == .handle { return }
         onFocus?()
+        if tap == .selected {
+            swallowTermTap()
+            return
+        }
         var skipTermTap = false
         editMenu.dismissMenu()
         if term.hasActiveSelection {
-            term.clearSelectedRange()
+            clearSelection()
             skipTermTap = true
         }
         if !term.isFirstResponder {
@@ -297,10 +359,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             skipTermTap = true
             _ = term.becomeFirstResponder()
         }
-        if skipTermTap {
-            swallowSingleTap = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.swallowSingleTap = false }
-        }
+        if skipTermTap { swallowTermTap() }
+        // SELECTION UI: a tap by the cursor offers Paste, as SwiftTerm's own view does.
+        if tap == .single(showsPaste: true) { presentEditMenu(at: CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4)) }
+    }
+
+    /// The engine's own tap for this touch (a click for the program) must not fire.
+    private func swallowTermTap() {
+        swallowSingleTap = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.swallowSingleTap = false }
     }
 
     /// Two-finger tap: zoom this pane (or unzoom).
@@ -317,19 +384,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     @objc private func longPressed(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: term)
         switch g.state {
+        // SELECTION UI: the controller selects, shows the loupe, plays the haptics, and on release
+        // copies, shows the handles and the menu. `selecting` follows it (`trackingChanged`).
         case .began:
             onFocus?()
-            selecting = true
-            editMenu.dismissMenu()
-            term.beginSelection(at: p, word: true)
+            selectionUI.pressBegan(at: p)
         case .changed:
-            guard selecting else { return }
-            term.extendSelection(to: p, autoscroll: true)
+            selectionUI.pressMoved(to: p)
         case .ended:
-            guard selecting else { return }
-            finishSelection(menuAt: p)
+            selectionUI.pressEnded(at: p)
         default:
-            endSelection()
+            selectionUI.pressCancelled()
         }
     }
 
@@ -341,6 +406,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             onFocus?()
             selecting = true
             editMenu.dismissMenu()
+            selectionUI.selectionCleared()
             let t = g.translation(in: term)
             term.beginSelection(at: CGPoint(x: p.x - t.x, y: p.y - t.y), word: false)
             term.extendSelection(to: p, autoscroll: false)
@@ -349,7 +415,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .ended:
             finishSelection(menuAt: nil)
         default:
-            term.clearSelectedRange()
+            clearSelection()
             endSelection()
         }
     }
@@ -373,7 +439,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             SelectionShimmer.play(on: term.layer, rects: rects, dark: theme.isDark)
             target = rects.dropFirst().reduce(rects.first) { $0?.union($1) }
         } else {
-            term.clearSelectedRange()
+            clearSelection()
         }
         guard let point else { return }
         let rect = target ?? CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4)
@@ -390,17 +456,38 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             items.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
                 guard let self else { return }
                 if let s = self.term.selectedText, !s.isEmpty { UIPasteboard.general.string = s }
-                self.term.clearSelectedRange()
+                self.clearSelection()
             })
         }
         if UIPasteboard.general.hasStrings {
             items.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
                 guard let self else { return }
-                self.term.clearSelectedRange()
+                self.clearSelection()
                 if let s = UIPasteboard.general.string { self.paste(s) }
             })
         }
+        // SELECTION UI: Select All, with handles to pull it back in from.
+        if term.usesHostSelectionUI {
+            items.append(UIAction(title: "Select All", image: UIImage(systemName: "character.textbox")) { [weak self] _ in
+                guard let self else { return }
+                self.selectionUI.selectAll(showsMenu: false)
+                // Once this menu has gone: Copy for what is selected now.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.selectionUI.showMenu() }
+            })
+        }
         return items.isEmpty ? nil : UIMenu(children: items)
+    }
+
+    // SELECTION UI: the controller needs to know whether the menu is up (a tap then hides it
+    // instead of showing Paste; a new target moves it instead of presenting again).
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, willPresentMenuFor configuration: UIEditMenuConfiguration,
+                             animator: any UIEditMenuInteractionAnimating) {
+        selectionUI.menuVisible = true
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, willDismissMenuFor configuration: UIEditMenuConfiguration,
+                             animator: any UIEditMenuInteractionAnimating) {
+        selectionUI.menuVisible = false
     }
 
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, targetRectFor configuration: UIEditMenuConfiguration) -> CGRect {
@@ -533,7 +620,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .paste:
             if let s = UIPasteboard.general.string { paste(s) }
         case .selectAll:
-            term.selectAllText()
+            selectionUI.selectAll(showsMenu: false)  // SELECTION UI: with handles
         case .pageUp:
             term.scrollPage(up: true)
         case .pageDown:
@@ -667,6 +754,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         statusLabel.backgroundColor = t.uiFG.withAlphaComponent(0.15)
         statusLabel.textColor = t.uiFG
         keyBar.apply(theme: t)
+        selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
     }
 
     func setFontSize(_ s: CGFloat) {

@@ -455,11 +455,45 @@ final class GhosttyTapRoutingTests: XCTestCase {
         view.scroller.apply(view.core.scroll.snapshot)
     }
 
-    /// A tap in the middle of a cell, as the scroll surface's tap passes it on.
-    private func tap(_ view: GhosttyTerminalView, col: Int, row: Int, focused: Bool = true, shift: Bool = false) -> Bool {
+    private var now: CFTimeInterval = 100
+
+    /// A tap in the middle of a cell, as the host's tap passes it on through the seam, `after`
+    /// seconds after the one before.
+    private func tap(_ view: GhosttyTerminalView, col: Int, row: Int, focused: Bool = true, shift: Bool = false,
+                     after: CFTimeInterval = 2) -> Bool {
         let rect = view.viewportRect(row: row, columns: col..<(col + 1))
-        view.taps.focusedAtTouch = focused
-        return view.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), shift: shift)
+        now += after
+        let at = now
+        view.taps.clock = { at }
+        let engine: any TerminalEngineView = view
+        return engine.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), focused: focused, shift: shift)
+    }
+
+    func testTheNextTapOfADoubleTapIsLeftToTheSelection() {
+        let (view, sink) = make("see https://text.example/z ok\r\n\r\n\(esc)]133;A;cl=line\(bel)$ \(esc)]133;B\(bel)echo hello world and more")
+        var opened: [URL] = []
+        view.taps.open = { opened.append($0) }
+        // The shell hasn't moved its cursor yet: a second tap must not send the keys again.
+        XCTAssertTrue(tap(view, col: 4, row: 2))
+        XCTAssertFalse(tap(view, col: 4, row: 2, after: 0.2))
+        XCTAssertFalse(tap(view, col: 5, row: 2, after: 0.2), "a third tap, a cell away")
+        XCTAssertEqual(sink.sent.count, 1)
+        // Later, or somewhere else, it is a tap of its own.
+        XCTAssertTrue(tap(view, col: 4, row: 2, after: 0.6))
+        XCTAssertTrue(tap(view, col: 16, row: 2, after: 0.1), "far enough away")
+        XCTAssertEqual(sink.sent.count, 3)
+        // A link opens once for a double tap.
+        XCTAssertTrue(tap(view, col: 8, row: 0))
+        XCTAssertFalse(tap(view, col: 8, row: 0, after: 0.2))
+        XCTAssertEqual(opened.count, 1)
+        // A tap that used nothing up starts no such window.
+        XCTAssertFalse(tap(view, col: 1, row: 0))
+        XCTAssertTrue(tap(view, col: 8, row: 2, after: 0.1))
+    }
+
+    func testAnEngineWithoutLinksLeavesEveryTapToTheHost() {
+        let engine: any TerminalEngineView = RexTerminalView(fontSize: 12, theme: ThemeStore.fallback)
+        XCTAssertFalse(engine.tapOpensLinkOrMovesCursor(at: CGPoint(x: 5, y: 5), focused: true, shift: false))
     }
 
     func testATapOnALinkOpensItOnlyOnAFocusedPane() {

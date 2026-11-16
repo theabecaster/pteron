@@ -12,8 +12,9 @@ import UIKit
 // 6. A tap next to the cursor is left alone (SwiftTerm shows its Paste menu there).
 // 7. A tap on the shell's prompt moves the shell's cursor (OSC 133).
 //
-// Steps 3, 5 and 7 are this file's; `GhosttyScroller.tapped` asks `tapOpensLinkOrMovesCursor`
-// first and keeps doing 2 and 4 itself.
+// Steps 3, 5 and 7 are this file's: TerminalHost's tap asks `tapOpensLinkOrMovesCursor` first
+// (`TAP HOOK`), before the selection UI counts the tap and before the focus logic. The host does
+// 1, 2 and 6 (its Paste menu uses the same "next to the cursor"), the scroll surface's tap does 4.
 
 /// What the terminal says about a tapped cell, read in one hold of its lock.
 struct GhosttyTapProbe: Equatable {
@@ -82,32 +83,57 @@ extension GhosttyCore {
 /// Per-view state for taps. Main thread.
 @MainActor
 final class GhosttyTapState {
-    /// Whether the view had the keyboard when the tap was recognized, before the host's own tap
-    /// (which focuses an unfocused pane for the same touch) could change it.
-    var focusedAtTouch = false
+    /// A tap this soon after a used-up one, this close to it, is the next tap of a double or
+    /// triple tap: it selects (the host), and is never a second link or prompt tap.
+    /// Both are wider than the host's own window for a multi-tap (`SelectionTapCounter`).
+    static let repeatInterval: CFTimeInterval = 0.5
+    static let repeatDistance: CGFloat = 40
+
     /// Opens a link. `UIApplication.open` by default, as the SwiftTerm engine does; tests put
     /// their own here.
     var open: (URL) -> Void = { UIApplication.shared.open($0) }
+    var clock: () -> CFTimeInterval = { CACurrentMediaTime() }
+    private var last: (time: CFTimeInterval, point: CGPoint)?
+
+    /// True if a tap at `point` now continues the last used-up tap.
+    func repeats(at point: CGPoint) -> Bool {
+        guard let last else { return false }
+        return clock() - last.time < Self.repeatInterval
+            && abs(point.x - last.point.x) <= Self.repeatDistance && abs(point.y - last.point.y) <= Self.repeatDistance
+    }
+
+    func used(at point: CGPoint) { last = (clock(), point) }
+}
+
+/// Engines without links or prompt clicks leave every tap to the host.
+extension TerminalEngineView {
+    func tapOpensLinkOrMovesCursor(at p: CGPoint, focused: Bool, shift: Bool) -> Bool { false }
 }
 
 extension GhosttyTerminalView {
-    /// Asked by the scroll surface's tap before anything else. True if the tap opened a link or
-    /// moved the shell's cursor, and so is used up.
-    func tapOpensLinkOrMovesCursor(at point: CGPoint, shift: Bool) -> Bool {
+    /// Asked by the host's tap before anything else (`TAP HOOK` in TerminalHost). True if the tap
+    /// opened a link or moved the shell's cursor, and so is used up.
+    func tapOpensLinkOrMovesCursor(at point: CGPoint, focused: Bool, shift: Bool) -> Bool {
+        // The cheap conditions first: the rest costs a terminal lock.
+        guard focused, !shift, !taps.repeats(at: point) else { return false }
         let cell = viewportCell(at: point)
-        let action = GhosttyTapRouting.action(focusedAtTouch: taps.focusedAtTouch, shift: shift, hasSelection: hasActiveSelection,
+        let action = GhosttyTapRouting.action(focusedAtTouch: focused, shift: shift, hasSelection: hasActiveSelection,
                                               probe: core.tapProbe(viewportCol: cell.col, row: cell.row))
+        var used = false
         switch action {
         case .open(let link):
             // Any scheme iOS has a handler for, as with the SwiftTerm engine.
-            guard let url = URL(string: link) else { return false }
-            taps.open(url)
-            return true
+            if let url = URL(string: link) {
+                taps.open(url)
+                used = true
+            }
         case .prompt(let click):
-            return send(promptClick: click)
+            used = send(promptClick: click)
         case .focusOnly, .dismissSelection, .mouseClick, .nothing:
-            return false
+            break
         }
+        if used { taps.used(at: point) }
+        return used
     }
 
     /// Sends a prompt click as one write.
@@ -161,8 +187,7 @@ enum GhosttyTapTest {
                 guard let view else { return }
                 let rect = view.viewportRect(row: cell.1, columns: cell.0..<(cell.0 + 1))
                 let probe = view.core.tapProbe(viewportCol: cell.0, row: cell.1)
-                view.taps.focusedAtTouch = true
-                let used = view.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), shift: false)
+                let used = view.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), focused: true, shift: false)
                 report.append("\(cell.0),\(cell.1) used=\(used) probe=\(probe)")
                 let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("tapTest.txt")
                 try? report.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)

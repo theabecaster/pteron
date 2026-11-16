@@ -64,6 +64,10 @@ struct GhosttySelectionExtent: Equatable {
     var endRow: Int
     /// A block of cells instead of a run of text.
     var rectangle = false
+    /// The selection really starts above the viewport / ends below it: that end was cut to the
+    /// viewport's edge (selection handles hide for such an end).
+    var startClipped = false
+    var endClipped = false
 }
 
 enum GhosttySelectionExtendResult: Equatable {
@@ -297,14 +301,78 @@ extension GhosttyCore {
             guard extent.endRow >= 0, extent.startRow <= lastRow else { return nil }
             if extent.startRow < 0 {
                 extent.startRow = 0
+                extent.startClipped = true
                 if !extent.rectangle { extent.startCol = 0 }
             }
             if extent.endRow > lastRow {
                 extent.endRow = lastRow
+                extent.endClipped = true
                 if !extent.rectangle { extent.endCol = size.cols - 1 }
             }
             return extent
         } ?? nil
+    }
+
+    // MARK: Selection UI (handles, triple tap). See docs/selection.md.
+
+    /// Starts a drag that moves one end of the selection there is: the other end becomes the
+    /// anchor, and `extendSelection` then selects from it to the finger. Returns false without a
+    /// selection.
+    @discardableResult
+    func beginSelectionAdjust(movingStart: Bool, anchor: GhosttySelectionAnchor) -> Bool {
+        var began = false
+        lockTerminal()
+        if let t = terminal, var selection = Self.currentSelection(t) {
+            anchor.release()
+            var ordered = GhosttySelection()
+            if ghostty_terminal_selection_ordered(t, &selection, GHOSTTY_SELECTION_ORDER_FORWARD, &ordered) == GHOSTTY_SUCCESS {
+                var fixed = movingStart ? ordered.end : ordered.start
+                // A reference is tracked from a point. Screen coordinates name every row; the
+                // lookup walks the page list once per grab.
+                var point = GhosttyPoint()
+                point.tag = GHOSTTY_POINT_TAG_SCREEN
+                var tracked: GhosttyTrackedGridRef?
+                if ghostty_terminal_point_from_grid_ref(t, &fixed, GHOSTTY_POINT_TAG_SCREEN, &point.value.coordinate) == GHOSTTY_SUCCESS,
+                   ghostty_terminal_grid_ref_track(t, point, &tracked) == GHOSTTY_SUCCESS {
+                    anchor.ref = tracked
+                    anchor.screen = Self.activeScreen(t)
+                    began = true
+                }
+            }
+        }
+        termLock.unlock()
+        return began
+    }
+
+    /// Selects the line on a viewport cell: Ghostty's line selection, which follows soft wraps
+    /// and leaves out the blanks around the text. Returns false on an empty line (the selection
+    /// there was is cleared, like a press that finds no word).
+    @discardableResult
+    func selectLine(col: Int, row: Int) -> Bool {
+        var selected = false
+        var changed = false
+        lockTerminal()
+        if let t = terminal {
+            let had = Self.currentSelection(t) != nil
+            var options = GhosttyTerminalSelectLineOptions()
+            options.size = MemoryLayout<GhosttyTerminalSelectLineOptions>.size
+            var selection = GhosttySelection()
+            if let ref = Self.ref(t, Self.clamp(t, col: col, row: row)) {
+                options.ref = ref
+                if ghostty_terminal_select_line(t, &options, &selection) == GHOSTTY_SUCCESS {
+                    ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_SELECTION, &selection)
+                    selected = true
+                    changed = true
+                }
+            }
+            if !selected, had {
+                ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+                changed = true
+            }
+        }
+        termLock.unlock()
+        if changed { selectionChanged() }
+        return selected
     }
 
     // MARK: Helpers (call with `termLock` held)

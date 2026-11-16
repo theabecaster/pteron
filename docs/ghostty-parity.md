@@ -44,14 +44,14 @@ How it was verified:
 | 19 | Long press selects a word | intentional difference | `GhosttySelectionTests` (words, paths, URLs, wide characters); hand | Same boundary characters. Ghostty's word follows a soft wrap onto the next row; SwiftTerm's stops at the row's end. |
 | 20 | Drag to extend, edge autoscroll | same | `GhosttySelectionTests.testDraggingToTheTopEdgeScrollsALinePerMoveThroughTheScroller`, `testHitTestingAndRectsAtAFractionalScrollOffsetInHistory`; hand | Fixed here: hit-testing and rects use the scroller's position (right at any fraction of a row and in history), and the edge scroll goes through the scroll surface. One line per finger move, as the SwiftTerm adapter does. |
 | 20a | The highlight is on the row under the finger | same | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) | Fixed here, reported from a device on build 7a0d37c ("highlights a row above"). See "The row-above bug" below. |
-| 21 | Copy, copy-on-select, shimmer, edit menu | same | `GhosttySelectionTests` (text and rects); hand | The host does all four from `selectedText` and `selectionRects`. |
+| 21 | Copy, copy-on-select, shimmer, edit menu | same | `GhosttySelectionTests` (text and rects), `SelectionUITests.testCopyOnSelectHappensOnLiftAndAfterAnAdjustmentThatChangedSomething`; hand | The host does all four from `selectedText` and `selectionRects`. Both engines also get the loupe and the selection haptics; Ghostty also handles and Select All in the menu ([selection.md](selection.md)). |
 | 22 | Copied text | intentional difference | `GhosttySelectionTests` | Ghostty copies what the Ghostty app copies: soft-wrapped rows joined into one line, trailing spaces trimmed. SwiftTerm copies rows as drawn. |
 | 23 | Selection through output and resize | intentional difference | `GhosttySelectionTests.testTheSelectionSurvivesAReflow`, `testTheSelectionAndItsRectFollowOutput` | The terminal tracks the selection: it stays on its text through output, scrolling and a reflow. SwiftTerm's is a fixed buffer range and is lost on a resize. |
 | 24 | Selection drawn during synchronized output | same | `GhosttySelectionTests.testASelectionChangeIsDrawnDuringARenderHold` | Fixed here: a selection made while a program holds the screen is drawn at once. |
 | 25 | Pointer (mouse / trackpad) drag selects, wheel scrolls | same | `GhosttySelectionTests.testPointerDrag`, `GhosttyIntegrationTests.testEveryPanOfTheEngineAsksThePanGate`, `testTheEnginesRecognizersAreTheShapeTheHostExpects`; hand | Fixed here: the host's pointer pan on the engine view asks `panGate`; the wheel-drag pan takes fingers only. |
 | 26 | Gesture arbitration: scroll, drag-select, pane swipe, mirror canvas pan, pinch, two-finger tap | same | `GhosttyIntegrationTests.testEveryPanOfTheEngineAsksThePanGate`, `GhosttyScrollViewTests.testGatesDecideWhetherPansAndTheTapBegin`; hand | Every pan of the engine asks `panGate`; the tap asks `tapGate`. `isBuiltInSelectionPan` is false for all of them: the engine has no pan that selects. |
-| 27 | Double tap (word), triple tap (line), SwiftTerm's own menu | gap | read of SwiftTerm's `doubleTap`, `tripleTap` | SwiftTerm selects on a double or triple tap and shows its own menu. Ghostty has only the host's long press. |
-| 28 | Tap near the cursor shows a Paste menu | gap | read of SwiftTerm's `singleTap` | SwiftTerm's own context menu. In Ghostty, Paste is on the long-press menu and the key bar. |
+| 27 | Double tap (word), triple tap (line) | intentional difference | `SelectionUITests.testDoubleTapSelectsAWordAndTripleTapTheLine`, `testSelectionEndsAdjustAndLine`; hand (Selection 7) | The host counts taps (`TerminalSelectionController.tap`), so the first tap acts at once instead of waiting for a second. Both copy, and show handles and the edit menu. Ghostty's line follows soft wraps. |
+| 28 | Tap near the cursor shows a Paste menu | same | `SelectionUITests.testATapByTheCursorOffersPaste`, `testRules`; hand (Selection 8) | SwiftTerm's trigger (`SelectionRules.tapShowsPaste`): within 3 columns and 1 row of the cursor, terminal focused, no selection cleared by the tap, no mouse tracking, no menu up. Shown with `UIEditMenuInteraction`. |
 | 29 | Tap on a link opens it | intentional difference | `GhosttyLinkLookupTests`, `GhosttyTapRoutingTests`; live (`-tapTest` on an OSC 8 link and on a web address, Safari opened); hand (a real finger) | A tap on a focused pane opens an OSC 8 hyperlink (any scheme, `UIApplication.open`, as the adapter's `requestOpenLink`), also in a mouse-tracking program, and an `http(s)` address written as text (soft-wrapped ones too) unless the program tracks the mouse. SwiftTerm 1.99.3 opens a link only while a pointer hovers over it (`linkHighlightMode` is `.hover`), so a finger tap never opened one. See "Taps" below. |
 | 30 | Tap on a prompt line moves the cursor (OSC 133 click) | same | `GhosttyPromptClickTests`, `GhosttyTapRoutingTests`; live (`-tapTest`, then a typed character landed at the tapped cell); hand | Same rules: the shell must announce `cl=…` or `click_events=…`, the cursor must be at a prompt, primary screen, no mouse tracking, no selection, not within 3 columns and 1 row of the cursor. Arrow keys go through the key encoder (DECCKM). Like Ghostty, every `cl` value moves within one input line; SwiftTerm also sends up/down for `cl=v` and `w`. See "Taps" below. |
 | 31 | OSC 52 copy to the pasteboard | same | `GhosttyClipboardTests`; live (`printf '\e]52;c;…'`, then `xcrun simctl pbpaste`) | Every destination is the iOS pasteboard, only valid UTF-8 text, an empty write empties it, silent (no haptic, no shimmer), as with SwiftTerm. A query is never answered. Ghostty takes one-letter destinations only (`52;pc;…` is dropped; SwiftTerm takes it). |
@@ -75,18 +75,30 @@ How it was verified:
 | 49 | Reset and resync fallback | same | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `Stream*` tests | `streamReset` feeds RIS and clear-scrollback as text to both; a snapshot that doesn't decode falls back to `terminal.format`. |
 | 50 | Teardown | same | `GhosttyIntegrationTests.testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane` | No terminal, render-thread pane or thread left. |
 
-Counts: 38 same, 11 intentional differences, 2 gaps (rows 27 and 28).
+Counts: 39 same, 12 intentional differences, no gaps.
 
 ## Taps: links, prompt clicks, OSC 52 (rows 29 to 31)
 
 Code: `Ghostty/GhosttyTap.swift` (the order of things a tap does, as a table with a test),
-`GhosttyLinks.swift`, `GhosttyPrompts.swift`, `GhosttyClipboard.swift`. The scroll surface's tap
-asks `tapOpensLinkOrMovesCursor` first; one hold of the terminal lock reads everything.
+`GhosttyLinks.swift`, `GhosttyPrompts.swift`, `GhosttyClipboard.swift`. The host's tap asks the
+engine (`tapOpensLinkOrMovesCursor`, at `TAP HOOK` in `TerminalHost.tapped`) before the selection
+UI and the focus logic see the tap; one hold of the terminal lock reads everything. A tap that
+opened a link or moved the cursor is used up: it is no click for the program and shows no menu.
 
 Order, from SwiftTerm's `singleTap` and the host's focus tap: an unfocused pane is only focused;
 a selection is only cleared; an OSC 8 hyperlink opens; a mouse-tracking program gets its click; a
-web address in the text opens; next to the cursor nothing happens (SwiftTerm's Paste menu, row 28);
+web address in the text opens; next to the cursor nothing moves (the Paste menu, row 28);
 a tap on the prompt moves the cursor.
+
+With the selection UI (rows 27 and 28):
+
+- **Paste by the cursor wins over a prompt click.** Both use the same zone (within 3 columns and
+  1 row of the cursor): inside it the tap offers Paste and moves nothing, outside it the tap moves
+  the cursor and shows no menu. SwiftTerm draws the line in the same place.
+- **A double or triple tap still selects.** A used-up tap is counted as the first tap, and a tap
+  that follows one within 0.5 s in the same place is never a link or prompt tap (the shell may not
+  have moved its cursor yet, and the keys would go out twice). So a double tap on a word of the
+  prompt moves the cursor there and selects the word; on a link it opens the link once.
 
 - **Links.** The hyperlink of a cell is `ghostty_grid_ref_hyperlink_uri`. A plain address is
   looked for in the cell's logical line, built from the rows' wrap flags, in view only. Only
@@ -183,8 +195,8 @@ Accepted, with the bound:
 
 1. **Row height (row 3).** Keep Ghostty's device-pixel line height (more rows, the Mac's pane is
    resized to more rows than with SwiftTerm), or round up to whole points to give the same grid.
-2. **The two gaps (rows 27 and 28).** Double / triple tap and the tap-near-cursor Paste menu.
-   Rows 29 to 31 are done; two choices in them are yours to undo: a finger tap opens links at all
+2. **Link taps (row 29).** No gaps are left (rows 27 and 28: [selection.md](selection.md); rows 29
+   to 31: "Taps" above). Two choices in row 29 are yours to undo: a finger tap opens links at all
    (SwiftTerm needed a hovering pointer), and web addresses in plain text open too.
 3. **Row 7.** Ctrl+Return from the key bar sends Return (SwiftTerm sends nothing).
 
@@ -230,3 +242,56 @@ when done.
     moves nothing.
 11. **Background (48).** Send the app to the background for a few seconds and return: the screen is
     there at once and current. On a device, scrolling should run at 120 Hz (41).
+
+## Selection (about 5 minutes, on a device)
+
+Touches can't be injected into the simulator, and haptics and the loupe over Metal can only be
+judged on hardware. Design and what is already verified: [selection.md](selection.md).
+
+Setup: as above (`zz-manual`, `seq 1 400`, then `echo The quick brown fox jumps over /usr/local/bin/rex`),
+Ghostty engine, Fit, font 9 to 11 pt, Settings → Haptics on. Keyboard down unless a step says so.
+
+1. **Start of a selection.** Touch and hold a word for half a second. Expected: one firm haptic at
+   the instant the word highlights; a loupe above the finger shows the word magnified with its
+   highlight (text, not a blank or black lens); the word under the finger is the one highlighted;
+   the keyboard stays down.
+2. **Drag.** Without lifting, drag right along the row, then down three rows. Expected: the pressed
+   word stays whole and the selection grows from it; the loupe follows and shows where the
+   selection ends; no tick while moving along a row, one light tick per new row; nothing scrolls or
+   swipes. Drag back up past the word: the selection turns around and still holds the whole word.
+3. **Lift.** Expected: a two-beat haptic, clearly different from the start, together with the
+   shimmer; the loupe goes; two handles appear (start: knob above its row, end: knob below);
+   Copy / Paste / Select All appears, above the selection if there is room. Paste somewhere: the
+   text is what was highlighted.
+4. **Handles.** Drag the end handle's knob down and right, then release; do the same with the start
+   handle, up and left. Expected: a light haptic on grab; the selection does not jump when the knob
+   is taken; the finger sits beside the row, not on it; the loupe shows the edge being moved; row
+   ticks; on release the two-beat haptic and the shimmer again, and the clipboard holds the new
+   text. Touch a handle and release without moving: no haptic but the grab, clipboard unchanged.
+   Drag one handle past the other: the selection turns around.
+5. **Edges.** Drag a handle to within a finger's width of the top edge and hold still. Expected: the
+   view scrolls steadily (about 16 lines a second) with a tick per line, the selection grows, and it
+   stops when the finger moves away. Same at the bottom after scrolling up. Select on the top row:
+   the start knob hangs below the row instead of leaving the pane.
+6. **Scroll and output with a selection.** With a selection standing, scroll with one finger away
+   from the handles. Expected: scrolling starts as fast as without a selection; the handles move
+   with the text and disappear when their end leaves the view. Run `seq 1 50` from the Mac: the
+   selection and handles ride up with their text.
+7. **Taps.** Double tap a word: selected, copied (two-beat haptic, shimmer), handles and menu. Triple
+   tap: the whole line (a wrapped line: all of it). Tap elsewhere: selection, handles and menu go.
+   With the keyboard down, the first tap of a double tap raises the keyboard (known; see
+   selection.md, open question 2).
+8. **Paste by the cursor.** Keyboard up, tap within a few characters of the cursor: Paste appears.
+   Tap again: it goes. Tap far from the cursor: no menu.
+9. **Select All.** Long press a word, choose Select All. Expected: everything highlights, no copy
+   haptic, the menu returns with Copy; the visible end handle pulls the selection back in.
+10. **Small targets and reach.** At 9 pt, select a two-letter word and grab each handle (above for
+    the start, below for the end). One-handed, repeat steps 1 to 4 near the top of the pane, and on
+    the Duo with the pane on each half.
+11. **Other modes.** Mirror mode, zoomed out: handles are full size on the small text and stay on
+    the selection while the canvas pans and zooms. In `vim` with `:set mouse=a`: long press and
+    handles work and vim's cursor does not move; a double tap selects (its first tap is a click).
+12. **Haptics off.** Settings → Haptics off: steps 1 to 4 again with no haptics at all.
+
+If the loupe is blank on the device, relaunch with `-selectionLoupe off` and report it: the fallback
+is a loupe drawn from the cell text.

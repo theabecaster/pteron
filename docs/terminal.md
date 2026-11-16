@@ -67,8 +67,10 @@ ghostty|swiftTerm` for one run); changing it rebuilds the open panes. Plan, desi
 - Vertical drag: SwiftTerm's scrollback, mouse wheel reports, or arrow keys (alternate screen).
 - Horizontal swipe: next or previous pane. Swipe on the title bar: next or previous tab.
 - Two-finger tap: zoom the pane (phone-only zoom, see `PhoneState`).
-- Long press: select a word, drag to extend; on release copy (copy-on-select, with a shimmer) and
-  show Copy/Paste. Mouse or trackpad drags select directly.
+- Long press: select a word (haptic, loupe), drag to extend; on release copy (copy-on-select, with a
+  shimmer and a confirming haptic), show handles to adjust with, and Copy / Paste / Select All.
+  Double tap selects a word, triple tap a line (Ghostty). Mouse or trackpad drags select directly.
+  Design, haptics and the seam: [selection.md](selection.md).
 - Pinch: in fit mode changes the font size (one resize claim at the end); in mirror mode zooms.
 - Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%.
 - A tab shows its splits as the Mac lays them out on wide windows. On compact ones (folded, half
