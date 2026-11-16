@@ -35,17 +35,23 @@ targets:
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
     # Stops with one actionable line when the framework was built from other pins than
-    # scripts/ghostty.version, instead of a link error or a silently stale engine. (When the
-    # framework is missing altogether, Xcode stops earlier with "There is no XCFramework found".)
+    # scripts/ghostty.version, or the deployment target is too old for it, instead of a link
+    # error, a silently stale engine or an app that fails at launch. (When the framework is
+    # missing altogether, Xcode stops earlier with "There is no XCFramework found".)
+    # It runs on every build (it takes a few milliseconds): with dependency analysis a patch
+    # added to scripts/ghostty-patches, which is no input yet, would not run it again.
     preBuildScripts:
       - name: Check GhosttyVt.xcframework
         script: '"$SRCROOT/scripts/check-ghostty.sh" && touch "$SCRIPT_OUTPUT_FILE_0"'
         shell: /bin/zsh
-        basedOnDependencyAnalysis: true
+        basedOnDependencyAnalysis: false
         inputFiles:
           - $(SRCROOT)/scripts/check-ghostty.sh
           - $(SRCROOT)/scripts/ghostty.version
-          # Every patch by name: the script sandbox lets the check read only listed files.
+          - $(SRCROOT)/project.yml
+          # Every patch by name: the script sandbox lets the check read only listed files, and
+          # listing the folder doesn't cover the files in it. A patch that is missing here
+          # stops the next build with a line that says so.
           - $(SRCROOT)/scripts/ghostty-patches/0001-tinyio-public-darwin-futex.patch
           - $(SRCROOT)/Vendor/GhosttyVt.stamp
           - $(SRCROOT)/Vendor/GhosttyVt.xcframework/Info.plist
