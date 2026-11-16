@@ -17,8 +17,7 @@ struct AgentsView: View {
                         Section(server.config.name) {
                             ForEach(rows) { row in
                                 Button {
-                                    model.select(server, session: row.sessionID, window: row.windowID, block: row.blockID)
-                                    onOpen(Selection(serverID: server.id, sessionID: row.sessionID, windowID: row.windowID))
+                                    open(server, row)
                                 } label: {
                                     agentRow(row, theme)
                                         .frame(minHeight: 44)
@@ -29,13 +28,15 @@ struct AgentsView: View {
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     let state = row.status?.state
                                     if state == "blocked" || state == "working" {
-                                        Button { send(server, row, "\u{1b}") } label: { Label("Esc", systemImage: "escape") }
+                                        Button { interrupt(server, row) } label: { Label("Interrupt", systemImage: "escape") }
                                             .tint(theme.chrome.error)
                                     }
                                     if state == "blocked" {
                                         Button { send(server, row, "\r") } label: { Label("Enter", systemImage: "return") }
                                             .tint(theme.chrome.blocked)
                                     }
+                                    Button { open(server, row) } label: { Label("Jump", systemImage: "arrow.up.forward.square") }
+                                        .tint(theme.accent)
                                 }
                             }
                         }
@@ -64,6 +65,19 @@ struct AgentsView: View {
     private func send(_ server: ServerConnection, _ row: ServerConnection.AgentRow, _ text: String) {
         Haptic.tap()
         Task { await server.write(row.sessionID, row.blockID, text) }
+    }
+
+    /// Esc stops an agent's current turn.
+    private func interrupt(_ server: ServerConnection, _ row: ServerConnection.AgentRow) {
+        Haptic.interrupt()
+        Task { await server.write(row.sessionID, row.blockID, "\u{1b}") }
+    }
+
+    /// Opens the agent's tab with its pane in view.
+    private func open(_ server: ServerConnection, _ row: ServerConnection.AgentRow) {
+        let sel = Waiting.prepare(model, Waiting.Item(server: server, row: row))
+        model.select(server, session: sel.sessionID, window: sel.windowID)
+        onOpen(sel)
     }
 
     private func agentRow(_ row: ServerConnection.AgentRow, _ theme: TermTheme) -> some View {

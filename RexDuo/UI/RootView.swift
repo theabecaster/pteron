@@ -12,6 +12,8 @@ struct RootView: View {
     @Environment(\.colorScheme) private var scheme
     @State private var sidebarVisible = true
     @State private var path: [Selection] = []
+    /// Width ≥ 600 pt: sidebar and tab side by side (or two pages), no navigation stack in view.
+    @State private var wide = false
 
     var body: some View {
         let theme = ThemeStore.current(scheme)
@@ -25,15 +27,23 @@ struct RootView: View {
                     compactLayout(theme: theme)
                 case .pages:
                     pagedLayout(theme: theme, firstPage: max(full.width / 2 - ins.leading, 200))
+                        .background(edgeReveal)
                 case .sidebar:
                     pagedLayout(theme: theme, firstPage: min(max(geo.size.width * 0.28, 240), 320))
+                        .background(edgeReveal)
                 case .stacked:
                     stackedLayout(theme: theme, firstPage: max(full.height / 2 - ins.top, 200))
+                        .background(edgeReveal)
                 }
             }
             .background(theme.chrome.canvas.ignoresSafeArea())
+            .onChange(of: geo.size.width >= 600, initial: true) { _, w in wide = w }
         }
         .overlay(alignment: .top) { NoticeBanner(theme: theme) }
+        .background(CommandListener { handle($0) })
+        .background(WaitingWatcher())
+        .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
+        .task { GestureTips.configure() }
         .background(HingeObserver { model.hinge = AppModel.hingeOverride ?? $0 })
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
@@ -70,7 +80,123 @@ struct RootView: View {
     private var paneCount: Int { model.current?.window.orderedBlockIDs.count ?? 0 }
     private var dual: Bool { model.dualPages && paneCount >= 2 }
 
+    // MARK: Commands
+
+    /// Is a tab on screen (so its WindowScreen runs the tab commands)?
+    private var tabShown: Bool { wide ? model.current != nil : !path.isEmpty }
+
+    /// Runs the app-wide `RexCommand`s. Tab commands go to the visible WindowScreen; with no tab on
+    /// screen, tab commands open the selected tab first.
+    private func handle(_ r: CommandRequest) {
+        if r.command.isWindowCommand {
+            guard !tabShown, PhoneState.shared.claim(r) else { return }
+            switch r.command {
+            case .newTab:
+                newTabOffscreen()
+            case .nextTab, .previousTab, .goToTab, .tabOverview:
+                if let sel = model.selection ?? firstTab() { show(sel) } else { Haptic.bump() }
+            default:
+                Haptic.bump()
+            }
+            return
+        }
+        guard PhoneState.shared.claim(r) else { return }
+        switch r.command {
+        case .newSession: newSession()
+        case .toggleSidebar: toggleSidebar()
+        case .jumpToWaiting: jumpToWaiting()
+        case .settings: model.showSettings = true
+        case .fontBigger: setFont(Prefs.shared.fontSize + 1)
+        case .fontSmaller: setFont(Prefs.shared.fontSize - 1)
+        case .fontReset: setFont(11)
+        default: break
+        }
+    }
+
+    private func setFont(_ size: Double) {
+        let v = min(max((size * 2).rounded() / 2, 7), 20)
+        guard v != Prefs.shared.fontSize else { Haptic.bump(); return }
+        Haptic.selection()
+        Prefs.shared.fontSize = v
+    }
+
+    private func toggleSidebar() {
+        guard wide else {
+            if !path.isEmpty { path = [] } else if let sel = model.selection { path = [sel] }
+            return
+        }
+        withAnimation(.snappy(duration: 0.25)) {
+            if dual {
+                model.dualPages = false
+                sidebarVisible = true
+            } else {
+                sidebarVisible.toggle()
+            }
+        }
+    }
+
+    /// Wide layouts: the left-edge swipe brings the sidebar back (leaving two pages if they're on).
+    private func revealSidebar() {
+        Haptic.threshold()
+        withAnimation(.snappy(duration: 0.25)) {
+            model.dualPages = false
+            sidebarVisible = true
+        }
+    }
+
+    private func jumpToWaiting() {
+        guard let first = Waiting.all(model.servers).first else {
+            Haptic.bump()
+            Notice.shared.show("No agent is waiting for you.")
+            return
+        }
+        Haptic.selection()
+        show(Waiting.prepare(model, first))
+    }
+
+    private var activeServer: ServerConnection? {
+        model.current?.server ?? model.servers.first { $0.phase == .online } ?? model.servers.first
+    }
+
+    private func firstTab() -> Selection? {
+        activeServer.flatMap { TabNav.first($0) }
+    }
+
+    private func newSession() {
+        guard let s = activeServer else { return }
+        Haptic.tap()
+        Task {
+            if let id = await s.createSession(label: nil), let w = s.views[id]?.windows.first {
+                show(Selection(serverID: s.id, sessionID: id, windowID: w.id))
+            }
+        }
+    }
+
+    /// New tab with none on screen: in the selected tab's session, else the first session.
+    private func newTabOffscreen() {
+        guard let s = model.selection.flatMap({ model.server($0.serverID) }) ?? activeServer,
+              let sid = model.selection?.sessionID ?? s.sessions.first?.id else { Haptic.bump(); return }
+        let before = Set(s.views[sid]?.windows.map(\.id) ?? [])
+        Haptic.tap()
+        Task {
+            await s.newWindow(sid)
+            if let wid = await Poll.until({ s.views[sid]?.windows.first { !before.contains($0.id) }?.id }) {
+                show(Selection(serverID: s.id, sessionID: sid, windowID: wid))
+            }
+        }
+    }
+
+    /// Selects a tab and puts it on screen, pushing it when the sidebar is all that shows.
+    private func show(_ sel: Selection) {
+        open(sel)
+        if path.isEmpty, !wide { path = [sel] }
+    }
+
     // MARK: Wide
+
+    private var edgeReveal: some View {
+        EdgeReveal(enabled: dual || !sidebarVisible) { revealSidebar() }
+    }
 
     @ViewBuilder
     private func pagedLayout(theme: TermTheme, firstPage: CGFloat) -> some View {
