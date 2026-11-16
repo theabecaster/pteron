@@ -17,10 +17,11 @@ APNs topic depend on it.
   `TerminalStream` (data socket, `APCFilter`, `DataFrame`). Foundation only, so it tests on macOS.
   Relay uses its JSON helpers too.
 - `RexConnect/State`: `AppModel` (selection, servers), one `ServerConnection` per server
-  (sessions, layouts, block metadata, server events, actions), `Prefs`, `AgentNotifier`.
+  (sessions, layouts, block metadata, server events, actions), `Prefs`, `AgentNotifier`,
+  `PushRegistrar` (push registration with the Mac helper).
 - `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, pane dock, title bar gestures,
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → SwiftTerm), KeyBar, Keyboard
-  (hardware keys and Rex's keymap), Agents, Settings.
+  (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card).
 - `RexConnect/App`: entry point, `RootView` (layout by width and hinge), launch transition.
 - `RexConnect/DesignSystem`: terminal themes and chrome colors derived from them, fonts.
 - `RexConnectTests`: app logic tests. `Relay/Tests`: relay tests.
@@ -61,6 +62,8 @@ Each is a UserDefaults key for that run only.
 - `-hinge closed|partial|full`: pretend the hinge reports this.
 - `-dualPages YES|NO`: two panes, one per page, on the unfolded Duo.
 - `-tips off|show`: hide or show every TipKit tip.
+- `-pushToken <hex>` (debug builds): use this APNs token and skip the permission check, to test
+  push registration in a simulator.
 
 ## Safety: the app drives real sessions
 

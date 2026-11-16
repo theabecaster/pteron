@@ -82,7 +82,12 @@ final class Prefs {
     }
     var haptics: Bool { didSet { d.set(haptics, forKey: "haptics") } }
     var showAgentStatus: Bool { didSet { d.set(showAgentStatus, forKey: "showAgentStatus") } }
+    /// In-app toast when an agent the user isn't looking at starts waiting.
     var notifyOnBlocked: Bool { didSet { d.set(notifyOnBlocked, forKey: "notifyOnBlocked") } }
+    /// Push notifications through Rex Connect Helper. Off until the user turns them on.
+    var pushEnabled: Bool { didSet { d.set(pushEnabled, forKey: "pushEnabled") } }
+    /// The user answered the "Get notified" card (Turn On or Not now); it never shows again.
+    var pushPromptDismissed: Bool { didSet { d.set(pushPromptDismissed, forKey: "pushPromptDismissed") } }
     var sidebarTextSize: Double { didSet { d.set(sidebarTextSize, forKey: "sidebarTextSize") } }
     var servers: [ServerConfig] {
         didSet { if let data = try? JSONEncoder().encode(servers) { d.set(data, forKey: "servers") } }
@@ -113,6 +118,8 @@ final class Prefs {
         haptics = d.object(forKey: "haptics") as? Bool ?? true
         showAgentStatus = d.object(forKey: "showAgentStatus") as? Bool ?? true
         notifyOnBlocked = d.object(forKey: "notifyOnBlocked") as? Bool ?? true
+        pushEnabled = d.bool(forKey: "pushEnabled")
+        pushPromptDismissed = d.bool(forKey: "pushPromptDismissed")
         sidebarTextSize = d.object(forKey: "sidebarTextSize") as? Double ?? 14
         hostURLs = d.dictionary(forKey: "hostURLs") as? [String: String] ?? [:]
         if let data = d.data(forKey: "servers"), let s = try? JSONDecoder().decode([ServerConfig].self, from: data), !s.isEmpty {

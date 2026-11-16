@@ -57,6 +57,7 @@ struct RootView: View {
         .onChange(of: model.autoOpenTarget(), initial: true) { _, t in
             if path.isEmpty, let t { path = [t] }
         }
+        .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
         .onAppear { if let h = AppModel.hingeOverride { model.hinge = h } }
     }
 

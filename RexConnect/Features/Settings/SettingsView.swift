@@ -142,8 +142,9 @@ struct SettingsView: View {
 
                 Section("Agents") {
                     Toggle("Show agent status", isOn: $p.showAgentStatus)
-                    Toggle("Notify when an agent is waiting", isOn: $p.notifyOnBlocked)
                 }
+
+                NotificationSettingsSection(theme: theme)
 
                 Section("About") {
                     LabeledContent("Version", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") + ")")

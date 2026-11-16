@@ -13,6 +13,13 @@ struct AgentsView: View {
         let theme = prefs.theme(for: scheme)
         NavigationStack {
             List {
+                if model.push.offersPrompt {
+                    Section {
+                        NotificationPromptCard(theme: theme)
+                            .padding(.vertical, 6)
+                            .listRowBackground(theme.chrome.sidebar)
+                    }
+                }
                 ForEach(model.servers) { server in
                     let rows = server.agents
                     if !rows.isEmpty {
