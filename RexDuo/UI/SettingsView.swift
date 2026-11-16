@@ -109,6 +109,16 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Engine", selection: $p.terminalEngine) {
+                        ForEach(TerminalEngineKind.allCases) { Text($0.title).tag($0) }
+                    }
+                } header: {
+                    Text("Terminal")
+                } footer: {
+                    Text(p.terminalEngine.detail + " " + Self.engineInUse(p.terminalEngine))
+                }
+
+                Section {
                     Picker("Layout", selection: Binding(
                         get: { KeyBarPreset.matching(p.keyBar)?.rawValue ?? "custom" },
                         set: { if let preset = KeyBarPreset(rawValue: $0) { p.keyBar = preset.keys } }
@@ -154,6 +164,14 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
+    }
+
+    /// Says which engine open panes run; a kind that isn't built in yet falls back.
+    static func engineInUse(_ picked: TerminalEngineKind) -> String {
+        let running = picked.implemented
+        return running == picked
+            ? "Open panes use \(running.title)."
+            : "\(picked.title) is not in this build yet, so open panes use \(running.title)."
     }
 
     private func phaseText(_ p: ServerConnection.Phase) -> String {

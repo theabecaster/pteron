@@ -449,6 +449,11 @@ struct WindowScreen: View {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }
                 Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
             }
+            // Not an action: which engine draws the panes.
+            Section("Terminal Engine") {
+                Button {} label: { Label(Prefs.shared.terminalEngine.implemented.title, systemImage: "cpu") }
+                    .disabled(true)
+            }
         } label: {
             Image(systemName: "ellipsis.circle")
                 .frame(width: 44, height: 44)
