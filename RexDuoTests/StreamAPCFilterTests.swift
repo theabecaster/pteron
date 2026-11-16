@@ -90,10 +90,10 @@ final class StreamAPCFilterTests: XCTestCase {
             let lo = UInt(bitPattern: raw.baseAddress!), hi = lo + UInt(raw.count)
             var views = 0
             f.process(chunk, snapshot: { part in
-                guard case .bytes(let b) = part else { return }
+                guard case .bytes(let b) = part else { return true }
                 let p = UInt(bitPattern: b.baseAddress!)
                 XCTAssertTrue(p >= lo && p + UInt(b.count) <= hi)
-                views += 1
+                views += 1; return true
             }, output: { _ in }, message: { _ in })
             XCTAssertEqual(views, 2)  // through READY, then the history
         }
@@ -332,6 +332,114 @@ final class StreamAPCFilterTests: XCTestCase {
         let snapshot = Snapshots.envelope + Snapshots.record(tag: 5) + Snapshots.record(tag: 6)
         XCTAssertEqual(runFilter([Data(snapshot)], nonce: 1, collectsSnapshot: true).events, Snapshots.parts(snapshot))
         XCTAssertEqual(runFilter(snapshot.map { Data([$0]) }, nonce: 1, collectsSnapshot: true).events, Snapshots.parts(snapshot))
+    }
+
+    // MARK: Damaged framing
+
+    func testWrongRecordLengthStopsBeingTrustedOnRefusal() throws {
+        let fx = try StreamFixture.load("scroll")
+        let legacy = runLegacyFilter([Data(fx.bytes)], nonce: fx.nonce)
+        // The damaged page claims enough to cover the rest of the capture.
+        let bad = Snapshots.withWrongLength(fx.bytes, extra: 30_000)
+        XCTAssertEqual(runLegacyFilter([Data(bad)], nonce: fx.nonce), legacy)
+
+        // While the snapshot is being restored the framing is all there is: the resize message and
+        // the output are taken for payload.
+        let trusted = runFilter([Data(bad)], nonce: fx.nonce, collectsSnapshot: true)
+        XCTAssertTrue(trusted.messages.isEmpty)
+        XCTAssertTrue(trusted.output.isEmpty)
+
+        // A restorer that gives up (its decoder saw the damage) gets the stream back: from that
+        // part on the filter scans for the first Rex message, and nothing after it is lost.
+        for refuseAt in [StreamEvent.snapshotBegin, .snapshotReady] {
+            for parts in [[Data(bad)], bad.map { Data([$0]) }, chunks(bad, cuts: [700, 5000, 21_000])] {
+                let t = runFilter(parts, nonce: fx.nonce, collectsSnapshot: true, keep: { $0 != refuseAt })
+                XCTAssertEqual(t.messages, legacy.messages, "\(refuseAt)")
+                XCTAssertEqual(t.output, legacy.output, "\(refuseAt)")
+                XCTAssertEqual(t.snapshotParts.last, refuseAt)
+                XCTAssertFalse(t.snapshotParts.contains(.snapshotEnd(true)))
+            }
+        }
+        // Refusing bytes in the middle of the damaged record, one byte at a time.
+        var seen = 0
+        let late = runFilter(bad.map { Data([$0]) }, nonce: fx.nonce, collectsSnapshot: true, keep: { e in
+            if case .snapshotBytes(let b) = e { seen += b.count }
+            return seen < fx.framedReadyLength + 500
+        })
+        XCTAssertEqual(late.messages, legacy.messages)
+        XCTAssertEqual(late.output, legacy.output)
+    }
+
+    func testAbandonSnapshotGoesBackToScanningForTheFirstMessage() throws {
+        let fx = try StreamFixture.load("scroll")
+        let legacy = runLegacyFilter([Data(fx.bytes)], nonce: fx.nonce)
+        let bad = Snapshots.withWrongLength(fx.bytes, extra: 30_000)
+        // Abandoned between two chunks, anywhere before the bytes after the snapshot arrive,
+        // including inside a record header.
+        for cut in [1, 5, 10, 15, 1000, fx.framedReadyLength, fx.framedReadyLength + 3, 9000, fx.framedSnapshotLength - 4, fx.framedSnapshotLength] {
+            var f = APCFilter(nonce: fx.nonce, passesSnapshot: true)
+            var t = StreamTrace()
+            let parts = chunks(bad, cuts: [cut])
+            f.process(parts[0], snapshot: { t.add(StreamEvent($0)); return true },
+                      output: { t.add(.output(Array($0))) }, message: { t.add(.message(StreamTrace.canonical($0))) })
+            let partsBefore = t.snapshotParts
+            f.abandonSnapshot()
+            f.abandonSnapshot()  // harmless twice
+            f.process(parts[1], snapshot: { t.add(StreamEvent($0)); return true },
+                      output: { t.add(.output(Array($0))) }, message: { t.add(.message(StreamTrace.canonical($0))) })
+            XCTAssertEqual(t.snapshotParts, partsBefore, "cut \(cut)")
+            XCTAssertEqual(t.messages, legacy.messages, "cut \(cut)")
+            XCTAssertEqual(t.output, legacy.output, "cut \(cut)")
+        }
+    }
+
+    func testAbandonKeepsAHeldHeaderForTheScan() {
+        // A snapshot cut short, then a chunk boundary inside the marker that stands where a
+        // record header should: the held bytes are the start of the message.
+        let nonce: UInt64 = 31
+        let snapshot = Snapshots.envelope + Snapshots.record(tag: 1, payload: [1])
+        let stream = snapshot + Array("\u{1b}_rex1;31;{\"type\":\"resize\",\"cols\":80,\"rows\":24}\u{1b}\\$".utf8)
+        for held in 1..<10 {
+            var f = APCFilter(nonce: nonce, passesSnapshot: true)
+            var t = StreamTrace()
+            let parts = chunks(stream, cuts: [snapshot.count + held])
+            f.process(parts[0], snapshot: { _ in true }, output: { t.add(.output(Array($0))) }, message: { t.add(.message(StreamTrace.canonical($0))) })
+            f.abandonSnapshot()
+            f.process(parts[1], snapshot: { _ in XCTFail("no parts after abandon"); return true },
+                      output: { t.add(.output(Array($0))) }, message: { t.add(.message(StreamTrace.canonical($0))) })
+            XCTAssertEqual(t.events, [.message("{\"cols\":80,\"rows\":24,\"type\":\"resize\"}"), .output(Array("$".utf8))], "held \(held)")
+        }
+    }
+
+    func testRecordOverTheRecordLimitEndsTheSnapshot() throws {
+        // 16 MiB + 1 in one record, well inside the snapshot limit: treated as damage at its header.
+        let nonce: UInt64 = 5
+        let n = APCFilter.defaultRecordLimit + 1
+        let header: [UInt8] = [3, 0, UInt8(n & 0xff), UInt8((n >> 8) & 0xff), UInt8((n >> 16) & 0xff), UInt8(n >> 24), 0, 0, 0, 0]
+        var stream = Snapshots.envelope + header + [UInt8](repeating: 7, count: 4096)
+        stream += Array("\u{1b}_rex1;5;{\"type\":\"resize\",\"cols\":80,\"rows\":24}\u{1b}\\ok".utf8)
+        let want: [StreamEvent] = [.snapshotBegin, .snapshotBytes(Snapshots.envelope), .snapshotEnd(false),
+                                   .message("{\"cols\":80,\"rows\":24,\"type\":\"resize\"}"), .output(Array("ok".utf8))]
+        XCTAssertEqual(runFilter([Data(stream)], nonce: nonce, collectsSnapshot: true).events, want)
+        XCTAssertEqual(runFilter(stream.map { Data([$0]) }, nonce: nonce, collectsSnapshot: true).events, want)
+
+        // A record of exactly the limit is accepted (its header, at least).
+        var atLimit = header
+        let m = APCFilter.defaultRecordLimit
+        for k in 0..<4 { atLimit[2 + k] = UInt8((m >> (8 * k)) & 0xff) }
+        let ok = runFilter([Data(Snapshots.envelope + atLimit + [1, 2, 3])], nonce: nonce, collectsSnapshot: true)
+        XCTAssertEqual(ok.events, [.snapshotBegin, .snapshotBytes(Snapshots.envelope + atLimit + [1, 2, 3])])
+
+        // A real capture whose page length is damaged past the limit keeps its messages.
+        let fx = try StreamFixture.load("scroll")
+        let legacy = runLegacyFilter([Data(fx.bytes)], nonce: fx.nonce)
+        let bad = Snapshots.withWrongLength(fx.bytes, extra: 1 << 30)
+        for parts in [[Data(bad)], bad.map { Data([$0]) }] {
+            let t = runFilter(parts, nonce: fx.nonce, collectsSnapshot: true)
+            XCTAssertEqual(t.snapshotParts.last, .snapshotEnd(false))
+            XCTAssertEqual(t.messages, legacy.messages)
+            XCTAssertEqual(t.output, legacy.output)
+        }
     }
 
     func testEmptyChunks() throws {

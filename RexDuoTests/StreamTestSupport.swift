@@ -48,6 +48,25 @@ enum Snapshots {
         return nil
     }
 
+    /// A stream whose snapshot has a damaged record: the first history page (the first PAGE record
+    /// after READY) claims `extra` more payload bytes than it has, so a filter that trusts the
+    /// framing takes the bytes after the snapshot, Rex messages included, for payload.
+    static func withWrongLength(_ b: [UInt8], extra: Int) -> [UInt8] {
+        var out = b
+        var o = framedLength(b, through: 5)!
+        while true {
+            let tag = Int(b[o]) | Int(b[o + 1]) << 8
+            let len = Int(b[o + 2]) | Int(b[o + 3]) << 8 | Int(b[o + 4]) << 16 | Int(b[o + 5]) << 24
+            if tag == 3 {
+                let wrong = len + extra
+                for k in 0..<4 { out[o + 2 + k] = UInt8((wrong >> (8 * k)) & 0xff) }
+                return out
+            }
+            precondition(tag != 6, "no history page")
+            o += 10 + len
+        }
+    }
+
     /// The parts a filter reports for the snapshot at the start of `b`: its first `upTo` bytes,
     /// with `ready` where the READY record ends, if those bytes reach it.
     static func parts(_ b: [UInt8], upTo: Int? = nil, complete: Bool = true) -> [StreamEvent] {
@@ -158,11 +177,11 @@ func chunks(_ bytes: [UInt8], cuts: [Int]) -> [Data] {
 }
 
 func runFilter(_ chunks: [Data], nonce: UInt64, collectsSnapshot: Bool,
-               limit: Int = APCFilter.defaultSnapshotLimit) -> StreamTrace {
+               limit: Int = APCFilter.defaultSnapshotLimit, keep: (StreamEvent) -> Bool = { _ in true }) -> StreamTrace {
     var f = APCFilter(nonce: nonce, passesSnapshot: collectsSnapshot, snapshotLimit: limit)
     var t = StreamTrace()
     for c in chunks {
-        f.process(c, snapshot: { t.add(StreamEvent($0)) },
+        f.process(c, snapshot: { t.add(StreamEvent($0)); return keep(StreamEvent($0)) },
                   output: { t.add(.output(Array($0))) },
                   message: { t.add(.message(StreamTrace.canonical($0))) })
     }

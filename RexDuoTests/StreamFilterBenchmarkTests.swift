@@ -41,7 +41,7 @@ final class StreamFilterBenchmarkTests: XCTestCase {
         var f = APCFilter(nonce: nonce, passesSnapshot: collect)
         var t = Totals()
         for c in stream {
-            f.process(c, snapshot: { if case .bytes(let b) = $0 { t.snapshot += b.count } }, output: { t.output += $0.count }, message: { _ in t.messages += 1 })
+            f.process(c, snapshot: { if case .bytes(let b) = $0 { t.snapshot += b.count }; return true }, output: { t.output += $0.count }, message: { _ in t.messages += 1 })
         }
         return t
     }

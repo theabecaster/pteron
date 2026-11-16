@@ -21,6 +21,10 @@ final class StreamSnapshotHandoffTests: XCTestCase {
         /// Answers each snapshot part; true by default.
         var answer: (StreamEvent) -> Bool = { _ in true }
 
+        var statuses: [TerminalStream.Status] = []
+        /// Runs inside `streamFeed` and `streamResized`, after the call is recorded.
+        var during: ((Call) -> Void)?
+
         func streamReset(cols: Int, rows: Int) { calls.append(.reset(cols, rows)) }
         func streamSnapshot(_ text: String) { calls.append(.snapshot(text.utf8.count)) }
         func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool {
@@ -38,11 +42,15 @@ final class StreamSnapshotHandoffTests: XCTestCase {
             } else {
                 calls.append(.feed(Array(bytes)))
             }
+            during?(.feed(Array(bytes)))
         }
-        func streamResized(cols: Int, rows: Int, owner: String?) { calls.append(.resized(cols, rows, owner)) }
+        func streamResized(cols: Int, rows: Int, owner: String?) {
+            calls.append(.resized(cols, rows, owner))
+            during?(.resized(cols, rows, owner))
+        }
         func streamTheme(_ theme: JSONObject) { calls.append(.theme) }
         func streamExited(code: Int?) { calls.append(.exited) }
-        func streamStatus(_ status: TerminalStream.Status) {}
+        func streamStatus(_ status: TerminalStream.Status) { statuses.append(status) }
 
         var ghostty: [StreamEvent] { calls.compactMap { if case .ghostty(let e) = $0 { return e } else { return nil } } }
     }
@@ -217,6 +225,166 @@ final class StreamSnapshotHandoffTests: XCTestCase {
         XCTAssertTrue(stream.ghosttySnapshotFailed)
         XCTAssertEqual(sink.calls, [.ghostty(.snapshotBegin), .ghostty(.snapshotBytes(Snapshots.envelope)), .ghostty(.snapshotEnd(false)),
                                     .resized(100, 40, nil), .feed(Array("ok".utf8))])
+    }
+
+    // MARK: Damaged snapshots
+
+    func testDamagedSnapshotDoesNotSwallowTheStreamOnceTheSinkGivesUp() throws {
+        let fx = try StreamFixture.load("scroll")
+        // A page that claims more than the rest of the capture: trusted, it would take the resize
+        // message and the output for payload.
+        let bad = Snapshots.withWrongLength(fx.bytes, extra: 30_000)
+        let after = "after-scroll"
+
+        // The sink's decoder rejects the snapshot at `ready`.
+        let sink = Sink(), stream = makeStream(sink)
+        sink.answer = { $0 != .snapshotReady }
+        stream.beginStream(nonce: fx.nonce, collectSnapshot: true)
+        feed(stream, bad, chunk: 300)
+        XCTAssertTrue(stream.ghosttySnapshotFailed)
+        XCTAssertEqual(sink.ghostty.last, .snapshotReady)
+        let rest = sink.calls.filter { !$0.isGhostty }
+        guard case .resized(80, 24, _)? = rest.first, case .feed(let out)? = rest.dropFirst().first else { return XCTFail("\(rest.prefix(2))") }
+        XCTAssertTrue(String(decoding: out, as: UTF8.self).contains(after))
+
+        // The sink reports the failure from its decoder's queue, between two chunks.
+        let sink2 = Sink(), stream2 = makeStream(sink2)
+        stream2.beginStream(nonce: fx.nonce, collectSnapshot: true)
+        feed(stream2, Array(bad[0..<9000]), chunk: 300)
+        stream2.snapshotRestoreFailed()
+        let partsBefore = sink2.ghostty
+        feed(stream2, Array(bad[9000...]), chunk: 300)
+        XCTAssertEqual(sink2.ghostty, partsBefore)
+        let rest2 = sink2.calls.filter { !$0.isGhostty }
+        guard case .resized(80, 24, _)? = rest2.first, case .feed(let out2)? = rest2.dropFirst().first else { return XCTFail("\(rest2.prefix(2))") }
+        XCTAssertEqual(out2, out)
+
+        // And from inside a part's call.
+        let sink3 = Sink(), stream3 = makeStream(sink3)
+        sink3.answer = { [unowned stream3] part in
+            if part == .snapshotReady { stream3.snapshotRestoreFailed() }
+            return true
+        }
+        stream3.beginStream(nonce: fx.nonce, collectSnapshot: true)
+        feed(stream3, bad, chunk: 300)
+        XCTAssertEqual(sink3.calls.filter { !$0.isGhostty }, rest)
+    }
+
+    // MARK: Handshake
+
+    private func welcome(nonce: UInt64) -> [UInt8] {
+        var b: [UInt8] = [0x81] + [UInt8](repeating: 0xAB, count: 16) + [0, 0, 0] + [0x60, 0xEA, 0, 0]
+        for k in 0..<8 { b.append(UInt8((nonce >> (8 * UInt64(k))) & 0xff)) }
+        return b
+    }
+
+    func testWelcomeStartsTheStream() throws {
+        let fx = try StreamFixture.load("fresh")
+        let sink = Sink(), stream = makeStream(sink)
+        try stream.acceptWelcome(welcome(nonce: fx.nonce), gen: stream.gen, fresh: true, collectSnapshot: true)
+        XCTAssertEqual(sink.statuses, [.live])
+        feed(stream, fx.bytes, chunk: 500)
+        XCTAssertEqual(sink.ghostty.last, .snapshotEnd(true))
+        XCTAssertTrue(sink.calls.contains { if case .resized = $0 { return true } else { return false } })
+    }
+
+    func testStaleWelcomeChangesNothing() throws {
+        // `stop()` while the handshake is in flight: the welcome that arrives afterwards must
+        // not start a stream, report `.live`, or replace the filter.
+        let fx = try StreamFixture.load("fresh")
+        let sink = Sink(), stream = makeStream(sink)
+        let started = stream.gen
+        stream.stop()
+        XCTAssertNotEqual(stream.gen, started)
+        XCTAssertThrowsError(try stream.acceptWelcome(welcome(nonce: fx.nonce), gen: started, fresh: true, collectSnapshot: true)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        // Stopped: not even with the current generation.
+        XCTAssertThrowsError(try stream.acceptWelcome(welcome(nonce: fx.nonce), gen: stream.gen, fresh: true, collectSnapshot: true))
+        XCTAssertEqual(sink.statuses, [])
+        feed(stream, fx.bytes, chunk: 500)
+        XCTAssertEqual(sink.calls, [])
+
+        // A welcome for an older start, on a stream that is running: the running stream's filter
+        // and byte position stay as they are.
+        let sink2 = Sink(), stream2 = makeStream(sink2)
+        try stream2.acceptWelcome(welcome(nonce: fx.nonce), gen: stream2.gen, fresh: true, collectSnapshot: true)
+        feed(stream2, Array(fx.bytes[0..<700]), chunk: 100)
+        XCTAssertThrowsError(try stream2.acceptWelcome(welcome(nonce: 999), gen: stream2.gen - 1, fresh: true, collectSnapshot: false))
+        feed(stream2, Array(fx.bytes[700...]), chunk: 100)
+        XCTAssertEqual(sink2.statuses, [.live])
+        XCTAssertEqual(sink2.ghostty, Snapshots.parts(fx.bytes))
+    }
+
+    func testRejectIsReportedWithItsReasonAndBusyIsRetried() throws {
+        let sink = Sink(), stream = makeStream(sink)
+        XCTAssertThrowsError(try stream.acceptWelcome([0x82, 0x02], gen: stream.gen, fresh: true, collectSnapshot: true)) { error in
+            XCTAssertEqual((error as? TerminalStream.Refused)?.reason, TerminalStream.busyReason)
+            XCTAssertEqual(error.localizedDescription, "stream refused (reason 2) (client)")
+        }
+        XCTAssertThrowsError(try stream.acceptWelcome([0x82, 0x03], gen: stream.gen, fresh: true, collectSnapshot: true)) { error in
+            XCTAssertEqual((error as? TerminalStream.Refused)?.reason, 3)
+        }
+        XCTAssertEqual(sink.statuses, [])
+
+        // Only "already connected" (0x02) is retried at once, and only a few times.
+        XCTAssertEqual(TerminalStream.busyReason, 0x02)
+        XCTAssertTrue(TerminalStream.retriesHello(reason: 0x02, attempt: 0))
+        XCTAssertTrue(TerminalStream.retriesHello(reason: 0x02, attempt: TerminalStream.busyRetryLimit - 1))
+        XCTAssertFalse(TerminalStream.retriesHello(reason: 0x02, attempt: TerminalStream.busyRetryLimit))
+        for reason: UInt8 in [0x00, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0xff] {
+            XCTAssertFalse(TerminalStream.retriesHello(reason: reason, attempt: 0), "reason \(reason)")
+        }
+        // All the tries together stay well under a second.
+        XCTAssertLessThanOrEqual(UInt64(TerminalStream.busyRetryLimit) * TerminalStream.busyRetryDelay, 500_000_000)
+        XCTAssertGreaterThanOrEqual(TerminalStream.busyRetryLimit, 3)
+    }
+
+    // MARK: Calls back into the stream
+
+    func testStopFromInsideACallbackEndsDeliveryOfTheChunk() throws {
+        let fx = try StreamFixture.load("resize")
+        let whole = Data(fx.bytes)
+
+        // From a snapshot part: nothing more of the chunk arrives, not even the resize.
+        for at in [StreamEvent.snapshotBegin, .snapshotReady, .snapshotEnd(true)] {
+            let sink = Sink(), stream = makeStream(sink)
+            sink.answer = { [unowned stream] part in
+                if part == at { stream.stop() }
+                return true
+            }
+            stream.beginStream(nonce: fx.nonce, collectSnapshot: true)
+            stream.consume(whole)
+            XCTAssertEqual(sink.calls.last, .ghostty(at), "\(at)")
+            XCTAssertFalse(sink.calls.contains { !$0.isGhostty }, "\(at)")
+        }
+
+        // From the first resize: no output, and not the second resize.
+        let sink = Sink(), stream = makeStream(sink)
+        sink.during = { [unowned stream] call in
+            if case .resized = call { stream.stop() }
+        }
+        stream.beginStream(nonce: fx.nonce, collectSnapshot: false)
+        stream.consume(whole)
+        XCTAssertEqual(sink.calls.count, 1)
+        guard case .resized(80, 24, _)? = sink.calls.first else { return XCTFail("\(sink.calls)") }
+
+        // From the first output: the second resize and the output after it don't arrive.
+        let sink2 = Sink(), stream2 = makeStream(sink2)
+        sink2.during = { [unowned stream2] call in
+            if case .feed = call { stream2.stop() }
+        }
+        stream2.beginStream(nonce: fx.nonce, collectSnapshot: false)
+        stream2.consume(whole)
+        XCTAssertEqual(sink2.calls.count, 2)
+        guard case .feed(let out)? = sink2.calls.last else { return XCTFail("\(sink2.calls)") }
+        XCTAssertFalse(String(decoding: out, as: UTF8.self).contains("after-resize\r\n"))
+
+        // Without the stop, the same chunk delivers more.
+        let sink3 = Sink(), stream3 = makeStream(sink3)
+        stream3.beginStream(nonce: fx.nonce, collectSnapshot: false)
+        stream3.consume(whole)
+        XCTAssertEqual(sink3.calls.count, 4)
     }
 
     func testStreamWithoutASnapshotNeverBegins() {
