@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 
+// Debug builds only: a development hook driven by launch arguments. Not in a shipped app.
+#if DEBUG
 /// Offline replay for development: shows a full-screen Ghostty terminal fed from a file. No server.
 ///
 /// Launch arguments: `-ghosttyDemo <absolute path> [-demoCols N -demoRows N -demoFontSize S]`.
@@ -167,3 +169,4 @@ final class GhosttyDemoView: UIView {
         }
     }
 }
+#endif

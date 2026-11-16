@@ -63,9 +63,14 @@ if (( build )); then
   echo "Building Release into $dd …" >&2
   (cd "$root" && xcodegen generate >/dev/null)
   # ONLY_ACTIVE_ARCH: Release builds every simulator arch by default, and libghostty-vt's
-  # simulator slice is arm64 only. Nothing else differs from an archive build's settings.
+  # simulator slice is arm64 only.
+  # BENCH: the compilation condition that keeps `-replay` and `-perfLog` in this optimized
+  # build (`#if DEBUG || BENCH`). It is set here, for this build only; the shipped Release
+  # configuration doesn't have it, so a shipped app has neither argument.
+  # Nothing else differs from an archive build's settings.
   xcodebuild -project "$root/RexConnect.xcodeproj" -scheme RexConnect -configuration Release \
     -destination "id=$sim" -derivedDataPath "$dd" -jobs 4 ONLY_ACTIVE_ARCH=YES \
+    'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) BENCH' \
     -skipPackagePluginValidation -skipMacroValidation build > "$out/build.log" 2>&1 \
     || { tail -30 "$out/build.log" >&2; exit 1; }
 fi

@@ -83,11 +83,18 @@ struct PerfReplayInfo: Sendable {
 /// - If neither decides within 0.5 s (a view that isn't drawing), the last frame handed over is
 ///   taken and the result says so (`…Assumed`).
 final class PerfProbe: Sendable {
-    static let argument = "perfLog"
     /// The run's probe. Nil without `-perfLog <name>`.
     /// A global on purpose: the hooks sit on three threads (main, render, feed queue), in types
     /// nothing is injected into, and must cost one branch when it is nil.
+    ///
+    /// The launch argument is read in Debug builds and in the benchmark's optimized build
+    /// (`BENCH`, set by scripts/bench/run.sh). A shipped app has no probe and no argument.
+    #if DEBUG || BENCH
+    static let argument = "perfLog"
     static let active: PerfProbe? = make(name: UserDefaults.standard.string(forKey: argument))
+    #else
+    static var active: PerfProbe? { nil }
+    #endif
 
     static let gapThreshold = 0.025
     /// How long after the window the idle memory is read and the file written.

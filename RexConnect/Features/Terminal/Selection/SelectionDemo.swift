@@ -1,5 +1,7 @@
 import UIKit
 
+// Debug builds only: a development hook driven by launch arguments. Not in a shipped app.
+#if DEBUG
 /// Development: plays a selection gesture by program, through the same controller calls
 /// TerminalHost makes, so a screenshot can check the loupe, the handles and the menu (touches
 /// can't be injected into the simulator from a script). Works on any pane; meant for the
@@ -65,3 +67,4 @@ enum SelectionDemo {
         }
     }
 }
+#endif

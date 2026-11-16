@@ -1,6 +1,9 @@
 import Foundation
 import RexKit
 
+// Debug and benchmark builds only (`BENCH`, set by scripts/bench/run.sh for its optimized build):
+// driven by launch arguments, not in a shipped app.
+#if DEBUG || BENCH
 /// How fast a replay hands out its chunks.
 enum ReplayRate: Equatable {
     /// As recorded: a timed file's own delays. Files without times go as fast as the host takes them.
@@ -259,3 +262,4 @@ final class ReplaySource {
         })
     }
 }
+#endif

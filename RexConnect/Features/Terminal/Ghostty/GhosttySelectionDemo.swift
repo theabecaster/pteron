@@ -1,5 +1,7 @@
 import UIKit
 
+// Debug builds only: a development hook driven by launch arguments. Not in a shipped app.
+#if DEBUG
 /// Development: applies a known selection in the offline demo (`-ghosttyDemo <path>`), through
 /// the same seam members TerminalHost calls, so a screenshot can check the highlight.
 ///
@@ -42,3 +44,4 @@ enum GhosttySelectionDemo {
         }
     }
 }
+#endif

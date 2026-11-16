@@ -2,6 +2,9 @@ import RexKit
 import SwiftUI
 import UIKit
 
+// Debug and benchmark builds only (`BENCH`, set by scripts/bench/run.sh for its optimized build):
+// driven by launch arguments, not in a shipped app.
+#if DEBUG || BENCH
 /// Offline replay: one real `TerminalHost` fed from a file, with no server and no network.
 /// It is the deterministic benchmark (with `-perfLog`) and a screenshot check, for both engines.
 ///
@@ -144,3 +147,4 @@ final class ReplayView: UIView {
         PerfProbe.active?.fail(message)
     }
 }
+#endif
