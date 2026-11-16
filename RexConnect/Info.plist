@@ -45,7 +45,7 @@
 		<key>UIColorName</key>
 		<string>LaunchBackground</string>
 		<key>UIImageName</key>
-		<string>SplashIcon</string>
+		<string>LaunchRexie</string>
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>
