@@ -111,7 +111,6 @@ final class GhosttyRenderer: @unchecked Sendable {
     private var focused = true
     private var pendingAtlas: GhosttyGlyphAtlas?
     private var pendingSelection: UInt32?
-    private var scrollOffset: Float = 0
     private var redraw = true
 
     // Render thread state.
@@ -151,8 +150,6 @@ final class GhosttyRenderer: @unchecked Sendable {
     func setFocused(_ f: Bool) { configure { focused = f } }
     func setAtlas(_ a: GhosttyGlyphAtlas) { configure { pendingAtlas = a } }
     func setSelectionColor(_ c: UInt32) { configure { pendingSelection = c } }
-    /// How far the grid is shifted up, in pixels, for smooth scrolling. Phase 2.
-    func setScrollOffset(_ px: Float) { configure { scrollOffset = px } }
 
     // MARK: Cursor blink (render thread)
 
@@ -361,9 +358,9 @@ final class GhosttyRenderer: @unchecked Sendable {
         }
         textures.sync(atlas, device: metal.device)
 
-        configLock.lock()
-        let scroll = scrollOffset
-        configLock.unlock()
+        // Smooth scrolling: the grid is shifted up by the part of a row scrolled past (the overscan
+        // row fills the bottom edge), and by the rubber band past either end.
+        let scroll = Float(frame.scrollOffset)
         let bg = frame.background
         func channel(_ c: UInt32, _ shift: UInt32) -> Float { Float((c >> shift) & 0xff) / 255 }
         var uniforms = GhosttyUniforms(

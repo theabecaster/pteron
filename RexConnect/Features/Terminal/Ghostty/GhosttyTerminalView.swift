@@ -68,6 +68,11 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     }()
     // END PHASE 2 (selection)
 
+    // PHASE 2 (scroll): stored state for GhosttyTerminalView+Scroll.swift. Created on first use
+    // (`didMoveToSuperview`, or any scroll member).
+    lazy var scroller = GhosttyScroller(view: self)
+    // END PHASE 2 (scroll)
+
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
     private var gridEpoch = 0
