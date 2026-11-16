@@ -141,6 +141,30 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     var selectionRects: [CGRect] { get }
     func selectAllText()
 
+    // Selection UI: handles, double and triple tap, the cursor's Paste menu (docs/selection.md).
+    // Every member has a default in Selection/SelectionSeam.swift; an engine that implements
+    // none of them keeps the long press, the loupe and the haptics.
+    /// True when the host draws selection handles and handles double taps, triple taps and the
+    /// tap near the cursor for this engine. False when the engine's view does that itself.
+    var usesHostSelectionUI: Bool { get }
+    /// Where the selection's first and last cells are drawn, or nil without a selection.
+    var selectionEnds: TerminalSelectionEnds? { get }
+    /// Changes whenever `selectionEnds` may have moved without a selection call (scrolling,
+    /// output). Cheap: asked on every display frame while handles show.
+    var selectionGeometryStamp: Int { get }
+    /// Starts a drag that moves one end of the selection while the other stays; continue with
+    /// `extendSelection` and finish with `endSelectionDrag`. False without a selection.
+    func beginSelectionAdjust(movingStart: Bool) -> Bool
+    /// Selects the line under `p` (a triple tap). False if there is nothing on it.
+    func selectLine(at p: CGPoint) -> Bool
+    /// The cell under `p`, with rows counted from the top of the scrollback, so a row keeps its
+    /// number while the view scrolls. Nil if the engine can't say.
+    func gridCell(at p: CGPoint) -> TerminalGridCell?
+    /// The cursor's cell, in `gridCell(at:)`'s space.
+    var cursorGridCell: TerminalGridCell? { get }
+    /// The program tracks the mouse: a tap is a click for it.
+    var sendsTapsToProgram: Bool { get }
+
     // Scrolling
     /// The engine's own one-finger scroll pan, if it has one; the host limits it to direct touches.
     var scrollPanRecognizer: UIPanGestureRecognizer? { get }
