@@ -97,6 +97,11 @@ Phase 1 chunks run in parallel, then phase 2 chunks. Each agent works in its own
 (`zz-gh-<chunk>`), and deletes all three when done. The lead merges each chunk after a focused
 review, and runs `git merge main` before every phase.
 
+Main is being restructured (feature folders, a `RexKit` package, RexDuo renamed to RexConnect,
+generated xcodeproj untracked, its own test target). When that lands: one `git merge main`, move
+our new files to the matching `Features/Terminal/…` and `RexKit` places, and adopt main's test
+target in place of `RexDuoTests`.
+
 ### Quality gates
 
 1. **Unit tests** (`RexDuoTests`, seconds to run): core feed and resize, snapshot restore from
@@ -117,8 +122,9 @@ review, and runs `git merge main` before every phase.
 - memory: `phys_footprint` peak and at rest.
 
 Scenarios, each on both engines, 3 runs, median reported:
-`seq 1 200000`, `yes | head -n 200000`, 10 s of htop, and a Claude Code-style redraw loop
-(synchronized output, full-screen repaints, spinner). Captures of these feed the offline replay.
+`seq 1 200000`, `yes | head -n 200000`, 10 s of `top` (htop isn't installed on the Rex Mac, and
+we don't install packages there), and a Claude Code-style redraw loop (synchronized output,
+full-screen repaints, spinner). Captures of these feed the offline replay.
 Simulator numbers compare the engines; a device run needs the user's yes.
 
 Pass: Ghostty is better on first frame, gaps and main-thread time in every scenario, and within
