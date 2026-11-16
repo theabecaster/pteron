@@ -1,0 +1,6 @@
+# Pinned inputs for scripts/build-ghostty.sh. Change them together.
+GHOSTTY_REPO=https://github.com/ghostty-org/ghostty.git
+GHOSTTY_COMMIT=5ebe501a63425b13d9952e8c54682c046386e5af
+# build.zig.zon minimum_zig_version at that commit.
+ZIG_VERSION=0.17.1
+ZIG_SHA256_AARCH64_MACOS=75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d
