@@ -1,6 +1,6 @@
-.build/
-.swiftpm/
-# package.sh output and staging. The staging bundle holds the APNs key: never commit it.
+# Cargo output. Builds embed the APNs key (build.rs), so never commit them.
+/target/
+# package.sh output and staging.
 /dist/
 /.stage/
 *.p8

@@ -4,10 +4,12 @@ iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's c
 terminal data stream over the server's Tailscale HTTPS address, draws panes with SwiftTerm, and
 creates, splits, resizes and types into real Rex sessions. It is built for the iPhone Duo (unfolded,
 it shows the sidebar beside the tab's splits) and works on any iPhone. `Relay/` holds Rex Connect
-Helper, a signed Mac app that sends push notifications for Rex events.
+Helper, a Rust program for macOS and Linux that sends push notifications for Rex events (on a Mac
+it ships as a signed app).
 
-Stack: Swift 6 language mode (app and RexKit; Relay is still Swift 5 mode), SwiftUI + UIKit,
-iOS 18, Xcode 27.2, XcodeGen, SwiftTerm 1.99.3 (exact pin), Swift Testing. No other dependencies.
+Stack: Swift 6 language mode, SwiftUI + UIKit, iOS 18, Xcode 27.2, XcodeGen, SwiftTerm 1.99.3
+(exact pin), Swift Testing. No other app dependencies. The helper in `Relay/` is Rust (tokio,
+tokio-tungstenite, h2, rustls, ring, serde; `Cargo.lock` pins them).
 Bundle id `dev.abrahamgonzalez.rexduo` predates the name and stays: App Store Connect and the
 APNs topic depend on it.
 
@@ -15,10 +17,9 @@ APNs topic depend on it.
 
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
   `TerminalStream` (data socket, `APCFilter`, `DataFrame`). Foundation only, so it tests on macOS.
-  Relay uses its JSON helpers too.
 - `RexConnect/State`: `AppModel` (selection, servers), one `ServerConnection` per server
   (sessions, layouts, block metadata, server events, actions), `Prefs`, `AgentNotifier`,
-  `PushRegistrar` (push registration with the Mac helper).
+  `PushRegistrar` (push registration with each server's helper).
 - `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures,
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → SwiftTerm), KeyBar, Keyboard
   (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card),
@@ -27,7 +28,7 @@ APNs topic depend on it.
   and `SidebarWidth` in `State/Posture.swift`, `SidebarSplit` in Features/Sidebar), launch transition.
   Bars and the Duo's vertical bar: [docs/duo-layout.md](docs/duo-layout.md).
 - `RexConnect/DesignSystem`: terminal themes and chrome colors derived from them, fonts.
-- `RexConnectTests`: app logic tests. `Relay/Tests`: relay tests.
+- `RexConnectTests`: app logic tests. Helper tests live next to the code in `Relay/src`.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane, *layer* is a tiled or floating
   group. Code keeps Rex's names (`WindowInfo`, `blockID`) because they match the server's
   `/llms.txt`; user-facing text says tab and pane.
@@ -44,7 +45,7 @@ xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<sim
   -derivedDataPath build/dd -skipPackagePluginValidation -skipMacroValidation build
 xcodebuild ... test                             # same flags: RexConnectTests in the simulator
 swift test --package-path Packages/RexKit       # protocol tests on macOS, about a second
-swift test --package-path Relay                 # helper and push policy tests
+cargo test --manifest-path Relay/Cargo.toml     # helper: push policy, payloads, JWT, devices
 ```
 
 - Use a concrete simulator id and pass `-skipPackagePluginValidation -skipMacroValidation`.
@@ -98,8 +99,12 @@ shell. So:
 - Unit tests run inside the app, which doesn't connect while it hosts tests.
 - `scripts/install-duo.sh`, `scripts/ship-macdesk.sh` and `Relay/package.sh` (without
   `--no-notarize`) install, upload or notarize. Run them only when asked.
+- The helper runs on this Mac, macdesk and workdesk next to other agents' sessions. Test it with a
+  foreground `--dry-run` after stopping the service (`Relay/README.md`, "Verify by hand"), and
+  never restart Rex.
 - `.asc.env` and `~/.appstoreconnect/private_keys/` hold App Store Connect and APNs keys. Don't
-  print, copy or commit them. `Relay/dist` holds a build with the APNs key inside; it is gitignored.
+  print, copy or commit them. `build.rs` embeds the APNs key in every helper binary, so
+  `Relay/target` and `Relay/dist` hold it; both are gitignored.
 
 ## Conventions
 
@@ -118,7 +123,7 @@ shell. So:
 - Commits: imperative subject, plain message, no AI attribution or trailers (no `Co-Authored-By`,
   "Generated with", or session links).
 - Clean up what you create: delete simulators you made (`xcrun simctl delete <id>`), `build/`,
-  `.build/` and finished worktrees.
+  `.build/`, `Relay/target/` and finished worktrees.
 
 ## Docs
 

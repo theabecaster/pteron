@@ -40,11 +40,14 @@ has the toggle:
 
 ## While the app is closed: Rex Connect Helper
 
-Rex has no push support, so `Relay/` builds **Rex Connect Helper**, a background Mac app
-(bundle id `dev.abrahamgonzalez.rexconnect.helper`) that connects to the local Rex as a client
-named `rex-push-relay`, watches every session and sends APNs pushes to registered phones.
-It is event driven: no polling while connected. `Relay/README.md` is the full reference: install,
-discovery, config, debounce and rate limits, and how to verify by hand.
+Rex has no push support, so `Relay/` builds **Rex Connect Helper**, one Rust program
+(`rex-connect-helper`) for macOS and Linux that connects to the local Rex as a client named
+`rex-push-relay`, watches every session and sends APNs pushes to registered phones. Each machine
+with a Rex server runs its own. On a Mac it ships as `Rex Connect Helper.app` (bundle id
+`dev.abrahamgonzalez.rexconnect.helper`; open once, it runs as a LaunchAgent); on Linux
+`rex-connect-helper install` sets up a systemd user service. It is event driven: no polling
+while connected. `Relay/README.md` is the full reference: install, discovery, config, debounce
+and rate limits, and how to verify by hand.
 
 | Event | Category | Level |
 |---|---|---|
@@ -53,7 +56,7 @@ discovery, config, debounce and rate limits, and how to verify by hand.
 | Desktop notification (OSC 9 / 777) | `NOTICE` | active, sound |
 
 The push decisions (debounce, rate limit, skip phones that are in front) are in
-`Relay/Sources/RelayCore/Policy.swift` and tested in `Relay/Tests`. The app doesn't share that
+`Relay/src/policy.rs` and `devices.rs`, tested with `cargo test`. The app doesn't share that
 code.
 
 ## Contract between app and helper
@@ -105,8 +108,9 @@ payload's `thread-id`.
 
 ### Testing
 
-- Simulator registration: run the helper with `swift run --package-path Relay rex-push-relay
-  --dry-run --verbose` and launch the app with push on. Simulators on Apple silicon get sandbox
+- Simulator registration: stop the installed helper (see `Relay/README.md`, "Verify by hand"), run
+  `cargo run --manifest-path Relay/Cargo.toml -- run --dry-run --verbose` and launch the app with
+  push on. Simulators on Apple silicon get sandbox
   tokens; `-pushToken <hex>` (debug builds) fakes one and skips the permission check.
 - Push taps: `xcrun simctl push <sim> dev.abrahamgonzalez.rexduo payload.json` with the payload
   above, app in the background or not running, then tap the banner.

@@ -11,8 +11,8 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
 | `RexConnect/Features` | screens, and UIKit where SwiftTerm needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
 | `RexConnect/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
 
-`Relay/` is a separate Swift package (the Mac helper). It depends on RexKit for JSON and
-`RexError` only; its connection code speaks the control protocol over Rex's Unix socket.
+`Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
+the app; it speaks the same control protocol over Rex's Unix socket.
 
 ## Data flow
 
@@ -52,7 +52,7 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 
 ## Concurrency
 
-- Swift 6 language mode for the app and RexKit. Relay is still Swift 5 mode.
+- Swift 6 language mode for the app and RexKit.
 - UI, state, `RexControl` and `TerminalStream` are `@MainActor`.
 - `RexControl` decodes control messages on URLSession's queue, then handles them on the main
   actor. A screen read reply is up to ~1 MB and takes ~4 ms to parse; events take microseconds.

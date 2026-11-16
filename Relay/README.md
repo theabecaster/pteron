@@ -1,6 +1,6 @@
 # Rex Connect Helper
 
-A small background app for the Mac that sends Rex Connect push notifications. Rex has no push
+Sends Rex Connect push notifications for the Rex server on the same machine. Rex has no push
 support of its own, so the helper connects to Rex as an ordinary client (named `rex-push-relay`,
 which is what the iOS app looks for), watches every session, and sends APNs pushes when:
 
@@ -11,101 +11,122 @@ which is what the iOS app looks for), watches every session, and sends APNs push
 | A terminal raises a desktop notification (OSC 9 / OSC 777) | `NOTICE` | `active`, sound |
 
 It skips a phone while Rex Connect is open on it, since the app shows its own toasts then.
-Device tokens reach the relay through Rex itself (client actions), so it opens no ports.
+Phones register through Rex itself (client actions), so the helper opens no ports. Every
+machine that runs a Rex server needs its own helper.
 
-macOS 14+, no third-party dependencies. JSON helpers and `RexError` come from the repo's local
-`Packages/RexKit`, shared with the iOS app. The connection code (`RexConnection.swift`,
-`WebSocket.swift`) stays here: it speaks the control protocol over Rex's Unix socket with
-Network.framework, which the app's `URLSession` client can't do.
+One Rust program, `rex-connect-helper`, runs on macOS and Linux. On a Mac it ships inside
+**Rex Connect Helper.app**, whose only executable is that same binary.
 
-## Install (for a friend)
+## Install
+
+**Mac**
 
 1. Unzip `Rex Connect Helper.zip` and drag **Rex Connect Helper** to Applications.
-2. Open it once. A small window says it's running. It adds itself to Open at login.
+2. Open it once. A small dialog says it's on. It keeps running and starts at every login.
 3. Open Rex Connect on the iPhone and turn on notifications.
 
-That's all: no config file, no Terminal. The app has no Dock or menu bar icon. Open it again to
-see the window, change **Open at login**, or **Quit**. To remove it, turn Open at login off,
-quit, and delete the app. macOS lists it under System Settings > General > Login Items.
+Open the app again to see whether it's connected, or click **Turn Off** to stop it. Then drag the
+app to the Trash to remove it. macOS lists it under System Settings > General > Login Items.
+
+**Linux**
+
+```sh
+chmod +x rex-connect-helper-linux-x86_64     # or -aarch64
+./rex-connect-helper-linux-x86_64 install
+```
+
+`install` copies itself to `~/.local/bin/rex-connect-helper`, adds a systemd user service, starts
+it, turns on lingering so it survives logout (or says how, if it can't), and prints one line such
+as `Rex Connect Helper 0.2.0 is running and connected to Rex at https://….` Without systemd it
+says how to start it by hand. Then `rex-connect-helper status` and `rex-connect-helper uninstall`.
+Logs: `journalctl --user -u rex-connect-helper`.
+
+The same three commands work on a Mac (from
+`/Applications/Rex Connect Helper.app/Contents/MacOS/rex-connect-helper`).
 
 ## How it finds Rex
 
 Before each connection attempt, in order:
 
 1. `REX_SERVER`, which Rex sets in its terminals (when run from a Rex shell).
-2. The local socket `~/Library/Application Support/rex/server.sock`. The control WebSocket
-   (`rex.control.v1`) runs over it via `Network.framework`, with a small RFC 6455 client in
-   `WebSocket.swift`, since `URLSession` can't use Unix sockets.
+2. The default socket: macOS `~/Library/Application Support/rex/server.sock`, Linux
+   `$XDG_RUNTIME_DIR/rex/server.sock` (`/run/user/<uid>/rex/server.sock`). The control WebSocket
+   (`rex.control.v1`) runs over it.
 3. `rex --autostart=false server status --json` (never starts a server): its `endpoint`, else
-   its Tailscale HTTPS URL.
+   its Tailscale HTTPS URL (over TLS).
 
 Pushes name the server by its Tailscale HTTPS URL, read from `session.bootstrap`, because that's
 how Rex Connect knows it.
 
+## Running in the background
+
+- **Mac:** opening the app writes `~/Library/LaunchAgents/dev.abrahamgonzalez.rexconnect.helper.plist`
+  (runs the binary in the app with `run --log-file`, `KeepAlive` on crash, tied to the app in
+  Login Items) and loads it with `launchctl`. If the app was updated, opening it restarts the
+  helper. Log: `~/Library/Logs/Rex Connect Helper.log` (rotated at 1 MB).
+- **Linux:** `~/.config/systemd/user/rex-connect-helper.service`, `Restart=on-failure`, `Nice=5`.
+- Either way only one helper runs per user (a lock in the state folder), and it writes
+  `status.json` there for `status` and the Mac dialog.
+
 ## Performance
 
-Event driven. While connected, nothing runs until Rex sends something: Rex pings every 120 s and
-the helper answers; a local server that quits closes the socket. The only timers are the
-reconnect backoff (1 s to 60 s, while Rex is down), the 30 s debounce for a block that flaps,
-and per-request timeouts. The APNs JWT is re-signed lazily when a push goes out and the token is
-over 50 minutes old. The window is plain AppKit and is freed when it closes.
+Event driven, on one thread (tokio's current-thread runtime). While connected, nothing runs until
+Rex sends something: Rex pings every 120 s and the helper answers; a local server that quits
+closes the socket. The only timers are the reconnect backoff (1 s to 60 s, while Rex is down), the
+30 s debounce for a block that flaps, per-request timeouts, and a 330 s silence check on remote
+(HTTPS) servers. The APNs JWT is re-signed lazily when a push goes out and the token is over 50
+minutes old; the HTTP/2 connection to APNs opens on the first push. Idle: about 3.5 MB of memory
+and no CPU.
 
 ## Build and ship
 
 ```sh
-Relay/package.sh                # build universal, sign, notarize, staple, zip
-Relay/package.sh --no-notarize  # sign only, for a quick local test
+cd Relay
+cargo test                         # policy, payload, JWT, devices, parsing; under a second
+cargo run -- run --dry-run         # foreground relay, logs pushes instead of sending them
+./package.sh                       # Mac app (sign, notarize, staple) + Linux binaries
+./package.sh --no-notarize         # sign only, for a quick local test
+./package.sh --mac-only | --linux-only
 ```
 
-Output: `Relay/dist/Rex Connect Helper.zip` (gitignored). The script:
+Output in `Relay/dist/` (gitignored): `Rex Connect Helper.zip` (universal) and
+`rex-connect-helper-linux-x86_64` / `-aarch64` (static musl, cross-compiled with `cargo zigbuild`;
+set `ZIG=/path/to/zig` if zig isn't on PATH). The script:
 
-- builds `RexConnectHelper` for arm64 and x86_64 and wraps it in a bundle (`LSUIElement`,
-  bundle id `dev.abrahamgonzalez.rexconnect.helper`, icon made from the iOS app icon);
-- copies the APNs key `~/.appstoreconnect/private_keys/AuthKey_5G2D4URHAC.p8` into the bundle
-  as `Contents/Resources/AuthKey.p8`. The key id, team and topic go in `Info.plist`. The key
-  only ever sits in `Relay/.stage` (gitignored, deleted on exit) and the zip; it's never
-  committed;
+- builds with `build.rs` embedding the APNs key `~/.appstoreconnect/private_keys/AuthKey_5G2D4URHAC.p8`
+  (key id, team and topic too) into every binary. Override with `REX_APNS_KEY`,
+  `REX_APNS_KEY_ID`, `REX_APNS_TEAM_ID`, `REX_APNS_TOPIC`; `REX_APNS_KEY=none` builds without a key.
+  The key only sits in `target/` and `dist/`, both gitignored; it's never committed;
+- wraps the universal Mac binary in a bundle (`LSUIElement`, bundle id
+  `dev.abrahamgonzalez.rexconnect.helper`, icon made from the iOS app icon by
+  `Packaging/make-iconset.swift`);
 - signs with `Developer ID Application: Abraham Gonzalez (R2PVQ496X7)`, hardened runtime, no
-  entitlements (no sandbox, so it can reach the socket and run `rex`);
-- notarizes with `xcrun notarytool` and the App Store Connect API key `2M674J7J7N`
-  (`ASC_ISS` from `~/rexduo/.asc.env`), staples, then checks `stapler validate` and `spctl`.
+  entitlements, and notarizes with `xcrun notarytool` and the App Store Connect API key
+  `2M674J7J7N` (`ASC_ISS` from `~/rexduo/.asc.env`), staples, then checks `spctl`.
 
-**The distributed app contains the APNs push key.** Anyone with the app can extract it and send
-pushes to Rex Connect users whose device tokens they know. That's fine for a few trusted
-friends. If the helper is ever shared widely, move sending to a hosted push gateway that holds
-the key, and have the helper forward events to it. Revoke `5G2D4URHAC` in the developer portal if
-a copy leaks.
+**Every distributed binary contains the APNs push key**, the Mac app and the Linux files alike.
+Anyone with a copy can extract it and send pushes to Rex Connect users whose device tokens they
+know. That's fine for a few trusted machines and friends. If the helper is ever shared widely,
+move sending to a hosted push gateway that holds the key. Revoke `5G2D4URHAC` in the developer
+portal if a copy leaks.
 
-## Run from source
+## Commands and options
 
-```sh
-swift run rex-push-relay --dry-run   # command-line relay, logs pushes instead of sending them
-swift test
-```
-
-The app takes the same switches as launch arguments, e.g.
-`open "/Applications/Rex Connect Helper.app" --args --dry-run`:
-
-| Option | Meaning |
+| Command | Meaning |
 | --- | --- |
-| `--dry-run` | Log each push (headers and payload) instead of sending it. `REX_CONNECT_DRY_RUN=1` works too. |
-| `--verbose` | Also log working/idle reports and every "no push" decision. |
-| `--check-apns` | Push to a fake token in both environments, then quit. `BadDeviceToken` means the key works. |
-| `--unregister` | Remove the login item, then quit. |
-| `--no-window` | Don't show the window on this launch. |
+| `install` / `status` / `uninstall` | Run in the background, report, or stop and remove it. |
+| `run` | Run in the foreground (what the service runs). |
+| `check-apns` | Push to a fake token in both environments, then exit. `BadDeviceToken` means the key works. |
 
-The command-line `rex-push-relay` also takes `--server ADDR` (repeatable, `unix:///…` or
-`https://…`), `--state-dir`, and `--config`; it reads the APNs key from the config.
-
-Logs go to the unified log:
-
-```sh
-log stream --predicate 'subsystem == "dev.abrahamgonzalez.rexconnect.helper"'
-```
+`run` takes `--dry-run` (log each push, headers and payload, instead of sending it;
+`REX_CONNECT_DRY_RUN=1` works too), `--verbose` (also log working/idle reports and every "no push"
+decision), `--server ADDR` (repeatable, `unix:///…` or `https://…`), `--state-dir`, `--config`,
+and `--log-file`.
 
 ## Config (optional)
 
-`~/Library/Application Support/Rex Connect Helper/config.json`. The normal install has none.
+`config.json` in the state folder: macOS `~/Library/Application Support/Rex Connect Helper/`,
+Linux `~/.local/state/rex-connect-helper/` (`$XDG_STATE_HOME`). The normal install has none.
 Every field is optional.
 
 ```json
@@ -124,11 +145,11 @@ Every field is optional.
 }
 ```
 
-`servers` replaces discovery. The app ignores `apns.key_path` and `key_id` (it uses its bundled
-key) but honors `apns.topic`. The JWT (ES256, CryptoKit) is reused for 50 minutes, then re-signed.
+`servers` replaces discovery. `apns.key_path` with `key_id` replaces the built-in key. The JWT
+(ES256, `ring`) is reused for 50 minutes, then re-signed.
 
-`devices.json` holds the registered phones. A device whose token APNs rejects with
-`410 Unregistered` or `BadDeviceToken` is removed.
+`devices.json` in the same folder holds the registered phones (same format as the old Swift
+helper's). A device whose token APNs rejects with `410 Unregistered` or `BadDeviceToken` is removed.
 
 ## What the app must do
 
@@ -173,7 +194,7 @@ registration quietly and try again on the next connect.
 - `device_id`: the id from step 1. Without it, the relay falls back to matching the phone's
   Tailscale device name, which is less exact.
 
-Result: `{"result": {"registered": true, "devices": 1, "push_enabled": true, "relay_version": "0.1.0"}, "performed_by": "client:<relay id>"}`.
+Result: `{"result": {"registered": true, "devices": 1, "push_enabled": true, "relay_version": "0.2.0"}, "performed_by": "client:<relay id>"}`.
 `push_enabled` is false while the relay has no APNs key or runs with `--dry-run`.
 
 Errors arrive as normal `client.perform` errors: `bad_request` for a malformed token, environment,
@@ -239,13 +260,20 @@ Result `{"removed": true|false}`.
 
 ## Verify by hand
 
+Stop the background helper (only one runs per user), run a dry run in the foreground, and drive a
+throwaway session from another terminal:
+
 ```sh
-open "/Applications/Rex Connect Helper.app" --args --dry-run
+# Mac: launchctl kill TERM gui/$(id -u)/dev.abrahamgonzalez.rexconnect.helper
+# Linux: systemctl --user stop rex-connect-helper
+rex-connect-helper run --dry-run
 rex new zz-push-test -- sh -c 'sleep 2
   printf "\033]7501;state=blocked:app=claude:msg=%s\033\\\\" "$(printf "Ready?" | base64)"
   printf "\033]9;Build finished\a"; sleep 30'
 rex kill zz-push-test
+# Mac: launchctl kickstart gui/$(id -u)/dev.abrahamgonzalez.rexconnect.helper
+# Linux: systemctl --user start rex-connect-helper
 ```
 
-With `--dry-run`, the helper logs one `AGENT_BLOCKED` and one `NOTICE` push (see the `log stream`
-command above). `rex client list` shows it as `rex-push-relay`, over unix.
+The dry run logs one `AGENT_BLOCKED` and one `NOTICE` push. `rex client list` shows the helper as
+`rex-push-relay` over unix.

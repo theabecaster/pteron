@@ -1,0 +1,31 @@
+[package]
+name = "rex-connect-helper"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "Sends Rex Connect push notifications for the Rex server on this machine."
+build = "build.rs"
+
+[dependencies]
+# One thread, no polling: everything waits on sockets, signals or the debounce timer.
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "macros", "signal", "io-util", "process", "sync"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# APNs speaks HTTP/2 only.
+h2 = "0.4"
+http = "1"
+bytes = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+# ES256 for the APNs provider token.
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
