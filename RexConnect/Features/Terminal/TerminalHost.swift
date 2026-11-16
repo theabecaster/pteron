@@ -1013,7 +1013,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true
-                term.send(txt: t.replacingOccurrences(of: "\\n", with: "\r"))
+                let text = t.replacingOccurrences(of: "\\n", with: "\r")
+                // `-scrollBackTest <seconds>` (testing): scroll two pages into the scrollback first
+                // and type that much later, to check that input returns the view to the bottom.
+                let wait = UserDefaults.standard.double(forKey: "scrollBackTest")
+                guard wait > 0 else { term.send(txt: text); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    self?.term.scrollPage(up: true)
+                    self?.term.scrollPage(up: true)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5 + wait) { [weak self] in self?.term.send(txt: text) }
             }
         case .connecting: showStatus("Connecting…", after: Self.statusDelay)
         // A failure retries on its own; to the user it is still reconnecting.
