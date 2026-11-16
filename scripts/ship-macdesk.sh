@@ -17,7 +17,7 @@ cat > build/ExportOptions.plist <<P
 <key>method</key><string>app-store-connect</string><key>destination</key><string>${DEST:-upload}</string>
 <key>teamID</key><string>R2PVQ496X7</string><key>signingStyle</key><string>automatic</string>
 <key>uploadSymbols</key><true/><key>manageAppVersionAndBuildNumber</key><false/>
-<key>testFlightInternalTestingOnly</key><true/></dict></plist>
+<key>testFlightInternalTestingOnly</key><false/></dict></plist>
 P
 xcodebuild -exportArchive -archivePath build/RexDuo.xcarchive -exportOptionsPlist build/ExportOptions.plist \
   -exportPath build/export -allowProvisioningUpdates 2>&1 | tail -25
