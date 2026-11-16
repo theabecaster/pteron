@@ -80,6 +80,8 @@ final class GhosttyCore: @unchecked Sendable {
     /// Guarded by `stateLock`. True while the program holds the screen.
     private(set) var held = false
     private var holdStarted: CFTimeInterval = 0
+    /// Guarded by `stateLock`. A wake-up for the hold's time limit is scheduled.
+    private var holdTimerArmed = false
     /// Bumped (under `stateLock`) when the render state is replaced, so a renderer drops its cache.
     private(set) var stateGeneration = 0
     /// Scroll position at the last frame's update. Guarded by `stateLock`. Phase 2 (scroll view).
@@ -479,6 +481,9 @@ final class GhosttyCore: @unchecked Sendable {
     // MARK: Render holds (synchronized output)
 
     /// Runs inside a terminal call on the feed queue, so `termLock` is already held.
+    ///
+    /// It doesn't mark the core dirty: the renderer can't read anything before `termLock` is
+    /// released, and whoever holds it (a write, a reset, a resize, a restore) does that then.
     private func renderHoldChanged(_ nowHeld: Bool) {
         stateLock.lock()
         if nowHeld, let rs = renderState, let t = terminal {
@@ -488,14 +493,24 @@ final class GhosttyCore: @unchecked Sendable {
             holdStarted = CACurrentMediaTime()
         }
         held = nowHeld
+        // The terminal has no clock. Wake the renderer after the limit so it can end a hold the
+        // program never released. One timer at a time: a redraw loop begins a hold per frame.
+        let arm = nowHeld && !holdTimerArmed
+        if arm { holdTimerArmed = true }
         stateLock.unlock()
-        onDirty?()
-        if nowHeld {
-            // The terminal has no clock. Wake the renderer after the limit so it can end a hold
-            // the program never released.
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.renderHoldTimeout + 0.02) { [weak self] in
-                self?.onDirty?()
-            }
+        if arm { armHoldTimer(after: Self.renderHoldTimeout + 0.02) }
+    }
+
+    private func armHoldTimer(after delay: CFTimeInterval) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            stateLock.lock()
+            // The hold this timer was armed for may be over and another one running.
+            let left = held ? holdStarted + Self.renderHoldTimeout - CACurrentMediaTime() : nil
+            if (left ?? 0) <= 0 { holdTimerArmed = false }
+            stateLock.unlock()
+            guard let left else { return }
+            if left > 0 { armHoldTimer(after: left + 0.02) } else { onDirty?() }
         }
     }
 
