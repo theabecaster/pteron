@@ -73,6 +73,9 @@ Each is a UserDefaults key for that run only.
 - `-typeTest 'text\n'`: type the text into the active pane once it is live. With `-scrollBackTest
   <seconds>`, scroll two pages into the scrollback first and type that much later (checks that input
   returns the view to the bottom).
+- `-tapTest col,row[;col,row…]` (Debug builds, Ghostty engine): tap those viewport cells as a
+  focused finger would, `-tapTestAfter` seconds after the pane is live (default 3), and write what
+  each did to `Documents/tapTest.txt`. `-tapTestType <text>` types the text after the last tap.
 - `-hinge closed|partial|full`: pretend the hinge reports this. It only tints the crease; layout never reads it.
 - `-simulateDuo <posture>[,<posture>…]` (Debug builds): lay the root out at that window size, with its
   size classes and a fake fold drawn as a red dashed line, at the bottom-left of a bigger screen.

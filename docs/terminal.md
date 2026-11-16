@@ -61,7 +61,9 @@ ghostty|swiftTerm` for one run); changing it rebuilds the open panes. Plan, desi
 
 ## Gestures
 
-- Tap: focus the pane, clear a selection, raise the keyboard on the first tap.
+- Tap: focus the pane, clear a selection, raise the keyboard on the first tap. On a focused pane
+  (Ghostty engine): open the link under the finger, or move the shell's cursor on its prompt
+  (`Ghostty/GhosttyTap.swift`).
 - Vertical drag: SwiftTerm's scrollback, mouse wheel reports, or arrow keys (alternate screen).
 - Horizontal swipe: next or previous pane. Swipe on the title bar: next or previous tab.
 - Two-finger tap: zoom the pane (phone-only zoom, see `PhoneState`).
