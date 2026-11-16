@@ -412,7 +412,7 @@ final class StreamAPCFilterTests: XCTestCase {
     }
 
     func testRecordOverTheRecordLimitEndsTheSnapshot() throws {
-        // 16 MiB + 1 in one record, well inside the snapshot limit: treated as damage at its header.
+        // One byte over the record limit, well inside the snapshot limit: treated as damage at its header.
         let nonce: UInt64 = 5
         let n = APCFilter.defaultRecordLimit + 1
         let header: [UInt8] = [3, 0, UInt8(n & 0xff), UInt8((n >> 8) & 0xff), UInt8((n >> 16) & 0xff), UInt8(n >> 24), 0, 0, 0, 0]

@@ -163,6 +163,13 @@ Around that:
   the character typed with shift (on a Spanish or German keyboard `/` is shift+7, so `cmd+/`
   arrives as shift+cmd+7), then the key's US name when what it types can't be spelled (`ñ`). A
   later tier never takes a key from a binding that names an earlier one.
+- Option on a hardware keyboard is Alt (Meta) unless the layout needs it. If Option makes a
+  printable ASCII character other than the key's own (`@ [ ] { } | \ ~ #`), that character is
+  typed. Otherwise, on an English layout Option is always Alt, dead keys included. On other
+  layouts, a letter or digit key is Alt unless Option makes it a dead key, which composes (German
+  and French Option+N, Space gives `~`); any other key types the layout's character. Option+Space,
+  Option+Return, Option+Delete and Control+Option are always Alt. The layout's language comes
+  from the keyboard's input mode.
 - Who has the keyboard (`KeyboardFocusPolicy`): with a hardware keyboard the active pane's
   terminal is first responder, as on a Mac, and takes it back when it comes free (pane switch,
   fold, a text field done, the app active again). Never from a text field, under a sheet, or

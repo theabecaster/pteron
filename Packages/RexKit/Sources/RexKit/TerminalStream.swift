@@ -50,12 +50,12 @@ public enum GhosttySnapshotPart {
 public struct APCFilter {
     /// The largest snapshot passed on, in bytes. The filter holds none of it; the limit protects
     /// whoever restores it.
-    public static let defaultSnapshotLimit = 64 << 20
+    public static let defaultSnapshotLimit = 16 << 20
     /// The longest record payload accepted. The format has no limit of its own (the length is a
     /// u32). Real records are far smaller: a page is a few KB, READY and FINISH are empty, and
     /// only unfinished input (the decoder's default limit is 65 MiB) and the pixels of a Kitty
     /// image can grow. A larger record is treated as damage.
-    public static let defaultRecordLimit = 16 << 20
+    public static let defaultRecordLimit = 8 << 20
 
     private let marker: [UInt8]
     public private(set) var skippingSnapshot = true
