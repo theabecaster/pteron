@@ -70,6 +70,8 @@ Each is a UserDefaults key for that run only.
 - `-replay <file>`: no server; feed a capture or scenario file to a real pane, either engine
   (`ReplayScreen`; more arguments there). `-perfLog <name>`: measure the pane and write
   `Documents/perf/<name>.json` (`PerfProbe`). `scripts/bench/run.sh` uses both.
+- `-selectionDemo <steps>`: play a selection gesture by program, for screenshots of the loupe and
+  handles; `-selectionLoupe off` (docs/selection.md).
 - `-typeTest 'text\n'`: type the text into the active pane once it is live. With `-scrollBackTest
   <seconds>`, scroll two pages into the scrollback first and type that much later (checks that input
   returns the view to the bottom).
@@ -126,6 +128,7 @@ Read the one for the area you touch:
 - [docs/architecture.md](docs/architecture.md): data flow, state, concurrency, where new code goes.
 - [docs/rex-protocol.md](docs/rex-protocol.md): control API methods and events the app uses.
 - [docs/terminal.md](docs/terminal.md): data stream, engines, fit and mirror, gestures, keyboard input.
+- [docs/selection.md](docs/selection.md): touch selection (loupe, handles, haptics): research, design, seam.
 - [docs/ghostty-engine.md](docs/ghostty-engine.md): the Ghostty engine's plan, design and status;
   [docs/ghostty-api-notes.md](docs/ghostty-api-notes.md): libghostty-vt API notes.
 - [docs/notifications.md](docs/notifications.md): local notifications, the helper, the relay contract.
