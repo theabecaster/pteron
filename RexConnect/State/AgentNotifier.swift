@@ -1,37 +1,42 @@
 import UIKit
-import UserNotifications
 
-/// Local notifications and the "agent is waiting" haptic. One instance, shared by every server,
-/// so the throttle holds across servers.
+/// An agent started waiting for the user (OSC 7501 `blocked`), as seen by a live connection.
+struct AgentAlert: Equatable, Identifiable {
+    let id = UUID()
+    var serverID: UUID
+    var sessionID: String
+    var windowID: String?
+    var blockID: String
+    /// "Claude has a question".
+    var title: String
+    /// Where it runs, and the agent's message if it sent one.
+    var body: String
+    var date: Date
+}
+
+/// In-app agent alerts and the "agent is waiting" haptic. One instance, shared by every server,
+/// so the throttle holds across servers. The app shows no system notifications while it runs:
+/// the toast in Features/Notifications reads `latest`. Pushes come from the Mac's helper when the
+/// app is in the background.
 @MainActor
+@Observable
 final class AgentNotifier {
     /// Several agents often block at once (or one flaps between working and blocked); one buzz
     /// per this many seconds is enough to get attention.
     static let hapticInterval: TimeInterval = 3
 
-    private var askedForAuthorization = false
-    private var lastHaptic: Date?
-    private let now: () -> Date
+    /// The newest alert. Observers react to its `id` changing.
+    private(set) var latest: AgentAlert?
+
+    @ObservationIgnored private var lastHaptic: Date?
+    @ObservationIgnored private let now: () -> Date
 
     init(now: @escaping () -> Date = Date.init) {
         self.now = now
     }
 
-    /// Asks once per launch. iOS shows the prompt only the first time; later calls are cheap
-    /// but needless.
-    func requestAuthorizationIfNeeded() {
-        guard !askedForAuthorization else { return }
-        askedForAuthorization = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-    }
-
-    func post(title: String, body: String) {
-        requestAuthorizationIfNeeded()
-        let c = UNMutableNotificationContent()
-        c.title = title
-        c.body = body
-        c.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    func post(_ alert: AgentAlert) {
+        latest = alert
     }
 
     /// Buzzes unless it buzzed within `hapticInterval`.

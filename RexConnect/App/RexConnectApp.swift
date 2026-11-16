@@ -1,8 +1,8 @@
 import SwiftUI
-import UserNotifications
 
 @main
 struct RexConnectApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var prefs: Prefs
     @State private var model: AppModel
     @Environment(\.scenePhase) private var phase
@@ -24,25 +24,19 @@ struct RexConnectApp: App {
             } else {
                 RootView()
                     .launchTransition()
+                    .agentToasts()
                     .environment(model)
                     .environment(prefs)
-                    .onAppear {
-                        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
-                    }
+                    .onAppear { appDelegate.attach(model) }
             }
         }
         .onChange(of: phase) { _, p in
-            if p == .active { model.foregroundResumed() }
+            guard !Self.isTestHost else { return }
+            switch p {
+            case .active: model.foregroundResumed()
+            case .background: model.push.enteredBackground()
+            default: break
+            }
         }
-    }
-}
-
-/// Shows notifications while the app is open. It has no state, so it is Sendable and iOS may call it
-/// on any queue.
-final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, Sendable {
-    static let shared = NotificationDelegate()
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound, .list])
     }
 }
