@@ -39,6 +39,9 @@ struct RexConnectApp: App {
                     .onAppear { appDelegate.attach(model) }
             }
         }
+        .commands {
+            if !Self.isTestHost { AppShortcutCommands(model: model) }
+        }
         .onChange(of: phase) { _, p in
             guard !Self.isTestHost else { return }
             switch p {

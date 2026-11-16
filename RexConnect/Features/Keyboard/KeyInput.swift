@@ -43,6 +43,9 @@ enum KeyInput {
 
     static func info(_ usage: UIKeyboardHIDUsage) -> Info? { table[usage.rawValue] }
 
+    /// The US name of the key with this W3C code (`Slash` → `/`).
+    static func name(forCode code: String) -> String? { table.values.first { $0.code == code }?.name }
+
     static func mods(_ f: UIKeyModifierFlags) -> KeyMods {
         var m: KeyMods = []
         if f.contains(.shift) { m.insert(.shift) }
@@ -56,23 +59,68 @@ enum KeyInput {
         (224...231).contains(u.rawValue)
     }
 
+    /// What a hardware key press reports (`UIKey`'s properties; a `UIKey` can't be made in a test).
+    struct Press {
+        var usage: Int
+        var flags: UIKeyModifierFlags
+        /// What the key types with its modifiers.
+        var characters: String
+        var charactersIgnoringModifiers: String
+    }
+
     /// The spellings a press can match: by what the key types (following the layout), then by position.
-    @MainActor static func chords(for key: UIKey) -> [KeyChord] {
-        let m = mods(key.modifierFlags)
-        let info = info(key.keyCode)
-        var out: [KeyChord] = []
+    @MainActor static func chords(for key: UIKey) -> [KeyChord] { chordTiers(for: key)[0] }
+
+    @MainActor static func chordTiers(for key: UIKey) -> [[KeyChord]] {
+        chordTiers(Press(usage: key.keyCode.rawValue, flags: key.modifierFlags, characters: key.characters,
+                         charactersIgnoringModifiers: key.charactersIgnoringModifiers))
+    }
+
+    /// The spellings a press can match, in tiers: a later tier is tried only when no binding matches
+    /// an earlier one, so it can never take a key from a binding that names it.
+    /// 1. What the key types without modifiers (with shift held: the key's US name), and its position (`[Slash]`).
+    /// 2. The character typed with shift, without the shift: on a Spanish or German keyboard `/` is
+    ///    shift+7, so `cmd+/` arrives as shift+cmd+7. Like the Mac, a binding names the character.
+    /// 3. The key's US name, when what it types can't be spelled in a binding at all (`ñ`, `ß`, `é`).
+    ///    Never for a key that types an ASCII character: on AZERTY the key at US `a` types `q`, and
+    ///    cmd+Q must not run cmd+A's binding.
+    static func chordTiers(_ p: Press) -> [[KeyChord]] {
+        let m = mods(p.flags)
+        let info = table[p.usage]
+        var first: [KeyChord] = []
+        var typed = ""
         if let info, info.shifted == nil {
-            out.append(KeyChord(mods: m, key: info.name))  // named key
+            first.append(KeyChord(mods: m, key: info.name))  // named key
         } else {
             // Bindings match unshifted keys: with shift held, use the key's own character.
-            var c = key.charactersIgnoringModifiers.lowercased()
+            var c = p.charactersIgnoringModifiers.lowercased()
+            typed = c
             // Option may still compose a character (∫ for alt+b); bind by the key's own letter then.
             let composed = m.contains(.alt) && !(c.unicodeScalars.first?.isASCII ?? false)
             if m.contains(.shift) || c.count != 1 || composed { c = info?.name ?? c }
-            if !c.isEmpty { out.append(KeyChord(mods: m, key: c)) }
+            if !c.isEmpty { first.append(KeyChord(mods: m, key: c)) }
         }
-        if let info { out.append(KeyChord(mods: m, key: "[\(info.code)]")) }
-        return out
+        if let info { first.append(KeyChord(mods: m, key: "[\(info.code)]")) }
+        var tiers = [first]
+        guard let info, info.shifted != nil else { return tiers }
+
+        // 2. A symbol that needs shift on this layout.
+        if m.contains(.shift), !m.contains(.alt), isSymbol(p.characters) {
+            let c = KeyChord(mods: m.subtracting(.shift), key: p.characters)
+            if !first.contains(c) { tiers.append([c]) }
+        }
+        // 3. A key that types nothing a binding can name.
+        if !m.contains(.shift), !m.contains(.alt), !(typed.unicodeScalars.first?.isASCII ?? false) {
+            let c = KeyChord(mods: m, key: info.name)
+            if !first.contains(c) { tiers.append([c]) }
+        }
+        return tiers
+    }
+
+    /// One printable ASCII character that is neither a letter nor a digit nor a space.
+    private static func isSymbol(_ s: String) -> Bool {
+        guard s.unicodeScalars.count == 1, let u = s.unicodeScalars.first, u.isASCII, u.value > 0x20, u.value < 0x7f else { return false }
+        return !CharacterSet.alphanumerics.contains(u)
     }
 
     // MARK: Key commands

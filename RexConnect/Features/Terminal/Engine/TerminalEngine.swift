@@ -180,6 +180,8 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     // Input
     /// Sees each hardware key press before the engine does; true consumes it (a key binding ran).
     var keyHook: ((UIKey) -> Bool)? { get set }
+    /// Called when the view becomes (true) or stops being (false) first responder.
+    var keyboardFocusHook: ((Bool) -> Void)? { get set }
     func send(txt: String)
     func pasteText(_ s: String)
 }

@@ -50,6 +50,35 @@ struct Arrangement: Equatable {
     }
 }
 
+/// Whether the sidebar shows, and what commands and gestures do to it. One state for every
+/// arrangement: inline it sits beside the tab, narrow it is a drawer over the tab.
+struct SidebarState: Equatable {
+    /// Starts open, so a launch shows the last tab with the sidebar beside or over it.
+    var open = true
+
+    enum Presentation: Equatable { case hidden, inline, drawer }
+
+    func presentation(_ arrangement: Arrangement) -> Presentation {
+        open ? (arrangement.inline ? .inline : .drawer) : .hidden
+    }
+
+    /// The toggle button, the Toggle Sidebar shortcut (`client.sidebar.toggle`) and the menu command.
+    mutating func toggle() { open.toggle() }
+
+    /// The left-edge swipe.
+    mutating func reveal() { open = true }
+
+    /// A tab was picked to be shown: a drawer closes so the tab shows; an inline sidebar stays.
+    mutating func tabShown(inline: Bool) { if !inline { open = false } }
+
+    /// Runs an app command that is the sidebar's. False for any other command.
+    mutating func perform(_ command: RexCommand) -> Bool {
+        guard command == .toggleSidebar else { return false }
+        toggle()
+        return true
+    }
+}
+
 /// The sidebar's width: limits, snap points and what a drag does. Pure, so it is tested.
 enum SidebarWidth {
     /// The Mac app's default.

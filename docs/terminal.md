@@ -96,3 +96,14 @@ ghostty|swiftTerm` for one run); changing it rebuilds the open panes. Plan, desi
   against Rex's keymap (`KeyChord` spellings like `shift+cmd+d` or `cmd+[Digit1]`), and
   `AppAction` turns the binding into an app command, a key to send (`KeyInput.bytes`), a server
   action, or a forwarded key. Unbound keys reach SwiftTerm.
+- A press is matched in tiers (`KeyInput.chordTiers`): what the key types and its position, then
+  the character typed with shift (on a Spanish or German keyboard `/` is shift+7, so `cmd+/`
+  arrives as shift+cmd+7), then the key's US name when what it types can't be spelled (`ñ`). A
+  later tier never takes a key from a binding that names an earlier one.
+- Who has the keyboard (`KeyboardFocusPolicy`): with a hardware keyboard the active pane's
+  terminal is first responder, as on a Mac, and takes it back when it comes free (pane switch,
+  fold, a text field done, the app active again). Never from a text field, under a sheet, or
+  after the key bar's hide key. Without a hardware keyboard a pane only keeps what it had.
+- The keymap's app commands are also menu shortcuts (`AppShortcutCommands`), so ⌘/ and the rest
+  work when no terminal is first responder (no tab open, keyboard put away). The menu replaces
+  the system's Settings item, whose ⌘, would open the Settings app before the keymap sees it.

@@ -18,6 +18,7 @@ final class RexTerminalView: SwiftTerm.TerminalView, TerminalEngineView, Termina
     var tapGate: (() -> Bool)?
     /// Sees each hardware key press before SwiftTerm does; true consumes it (a key binding ran).
     var keyHook: ((UIKey) -> Bool)?
+    var keyboardFocusHook: ((Bool) -> Void)?
     weak var engineDelegate: (any TerminalEngineDelegate)? {
         didSet { if grid.cols > 0 { engineDelegate?.engineGridChanged(cols: grid.cols, rows: grid.rows) } }
     }
@@ -52,6 +53,20 @@ final class RexTerminalView: SwiftTerm.TerminalView, TerminalEngineView, Termina
 
     @objc private func metaModifierWasReset() {
         NotificationCenter.default.post(name: .terminalEngineMetaModifierReset, object: self)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let was = isFirstResponder
+        let ok = super.becomeFirstResponder()
+        if ok, !was { keyboardFocusHook?(true) }
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let was = isFirstResponder
+        let ok = super.resignFirstResponder()
+        if ok, was { keyboardFocusHook?(false) }
+        return ok
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

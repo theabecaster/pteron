@@ -36,7 +36,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var fontSize: CGFloat
     var theme: TermTheme
     var isActive = false {
-        didSet { if isActive && !oldValue { claimHardwareKeyboard() } }
+        didSet { if isActive && !oldValue { reclaimKeyboard() } }
     }
     var onFocus: (() -> Void)?
     var onTitle: ((String) -> Void)?
@@ -60,8 +60,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// A font change soft-reset the engine (modes lost), or the width changed and the engine can't
     /// reflow the way the server does; redraw from the server once sized.
     private var needsResync = false
-    /// Had the keyboard when it left the window (see `scheduleStop`).
-    private var refocusOnReturn = false
+    /// When its view was moved or left the window while it had the keyboard (see `scheduleStop`).
+    /// It takes the keyboard back only if it lands again within a second.
+    private var movedWithKeyboardAt: CFTimeInterval = -10
+    private var hadKeyboard: Bool { CACurrentMediaTime() - movedWithKeyboardAt < 1 }
+    /// When the engine view last stopped being first responder. UIKit resigns a view before it
+    /// tells it that it leaves the window, so `isFirstResponder` is already false by then.
+    private var lostKeyboardAt: CFTimeInterval = -1
+    /// The key bar's hide key put the keyboard away; a tap brings it back.
+    private var userHidKeyboard = false
+    private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
     /// The view let go of its stream for good (see `TerminalHostPool`).
     var onStopped: (() -> Void)?
@@ -126,7 +134,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyBar.onPaste = { [weak self] in
             if let s = UIPasteboard.general.string { self?.paste(s) }
         }
-        keyBar.onHideKeyboard = { [weak self] in _ = self?.term.resignFirstResponder() }
+        keyBar.onHideKeyboard = { [weak self] in self?.hideKeyboard() }
         term.inputAccessoryView = keyBar
 
         zoomer.delegate = self
@@ -156,9 +164,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(keyboardConnected),
-                                               name: .GCKeyboardDidConnect, object: nil)
+        // Moments when the keyboard may be free for the active pane to take (`reclaimKeyboard`).
+        let free: [Notification.Name] = [.GCKeyboardDidConnect, UIApplication.didBecomeActiveNotification,
+                                         UIWindow.didBecomeKeyNotification, UITextField.textDidEndEditingNotification,
+                                         UITextView.textDidEndEditingNotification]
+        for name in free {
+            NotificationCenter.default.addObserver(self, selector: #selector(keyboardMayBeFree), name: name, object: nil)
+        }
         term.keyHook = { [weak self] key in self?.handleKey(key) ?? false }
+        term.keyboardFocusHook = { [weak self] focused in self?.keyboardFocusChanged(focused) }
+        // The pane shows its own focus (cursor, border): no system focus halo on top of it.
+        term.focusEffect = nil
         setupGestures()
         PerfProbe.active?.paneOpened(self)  // PERF
     }
@@ -598,7 +614,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// terminal). Only keys the keymap binds are taken; every other key is typed as usual.
     private func handleKey(_ key: UIKey) -> Bool {
         guard let keymap, !KeyInput.isModifierKey(key.keyCode) else { return false }
-        guard let (binding, action) = keymap.resolve(KeyInput.chords(for: key)) else { return false }
+        guard let (binding, action) = keymap.resolve(tiers: KeyInput.chordTiers(for: key)) else { return false }
         perform(action, key: key)
         if KeyActions.repeats(binding.action) {
             startRepeat(key.keyCode) { [weak self] in self?.perform(action, key: key) }
@@ -686,24 +702,68 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         super.pressesCancelled(presses, with: event)
     }
 
-    @objc private func keyboardConnected() { claimHardwareKeyboard() }
+    // MARK: Keyboard focus
 
-    /// With a hardware keyboard, the active pane takes the keyboard focus at once, as on a Mac:
-    /// keys go to the pane on screen without a tap first. Never steals focus from a text field.
-    private func claimHardwareKeyboard() {
+    @objc private func keyboardMayBeFree() { reclaimKeyboard() }
+
+    /// What `KeyboardFocusPolicy` decides on, for this pane now.
+    private var keyboardSituation: KeyboardFocusPolicy.Situation {
+        KeyboardFocusPolicy.Situation(
+            paneActive: isActive, inWindow: window != nil,
+            appActive: UIApplication.shared.applicationState == .active,
+            holdsKeyboard: term.isFirstResponder, hardwareKeyboard: GCKeyboard.coalesced != nil,
+            hadKeyboard: hadKeyboard, userHidKeyboard: userHidKeyboard,
+            sheetUp: KeyboardFocusPolicy.sheetUp(in: window),
+            holder: KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: term))
+    }
+
+    /// Takes the keyboard when the policy says this pane should have it: with a hardware keyboard
+    /// the active pane always does, as on a Mac, so keys go to the pane on screen without a tap
+    /// first; without one, only to keep the keyboard it had (a fold moved the pane, or the active
+    /// pane changed). Never from a text field, under a sheet, or after the user put the keyboard away.
+    /// Called whenever the keyboard may have become free: the pane became active or came on screen,
+    /// a keyboard connected, the app or its window became active, a text field finished.
+    private func reclaimKeyboard(afterMove: Bool = false) {
         #if DEBUG
         // `-focus none` (testing): the simulator reports a hardware keyboard; leave the keyboard down.
         if UserDefaults.standard.string(forKey: "focus") == "none" { return }
         #endif
-        guard isActive, window != nil, GCKeyboard.coalesced != nil, !term.isFirstResponder else { return }
+        // Cheap checks first: this runs for every pane on every notification.
+        guard isActive, window != nil, !term.isFirstResponder else { return }
+        // Later: the view may still be on its way into the window, or the app into the foreground.
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isActive, self.window != nil, !self.term.isFirstResponder,
-                  UIApplication.shared.applicationState == .active else { return }
-            let current = UIResponder.rexCurrentFirstResponder()
-            // An engine view may decline unknown actions, so a focused terminal can report its host.
-            guard current == nil || current is TerminalHost || current is any TerminalEngineView else { return }
+            guard let self, KeyboardFocusPolicy.takesKeyboard(self.keyboardSituation) else { return }
+            if afterMove, !self.moveRetakes.allows(at: CACurrentMediaTime()) {
+                // The layout keeps moving this pane as it takes the keyboard: leave the keyboard down.
+                self.movedWithKeyboardAt = -10
+                return
+            }
             _ = self.term.becomeFirstResponder()
         }
+    }
+
+    private func keyboardFocusChanged(_ focused: Bool) {
+        if focused {
+            movedWithKeyboardAt = -10
+            userHidKeyboard = false
+        } else {
+            lostKeyboardAt = CACurrentMediaTime()
+        }
+    }
+
+    /// The engine view is about to move to another superview or leave the window: note whether it
+    /// has the keyboard, to take it back where it lands. UIKit resigns it first, so a keyboard lost
+    /// in this same turn of the run loop counts.
+    func noteKeyboardBeforeMove() {
+        let now = CACurrentMediaTime()
+        if term.isFirstResponder || now - lostKeyboardAt < 0.05 { movedWithKeyboardAt = now }
+    }
+
+    /// The key bar's hide key: the keyboard and the bar go away until the next tap on the pane,
+    /// with a hardware keyboard too. App shortcuts keep working meanwhile (`AppShortcutCommands`).
+    private func hideKeyboard() {
+        userHidKeyboard = true
+        _ = term.resignFirstResponder()
     }
 
     // MARK: App state
@@ -789,7 +849,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     override func willMove(toWindow newWindow: UIWindow?) {
         super.willMove(toWindow: newWindow)
-        if newWindow == nil { refocusOnReturn = term.isFirstResponder }
+        if newWindow == nil { noteKeyboardBeforeMove() }
     }
 
     override func didMoveToWindow() {
@@ -801,16 +861,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             stopWork = nil
             if !metalTried { metalTried = true; term.enableGPU() }
             yieldContentSwipeBack()
-            if refocusOnReturn {
-                // Moved by a fold or unfold while it had the keyboard: take it back.
-                refocusOnReturn = false
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.window != nil, !self.term.isFirstResponder else { return }
-                    _ = self.term.becomeFirstResponder()
-                }
-            } else {
-                claimHardwareKeyboard()
-            }
+            // Moved by a fold or unfold while it had the keyboard, or a hardware keyboard is attached.
+            reclaimKeyboard(afterMove: true)
         }
     }
 

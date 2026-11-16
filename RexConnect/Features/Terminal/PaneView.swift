@@ -127,9 +127,15 @@ struct PaneHostView: UIViewRepresentable {
 
         func adopt() {
             guard !owns else { return }
-            host.removeFromSuperview()
+            // UIKit takes the keyboard from a view it moves; the host takes it back where it lands.
+            host.noteKeyboardBeforeMove()
             host.frame = bounds
             addSubview(host)
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil { pool?.show(key) }
         }
 
         override func layoutSubviews() {
@@ -173,21 +179,47 @@ final class TerminalHostPool {
         }
     }
 
-    /// The newest container shows the host.
+    @ObservationIgnored private var showing: Set<Key> = []
+    @ObservationIgnored private var showAgain: Set<Key> = []
+
+    /// A new container for the pane.
     func attach(_ c: PaneHostView.Container) {
         containers[c.key, default: []].removeAll { $0.c == nil || $0.c === c }
         containers[c.key, default: []].append(Weak(c))
-        c.adopt()
+        show(c.key)
     }
 
-    /// A container went away. If it showed the host, the host goes back to the newest one left.
+    /// A container went away. If it showed the host, the host goes back to one that is left.
     func detach(_ c: PaneHostView.Container) {
         containers[c.key]?.removeAll { $0.c == nil || $0.c === c }
         guard c.owns else { return }
-        if let prev = containers[c.key]?.last?.c {
-            prev.adopt()
+        if Self.target(live(c.key)) != nil {
+            show(c.key)
         } else {
             c.host.scheduleStop()
         }
+    }
+
+    private func live(_ key: Key) -> [PaneHostView.Container] { containers[key]?.compactMap(\.c) ?? [] }
+
+    /// The container that shows the host: the newest one in a window, else the newest. SwiftUI
+    /// builds containers it never puts on screen (to measure a transition, or for a layout it then
+    /// drops) and doesn't always tear them down; one of those must not take the host from the
+    /// container on screen, or the pane goes blank and loses the keyboard.
+    static func target<C: UIView>(_ containers: [C]) -> C? {
+        containers.last { $0.window != nil } ?? containers.last
+    }
+
+    /// Moves the pane's host to the container that should show it. Called for a new container and
+    /// when one enters a window. Moving the host can make SwiftUI build more containers before the
+    /// move returns; those wait for it to finish.
+    func show(_ key: Key) {
+        guard !showing.contains(key) else { showAgain.insert(key); return }
+        showing.insert(key)
+        defer { showing.remove(key) }
+        repeat {
+            showAgain.remove(key)
+            Self.target(live(key))?.adopt()
+        } while showAgain.contains(key)
     }
 }

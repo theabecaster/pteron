@@ -111,7 +111,9 @@ struct WindowScreen: View {
             }
             .environment(model)
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { n in
+        // Every frame change, not only "will show": a keyboard can grow from the key bar alone to its
+        // full height without showing again, and the panes' layout must not follow it.
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
             let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
             // How much of the screen the keyboard covers: a split or floating keyboard (the unfolded
             // Duo) has another height and place. The key bar alone (hardware keyboard) is shorter.

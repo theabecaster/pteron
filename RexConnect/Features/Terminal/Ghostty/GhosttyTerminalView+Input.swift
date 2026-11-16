@@ -110,6 +110,7 @@ extension GhosttyTerminalView {
         renderer.setFocused(focused)
         let report = core.input.focusReport(gained: focused)
         if !report.isEmpty { engineDelegate?.engineSend(report) }
+        keyboardFocusHook?(focused)
     }
 
     override func willMove(toWindow newWindow: UIWindow?) {
