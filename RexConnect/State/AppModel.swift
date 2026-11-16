@@ -80,20 +80,11 @@ final class AppModel {
 
     /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
     var hinge: HingeInfo?
-    /// Unfolded Duo: show two panes of the tab, one per page, instead of sidebar + tab.
-    var dualPages: Bool { didSet { UserDefaults.standard.set(dualPages, forKey: "dualPages") } }
-    /// Dual pages: which pane sits on each page, per window.
-    var dualPair: [String: [String]] = [:]
-    /// Quick-reply bars the user dismissed, keyed by block, holding the status they dismissed.
-    var dismissedReplies: [String: String] = [:]
-    /// Composer drafts, per pane. Kept outside the observed state so typing doesn't re-render the screen.
-    @ObservationIgnored var drafts: [String: String] = [:]
 
     /// `connect: false` builds no servers (unit tests and the test host).
     init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
         push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor))
-        dualPages = UserDefaults.standard.bool(forKey: "dualPages")
         push.servers = { [weak self] in self?.servers ?? [] }
         if connect { rebuildServers() }
     }
@@ -178,7 +169,6 @@ final class AppModel {
         guard let w else { return false }
         if let bid, w.allBlocks.contains(where: { $0.id == bid }) {
             focusedPane[w.id] = bid
-            if let p = dualPair[w.id], !p.contains(bid) { dualPair[w.id] = nil }
             Task { await s.focus(sid, block: bid) }
         }
         openRequest = OpenRequest(selection: Selection(serverID: s.id, sessionID: sid, windowID: w.id))

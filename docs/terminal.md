@@ -53,6 +53,14 @@ its plan is `docs/ghostty-engine.md` on that branch.
   show Copy/Paste. Mouse or trackpad drags select directly.
 - Pinch: in fit mode changes the font size (one resize claim at the end); in mirror mode zooms.
 - Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%.
+- A tab shows its splits as the Mac lays them out on wide windows. On compact ones (folded, half
+  the unfolded screen, iPhone portrait) splits show only while every pane keeps 40×8 cells
+  (`SplitGeometry.legible`); otherwise one pane shows at a time, with dots in the title bar and a
+  sideways swipe on the terminal to move between panes.
+- A width change (fold, unfold, rotation, resize) makes fit mode redraw from the server once the
+  new size is claimed: SwiftTerm resizes without reflowing, so old lines would stay cut off.
+- `TerminalHostPool` keeps each pane's `TerminalHost` alive while a fold or unfold swaps the view
+  tree. The new `PaneView` takes the host over, so the stream, screen and keyboard focus carry over.
 
 ## Input
 
@@ -66,5 +74,3 @@ its plan is `docs/ghostty-engine.md` on that branch.
   against Rex's keymap (`KeyChord` spellings like `shift+cmd+d` or `cmd+[Digit1]`), and
   `AppAction` turns the binding into an app command, a key to send (`KeyInput.bytes`), a server
   action, or a forwarded key. Unbound keys reach SwiftTerm.
-- The composer (pane dock) sends a message as text, then Enter as a separate write; multi-line text
-  goes in as a bracketed paste.
