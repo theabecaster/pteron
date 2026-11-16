@@ -9,12 +9,14 @@
 /* Begin PBXBuildFile section */
 		06E0B6EAC1EA139F38D8D180 /* MesloLGS NF Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 6FC8AE73DE5CA232DA3C7C4A /* MesloLGS NF Regular.ttf */; };
 		1A96C1E14C301C9DF5EA2329 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A9B3893057528BAEB973F0 /* AppModel.swift */; };
+		3F0E6807720F0C79E564DA3C /* EdgeReveal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FCA9276E5DB8EAA679BC71F /* EdgeReveal.swift */; };
 		3F8B02686562926168FC6314 /* MesloLGS NF Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 68164475A5C9FB02AB10EDB5 /* MesloLGS NF Italic.ttf */; };
 		44AECC9EF612BB3B143BCEBC /* JSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D6F8B22DCCD9BA958DE880D /* JSON.swift */; };
 		46F16E0111A1B9536929F9B4 /* ServerConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE82B2C7A94534A2C834AED /* ServerConnection.swift */; };
 		47CEE5C2E8E574FF2C3AB0C6 /* Prefs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3652D45242D6A369CD903F62 /* Prefs.swift */; };
 		4937932BC65321E03726982C /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E457CA66E64CDD73211FC4E7 /* AgentsView.swift */; };
 		4E4DAE909AB7AC0913DDC06F /* TerminalStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BDFE9E2D0F60A308B0E345 /* TerminalStream.swift */; };
+		4E5E329ABF8F806FE6168CCC /* GestureTips.swift in Sources */ = {isa = PBXBuildFile; fileRef = E55AEC756ACCD56BAF3F0766 /* GestureTips.swift */; };
 		4FFAC817B5E2F8D1A32E5F14 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA441015D33531A959DE206D /* SidebarView.swift */; };
 		563F4F3F91FDC44B7D4099BD /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A055753C27DEA288961D8FB4 /* Theme.swift */; };
 		56A36A5D00548255CFDB0BE7 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F109CEE782779190FC8C61 /* RootView.swift */; };
@@ -22,6 +24,7 @@
 		64C9ECB22164DB5A45348BC9 /* themes.json in Resources */ = {isa = PBXBuildFile; fileRef = 7D15038E6F4BB703628C8577 /* themes.json */; };
 		75CBDA7DC81C707CF21FADB8 /* PaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3283DC3428ED2FF39CB3E79 /* PaneView.swift */; };
 		8F47BCE5DDC1486F2F825258 /* RexDuoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52A8A3B01CD6A86DE56B129A /* RexDuoApp.swift */; };
+		92FBA60A03D1CEA32B8E990C /* BarGestures.swift in Sources */ = {isa = PBXBuildFile; fileRef = C36D0789E38A499E44EC7DC4 /* BarGestures.swift */; };
 		997E54C894ED1100A5A8BD0D /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22673A3DDD733ABB237BC3A /* KeyBar.swift */; };
 		99B2E8F084A93A68B01DA4A0 /* RexControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B100EBBEB938BA419C66C79 /* RexControl.swift */; };
 		A2FC5D047559BCED8E620209 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 40A5A6C20B3CC18CCF321DC9 /* Assets.xcassets */; };
@@ -31,6 +34,7 @@
 		E230480A186CEEEA3D460A74 /* MesloLGS NF Bold Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7FDEF5304A507E55668C7764 /* MesloLGS NF Bold Italic.ttf */; };
 		E2DBF4278E1B27E665567126 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E842F7EED38AB887CA95A142 /* Models.swift */; };
 		E4377E6CF44A7DD29F474F84 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 36EACA01B130B7317BA01A95 /* SwiftTerm */; };
+		E8D08B224AB23DF04C06EEC4 /* PhoneState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 450DE0047F69FD77BB7A05B6 /* PhoneState.swift */; };
 		F42C7274F19FE0B1672560D7 /* LaunchTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D344A7771508EA552910BC1 /* LaunchTransition.swift */; };
 /* End PBXBuildFile section */
 
@@ -39,6 +43,7 @@
 		3652D45242D6A369CD903F62 /* Prefs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prefs.swift; sourceTree = "<group>"; };
 		37F109CEE782779190FC8C61 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		40A5A6C20B3CC18CCF321DC9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		450DE0047F69FD77BB7A05B6 /* PhoneState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneState.swift; sourceTree = "<group>"; };
 		52A8A3B01CD6A86DE56B129A /* RexDuoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RexDuoApp.swift; sourceTree = "<group>"; };
 		5C0D8DE77633FDB71FF54DCA /* WindowScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowScreen.swift; sourceTree = "<group>"; };
 		68164475A5C9FB02AB10EDB5 /* MesloLGS NF Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Italic.ttf"; sourceTree = "<group>"; };
@@ -50,6 +55,7 @@
 		8D344A7771508EA552910BC1 /* LaunchTransition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchTransition.swift; sourceTree = "<group>"; };
 		8D6F8B22DCCD9BA958DE880D /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
 		8EE82B2C7A94534A2C834AED /* ServerConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConnection.swift; sourceTree = "<group>"; };
+		9FCA9276E5DB8EAA679BC71F /* EdgeReveal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeReveal.swift; sourceTree = "<group>"; };
 		A055753C27DEA288961D8FB4 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		A0BDFE9E2D0F60A308B0E345 /* TerminalStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalStream.swift; sourceTree = "<group>"; };
 		A3283DC3428ED2FF39CB3E79 /* PaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneView.swift; sourceTree = "<group>"; };
@@ -57,8 +63,10 @@
 		B22673A3DDD733ABB237BC3A /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
 		BC5FCF0AAEEA7001A3D49613 /* RexDuo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RexDuo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD8035F573FBF207BAC58480 /* TerminalHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHost.swift; sourceTree = "<group>"; };
+		C36D0789E38A499E44EC7DC4 /* BarGestures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarGestures.swift; sourceTree = "<group>"; };
 		CB06DDCBADF73246589AE682 /* MesloLGS NF Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MesloLGS NF Bold.ttf"; sourceTree = "<group>"; };
 		E457CA66E64CDD73211FC4E7 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
+		E55AEC756ACCD56BAF3F0766 /* GestureTips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureTips.swift; sourceTree = "<group>"; };
 		E842F7EED38AB887CA95A142 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		FE41993FA633CFC2CF1986F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -138,9 +146,13 @@
 			isa = PBXGroup;
 			children = (
 				E457CA66E64CDD73211FC4E7 /* AgentsView.swift */,
+				C36D0789E38A499E44EC7DC4 /* BarGestures.swift */,
+				9FCA9276E5DB8EAA679BC71F /* EdgeReveal.swift */,
+				E55AEC756ACCD56BAF3F0766 /* GestureTips.swift */,
 				B22673A3DDD733ABB237BC3A /* KeyBar.swift */,
 				8D344A7771508EA552910BC1 /* LaunchTransition.swift */,
 				A3283DC3428ED2FF39CB3E79 /* PaneView.swift */,
+				450DE0047F69FD77BB7A05B6 /* PhoneState.swift */,
 				37F109CEE782779190FC8C61 /* RootView.swift */,
 				83D9382C1B610CA4DDB693E3 /* SettingsView.swift */,
 				AA441015D33531A959DE206D /* SidebarView.swift */,
@@ -262,11 +274,15 @@
 			files = (
 				4937932BC65321E03726982C /* AgentsView.swift in Sources */,
 				1A96C1E14C301C9DF5EA2329 /* AppModel.swift in Sources */,
+				92FBA60A03D1CEA32B8E990C /* BarGestures.swift in Sources */,
+				3F0E6807720F0C79E564DA3C /* EdgeReveal.swift in Sources */,
+				4E5E329ABF8F806FE6168CCC /* GestureTips.swift in Sources */,
 				44AECC9EF612BB3B143BCEBC /* JSON.swift in Sources */,
 				997E54C894ED1100A5A8BD0D /* KeyBar.swift in Sources */,
 				F42C7274F19FE0B1672560D7 /* LaunchTransition.swift in Sources */,
 				E2DBF4278E1B27E665567126 /* Models.swift in Sources */,
 				75CBDA7DC81C707CF21FADB8 /* PaneView.swift in Sources */,
+				E8D08B224AB23DF04C06EEC4 /* PhoneState.swift in Sources */,
 				47CEE5C2E8E574FF2C3AB0C6 /* Prefs.swift in Sources */,
 				99B2E8F084A93A68B01DA4A0 /* RexControl.swift in Sources */,
 				8F47BCE5DDC1486F2F825258 /* RexDuoApp.swift in Sources */,

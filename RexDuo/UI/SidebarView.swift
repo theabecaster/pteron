@@ -10,6 +10,8 @@ struct SidebarView: View {
     @State private var renaming: RenameTarget?
     @State private var renameText = ""
     @State private var closing: RenameTarget?
+    /// A tab with an agent in it: closing asks first.
+    @State private var closingTab: RenameTarget?
     @State private var showAgents = false
 
     struct RenameTarget: Identifiable {
@@ -40,6 +42,17 @@ struct SidebarView: View {
                 remoteHosts(theme)
             }
             .listStyle(.plain)
+            .confirmationDialog("Close this tab?",
+                                isPresented: Binding(get: { closingTab != nil }, set: { if !$0 { closingTab = nil } }),
+                                titleVisibility: .visible) {
+                Button("Close Tab", role: .destructive) {
+                    if let c = closingTab, let w = c.windowID { Task { await c.server.closeWindow(c.sessionID, w) } }
+                    closingTab = nil
+                }
+                Button("Cancel", role: .cancel) { closingTab = nil }
+            } message: {
+                Text("The agent running there stops, on the Mac too.")
+            }
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 44)
             .refreshable { await model.refresh() }
@@ -189,9 +202,18 @@ struct SidebarView: View {
     private func windowRow(_ server: ServerConnection, _ v: SessionView, _ w: WindowInfo, _ theme: TermTheme, textSize: Double) -> some View {
         let selected = model.selection == Selection(serverID: server.id, sessionID: v.sessionID, windowID: w.id)
         let rename = { renameText = w.label; renaming = RenameTarget(server: server, sessionID: v.sessionID, windowID: w.id) }
+        // Destructive: never a full swipe, and a confirmation when an agent would stop.
+        let close = {
+            if server.windowAgent(w) != nil {
+                closingTab = RenameTarget(server: server, sessionID: v.sessionID, windowID: w.id, label: w.label)
+            } else {
+                Task { await server.closeWindow(v.sessionID, w.id) }
+            }
+        }
         return styled(
             Button {
                 let sel = Selection(serverID: server.id, sessionID: v.sessionID, windowID: w.id)
+                if !selected { GestureTips.donate(TabSwipeTip.switchedTabs) }
                 model.select(server, session: v.sessionID, window: w.id)
                 onSelect(sel)
             } label: {
@@ -201,10 +223,10 @@ struct SidebarView: View {
             .contextMenu {
                 Button(action: rename) { Label("Rename Tab", systemImage: "pencil") }
                 Button { Task { await server.newWindow(v.sessionID) } } label: { Label("New Tab", systemImage: "plus.square") }
-                Button(role: .destructive) { Task { await server.closeWindow(v.sessionID, w.id) } } label: { Label("Close Tab", systemImage: "xmark") }
+                Button(role: .destructive, action: close) { Label("Close Tab", systemImage: "xmark") }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button { Task { await server.closeWindow(v.sessionID, w.id) } } label: { Label("Close", systemImage: "xmark") }
+                Button(action: close) { Label("Close", systemImage: "xmark") }
                     .tint(theme.chrome.error)
                 Button(action: rename) { Label("Rename", systemImage: "pencil") }
                     .tint(theme.chrome.secondary)

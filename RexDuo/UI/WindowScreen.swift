@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import TipKit
 
 /// One Rex tab (window): a header, its panes, and a dock with a message composer, pane pager and
 /// agent quick replies.
@@ -16,6 +17,12 @@ struct WindowScreen: View {
         case dual(split: CGFloat, vertical: Bool)
     }
 
+    /// A close that needs a second tap because an agent would stop.
+    enum Confirm: Identifiable {
+        case pane(String), tab
+        var id: String { if case .pane(let b) = self { return b } else { return "tab" } }
+    }
+
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
@@ -25,7 +32,7 @@ struct WindowScreen: View {
     let windowID: String
     let mode: Mode
     @Binding var sidebarVisible: Bool
-    /// Opens another tab (tab overview).
+    /// Opens another tab (tab overview, title menu, tab swipes, waiting pill).
     var onOpen: (Selection) -> Void = { _ in }
 
     @State private var renaming = false
@@ -34,15 +41,20 @@ struct WindowScreen: View {
     @State private var forward = true
     @State private var keyboardUp = false
     @State private var showOverview = false
+    @State private var confirm: Confirm?
+
+    private let zoomTip = ZoomGestureTip()
 
     private var view: SessionView? { server.views[sessionID] }
     private var window: WindowInfo? { view?.window(windowID) }
+    /// Zoomed on the phone only (see `PhoneState.zoomed`).
+    private var zoomedHere: Bool { PhoneState.shared.zoomed.contains(windowID) }
 
     var body: some View {
         let theme = ThemeStore.current(scheme)
         VStack(spacing: 0) {
             if let w = window {
-                if case .dual(let split, let vertical) = mode, w.orderedBlockIDs.count >= 2 {
+                if case .dual(let split, let vertical) = mode, dualShown(w) {
                     dualPages(w, theme, split: split, vertical: vertical)
                 } else {
                     header(w, theme)
@@ -51,6 +63,7 @@ struct WindowScreen: View {
                         .clipped()
                     if let b = activeBlock(w) {
                         PaneDock(server: server, sessionID: sessionID, window: w, block: b, keyboardUp: keyboardUp,
+                                 actions: actions(w, block: b), splitDownByDefault: mode == .compact, stepIDs: w.orderedBlockIDs,
                                  onPick: { pick(w, $0) }, onStep: { switchPane(w, by: $0) })
                     }
                 }
@@ -66,10 +79,23 @@ struct WindowScreen: View {
             }
         }
         .background(theme.chrome.canvas.ignoresSafeArea(edges: .bottom))
+        .background(CommandListener { handle($0) })
         .alert("Rename Tab", isPresented: $renaming) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) {}
             Button("Rename") { Task { await server.renameWindow(sessionID, windowID, renameText) } }
+        }
+        .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
+                            titleVisibility: .visible, presenting: confirm) { c in
+            switch c {
+            case .pane(let b):
+                Button("Close Pane", role: .destructive) { Task { await server.closeBlock(sessionID, b) } }
+            case .tab:
+                Button("Close Tab", role: .destructive) { closeTab() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("The agent running there stops, on the Mac too.")
         }
         .fullScreenCover(isPresented: $showOverview) {
             TabOverview(server: server, currentSessionID: sessionID, currentWindowID: windowID) { sel in
@@ -87,11 +113,22 @@ struct WindowScreen: View {
         }
     }
 
+    private var confirmTitle: String {
+        if case .tab = confirm { return "Close this tab?" }
+        return "Close this pane?"
+    }
+
     // MARK: State helpers
 
     private var isDual: Bool { if case .dual = mode { return true } else { return false } }
 
-    private func useSplits(_ w: WindowInfo) -> Bool {
+    /// Two panes, one per page, are on screen (not zoomed).
+    private func dualShown(_ w: WindowInfo) -> Bool {
+        isDual && w.orderedBlockIDs.count >= 2 && !zoomedHere
+    }
+
+    /// Splits as the Mac lays them out would show, zoom aside.
+    private func splitsFit(_ w: WindowInfo) -> Bool {
         guard w.layout != nil, w.orderedBlockIDs.count > 1 else { return false }
         switch mode {
         case .compact, .dual: return false
@@ -105,10 +142,24 @@ struct WindowScreen: View {
         }
     }
 
+    private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
+
+    /// Zoom means something only while more than one pane is on screen.
+    private func canZoom(_ w: WindowInfo) -> Bool {
+        zoomedHere || (w.orderedBlockIDs.count >= 2 && (isDual || splitsFit(w)))
+    }
+
     private func activeBlock(_ w: WindowInfo) -> String? {
         if let f = model.focusedPane[w.id], w.allBlocks.contains(where: { $0.id == f }) { return f }
         if let z = w.zoomedBlockID { return z }
         return w.focusedBlockID ?? w.orderedBlockIDs.first
+    }
+
+    /// The pane commands act on: the active pane, or in two pages the active page's pane.
+    private func currentBlock(_ w: WindowInfo) -> String? {
+        guard dualShown(w) else { return activeBlock(w) }
+        let pair = dualPair(w)
+        return activeBlock(w).flatMap { pair.contains($0) ? $0 : nil } ?? pair[0]
     }
 
     /// Shows pane `id` with a slide in the direction of travel.
@@ -116,16 +167,17 @@ struct WindowScreen: View {
         let ids = w.orderedBlockIDs
         guard let cur = activeBlock(w), id != cur else { return }
         forward = fw ?? ((ids.firstIndex(of: id) ?? 0) > (ids.firstIndex(of: cur) ?? 0))
-        Haptic.tap()
+        Haptic.selection()
         withAnimation(.snappy(duration: 0.24)) { model.focusedPane[w.id] = id }
         Task { await server.focus(sessionID, block: id) }
     }
 
-    /// Terminal or dock swipe: +1 next pane, -1 previous pane (wraps around).
+    /// Terminal or dock swipe: +1 next pane, -1 previous pane. No wrap: at either end, a bump.
     private func switchPane(_ w: WindowInfo, by dir: Int) {
         let ids = w.orderedBlockIDs
-        guard ids.count > 1, let cur = activeBlock(w), let i = ids.firstIndex(of: cur) else { return }
-        pick(w, ids[(i + dir + ids.count) % ids.count], forward: dir > 0)
+        guard let cur = activeBlock(w), let i = ids.firstIndex(of: cur) else { return }
+        guard ids.indices.contains(i + dir) else { Haptic.bump(); return }
+        pick(w, ids[i + dir], forward: dir > 0)
     }
 
     private var slide: AnyTransition {
@@ -133,26 +185,172 @@ struct WindowScreen: View {
                     removal: .move(edge: forward ? .leading : .trailing))
     }
 
+    // MARK: Actions
+
+    private func actions(_ w: WindowInfo, block b: String, page: Int? = nil) -> PaneActions {
+        PaneActions(
+            split: { split(vertical: $0, anchor: b) },
+            newTab: { newTab() },
+            zoom: canZoom(w) ? { toggleZoom() } : nil,
+            zoomed: zoomedHere,
+            swapPages: page.map { p in { if let w = window { setDual(w, page: 1 - p, b) } } },
+            clear: { Task { await server.clear(sessionID, b) } },
+            renameTab: { rename() },
+            close: { requestClose(b) },
+            overview: { openOverview() })
+    }
+
+    private func openOverview() {
+        Haptic.tap()
+        showOverview = true
+    }
+
+    private func rename() {
+        renameText = window?.label ?? ""
+        renaming = true
+    }
+
+    /// Phone-only zoom: show the active pane alone, or go back to splits / two pages.
+    private func toggleZoom() {
+        guard let w = window, canZoom(w) else { Haptic.bump(); return }
+        let st = PhoneState.shared
+        Haptic.zoom()
+        withAnimation(.snappy(duration: 0.25)) {
+            if st.zoomed.contains(windowID) {
+                st.zoomed.remove(windowID)
+            } else {
+                if let b = currentBlock(w) { model.focusedPane[w.id] = b }
+                st.zoomed.insert(windowID)
+            }
+        }
+    }
+
+    /// Splits `anchor` (default: the pane commands act on), then shows the new pane
+    /// (on the other page with two pages).
+    private func split(vertical: Bool, anchor a: String? = nil) {
+        guard let w = window, let anchor = a ?? currentBlock(w) else { return }
+        let before = Set(w.orderedBlockIDs)
+        let page = dualShown(w) ? dualPair(w).firstIndex(of: anchor) : nil
+        let server = server, sid = sessionID, wid = windowID
+        Haptic.tap()
+        Task {
+            await server.split(sid, anchor: anchor, vertical: vertical)
+            guard let new = await Poll.until({ server.views[sid]?.window(wid)?.orderedBlockIDs.first { !before.contains($0) } }),
+                  let w = window else { return }
+            if let page, dualShown(w) { setDual(w, page: 1 - page, new) } else { pick(w, new, forward: true) }
+        }
+    }
+
+    /// Opens a tab in this session and shows it once it exists.
+    private func newTab() {
+        let before = Set(view?.windows.map(\.id) ?? [])
+        let server = server, sid = sessionID, open = onOpen
+        Haptic.tap()
+        Task {
+            await server.newWindow(sid)
+            if let wid = await Poll.until({ server.views[sid]?.windows.first { !before.contains($0.id) }?.id }) {
+                open(Selection(serverID: server.id, sessionID: sid, windowID: wid))
+            }
+        }
+    }
+
+    /// Closing stops whatever runs there; ask first when that's an agent.
+    private func requestClose(_ b: String) {
+        if server.meta[b]?.agentKind != nil { confirm = .pane(b); return }
+        Task { await server.closeBlock(sessionID, b) }
+    }
+
+    private func requestCloseTab() {
+        if let w = window, server.windowAgent(w) != nil { confirm = .tab; return }
+        closeTab()
+    }
+
+    /// Closes this tab and shows its neighbor in the session (next, else previous), like Safari.
+    private func closeTab() {
+        let next = TabNav.neighbor(server, sessionID, windowID, by: 1) ?? TabNav.neighbor(server, sessionID, windowID, by: -1)
+        let server = server, sid = sessionID, wid = windowID, open = onOpen
+        Task {
+            await server.closeWindow(sid, wid)
+            if let next, server.views[sid]?.window(next.windowID) != nil { open(next) }
+        }
+    }
+
+    /// Previous / next tab in this session. No wrap.
+    private func switchTab(by d: Int, haptic: Bool = true) {
+        guard let sel = TabNav.neighbor(server, sessionID, windowID, by: d) else { Haptic.bump(); return }
+        if haptic { Haptic.selection() }
+        onOpen(sel)
+    }
+
+    /// `goToTab(n)`: the n-th tab of this session, counting from 1; 9 is the last tab (as in Safari).
+    private func goToTab(_ n: Int) {
+        let ws = view?.windows ?? []
+        let i = n == 9 ? ws.count - 1 : n - 1
+        guard ws.indices.contains(i) else { Haptic.bump(); return }
+        guard ws[i].id != windowID else { return }
+        Haptic.selection()
+        onOpen(Selection(serverID: server.id, sessionID: sessionID, windowID: ws[i].id))
+    }
+
+    private func stepPane(_ d: Int) {
+        guard let w = window else { return }
+        if dualShown(w), let b = currentBlock(w), let page = dualPair(w).firstIndex(of: b) {
+            cycleDual(w, page: page, by: d)
+        } else {
+            switchPane(w, by: d)
+        }
+    }
+
+    private func jump(_ item: Waiting.Item) {
+        onOpen(Waiting.prepare(model, item))
+    }
+
+    /// Runs the tab-scoped `RexCommand`s; RootView runs the app-wide ones.
+    private func handle(_ r: CommandRequest) {
+        guard r.command.isWindowCommand, PhoneState.shared.claim(r) else { return }
+        guard let w = window else { return }
+        switch r.command {
+        case .newTab: newTab()
+        case .splitRight: split(vertical: false)
+        case .splitDown: split(vertical: true)
+        case .closePane: if let b = currentBlock(w) { requestClose(b) }
+        case .closeTab: requestCloseTab()
+        case .renameTab: rename()
+        case .nextTab: switchTab(by: 1)
+        case .previousTab: switchTab(by: -1)
+        case .goToTab(let n): goToTab(n)
+        case .nextPane: stepPane(1)
+        case .previousPane: stepPane(-1)
+        case .toggleZoom: toggleZoom()
+        case .clear: if let b = currentBlock(w) { Task { await server.clear(sessionID, b) } }
+        case .tabOverview: openOverview()
+        case .newSession, .toggleSidebar, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
+        }
+    }
+
     // MARK: Header
 
     private func header(_ w: WindowInfo?, _ theme: TermTheme) -> some View {
         HStack(spacing: 0) {
             leadingButton()
-            VStack(alignment: .leading, spacing: 1) {
-                if let w { TabTitle(server: server, window: w) } else { Text("") }
+            if let w {
+                titleBar(w, theme)
+            } else {
                 Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(theme.chrome.tertiary)
-                    .lineLimit(2)
+                    .padding(.leading, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.leading, 2)
-            .padding(.vertical, 3)
-            Spacer(minLength: 4)
             if let w, let b = activeBlock(w) {
+                WaitingPill(visible: [b], theme: theme, onJump: jump)
                 BlockBadge(server: server, block: b, theme: theme)
-                    .padding(.trailing, 6)
+                    .padding(.horizontal, 6)
+                if zoomedHere { unzoomButton(theme) }
                 if mode != .compact, w.orderedBlockIDs.count >= 2 { dualToggle(theme) }
-                overviewButton
+                // Beside the sidebar every tab is already listed; the title menu and a swipe up on
+                // the pager still open the overview. Leaves the title room on a 334 pt Duo page.
+                if mode != .page { overviewButton }
                 paneMenu(w, block: b)
             }
         }
@@ -161,6 +359,16 @@ struct WindowScreen: View {
         .frame(minHeight: 44)
         .padding(.horizontal, 4)
         .background(theme.chrome.canvas)
+        .animation(.snappy(duration: 0.2), value: zoomedHere)
+    }
+
+    private func titleBar(_ w: WindowInfo, _ theme: TermTheme) -> some View {
+        TabTitleBar(server: server, sessionID: sessionID, window: w, subtitle: subtitle, theme: theme,
+                    onSwipe: { switchTab(by: $0, haptic: false) },
+                    onPick: { Haptic.selection(); onOpen($0) },
+                    onOverview: { openOverview() },
+                    onNewTab: { newTab() },
+                    onRename: { rename() })
     }
 
     /// Session name, plus the server's name when more than one server is set up.
@@ -170,10 +378,13 @@ struct WindowScreen: View {
     }
 
     private var overviewButton: some View {
-        IconButton(symbol: "square.on.square", label: "All Tabs") {
-            Haptic.tap()
-            showOverview = true
-        }
+        IconButton(symbol: "square.on.square", label: "All Tabs") { openOverview() }
+    }
+
+    private func unzoomButton(_ theme: TermTheme) -> some View {
+        IconButton(symbol: "arrow.down.right.and.arrow.up.left", label: "Unzoom") { toggleZoom() }
+            .foregroundStyle(theme.accent)
+            .transition(.scale.combined(with: .opacity))
     }
 
     @ViewBuilder
@@ -210,14 +421,19 @@ struct WindowScreen: View {
     private func paneMenu(_ w: WindowInfo, block: String) -> some View {
         Menu {
             Section {
-                Button { Task { await server.split(sessionID, anchor: block, vertical: false) } } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-                Button { Task { await server.split(sessionID, anchor: block, vertical: true) } } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
-                Button { Task { await server.newWindow(sessionID) } } label: { Label("New Tab", systemImage: "plus.square") }
+                Button { GestureTips.donate(PlusMenuTip.splitFromMenu); split(vertical: false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
+                Button { GestureTips.donate(PlusMenuTip.splitFromMenu); split(vertical: true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
+                Button { newTab() } label: { Label("New Tab", systemImage: "plus.square") }
             }
             Section {
-                if w.allBlocks.count > 1 {
-                    Button { Task { await server.zoom(sessionID, block: block, on: nil) } } label: {
-                        Label(w.zoomedBlockID == nil ? "Zoom Pane" : "Unzoom", systemImage: "arrow.up.left.and.arrow.down.right")
+                if canZoom(w) {
+                    Button {
+                        if !zoomedHere { GestureTips.donate(ZoomGestureTip.zoomedFromMenu) }
+                        toggleZoom()
+                    } label: {
+                        Label(zoomedHere ? "Unzoom" : "Zoom Pane",
+                              systemImage: zoomedHere ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        Text("or tap with two fingers")
                     }
                 }
                 Button { Task { await server.clear(sessionID, block) } } label: { Label("Clear", systemImage: "eraser") }
@@ -227,11 +443,11 @@ struct WindowScreen: View {
                 } label: {
                     Label(Prefs.shared.sizing == .fit ? "Mirror Mac Size" : "Fit to Phone", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                 }
-                Button { renameText = w.label; renaming = true } label: { Label("Rename Tab", systemImage: "pencil") }
+                Button { rename() } label: { Label("Rename Tab…", systemImage: "pencil") }
             }
             Section {
-                Button(role: .destructive) { Task { await server.closeBlock(sessionID, block) } } label: { Label("Close Pane", systemImage: "xmark.square") }
-                Button(role: .destructive) { Task { await server.closeWindow(sessionID, windowID) } } label: { Label("Close Tab", systemImage: "xmark") }
+                Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }
+                Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
             }
         } label: {
             Image(systemName: "ellipsis.circle")
@@ -239,6 +455,7 @@ struct WindowScreen: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("Pane Actions")
+        .popoverTip(zoomTip, arrowEdge: .top)
     }
 
     // MARK: Canvas
@@ -305,7 +522,7 @@ struct WindowScreen: View {
         guard p[page] != id else { return }
         if p[1 - page] == id { p.swapAt(0, 1) } else { p[page] = id }
         forward = fw
-        Haptic.tap()
+        Haptic.selection()
         withAnimation(.snappy(duration: 0.24)) {
             model.dualPair[w.id] = p
             model.focusedPane[w.id] = id
@@ -313,12 +530,13 @@ struct WindowScreen: View {
         Task { await server.focus(sessionID, block: id) }
     }
 
-    /// Swipe on a page: cycle that page through the panes the other page isn't showing.
+    /// Swipe on a page: step that page through the panes the other page isn't showing. No wrap.
     private func cycleDual(_ w: WindowInfo, page: Int, by dir: Int) {
         let p = dualPair(w)
         let pool = w.orderedBlockIDs.filter { $0 != p[1 - page] }
-        guard pool.count > 1, let i = pool.firstIndex(of: p[page]) else { return }
-        setDual(w, page: page, pool[(i + dir + pool.count) % pool.count], forward: dir > 0)
+        guard let i = pool.firstIndex(of: p[page]) else { return }
+        guard pool.indices.contains(i + dir) else { Haptic.bump(); return }
+        setDual(w, page: page, pool[i + dir], forward: dir > 0)
     }
 
     private func dualPages(_ w: WindowInfo, _ theme: TermTheme, split: CGFloat, vertical: Bool) -> some View {
@@ -354,9 +572,12 @@ struct WindowScreen: View {
                         .lineLimit(1)
                 }
                 .padding(.leading, page == 0 ? 2 : 12)
-                Spacer(minLength: 4)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+                .contextMenu { PaneMenuItems(actions: actions(w, block: b, page: page)) }
+                if page == 0 { WaitingPill(visible: Set(pair), theme: theme, onJump: jump) }
                 BlockBadge(server: server, block: b, theme: theme)
-                    .padding(.trailing, 6)
+                    .padding(.horizontal, 6)
                 if page == 1 {
                     dualToggle(theme)
                     overviewButton
@@ -386,6 +607,8 @@ struct WindowScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             PaneDock(server: server, sessionID: sessionID, window: w, block: b, keyboardUp: keyboardUp,
+                     actions: actions(w, block: b, page: page), splitDownByDefault: false,
+                     stepIDs: w.orderedBlockIDs.filter { $0 != pair[1 - page] },
                      onPick: { setDual(w, page: page, $0) }, onStep: { cycleDual(w, page: page, by: $0) })
         }
     }
@@ -439,11 +662,17 @@ struct PaneDock: View {
     let window: WindowInfo
     let block: String
     let keyboardUp: Bool
+    let actions: PaneActions
+    /// "+" splits down when folded (one narrow pane), right when unfolded.
+    let splitDownByDefault: Bool
+    /// The panes the pager steps through.
+    let stepIDs: [String]
     let onPick: (String) -> Void
     let onStep: (Int) -> Void
 
     @State private var text = ""
     @FocusState private var composing: Bool
+    private let plusTip = PlusMenuTip()
 
     static let rowHeight: CGFloat = 48
 
@@ -504,6 +733,12 @@ struct PaneDock: View {
 
     private func send(_ bytes: String) {
         Haptic.tap()
+        Task { await server.write(sessionID, block, bytes) }
+    }
+
+    /// Stop: a hard, distinct haptic so the user feels it.
+    private func interrupt(_ bytes: String) {
+        Haptic.interrupt()
         Task { await server.write(sessionID, block, bytes) }
     }
 
@@ -591,32 +826,16 @@ struct PaneDock: View {
     // MARK: Pager
 
     private func pager(_ theme: TermTheme, working: Bool, sig: String?) -> some View {
-        let ids = window.orderedBlockIDs
-        let idx = ids.firstIndex(of: block) ?? 0
+        let step = stepIDs.firstIndex(of: block) ?? 0
+        let many = window.orderedBlockIDs.count > 1
         return HStack(spacing: 0) {
-            if ids.count > 1 {
-                IconButton(symbol: "chevron.left", label: "Previous Pane") { onStep(-1) }
-                    .foregroundStyle(theme.chrome.secondary)
+            if many {
+                chevron("chevron.left", "Previous Pane", enabled: step > 0, theme) { onStep(-1) }
             }
-            VStack(spacing: 4) {
-                PaneName(server: server, window: window, block: block)
-                    .font(.caption.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(theme.fg)
-                if ids.count > 1 { dots(ids, idx, theme) }
-            }
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 16).onEnded { v in
-                guard abs(v.translation.width) > 36, abs(v.translation.width) > abs(v.translation.height) else { return }
-                onStep(v.translation.width < 0 ? 1 : -1)
-            })
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")
-            .accessibilityAdjustableAction { dir in onStep(dir == .increment ? 1 : -1) }
-            if ids.count > 1 {
-                IconButton(symbol: "chevron.right", label: "Next Pane") { onStep(1) }
-                    .foregroundStyle(theme.chrome.secondary)
+            PagerCenter(server: server, window: window, block: block, stepIDs: stepIDs, theme: theme, actions: actions,
+                        onPick: onPick, onStep: onStep, onNewPane: { actions.split(splitDownByDefault) })
+            if many {
+                chevron("chevron.right", "Next Pane", enabled: step < stepIDs.count - 1, theme) { onStep(1) }
             }
             if working {
                 interrupt(theme, sig: sig).transition(.opacity)
@@ -627,58 +846,66 @@ struct PaneDock: View {
         .padding(.horizontal, 2)
     }
 
-    private func dots(_ ids: [String], _ idx: Int, _ theme: TermTheme) -> some View {
-        Group {
-            if ids.count <= 9 {
-                HStack(spacing: 5) {
-                    ForEach(Array(ids.enumerated()), id: \.element) { i, bid in
-                        PagerDot(server: server, block: bid, selected: i == idx, theme: theme)
-                            .onTapGesture { onPick(bid) }
-                    }
-                }
-            } else {
-                Text("\(idx + 1) / \(ids.count)").font(.caption2.weight(.semibold)).foregroundStyle(theme.chrome.tertiary)
-            }
-        }
+    /// Pane arrows dim at either end: paging doesn't wrap.
+    private func chevron(_ symbol: String, _ label: String, enabled: Bool, _ theme: TermTheme,
+                         action: @escaping () -> Void) -> some View {
+        IconButton(symbol: symbol, label: label, action: action)
+            .foregroundStyle(enabled ? theme.chrome.secondary : theme.chrome.tertiary.opacity(0.4))
+            .disabled(!enabled)
     }
 
+    /// Stop. Tap sends Esc to an agent (Ctrl-C to a shell); touch and hold for the other ways to stop.
     private func interrupt(_ theme: TermTheme, sig: String?) -> some View {
-        HStack(spacing: 0) {
-            Button { send("\u{1b}") } label: {
-                Text("Esc · interrupt")
+        let agent = server.meta[block]?.agentKind != nil
+        return HStack(spacing: 0) {
+            Menu {
+                Button { interrupt("\u{1b}") } label: { Label("Esc", systemImage: "escape"); Text("Interrupt the agent") }
+                Button { interrupt("\u{3}") } label: { Label("Ctrl-C", systemImage: "control") }
+                Button(role: .destructive) { interrupt("\u{3}\u{3}") } label: { Label("Ctrl-C Twice", systemImage: "xmark.octagon"); Text("Exits most agents") }
+            } label: {
+                Text(agent ? "Esc · interrupt" : "^C · interrupt")
                     .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.chrome.working)
                     .padding(.leading, 12).padding(.trailing, 4)
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())
+            } primaryAction: {
+                interrupt(agent ? "\u{1b}" : "\u{3}")
             }
-            .accessibilityLabel("Interrupt: send Escape")
+            .accessibilityLabel(agent ? "Interrupt: send Escape" : "Interrupt: send Control C")
+            .accessibilityHint("Touch and hold for more ways to stop.")
             Button { dismiss(sig) } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
                     .frame(width: 30, height: 44)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Hide Interrupt")
         }
-        .buttonStyle(.plain)
         .foregroundStyle(theme.chrome.working)
         .background(Capsule().fill(theme.chrome.working.opacity(0.16)).frame(height: 32))
         .fixedSize()
         .padding(.trailing, 4)
     }
 
+    /// "+": tap splits (down when folded, right when unfolded); touch and hold for the menu.
     private func newMenu(_ theme: TermTheme) -> some View {
         Menu {
-            Button { Task { await server.split(sessionID, anchor: block, vertical: false) } } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-            Button { Task { await server.split(sessionID, anchor: block, vertical: true) } } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
-            Button { Task { await server.newWindow(sessionID) } } label: { Label("New Tab", systemImage: "plus.square") }
+            Button { actions.split(false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
+            Button { actions.split(true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
+            Button { actions.newTab() } label: { Label("New Tab", systemImage: "plus.square") }
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(theme.chrome.secondary)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
+        } primaryAction: {
+            actions.split(splitDownByDefault)
         }
-        .accessibilityLabel("New Pane or Tab")
+        .accessibilityLabel(splitDownByDefault ? "Split Down" : "Split Right")
+        .accessibilityHint("Touch and hold for more.")
+        .popoverTip(plusTip, arrowEdge: .bottom)
     }
 
     // MARK: Quick replies
@@ -779,23 +1006,12 @@ struct TabOverview: View {
                     ForEach(order) { s in
                         if let v = server.views[s.id] {
                             VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 4) {
-                                    Text(s.label.isEmpty ? "session" : s.label)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(theme.chrome.secondary)
-                                        .lineLimit(2)
-                                    Spacer(minLength: 4)
-                                    Button { Haptic.tap(); Task { await server.newWindow(s.id) } } label: {
-                                        Label("New Tab", systemImage: "plus")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(theme.accent)
-                                            .padding(.horizontal, 8)
-                                            .frame(minHeight: 44)
-                                            .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(PressScale())
-                                }
-                                .padding(.leading, 4)
+                                Text(s.label.isEmpty ? "session" : s.label)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(theme.chrome.secondary)
+                                    .lineLimit(2)
+                                    .padding(.leading, 4)
+                                    .padding(.top, 8)
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
                                     ForEach(v.windows) { w in
                                         TabCard(server: server, sessionID: s.id, window: w,
@@ -803,6 +1019,7 @@ struct TabOverview: View {
                                             onOpen(Selection(serverID: server.id, sessionID: s.id, windowID: w.id))
                                         }
                                     }
+                                    NewTabCard(theme: theme) { newTab(in: s.id) }
                                 }
                             }
                         }
@@ -818,6 +1035,42 @@ struct TabOverview: View {
             }
         }
         .foregroundStyle(theme.fg)
+    }
+
+    /// Opens a tab in that session and goes straight to it.
+    private func newTab(in sid: String) {
+        Haptic.tap()
+        let before = Set(server.views[sid]?.windows.map(\.id) ?? [])
+        let server = server, open = onOpen
+        Task {
+            await server.newWindow(sid)
+            if let wid = await Poll.until({ server.views[sid]?.windows.first { !before.contains($0.id) }?.id }) {
+                open(Selection(serverID: server.id, sessionID: sid, windowID: wid))
+            }
+        }
+    }
+}
+
+/// The last card of each session in the tab overview, like Safari's.
+struct NewTabCard: View {
+    let theme: TermTheme
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: "plus").font(.system(size: 26, weight: .light))
+                Text("New Tab").font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(theme.accent)
+            .frame(maxWidth: .infinity)
+            .frame(height: 190)
+            .background(RoundedRectangle(cornerRadius: 14).fill(theme.fg.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.chrome.divider, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(PressScale())
+        .accessibilityLabel("New Tab")
     }
 }
 
@@ -915,11 +1168,32 @@ struct PressScale: ButtonStyle {
     }
 }
 
+/// System haptics, each used for its documented meaning. All behind the Haptics setting.
 @MainActor
 enum Haptic {
-    static func tap() {
-        guard Prefs.shared.haptics else { return }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    private static let light = UIImpactFeedbackGenerator(style: .light)
+    private static let medium = UIImpactFeedbackGenerator(style: .medium)
+    private static let rigid = UIImpactFeedbackGenerator(style: .rigid)
+    private static let select = UISelectionFeedbackGenerator()
+    private static var lastBump = Date.distantPast
+
+    private static var on: Bool { Prefs.shared.haptics }
+
+    /// A button press.
+    static func tap() { if on { light.impactOccurred() } }
+    /// A value changed: pane, tab, font size, split detent.
+    static func selection() { if on { select.selectionChanged() } }
+    /// A gesture crossed its commit point. Played once, at the threshold.
+    static func threshold() { if on { medium.impactOccurred() } }
+    /// Zoom toggled: the layout snapping into place.
+    static func zoom() { if on { medium.impactOccurred() } }
+    /// Interrupt sent.
+    static func interrupt() { if on { rigid.impactOccurred() } }
+    /// Nothing there (end of panes or tabs). At most once a second.
+    static func bump() {
+        guard on, Date().timeIntervalSince(lastBump) > 1 else { return }
+        lastBump = Date()
+        light.impactOccurred(intensity: 0.6)
     }
 }
 
@@ -930,6 +1204,7 @@ struct SplitHandle: View {
     let theme: TermTheme
     let onCommit: (Double) -> Void
     @State private var drag: CGFloat = 0
+    @State private var inDetent = false
 
     var body: some View {
         let r = split.rect
@@ -943,12 +1218,24 @@ struct SplitHandle: View {
             .contentShape(Rectangle().inset(by: -20))
             .position(x: x + (horizontal ? drag : len / 2), y: y + (horizontal ? len / 2 : drag))
             .gesture(DragGesture(minimumDistance: 4)
-                .onChanged { v in drag = horizontal ? v.translation.width : v.translation.height }
-                .onEnded { v in
-                    let total = horizontal ? r.width * canvas.width : r.height * canvas.height
-                    let delta = (horizontal ? v.translation.width : v.translation.height) / max(total, 1)
+                .onChanged { v in
+                    // A detent at 50%: the split snaps there with a tick, so an even split is easy to hit.
+                    let total = max(horizontal ? r.width * canvas.width : r.height * canvas.height, 1)
+                    var t = horizontal ? v.translation.width : v.translation.height
+                    let snap = abs(split.ratio + t / total - 0.5) < 0.025
+                    if snap { t = (0.5 - split.ratio) * total }
+                    if snap != inDetent {
+                        inDetent = snap
+                        if snap { Haptic.selection() }
+                    }
+                    drag = t
+                }
+                .onEnded { _ in
+                    let total = max(horizontal ? r.width * canvas.width : r.height * canvas.height, 1)
+                    let ratio = split.ratio + drag / total
                     drag = 0
-                    onCommit(split.ratio + delta)
+                    inDetent = false
+                    onCommit(ratio)
                 })
     }
 }
