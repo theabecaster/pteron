@@ -43,6 +43,7 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     /// Sees each hardware key press before it is encoded; true means a key binding ran and the
     /// key must not reach the program.
     var keyHook: ((UIKey) -> Bool)?
+    var keyboardFocusHook: ((Bool) -> Void)?
     var controlModifier = false
     var metaModifier = false
     var keyboardAppearance: UIKeyboardAppearance = .dark

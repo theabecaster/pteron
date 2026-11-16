@@ -14,9 +14,8 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
-    /// The sidebar is showing: inline beside the tab, or the drawer over it. Starts open, so a launch
-    /// shows the last tab with the sidebar beside or over it.
-    @State private var sidebarOpen = true
+    /// The sidebar is showing: inline beside the tab, or the drawer over it.
+    @State private var sidebar = SidebarState()
     /// The sidebar is inline (wide window). Mirrors the arrangement for commands.
     @State private var inline = false
     /// The root's height without the keyboard.
@@ -59,7 +58,7 @@ struct RootView: View {
                 if let h = AppModel.hingeOverride { model.hinge = h }
                 #if DEBUG
                 // `-sidebar closed` (testing): start with the sidebar hidden.
-                if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebarOpen = false }
+                if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
                 #endif
             }
     }
@@ -138,13 +137,13 @@ struct RootView: View {
             let size = CGSize(width: geo.size.width, height: max(geo.size.height, keyboardFreeHeight))
             let arr = Arrangement.decide(size: size, division: division)
             NavigationStack {
-                SidebarSplit(arrangement: arr, theme: theme, open: $sidebarOpen) {
-                    SidebarView(onSelect: { _ in if !arr.inline { sidebarOpen = false } })
+                SidebarSplit(arrangement: arr, theme: theme, open: $sidebar.open) {
+                    SidebarView(onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
                 } tab: {
                     tab(arr)
                 }
                 .background(theme.chrome.canvas.ignoresSafeArea())
-                .background(EdgeReveal(enabled: !sidebarOpen) { revealSidebar() })
+                .background(EdgeReveal(enabled: !sidebar.open) { revealSidebar() })
                 // Only where the system has a vertical bar: the toggle and the tab's actions go there.
                 // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
                 .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
@@ -152,7 +151,7 @@ struct RootView: View {
                     if barEdge != nil {
                         ToolbarItem(placement: .topBarLeading) {
                             Button { toggleSidebar() } label: {
-                                Label(sidebarOpen ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                                Label(sidebar.open ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
                             }
                         }
                     }
@@ -191,7 +190,7 @@ struct RootView: View {
     }
 
     private var sidebarBinding: Binding<Bool> {
-        Binding(get: { sidebarOpen }, set: { if $0 != sidebarOpen { toggleSidebar() } })
+        Binding(get: { sidebar.open }, set: { if $0 != sidebar.open { toggleSidebar() } })
     }
 
     // MARK: Commands
@@ -214,7 +213,9 @@ struct RootView: View {
         guard PhoneState.shared.claim(r) else { return }
         switch r.command {
         case .newSession: newSession()
-        case .toggleSidebar: toggleSidebar()
+        case .toggleSidebar:
+            Haptic.tap()
+            _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()
         case .settings: model.showSettings = true
         case .fontBigger: setFont(prefs.fontSize + 1)
@@ -234,13 +235,13 @@ struct RootView: View {
     /// The toggle button, the shortcut and the menu command: show or hide the sidebar, in any posture.
     private func toggleSidebar() {
         Haptic.tap()
-        sidebarOpen.toggle()
+        sidebar.toggle()
     }
 
     /// The left-edge swipe brings the sidebar back.
     private func revealSidebar() {
         Haptic.threshold()
-        sidebarOpen = true
+        sidebar.reveal()
     }
 
     private func jumpToWaiting() {
@@ -288,7 +289,7 @@ struct RootView: View {
     /// Selects a tab and puts it on screen: a drawer closes so the tab shows.
     private func show(_ sel: Selection) {
         open(sel)
-        if !inline { sidebarOpen = false }
+        sidebar.tabShown(inline: inline)
     }
 
     /// Opens a tab (tab overview, title menu, tab swipes, waiting pill) in place.

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import RexKit
 
 /// Modifier keys, in Rex's spelling order (shift, ctrl, alt, cmd).
@@ -314,15 +315,17 @@ enum KeyDefaults {
 /// The keymap for one server: Rex's defaults under the user's init.lua, as `client.keymap` resolves it.
 /// Falls back to the built-in defaults until (or unless) the server answers.
 @MainActor
+@Observable
 final class KeymapStore {
-    private let control: RexControl
+    @ObservationIgnored private let control: RexControl
+    /// Observed: the app's shortcut menu follows it (`AppShortcutCommands`).
     private(set) var bindings: [KeyBinding] = []
     /// Bumped on every change; key command lists cache against it.
-    private(set) var generation = 0
-    private var byChord: [KeyChord: [Int]] = [:]
-    private var hash: String?
-    private var instance: String?
-    private var loading = false
+    @ObservationIgnored private(set) var generation = 0
+    @ObservationIgnored private var byChord: [KeyChord: [Int]] = [:]
+    @ObservationIgnored private var hash: String?
+    @ObservationIgnored private var instance: String?
+    @ObservationIgnored private var loading = false
 
     init(control: RexControl) {
         self.control = control
@@ -340,6 +343,14 @@ final class KeymapStore {
     func resolve(_ chords: [KeyChord]) -> (KeyBinding, AppAction)? {
         for b in bindings(for: chords) {
             if let a = AppAction.resolve(b.action, b.args) { return (b, a) }
+        }
+        return nil
+    }
+
+    /// The binding a press runs (`KeyInput.chordTiers`): the first tier that has one.
+    func resolve(tiers: [[KeyChord]]) -> (KeyBinding, AppAction)? {
+        for chords in tiers {
+            if let hit = resolve(chords) { return hit }
         }
         return nil
     }
@@ -363,23 +374,27 @@ final class KeymapStore {
                 "server_actions": "none",
                 "defaults": [KeyDefaults.requestLayer],
             ])
-            let list: [KeyBinding] = r.arr("bindings").compactMap { b in
-                // Key sequences and modes aren't supported yet; their keys go to the terminal.
-                guard b.str("mode") == nil, let keys = b["keys"] as? [String], keys.count == 1,
-                      let action = b.str("action"), let chord = KeyChord(spelling: keys[0]) else { return nil }
-                return KeyBinding(chord: chord, action: action, args: b.obj("args"))
-            }
             if let c = r.obj("config") {
                 hash = c.str("hash")
                 instance = c.str("instance_id")
             }
-            apply(list)
+            apply(Self.bindings(in: r))
         } catch {
             // Older server or no connection: keep what we have (the defaults at first).
         }
     }
 
-    private func apply(_ list: [KeyBinding]) {
+    /// The single-key bindings in a `client.keymap` response, top of each key's stack first.
+    static func bindings(in response: JSONObject) -> [KeyBinding] {
+        response.arr("bindings").compactMap { b in
+            // Key sequences and modes aren't supported yet; their keys go to the terminal.
+            guard b.str("mode") == nil, let keys = b["keys"] as? [String], keys.count == 1,
+                  let action = b.str("action"), let chord = KeyChord(spelling: keys[0]) else { return nil }
+            return KeyBinding(chord: chord, action: action, args: b.obj("args"))
+        }
+    }
+
+    func apply(_ list: [KeyBinding]) {
         bindings = list
         byChord = [:]
         for (i, b) in list.enumerated() { byChord[b.chord, default: []].append(i) }
