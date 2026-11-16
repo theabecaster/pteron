@@ -137,8 +137,9 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     func restoreSnapshot(_ bytes: [UInt8], consumed: (@Sendable (Int) -> Void)?, failed: @escaping @MainActor () -> Void) -> Bool {
         guard GhosttyCore.isSnapshot(bytes) else { return false }
         restoreEpoch = gridEpoch
-        core.restore(snapshot: bytes) { [weak self] used in
+        core.restore(snapshot: bytes) { [weak self, core] used in
             if let used {
+                PerfProbe.active?.ghosttyRestored(core)  // PERF: the restored terminal is in place
                 consumed?(used)
                 // The restored terminal has the snapshot's grid.
                 DispatchQueue.main.async { [weak self] in self?.adoptCoreGrid() }

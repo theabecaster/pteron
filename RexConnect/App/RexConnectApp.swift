@@ -14,13 +14,17 @@ struct RexConnectApp: App {
     init() {
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
-        _model = State(initialValue: AppModel(prefs: prefs, connect: !Self.isTestHost))
+        // An offline replay (`-replay <file>`) has no server either.
+        _model = State(initialValue: AppModel(prefs: prefs, connect: !Self.isTestHost && ReplayConfig.current == nil))
     }
 
     var body: some Scene {
         WindowGroup {
             // Offline replay of a capture file (development): `-ghosttyDemo <path>`.
-            if let demo = GhosttyDemo.path {
+            if let replay = ReplayConfig.current {
+                // Offline replay through a real TerminalHost, either engine: `-replay <file>`.
+                ReplayScreen(config: replay).ignoresSafeArea()
+            } else if let demo = GhosttyDemo.path {
                 GhosttyDemoScreen(path: demo).ignoresSafeArea()
             } else if Self.isTestHost {
                 // Show nothing, so no real pane is ever opened.

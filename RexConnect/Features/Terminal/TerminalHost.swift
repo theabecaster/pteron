@@ -104,6 +104,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme,
          engine: TerminalEngineKind) {
+        PerfProbe.active?.paneOpening()  // PERF: pane open, before the engine view is made
         self.stream = stream
         self.sizing = sizing
         self.fontSize = fontSize
@@ -151,6 +152,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                                                name: .GCKeyboardDidConnect, object: nil)
         term.keyHook = { [weak self] key in self?.handleKey(key) ?? false }
         setupGestures()
+        PerfProbe.active?.paneOpened(self)  // PERF
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -846,6 +848,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool {
         guard term.engineKind == .ghostty else { return false }
+        PerfProbe.active?.snapshot(part, host: self)  // PERF
         switch part {
         case .begin:
             snapshot.removeAll(keepingCapacity: true)
@@ -864,10 +867,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func streamSnapshot(_ text: String) {
         // One parse, one frame: the restored screen appears at once instead of scrolling in.
+        PerfProbe.active?.seedReceived(text.utf8.count, host: self)  // PERF
         term.feed(text: text)
+        PerfProbe.active?.seedParsed(host: self)  // PERF
     }
 
     func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>) {
+        PerfProbe.active?.fed(bytes.count, host: self)  // PERF
         // An engine that parses off the main thread takes everything at once.
         guard pacesOutput else {
             term.feed(buffer: bytes)
@@ -906,6 +912,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     private func feed(_ bytes: ArraySlice<UInt8>) {
         term.feed(byteArray: bytes)
+        PerfProbe.active?.parsedOnMain(bytes.count, host: self)  // PERF
     }
 
     private func startOutputLink() {
@@ -953,6 +960,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func streamStatus(_ status: TerminalStream.Status) {
+        PerfProbe.active?.status(status, host: self)  // PERF
         switch status {
         case .live:
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }

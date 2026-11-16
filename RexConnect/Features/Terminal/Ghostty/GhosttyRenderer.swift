@@ -176,7 +176,10 @@ final class GhosttyRenderer: @unchecked Sendable {
         let layer = layer, size = drawableSize, visible = visible
         configLock.unlock()
         guard visible, let layer, size.x > 0, size.y > 0, let metal = GhosttyMetal.shared else { return true }
-        guard prepare(now: now) else { return true }
+        guard prepare(now: now) else {
+            PerfProbe.active?.ghosttyPass(self, built: now, presented: false)  // PERF: nothing new to draw
+            return true
+        }
         guard inFlight.wait(timeout: .now()) == .success else { return false }
         guard let drawable = layer.nextDrawable() else {
             inFlight.signal()
@@ -193,6 +196,7 @@ final class GhosttyRenderer: @unchecked Sendable {
         commands.commit()
         lastEncodeSeconds = CACurrentMediaTime() - start
         framesDrawn += 1
+        PerfProbe.active?.ghosttyPass(self, built: now, presented: true)  // PERF: frame handed to the GPU
         return true
     }
 
