@@ -111,7 +111,13 @@ final class Prefs {
         if let data = d.data(forKey: "servers"), let s = try? JSONDecoder().decode([ServerConfig].self, from: data), !s.isEmpty {
             servers = s
         } else {
+            #if DEBUG
+            // The developer's Mac, so a fresh simulator connects without setup. Release builds go
+            // to other people and start empty.
             servers = [ServerConfig(name: "This Mac", url: "https://macbook-pro-rex.tail8657d0.ts.net")]
+            #else
+            servers = []
+            #endif
         }
     }
 }

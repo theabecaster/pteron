@@ -25,6 +25,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private let hideKey = KeyCap(key: "hide", kind: .action)
     private let divider = UIView()
     private let topLine = UIView()
+    private var hairlines: [NSLayoutConstraint] = []
     private var caps: [KeyCap] = []
     private var theme: TermTheme = ThemeStore.fallback
     private var ctrl: ModState = .off { didSet { syncModifiers() } }
@@ -57,19 +58,18 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         addSubview(hideKey)
         addSubview(topLine)
         scroll.addSubview(stack)
-        let px = 1 / UIScreen.main.scale
-        NSLayoutConstraint.activate([
+        // One-pixel lines; the scale is known once the bar is on screen (see didMoveToWindow).
+        hairlines = [topLine.heightAnchor.constraint(equalToConstant: 0.5), divider.widthAnchor.constraint(equalToConstant: 0.5)]
+        NSLayoutConstraint.activate(hairlines + [
             heightAnchor.constraint(equalToConstant: Self.barHeight),
             topLine.topAnchor.constraint(equalTo: topAnchor),
             topLine.leadingAnchor.constraint(equalTo: leadingAnchor),
             topLine.trailingAnchor.constraint(equalTo: trailingAnchor),
-            topLine.heightAnchor.constraint(equalToConstant: px),
 
             hideKey.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -6),
             hideKey.centerYAnchor.constraint(equalTo: centerYAnchor),
             divider.trailingAnchor.constraint(equalTo: hideKey.leadingAnchor, constant: -5),
             divider.centerYAnchor.constraint(equalTo: centerYAnchor),
-            divider.widthAnchor.constraint(equalToConstant: px),
             divider.heightAnchor.constraint(equalToConstant: 26),
 
             scroll.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
@@ -87,6 +87,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        let scale = traitCollection.displayScale
+        if scale > 0 { hairlines.forEach { $0.constant = 1 / scale } }
+    }
 
     @objc private func prefsChanged() { rebuild() }
 

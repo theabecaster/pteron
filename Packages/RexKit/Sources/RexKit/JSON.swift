@@ -43,6 +43,15 @@ public enum JSONCodec {
     }
 }
 
+/// A value fresh from `JSONSerialization`, carried from the socket's queue to the main actor.
+/// `@unchecked` is safe because nothing mutates it after decoding: without `.mutableContainers`
+/// JSONSerialization returns immutable containers, strings and numbers, and Swift collections
+/// bridged from them copy on write.
+struct DecodedJSON: @unchecked Sendable {
+    let value: Any
+    init(_ value: Any) { self.value = value }
+}
+
 /// An error from the server (`code`, `message`, HTTP-like `status`) or a local one (`code` "client").
 public struct RexError: LocalizedError, Sendable {
     public let code: String

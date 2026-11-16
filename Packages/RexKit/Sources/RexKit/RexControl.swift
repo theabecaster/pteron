@@ -31,7 +31,10 @@ public final class RexControl {
 
     public static let apiRevision = 13
 
-    public let baseURL: URL
+    /// The server address as configured.
+    public let address: String
+    /// `wss://host` for the address; nil when the address is invalid (`connect()` then fails).
+    public let wsBase: URL?
     public let client: ClientInfo
     public private(set) var state: State = .idle { didSet { onStateChange?(state) } }
     public private(set) var clientID: String?
@@ -43,8 +46,9 @@ public final class RexControl {
     public var onReconnected: ((_ resumed: Bool) -> Void)?
 
     private var task: URLSessionWebSocketTask?
-    private let session: URLSession
-    private var pending: [String: CheckedContinuation<Any, Error>] = [:]
+    /// Also used by `TerminalStream` for the data sockets, so both share one configuration.
+    let session: URLSession
+    private var pending: [String: CheckedContinuation<DecodedJSON, Error>] = [:]
     private var nextID = 0
     private var reconnectToken: String?
     private var welcomeWaiter: CheckedContinuation<Void, Error>?
@@ -53,8 +57,10 @@ public final class RexControl {
     private var wantConnected = false
     private var retryDelay: Double = 1
 
-    public init(baseURL: URL, client: ClientInfo) {
-        self.baseURL = baseURL
+    /// `address` is the server's HTTPS address, e.g. `https://mac.tailnet.ts.net`.
+    public init(address: String, client: ClientInfo) {
+        self.address = address
+        self.wsBase = Self.webSocketBase(for: address)
         self.client = client
         let cfg = URLSessionConfiguration.default
         cfg.waitsForConnectivity = false
@@ -62,16 +68,30 @@ public final class RexControl {
         self.session = URLSession(configuration: cfg)
     }
 
-    public var wsBase: URL {
-        var c = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        if c.scheme == "https" { c.scheme = "wss" } else if c.scheme == "http" { c.scheme = "ws" }
+    /// The WebSocket origin (`wss://host[:port]`) for a server address, or nil if the address has
+    /// no host or isn't http(s) or ws(s).
+    public nonisolated static func webSocketBase(for address: String) -> URL? {
+        guard var c = URLComponents(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let host = c.host, !host.isEmpty else { return nil }
+        switch c.scheme?.lowercased() {
+        case "https", "wss": c.scheme = "wss"
+        case "http", "ws": c.scheme = "ws"
+        default: return nil
+        }
         c.path = ""
-        return c.url!
+        c.query = nil
+        c.fragment = nil
+        return c.url
     }
 
     // MARK: Connection
 
     public func connect() async throws {
+        guard wsBase != nil else {
+            let msg = "“\(address)” isn't a server address. Use https://<name>.<tailnet>.ts.net."
+            state = .failed(msg)
+            throw RexError.local(msg)
+        }
         wantConnected = true
         try await openSocket()
     }
@@ -86,6 +106,7 @@ public final class RexControl {
     }
 
     private func openSocket() async throws {
+        guard let wsBase else { throw RexError.local("invalid server address") }
         generation += 1
         let gen = generation
         state = .connecting
@@ -148,15 +169,21 @@ public final class RexControl {
 
     private func receiveLoop(_ t: URLSessionWebSocketTask, gen: Int) {
         t.receive { [weak self] result in
+            // Decode here, on URLSession's queue: a screen-read reply is up to ~1 MB and takes
+            // milliseconds to parse. Order is kept because the next receive starts only after this
+            // message is handled on the main actor.
+            let parsed = result.map { msg -> DecodedJSON? in
+                switch msg {
+                case .string(let s): return JSONCodec.decode(s).map(DecodedJSON.init)
+                case .data(let d): return JSONCodec.decode(d).map(DecodedJSON.init)
+                @unknown default: return nil
+                }
+            }
             Task { @MainActor in
                 guard let self, gen == self.generation else { return }
-                switch result {
-                case .success(let msg):
-                    switch msg {
-                    case .string(let s): self.handle(text: s)
-                    case .data(let d): self.handle(text: String(decoding: d, as: UTF8.self))
-                    @unknown default: break
-                    }
+                switch parsed {
+                case .success(let m):
+                    if let m = m?.value as? JSONObject { self.handle(m) }
                     self.receiveLoop(t, gen: gen)
                 case .failure(let err):
                     self.handleDrop(gen: gen, reason: err.localizedDescription)
@@ -209,8 +236,8 @@ public final class RexControl {
         for (_, c) in p { c.resume(throwing: err) }
     }
 
-    private func handle(text: String) {
-        guard let m = JSONCodec.decode(text), let type = m.str("type") else { return }
+    private func handle(_ m: JSONObject) {
+        guard let type = m.str("type") else { return }
         switch type {
         case "welcome":
             if let c = m.obj("client") {
@@ -226,7 +253,7 @@ public final class RexControl {
             if let e = m.obj("error") {
                 c.resume(throwing: RexError(code: e.str("code") ?? "internal", message: e.str("message") ?? "error", status: e.int("status") ?? 500))
             } else {
-                c.resume(returning: m["payload"] ?? NSNull())
+                c.resume(returning: DecodedJSON(m["payload"] ?? NSNull()))
             }
         case "event":
             onEvent?(m.int("seq") ?? 0, m.obj("payload") ?? [:])
@@ -250,7 +277,7 @@ public final class RexControl {
         var req: JSONObject = ["type": "request", "id": id, "method": method]
         if let payload { req["payload"] = payload }
         let text = JSONCodec.encode(req)
-        return try await withCheckedThrowingContinuation { (c: CheckedContinuation<Any, Error>) in
+        let reply = try await withCheckedThrowingContinuation { (c: CheckedContinuation<DecodedJSON, Error>) in
             pending[id] = c
             t.send(.string(text)) { err in
                 if let err {
@@ -260,6 +287,7 @@ public final class RexControl {
                 }
             }
         }
+        return reply.value
     }
 
     /// Calls a block method: payload is `{session_id, block_id, args}`.

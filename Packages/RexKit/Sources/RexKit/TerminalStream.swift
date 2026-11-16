@@ -208,11 +208,11 @@ public final class TerminalStream {
                 "session_id": sessionID, "block_id": blockID,
                 "data_ref_id": "terminal", "subprotocol": "rex.data.terminal.v1",
             ])
-            guard let ticketStr = t.str("ticket"), let ticket = Self.base64url(ticketStr), ticket.count == 16 else {
+            guard let ticketStr = t.str("ticket"), let hello = DataFrame.ticketHello(ticketStr) else {
                 throw RexError.local("bad ticket")
             }
             guard myGen == gen, !stopped else { return }
-            try await openData(hello: [0x01] + ticket, gen: myGen, fresh: true)
+            try await openData(hello: hello, gen: myGen, fresh: true)
         } catch {
             guard myGen == gen, !stopped else { return }
             sink?.streamStatus(.failed(error.localizedDescription))
@@ -275,22 +275,18 @@ public final class TerminalStream {
     }
 
     private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool) async throws {
-        let url = control.wsBase.appendingPathComponent("api/data")
-        let task = URLSession.shared.webSocketTask(with: url, protocols: ["rex.data.terminal.v1"])
+        guard let base = control.wsBase else { throw RexError.local("invalid server address") }
+        let url = base.appendingPathComponent("api/data")
+        let task = control.session.webSocketTask(with: url, protocols: ["rex.data.terminal.v1"])
         task.maximumMessageSize = 1 << 20
         ws = task
         task.resume()
         try await task.send(.data(Data(hello)))
         let first = try await task.receive()
         guard case .data(let d) = first else { throw RexError.local("bad handshake") }
-        let b = [UInt8](d)
-        if b.first == 0x82 {
-            throw RexError.local("stream refused (reason \(b.count > 1 ? Int(b[1]) : 0))")
-        }
-        guard b.count == 32, b[0] == 0x81 else { throw RexError.local("bad welcome") }
-        token = Array(b[1..<17])
-        var nn: UInt64 = 0
-        for k in 0..<8 { nn |= UInt64(b[24 + k]) << (8 * UInt64(k)) }
+        let welcome = try DataFrame.welcome([UInt8](d))
+        token = welcome.token
+        let nn = welcome.nonce
         if fresh {
             nonce = nn
             received = 0
@@ -344,7 +340,7 @@ public final class TerminalStream {
 
     private func handleDataDrop(_ task: URLSessionWebSocketTask, gen myGen: Int) {
         guard !stopped, myGen == gen else { return }
-        if let code = Optional(task.closeCode.rawValue), code == 4000 {
+        if task.closeCode.rawValue == 4000 {
             sink?.streamStatus(.ended("pane closed"))
             return
         }
@@ -359,11 +355,8 @@ public final class TerminalStream {
         Task {
             try? await Task.sleep(nanoseconds: UInt64(400_000_000 * resumeAttempts))
             guard myGen == self.gen, !self.stopped else { return }
-            var hello: [UInt8] = [0x02] + tok
-            var c = self.received
-            for _ in 0..<8 { hello.append(UInt8(c & 0xff)); c >>= 8 }
             do {
-                try await self.openData(hello: hello, gen: myGen, fresh: false)
+                try await self.openData(hello: DataFrame.resumeHello(token: tok, received: self.received), gen: myGen, fresh: false)
             } catch {
                 await self.fullStart()
             }
@@ -469,12 +462,5 @@ public final class TerminalStream {
 
     public func release() async {
         _ = try? await control.call("session.disown_block", ["session_id": sessionID, "block_ids": [blockID]])
-    }
-
-    public static func base64url(_ s: String) -> [UInt8]? {
-        var b = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        while b.count % 4 != 0 { b += "=" }
-        guard let d = Data(base64Encoded: b) else { return nil }
-        return [UInt8](d)
     }
 }

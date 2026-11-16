@@ -53,6 +53,8 @@ final class ServerConnection: Identifiable {
     let control: RexControl
     /// What each hardware key does: Rex's defaults under the user's init.lua (`client.keymap`).
     @ObservationIgnored let keymap: KeymapStore
+    /// Local notifications and haptics for agents; shared by every server.
+    @ObservationIgnored let notifier: AgentNotifier
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
@@ -93,10 +95,10 @@ final class ServerConnection: Identifiable {
         return b
     }
 
-    init(config: ServerConfig) {
+    init(config: ServerConfig, notifier: AgentNotifier) {
         self.config = config
-        let url = URL(string: config.url.trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "https://invalid.local")!
-        control = RexControl(baseURL: url, client: ClientInfo(
+        self.notifier = notifier
+        control = RexControl(address: config.url, client: ClientInfo(
             name: "Rex Connect",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: String(UIDevice.current.name.prefix(40))))
@@ -138,6 +140,13 @@ final class ServerConnection: Identifiable {
 
     func start() {
         guard !started else { control.kick(); return }
+        guard control.wsBase != nil else {
+            // A typo in Settings: say so, and don't retry an address that can't work.
+            let msg = "“\(config.url)” isn't a server address."
+            setPhase(.offline(msg))
+            lastError = msg
+            return
+        }
         started = true
         Task {
             do {
@@ -411,7 +420,7 @@ final class ServerConnection: Identifiable {
         case "child_exited":
             m.exited = true
         case "desktop_notification":
-            postLocal(title: e.str("title").flatMap { $0.isEmpty ? nil : $0 } ?? label(for: sid, block: bid),
+            notifier.post(title: e.str("title").flatMap { $0.isEmpty ? nil : $0 } ?? label(for: sid, block: bid),
                       body: e.str("body") ?? "")
             return
         default:
@@ -466,17 +475,8 @@ final class ServerConnection: Identifiable {
         case "auth": why = "needs a password"
         default: why = "is waiting for you"
         }
-        postLocal(title: "\(who) \(why)", body: [label(for: sid, block: bid), st.text].compactMap { $0 }.joined(separator: " — "))
-        if Prefs.shared.haptics { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-    }
-
-    private func postLocal(title: String, body: String) {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-        let c = UNMutableNotificationContent()
-        c.title = title
-        c.body = body
-        c.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+        notifier.post(title: "\(who) \(why)", body: [label(for: sid, block: bid), st.text].compactMap { $0 }.joined(separator: " — "))
+        if Prefs.shared.haptics { notifier.waitingHaptic() }
     }
 
     func label(for sid: String, block bid: String) -> String {

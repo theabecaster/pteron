@@ -306,7 +306,10 @@ struct EmptyState: View {
                 .foregroundStyle(theme.chrome.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 30)
-            if !sidebarVisible {
+            if model.servers.isEmpty {
+                Button("Add a Server") { model.showSettings = true }
+                    .frame(minHeight: 44)
+            } else if !sidebarVisible {
                 Button("Show Sidebar") { sidebarVisible = true }
                     .frame(minHeight: 44)
             }
@@ -316,6 +319,9 @@ struct EmptyState: View {
     }
 
     private var statusText: String {
+        if model.servers.isEmpty {
+            return "Add your Rex server's Tailscale address, https://<name>.<tailnet>.ts.net, in Settings."
+        }
         if model.servers.contains(where: { $0.phase == .online }) { return "Pick a tab in the sidebar." }
         if let s = model.servers.first, case .offline(let m) = s.phase {
             return "Can't reach \(s.config.name).\n\(m)\n\nTailscale must be on, signed in as the same account as the Mac."

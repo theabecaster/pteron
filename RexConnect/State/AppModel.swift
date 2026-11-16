@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 import RexKit
 
@@ -64,7 +65,7 @@ final class AppModel {
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false
-    var showAgents = false
+    @ObservationIgnored let notifier = AgentNotifier()
 
     /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
     var hinge: HingeInfo?
@@ -104,16 +105,16 @@ final class AppModel {
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
-            return ServerConnection(config: cfg)
+            return ServerConnection(config: cfg, notifier: notifier)
         }
         for s in servers { s.start() }
     }
 
+    /// The same id for the same host label on every launch: the first 16 bytes of its SHA-256.
     static func stableID(_ label: String) -> UUID {
-        var bytes = [UInt8](repeating: 0, count: 16)
-        for (i, b) in Array(("host:" + label).utf8).enumerated() { bytes[i % 16] = bytes[i % 16] &+ b &* UInt8((i % 7) + 1) }
-        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+        let b = Array(SHA256.hash(data: Data(("host:" + label).utf8)))
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
     }
 
     func server(_ id: UUID?) -> ServerConnection? { servers.first { $0.id == id } }
