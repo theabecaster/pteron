@@ -2,7 +2,8 @@
 
 Status: phases 0 and 1 are done and merged with `main`'s layout (RexConnect, feature folders,
 RexKit, Swift 6). Both engines run behind `TerminalEngineView`. The Ghostty engine draws output and
-restores Rex's snapshot; its input, scrolling and selection are `// PHASE 2` stubs.
+restores Rex's snapshot. Phase 2 (input, scroll and mouse, selection) is merged and integrated;
+the parity audit is in [ghostty-parity.md](ghostty-parity.md).
 
 ## Decision
 
@@ -79,7 +80,7 @@ Tools in `scripts/ghostty-tools/`:
   adapter and the reference for what each seam member does.
 - `RexConnect/Features/Terminal/Ghostty/`: core, render thread, Metal renderer, glyph atlas,
   sprites, `GhosttyTerminalView` (output side) and its `+Input`, `+Scroll`, `+Selection` files,
-  where every member still to implement is marked `// PHASE 2`. `GhosttyDemoScreen` is the
+  which hold input, scrolling and selection. `GhosttyDemoScreen` is the
   offline replay (`-ghosttyDemo <path>`).
 - `Packages/RexKit/Sources/RexKit/TerminalStream.swift`: `GhosttySnapshotPart`, `APCFilter`'s
   snapshot framing, `restoresGhosttySnapshot`, `snapshotRestoreFailed()`.
