@@ -19,6 +19,6 @@ cat > build/ExportOptions.plist <<P
 <key>uploadSymbols</key><true/><key>manageAppVersionAndBuildNumber</key><false/>
 <key>testFlightInternalTestingOnly</key><false/></dict></plist>
 P
-xcodebuild -exportArchive -archivePath build/RexDuo.xcarchive -exportOptionsPlist build/ExportOptions.plist \
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH xcodebuild -exportArchive -archivePath build/RexDuo.xcarchive -exportOptionsPlist build/ExportOptions.plist \
   -exportPath build/export -allowProvisioningUpdates 2>&1 | tail -25
 echo "== done $(date) rc=$?"
