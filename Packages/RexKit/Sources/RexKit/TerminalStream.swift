@@ -37,14 +37,25 @@ public enum GhosttySnapshotPart {
 /// decoder.
 ///
 /// The snapshot ends with `end(complete: false)`, and the filter goes back to dropping everything
-/// before the first Rex message, in three cases: the stream doesn't start with a version 1
-/// envelope (then there is no `begin` either); a record would take the snapshot past
-/// `snapshotLimit` (known from the record's header, before its payload); or a Rex message starts
-/// where a record should (a snapshot cut short has no FINISH).
+/// before the first Rex message, in these cases: the stream doesn't start with a version 1
+/// envelope (then there is no `begin` either); a record is longer than `recordLimit` or would
+/// take the snapshot past `snapshotLimit` (known from the record's header, before its payload);
+/// or a Rex message starts where a record should (a snapshot cut short has no FINISH).
+///
+/// The framing is only trusted while someone restores the snapshot. A wrong length in a damaged
+/// record would make the filter take what follows, Rex messages included, for payload. So when
+/// `snapshot` returns false, or `abandonSnapshot()` is called, the filter stops walking records
+/// at once and scans for the first Rex message again. The record limit bounds what a wrong length
+/// can take before that.
 public struct APCFilter {
     /// The largest snapshot passed on, in bytes. The filter holds none of it; the limit protects
     /// whoever restores it.
     public static let defaultSnapshotLimit = 64 << 20
+    /// The longest record payload accepted. The format has no limit of its own (the length is a
+    /// u32). Real records are far smaller: a page is a few KB, READY and FINISH are empty, and
+    /// only unfinished input (the decoder's default limit is 65 MiB) and the pixels of a Kitty
+    /// image can grow. A larger record is treated as damage.
+    public static let defaultRecordLimit = 16 << 20
 
     private let marker: [UInt8]
     public private(set) var skippingSnapshot = true
@@ -54,6 +65,7 @@ public struct APCFilter {
     // Snapshot framing.
     private var inSnapshot: Bool
     private let snapshotLimit: Int
+    private let recordLimit: Int
     /// True until the envelope has been read.
     private var atEnvelope = true
     /// Bytes of the current record's payload still to come.
@@ -72,15 +84,27 @@ public struct APCFilter {
     private static let readyTag: UInt16 = 5
     private static let finishTag: UInt16 = 6
 
-    public init(nonce: UInt64, passesSnapshot: Bool = false, snapshotLimit: Int = APCFilter.defaultSnapshotLimit) {
+    public init(nonce: UInt64, passesSnapshot: Bool = false, snapshotLimit: Int = APCFilter.defaultSnapshotLimit,
+                recordLimit: Int = APCFilter.defaultRecordLimit) {
         marker = Array("\u{1b}_rex1;\(nonce);".utf8)
         inSnapshot = passesSnapshot
         self.snapshotLimit = snapshotLimit
+        self.recordLimit = recordLimit
     }
 
-    /// `snapshot` is only called by a filter made with `passesSnapshot`.
+    /// Stops passing the snapshot on, without an `end`: what is left of it is dropped by scanning
+    /// for the first Rex message, as when snapshots aren't passed at all.
+    public mutating func abandonSnapshot() {
+        guard inSnapshot else { return }
+        inSnapshot = false
+        pending = header
+        header = []
+    }
+
+    /// `snapshot` is only called by a filter made with `passesSnapshot`. Returning false from it
+    /// abandons the snapshot: no more parts follow.
     public mutating func process(_ chunk: Data,
-                                 snapshot: (GhosttySnapshotPart) -> Void = { _ in },
+                                 snapshot: (GhosttySnapshotPart) -> Bool = { _ in true },
                           output: (UnsafeBufferPointer<UInt8>) -> Void,
                           message: (JSONObject) -> Void) {
         if inSnapshot {
@@ -115,15 +139,18 @@ public struct APCFilter {
 
     /// Passes on the snapshot bytes at the front of `buf`, walking the records.
     /// Returns how many bytes of `buf` belonged to the snapshot; it is over if any are left.
-    private mutating func passSnapshot(_ buf: UnsafeBufferPointer<UInt8>, snapshot: (GhosttySnapshotPart) -> Void) -> Int {
+    private mutating func passSnapshot(_ buf: UnsafeBufferPointer<UInt8>, snapshot: (GhosttySnapshotPart) -> Bool) -> Int {
         guard let base = buf.baseAddress else { return 0 }
         let n = buf.count
         var off = 0
         var sent = 0  // bytes of `buf` before this have been passed on
-        func flush(_ to: Int) {
-            if to > sent { snapshot(.bytes(UnsafeBufferPointer(rebasing: buf[sent..<to]))) }
-            sent = to
+        /// Passes on the bytes up to `to`. False if the snapshot was refused.
+        func flush(_ to: Int) -> Bool {
+            defer { sent = to }
+            return to > sent ? snapshot(.bytes(UnsafeBufferPointer(rebasing: buf[sent..<to]))) : true
         }
+        // After a refusal the framing is no longer trusted: the bytes from `off` on, which may
+        // not be what the record lengths say, are scanned for the first Rex message.
         while true {
             if need > 0 {
                 let take = min(need, n - off)
@@ -135,15 +162,14 @@ public struct APCFilter {
             switch recordEnd {
             case .nothing: break
             case .ready:
-                flush(off)
                 recordEnd = .nothing
-                snapshot(.ready)
+                guard flush(off), snapshot(.ready) else { inSnapshot = false; return off }
             case .finish:
                 // Everything after FINISH is the stream.
-                flush(off)
+                let passed = flush(off)
                 inSnapshot = false
                 skippingSnapshot = false
-                snapshot(.end(complete: true))
+                if passed { _ = snapshot(.end(complete: true)) }
                 return off
             }
             // The next header: read in place when this chunk has all of it, joined otherwise.
@@ -152,36 +178,37 @@ public struct APCFilter {
                 let wasEnvelope = atEnvelope
                 guard let payload = readHeader(base + off) else {
                     // The bytes from here on are scanned as the old path would.
-                    flush(off)
+                    let passed = flush(off)
                     inSnapshot = false
-                    snapshot(.end(complete: false))
+                    if passed { _ = snapshot(.end(complete: false)) }
                     return off
                 }
-                if wasEnvelope { snapshot(.begin) }
+                if wasEnvelope, !snapshot(.begin) { inSnapshot = false; return off }
                 off += Self.headerSize
                 need = payload
             } else {
-                flush(off)
+                guard flush(off) else { inSnapshot = false; return off }
                 let take = min(Self.headerSize - header.count, n - off)
                 header.append(contentsOf: UnsafeBufferPointer(rebasing: buf[off..<off + take]))
                 off += take
                 sent = off
                 if header.count < Self.headerSize { return off }
                 let wasEnvelope = atEnvelope
-                guard let payload = header.withUnsafeBufferPointer({ readHeader($0.baseAddress!) }) else {
-                    pending = header
-                    header = []
+                let held = header
+                header.removeAll(keepingCapacity: true)
+                let payload = held.withUnsafeBufferPointer { readHeader($0.baseAddress!) }
+                guard let payload else {
+                    pending = held
                     inSnapshot = false
-                    snapshot(.end(complete: false))
+                    _ = snapshot(.end(complete: false))
                     return off
                 }
-                if wasEnvelope { snapshot(.begin) }
-                header.withUnsafeBufferPointer { snapshot(.bytes($0)) }
-                header.removeAll(keepingCapacity: true)
+                if wasEnvelope, !snapshot(.begin) { inSnapshot = false; pending = held; return off }
+                guard held.withUnsafeBufferPointer({ snapshot(.bytes($0)) }) else { inSnapshot = false; return off }
                 need = payload
             }
         }
-        flush(off)
+        if !flush(off) { inSnapshot = false }
         return off
     }
 
@@ -200,7 +227,7 @@ public struct APCFilter {
         let tag = UInt16(p[0]) | UInt16(p[1]) << 8
         let len = Int(p[2]) | Int(p[3]) << 8 | Int(p[4]) << 16 | Int(p[5]) << 24
         snapshotBytes += Self.headerSize + len
-        if snapshotBytes > snapshotLimit { return nil }
+        if len > recordLimit || snapshotBytes > snapshotLimit { return nil }
         recordEnd = tag == Self.finishTag ? .finish : tag == Self.readyTag ? .ready : .nothing
         return len
     }
@@ -336,8 +363,11 @@ public final class TerminalStream {
     public private(set) var serverRows = 24
     public private(set) var owner: String?
     private var ws: URLSessionWebSocketTask?
-    private var gen = 0
+    /// Counts starts and stops. Work begun under an older value is stale and must do nothing.
+    private(set) var gen = 0
     private var filter: APCFilter?
+    /// True while a chunk is being split: the filter is in use and can't be changed.
+    private var consuming = false
     private var token: [UInt8]?
     private var nonce: UInt64 = 0
     private var received: UInt64 = 0
@@ -356,10 +386,25 @@ public final class TerminalStream {
     /// `terminal.format` for the rest of its life.
     public private(set) var ghosttySnapshotFailed = false
     /// Where a fresh stream's snapshot stands: expected, being passed to the sink, or going by
-    /// unused (the old path takes over at its end).
+    /// unused (the old path takes over at the first Rex message, which follows the snapshot).
     private enum SnapshotState { case none, awaiting, restoring, refused }
     private var snapshotState = SnapshotState.none
     private var usesGhosttySnapshot: Bool { restoresGhosttySnapshot && !ghosttySnapshotFailed }
+
+    /// The server refused the HELLO or RESUME (REJECT).
+    struct Refused: LocalizedError {
+        let reason: UInt8
+        var errorDescription: String? { "stream refused (reason \(reason)) (client)" }
+    }
+    /// REJECT 0x02: this client still has a connection to the terminal. After `restart()` that is
+    /// the old socket, whose close the server hasn't handled yet; it is gone moments later.
+    static let busyReason: UInt8 = 0x02
+    static let busyRetryLimit = 6
+    static let busyRetryDelay: UInt64 = 50_000_000
+    /// Whether a refused HELLO is worth another try right away, with a new ticket.
+    static func retriesHello(reason: UInt8, attempt: Int) -> Bool {
+        reason == busyReason && attempt < busyRetryLimit
+    }
 
     // Input is sent one write at a time; block methods are not ordered by the server.
     private var inputBuffer: [UInt8] = []
@@ -401,7 +446,11 @@ public final class TerminalStream {
     }
 
     /// Re-read the screen (and scrollback) and redraw it, keeping the data stream open.
-    /// Stream output that arrives while the read is in flight is dropped: the snapshot already holds it.
+    /// Stream output that arrives while the read is in flight is dropped, on the assumption that
+    /// the read holds it. That is not exact, because the read and the stream aren't tied together:
+    /// output the program writes after the server has formatted the screen, and that arrives
+    /// before the read's last call returns, is dropped and lost; output from before the format
+    /// whose frames arrive after the read is drawn a second time.
     ///
     /// With `restoresGhosttySnapshot` it opens a fresh data stream instead (`restart()`), whose
     /// snapshot redraws everything. That costs a ticket and a WebSocket handshake where the read
@@ -421,33 +470,47 @@ public final class TerminalStream {
     public func snapshotRestoreFailed() {
         guard !ghosttySnapshotFailed else { return }
         ghosttySnapshotFailed = true
-        // A snapshot still on its way gets no more parts and ends in the old path by itself.
-        guard snapshotState == .none else { return }
-        readScreenAndRedraw()
+        switch snapshotState {
+        case .none:
+            readScreenAndRedraw()
+        case .awaiting, .restoring:
+            // The snapshot is still on its way. It gets no more parts, and its framing is no
+            // longer trusted: the filter scans for the first Rex message, where the read starts.
+            // (Called from inside a part, the filter is told by that part's false result.)
+            snapshotState = .refused
+            if !consuming { filter?.abandonSnapshot() }
+        case .refused:
+            break
+        }
     }
 
-    /// Passes one part of the stream's snapshot to the sink, or lets it go by after a refusal.
-    private func handleSnapshot(_ part: GhosttySnapshotPart, sink: TerminalSink?) {
+    /// Passes one part of the stream's snapshot to the sink. False once the snapshot can't be
+    /// restored: the filter then stops walking its records.
+    private func handleSnapshot(_ part: GhosttySnapshotPart, sink: TerminalSink?) -> Bool {
         var offer = snapshotState == .restoring
         if snapshotState == .awaiting, case .begin = part { offer = true }
-        if offer {
-            if !ghosttySnapshotFailed, sink?.streamGhosttySnapshot(part) == true {
-                snapshotState = .restoring
-            } else {
-                snapshotState = .refused
-                ghosttySnapshotFailed = true
+        var ok = false
+        if offer, !ghosttySnapshotFailed {
+            // The sink may also report a failure from inside the call.
+            ok = sink?.streamGhosttySnapshot(part) == true && !ghosttySnapshotFailed
+        }
+        if case .end(let complete) = part {
+            if ok, complete {
+                snapshotState = .none
+                return true
             }
+        } else if ok {
+            snapshotState = .restoring
+            return true
         }
-        guard case .end(let complete) = part else { return }
-        let restored = snapshotState == .restoring && complete && !ghosttySnapshotFailed
-        snapshotState = .none
-        if !restored {
-            // Draw the screen the old way, on this same stream.
-            ghosttySnapshotFailed = true
-            readScreenAndRedraw()
-        }
+        // Draw the screen the old way, on this same stream, from the first Rex message on.
+        ghosttySnapshotFailed = true
+        snapshotState = .refused
+        return false
     }
 
+    /// Reads the screen with `terminal.format` and redraws it. Stream output is dropped until the
+    /// read is done; see `resync()` for what that can lose or repeat.
     private func readScreenAndRedraw() {
         guard !stopped, ws != nil else { return }
         let myGen = gen
@@ -475,6 +538,8 @@ public final class TerminalStream {
     }
 
     private func fullStart() async {
+        // `stop()` may have run between the call that asked for this start and the start itself.
+        guard !stopped else { return }
         gen += 1
         resyncing = false
         snapshotState = .none
@@ -497,15 +562,27 @@ public final class TerminalStream {
             }
 
             // 2. Ticket, then the data WebSocket.
-            let t = try await control.call("data.connect", [
-                "session_id": sessionID, "block_id": blockID,
-                "data_ref_id": "terminal", "subprotocol": "rex.data.terminal.v1",
-            ])
-            guard let ticketStr = t.str("ticket"), let hello = DataFrame.ticketHello(ticketStr) else {
-                throw RexError.local("bad ticket")
+            var busyRetries = 0
+            while true {
+                let t = try await control.call("data.connect", [
+                    "session_id": sessionID, "block_id": blockID,
+                    "data_ref_id": "terminal", "subprotocol": "rex.data.terminal.v1",
+                ])
+                guard let ticketStr = t.str("ticket"), let hello = DataFrame.ticketHello(ticketStr) else {
+                    throw RexError.local("bad ticket")
+                }
+                guard myGen == gen, !stopped else { return }
+                do {
+                    try await openData(hello: hello, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
+                    break
+                } catch let refused as Refused where Self.retriesHello(reason: refused.reason, attempt: busyRetries) {
+                    // The old socket's close hasn't reached the server yet. A refused HELLO used
+                    // up its ticket, so each try gets a new one. Past the limit it is a failure.
+                    busyRetries += 1
+                    try await Task.sleep(nanoseconds: Self.busyRetryDelay)
+                    guard myGen == gen, !stopped else { return }
+                }
             }
-            guard myGen == gen, !stopped else { return }
-            try await openData(hello: hello, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
         } catch {
             guard myGen == gen, !stopped else { return }
             sink?.streamStatus(.failed(error.localizedDescription))
@@ -574,16 +651,36 @@ public final class TerminalStream {
         task.maximumMessageSize = 1 << 20
         ws = task
         task.resume()
-        try await task.send(.data(Data(hello)))
-        let first = try await task.receive()
-        guard case .data(let d) = first else { throw RexError.local("bad handshake") }
-        let welcome = try DataFrame.welcome([UInt8](d))
+        do {
+            // `stop()` or `restart()` may run during either wait. A handshake that finishes
+            // after that must change nothing.
+            try await task.send(.data(Data(hello)))
+            guard myGen == gen, !stopped else { throw CancellationError() }
+            let first = try await task.receive()
+            guard case .data(let d) = first else { throw RexError.local("bad handshake") }
+            try acceptWelcome([UInt8](d), gen: myGen, fresh: fresh, collectSnapshot: collectSnapshot)
+        } catch {
+            // This socket is of no use, to this start or a newer one. Status 1000 also ends a
+            // stream the server may have opened for it.
+            task.cancel(with: .normalClosure, reason: nil)
+            throw error
+        }
+        receive(task, gen: myGen)
+    }
+
+    /// Takes the server's answer to a HELLO or RESUME. Throws `Refused` for a REJECT, and
+    /// `CancellationError`, with nothing changed, if the stream was stopped or restarted since
+    /// `myGen`. (Internal for tests.)
+    func acceptWelcome(_ b: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool) throws {
+        guard myGen == gen, !stopped else { throw CancellationError() }
+        // A REJECT gets its own error (a busy terminal is retried); `DataFrame` checks the rest.
+        if b.first == 0x82 { throw Refused(reason: b.count > 1 ? b[1] : 0) }
+        let welcome = try DataFrame.welcome(b)
         token = welcome.token
         // A resume keeps its filter: it may be partway through the snapshot or a message.
         if fresh { beginStream(nonce: welcome.nonce, collectSnapshot: collectSnapshot) }
         resumeAttempts = 0
         sink?.streamStatus(.live)
-        receive(task, gen: myGen)
     }
 
     private func receive(_ task: URLSessionWebSocketTask, gen myGen: Int) {
@@ -594,6 +691,8 @@ public final class TerminalStream {
                 case .success(.data(let d)):
                     self.received += UInt64(d.count)
                     self.consume(d)
+                    // The sink may have stopped or restarted the stream from inside a callback.
+                    guard myGen == self.gen else { return }
                     self.receive(task, gen: myGen)
                 case .success:
                     self.receive(task, gen: myGen)
@@ -616,13 +715,27 @@ public final class TerminalStream {
     func consume(_ chunk: Data) {
         guard filter != nil else { return }
         let sink = self.sink
+        // A sink may call `stop()`, `restart()` or `resync()` from inside any of these calls.
+        // The rest of the chunk then belongs to a stream that is over, and none of it is passed on.
+        let myGen = gen
+        consuming = true
+        defer { consuming = false }
         // In order: a resize applies between the bytes written before and after it.
         filter!.process(chunk, snapshot: { part in
-            self.handleSnapshot(part, sink: sink)
+            guard self.gen == myGen else { return false }
+            return self.handleSnapshot(part, sink: sink)
         }, output: { out in
-            // While a resync reads the screen, its snapshot replaces this output.
+            guard self.gen == myGen else { return }
+            // While a resync reads the screen, this output is dropped (see `resync()`).
             if !self.resyncing { sink?.streamFeed(out) }
         }, message: { m in
+            guard self.gen == myGen else { return }
+            // The first message follows the snapshot. If the snapshot went unused, the screen
+            // is read from here.
+            if self.snapshotState == .refused {
+                self.snapshotState = .none
+                self.readScreenAndRedraw()
+            }
             switch m.str("type") {
             case "resize":
                 let c = m.int("cols") ?? self.serverCols, r = m.int("rows") ?? self.serverRows
@@ -649,7 +762,10 @@ public final class TerminalStream {
         // 1013: the server dropped the stream (e.g. too much output piled up); a resume can't work.
         // Any failed resume (stale token, byte count off) also ends in a fresh read of the screen.
         guard let tok = token, resumeAttempts <= 3, task.closeCode.rawValue != 1013 else {
-            Task { await self.fullStart() }
+            Task {
+                guard myGen == self.gen, !self.stopped else { return }
+                await self.fullStart()
+            }
             return
         }
         Task {
@@ -658,6 +774,8 @@ public final class TerminalStream {
             do {
                 try await self.openData(hello: DataFrame.resumeHello(token: tok, received: self.received), gen: myGen, fresh: false)
             } catch {
+                // Not after `stop()`, and not on top of a newer start.
+                guard myGen == self.gen, !self.stopped else { return }
                 await self.fullStart()
             }
         }
