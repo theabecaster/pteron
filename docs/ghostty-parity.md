@@ -43,6 +43,7 @@ How it was verified:
 | 18 | Pinch font size (fit mode) | intentional difference | hand | Same gesture and same font steps. SwiftTerm soft-resets on a font change and the host redraws from the server; Ghostty keeps its modes and screen (`fontChangeResetsModes` is false), so there is no redraw. |
 | 19 | Long press selects a word | intentional difference | `GhosttySelectionTests` (words, paths, URLs, wide characters); hand | Same boundary characters. Ghostty's word follows a soft wrap onto the next row; SwiftTerm's stops at the row's end. |
 | 20 | Drag to extend, edge autoscroll | same | `GhosttySelectionTests.testDraggingToTheTopEdgeScrollsALinePerMoveThroughTheScroller`, `testHitTestingAndRectsAtAFractionalScrollOffsetInHistory`; hand | Fixed here: hit-testing and rects use the scroller's position (right at any fraction of a row and in history), and the edge scroll goes through the scroll surface. One line per finger move, as the SwiftTerm adapter does. |
+| 20a | The highlight is on the row under the finger | same | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) | Fixed here, reported from a device on build 7a0d37c ("highlights a row above"). See "The row-above bug" below. |
 | 21 | Copy, copy-on-select, shimmer, edit menu | same | `GhosttySelectionTests` (text and rects); hand | The host does all four from `selectedText` and `selectionRects`. |
 | 22 | Copied text | intentional difference | `GhosttySelectionTests` | Ghostty copies what the Ghostty app copies: soft-wrapped rows joined into one line, trailing spaces trimmed. SwiftTerm copies rows as drawn. |
 | 23 | Selection through output and resize | intentional difference | `GhosttySelectionTests.testTheSelectionSurvivesAReflow`, `testTheSelectionAndItsRectFollowOutput` | The terminal tracks the selection: it stays on its text through output, scrolling and a reflow. SwiftTerm's is a fixed buffer range and is lost on a resize. |
@@ -74,7 +75,29 @@ How it was verified:
 | 49 | Reset and resync fallback | same | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `Stream*` tests | `streamReset` feeds RIS and clear-scrollback as text to both; a snapshot that doesn't decode falls back to `terminal.format`. |
 | 50 | Teardown | same | `GhosttyIntegrationTests.testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane` | No terminal, render-thread pane or thread left. |
 
-Counts: 35 same, 10 intentional differences, 5 gaps (rows 27 to 31).
+Counts: 36 same, 10 intentional differences, 5 gaps (rows 27 to 31).
+
+## The row-above bug (build 7a0d37c)
+
+Reported from an iPhone Duo: a long press highlighted the row above the finger.
+
+Cause: the selection chunk had its own point-to-cell conversion (`GhosttySelectionGeometry`), which
+divided the touch's y by the cell height and took the grid to start at the view's top edge. The
+renderer draws the grid shifted up by the part of the first row that is scrolled past (the scroll
+surface is a `UIScrollView` and rests at any pixel offset, not on row boundaries). The shift was a
+placeholder that returned 0 (`selectionScrollShift`), so with a shift of `f` pixels a touch in the
+bottom `f` pixels of every row was mapped to the row above, and the terminal highlighted that row.
+At the bottom of the output the shift is 0 and the mapping was right, but a second bug put the
+view off the bottom without the user scrolling: when the view grew (keyboard hidden, unfold), UIKit
+pulled the scroll offset back and that was sent to the terminal as a scroll (row 45). After that,
+every press was off by up to a row.
+
+It was not the view's position (the host reads the press in the engine view's coordinates, also
+when the view sits at a negative y or is scaled in mirror mode), not the display scale, and not
+cell-height rounding: the error did not grow with the row number.
+
+Fix: one mapping, `GhosttyGridGeometry`, in device pixels with the frame's scroll shift, used for
+selection points, selection rects and the shimmer. The old conversion is gone.
 
 ## Reflow (`reflowsLikeServer`)
 
@@ -138,7 +161,7 @@ Accepted, with the bound:
 
 ## Manual script (about 5 minutes)
 
-Rows that still need a hand: 8, 9, 12, 13, 18 to 21, 25, 26, 39, 41, 42, 44, 45, 48.
+Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 39, 41, 42, 44, 45, 48.
 
 Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In the app choose
 Settings → Terminal → Engine → Ghostty, Pane Size → Fit, and open `zz-manual`. Close the session
@@ -147,9 +170,11 @@ when done.
 1. **Scroll (13).** Drag down with one finger, flick, let it coast, pull past the top. Expected:
    smooth pixel scrolling, a rubber band at both ends, an indicator at the right.
 2. **Type while scrolled (14).** Scrolled up, type `a`. Expected: the view jumps to the prompt.
-3. **Long press (19, 21).** Scroll up a little so a row is cut at the top. Long press a number.
-   Expected: that number is highlighted, no keyboard pops up; on release a shimmer plays exactly over
-   it and Copy / Paste appear. Tap Copy, then long press the prompt and Paste: the number is typed.
+3. **Long press (19, 20a, 21).** Scroll up a little so a row is cut at the top. Long press a
+   number, with the finger low on its row, then on rows near the top, middle and bottom of the pane.
+   Expected: each time the number under the finger is highlighted (never the one above), no keyboard
+   pops up; on release a shimmer plays exactly over it and Copy / Paste appear. Repeat at the bottom
+   of the output after raising and hiding the keyboard, and once in Mirror mode. Tap Copy, then long press the prompt and Paste: the number is typed.
 4. **Drag select and edge scroll (20).** Long press a number, drag up to the top edge and keep
    moving slightly. Expected: the view scrolls a line per move and the selection grows; nothing
    else scrolls or swipes. Release: the shimmer covers the visible part.

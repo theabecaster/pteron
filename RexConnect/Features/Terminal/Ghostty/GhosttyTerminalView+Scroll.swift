@@ -62,27 +62,24 @@ extension GhosttyTerminalView {
     /// the sub-row pixel offset.
     var scrollSnapshot: GhosttyScrollState.Snapshot { core.scroll.snapshot }
 
+    /// Where the grid is drawn in this view now: the one mapping between points and cells, for
+    /// selection, mouse reports and rects.
+    var gridGeometry: GhosttyGridGeometry {
+        let s = core.scroll.snapshot, m = atlas.metrics
+        return GhosttyGridGeometry(cellWidth: m.cellWidth, cellHeight: m.cellHeight, scale: displayScale, cols: cols, rows: rows,
+                                   shift: s.fraction + s.bounce)
+    }
+
     /// The viewport cell under a point in this view's coordinates (what `location(in:)` gives),
     /// for `GHOSTTY_POINT_TAG_VIEWPORT`. Counts the part of a row scrolled past. Clamped to the grid.
-    func viewportCell(at p: CGPoint) -> (col: Int, row: Int) {
-        let s = core.scroll.snapshot, m = atlas.metrics
-        let x = p.x * displayScale, y = p.y * displayScale + CGFloat(s.fraction + s.bounce)
-        let col = Int((x / CGFloat(max(1, m.cellWidth))).rounded(.down))
-        let row = Int((y / CGFloat(max(1, m.cellHeight))).rounded(.down))
-        return (min(max(col, 0), max(cols - 1, 0)), min(max(row, 0), max(rows - 1, 0)))
-    }
+    func viewportCell(at p: CGPoint) -> (col: Int, row: Int) { gridGeometry.cell(at: p) }
 
     /// The row in the whole scrollable area (scrollback included, 0 is the oldest) that viewport
     /// row `row` shows now.
     func scrollbackRow(ofViewportRow row: Int) -> Int { core.scroll.snapshot.offset + row }
 
     /// Where cells `columns` of viewport row `row` are drawn, in this view's coordinates.
-    func viewportRect(row: Int, columns: Range<Int>) -> CGRect {
-        let s = core.scroll.snapshot, m = atlas.metrics
-        let top = CGFloat(row * m.cellHeight - s.fraction - s.bounce) / displayScale
-        return CGRect(x: CGFloat(columns.lowerBound * m.cellWidth) / displayScale, y: top,
-                      width: CGFloat(columns.count * m.cellWidth) / displayScale, height: CGFloat(m.cellHeight) / displayScale)
-    }
+    func viewportRect(row: Int, columns: Range<Int>) -> CGRect { gridGeometry.rect(row: row, columns: columns) }
 
     /// Scrolls by `lines` rows (negative is up) on the next frame.
     func scrollLines(_ lines: Int) {
@@ -104,5 +101,38 @@ extension GhosttyTerminalView {
         }
         scrollLines(lines)
         return lines
+    }
+}
+
+/// Where the renderer draws the grid inside the terminal view, and so where a touch lands on it.
+///
+/// The renderer works in device pixels: row `r` starts `r * cellHeight - shift` pixels below the
+/// view's top edge, where `shift` is the part of the first row a smooth scroll has moved past
+/// the top (plus the rubber band). A cell is a whole number of pixels, which is a fraction of a
+/// point at 3x, so this maps in pixels too: converting with a cell size in points and no shift
+/// puts a touch on the row above the one it is on.
+struct GhosttyGridGeometry: Equatable {
+    /// One cell in device pixels.
+    var cellWidth: Int
+    var cellHeight: Int
+    /// Pixels per point.
+    var scale: CGFloat
+    var cols: Int
+    var rows: Int
+    /// Pixels the grid is drawn shifted up.
+    var shift: Int
+
+    /// The cell drawn under a point of the view, clamped to the grid.
+    func cell(at p: CGPoint) -> (col: Int, row: Int) {
+        let x = p.x * scale, y = p.y * scale + CGFloat(shift)
+        let col = Int((x / CGFloat(max(1, cellWidth))).rounded(.down))
+        let row = Int((y / CGFloat(max(1, cellHeight))).rounded(.down))
+        return (min(max(col, 0), max(cols - 1, 0)), min(max(row, 0), max(rows - 1, 0)))
+    }
+
+    /// Where cells `columns` of row `row` are drawn, in the view's coordinates.
+    func rect(row: Int, columns: Range<Int>) -> CGRect {
+        CGRect(x: CGFloat(columns.lowerBound * cellWidth) / scale, y: CGFloat(row * cellHeight - shift) / scale,
+               width: CGFloat(columns.count * cellWidth) / scale, height: CGFloat(cellHeight) / scale)
     }
 }

@@ -670,4 +670,96 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertEqual(view.selectedText, "target")
         assertRects(view.selectionRects, [CGRect(x: 4 * cell.width, y: cell.height, width: 6 * cell.width, height: cell.height)])
     }
+
+    // MARK: Hit-testing: point to cell to rect
+
+    /// For every row and several columns of the grid, at 2x and 3x and every font size the pinch
+    /// allows, at every sub-row scroll offset: a point anywhere inside the rect a cell is drawn
+    /// in maps back to that cell. (A cell is a whole number of pixels, a fraction of a point.)
+    func testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction() {
+        for scale in [2, 3] as [CGFloat] {
+            var size: CGFloat = 7
+            while size <= 20 {
+                let m = GhosttyGlyphAtlas(pointSize: size, scale: scale).metrics
+                let cols = 80, rows = 60
+                for shift in Set([0, 1, m.cellHeight / 3, m.cellHeight / 2, m.cellHeight - 1]) {
+                    let g = GhosttyGridGeometry(cellWidth: m.cellWidth, cellHeight: m.cellHeight, scale: scale, cols: cols, rows: rows, shift: shift)
+                    var wrong = 0
+                    for row in 0..<rows {
+                        for col in [0, 1, 39, 79] {
+                            let r = g.rect(row: row, columns: col..<(col + 1))
+                            // Just inside each corner and the middle, half a pixel from the edges.
+                            let d = 0.5 / scale
+                            for p in [CGPoint(x: r.minX + d, y: r.minY + d), CGPoint(x: r.maxX - d, y: r.maxY - d), CGPoint(x: r.midX, y: r.midY)]
+                            where p.y >= 0 {
+                                let hit = g.cell(at: p)
+                                if hit.col != col || hit.row != row { wrong += 1 }
+                            }
+                        }
+                    }
+                    XCTAssertEqual(wrong, 0, "\(size) pt at \(scale)x, shifted \(shift) px")
+                    // Rows are drawn edge to edge: the last row's bottom is exactly rows cells down.
+                    XCTAssertEqual(g.rect(row: rows - 1, columns: 0..<1).maxY, CGFloat(rows * m.cellHeight - shift) / scale, accuracy: 0.0001)
+                }
+                size += 0.5
+            }
+        }
+    }
+
+    /// The bug of build 7a0d37c: with the view resting at a fraction of a row (any scroll does
+    /// that), a touch low in a row selected the row above, because the point was mapped without
+    /// the scroll shift. Every row, pressed near its bottom edge, selects itself.
+    @MainActor
+    func testAPressLowInARowSelectsThatRowAtAnyScrollFraction() {
+        let view = makeView((1...60).map { "w\($0)" }.joined(separator: "\r\n"), rows: 12)
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        for fraction in [0.0, 0.25, 0.5, 0.9] as [CGFloat] {
+            view.scroller.setOffset((20 + fraction) * cell.height, animated: false)
+            frame(view)
+            let shift = CGFloat(view.scrollSnapshot.fraction) / view.displayScale
+            for row in 0..<12 {
+                // The row is drawn from row * height - shift; press a pixel above its bottom edge.
+                let y = CGFloat(row + 1) * cell.height - shift - 1 / view.displayScale
+                guard y >= 0, y < view.bounds.height else { continue }
+                view.beginSelection(at: CGPoint(x: cell.width * 0.5, y: y), word: true)
+                view.endSelectionDrag()
+                XCTAssertEqual(view.selectedText, "w\(21 + row)", "row \(row) at fraction \(fraction)")
+                let rect = view.selectionRects.first ?? .null
+                XCTAssertTrue(rect.insetBy(dx: -0.01, dy: -0.01).contains(CGPoint(x: cell.width * 0.5, y: y)), "the rect is under the finger: \(rect)")
+            }
+        }
+    }
+
+    /// Fit mode puts the engine view at a negative y while the server catches up with a shorter
+    /// pane (bottom rows kept in view), and mirror mode scales it. The host reads the press in
+    /// the engine view's coordinates, so every row still selects itself.
+    @MainActor
+    func testHitTestingWhenTheViewIsBottomAnchoredOrScaled() {
+        let view = makeView((1...12).map { "w\($0)" }.joined(separator: "\r\n"), rows: 12)
+        view.layoutIfNeeded()
+        frame(view)
+        let cell = view.cellSize
+        let host = UIView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 7.4 * cell.height))
+        host.clipsToBounds = true
+        host.addSubview(view)
+        for (name, transform) in [("bottom anchored", CGAffineTransform.identity), ("scaled", CGAffineTransform(scaleX: 0.6, y: 0.6))] {
+            view.transform = .identity
+            view.frame.origin = CGPoint(x: 0, y: host.bounds.height - view.bounds.height)  // negative: the top rows are cut off
+            view.transform = transform
+            for row in 0..<12 {
+                let inView = CGPoint(x: cell.width * 0.5, y: (CGFloat(row) + 0.9) * cell.height)
+                let inHost = host.convert(inView, from: view)
+                // What the host's recognizer reports: the touch, in the engine view's coordinates.
+                let p = view.convert(inHost, from: host)
+                view.beginSelection(at: p, word: true)
+                view.endSelectionDrag()
+                XCTAssertEqual(view.selectedText, "w\(row + 1)", "\(name), row \(row)")
+                let rect = host.convert(view.selectionRects.first ?? .null, from: view)
+                XCTAssertTrue(rect.insetBy(dx: -0.01, dy: -0.01).contains(inHost), "\(name), row \(row)")
+            }
+        }
+        view.transform = .identity
+    }
 }
