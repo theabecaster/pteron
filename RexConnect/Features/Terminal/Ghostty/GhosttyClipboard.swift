@@ -10,6 +10,10 @@ import UIKit
 /// - Only text that is valid UTF-8 is taken; anything else is dropped.
 /// - An empty write empties the pasteboard's text.
 /// - Nothing is shown and nothing is felt: a program copying is not the user copying.
+/// - Only the pane the user is working in may write: the active pane, on screen, with the app in
+///   the foreground (`setGate`; the host says which pane that is). A write from any other pane
+///   is dropped, not kept for later: a program in a pane nobody is looking at, or in an app
+///   that was put away, must not replace or empty what the user copied.
 /// - A read query (`OSC 52 ; c ; ?`) is never answered. No clipboard-read callback is installed,
 ///   and no write-pty callback either, so the terminal has no way to send a reply. The Rex
 ///   server's own terminal answers queries.
@@ -28,7 +32,30 @@ final class GhosttyClipboard: @unchecked Sendable {
     private var pending: String?
     private var scheduled = false
     private var sink: Sink = { UIPasteboard.general.string = $0 }
+    private var gate: Gate = { GhosttyClipboard.appIsActive }
     private var delivered = 0
+    private var droppedWrites = 0
+
+    /// Asked on the main actor for every write, when it is about to reach the pasteboard.
+    typealias Gate = @MainActor () -> Bool
+
+    /// Without a host to say which pane is active (the demo screen), the app must at least be
+    /// in the foreground.
+    @MainActor static var appIsActive: Bool { UIApplication.shared.applicationState == .active }
+
+    /// Who may write. A write the gate refuses is dropped.
+    func setGate(_ gate: @escaping Gate) {
+        lock.lock()
+        self.gate = gate
+        lock.unlock()
+    }
+
+    /// Writes the gate refused so far.
+    var dropped: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return droppedWrites
+    }
 
     /// Where the text goes. The pasteboard by default; tests put their own here.
     func setSink(_ sink: @escaping Sink) {
@@ -59,11 +86,19 @@ final class GhosttyClipboard: @unchecked Sendable {
         lock.lock()
         let text = pending
         let sink = sink
+        let gate = gate
         pending = nil
         scheduled = false
         delivered += 1
         lock.unlock()
-        if let text { sink(text) }
+        guard let text else { return }
+        guard gate() else {
+            lock.lock()
+            droppedWrites += 1
+            lock.unlock()
+            return
+        }
+        sink(text)
     }
 
     /// Handles one request inside the callback. `request` and everything it points to are only

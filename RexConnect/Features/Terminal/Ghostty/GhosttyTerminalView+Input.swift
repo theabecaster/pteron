@@ -34,9 +34,20 @@ extension GhosttyTerminalView {
         return mods
     }
 
-    /// Encodes key events and sends them as one write, after `backspaces` Backspace keys.
-    func sendTyped(_ keys: [GhosttyInputKey], backspaces: Int = 0) {
+    /// Sends what an edit of the shadow document means for the program's line, as one write.
+    func sendEdit(_ edit: GhosttyInputEdit) {
+        guard !edit.isEmpty else { return }
+        sendTyped(GhosttyInputKeymap.typed(edit.text), backspaces: edit.backspaces, move: edit.move)
+    }
+
+    /// Encodes key events and sends them as one write, after `move` arrow keys (negative: Left)
+    /// and `backspaces` Backspace keys.
+    func sendTyped(_ keys: [GhosttyInputKey], backspaces: Int = 0, move: Int = 0) {
         var bytes: [UInt8] = []
+        if move != 0 {
+            let one = core.input.encode(GhosttyInputKey(move < 0 ? GHOSTTY_KEY_ARROW_LEFT : GHOSTTY_KEY_ARROW_RIGHT))
+            for _ in 0..<abs(move) { bytes += one }
+        }
         if backspaces > 0 {
             let one = core.input.encode(GhosttyInputKey(GHOSTTY_KEY_BACKSPACE))
             for _ in 0..<backspaces { bytes += one }
@@ -78,6 +89,10 @@ extension GhosttyTerminalView {
         resetInputDocument()
         sendInput(core.input.paste(s))
     }
+
+    func pasteNeedsConfirmation(_ s: String) -> Bool { core.input.pasteNeedsConfirmation(s) }
+
+    func setProgramClipboardGate(_ gate: @escaping @MainActor () -> Bool) { core.clipboard.setGate(gate) }
 }
 
 // MARK: First responder
@@ -145,9 +160,18 @@ extension GhosttyTerminalView {
     /// Text from the system keyboard, an input method's commit, dictation, or a hardware key
     /// that went through the text system.
     func insertText(_ text: String) {
-        editInputDocument { $0.insert(text) }
+        // Return ends the line: nothing on it is edited any more.
+        if text == "\n" { resetInputDocument() }
+        let edit = text == "\n" ? GhosttyInputEdit(text: text) : editInputDocument { $0.insert(text) }
         // The shadow only needs the line being typed.
-        if text == "\n" || inputState.document.length > 4096 { resetInputDocument() }
+        if inputState.document.length > 4096 { resetInputDocument() }
+        guard edit.move == 0, edit.backspaces == 0, edit.text == text else {
+            // The keyboard put the text somewhere other than the program's cursor (a caret it
+            // moved, a selection it replaced): the program's line is edited to match.
+            inputState.pending = nil
+            _ = takeOneShotModifiers()
+            return sendEdit(edit)
+        }
 
         var keys = GhosttyInputKeymap.typed(text)
         guard !keys.isEmpty else { return }
@@ -177,7 +201,13 @@ extension GhosttyTerminalView {
     }
 
     func deleteBackward() {
-        let backspaces = editInputDocument { $0.deleteBackward() }
+        let edit = editInputDocument { $0.deleteBackward() }
+        guard edit.move == 0, edit.text.isEmpty else {
+            // Not at the program's cursor: go there, delete, and type again what stood behind.
+            inputState.pending = nil
+            return sendEdit(edit)
+        }
+        let backspaces = edit.backspaces
         guard backspaces > 0 else { return }
         var key = GhosttyInputKey(GHOSTTY_KEY_BACKSPACE)
         if let pending = takePending(for: key) {
@@ -240,7 +270,8 @@ extension GhosttyTerminalView {
     /// system. Takes `UIKey`'s properties, since a `UIKey` can't be made in a test.
     func hardwareKeyDown(usage: Int, flags: UIKeyModifierFlags, characters: String, charactersIgnoringModifiers: String) -> Bool {
         let route = GhosttyInputKeymap.route(usage: usage, flags: flags, characters: characters,
-                                             charactersIgnoringModifiers: charactersIgnoringModifiers)
+                                             charactersIgnoringModifiers: charactersIgnoringModifiers,
+                                             layoutLanguage: inputState.layoutLanguage ?? textInputMode?.primaryLanguage)
         let composing = inputState.document.isComposing
         switch route {
         case .system:
@@ -285,7 +316,7 @@ extension GhosttyTerminalView {
     }
 
     func hardwareKeyUp(usage: Int) {
-        if inputState.repeatUsage == usage { stopKeyRepeat() }
+        inputState.keyRepeat.released(usage: usage)
         if inputState.pending?.usage == usage { inputState.pending = nil }
         guard var k = inputState.down.removeValue(forKey: usage) else { return }
         // Empty unless the program asked the Kitty protocol for release events.
@@ -294,28 +325,27 @@ extension GhosttyTerminalView {
         if !bytes.isEmpty { engineDelegate?.engineSend(bytes) }
     }
 
-    // Keys that type repeat through the text system. Keys encoded here repeat on a timer, with
-    // SwiftTerm's delay and rate; only the latest key repeats.
+    // Keys that type repeat through the text system. Keys encoded here repeat through
+    // `KeyRepeater`, with SwiftTerm's delay and rate; only the latest key repeats. The repeater
+    // ends by itself when the key comes up, the app leaves the foreground, a keyboard goes away
+    // or its limit is reached; this view ends it when it stops being first responder or leaves
+    // its window.
 
     private func startKeyRepeat(usage: Int, key: GhosttyInputKey) {
-        stopKeyRepeat()
         var again = key
         again.action = .repeatPress
-        inputState.repeatUsage = usage
-        let timer = Timer(fire: Date(timeIntervalSinceNow: 0.4), interval: 0.1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                guard self.isFirstResponder, self.window != nil else { return self.stopKeyRepeat() }
-                self.sendTyped([again])
-            }
+        inputState.keyRepeat.start(usage: usage, while: { [weak self] in self?.mayRepeatKeys ?? false }) { [weak self] in
+            self?.sendTyped([again])
         }
-        inputState.repeatTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func stopKeyRepeat() {
-        inputState.repeatTimer?.invalidate()
-        inputState.repeatTimer = nil
-        inputState.repeatUsage = nil
+    /// A held key repeats only into the terminal that has the keyboard, on screen, in the
+    /// foreground.
+    private var mayRepeatKeys: Bool {
+        isFirstResponder && window != nil && UIApplication.shared.applicationState == .active
+    }
+
+    func stopKeyRepeat() {
+        inputState.keyRepeat.stop()
     }
 }

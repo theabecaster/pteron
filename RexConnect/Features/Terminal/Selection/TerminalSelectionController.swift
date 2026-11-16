@@ -79,7 +79,9 @@ final class TerminalSelectionController: NSObject {
         }
         handles.onWindowChange = { [weak self] in
             self?.updateLink()
-            if let self { SelectionDemo.runIfRequested(self) }
+            #if DEBUG
+            if let self { SelectionDemo.runIfRequested(self) }  // `-selectionDemo` (testing)
+            #endif
         }
     }
 
@@ -139,33 +141,51 @@ final class TerminalSelectionController: NSObject {
         perform(session.pressCancelled(selected: term.hasActiveSelection))
     }
 
-    /// A tap at `p` (engine view coordinates), before the host does anything with it.
-    /// `focused`: the terminal had the keyboard focus when the tap came.
-    func tap(at p: CGPoint, focused: Bool) -> Tap {
+    /// Counts a tap at `p` (engine view coordinates): whether it is on a handle, and else which
+    /// tap of a run it is (1, 2 or 3). The host decides what the tap does with these
+    /// (`TerminalTapDecision`); call it once per tap.
+    func countTap(at p: CGPoint) -> (onHandle: Bool, count: Int) {
         let now = clock(), inWindow = term.convert(p, to: nil)
         // The next tap of a double or triple tap lands on the handles the last one put up: it
         // is still a tap on the text.
         if !taps.continues(at: inWindow, now: now), handles.showsHandles,
-           handles.layout.handle(at: handles.convert(p, from: term)) != nil { return .handle }
-        guard term.usesHostSelectionUI else { return .single(showsPaste: false) }
-        switch taps.tap(at: inWindow, now: now) {
-        case 2:
+           handles.layout.handle(at: handles.convert(p, from: term)) != nil { return (true, 1) }
+        guard term.usesHostSelectionUI else { return (false, 1) }
+        return (false, taps.tap(at: inWindow, now: now))
+    }
+
+    /// A double tap at `p` selects the word there, a triple tap (`line`) the line.
+    func selectTap(at p: CGPoint, line: Bool) {
+        finger = p
+        if line {
+            perform(session.tapSelected(term.selectLine(at: p)))
+        } else {
             term.beginSelection(at: p, word: true)
             term.endSelectionDrag()
-            finger = p
             perform(session.tapSelected(term.hasActiveSelection))
-            return .selected
-        case 3:
-            finger = p
-            perform(session.tapSelected(term.selectLine(at: p)))
-            return .selected
-        default:
-            // The cheap conditions first: the cursor and the mouse mode cost a terminal lock each.
-            guard focused, !menuVisible, !term.hasActiveSelection else { return .single(showsPaste: false) }
-            return .single(showsPaste: SelectionRules.tapShowsPaste(
-                tap: term.gridCell(at: p), cursor: term.cursorGridCell, focused: focused, clearedSelection: false,
-                tapsGoToProgram: term.sendsTapsToProgram, menuVisible: menuVisible))
         }
+    }
+
+    /// SwiftTerm's zone for the cursor's Paste menu: within 3 columns and 1 row of the cursor.
+    func tapIsByCursor(at p: CGPoint) -> Bool {
+        SelectionRules.tapShowsPaste(tap: term.gridCell(at: p), cursor: term.cursorGridCell, focused: true,
+                                     clearedSelection: false, tapsGoToProgram: false, menuVisible: false)
+    }
+
+    /// A tap at `p` (engine view coordinates) as the selection UI alone sees it: counted, and
+    /// selecting on the second and third tap. `focused`: the terminal had the keyboard focus
+    /// when the tap came. The host's own taps go through `TerminalTapDecision` instead.
+    func tap(at p: CGPoint, focused: Bool) -> Tap {
+        let (onHandle, count) = countTap(at: p)
+        if onHandle { return .handle }
+        guard term.usesHostSelectionUI else { return .single(showsPaste: false) }
+        if count >= 2 {
+            selectTap(at: p, line: count >= 3)
+            return .selected
+        }
+        // The cheap conditions first: the cursor and the mouse mode cost a terminal lock each.
+        guard focused, !menuVisible, !term.hasActiveSelection else { return .single(showsPaste: false) }
+        return .single(showsPaste: !term.sendsTapsToProgram && tapIsByCursor(at: p))
     }
 
     /// Select All, from the keyboard (`showsMenu` false) or the edit menu.

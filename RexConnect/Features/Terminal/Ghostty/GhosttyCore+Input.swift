@@ -198,10 +198,9 @@ final class GhosttyInputMirror: @unchecked Sendable {
     /// paste" (paste.h). `ghostty_terminal_paste` itself can't be used: it writes through the
     /// write-pty callback, and this client installs none, because that callback also carries the
     /// terminal's answers to queries, which the server's terminal already sends. The pieces it
-    /// adds don't apply here: Kitty paste events need a clipboard-read callback (not installed),
-    /// and its refusal of text that could run a command is for a confirmation dialog the app
-    /// doesn't have. The SwiftTerm engine pastes such text too (`pasteText` retries a refused
-    /// paste with `allowUnsafe`), so this pastes like `allow_unsafe = true`.
+    /// adds don't apply here: Kitty paste events need a clipboard-read callback (not installed).
+    /// Its refusal of text that could run a command is `pasteNeedsConfirmation`, which the host
+    /// asks first; this encodes like `allow_unsafe = true`, for a paste the user confirmed.
     func paste(_ text: String) -> [UInt8] {
         guard !text.isEmpty else { return [] }
         let bracketed = modes.bracketedPaste
@@ -215,6 +214,23 @@ final class GhosttyInputMirror: @unchecked Sendable {
         guard ghostty_paste_encode(&data, data.count, bracketed, &out, out.count, &written) == GHOSTTY_SUCCESS else { return [] }
         out.removeSubrange(written...)
         return out
+    }
+
+    /// True when pasting `text` now could run a command: the program has not asked for
+    /// bracketed paste, and the text has a line end or another character libghostty-vt's
+    /// unsafe-paste check flags (`ghostty_paste_is_safe`). The host asks the user before it
+    /// pastes such text.
+    ///
+    /// Under bracketed paste (mode 2004) the program gets the text as one marked block, and the
+    /// one thing that could break out of the block, the end marker `ESC [ 201 ~`, can't survive
+    /// the encoder, which replaces ESC with a space. That is the terminal-aware rule
+    /// `ghostty_terminal_paste` applies (paste.h); the check by itself ignores the mode.
+    func pasteNeedsConfirmation(_ text: String) -> Bool {
+        guard !text.isEmpty, !modes.bracketedPaste else { return false }
+        var copy = text
+        return copy.withUTF8 { utf8 in
+            utf8.withMemoryRebound(to: CChar.self) { !ghostty_paste_is_safe($0.baseAddress, $0.count) }
+        }
     }
 
     // MARK: Focus

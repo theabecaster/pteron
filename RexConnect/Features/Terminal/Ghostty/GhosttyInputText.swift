@@ -1,18 +1,40 @@
 import UIKit
 import GhosttyVt
 
+/// What the program must get so that its line matches an edit of the shadow document: move its
+/// cursor, delete before it, then type.
+struct GhosttyInputEdit: Equatable {
+    /// Arrow keys first: negative is Left, positive Right, in characters.
+    var move = 0
+    /// Backspace keys, after the move.
+    var backspaces = 0
+    /// Text typed last. It can be longer than what the keyboard inserted: text that stood between
+    /// the edit and the program's cursor was deleted on the way and is typed again.
+    var text = ""
+
+    var isEmpty: Bool { move == 0 && backspaces == 0 && text.isEmpty }
+}
+
 /// The text the keyboard believes it is editing.
 ///
 /// A terminal has no document, but iOS's input methods, dictation and the space-bar trackpad need
 /// one (`UITextInput`): marked text to compose in, a range to replace when dictation revises a
 /// phrase, a caret to move. This is a shadow of what was typed since the last Return, as the
 /// SwiftTerm engine keeps. Offsets are UTF-16, as `UITextInput` counts.
+///
+/// The keyboard edits anywhere in this text, but the program only deletes before its own cursor.
+/// So the document also knows where the program's cursor is in the text (`programCaret`), and
+/// every change returns the keys that make the same change there (`GhosttyInputEdit`): Backspace
+/// from the program's cursor back to the start of the edit, the new text, then the text that was
+/// deleted on the way.
 struct GhosttyInputDocument: Equatable {
     private(set) var text = ""
     /// The caret (length 0) or the keyboard's selection.
     private(set) var selected = NSRange(location: 0, length: 0)
     /// Text an input method is still composing. It has not been sent to the program.
     private(set) var marked: NSRange?
+    /// Where the program's cursor is in `text`. Never inside the marked text.
+    private(set) var programCaret = 0
 
     var length: Int { (text as NSString).length }
     var isEmpty: Bool { text.isEmpty }
@@ -33,6 +55,10 @@ struct GhosttyInputDocument: Equatable {
         (text as NSString).substring(with: clamped(r))
     }
 
+    private func slice(_ from: Int, _ to: Int) -> String {
+        to > from ? (text as NSString).substring(with: NSRange(location: from, length: to - from)) : ""
+    }
+
     mutating func reset() {
         self = GhosttyInputDocument()
     }
@@ -45,28 +71,74 @@ struct GhosttyInputDocument: Equatable {
         text = (text as NSString).replacingCharacters(in: r, with: s)
     }
 
-    /// Typed or committed text: replaces the marked text, else the selection. The caret ends after it.
-    mutating func insert(_ s: String) {
-        let r = clamped(marked ?? selected)
+    /// Replaces sent text `r` (clamped, no marked text in the document) with `s`, and returns the
+    /// keys that do the same on the program's line. The program's cursor ends where it was in
+    /// the text: after what stood behind the edit, or right after `s` if it had to move there.
+    private mutating func change(_ r: NSRange, to s: String) -> GhosttyInputEdit {
+        var edit = GhosttyInputEdit()
+        let n = (s as NSString).length
+        let end = NSMaxRange(r)
+        if programCaret >= end {
+            // Delete back to the start of the edit, taking the text behind it too, and type
+            // that text again after the new one.
+            let tail = slice(end, programCaret)
+            edit.backspaces = slice(r.location, programCaret).count
+            edit.text = s + tail
+            programCaret += n - r.length
+        } else {
+            // The program's cursor is before the end of the edit (the space-bar trackpad moved
+            // it): go to the end first.
+            edit.move = slice(programCaret, end).count
+            edit.backspaces = slice(r.location, end).count
+            edit.text = s
+            programCaret = r.location + n
+        }
         splice(r, s)
-        marked = nil
-        selected = NSRange(location: r.location + (s as NSString).length, length: 0)
+        return edit
     }
 
-    /// An input method's text in progress. `selection` is relative to `s`.
-    mutating func setMarked(_ s: String?, selection: NSRange) {
-        let r = clamped(marked ?? selected)
-        let new = s ?? ""
-        splice(r, new)
-        let n = (new as NSString).length
-        guard n > 0 else {
-            marked = nil
-            selected = NSRange(location: r.location, length: 0)
-            return
+    /// Takes the marked text out. It never reached the program.
+    private mutating func dropMarked() {
+        guard let m = marked.map(clamped) else { return }
+        splice(m, "")
+        marked = nil
+        if programCaret >= NSMaxRange(m) { programCaret -= m.length } else if programCaret > m.location { programCaret = m.location }
+        selected = NSRange(location: m.location, length: 0)
+    }
+
+    /// Typed or committed text: replaces the marked text, else the selection. The caret ends after it.
+    @discardableResult
+    mutating func insert(_ s: String) -> GhosttyInputEdit {
+        dropMarked()
+        let r = clamped(selected)
+        let edit = change(r, to: s)
+        selected = NSRange(location: r.location + (s as NSString).length, length: 0)
+        return edit
+    }
+
+    /// An input method's text in progress. `selection` is relative to `s`. Composing sends
+    /// nothing, unless it starts over a selection of sent text: that text goes.
+    @discardableResult
+    mutating func setMarked(_ s: String?, selection: NSRange) -> GhosttyInputEdit {
+        var edit = GhosttyInputEdit()
+        if marked == nil {
+            let sel = clamped(selected)
+            if sel.length > 0 { edit = change(sel, to: "") }
+            selected = NSRange(location: sel.location, length: 0)
+        } else {
+            dropMarked()
         }
-        marked = NSRange(location: r.location, length: n)
+        let at = selected.location
+        let new = s ?? ""
+        let n = (new as NSString).length
+        guard n > 0 else { return edit }
+        splice(NSRange(location: at, length: 0), new)
+        // The program's cursor stays before the composed text, or keeps its place behind it.
+        if programCaret > at { programCaret += n }
+        marked = NSRange(location: at, length: n)
         let start = max(0, min(selection.location, n)), len = max(0, min(selection.length, n - start))
-        selected = clamped(NSRange(location: r.location + start, length: len))
+        selected = clamped(NSRange(location: at + start, length: len))
+        return edit
     }
 
     /// Ends composition and returns the composed text, which the caller commits with `insert`.
@@ -75,51 +147,62 @@ struct GhosttyInputDocument: Equatable {
         marked.map { substring($0) }
     }
 
-    /// The keyboard's delete key. Returns how many Backspace keys the program should get.
-    mutating func deleteBackward() -> Int {
-        if let m = marked {
+    /// The keyboard's delete key.
+    mutating func deleteBackward() -> GhosttyInputEdit {
+        if marked != nil {
             // Composed text never reached the program: drop it here only.
-            let r = clamped(m)
-            splice(r, "")
-            marked = nil
-            selected = NSRange(location: r.location, length: 0)
-            return 0
+            dropMarked()
+            return GhosttyInputEdit()
         }
         let sel = clamped(selected)
         if sel.length > 0 {
-            let n = substring(sel).count
-            splice(sel, "")
+            let edit = change(sel, to: "")
             selected = NSRange(location: sel.location, length: 0)
-            return n
+            return edit
         }
-        // Nothing of ours before the caret (after a paste, a Return, a prompt that was already
-        // there): the program still has something to delete.
-        guard sel.location > 0 else { return 1 }
+        guard sel.location > 0 else {
+            // Nothing of ours before the caret (after a paste, a Return, a prompt that was already
+            // there): the program still has something to delete, before the start of this text.
+            let edit = GhosttyInputEdit(move: -slice(0, programCaret).count, backspaces: 1)
+            programCaret = 0
+            return edit
+        }
         let r = (text as NSString).rangeOfComposedCharacterSequence(at: sel.location - 1)
-        splice(r, "")
+        let edit = change(r, to: "")
         selected = NSRange(location: r.location, length: 0)
-        return 1
+        return edit
     }
 
-    /// The system replaces text that was already sent (dictation revising a phrase). Returns how
-    /// many Backspace keys take the old text off the program's line before `s` is typed.
-    mutating func replace(_ range: NSRange, with s: String) -> Int {
+    /// The system replaces text that was already sent (dictation revising a phrase, a correction
+    /// picked from the keyboard's bar).
+    mutating func replace(_ range: NSRange, with s: String) -> GhosttyInputEdit {
+        dropMarked()
         let r = clamped(range)
-        let removed = substring(r).count
-        splice(r, s)
+        let edit = change(r, to: s)
         let n = (s as NSString).length
         if NSMaxRange(r) <= selected.location {
             selected = clamped(NSRange(location: selected.location - r.length + n, length: selected.length))
         } else if r.location < NSMaxRange(selected) {
             selected = NSRange(location: r.location + n, length: 0)
         }
-        return removed
+        return edit
     }
 
-    /// Moves the caret by whole characters (the space-bar trackpad).
-    mutating func moveCaret(by characters: Int) {
+    /// Moves the caret by whole characters (the space-bar trackpad), and the program's cursor
+    /// with it: the caller sends one arrow key per character asked for. Returns how far the
+    /// program's cursor went in the text; less than asked means it left what was typed, where
+    /// the document no longer knows the line.
+    @discardableResult
+    mutating func moveCaret(by characters: Int) -> Int {
+        selected = NSRange(location: offset(clamped(selected).location, movedBy: characters).at, length: 0)
+        let program = offset(programCaret, movedBy: characters)
+        programCaret = program.at
+        return program.moved
+    }
+
+    private func offset(_ from: Int, movedBy characters: Int) -> (at: Int, moved: Int) {
         let s = text as NSString
-        var at = clamped(selected).location
+        var at = max(0, min(from, s.length))
         var left = characters
         while left < 0, at > 0 {
             at = s.rangeOfComposedCharacterSequence(at: at - 1).location
@@ -129,7 +212,7 @@ struct GhosttyInputDocument: Equatable {
             at = NSMaxRange(s.rangeOfComposedCharacterSequence(at: at))
             left -= 1
         }
-        selected = NSRange(location: at, length: 0)
+        return (at, characters - left)
     }
 }
 
@@ -161,8 +244,11 @@ final class GhosttyInputState {
     /// Hardware keys whose press was encoded, by HID usage, for their release (the Kitty
     /// protocol can report it).
     var down: [Int: GhosttyInputKey] = [:]
-    var repeatTimer: Timer?
-    var repeatUsage: Int?
+    /// Repeats the held key that was encoded here (`KeyRepeater`).
+    var keyRepeat = KeyRepeater()
+    /// The hardware keyboard's language, for what Option means (`GhosttyInputKeymap.optionRole`).
+    /// Nil: the view's input mode says. Tests set it.
+    var layoutLanguage: String?
     /// Last point of a space-bar trackpad drag.
     var floatingCursor: CGPoint?
 }
@@ -206,8 +292,7 @@ extension GhosttyTerminalView: UITextInput {
 
     func replace(_ range: UITextRange, withText text: String) {
         guard let r = nsRange(range), !document.isComposing else { return }
-        let backspaces = editInputDocument { $0.replace(r, with: text) }
-        sendTyped(GhosttyInputKeymap.typed(text), backspaces: backspaces)
+        sendEdit(editInputDocument { $0.replace(r, with: text) })
     }
 
     var selectedTextRange: UITextRange? {
@@ -223,13 +308,13 @@ extension GhosttyTerminalView: UITextInput {
     var markedTextRange: UITextRange? { document.marked.map { GhosttyTextRange($0) } }
 
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
-        editInputDocument { $0.setMarked(markedText, selection: selectedRange) }
+        sendEdit(editInputDocument { $0.setMarked(markedText, selection: selectedRange) })
     }
 
     func unmarkText() {
         guard let composed = document.markedText() else { return }
         if composed.isEmpty {
-            editInputDocument { $0.setMarked(nil, selection: NSRange(location: 0, length: 0)) }
+            sendEdit(editInputDocument { $0.setMarked(nil, selection: NSRange(location: 0, length: 0)) })
         } else {
             insertText(composed)
         }
@@ -329,7 +414,8 @@ extension GhosttyTerminalView: UITextInput {
         let dx = last.x - point.x, dy = last.y - point.y
         if abs(dx) > 5 {
             // Keep the shadow caret with the program's, so a later delete removes the right character.
-            editInputDocument { $0.moveCaret(by: dx > 0 ? -1 : 1) }
+            // Past either end of what was typed the shadow no longer mirrors the line: forget it.
+            if editInputDocument({ $0.moveCaret(by: dx > 0 ? -1 : 1) }) == 0 { resetInputDocument() }
             sendTyped([GhosttyInputKey(dx > 0 ? GHOSTTY_KEY_ARROW_LEFT : GHOSTTY_KEY_ARROW_RIGHT)])
             inputState.floatingCursor = point
         }

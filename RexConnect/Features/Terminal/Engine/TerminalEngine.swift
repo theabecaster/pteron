@@ -184,4 +184,25 @@ protocol TerminalEngineView: UIView, TerminalKeyTarget {
     var keyboardFocusHook: ((Bool) -> Void)? { get set }
     func send(txt: String)
     func pasteText(_ s: String)
+    /// True when pasting `s` now could run a command (a line end, outside bracketed paste): the
+    /// host asks the user first. Default: false.
+    func pasteNeedsConfirmation(_ s: String) -> Bool
+    /// Who may let the program write the pasteboard (OSC 52): asked on the main actor for each
+    /// write; a refused write is dropped. Default: the engine keeps its own rule.
+    func setProgramClipboardGate(_ gate: @escaping @MainActor () -> Bool)
+    /// A mouse click for the program at `p`, once the host decided the tap is one
+    /// (`TerminalTapDecision`). Default: nothing; such an engine sends clicks from its own tap,
+    /// which asks `tapGate`.
+    func sendClickToProgram(at p: CGPoint)
+    /// Stops a held hardware key from repeating (the pane stopped being the active one).
+    /// Default: nothing.
+    func stopKeyRepeat()
+}
+
+/// Engines without these leave them out.
+extension TerminalEngineView {
+    func pasteNeedsConfirmation(_ s: String) -> Bool { false }
+    func setProgramClipboardGate(_ gate: @escaping @MainActor () -> Bool) {}
+    func sendClickToProgram(at p: CGPoint) {}
+    func stopKeyRepeat() {}
 }

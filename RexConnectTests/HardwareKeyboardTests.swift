@@ -175,12 +175,45 @@ struct KeyboardFocusPolicyTests {
         // A sheet or an alert is up.
         S(hardwareKeyboard: true, sheetUp: true),
         S(hardwareKeyboard: true, sheetUp: true, holder: .terminal),
-        // The user put the keyboard away with the key bar's hide key.
-        S(hardwareKeyboard: true, userHidKeyboard: true),
-        S(hadKeyboard: true, userHidKeyboard: true, holder: .terminal),
+        // The user put the software keyboard away with the key bar's hide key, and there is no
+        // hardware keyboard: a fold or a freed keyboard doesn't bring it back.
+        S(hadKeyboard: true, userHidKeyboard: true),
+        S(userHidKeyboard: true),
+        S(hadKeyboard: true, userHidKeyboard: true, holder: .other),
+        // A text field keeps the keyboard from a pane that hid its own, too.
+        S(hardwareKeyboard: true, userHidKeyboard: true, holder: .textInput),
+        S(hardwareKeyboard: true, userHidKeyboard: true, sheetUp: true),
     ])
     func neverOtherwise(s: KeyboardFocusPolicy.Situation) {
         #expect(!KeyboardFocusPolicy.takesKeyboard(s))
+    }
+
+    @Test func aHiddenKeyboardNeverLeavesTheKeysWithAnotherPane() {
+        // The reviewed defect: pane B hid its keyboard, pane A has it, B becomes active. B
+        // refused the keyboard, so a hardware keyboard went on typing into A.
+        let hiddenThere = S(hardwareKeyboard: true, userHidKeyboard: true, holder: .terminal)
+        #expect(KeyboardFocusPolicy.takesKeyboard(hiddenThere))
+        #expect(KeyboardFocusPolicy.takesQuietly(hiddenThere))
+        // Without a hardware keyboard the keyboard still leaves the pane that isn't active.
+        #expect(KeyboardFocusPolicy.takesKeyboard(S(userHidKeyboard: true, holder: .terminal)))
+        // A free keyboard: hardware keys go to the active pane, hidden or not.
+        #expect(KeyboardFocusPolicy.takesKeyboard(S(hardwareKeyboard: true, userHidKeyboard: true)))
+        #expect(KeyboardFocusPolicy.takesKeyboard(S(hardwareKeyboard: true, userHidKeyboard: true, holder: .other)))
+        // Quietly only where the user hid it.
+        #expect(!KeyboardFocusPolicy.takesQuietly(S(hardwareKeyboard: true, holder: .terminal)))
+        #expect(!KeyboardFocusPolicy.takesQuietly(S(hardwareKeyboard: true)))
+    }
+
+    @Test func aPaneThatIsNotActiveMustGiveTheKeyboardUp() {
+        #expect(KeyboardFocusPolicy.mustResign(paneActive: false, holdsKeyboard: true))
+        #expect(!KeyboardFocusPolicy.mustResign(paneActive: true, holdsKeyboard: true))
+        #expect(!KeyboardFocusPolicy.mustResign(paneActive: false, holdsKeyboard: false))
+        #expect(!KeyboardFocusPolicy.mustResign(paneActive: true, holdsKeyboard: false))
+    }
+
+    @Test func aSheetOnItsWayOutNoLongerCovers() {
+        #expect(!KeyboardFocusPolicy.sheetUp(in: nil))
+        #expect(!KeyboardFocusPolicy.sheetUp(in: UIWindow(frame: .zero)))
     }
 
     @Test func classifiesTheFirstResponder() {
@@ -396,6 +429,35 @@ struct HardwareKeyPathTests {
         #expect(seen.first?.1 == cmd)
         // Left alone, the engine gives a Command chord to the app and the system: it never types it.
         #expect(GhosttyInputKeymap.route(usage: keySlash, flags: cmd, characters: "/", charactersIgnoringModifiers: "/") == .system)
+    }
+
+    @Test func aBoundKeyRepeatsThroughTheSharedRepeaterAndStopsWhenThePaneIsLeft() throws {
+        // ⌥⌘← is Focus Pane Left in the default keymap, and repeats while held.
+        let (host, _) = makeHost(.ghostty)
+        let clock = ManualKeyRepeatClock()
+        host.keyRepeat = KeyRepeater(clock: clock, notifications: NotificationCenter(), keyIsDown: { _ in true })
+        var ran = 0
+        host.onCommand = { _ in ran += 1 }
+        let key = try makeKey(usage: 80, flags: [.alternate, .command], characters: UIKeyCommand.inputLeftArrow)
+        host.term.pressesBegan([FakePress(key)], with: nil)
+        #expect(host.keyRepeat.isRepeating)
+        // Not the active pane, not on screen, no keyboard: the first repeat finds that out.
+        clock.advance(5)
+        #expect(!host.keyRepeat.isRepeating)
+
+        // A release ends it, through the responder chain.
+        host.term.pressesBegan([FakePress(key)], with: nil)
+        #expect(host.keyRepeat.isRepeating)
+        host.pressesEnded([FakePress(key)], with: nil)
+        #expect(!host.keyRepeat.isRepeating)
+
+        // So does the pane no longer being the active one.
+        host.isActive = true
+        host.term.pressesBegan([FakePress(key)], with: nil)
+        #expect(host.keyRepeat.isRepeating)
+        host.isActive = false
+        #expect(!host.keyRepeat.isRepeating)
+        #expect(ran == 3, "each press ran the command once; no repeat got through")
     }
 
     @Test func theKeyCommandListCarriesToggleSidebar() throws {

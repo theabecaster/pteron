@@ -89,9 +89,11 @@ final class GhosttyTapState {
     static let repeatInterval: CFTimeInterval = 0.5
     static let repeatDistance: CGFloat = 40
 
-    /// Opens a link. `UIApplication.open` by default, as the SwiftTerm engine does; tests put
-    /// their own here.
+    /// Opens a link. `UIApplication.open` by default; tests put their own here.
     var open: (URL) -> Void = { UIApplication.shared.open($0) }
+    /// Asks before a link opens that `LinkOpenPolicy` doesn't open at once. Nil: the view shows
+    /// an alert (`TerminalPrompt`). Tests put their own here.
+    var ask: ((URL, LinkOpenPolicy.LinkQuestion, @escaping @MainActor (Bool) -> Void) -> Void)?
     var clock: () -> CFTimeInterval = { CACurrentMediaTime() }
     private var last: (time: CFTimeInterval, point: CGPoint)?
 
@@ -117,15 +119,30 @@ extension GhosttyTerminalView {
         // The cheap conditions first: the rest costs a terminal lock.
         guard focused, !shift, !taps.repeats(at: point) else { return false }
         let cell = viewportCell(at: point)
-        let action = GhosttyTapRouting.action(focusedAtTouch: focused, shift: shift, hasSelection: hasActiveSelection,
-                                              probe: core.tapProbe(viewportCol: cell.col, row: cell.row))
+        let probe = core.tapProbe(viewportCol: cell.col, row: cell.row)
+        let action = GhosttyTapRouting.action(focusedAtTouch: focused, shift: shift, hasSelection: hasActiveSelection, probe: probe)
         var used = false
         switch action {
         case .open(let link):
-            // Any scheme iOS has a handler for, as with the SwiftTerm engine.
-            if let url = URL(string: link) {
+            // A program wrote the link: web and mail addresses open, anything else, and a label
+            // that names another site, is asked about first (`LinkOpenPolicy`). An address found
+            // in the text is its own label.
+            let label = probe.link?.explicit == true ? core.hyperlinkLabel(atViewportCol: cell.col, row: cell.row) : nil
+            switch LinkOpenPolicy.decide(target: link, label: label) {
+            case .open(let url):
                 taps.open(url)
                 used = true
+            case .ask(let url, let question):
+                let open = taps.open
+                let answer: @MainActor (Bool) -> Void = { if $0 { open(url) } }
+                if let ask = taps.ask {
+                    ask(url, question, answer)
+                } else {
+                    TerminalPrompt.ask(over: self, link: url, question: question, answer: answer)
+                }
+                used = true
+            case .refuse:
+                break
             }
         case .prompt(let click):
             used = send(promptClick: click)
@@ -134,6 +151,11 @@ extension GhosttyTerminalView {
         }
         if used { taps.used(at: point) }
         return used
+    }
+
+    /// A click the host decided on (`TerminalTapDecision`): press and release at the cell.
+    func sendClickToProgram(at point: CGPoint) {
+        scroller.forwardTap(at: point)
     }
 
     /// Sends a prompt click as one write.

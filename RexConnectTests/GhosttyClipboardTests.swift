@@ -19,6 +19,8 @@ final class GhosttyClipboardTests: XCTestCase {
         let core = GhosttyCore(cols: 40, rows: 10)
         let board = Pasteboard()
         core.clipboard.setSink { board.texts.append($0) }
+        // Who may write is the host's to say (TerminalPromptTests); here every write may.
+        core.clipboard.setGate { true }
         return (core, board)
     }
 
@@ -112,6 +114,7 @@ final class GhosttyClipboardTests: XCTestCase {
         view.engineDelegate = sink
         let board = Pasteboard()
         view.core.clipboard.setSink { board.texts.append($0) }
+        view.core.clipboard.setGate { true }
         // Queries with both terminators and every destination, then other things a terminal
         // answers (device attributes, status, a Kitty clipboard read): nothing may come back.
         view.feed(text: "\u{1b}]52;c;?\u{07}\u{1b}]52;p;?\u{1b}\\\u{1b}]52;;?\u{07}\u{1b}]52;s;?\u{07}")

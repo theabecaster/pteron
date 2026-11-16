@@ -121,19 +121,19 @@ final class GhosttyInputTextTests: XCTestCase {
         var doc = GhosttyInputDocument()
         XCTAssertTrue(doc.isEmpty)
         // Nothing of ours to delete: the program still gets a Backspace.
-        XCTAssertEqual(doc.deleteBackward(), 1)
+        XCTAssertEqual(doc.deleteBackward().backspaces, 1)
         doc.insert("ab")
         doc.insert("👍")
         doc.insert("e\u{301}")
         XCTAssertEqual(doc.text, "ab👍e\u{301}")
         XCTAssertEqual(doc.selected, NSRange(location: 6, length: 0))
         // One Backspace per character, whatever its length in UTF-16.
-        XCTAssertEqual(doc.deleteBackward(), 1)
+        XCTAssertEqual(doc.deleteBackward().backspaces, 1)
         XCTAssertEqual(doc.text, "ab👍")
-        XCTAssertEqual(doc.deleteBackward(), 1)
+        XCTAssertEqual(doc.deleteBackward().backspaces, 1)
         XCTAssertEqual(doc.text, "ab")
         doc.select(NSRange(location: 0, length: 2))
-        XCTAssertEqual(doc.deleteBackward(), 2)
+        XCTAssertEqual(doc.deleteBackward().backspaces, 2)
         XCTAssertTrue(doc.isEmpty)
         XCTAssertEqual(doc.selected, NSRange(location: 0, length: 0))
     }
@@ -156,7 +156,7 @@ final class GhosttyInputTextTests: XCTestCase {
 
         // Deleting marked text is the input method's business: no Backspace for the program.
         doc.setMarked("x", selection: NSRange(location: 1, length: 0))
-        XCTAssertEqual(doc.deleteBackward(), 0)
+        XCTAssertEqual(doc.deleteBackward().backspaces, 0)
         XCTAssertEqual(doc.text, "go 日本")
         XCTAssertFalse(doc.isComposing)
         // Clearing it.
@@ -170,7 +170,7 @@ final class GhosttyInputTextTests: XCTestCase {
         var doc = GhosttyInputDocument()
         doc.insert("hello word")
         // Dictation revises the last word: four characters go, five come.
-        XCTAssertEqual(doc.replace(NSRange(location: 6, length: 4), with: "world"), 4)
+        XCTAssertEqual(doc.replace(NSRange(location: 6, length: 4), with: "world"), GhosttyInputEdit(backspaces: 4, text: "world"))
         XCTAssertEqual(doc.text, "hello world")
         XCTAssertEqual(doc.selected, NSRange(location: 11, length: 0))
         // Ranges are cut to the document and never split a character.
