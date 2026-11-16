@@ -48,7 +48,7 @@ final class ServerConnection: Identifiable {
     enum Phase: Equatable { case idle, connecting, online, offline(String) }
 
     let config: ServerConfig
-    var id: UUID { config.id }
+    nonisolated var id: UUID { config.id }
     let control: RexControl
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
