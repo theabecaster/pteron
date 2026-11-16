@@ -1,0 +1,220 @@
+import XCTest
+@testable import RexKit
+
+/// A control connection with no server behind it. Calls are recorded and answered at once, or
+/// held until the test releases them; `disconnect()` fails the held ones as a lost connection
+/// does; `connect()` tells the observers, as `RexControl` does after a reconnect.
+@MainActor
+final class FakeLink: StreamLink {
+    struct Call {
+        let method: String
+        let payload: JSONObject
+        /// The text of a `terminal.write`.
+        var text: String? { payload.obj("args")?.str("data") }
+    }
+
+    enum SocketPlan {
+        /// Answers the handshake with a WELCOME that keeps the stream this long for a resume.
+        case welcome(keepMs: UInt32 = 60_000)
+        case reject(UInt8)
+        /// The socket fails as soon as it is used: no network.
+        case fail
+        /// Takes the handshake and answers nothing until the test does.
+        case silent
+    }
+
+    private(set) var isConnected: Bool
+    private var observers: [@MainActor () -> Bool] = []
+    /// Every call that reached the "server", in order.
+    private(set) var calls: [Call] = []
+    /// Methods whose calls wait for `release`.
+    var held: Set<String> = []
+    /// Errors for the next calls of a method, thrown instead of an answer.
+    var failures: [String: [Error]] = [:]
+    private var waiting: [(Call, CheckedContinuation<Void, Error>)] = []
+
+    private(set) var sockets: [FakeSocket] = []
+    /// What the next sockets do, in order; `defaultPlan` after that.
+    var plans: [SocketPlan] = []
+    var defaultPlan = SocketPlan.welcome()
+    static let nonce: UInt64 = 77
+
+    init(connected: Bool = true) { isConnected = connected }
+
+    func observeConnected(_ body: @escaping @MainActor () -> Bool) { observers.append(body) }
+
+    /// The control connection is connected (again).
+    func connect() {
+        isConnected = true
+        observers = observers.filter { $0() }
+    }
+
+    /// The control connection is lost: calls still waiting fail the way `RexControl.failAll` does.
+    func disconnect() {
+        isConnected = false
+        let w = waiting
+        waiting = []
+        for (_, c) in w { c.resume(throwing: RexError.local("connection lost")) }
+    }
+
+    func call(_ method: String, _ payload: JSONObject?) async throws -> JSONObject {
+        guard isConnected else { throw RexError.unsent("not connected") }
+        if var errors = failures[method], !errors.isEmpty {
+            let e = errors.removeFirst()
+            failures[method] = errors
+            // A request the socket didn't take never reached the server.
+            if (e as? RexError)?.neverSent != true { calls.append(Call(method: method, payload: payload ?? [:])) }
+            throw e
+        }
+        let call = Call(method: method, payload: payload ?? [:])
+        calls.append(call)
+        if held.contains(method) {
+            try await withCheckedThrowingContinuation { waiting.append((call, $0)) }
+        }
+        return method == "data.connect" ? ["ticket": "AAECAwQFBgcICQoLDA0ODw"] : [:]
+    }
+
+    /// Answers the oldest held call.
+    func release() {
+        guard !waiting.isEmpty else { return XCTFail("no call is waiting") }
+        waiting.removeFirst().1.resume()
+    }
+
+    var waitingCount: Int { waiting.count }
+    func count(_ method: String) -> Int { calls.filter { $0.method == method }.count }
+    var methods: [String] { calls.map(\.method) }
+    /// The texts of the `terminal.write` calls, in order.
+    var written: [String] { calls.compactMap(\.text) }
+    /// Writes as `w:<text>` and other calls by method, in order, without the stream's own start.
+    var inputTrace: [String] {
+        calls.compactMap { c in
+            if let t = c.text { return "w:\(t)" }
+            return c.method.hasPrefix("client.") ? c.method : nil
+        }
+    }
+
+    func openDataSocket() throws -> any StreamSocket {
+        let plan = plans.isEmpty ? defaultPlan : plans.removeFirst()
+        let s = FakeSocket(plan)
+        sockets.append(s)
+        return s
+    }
+
+    static func welcome(keepMs: UInt32 = 60_000) -> [UInt8] {
+        var b: [UInt8] = [0x81] + [UInt8](repeating: 0xAB, count: 16) + [0, 0, 0]
+        for k in 0..<4 { b.append(UInt8((keepMs >> (8 * UInt32(k))) & 0xff)) }
+        for k in 0..<8 { b.append(UInt8((nonce >> (8 * UInt64(k))) & 0xff)) }
+        return b
+    }
+}
+
+@MainActor
+final class FakeSocket: StreamSocket {
+    private let plan: FakeLink.SocketPlan
+    private(set) var sent: [[UInt8]] = []
+    private(set) var closed = false
+    private(set) var closeCode = 0
+    private var inbox: [Result<Data?, Error>] = []
+    private var waiter: CheckedContinuation<Data?, Error>?
+
+    init(_ plan: FakeLink.SocketPlan) { self.plan = plan }
+
+    var isHello: Bool { sent.first?.first == 0x01 }
+    var isResume: Bool { sent.first?.first == 0x02 }
+    /// The byte count of a RESUME.
+    var resumeCount: UInt64? {
+        guard isResume, let m = sent.first, m.count == 25 else { return nil }
+        return m[17...].reversed().reduce(0) { $0 << 8 | UInt64($1) }
+    }
+
+    func send(_ data: Data) async throws {
+        if case .fail = plan { throw URLError(.notConnectedToInternet) }
+        sent.append([UInt8](data))
+        switch plan {
+        case .welcome(let keep): deliver(.success(Data(FakeLink.welcome(keepMs: keep))))
+        case .reject(let reason): deliver(.success(Data([0x82, reason])))
+        case .fail, .silent: break
+        }
+    }
+
+    func receive() async throws -> Data? {
+        if !inbox.isEmpty { return try inbox.removeFirst().get() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+
+    func close() {
+        closed = true
+        deliver(.failure(URLError(.cancelled)))
+    }
+
+    private func deliver(_ r: Result<Data?, Error>) {
+        if let w = waiter {
+            waiter = nil
+            w.resume(with: r)
+        } else {
+            inbox.append(r)
+        }
+    }
+
+    /// The server sends stream bytes (or, on a silent socket, its handshake answer).
+    func push(_ bytes: [UInt8]) { deliver(.success(Data(bytes))) }
+
+    /// The connection drops, or the server closes it with `code`.
+    func drop(code: Int = 0) {
+        closeCode = code
+        deliver(.failure(URLError(.networkConnectionLost)))
+    }
+}
+
+/// Waits until `condition` holds; false after two seconds.
+@MainActor
+func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
+    for _ in 0..<2000 {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(1))
+    }
+    return condition()
+}
+
+/// Lets everything that is ready to run finish, to check that nothing more happens.
+@MainActor
+func settle() async {
+    for _ in 0..<5 {
+        try? await Task.sleep(for: .milliseconds(10))
+        for _ in 0..<20 { await Task.yield() }
+    }
+}
+
+/// The waits a stream asked for. They are recorded and skipped, except those in `real`.
+@MainActor
+final class SleepLog {
+    private(set) var asked: [Duration] = []
+    /// Runs after a wait is recorded.
+    var onSleep: ((Duration) -> Void)?
+    /// Waits that really pass: by default the hold after a key-bound action (`actionHold`), which
+    /// would otherwise let typing overtake every action at once.
+    var real: Set<Duration> = [.milliseconds(1500)]
+
+    func attach(to stream: TerminalStream) {
+        // The stream keeps the log alive.
+        stream.sleep = { d in
+            self.asked.append(d)
+            self.onSleep?(d)
+            if self.real.contains(d) { try? await Task.sleep(for: d) } else { await Task.yield() }
+        }
+    }
+
+    /// The pauses between fresh starts (seconds); the short ones are other waits.
+    var backoffs: [Duration] { asked.filter { $0 >= .seconds(3) } }
+}
+
+@MainActor
+func makeStream(link: FakeLink, sink: TerminalSink, ghostty: Bool = true) -> (TerminalStream, SleepLog) {
+    let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
+    let s = TerminalStream(control: control, link: link, sessionID: "session:test", blockID: "block:test")
+    s.sink = sink
+    s.restoresGhosttySnapshot = ghostty
+    let log = SleepLog()
+    log.attach(to: s)
+    return (s, log)
+}

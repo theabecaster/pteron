@@ -36,7 +36,12 @@ public final class RexControl {
     /// `wss://host` for the address; nil when the address is invalid (`connect()` then fails).
     public let wsBase: URL?
     public let client: ClientInfo
-    public private(set) var state: State = .idle { didSet { onStateChange?(state) } }
+    public private(set) var state: State = .idle {
+        didSet {
+            onStateChange?(state)
+            if state == .connected, oldValue != .connected { notifyConnected() }
+        }
+    }
     public private(set) var clientID: String?
     public private(set) var maxMessageBytes = 65536
 
@@ -57,6 +62,7 @@ public final class RexControl {
     private var wantConnected = false
     private var retryDelay: Double = 1
     private var retryTask: Task<Void, Never>?
+    private var connectedObservers: [@MainActor () -> Bool] = []
 
     /// `address` is the server's HTTPS address, e.g. `https://mac.tailnet.ts.net`.
     public init(address: String, client: ClientInfo) {
@@ -257,6 +263,22 @@ public final class RexControl {
         Task { @MainActor in await self.attempt() }
     }
 
+    /// Calls `body` each time the connection becomes connected, the first time and after every
+    /// reconnect, until it returns false. This connection is the only thing that retries; what
+    /// depends on it (a `TerminalStream`) waits here instead of polling or retrying on its own.
+    /// `body` runs as soon as `state` is `.connected`, before `onReconnected`.
+    public func observeConnected(_ body: @escaping @MainActor () -> Bool) {
+        connectedObservers.append(body)
+    }
+
+    private func notifyConnected() {
+        // An observer added from inside a call is kept for the next time.
+        let current = connectedObservers
+        connectedObservers = []
+        let kept = current.filter { $0() }
+        connectedObservers = kept + connectedObservers
+    }
+
     private func failAll(_ err: Error) {
         let p = pending
         pending.removeAll()
@@ -298,7 +320,8 @@ public final class RexControl {
     }
 
     public func callAny(_ method: String, _ payload: JSONObject? = nil) async throws -> Any {
-        guard let t = task, state == .connected else { throw RexError.local("not connected") }
+        // `neverSent`: a caller that must not repeat a request (typed input) may send this one again.
+        guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
         nextID += 1
         let id = String(nextID)
         var req: JSONObject = ["type": "request", "id": id, "method": method]
@@ -309,7 +332,11 @@ public final class RexControl {
             t.send(.string(text)) { err in
                 if let err {
                     Task { @MainActor in
-                        if let c = self.pending.removeValue(forKey: id) { c.resume(throwing: err) }
+                        // The socket didn't take the message, so the server never saw it. (A
+                        // request that was sent and then lost its connection fails in `failAll`.)
+                        if let c = self.pending.removeValue(forKey: id) {
+                            c.resume(throwing: RexError.unsent(err.localizedDescription))
+                        }
                     }
                 }
             }

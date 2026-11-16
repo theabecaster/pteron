@@ -57,6 +57,11 @@ public struct RexError: LocalizedError, Sendable {
     public let code: String
     public let message: String
     public let status: Int
+    /// True when the request never left this client: there was no connection, or the socket
+    /// refused the message. Sending it again can't make the server run it twice. False for an
+    /// error the server answered with, and for a request that was sent and whose answer never
+    /// came because the connection broke: the server may or may not have run that one.
+    public var neverSent = false
     public var errorDescription: String? { "\(message) (\(code))" }
 
     public init(code: String, message: String, status: Int = 0) {
@@ -66,4 +71,10 @@ public struct RexError: LocalizedError, Sendable {
     }
 
     public static func local(_ msg: String) -> RexError { RexError(code: "client", message: msg) }
+    /// A local error for a request that never left this client (`neverSent`).
+    public static func unsent(_ msg: String) -> RexError {
+        var e = RexError(code: "client", message: msg)
+        e.neverSent = true
+        return e
+    }
 }

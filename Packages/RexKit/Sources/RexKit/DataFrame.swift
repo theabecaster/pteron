@@ -5,12 +5,15 @@ import Foundation
 /// - Client hello: `0x01` + the 16-byte ticket from `data.connect`.
 /// - Client resume: `0x02` + the 16-byte resume token + bytes received so far (UInt64, little-endian).
 /// - Server refusal: `0x82` + a reason byte.
-/// - Server welcome: `0x81`, 32 bytes, resume token at 1..<17, nonce (UInt64 LE) at 24..<32.
+/// - Server welcome: `0x81`, 32 bytes, resume token at 1..<17, how long the server keeps a dropped
+///   stream for a resume (milliseconds, UInt32 LE) at 20..<24, nonce (UInt64 LE) at 24..<32.
 ///   The nonce marks Rex's own APC messages in the stream (see `APCFilter`).
 public enum DataFrame {
     public struct Welcome: Equatable, Sendable {
         public var token: [UInt8]
         public var nonce: UInt64
+        /// How long the server keeps the stream for a RESUME after its connection drops.
+        public var resumeWindowMs: UInt32 = 0
     }
 
     /// The hello for a ticket in base64url, or nil if it isn't 16 bytes.
@@ -34,7 +37,8 @@ public enum DataFrame {
         guard b.count == 32, b[0] == 0x81 else { throw RexError.local("bad welcome") }
         var nonce: UInt64 = 0
         for k in 0..<8 { nonce |= UInt64(b[24 + k]) << (8 * UInt64(k)) }
-        return Welcome(token: Array(b[1..<17]), nonce: nonce)
+        let keep = UInt32(b[20]) | UInt32(b[21]) << 8 | UInt32(b[22]) << 16 | UInt32(b[23]) << 24
+        return Welcome(token: Array(b[1..<17]), nonce: nonce, resumeWindowMs: keep)
     }
 
     /// Decodes base64url (RFC 4648 §5), with or without padding.
