@@ -95,6 +95,11 @@ final class GhosttyCore: @unchecked Sendable {
     /// terminal that can change a mode, so typing never waits for that lock (GhosttyCore+Input.swift).
     let input = GhosttyInputMirror()
 
+    /// OSC 52: text the program copies goes to the pasteboard (GhosttyClipboard.swift).
+    let clipboard = GhosttyClipboard()
+    /// OSC 133: the prompt click mode the shell announced (GhosttyPrompts.swift). Guarded by `termLock`.
+    var promptWatch = GhosttyPromptWatch()
+
     /// Runs after anything that can change what's on screen. Called on any thread.
     var onDirty: (@Sendable () -> Void)? {
         get {
@@ -180,6 +185,9 @@ final class GhosttyCore: @unchecked Sendable {
         // We don't draw images, so don't let programs fill 10 MB per screen with them.
         var noImages: UInt64 = 0
         ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &noImages)
+        // Effects that send nothing to the program: clipboard writes and the full-reset notice.
+        installClipboard(t)
+        installPromptWatch(t)
         applyColors(t)
     }
 
@@ -289,7 +297,8 @@ final class GhosttyCore: @unchecked Sendable {
                 }
                 termLock.lock()
                 if let t = terminal {
-                    ghostty_terminal_vt_write(t, base + off, n)
+                    // A plain write that also reads the prompt click mode (GhosttyPrompts.swift).
+                    writeWatchingPrompts(t, base + off, n)
                     input.sync(from: t)
                 }
                 termLock.unlock()
@@ -381,6 +390,7 @@ final class GhosttyCore: @unchecked Sendable {
             termLock.lock()
             if let t = terminal {
                 ghostty_terminal_reset(t)
+                promptWatch.reset()
                 input.sync(from: t)
             }
             termLock.unlock()

@@ -1011,6 +1011,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         switch status {
         case .live:
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
+            #if DEBUG
+            if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
+            #endif
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true
                 let text = t.replacingOccurrences(of: "\\n", with: "\r")

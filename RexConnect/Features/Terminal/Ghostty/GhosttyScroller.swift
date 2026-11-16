@@ -225,6 +225,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             return true
         }
         if g === tap {
+            // Links and prompt clicks (GhosttyTap.swift): focus as it is before the host's tap changes it.
+            view.taps.focusedAtTouch = view.isFirstResponder
             // Lifting a long press that selected is not a tap.
             if let press = view.selectionPressRecognizer, press.state == .began || press.state == .changed || press.state == .ended {
                 return false
@@ -313,6 +315,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         guard g.state == .ended, let view else { return }
         // The host focuses an unfocused pane with its own tap; that tap is never also a click.
         guard view.isFirstResponder, !g.modifierFlags.contains(.shift) else { return }
+        // Links and prompt clicks (GhosttyTap.swift): a tap that opened a link or moved the shell's cursor is used up.
+        if view.tapOpensLinkOrMovesCursor(at: g.location(in: view), shift: false) { return }
         guard core.programScrollModes().mouseTracking else { return }
         if view.hasActiveSelection {
             // SwiftTerm: with a selection up, the tap dismisses it instead of clicking.

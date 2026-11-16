@@ -79,6 +79,10 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     lazy var scroller = GhosttyScroller(view: self)
     // END scroll
 
+    // Taps: links and prompt clicks (GhosttyTap.swift).
+    let taps = GhosttyTapState()
+    // END taps
+
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
     private var gridEpoch = 0
