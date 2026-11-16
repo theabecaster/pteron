@@ -1,5 +1,4 @@
 import UIKit
-import SwiftTerm
 
 /// Which library parses and draws terminal output.
 enum TerminalEngineKind: String, CaseIterable, Identifiable {
@@ -22,17 +21,38 @@ enum TerminalEngineKind: String, CaseIterable, Identifiable {
         }
     }
     private static let key = "terminalEngine"
+
+    /// The engine a pane made for this kind really runs.
+    var implemented: TerminalEngineKind {
+        // TODO(merge): return `self` once GhosttyTerminalView exists.
+        .swiftTerm
+    }
+
+    /// Makes the view for a new pane. Read `engineKind` on the result for what it really is.
+    @MainActor
+    func makeView(fontSize: CGFloat, theme: TermTheme) -> any TerminalEngineView {
+        switch implemented {
+        case .ghostty:
+            // TODO(merge): GhosttyTerminalView(fontSize: fontSize, theme: theme)
+            return RexTerminalView(fontSize: fontSize, theme: theme)
+        case .swiftTerm:
+            return RexTerminalView(fontSize: fontSize, theme: theme)
+        }
+    }
 }
 
 extension Notification.Name {
     static let terminalEngineChanged = Notification.Name("RexTerminalEngineChanged")
+    /// Posted by an engine view (object: the view) after a typed key used up its one-shot ctrl / alt flag.
+    static let terminalEngineControlModifierReset = Notification.Name("RexTerminalEngineControlModifierReset")
+    static let terminalEngineMetaModifierReset = Notification.Name("RexTerminalEngineMetaModifierReset")
 }
 
-/// What the key bar needs from a terminal. SwiftTerm's view already has all of it.
+/// What the key bar needs from a terminal.
 @MainActor
 protocol TerminalKeyTarget: AnyObject {
     /// One-shot ctrl / alt for the next key typed on the system keyboard. Cleared after use, with
-    /// `.terminalViewControlModifierReset` / `.terminalViewMetaModifierReset` posted (object: the view).
+    /// `.terminalEngineControlModifierReset` / `.terminalEngineMetaModifierReset` posted (object: the view).
     var controlModifier: Bool { get set }
     var metaModifier: Bool { get set }
     func sendKeyUp()
@@ -43,8 +63,6 @@ protocol TerminalKeyTarget: AnyObject {
     func sendKeyEnd()
     func send(data: ArraySlice<UInt8>)
 }
-
-extension SwiftTerm.TerminalView: TerminalKeyTarget {}
 
 /// The host's side of an engine: output the engine produces.
 @MainActor
@@ -60,6 +78,8 @@ protocol TerminalEngineDelegate: AnyObject {
 @MainActor
 protocol TerminalEngineView: UIView, TerminalKeyTarget {
     var engineKind: TerminalEngineKind { get }
+    /// Held weakly. Setting it reports the current grid once, if the view has one.
+    var engineDelegate: (any TerminalEngineDelegate)? { get set }
     /// Asked before any of this view's pans begins (scroll, wheel/arrow drag, selection).
     var panGate: ((UIPanGestureRecognizer) -> Bool)? { get set }
     /// Asked before the view's own single tap (focus / mouse click) fires.

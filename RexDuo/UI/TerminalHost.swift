@@ -1,27 +1,4 @@
 import UIKit
-import SwiftTerm
-
-/// SwiftTerm's view with hooks that let TerminalHost arbitrate gestures.
-///
-/// SwiftTerm already routes a one-finger vertical drag: local scrollback on the main screen,
-/// wheel reports to a mouse-tracking program, arrow keys on an alternate screen without mouse
-/// tracking (Alternate Scroll Mode). The hooks only keep horizontal flicks and the mirror-mode
-/// canvas pan out of its way.
-final class RexTerminalView: SwiftTerm.TerminalView {
-    /// Asked before any of this view's pans begins (scroll, wheel/arrow drag, selection).
-    var panGate: ((UIPanGestureRecognizer) -> Bool)?
-    /// Asked before SwiftTerm's own single tap fires.
-    var tapGate: (() -> Bool)?
-
-    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        // UIKit also asks the touched view about its ancestors' recognizers; gate only our own.
-        if g.view === self {
-            if let p = g as? UIPanGestureRecognizer, let gate = panGate, !gate(p) { return false }
-            if let t = g as? UITapGestureRecognizer, t.numberOfTapsRequired == 1, let gate = tapGate, !gate() { return false }
-        }
-        return super.gestureRecognizerShouldBegin(g)
-    }
-}
 
 /// The scroll view that zooms and pans the terminal in mirror mode.
 final class ZoomScrollView: UIScrollView {
@@ -33,18 +10,22 @@ final class ZoomScrollView: UIScrollView {
     }
 }
 
-/// A UIKit view that shows one Rex terminal block with SwiftTerm.
+/// A UIKit view that shows one Rex terminal block with a terminal engine (`TerminalEngineView`).
 /// Fit mode: claims the block and resizes it to this view. Mirror mode: keeps the server's size, zoom/pan.
 ///
 /// The local grid always follows the server: it changes only when the stream says the server's
 /// size changed, at that point in the stream. Fit mode asks the server for the size that fits and
 /// keeps the stream open; the program redraws itself.
 @MainActor
-final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     static let fontRange: ClosedRange<CGFloat> = 7...20
 
     let stream: TerminalStream
-    let term: RexTerminalView
+    let term: any TerminalEngineView
+    /// The engine that really runs in this pane.
+    var engineKind: TerminalEngineKind { term.engineKind }
+    /// The engine parses on the main thread: heavy output is paced by the display link.
+    private let pacesOutput: Bool
     private let zoomer = ZoomScrollView()
     private let statusLabel = UILabel()
     private let keyBar: KeyBar
@@ -64,11 +45,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var started = false
     private var lastBounds: CGSize = .zero
     private var serverSize: (Int, Int) = (80, 24)
-    /// The grid SwiftTerm has now; reported by `sizeChanged`.
+    /// The grid the engine has now; reported by `engineGridChanged`.
     private var localGrid: (Int, Int) = (0, 0)
     private var typedTest = false
     private var lostOwnership = false
-    /// A font change soft-reset SwiftTerm (modes lost); redraw from the server once sized.
+    /// A font change soft-reset the engine (modes lost); redraw from the server once sized.
     private var needsResync = false
 
     private var tapGR: UITapGestureRecognizer!
@@ -79,7 +60,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var swallowSingleTap = false
     /// Long-press focused the terminal for the edit menu without raising the keyboard.
     private var quietInput = false
-    private var selectAnchor: Position?
 
     // Output pacing: heavy output is parsed in slices, a frame's budget at a time.
     static let directFeedLimit = 8 * 1024
@@ -99,20 +79,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     private var statusWork: DispatchWorkItem?
     private static let lostText = "Resized elsewhere · tap to fit here"
 
-    init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme) {
+    init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme,
+         engine: TerminalEngineKind = .current) {
         self.stream = stream
         self.sizing = sizing
         self.fontSize = fontSize
         self.theme = theme
-        let f = RexFont.all(fontSize)
-        term = RexTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), font: f.0)
+        term = engine.makeView(fontSize: fontSize, theme: theme)
+        pacesOutput = !term.parsesOffMainThread
         keyBar = KeyBar()
         super.init(frame: .zero)
-        term.terminalDelegate = self
-        term.setFonts(normal: f.0, bold: f.1, italic: f.2, boldItalic: f.3)
-        term.changeScrollback(10_000)
-        term.optionAsMetaKey = true
-        term.keyboardAppearance = theme.isDark ? .dark : .light
+        term.engineDelegate = self
         keyBar.terminal = term
         keyBar.onPaste = { [weak self] in
             if let s = UIPasteboard.general.string { self?.paste(s) }
@@ -165,10 +142,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
             return false
         }
 
-        // Long press selects the word under the finger and offers Copy (SwiftTerm's own long press
-        // only shows a menu with "Select", and raises the keyboard).
-        // Match the exact class: UIScrollView's indicator-drag recognizer is a long-press subclass.
-        let lp = term.gestureRecognizers?.first(where: { type(of: $0) == UILongPressGestureRecognizer.self }) as? UILongPressGestureRecognizer
+        // Long press selects the word under the finger and offers Copy.
+        let lp = term.selectionPressRecognizer
         if let lp {
             lp.removeTarget(nil, action: nil)
             lp.addTarget(self, action: #selector(longPressed(_:)))
@@ -207,7 +182,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     private func termPanShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
-        // Leave trackpad scrolls, multi-finger drags and selection drags to SwiftTerm.
+        // Leave trackpad scrolls, multi-finger drags and selection drags to the engine.
         if pan.allowedTouchTypes.isEmpty || pan.numberOfTouches > 1 || term.hasActiveSelection { return true }
         let horizontal = isHorizontal(pan)
         // Mirror mode: the zoomed canvas pans first when it has room to in that direction.
@@ -234,7 +209,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        // The focus tap observes; it must never cancel SwiftTerm's taps, selection or our swipe.
+        // The focus tap observes; it must never cancel the engine's taps, selection or our swipe.
         g === tapGR || other === tapGR
     }
 
@@ -243,8 +218,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         onFocus?()
         restoreInputViews()
         if !term.isFirstResponder {
-            // SwiftTerm would wait for its double-tap timeout, and with a mouse-tracking program it
-            // would send a click instead of focusing. Focus now and skip its tap for this touch.
+            // The engine's own tap may wait for a double-tap timeout, and with a mouse-tracking program
+            // it would send a click instead of focusing. Focus now and skip its tap for this touch.
             swallowSingleTap = true
             _ = term.becomeFirstResponder()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.swallowSingleTap = false }
@@ -262,31 +237,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
                 term.inputView = UIView(frame: .zero)
                 term.inputAccessoryView = nil
             }
-            selectAnchor = cell(at: p)
-            term.showStandardContextMenu(at: p)  // focuses and records the press position
-            UIMenuController.shared.hideMenu()    // not that menu: the selection's own, with Copy
-            term.select(nil)                      // selects the word there and shows Copy
+            term.beginSelection(at: p)
         case .changed:
-            guard let a = selectAnchor else { return }
-            let h = cell(at: p)
-            if h.row != a.row || h.col != a.col {
-                let forward = h.row > a.row || (h.row == a.row && h.col >= a.col)
-                term.setSelectionRange(start: forward ? a : h, end: forward ? h : a)
-            }
+            term.extendSelection(to: p)
         case .ended:
-            if let a = selectAnchor, cell(at: p) != a {
-                term.showStandardContextMenu(at: p)
-            }
-            selectAnchor = nil
+            term.endSelection(at: p)
         default:
-            selectAnchor = nil
+            break
         }
-    }
-
-    /// Buffer cell (scrollback included) under a point in the terminal view.
-    private func cell(at p: CGPoint) -> Position {
-        let c = cellSize()
-        return Position(col: max(0, min(Int(p.x / c.width), max(localGrid.0 - 1, 0))), row: max(0, Int(p.y / c.height)))
     }
 
     private func restoreInputViews() {
@@ -389,21 +347,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         theme = t
         backgroundColor = t.uiBG
         zoomer.backgroundColor = t.uiBG
-        term.nativeBackgroundColor = t.uiBG
-        term.nativeForegroundColor = t.uiFG
-        term.caretColor = t.uiCursor
-        term.selectedTextBackgroundColor = t.uiSelection
-        term.keyboardAppearance = t.isDark ? .dark : .light
+        term.apply(theme: t)
         // Native scroll indicators that stay visible on both light and dark themes.
-        term.indicatorStyle = t.isDark ? .white : .black
-        zoomer.indicatorStyle = term.indicatorStyle
-        let colors: [SwiftTerm.Color] = (0..<16).map { i in
-            let c = UIColor(hex: t.ansi[safe: i] ?? t.foreground)
-            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            c.getRed(&r, green: &g, blue: &b, alpha: &a)
-            return SwiftTerm.Color(red: UInt16(r * 65535), green: UInt16(g * 65535), blue: UInt16(b * 65535))
-        }
-        term.installColors(colors)
+        zoomer.indicatorStyle = t.isDark ? .white : .black
         statusLabel.backgroundColor = t.uiFG.withAlphaComponent(0.15)
         statusLabel.textColor = t.uiFG
         keyBar.apply(theme: t)
@@ -412,13 +358,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     func setFontSize(_ s: CGFloat) {
         guard abs(s - fontSize) > 0.01 else { return }
         fontSize = s
-        let f = RexFont.all(s)
-        // SwiftTerm resizes to its frame and soft-resets here. Put the server's grid back at the new
-        // cell size, then redraw from the server once the new size is settled.
-        term.setFonts(normal: f.0, bold: f.1, italic: f.2, boldItalic: f.3)
+        // An engine may resize to its frame and soft-reset here (SwiftTerm does). Put the server's grid
+        // back at the new cell size, then redraw from the server once the new size is settled.
+        term.setFont(size: s)
         applyLocalGrid(serverSize.0, serverSize.1, force: true)
         positionTerm()
-        if started {
+        if started, term.fontChangeResetsModes {
             needsResync = true
             if !fitted { scheduleResync() }
         }
@@ -445,8 +390,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         if window == nil {
             stop()
         } else {
-            // GPU rendering keeps scrolling and heavy output at the display rate; CoreGraphics is the fallback.
-            if !metalTried { metalTried = true; try? term.setUseMetal(true) }
+            if !metalTried { metalTried = true; term.enableGPU() }
             yieldContentSwipeBack()
         }
     }
@@ -509,15 +453,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     /// One cell's size in points at the current font.
-    private func cellSize() -> CGSize {
-        let opt = term.getOptimalFrameSize()
-        let (c, r) = localGrid
-        guard c > 0, r > 0, opt.width > 0, opt.height > 0 else {
-            let font = RexFont.ui(fontSize)
-            return CGSize(width: ("W" as NSString).size(withAttributes: [.font: font]).width, height: ceil(font.lineHeight))
-        }
-        return CGSize(width: opt.width / CGFloat(c), height: opt.height / CGFloat(r))
-    }
+    private func cellSize() -> CGSize { term.cellSize }
 
     /// Largest grid that fits the view at the current font.
     private func fitGrid() -> (Int, Int) {
@@ -527,15 +463,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         return (c, r)
     }
 
-    /// Sizes SwiftTerm to a grid without its `resize`, which soft-resets modes the program set.
+    /// Sizes the engine to a grid, at this point of the stream, keeping the modes the program set.
     private func applyLocalGrid(_ cols: Int, _ rows: Int, force: Bool = false) {
         guard force || localGrid != (cols, rows) else { return }
-        let cell = cellSize()
-        var b = term.bounds
-        b.size = CGSize(width: CGFloat(cols) * cell.width + 0.5, height: CGFloat(rows) * cell.height + 0.5)
-        term.bounds = b
-        term.setNeedsLayout()
-        term.layoutIfNeeded()  // SwiftTerm resizes in layoutSubviews; do it now, at this point of the stream
+        term.setGrid(cols: cols, rows: rows, force: force)
     }
 
     /// Places the terminal for the current grid. Fit: 1:1, bottom rows kept in view while the server
@@ -617,6 +548,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>) {
+        // An engine that parses off the main thread takes everything at once.
+        guard pacesOutput else {
+            feed(ArraySlice(bytes))
+            return
+        }
         // Light output (echo, prompts) goes straight in for the lowest latency.
         if output.isEmpty, bytes.count <= Self.directFeedLimit {
             feed(ArraySlice(bytes))
@@ -672,8 +608,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
     }
 
     func streamResized(cols: Int, rows: Int, owner: String?) {
-        // Output before the resize belongs to the old size.
-        drainOutput(all: true)
+        // Output before the resize belongs to the old size. (Nothing is queued here when the engine
+        // parses off the main thread; it keeps stream order itself.)
+        if pacesOutput { drainOutput(all: true) }
         serverSize = (cols, rows)
         let wasFitted = fitted
         if sizing == .fit, let c = claimedSize, c != (cols, rows), owner != stream.control.clientID {
@@ -743,43 +680,19 @@ final class TerminalHost: UIView, TerminalSink, TerminalViewDelegate, UIScrollVi
         statusLabel.layer.cornerRadius = 11
     }
 
-    // MARK: TerminalViewDelegate
+    // MARK: TerminalEngineDelegate
 
-    nonisolated func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
-        // SwiftTerm calls this synchronously on the main thread from resize/layout.
-        MainActor.assumeIsolated { self.localGrid = (newCols, newRows) }
+    func engineGridChanged(cols: Int, rows: Int) {
+        localGrid = (cols, rows)
     }
 
-    nonisolated func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {}
-
-    nonisolated func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {}
-
-    nonisolated func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
-        let bytes = Array(data)
-        Task { @MainActor in
-            self.stream.send(bytes)
-            self.keyBar.consumedModifiers()
-        }
-    }
-
-    nonisolated func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
-
-    nonisolated func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
-
-    nonisolated func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
-        if let s = String(data: content, encoding: .utf8) {
-            Task { @MainActor in UIPasteboard.general.string = s }
-        }
-    }
-
-    nonisolated func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
-        if let u = URL(string: link) {
-            Task { @MainActor in UIApplication.shared.open(u) }
-        }
+    func engineSend(_ bytes: [UInt8]) {
+        stream.send(bytes)
+        keyBar.consumedModifiers()
     }
 
     func paste(_ s: String) {
-        // Goes through SwiftTerm so it's bracketed when the program asked for bracketed paste.
+        // Goes through the engine so it's bracketed when the program asked for bracketed paste.
         term.pasteText(s)
     }
 

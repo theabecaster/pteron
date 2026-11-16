@@ -70,6 +70,10 @@ final class Prefs {
     var fontSize: Double { didSet { d.set(fontSize, forKey: "fontSize") } }
     var sizing: SizingMode { didSet { d.set(sizing.rawValue, forKey: "sizing") } }
     var wideLayout: WideLayout { didSet { d.set(wideLayout.rawValue, forKey: "wideLayout") } }
+    /// The engine panes are made with. Changing it recreates the open panes (see PaneView).
+    var terminalEngine: TerminalEngineKind {
+        didSet { if terminalEngine != oldValue { TerminalEngineKind.current = terminalEngine } }
+    }
     var keyBar: [String] {
         didSet {
             d.set(keyBar, forKey: "keyBar")
@@ -102,6 +106,7 @@ final class Prefs {
         fontSize = d.object(forKey: "fontSize") as? Double ?? 11
         sizing = SizingMode(rawValue: d.string(forKey: "sizing") ?? "") ?? .fit
         wideLayout = WideLayout(rawValue: d.string(forKey: "wideLayout") ?? "") ?? .auto
+        terminalEngine = TerminalEngineKind.current
         keyBar = d.stringArray(forKey: "keyBar") ?? Prefs.defaultKeyBar
         haptics = d.object(forKey: "haptics") as? Bool ?? true
         showAgentStatus = d.object(forKey: "showAgentStatus") as? Bool ?? true

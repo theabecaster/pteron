@@ -1,5 +1,4 @@
 import UIKit
-import SwiftTerm
 
 /// The row of extra keys above the software keyboard. Keys come from Prefs.keyBar.
 ///
@@ -9,7 +8,7 @@ import SwiftTerm
 /// - The "arrows" key is a trackpad: press and drag to send arrow keys.
 @MainActor
 final class KeyBar: UIInputView, UIInputViewAudioFeedback {
-    weak var terminal: SwiftTerm.TerminalView? {
+    weak var terminal: (any TerminalKeyTarget)? {
         didSet { observe(terminal, old: oldValue); syncModifiers() }
     }
     var onPaste: (() -> Void)?
@@ -129,7 +128,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     // MARK: Modifiers
 
-    /// Keeps SwiftTerm's own modifier flags (used for keys typed on the system keyboard) in step with the bar.
+    /// Keeps the terminal's own modifier flags (used for keys typed on the system keyboard) in step with the bar.
     private func syncModifiers() {
         terminal?.controlModifier = ctrl != .off
         terminal?.metaModifier = alt != .off
@@ -143,19 +142,19 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    private func observe(_ t: SwiftTerm.TerminalView?, old: SwiftTerm.TerminalView?) {
+    private func observe(_ t: (any TerminalKeyTarget)?, old: (any TerminalKeyTarget)?) {
         let nc = NotificationCenter.default
         if let old {
-            nc.removeObserver(self, name: .terminalViewControlModifierReset, object: old)
-            nc.removeObserver(self, name: .terminalViewMetaModifierReset, object: old)
+            nc.removeObserver(self, name: .terminalEngineControlModifierReset, object: old)
+            nc.removeObserver(self, name: .terminalEngineMetaModifierReset, object: old)
         }
         if let t {
-            nc.addObserver(self, selector: #selector(controlReset), name: .terminalViewControlModifierReset, object: t)
-            nc.addObserver(self, selector: #selector(metaReset), name: .terminalViewMetaModifierReset, object: t)
+            nc.addObserver(self, selector: #selector(controlReset), name: .terminalEngineControlModifierReset, object: t)
+            nc.addObserver(self, selector: #selector(metaReset), name: .terminalEngineMetaModifierReset, object: t)
         }
     }
 
-    /// SwiftTerm cleared its ctrl flag because a typed key used it.
+    /// The terminal cleared its ctrl flag because a typed key used it.
     @objc private func controlReset() {
         switch ctrl {
         case .locked: terminal?.controlModifier = true
@@ -172,7 +171,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    /// Called after the terminal sent bytes. One-shot modifiers turn off once SwiftTerm has used them;
+    /// Called after the terminal sent bytes. One-shot modifiers turn off once the terminal has used them;
     /// locked ones stay on.
     func consumedModifiers() {
         guard let t = terminal else { return }
