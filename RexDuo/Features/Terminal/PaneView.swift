@@ -1,4 +1,5 @@
 import SwiftUI
+import RexKit
 
 /// SwiftUI wrapper for one live terminal pane.
 struct PaneView: UIViewRepresentable {
@@ -25,6 +26,7 @@ struct PaneView: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalHost {
         let p = Prefs.shared
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
+        stream.onActionFailed = { Notice.shared.show($0) }
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: ThemeStore.current(scheme))
         host.keymap = server.keymap
         host.onCommand = commandHandler

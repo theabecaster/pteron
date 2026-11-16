@@ -1,4 +1,5 @@
 import UIKit
+import RexKit
 
 /// Converts hardware key presses to Rex's key spellings and back to terminal bytes.
 enum KeyInput {

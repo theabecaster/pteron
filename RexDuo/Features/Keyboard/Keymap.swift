@@ -1,4 +1,5 @@
 import Foundation
+import RexKit
 
 /// Modifier keys, in Rex's spelling order (shift, ctrl, alt, cmd).
 struct KeyMods: OptionSet, Hashable {

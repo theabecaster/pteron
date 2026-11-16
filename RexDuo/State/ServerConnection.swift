@@ -1,4 +1,5 @@
 import SwiftUI
+import RexKit
 import UserNotifications
 
 struct SessionEntry: Identifiable, Equatable {
@@ -95,7 +96,10 @@ final class ServerConnection: Identifiable {
     init(config: ServerConfig) {
         self.config = config
         let url = URL(string: config.url.trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "https://invalid.local")!
-        control = RexControl(baseURL: url)
+        control = RexControl(baseURL: url, client: ClientInfo(
+            name: "Rex Duo",
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
+            label: String(UIDevice.current.name.prefix(40))))
         keymap = KeymapStore(control: control)
         control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
         control.onStateChange = { [weak self] st in

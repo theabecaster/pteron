@@ -1,4 +1,5 @@
 import SwiftUI
+import RexKit
 
 /// Rex's vertical-tab sidebar: hosts, then sessions, then each session's tabs.
 /// A plain `List` styled like Rex: swipe actions on rows, pull to refresh, 44 pt rows.

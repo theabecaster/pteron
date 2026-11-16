@@ -1,4 +1,5 @@
 import SwiftUI
+import RexKit
 
 struct Selection: Hashable {
     var serverID: UUID

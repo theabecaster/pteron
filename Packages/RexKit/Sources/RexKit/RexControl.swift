@@ -1,28 +1,46 @@
 import Foundation
-import UIKit
+
+/// Who this client is. Sent in the hello; Rex shows it in `rex client list`.
+public struct ClientInfo: Sendable, Equatable {
+    public var kind: String
+    public var platform: String
+    public var name: String
+    public var version: String
+    /// Shown next to the name. Rex caps labels at 64 bytes.
+    public var label: String
+
+    public init(kind: String = "app", platform: String = "ios", name: String, version: String, label: String) {
+        self.kind = kind
+        self.platform = platform
+        self.name = name
+        self.version = version
+        self.label = label
+    }
+}
 
 /// One control connection (`GET /api/control`, subprotocol `rex.control.v1`) to a Rex server.
 /// Every method call and event goes through here. See the server's /llms.txt.
 @MainActor
-final class RexControl {
-    enum State: Equatable {
+public final class RexControl {
+    public enum State: Equatable {
         case idle
         case connecting
         case connected
         case failed(String)
     }
 
-    static let apiRevision = 13
+    public static let apiRevision = 13
 
-    let baseURL: URL
-    private(set) var state: State = .idle { didSet { onStateChange?(state) } }
-    private(set) var clientID: String?
-    private(set) var maxMessageBytes = 65536
+    public let baseURL: URL
+    public let client: ClientInfo
+    public private(set) var state: State = .idle { didSet { onStateChange?(state) } }
+    public private(set) var clientID: String?
+    public private(set) var maxMessageBytes = 65536
 
-    var onEvent: ((_ seq: Int, _ event: JSONObject) -> Void)?
-    var onStateChange: ((State) -> Void)?
+    public var onEvent: ((_ seq: Int, _ event: JSONObject) -> Void)?
+    public var onStateChange: ((State) -> Void)?
     /// Called after a dropped connection is re-established (state must be re-read).
-    var onReconnected: ((_ resumed: Bool) -> Void)?
+    public var onReconnected: ((_ resumed: Bool) -> Void)?
 
     private var task: URLSessionWebSocketTask?
     private let session: URLSession
@@ -35,15 +53,16 @@ final class RexControl {
     private var wantConnected = false
     private var retryDelay: Double = 1
 
-    init(baseURL: URL) {
+    public init(baseURL: URL, client: ClientInfo) {
         self.baseURL = baseURL
+        self.client = client
         let cfg = URLSessionConfiguration.default
         cfg.waitsForConnectivity = false
         cfg.timeoutIntervalForRequest = 20
         self.session = URLSession(configuration: cfg)
     }
 
-    var wsBase: URL {
+    public var wsBase: URL {
         var c = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         if c.scheme == "https" { c.scheme = "wss" } else if c.scheme == "http" { c.scheme = "ws" }
         c.path = ""
@@ -52,12 +71,12 @@ final class RexControl {
 
     // MARK: Connection
 
-    func connect() async throws {
+    public func connect() async throws {
         wantConnected = true
         try await openSocket()
     }
 
-    func disconnect() {
+    public func disconnect() {
         wantConnected = false
         pingTimer?.invalidate()
         task?.cancel(with: .normalClosure, reason: nil)
@@ -80,11 +99,11 @@ final class RexControl {
             "type": "hello",
             "api_revision": Self.apiRevision,
             "client": [
-                "kind": "app",
-                "platform": "ios",
-                "name": "Rex Duo",
-                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-                "label": UIDevice.current.name.prefix(40).description,
+                "kind": client.kind,
+                "platform": client.platform,
+                "name": client.name,
+                "version": client.version,
+                "label": client.label,
             ] as JSONObject,
         ]
         if let tok = reconnectToken { hello["reconnect_token"] = tok }
@@ -176,7 +195,7 @@ final class RexControl {
     }
 
     /// Reconnect immediately (e.g. when the app returns to the foreground).
-    func kick() {
+    public func kick() {
         guard wantConnected else { return }
         if task == nil || state != .connected {
             retryDelay = 0.2
@@ -219,12 +238,12 @@ final class RexControl {
     // MARK: Calls
 
     @discardableResult
-    func call(_ method: String, _ payload: JSONObject? = nil) async throws -> JSONObject {
+    public func call(_ method: String, _ payload: JSONObject? = nil) async throws -> JSONObject {
         let any = try await callAny(method, payload)
         return any as? JSONObject ?? [:]
     }
 
-    func callAny(_ method: String, _ payload: JSONObject? = nil) async throws -> Any {
+    public func callAny(_ method: String, _ payload: JSONObject? = nil) async throws -> Any {
         guard let t = task, state == .connected else { throw RexError.local("not connected") }
         nextID += 1
         let id = String(nextID)
@@ -245,7 +264,7 @@ final class RexControl {
 
     /// Calls a block method: payload is `{session_id, block_id, args}`.
     @discardableResult
-    func blockCall(_ method: String, session: String, block: String, args: JSONObject = [:]) async throws -> JSONObject {
+    public func blockCall(_ method: String, session: String, block: String, args: JSONObject = [:]) async throws -> JSONObject {
         try await call(method, ["session_id": session, "block_id": block, "args": args])
     }
 }

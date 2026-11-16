@@ -16,6 +16,8 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.99.3
+  RexKit:
+    path: Packages/RexKit
 targets:
   RexDuo:
     type: application
@@ -25,6 +27,8 @@ targets:
     dependencies:
       - package: SwiftTerm
         product: SwiftTerm
+      - package: RexKit
+        product: RexKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo

@@ -1,8 +1,8 @@
 import Foundation
 
-typealias JSONObject = [String: Any]
+public typealias JSONObject = [String: Any]
 
-extension Dictionary where Key == String, Value == Any {
+public extension Dictionary where Key == String, Value == Any {
     func str(_ k: String) -> String? { self[k] as? String }
     func int(_ k: String) -> Int? {
         if let i = self[k] as? Int { return i }
@@ -20,25 +20,25 @@ extension Dictionary where Key == String, Value == Any {
     func arr(_ k: String) -> [JSONObject] { (self[k] as? [Any])?.compactMap { $0 as? JSONObject } ?? [] }
 }
 
-enum JSONCodec {
-    static func encode(_ obj: Any) -> String {
+public enum JSONCodec {
+    public static func encode(_ obj: Any) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []) else { return "{}" }
         return String(decoding: data, as: UTF8.self)
     }
-    static func decode(_ s: String) -> JSONObject? {
+    public static func decode(_ s: String) -> JSONObject? {
         guard let d = s.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: d)) as? JSONObject
     }
-    static func decode(_ d: Data) -> JSONObject? {
+    public static func decode(_ d: Data) -> JSONObject? {
         (try? JSONSerialization.jsonObject(with: d)) as? JSONObject
     }
 }
 
-struct RexError: LocalizedError {
-    let code: String
-    let message: String
-    let status: Int
-    var errorDescription: String? { "\(message) (\(code))" }
+public struct RexError: LocalizedError {
+    public let code: String
+    public let message: String
+    public let status: Int
+    public var errorDescription: String? { "\(message) (\(code))" }
 
-    static func local(_ msg: String) -> RexError { RexError(code: "client", message: msg, status: 0) }
+    public static func local(_ msg: String) -> RexError { RexError(code: "client", message: msg, status: 0) }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import RexKit
 
 /// Every agent running in any pane on any connected server, most urgent first.
 struct AgentsView: View {

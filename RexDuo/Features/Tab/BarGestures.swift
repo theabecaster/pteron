@@ -1,4 +1,5 @@
 import SwiftUI
+import RexKit
 import TipKit
 
 // MARK: - Pane actions

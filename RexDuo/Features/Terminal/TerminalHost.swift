@@ -1,4 +1,5 @@
 import UIKit
+import RexKit
 import GameController
 import SwiftTerm
 

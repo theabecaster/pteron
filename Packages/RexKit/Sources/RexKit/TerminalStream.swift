@@ -4,17 +4,17 @@ import Foundation
 /// and drops the leading Ghostty snapshot (everything before the first Rex message).
 /// Output and messages are reported in stream order, so a resize applies exactly where the server
 /// put it. Output is handed out as views into the received chunk, without copying.
-struct APCFilter {
+public struct APCFilter {
     private let marker: [UInt8]
-    private(set) var skippingSnapshot = true
+    public private(set) var skippingSnapshot = true
     /// The start of a message split across chunks.
     private var pending: [UInt8] = []
 
-    init(nonce: UInt64) {
+    public init(nonce: UInt64) {
         marker = Array("\u{1b}_rex1;\(nonce);".utf8)
     }
 
-    mutating func process(_ chunk: Data,
+    public mutating func process(_ chunk: Data,
                           output: (UnsafeBufferPointer<UInt8>) -> Void,
                           message: (JSONObject) -> Void) {
         if pending.isEmpty {
@@ -75,7 +75,7 @@ struct APCFilter {
     }
 }
 
-protocol TerminalSink: AnyObject {
+public protocol TerminalSink: AnyObject {
     /// Clears the terminal and sets the server's grid; a snapshot follows.
     @MainActor func streamReset(cols: Int, rows: Int)
     /// The screen and scrollback as escape sequences, applied at once.
@@ -91,20 +91,22 @@ protocol TerminalSink: AnyObject {
 /// Streams one terminal block's output over `GET /api/data` (subprotocol rex.data.terminal.v1)
 /// and sends typed input back over the control connection.
 @MainActor
-final class TerminalStream {
-    enum Status: Equatable { case connecting, live, reconnecting, ended(String), failed(String) }
+public final class TerminalStream {
+    public enum Status: Equatable { case connecting, live, reconnecting, ended(String), failed(String) }
 
     /// The most scrollback (bytes of escape sequences) a snapshot reads; older history is skipped.
-    static let snapshotLimit = 1 << 20
+    public static let snapshotLimit = 1 << 20
 
-    let control: RexControl
-    let sessionID: String
-    let blockID: String
-    weak var sink: TerminalSink?
+    public let control: RexControl
+    public let sessionID: String
+    public let blockID: String
+    public weak var sink: TerminalSink?
+    /// Called with a short message when a key-bound server action fails.
+    public var onActionFailed: (@MainActor (String) -> Void)?
 
-    private(set) var serverCols = 80
-    private(set) var serverRows = 24
-    private(set) var owner: String?
+    public private(set) var serverCols = 80
+    public private(set) var serverRows = 24
+    public private(set) var owner: String?
     private var ws: URLSessionWebSocketTask?
     private var gen = 0
     private var filter: APCFilter?
@@ -126,18 +128,18 @@ final class TerminalStream {
     private var runningWork = false
     private var workToken = 0
 
-    init(control: RexControl, sessionID: String, blockID: String) {
+    public init(control: RexControl, sessionID: String, blockID: String) {
         self.control = control
         self.sessionID = sessionID
         self.blockID = blockID
     }
 
-    func start() {
+    public func start() {
         stopped = false
         Task { await self.fullStart() }
     }
 
-    func stop() {
+    public func stop() {
         stopped = true
         inputRetry?.cancel()
         inputRetry = nil
@@ -148,7 +150,7 @@ final class TerminalStream {
     }
 
     /// Re-read the whole screen and open a fresh stream.
-    func restart() {
+    public func restart() {
         gen += 1
         ws?.cancel(with: .normalClosure, reason: nil)
         ws = nil
@@ -158,7 +160,7 @@ final class TerminalStream {
 
     /// Re-read the screen (and scrollback) and redraw it, keeping the data stream open.
     /// Stream output that arrives while the read is in flight is dropped: the snapshot already holds it.
-    func resync() {
+    public func resync() {
         guard !stopped, ws != nil else { return }
         let myGen = gen
         resyncSeq += 1
@@ -370,12 +372,12 @@ final class TerminalStream {
 
     // MARK: Input
 
-    func send(_ bytes: [UInt8]) {
+    public func send(_ bytes: [UInt8]) {
         inputBuffer.append(contentsOf: bytes)
         pump()
     }
 
-    func send(text: String) { send(Array(text.utf8)) }
+    public func send(text: String) { send(Array(text.utf8)) }
 
     /// Sends typed input now. Keys typed while a write is in flight go out together right after it.
     /// Input is never dropped by a lost connection: it waits and goes out once the server is back.
@@ -428,21 +430,21 @@ final class TerminalStream {
 
     /// Runs a block or configuration-file action on this pane (`client.action`), as a key binding
     /// does on the Mac. Returns the client actions the server asks this client to perform.
-    func perform(action: String, args: JSONObject?, then: @escaping @MainActor ([JSONObject]) -> Void) {
-        afterInput { [sessionID, blockID, control] in
+    public func perform(action: String, args: JSONObject?, then: @escaping @MainActor ([JSONObject]) -> Void) {
+        afterInput { [sessionID, blockID, control, weak self] in
             var p: JSONObject = ["action": action, "origin": "key", "session_id": sessionID, "block_id": blockID]
             if let args, !args.isEmpty { p["args"] = args }
             do {
                 let r = try await control.call("client.action", p)
                 then(r.arr("client_actions"))
             } catch {
-                Notice.shared.show("Couldn't run \(action). \((error as? RexError)?.message ?? error.localizedDescription)")
+                self?.onActionFailed?("Couldn't run \(action). \((error as? RexError)?.message ?? error.localizedDescription)")
             }
         }
     }
 
     /// Sends a key to the server's Lua key bindings (`client.key`); unhandled, it reaches this pane.
-    func forward(key: JSONObject) {
+    public func forward(key: JSONObject) {
         afterInput { [sessionID, blockID, control] in
             _ = try? await control.call("client.key", ["session_id": sessionID, "block_id": blockID, "key": key])
         }
@@ -459,17 +461,17 @@ final class TerminalStream {
 
     // MARK: Ownership / sizing
 
-    func claimAndResize(cols: Int, rows: Int) async {
+    public func claimAndResize(cols: Int, rows: Int) async {
         _ = try? await control.call("session.own_block", ["session_id": sessionID, "block_ids": [blockID], "mode": "take"])
         _ = try? await control.blockCall("com.superlogical.terminal.resize", session: sessionID, block: blockID,
                                          args: ["columns": cols, "rows": rows])
     }
 
-    func release() async {
+    public func release() async {
         _ = try? await control.call("session.disown_block", ["session_id": sessionID, "block_ids": [blockID]])
     }
 
-    static func base64url(_ s: String) -> [UInt8]? {
+    public static func base64url(_ s: String) -> [UInt8]? {
         var b = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while b.count % 4 != 0 { b += "=" }
         guard let d = Data(base64Encoded: b) else { return nil }
