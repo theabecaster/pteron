@@ -104,12 +104,10 @@ enum Waiting {
         .sorted { (since[$0.id] ?? .distantFuture) < (since[$1.id] ?? .distantFuture) }
     }
 
-    /// Points the app at that agent's pane (also placing it on a page when two pages show)
-    /// and returns the tab to open.
+    /// Points the app at that agent's pane and returns the tab to open.
     static func prepare(_ model: AppModel, _ item: Item) -> Selection {
         let r = item.row
         model.focusedPane[r.windowID] = r.blockID
-        if let p = model.dualPair[r.windowID], !p.contains(r.blockID) { model.dualPair[r.windowID] = nil }
         let server = item.server
         Task { await server.focus(r.sessionID, block: r.blockID) }
         return Selection(serverID: server.id, sessionID: r.sessionID, windowID: r.windowID)
@@ -139,7 +137,7 @@ struct WaitingWatcher: View {
 /// touch and hold lists every waiting agent.
 struct WaitingPill: View {
     @Environment(AppModel.self) private var model
-    /// Panes on screen right now; agents waiting there already show their quick replies.
+    /// Panes on screen right now; agents waiting there are already in view.
     let visible: Set<String>
     let theme: TermTheme
     let onJump: (Waiting.Item) -> Void

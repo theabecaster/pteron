@@ -168,7 +168,7 @@ struct SidebarView: View {
                 Text(name)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(theme.chrome.tertiary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                 Spacer(minLength: 4)
                 Button { Task { await server.newWindow(s.id) } } label: {
                     Image(systemName: "plus")
@@ -215,7 +215,6 @@ struct SidebarView: View {
         return styled(
             Button {
                 let sel = Selection(serverID: server.id, sessionID: v.sessionID, windowID: w.id)
-                if !selected { GestureTips.donate(TabSwipeTip.switchedTabs) }
                 model.select(server, session: v.sessionID, window: w.id)
                 onSelect(sel)
             } label: {
@@ -377,16 +376,21 @@ struct TabRowLabel: View {
                     .foregroundStyle(theme.bg)
             }
             .frame(width: 18, height: 18)
+            // One line: the row's height stays put and the badges keep their room.
             Text(WindowTitle.of(window, server: server))
                 .font(.system(size: textSize * scale))
-                .lineLimit(2)
+                .lineLimit(1)
             Spacer(minLength: 4)
-            if window.allBlocks.count > 1 {
-                Text("\(window.allBlocks.count)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(theme.chrome.tertiary)
+            Group {
+                if window.allBlocks.count > 1 {
+                    Text("\(window.allBlocks.count)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(theme.chrome.tertiary)
+                }
+                StatusBadge(status: server.windowStatus(window), theme: theme)
             }
-            StatusBadge(status: server.windowStatus(window), theme: theme)
+            .fixedSize()
+            .layoutPriority(1)
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

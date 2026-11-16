@@ -57,8 +57,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var localGrid: (Int, Int) = (0, 0)
     private var typedTest = false
     private var lostOwnership = false
-    /// A font change soft-reset the engine (modes lost); redraw from the server once sized.
+    /// A font change soft-reset the engine (modes lost), or the width changed and the engine can't
+    /// reflow the way the server does; redraw from the server once sized.
     private var needsResync = false
+    /// Had the keyboard when it left the window (see `scheduleStop`).
+    private var refocusOnReturn = false
+    private var stopWork: DispatchWorkItem?
+    /// The view let go of its stream for good (see `TerminalHostPool`).
+    var onStopped: (() -> Void)?
 
     private var tapGR: UITapGestureRecognizer!
     private var swipeGR: UIPanGestureRecognizer!
@@ -596,6 +602,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// With a hardware keyboard, the active pane takes the keyboard focus at once, as on a Mac:
     /// keys go to the pane on screen without a tap first. Never steals focus from a text field.
     private func claimHardwareKeyboard() {
+        #if DEBUG
+        // `-focus none` (testing): the simulator reports a hardware keyboard; leave the keyboard down.
+        if UserDefaults.standard.string(forKey: "focus") == "none" { return }
+        #endif
         guard isActive, window != nil, GCKeyboard.coalesced != nil, !term.isFirstResponder else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isActive, self.window != nil, !self.term.isFirstResponder,
@@ -687,15 +697,47 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     // MARK: Lifecycle
 
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil { refocusOnReturn = term.isFirstResponder }
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
-            stop()
+            scheduleStop()
         } else {
+            stopWork?.cancel()
+            stopWork = nil
             if !metalTried { metalTried = true; term.enableGPU() }
             yieldContentSwipeBack()
-            claimHardwareKeyboard()
+            if refocusOnReturn {
+                // Moved by a fold or unfold while it had the keyboard: take it back.
+                refocusOnReturn = false
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window != nil, !self.term.isFirstResponder else { return }
+                    _ = self.term.becomeFirstResponder()
+                }
+            } else {
+                claimHardwareKeyboard()
+            }
         }
+    }
+
+    /// Off screen: let go of the stream, unless the view is back on screen in a moment. A fold or an
+    /// unfold rebuilds the layout around the pane and `PaneView` moves this view to its new place
+    /// (`TerminalHostPool`), keeping the screen, the scrollback and the keyboard.
+    func scheduleStop() {
+        stopWork?.cancel()
+        // Strong capture: the pool may be the only owner, and the stream must be stopped either way.
+        let work = DispatchWorkItem { [self] in
+            stopWork = nil
+            guard window == nil else { return }
+            stop()
+            onStopped?()
+        }
+        stopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     /// iOS 26 swipes back from anywhere in the content. Over the terminal a horizontal flick
@@ -749,6 +791,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .fit:
             guard !lostOwnership else { return }
             let want = fitGrid()
+            // A new width (fold, unfold, rotation) leaves lines drawn at the old width cut off or
+            // short in an engine that resizes without reflowing (SwiftTerm). Redraw from the server
+            // once the claim lands. A new height alone (the keyboard) needs nothing, and neither
+            // does an engine that reflows the way the server does.
+            if started, !term.reflowsLikeServer, want.0 != serverSize.0 { needsResync = true }
             if started, !needsResync, let c = claimedSize, c == want, serverSize == want { return }
             requestClaim(cols: want.0, rows: want.1)
         case .mirror:

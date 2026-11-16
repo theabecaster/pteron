@@ -1,6 +1,5 @@
 import SwiftUI
 import RexKit
-import UserNotifications
 
 struct SessionEntry: Identifiable, Equatable {
     var id: String
@@ -53,9 +52,14 @@ final class ServerConnection: Identifiable {
     let control: RexControl
     /// What each hardware key does: Rex's defaults under the user's init.lua (`client.keymap`).
     @ObservationIgnored let keymap: KeymapStore
-    /// Local notifications and haptics for agents; shared by every server.
+    /// In-app agent alerts and haptics; shared by every server.
     @ObservationIgnored let notifier: AgentNotifier
+    /// Push registration with this server's Rex Connect Helper.
+    @ObservationIgnored private weak var push: PushRegistrar?
     @ObservationIgnored let prefs: Prefs
+    /// Counts successful connections, so per-connection work (push registration) can tell a new
+    /// connection from a resync.
+    @ObservationIgnored private(set) var connectionSerial = 0
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
@@ -96,21 +100,25 @@ final class ServerConnection: Identifiable {
         return b
     }
 
-    init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier) {
+    /// `deviceID` ends the client label (` #<id>`), which is how the helper recognizes this phone.
+    init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier, push: PushRegistrar? = nil, deviceID: String) {
         self.prefs = prefs
         self.config = config
         self.notifier = notifier
+        self.push = push
         control = RexControl(address: config.url, client: ClientInfo(
             name: "Rex Connect",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-            label: String(UIDevice.current.name.prefix(40))))
+            label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)))
         keymap = KeymapStore(control: control)
         control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
         control.onStateChange = { [weak self] st in
             guard let self else { return }
             switch st {
             case .connecting: self.setPhase(.connecting)
-            case .connected: self.setPhase(.online)
+            case .connected:
+                self.connectionSerial += 1
+                self.setPhase(.online)
             case .failed(let m): self.setPhase(.offline(m))
             case .idle: self.setPhase(.idle)
             }
@@ -235,6 +243,7 @@ final class ServerConnection: Identifiable {
             await loadHosts()
             await keymap.load()
             lastError = nil
+            push?.serverReady(self)
         } catch {
             lastError = error.localizedDescription
         }
@@ -372,6 +381,10 @@ final class ServerConnection: Identifiable {
             Task { await loadHosts() }
         case "keymap_changed":
             keymap.configChanged(hash: p.str("hash"))
+        case "client_joined":
+            if p.obj("client")?.obj("info")?.str("name") == RelayLookup.clientName { push?.relayChanged(self) }
+        case "client_left":
+            if let id = p.str("client_id"), push?.isRelay(id, on: self) == true { push?.relayChanged(self) }
         case "session_event":
             guard let sid = p.str("session_id"), let ev = p.obj("event") else { return }
             handle(sessionID: sid, event: ev)
@@ -435,8 +448,7 @@ final class ServerConnection: Identifiable {
         case "child_exited":
             m.exited = true
         case "desktop_notification":
-            notifier.post(title: e.str("title").flatMap { $0.isEmpty ? nil : $0 } ?? label(for: sid, block: bid),
-                      body: e.str("body") ?? "")
+            // No banner in the app; the helper pushes these while the app is in the background.
             return
         default:
             return
@@ -490,7 +502,11 @@ final class ServerConnection: Identifiable {
         case "auth": why = "needs a password"
         default: why = "is waiting for you"
         }
-        notifier.post(title: "\(who) \(why)", body: [label(for: sid, block: bid), st.text].compactMap { $0 }.joined(separator: " — "))
+        let place = label(for: sid, block: bid)
+        notifier.post(AgentAlert(serverID: id, sessionID: sid, windowID: views[sid]?.windowContaining(block: bid)?.id,
+                                 blockID: bid, title: "\(who) \(why)",
+                                 body: [place.isEmpty ? nil : place, st.text].compactMap { $0 }.joined(separator: " — "),
+                                 date: Date()))
         if prefs.haptics { notifier.waitingHaptic() }
     }
 
@@ -599,22 +615,11 @@ final class ServerConnection: Identifiable {
         }
     }
 
-    /// Types text into a pane (quick replies). Escape sequences work: "\u{1b}" is Esc, "\r" is Enter.
+    /// Types text into a pane. Escape sequences work: "\u{1b}" is Esc, "\r" is Enter.
     func write(_ sid: String, _ bid: String, _ text: String) async {
         await act("send to the pane", session: nil) {
             try await self.control.blockCall("com.superlogical.terminal.write", session: sid, block: bid, args: ["data": text])
         }
-    }
-
-    /// Sends a composed message: the text, then Enter as a separate write so agents don't treat the
-    /// Enter as part of a paste. Multi-line text goes in as a bracketed paste.
-    func submit(_ sid: String, _ bid: String, _ text: String) async {
-        if !text.isEmpty {
-            let body = text.contains("\n") ? "\u{1b}[200~" + text + "\u{1b}[201~" : text
-            await write(sid, bid, body)
-            try? await Task.sleep(nanoseconds: 40_000_000)
-        }
-        await write(sid, bid, "\r")
     }
 
     /// The last lines of a pane as plain text (tab overview cards).

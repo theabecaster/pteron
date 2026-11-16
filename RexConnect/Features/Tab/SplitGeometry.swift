@@ -39,6 +39,21 @@ struct SplitGeometry {
         return (snapped ? (0.5 - ratio) * span : translation, snapped)
     }
 
+    /// Smallest grid a pane may get before a narrow screen shows one pane at a time instead.
+    static let legibleCols = 40
+    static let legibleRows = 8
+
+    /// Whether every pane of a layout (`rects`, normalized) keeps a legible grid when the layout is
+    /// drawn at `canvas` with the terminal font at `fontSize`. Cells are estimated from the font
+    /// (Meslo: about 0.6 × size wide, 1.25 × size tall). An unmeasured canvas is not legible.
+    static func legible(_ rects: [CGRect], canvas: CGSize, fontSize: Double) -> Bool {
+        guard canvas.width > 0, canvas.height > 0, !rects.isEmpty else { return false }
+        let cellW = CGFloat(fontSize) * 0.6, cellH = CGFloat(fontSize) * 1.25
+        return rects.allSatisfy { r in
+            r.width * canvas.width >= CGFloat(legibleCols) * cellW && r.height * canvas.height >= CGFloat(legibleRows) * cellH
+        }
+    }
+
     /// The ratio after dragging the divider by `offset` points, within Rex's limits.
     func ratio(after offset: CGFloat) -> Double {
         min(max(ratio + offset / span, Self.ratioRange.lowerBound), Self.ratioRange.upperBound)

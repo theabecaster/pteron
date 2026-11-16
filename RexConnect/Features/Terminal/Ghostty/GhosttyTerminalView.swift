@@ -18,6 +18,8 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     let engineKind = TerminalEngineKind.ghostty
     let parsesOffMainThread = true
     let fontChangeResetsModes = false
+    /// The server's terminal is Ghostty too.
+    let reflowsLikeServer = true
 
     weak var engineDelegate: (any TerminalEngineDelegate)? {
         didSet { engineDelegate?.engineGridChanged(cols: cols, rows: rows) }

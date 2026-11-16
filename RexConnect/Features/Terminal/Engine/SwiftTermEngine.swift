@@ -76,6 +76,7 @@ final class RexTerminalView: SwiftTerm.TerminalView, TerminalEngineView, Termina
     var parsesOffMainThread: Bool { false }
     /// `setFonts` resizes to the frame and soft-resets.
     var fontChangeResetsModes: Bool { true }
+    var reflowsLikeServer: Bool { false }
 
     func restoreSnapshot(_ bytes: [UInt8], failed: @escaping @MainActor () -> Void) -> Bool { false }
 
