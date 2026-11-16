@@ -48,7 +48,10 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
             window.addSubview(splash)
             splash.layoutIfNeeded()
             let finish = onFinish
-            splash.run(content: window.rootViewController?.view) { finish?() }
+            // Schedule once the first frame is committed, so the clock starts from what is on screen.
+            DispatchQueue.main.async { [weak window] in
+                splash.run(content: window?.rootViewController?.view) { finish?() }
+            }
         }
     }
 }
@@ -57,25 +60,25 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
 /// (Core Animation), unaffected by main-thread work while the app connects underneath.
 ///
 /// Layers (bottom to top): `cover` (the background with an icon-shaped hole, drawn as a huge rounded
-/// border so it needs no mask or offscreen pass), `row` (Rexie + "for Rex"), `icon`. The icon and row
-/// are crops of the static launch image (`LaunchSplash`), placed on the same pixel grid, so the first
-/// frame matches the launch screen exactly.
+/// border so it needs no mask or offscreen pass) and `icon` (the Rex icon). The icon is the same image
+/// as the static launch screen (`SplashIcon`), centered on the same pixel grid, so the first frame
+/// matches the launch screen exactly.
 final class LaunchSplashView: UIView {
     private enum Metric {
         static let icon: CGFloat = 128
         static let iconRadius: CGFloat = 128 * 0.2237
-        static let row = CGSize(width: 264, height: 40)
-        static let rowOffset: CGFloat = 112   // row center below screen center
         static let holeStart: CGFloat = 0.9   // hole hides under the icon until the icon shrinks to it
     }
 
     private let cover = CALayer()
     private let icon = CALayer()
-    private let row = CALayer()
     private var border: CGFloat = 0
 
     /// Minimum time from process start to the transition, so the splash never lingers.
     static let minimumSplash: CFTimeInterval = 0.6
+    /// Minimum time after our first frame: iOS cross-fades from the launch screen to the app's first
+    /// frame, and starting the dip inside that fade shows both icons at once.
+    static let handoff: CFTimeInterval = 0.3
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -87,15 +90,12 @@ final class LaunchSplashView: UIView {
         let bg = UIColor(named: "LaunchBackground") ?? UIColor(red: 0x22 / 255, green: 0x27 / 255, blue: 0x2e / 255, alpha: 1)
         cover.borderColor = bg.cgColor
         cover.cornerCurve = .circular
-        for (l, name) in [(icon, "SplashIcon"), (row, "SplashRow")] {
-            if let img = UIImage(named: name) {
-                l.contents = img.cgImage
-                l.contentsScale = img.scale
-            }
-            l.contentsGravity = .resize
+        if let img = UIImage(named: "SplashIcon") {
+            icon.contents = img.cgImage
+            icon.contentsScale = img.scale
         }
+        icon.contentsGravity = .resize
         layer.addSublayer(cover)
-        layer.addSublayer(row)
         layer.addSublayer(icon)
     }
 
@@ -108,7 +108,6 @@ final class LaunchSplashView: UIView {
         let c = CGPoint(x: bounds.midX, y: bounds.midY)
         // bounds + position, not frame: frame would fold in the icon's scale transform once it runs.
         place(icon, pixelRect(center: c, size: CGSize(width: Metric.icon, height: Metric.icon)))
-        place(row, pixelRect(center: CGPoint(x: c.x, y: c.y + Metric.rowOffset), size: Metric.row))
         // The hole is the inside of a border this wide; its outer edge stays past the screen corners
         // even at the smallest hole scale.
         border = hypot(bounds.width, bounds.height)
@@ -139,7 +138,7 @@ final class LaunchSplashView: UIView {
     /// Schedules the whole transition up front on Core Animation's clock, then removes itself.
     func run(content: UIView?, completion: @escaping () -> Void) {
         let elapsed = Self.processUptime() ?? 0
-        let delay = max(Self.minimumSplash - elapsed, 0.12)
+        let delay = max(Self.minimumSplash - elapsed, Self.handoff)
         let t0 = CACurrentMediaTime() + delay
 
         if UIAccessibility.isReduceMotionEnabled {
@@ -155,7 +154,7 @@ final class LaunchSplashView: UIView {
         }
 
         // Timeline (seconds after t0):
-        //   0.00–0.20  icon dips to the hole size; Rexie and the label drop away
+        //   0.00–0.20  icon dips to the hole size
         //   0.10–0.26  icon fades, leaving an icon-shaped hole onto the live app (at 1.2x)
         //   0.22–0.84  hole irises out past the screen corners; app settles 1.2x -> 1.0x
         let holeEnd = hypot(bounds.width, bounds.height) / (Metric.icon * 0.98) + 0.2
@@ -186,9 +185,6 @@ final class LaunchSplashView: UIView {
         icon.transform = CATransform3DMakeScale(Metric.holeStart, Metric.holeStart, 1)
         icon.opacity = 0
 
-        row.add(anim("opacity", from: 1, to: 0, start: t0, duration: 0.18, .easeIn), forKey: "fade")
-        row.add(anim("transform.translation.y", from: 0, to: 10, start: t0, duration: 0.2, .easeIn), forKey: "drop")
-        row.opacity = 0
 
         // Zooming reads as constant speed when the scale moves evenly in log space, so the keyframes ease
         // the exponent (smoothstep): the hole opens gently, rushes through the screen edges, then lands.
