@@ -1,28 +1,28 @@
 import SwiftUI
 import UIKit
 
-/// iPhone Duo first. The layout comes from size classes and the fold's reserved region
-/// (`Arrangement.decide`), never from orientation or the hinge:
-/// - Folded, any other iPhone, any landscape iPhone (compact width or height): a navigation stack,
-///   sidebar then tab, one pane at a time.
-/// - Unfolded (inner screen, landscape, vertical crease): two pages split at the crease. The sidebar
-///   fills the left page and the tab's panes, split as the Mac lays them out, the right.
-/// - Unfolded portrait (horizontal crease): the tab the full width, the sidebar as an overlay. Partly
-///   folded (tabletop), the terminal sits above the crease and the controls below it.
-/// The hinge (`model.hinge`) only tints the crease while the device is partly open.
+/// iPhone Duo first, and one model for every screen, like the Rex Mac app: the tab fills the window,
+/// and the sidebar sits beside it when the window is wide (`Arrangement.inline`) or slides over it as
+/// a drawer when narrow (folded Duo, iPhone portrait, half the inner screen). Same sidebar, same
+/// toggle, same gestures and the same open or closed state in every posture (`SidebarSplit`).
+///
+/// Bars follow the system. Where the system has a vertical bar (the Duo's outer screen, and its inner
+/// screen in landscape), the navigation bar shows and the sidebar toggle and tab actions are toolbar
+/// items, which the system puts in that bar beside the status bar. Elsewhere the bar stays hidden and
+/// the tab's own thin title bar holds them. The chrome background runs edge to edge, under the bar.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.horizontalSizeClass) private var hSize
-    @Environment(\.verticalSizeClass) private var vSize
     @Environment(Prefs.self) private var prefs
-    /// Unfolded portrait: the sidebar overlay is open.
-    @State private var overlaySidebar = false
-    @State private var path: [Selection] = []
-    /// The navigation stack is in use (folded or any other iPhone). Mirrors the arrangement for commands.
-    @State private var stacked = true
+    /// The sidebar is showing: inline beside the tab, or the drawer over it. Starts open, so a launch
+    /// shows the last tab with the sidebar beside or over it.
+    @State private var sidebarOpen = true
+    /// The sidebar is inline (wide window). Mirrors the arrangement for commands.
+    @State private var inline = false
     /// The root's height without the keyboard.
     @State private var keyboardFreeHeight: CGFloat = 0
+    /// Where the system puts its vertical bar, if it has one here.
+    @State private var barEdge: HorizontalEdge?
     /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
     @State private var hostPool = TerminalHostPool()
     #if DEBUG
@@ -38,10 +38,11 @@ struct RootView: View {
             .overlay(alignment: .top) { NoticeBanner(theme: theme) }
             .background(CommandListener { handle($0) })
             .background(WaitingWatcher())
+            .background(VerticalBarObserver { e in if barEdge != e { barEdge = e } })
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .background(HingeObserver { h in
-                // Layout never reads the hinge. Only a status change matters (the crease tint), so an
-                // angle change alone invalidates nothing.
+                // Layout never reads the hinge. Only a status change matters, so an angle change alone
+                // invalidates nothing.
                 let new = AppModel.hingeOverride ?? h
                 if model.hinge?.status != new?.status { model.hinge = new }
             })
@@ -53,15 +54,12 @@ struct RootView: View {
             .onChange(of: model.servers.map { $0.views.count }) { _, _ in
                 model.autoSelect()
             }
-            .onChange(of: model.autoOpenTarget(), initial: true) { _, t in
-                if path.isEmpty, let t { path = [t] }
-            }
             .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
             .onAppear {
                 if let h = AppModel.hingeOverride { model.hinge = h }
                 #if DEBUG
-                // `-overlaySidebar YES` (testing): start with the unfolded-portrait sidebar open.
-                if UserDefaults.standard.bool(forKey: "overlaySidebar") { overlaySidebar = true }
+                // `-sidebar closed` (testing): start with the sidebar hidden.
+                if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebarOpen = false }
                 #endif
             }
     }
@@ -72,10 +70,10 @@ struct RootView: View {
         if !simulations.isEmpty {
             simulated(simulations[simIndex % simulations.count], theme)
         } else {
-            layout(theme, h: hSize, v: vSize)
+            layout(theme, fake: nil)
         }
         #else
-        layout(theme, h: hSize, v: vSize)
+        layout(theme, fake: nil)
         #endif
     }
 
@@ -87,7 +85,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
-                layout(theme, h: sim.horizontal, v: sim.vertical, fake: .some(sim.division))
+                layout(theme, fake: .some(sim.division))
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
                     .environment(\.horizontalSizeClass, sim.horizontal)
@@ -129,19 +127,40 @@ struct RootView: View {
             }
         }
     }
-
     #endif
 
-    /// Lays out the sidebar and tab for the size classes and the fold. `fake` replaces the fold
+    /// The sidebar and the tab, arranged for the window's width and the fold. `fake` replaces the fold
     /// (debug simulation).
-    private func layout(_ theme: TermTheme, h: UserInterfaceSizeClass?, v: UserInterfaceSizeClass?,
-                        fake: Division?? = nil) -> some View {
+    private func layout(_ theme: TermTheme, fake: Division??) -> some View {
         GeometryReader { geo in
             let division = fake ?? Self.division(geo)
             // The keyboard shrinks the height; the arrangement must not change when it shows.
             let size = CGSize(width: geo.size.width, height: max(geo.size.height, keyboardFreeHeight))
-            arranged(Arrangement.decide(size: size, horizontal: h, vertical: v, division: division),
-                     division: division, theme: theme)
+            let arr = Arrangement.decide(size: size, division: division)
+            NavigationStack {
+                SidebarSplit(arrangement: arr, theme: theme, open: $sidebarOpen) {
+                    SidebarView(onSelect: { _ in if !arr.inline { sidebarOpen = false } })
+                } tab: {
+                    tab(arr)
+                }
+                .background(theme.chrome.canvas.ignoresSafeArea())
+                .background(EdgeReveal(enabled: !sidebarOpen) { revealSidebar() })
+                // Only where the system has a vertical bar: the toggle and the tab's actions go there.
+                // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
+                .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
+                .toolbar {
+                    if barEdge != nil {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button { toggleSidebar() } label: {
+                                Label(sidebarOpen ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                            }
+                        }
+                    }
+                }
+            }
+            .environment(\.division, division)
+            .environment(\.verticalBarEdge, barEdge)
+            .onChange(of: arr.inline, initial: true) { _, new in inline = new }
         }
         .background {
             Color.clear
@@ -151,7 +170,7 @@ struct RootView: View {
     }
 
     /// The fold, from the reserved regions (iOS 27.1+). Inactive regions count: a flat device still
-    /// has a crease, and two pages split at it read better than one page across it.
+    /// has a crease, and the sidebar's edge snaps to it.
     private static func division(_ geo: GeometryProxy) -> Division? {
         if #available(iOS 27.1, *) {
             guard let r = geo.reservedRegions(kind: .division, options: .includeInactive).first else { return nil }
@@ -160,53 +179,28 @@ struct RootView: View {
         return nil
     }
 
-    private func arranged(_ arr: Arrangement, division: Division?, theme: TermTheme) -> some View {
-        Group {
-            switch arr {
-            case .stack:
-                stackLayout(theme: theme)
-            case .pages(let first, let gap):
-                pagesLayout(theme: theme, first: first, gap: gap)
-            case .overlay:
-                overlayLayout(theme: theme, mode: .full())
-                    .background(edgeReveal(arr))
-            case .tabletop(let top, let gap):
-                overlayLayout(theme: theme, mode: .full(top: top, gap: gap))
-                    .background(edgeReveal(arr))
-            }
-        }
-        .environment(\.division, division)
-        .background(theme.chrome.canvas.ignoresSafeArea())
-        .onChange(of: arr, initial: true) { old, new in
-            stacked = new.isStack
-            if old.isStack != new.isStack { folded(into: new.isStack) }
+    @ViewBuilder
+    private func tab(_ arr: Arrangement) -> some View {
+        let mode: WindowScreen.Mode = arr.inline ? .wide(tabletop: arr.tabletop) : .narrow
+        if let cur = model.current {
+            WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
+                         mode: mode, sidebarVisible: sidebarBinding, onOpen: open)
+        } else {
+            EmptyState(sidebarVisible: sidebarBinding)
         }
     }
 
-    /// A fold or an unfold switched between the stack and a wide layout. Keeps what was on screen:
-    /// folding while a tab shows pushes that tab, so the outer screen shows it rather than the sidebar.
-    private func folded(into stack: Bool) {
-        var t = Transaction()
-        t.disablesAnimations = true
-        withTransaction(t) {
-            if stack {
-                if let sel = model.selection, model.current != nil { path = [sel] }
-            } else {
-                overlaySidebar = false
-            }
-        }
+    private var sidebarBinding: Binding<Bool> {
+        Binding(get: { sidebarOpen }, set: { if $0 != sidebarOpen { toggleSidebar() } })
     }
 
     // MARK: Commands
-
-    /// Is a tab on screen (so its WindowScreen runs the tab commands)?
-    private var tabShown: Bool { stacked ? !path.isEmpty : model.current != nil }
 
     /// Runs the app-wide `RexCommand`s. Tab commands go to the visible WindowScreen; with no tab on
     /// screen, tab commands open the selected tab first.
     private func handle(_ r: CommandRequest) {
         if r.command.isWindowCommand {
-            guard !tabShown, PhoneState.shared.claim(r) else { return }
+            guard model.current == nil, PhoneState.shared.claim(r) else { return }
             switch r.command {
             case .newTab:
                 newTabOffscreen()
@@ -237,20 +231,16 @@ struct RootView: View {
         prefs.fontSize = v
     }
 
-    /// Stack: back to the sidebar, or into the selected tab. One column: the overlay opens or closes.
-    /// Two pages: the sidebar always has its page.
+    /// The toggle button, the shortcut and the menu command: show or hide the sidebar, in any posture.
     private func toggleSidebar() {
-        guard !stacked else {
-            if !path.isEmpty { path = [] } else if let sel = model.selection { path = [sel] }
-            return
-        }
-        withAnimation(.snappy(duration: 0.25)) { overlaySidebar.toggle() }
+        Haptic.tap()
+        sidebarOpen.toggle()
     }
 
-    /// One column: the left-edge swipe brings the sidebar overlay in.
+    /// The left-edge swipe brings the sidebar back.
     private func revealSidebar() {
         Haptic.threshold()
-        withAnimation(.snappy(duration: 0.25)) { overlaySidebar = true }
+        sidebarOpen = true
     }
 
     private func jumpToWaiting() {
@@ -295,119 +285,16 @@ struct RootView: View {
         }
     }
 
-    /// Selects a tab and puts it on screen, pushing it when the sidebar is all that shows.
+    /// Selects a tab and puts it on screen: a drawer closes so the tab shows.
     private func show(_ sel: Selection) {
         open(sel)
-        if path.isEmpty, stacked { path = [sel] }
+        if !inline { sidebarOpen = false }
     }
 
-    // MARK: Wide
-
-    private func edgeReveal(_ arr: Arrangement) -> some View {
-        EdgeReveal(enabled: !overlaySidebar) { revealSidebar() }
-    }
-
-    /// Two pages split at the crease, like the Mac app's window: the sidebar, then the tab's panes.
-    /// Nothing interactive or textual sits on the crease.
-    private func pagesLayout(theme: TermTheme, first: CGFloat, gap: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            sidebar(theme) { _ in }
-                .frame(width: first)
-            Crease(gap: gap, theme: theme)
-            tab(mode: .page, sidebarVisible: .constant(true))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    /// One column the full width (unfolded portrait), the sidebar as an overlay from the leading edge.
-    private func overlayLayout(theme: TermTheme, mode: WindowScreen.Mode) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                tab(mode: mode, sidebarVisible: $overlaySidebar)
-                if overlaySidebar {
-                    Color.black.opacity(0.3)
-                        .ignoresSafeArea()
-                        .onTapGesture { withAnimation(.snappy(duration: 0.25)) { overlaySidebar = false } }
-                        .accessibilityLabel("Hide Sidebar")
-                        .accessibilityAddTraits(.isButton)
-                        .transition(.opacity)
-                    sidebar(theme) { _ in withAnimation(.snappy(duration: 0.25)) { overlaySidebar = false } }
-                        .frame(width: min(320, geo.size.width * 0.6))
-                        .overlay(alignment: .trailing) {
-                            Rectangle().fill(theme.chrome.divider).frame(width: 1).ignoresSafeArea()
-                        }
-                        .shadow(color: .black.opacity(0.25), radius: 12)
-                        .transition(.move(edge: .leading))
-                }
-            }
-        }
-    }
-
-    private func sidebar(_ theme: TermTheme, onSelect: @escaping (Selection) -> Void) -> some View {
-        SidebarView(onSelect: onSelect)
-            .background(theme.chrome.sidebar.ignoresSafeArea())
-    }
-
-    @ViewBuilder
-    private func tab(mode: WindowScreen.Mode, sidebarVisible: Binding<Bool>) -> some View {
-        if let cur = model.current {
-            WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
-                         mode: mode, sidebarVisible: sidebarVisible, onOpen: open)
-        } else {
-            EmptyState(sidebarVisible: sidebarVisible, showsSidebarButton: mode != .page)
-        }
-    }
-
-    /// Opens a tab from the tab overview: swaps the shown tab in place, without a push animation.
+    /// Opens a tab (tab overview, title menu, tab swipes, waiting pill) in place.
     private func open(_ sel: Selection) {
         guard let s = model.server(sel.serverID) else { return }
         model.select(s, session: sel.sessionID, window: sel.windowID)
-        if !path.isEmpty {
-            var t = Transaction()
-            t.disablesAnimations = true
-            withTransaction(t) { path = [sel] }
-        }
-    }
-
-    // MARK: Stack
-
-    @ViewBuilder
-    private func stackLayout(theme: TermTheme) -> some View {
-        NavigationStack(path: $path) {
-            SidebarView(onSelect: { sel in path = [sel] })
-                .background(theme.chrome.sidebar.ignoresSafeArea())
-                .navigationTitle("Rex")
-                .navigationBarTitleDisplayMode(.inline)
-                .navigationDestination(for: Selection.self) { sel in
-                    if let s = model.server(sel.serverID) {
-                        WindowScreen(server: s, sessionID: sel.sessionID, windowID: sel.windowID,
-                                     mode: .compact, sidebarVisible: .constant(false), onOpen: open)
-                            .toolbar(.hidden, for: .navigationBar)
-                            .background(SwipeBackEnabler())
-                    }
-                }
-        }
-    }
-}
-
-/// The crease between two pages. Flat, a hairline; partly folded, the region's width (its tap
-/// margins included), so nothing interactive sits there. The hinge only strengthens the line, and
-/// this view is the only one that reads it.
-struct Crease: View {
-    @Environment(AppModel.self) private var model
-    let gap: CGFloat
-    let theme: TermTheme
-
-    var body: some View {
-        let bent = model.hinge?.status == .partial
-        Rectangle()
-            .fill(theme.chrome.canvas)
-            .frame(width: max(gap, 1))
-            .overlay {
-                Rectangle().fill(bent ? theme.chrome.activeBorder.opacity(0.6) : theme.chrome.divider).frame(width: 1)
-            }
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
     }
 }
 
@@ -416,8 +303,6 @@ struct EmptyState: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Binding var sidebarVisible: Bool
-    /// Beside the sidebar, there's no sidebar to show.
-    var showsSidebarButton = true
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -433,13 +318,13 @@ struct EmptyState: View {
             if model.servers.isEmpty {
                 Button("Add a Server") { model.showSettings = true }
                     .frame(minHeight: 44)
-            } else if showsSidebarButton, !sidebarVisible {
+            } else if !sidebarVisible {
                 Button("Show Sidebar") { sidebarVisible = true }
                     .frame(minHeight: 44)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.bg)
+        .background(theme.bg.ignoresSafeArea())
     }
 
     private var statusText: String {
@@ -512,38 +397,57 @@ struct HingeObserver: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
-// MARK: - Edge swipe back
+// MARK: - Vertical bar
 
-/// Keeps the navigation stack's edge swipe-back working while the navigation bar is hidden.
-/// The edge swipe wins over the terminal's own pans and swipes, which wait for it to fail.
-struct SwipeBackEnabler: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> Controller { Controller() }
-    func updateUIViewController(_ vc: Controller, context: Context) {}
+/// Reports where the system puts its vertical bar (`UITraitCollection.verticalBarEdge`, iOS 27.1+), or
+/// nil where bars are horizontal. The trait gives the system's preferred edge whether or not a bar
+/// shows yet, so the navigation bar can be shown only where it turns vertical.
+struct VerticalBarObserver: UIViewRepresentable {
+    let onChange: (HorizontalEdge?) -> Void
 
-    final class Controller: UIViewController {
-        override func viewDidAppear(_ animated: Bool) {
-            super.viewDidAppear(animated)
-            guard let nav = navigationController, let pop = nav.interactivePopGestureRecognizer else { return }
-            PopGestureDelegate.shared.nav = nav
-            pop.delegate = PopGestureDelegate.shared
-            pop.isEnabled = true
-            // iOS 26's full-width content swipe would fight the terminal's pane swipes; keep the edge only.
-            if #available(iOS 26.0, *) { nav.interactiveContentPopGestureRecognizer?.isEnabled = false }
+    func makeUIView(context: Context) -> Probe { Probe() }
+
+    func updateUIView(_ v: Probe, context: Context) {
+        v.onChange = onChange
+        v.report()
+    }
+
+    final class Probe: UIView {
+        var onChange: (HorizontalEdge?) -> Void = { _ in }
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            registerForTraitChanges([UITraitHorizontalSizeClass.self, UITraitVerticalSizeClass.self]) { (v: Probe, _) in
+                v.report()
+            }
         }
-    }
-}
 
-/// Outlives any one screen so the pop gesture never points at a freed delegate.
-final class PopGestureDelegate: NSObject, UIGestureRecognizerDelegate {
-    static let shared = PopGestureDelegate()
-    weak var nav: UINavigationController?
+        required init?(coder: NSCoder) { fatalError() }
 
-    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        guard let nav else { return false }
-        return nav.viewControllers.count > 1 && nav.transitionCoordinator == nil
-    }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            report()
+        }
 
-    func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
-        other is UIPanGestureRecognizer || other is UISwipeGestureRecognizer
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            report()
+        }
+
+        func report() {
+            guard window != nil else { return }
+            var edge: HorizontalEdge?
+            if #available(iOS 27.1, *) {
+                switch traitCollection.verticalBarEdge {
+                case .leading: edge = .leading
+                case .trailing: edge = .trailing
+                default: edge = nil
+                }
+            }
+            let send = onChange
+            // Reported after this layout pass: it changes SwiftUI state.
+            DispatchQueue.main.async { send(edge) }
+        }
     }
 }

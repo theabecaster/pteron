@@ -11,6 +11,8 @@ struct TabTitleBar: View {
     let sessionID: String
     let window: WindowInfo
     let subtitle: String
+    /// A short title bar (landscape iPhone) keeps the title only.
+    var showsSubtitle = true
     let theme: TermTheme
     /// A committed swipe: +1 next tab, -1 previous tab.
     let onSwipe: (Int) -> Void
@@ -49,7 +51,7 @@ struct TabTitleBar: View {
                     onOverview: onOverview, onNewTab: onNewTab, onRename: onRename)
                 .presentationCompactAdaptation(.popover)
         }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .clipped()
         .contentShape(Rectangle())
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = max($0, 1) }
@@ -73,10 +75,12 @@ struct TabTitleBar: View {
                         .accessibilityHidden(true)
                 }
             }
-            Text(sub)
-                .font(.caption2)
-                .foregroundStyle(theme.chrome.tertiary)
-                .lineLimit(1)
+            if showsSubtitle {
+                Text(sub)
+                    .font(.caption2)
+                    .foregroundStyle(theme.chrome.tertiary)
+                    .lineLimit(1)
+            }
         }
         .padding(.leading, 2)
         .padding(.vertical, 3)

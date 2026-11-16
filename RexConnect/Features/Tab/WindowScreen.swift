@@ -5,17 +5,14 @@ import UIKit
 /// One Rex tab (window), as the Mac app shows it: a thin title bar and the tab's terminal panes.
 /// The terminal is the input: tap it and type, with the key bar above the keyboard.
 struct WindowScreen: View {
-    /// How the tab is placed on screen.
+    /// How the tab is placed on screen. Either way, splits show while every pane stays legible;
+    /// otherwise one pane at a time, a swipe away from the next.
     enum Mode: Equatable {
-        /// Folded / any other iPhone: full screen with a back button. Splits show when every pane
-        /// stays legible; otherwise one pane at a time, a swipe away from the next.
-        case compact
-        /// The second page of the unfolded Duo, beside the sidebar.
-        case page
-        /// The whole width, sidebar as an overlay (unfolded portrait). Partly folded (tabletop), `top`
-        /// is the height above the crease, which holds the title bar and the panes; the keyboard goes
-        /// below the crease, which is `gap` tall.
-        case full(top: CGFloat? = nil, gap: CGFloat = 0)
+        /// Narrow (folded Duo, iPhone portrait): the full window, the sidebar a drawer over it.
+        case narrow
+        /// Wide, beside the inline sidebar. Partly folded with a horizontal crease (tabletop), the
+        /// title bar and panes stay above the crease and the keyboard comes up below it.
+        case wide(tabletop: Arrangement.Tabletop? = nil)
     }
 
     /// A close that needs a second tap because an agent would stop.
@@ -27,8 +24,9 @@ struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.verticalSizeClass) private var vSize
+    /// Where the system's vertical bar is, if any: the tab's actions go there as toolbar items.
+    @Environment(\.verticalBarEdge) private var barEdge
 
     let server: ServerConnection
     let sessionID: String
@@ -58,16 +56,16 @@ struct WindowScreen: View {
         let theme = prefs.theme(for: scheme)
         VStack(spacing: 0) {
             if let w = window {
-                if case .full(let top?, let gap) = mode {
+                if case .wide(let t?) = mode {
                     // Tabletop: title bar and panes above the crease, read at a distance; the keyboard
                     // comes up below it. The top region gives way only if the keyboard needs it.
                     VStack(spacing: 0) {
                         if showsHeader { header(w, theme) }
                         panes(w, theme)
                     }
-                    .frame(maxHeight: top)
+                    .frame(maxHeight: t.top)
                     .layoutPriority(1)
-                    Color.clear.frame(height: gap)
+                    Color.clear.frame(height: t.gap)
                     Spacer(minLength: 0)
                 } else {
                     if showsHeader { header(w, theme) }
@@ -84,7 +82,10 @@ struct WindowScreen: View {
                 .background(theme.bg)
             }
         }
-        .background(theme.chrome.canvas.ignoresSafeArea(edges: .bottom))
+        // Edge to edge, under the status bar and the Duo's vertical bar, so system UI sits on the
+        // app's chrome. The panes themselves stay inside the safe area.
+        .background(theme.chrome.canvas.ignoresSafeArea())
+        .toolbar { barItems(theme) }
         .background(CommandListener { handle($0) })
         .alert("Rename Tab", isPresented: $renaming) {
             TextField("Name", text: $renameText)
@@ -152,7 +153,6 @@ struct WindowScreen: View {
         case .splits: return true
         case .auto:
             guard w.zoomedBlockID == nil else { return false }
-            guard mode == .compact else { return true }
             return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
         }
     }
@@ -312,12 +312,37 @@ struct WindowScreen: View {
 
     // MARK: Title bar
 
-    /// Thin, like the Mac's title bar: back (or sidebar), the tab's title, then status and one menu.
+    /// Where the system has a vertical bar, the sidebar toggle and the tab's actions are toolbar items
+    /// there (Apple: navigation at the top, then actions, each with a title and a symbol). The title
+    /// and status stay in the title bar: text and custom views stay off the vertical axis.
+    @ToolbarContentBuilder
+    private func barItems(_ theme: TermTheme) -> some ToolbarContent {
+        if barEdge != nil, let w = window, let b = activeBlock(w) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if zoomedHere {
+                    Button { toggleZoom() } label: { Label("Unzoom", systemImage: "arrow.down.right.and.arrow.up.left") }
+                }
+                Button { openOverview() } label: { Label("All Tabs", systemImage: "square.on.square") }
+                paneMenu(w, block: b)
+            }
+        }
+    }
+
+    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title, then status and the pane
+    /// menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
+    /// title and status. Under a short window (landscape iPhone) it is thinner, to leave rows for the
+    /// panes.
     private func header(_ w: WindowInfo?, _ theme: TermTheme) -> some View {
-        HStack(spacing: 0) {
-            leadingButton()
+        let bar = barEdge != nil
+        let short = vSize == .compact
+        let height: CGFloat = short ? 34 : 44
+        return HStack(spacing: 0) {
+            if !bar {
+                IconButton(symbol: "sidebar.left", label: sidebarVisible ? "Hide Sidebar" : "Show Sidebar",
+                           height: height) { sidebarVisible.toggle() }
+            }
             if let w {
-                titleBar(w, theme)
+                titleBar(w, theme, subtitle: !short)
             } else {
                 Text(subtitle)
                     .font(.caption2)
@@ -333,22 +358,27 @@ struct WindowScreen: View {
                 if single, w.orderedBlockIDs.count > 1 {
                     PaneDots(server: server, ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
                 }
-                if zoomedHere { unzoomButton(theme) }
-                paneMenu(w, block: b)
+                if !bar {
+                    if zoomedHere { unzoomButton(theme, height: height) }
+                    paneMenu(w, block: b)
+                        .labelStyle(.iconOnly)
+                        .frame(width: 44, height: height)
+                        .contentShape(Rectangle())
+                }
             }
         }
         .font(.system(size: 17))
         .foregroundStyle(theme.fg)
-        .frame(minHeight: 44)
-        // On the second page the title starts clear of the crease.
-        .padding(.leading, mode == .page ? 12 : 4)
+        .frame(height: height)
+        .padding(.leading, bar ? 12 : 4)
         .padding(.trailing, 4)
         .background(theme.chrome.canvas)
         .animation(.snappy(duration: 0.2), value: zoomedHere)
     }
 
-    private func titleBar(_ w: WindowInfo, _ theme: TermTheme) -> some View {
-        TabTitleBar(server: server, sessionID: sessionID, window: w, subtitle: subtitle, theme: theme,
+    private func titleBar(_ w: WindowInfo, _ theme: TermTheme, subtitle showsSubtitle: Bool) -> some View {
+        TabTitleBar(server: server, sessionID: sessionID, window: w, subtitle: subtitle, showsSubtitle: showsSubtitle,
+                    theme: theme,
                     onSwipe: { switchTab(by: $0, haptic: false) },
                     onPick: { Haptic.selection(); onOpen($0) },
                     onOverview: { openOverview() },
@@ -362,26 +392,10 @@ struct WindowScreen: View {
         return model.servers.count > 1 ? "\(server.config.name) · \(session)" : session
     }
 
-    private func unzoomButton(_ theme: TermTheme) -> some View {
-        IconButton(symbol: "arrow.down.right.and.arrow.up.left", label: "Unzoom") { toggleZoom() }
+    private func unzoomButton(_ theme: TermTheme, height: CGFloat) -> some View {
+        IconButton(symbol: "arrow.down.right.and.arrow.up.left", label: "Unzoom", height: height) { toggleZoom() }
             .foregroundStyle(theme.accent)
             .transition(.scale.combined(with: .opacity))
-    }
-
-    @ViewBuilder
-    private func leadingButton() -> some View {
-        switch mode {
-        case .compact:
-            IconButton(symbol: "chevron.left", label: "Back") { dismiss() }
-                .fontWeight(.semibold)
-        case .page:
-            // The sidebar is on the other page.
-            EmptyView()
-        case .full:
-            IconButton(symbol: "sidebar.left", label: sidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
-                sidebarVisible.toggle()
-            }
-        }
     }
 
     private func paneMenu(_ w: WindowInfo, block: String) -> some View {
@@ -414,9 +428,8 @@ struct WindowScreen: View {
                 Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+            // Not an ellipsis: Apple keeps that symbol for the system's overflow menu.
+            Label("Pane Actions", systemImage: "square.split.2x2")
         }
         .accessibilityLabel("Pane Actions")
     }
@@ -427,7 +440,7 @@ struct WindowScreen: View {
     private func canvas(_ w: WindowInfo, _ theme: TermTheme) -> some View {
         if !useSplits(w) {
             if let b = activeBlock(w) {
-                let rounded = mode != .compact
+                let rounded = mode != .narrow
                 ZStack {
                     PaneView(server: server, sessionID: sessionID, blockID: b, active: true, onFocus: {},
                              onSwipe: { dir in switchPane(w, by: dir) })
@@ -698,16 +711,17 @@ struct WindowBadge: View {
 
 // MARK: - Small pieces
 
-/// A 44 × 44 pt icon button for headers and bars.
+/// A 44 pt wide icon button for headers and bars, 44 pt tall unless a thin bar asks for less.
 struct IconButton: View {
     let symbol: String
     let label: String
+    var height: CGFloat = 44
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: height)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -89,6 +89,12 @@ final class Prefs {
     /// The user answered the "Get notified" card (Turn On or Not now); it never shows again.
     var pushPromptDismissed: Bool { didSet { d.set(pushPromptDismissed, forKey: "pushPromptDismissed") } }
     var sidebarTextSize: Double { didSet { d.set(sidebarTextSize, forKey: "sidebarTextSize") } }
+    /// The sidebar's width per posture, keyed by `SidebarWidth.key`.
+    var sidebarWidths: [String: Double] { didSet { d.set(sidebarWidths, forKey: "sidebarWidths") } }
+    /// The tab open when the app last ran.
+    var lastSelection: Selection? {
+        didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
+    }
     var servers: [ServerConfig] {
         didSet { if let data = try? JSONEncoder().encode(servers) { d.set(data, forKey: "servers") } }
     }
@@ -121,6 +127,8 @@ final class Prefs {
         pushEnabled = d.bool(forKey: "pushEnabled")
         pushPromptDismissed = d.bool(forKey: "pushPromptDismissed")
         sidebarTextSize = d.object(forKey: "sidebarTextSize") as? Double ?? 14
+        sidebarWidths = d.dictionary(forKey: "sidebarWidths") as? [String: Double] ?? [:]
+        lastSelection = d.data(forKey: "lastSelection").flatMap { try? JSONDecoder().decode(Selection.self, from: $0) }
         hostURLs = d.dictionary(forKey: "hostURLs") as? [String: String] ?? [:]
         if let data = d.data(forKey: "servers"), let s = try? JSONDecoder().decode([ServerConfig].self, from: data), !s.isEmpty {
             servers = s
