@@ -26,7 +26,7 @@ public final class RexControl {
         case idle
         case connecting
         case connected
-        case failed(String)
+        case failed(ConnectionFailure)
     }
 
     public static let apiRevision = 13
@@ -56,6 +56,7 @@ public final class RexControl {
     private var generation = 0
     private var wantConnected = false
     private var retryDelay: Double = 1
+    private var retryTask: Task<Void, Never>?
 
     /// `address` is the server's HTTPS address, e.g. `https://mac.tailnet.ts.net`.
     public init(address: String, client: ClientInfo) {
@@ -86,11 +87,14 @@ public final class RexControl {
 
     // MARK: Connection
 
+    /// Connects, and keeps the connection while it's wanted: after any failure, the first one
+    /// included, it retries with backoff (1 s doubling to 15 s) until `disconnect()`. Throws if this
+    /// first attempt fails; `state` and `onReconnected` report the later ones.
     public func connect() async throws {
         guard wsBase != nil else {
-            let msg = "“\(address)” isn't a server address. Use https://<name>.<tailnet>.ts.net."
-            state = .failed(msg)
-            throw RexError.local(msg)
+            let f = ConnectionFailure.invalidAddress(address)
+            state = .failed(f)
+            throw f
         }
         wantConnected = true
         try await openSocket()
@@ -98,15 +102,24 @@ public final class RexControl {
 
     public func disconnect() {
         wantConnected = false
+        retryTask?.cancel()
+        retryTask = nil
+        generation += 1
         pingTimer?.invalidate()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         failAll(RexError.local("disconnected"))
+        resumeWelcome(throwing: RexError.local("disconnected"))
         state = .idle
     }
 
+    /// Opens a socket and waits for the welcome. Every failure goes through `handleDrop`, which
+    /// records it and schedules the next attempt; the throw only tells the caller.
     private func openSocket() async throws {
-        guard let wsBase else { throw RexError.local("invalid server address") }
+        guard let wsBase else { throw ConnectionFailure.invalidAddress(address) }
+        // An attempt still waiting for its welcome is superseded by this one.
+        resumeWelcome(throwing: RexError.local("superseded"))
+        task?.cancel()
         generation += 1
         let gen = generation
         state = .connecting
@@ -134,23 +147,28 @@ public final class RexControl {
             receiveLoop(t, gen: gen)
             t.send(.string(helloText)) { err in
                 guard let err else { return }
-                Task { @MainActor in
-                    if let w = self.welcomeWaiter, gen == self.generation {
-                        self.welcomeWaiter = nil
-                        w.resume(throwing: err)
-                    }
-                }
+                Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
             }
             // Welcome timeout.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
-                if let w = self.welcomeWaiter, gen == self.generation {
-                    self.welcomeWaiter = nil
-                    w.resume(throwing: RexError.local("Timed out waiting for the server. Is Tailscale on?"))
-                }
+                if self.welcomeWaiter != nil, gen == self.generation { self.handleDrop(gen: gen, failure: .timedOut()) }
             }
         }
         startPings(gen: gen)
+    }
+
+    private func resumeWelcome(throwing error: Error) {
+        guard let w = welcomeWaiter else { return }
+        welcomeWaiter = nil
+        w.resume(throwing: error)
+    }
+
+    /// The failure plus what the socket task knows: the upgrade's HTTP status and the close code.
+    private func failure(_ error: Error, _ t: URLSessionWebSocketTask?) -> ConnectionFailure {
+        let status = (t?.response as? HTTPURLResponse)?.statusCode
+        let close = t.flatMap { $0.closeCode == .invalid ? nil : $0.closeCode.rawValue }
+        return ConnectionFailure(error, httpStatus: status == 101 ? nil : status, closeCode: close)
     }
 
     private func startPings(gen: Int) {
@@ -159,8 +177,8 @@ public final class RexControl {
             Task { @MainActor in
                 guard let self, gen == self.generation, let t = self.task else { return }
                 t.sendPing { err in
-                    if err != nil {
-                        Task { @MainActor in self.handleDrop(gen: gen, reason: "ping failed") }
+                    if let err {
+                        Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
                     }
                 }
             }
@@ -186,48 +204,57 @@ public final class RexControl {
                     if let m = m?.value as? JSONObject { self.handle(m) }
                     self.receiveLoop(t, gen: gen)
                 case .failure(let err):
-                    self.handleDrop(gen: gen, reason: err.localizedDescription)
+                    self.handleDrop(gen: gen, failure: self.failure(err, t))
                 }
             }
         }
     }
 
-    private func handleDrop(gen: Int, reason: String) {
+    /// The one place a failed or dropped socket is handled: once per generation, so a socket that
+    /// fails several ways at once counts once and backs off once.
+    private func handleDrop(gen: Int, failure: ConnectionFailure) {
         guard gen == generation else { return }
         generation += 1
         pingTimer?.invalidate()
         task?.cancel()
         task = nil
         failAll(RexError.local("connection lost"))
-        if let w = welcomeWaiter {
-            welcomeWaiter = nil
-            w.resume(throwing: RexError.local(reason))
-        }
-        state = .failed(reason)
+        resumeWelcome(throwing: failure)
+        state = .failed(failure)
         guard wantConnected else { return }
-        let delay = retryDelay
+        scheduleRetry(after: retryDelay)
         retryDelay = min(retryDelay * 2, 15)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard self.wantConnected, self.task == nil else { return }
-            do {
-                let hadToken = self.reconnectToken != nil
-                try await self.openSocket()
-                self.retryDelay = 1
-                self.onReconnected?(hadToken)
-            } catch {
-                self.handleDrop(gen: self.generation, reason: error.localizedDescription)
-            }
+    }
+
+    private func scheduleRetry(after delay: Double) {
+        retryTask?.cancel()
+        retryTask = Task { @MainActor [weak self] in
+            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            guard let self, !Task.isCancelled, self.wantConnected, self.task == nil else { return }
+            self.retryTask = nil
+            await self.attempt()
         }
     }
 
-    /// Reconnect immediately (e.g. when the app returns to the foreground).
-    public func kick() {
-        guard wantConnected else { return }
-        if task == nil || state != .connected {
-            retryDelay = 0.2
-            handleDrop(gen: generation, reason: "reconnecting")
+    private func attempt() async {
+        let hadToken = reconnectToken != nil
+        do {
+            try await openSocket()
+            retryDelay = 1
+            onReconnected?(hadToken)
+        } catch {
+            // Already handled: `handleDrop` recorded it and scheduled the next try.
         }
+    }
+
+    /// Tries now instead of waiting out the backoff: back in the foreground, the network changed,
+    /// or the user asked. Does nothing while connected or not wanted.
+    public func kick() {
+        guard wantConnected, state != .connected else { return }
+        retryDelay = 1
+        retryTask?.cancel()
+        retryTask = nil
+        Task { @MainActor in await self.attempt() }
     }
 
     private func failAll(_ err: Error) {
