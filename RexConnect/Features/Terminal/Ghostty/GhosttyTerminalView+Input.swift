@@ -13,8 +13,9 @@ extension GhosttyTerminalView {
     /// Bytes for the program from something the user did. Typing shows live output again.
     private func sendInput(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
-        core.followOutput()
         engineDelegate?.engineSend(bytes)
+        // The scroller owns the viewport: it jumps to the bottom if the view is scrolled up.
+        scrollToBottomForInput()
     }
 
     /// Takes the key bar's one-shot ctrl / alt for the key being typed and tells the bar.
@@ -113,8 +114,9 @@ extension GhosttyTerminalView {
 
     override func willMove(toWindow newWindow: UIWindow?) {
         super.willMove(toWindow: newWindow)
-        // A pane that never had the keyboard draws the hollow cursor too.
-        if newWindow != nil { renderer.setFocused(isFirstResponder) }
+        // The solid cursor needs the keyboard, and the keyboard needs a window: a pane that never
+        // had the keyboard, or is off screen, draws the hollow cursor.
+        renderer.setFocused(newWindow != nil && isFirstResponder)
         if newWindow == nil { stopKeyRepeat() }
     }
 

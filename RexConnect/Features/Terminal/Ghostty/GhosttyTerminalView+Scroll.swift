@@ -1,4 +1,5 @@
 import UIKit
+import GhosttyVt
 
 // Scrolling and mouse reporting (chunk 2b). The work is in three places:
 // - `GhosttyScroller` (main thread): a transparent UIScrollView over the Metal view for native
@@ -15,6 +16,14 @@ extension GhosttyTerminalView {
         if superview != nil { _ = scroller }
     }
 
+    /// The pans on this view itself (the host's pointer-drag selection) ask `panGate` like the
+    /// scroll surface's pans do (`GhosttyScroller.shouldBegin`).
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        // UIKit also asks the touched view about its ancestors' recognizers; gate only our own.
+        if g.view === self, let pan = g as? UIPanGestureRecognizer, let gate = panGate, !gate(pan) { return false }
+        return super.gestureRecognizerShouldBegin(g)
+    }
+
     // MARK: Seam
 
     /// The scroll view's own pan: one finger for scrollback, two while the program takes
@@ -23,10 +32,11 @@ extension GhosttyTerminalView {
     var scrollPanRecognizer: UIPanGestureRecognizer? { scroller.surface.panGestureRecognizer }
 
     /// Scrolls the scrollback a page. On an alternate screen there is none, so the program gets
-    /// Page Up or Page Down instead (SwiftTerm's rule).
+    /// Page Up or Page Down instead (SwiftTerm's rule). The screen and the key's bytes come from
+    /// the input mirror, so a key press never waits for the terminal lock.
     func scrollPage(up: Bool) {
-        if core.programScrollModes().alternateScreen {
-            scroller.send(scroller.mouse.key(up ? .pageUp : .pageDown, core: core))
+        if core.input.modes.alternateScreen {
+            scroller.sendKeys(core.input.encode(GhosttyInputKey(up ? GHOSTTY_KEY_PAGE_UP : GHOSTTY_KEY_PAGE_DOWN)))
         } else {
             scroller.jump(.pages(up ? -1 : 1))
         }
@@ -41,7 +51,7 @@ extension GhosttyTerminalView {
 
     // MARK: For input (chunk 2a)
 
-    /// Call after sending typed or pasted bytes to the program: a scrolled-up view jumps back to
+    /// Called after typed or pasted bytes went to the program: a scrolled-up view jumps back to
     /// the bottom, as in SwiftTerm. Output alone never moves a scrolled-up view.
     func scrollToBottomForInput() { scroller.scrollToBottomForInput() }
 

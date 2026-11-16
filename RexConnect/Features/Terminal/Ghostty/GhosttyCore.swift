@@ -85,8 +85,11 @@ final class GhosttyCore: @unchecked Sendable {
     /// Scroll position at the last frame's update. Guarded by `stateLock`. Phase 2 (scroll view).
     var scrollbar = GhosttyTerminalScrollbar()
     var viewportActive = true
-    /// PHASE 2 (scroll): pending scroll requests and the position each frame was drawn at.
+    /// Pending scroll requests and the position each frame was drawn at (GhosttyCore+Scroll.swift).
     let scroll = GhosttyScrollState()
+    /// Set when the user changed the selection, so the next frame shows it even during a render
+    /// hold (GhosttyCore+Selection.swift). Any thread.
+    let selectionDirty = Atomic<Bool>(false)
 
     /// The key encoder and the input modes, synced under `termLock` after every change to the
     /// terminal that can change a mode, so typing never waits for that lock (GhosttyCore+Input.swift).
@@ -108,23 +111,6 @@ final class GhosttyCore: @unchecked Sendable {
     private let handlerLock = GhosttyLock()
     /// Guarded by `handlerLock`.
     private var dirtyHandler: (@Sendable () -> Void)?
-
-    /// Runs under `termLock` in the begin phase of every frame, for values that must describe the
-    /// same moment as the render state (scrollbar, viewport). Phase 2.
-    var frameSync: (@Sendable (GhosttyTerminal) -> Void)? {
-        get {
-            termLock.lock()
-            defer { termLock.unlock() }
-            return frameHandler
-        }
-        set {
-            termLock.lock()
-            frameHandler = newValue
-            termLock.unlock()
-        }
-    }
-    /// Guarded by `termLock`.
-    private var frameHandler: (@Sendable (GhosttyTerminal) -> Void)?
 
     let queue = DispatchQueue(label: "rex.ghostty.feed", qos: .userInitiated)
     /// Threads waiting for `termLock` that the feed queue lets in between slices: the renderer
@@ -520,14 +506,14 @@ final class GhosttyCore: @unchecked Sendable {
             ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE, &cfg)
             held = false
         }
-        // Upstream: a hold may be ignored when someone scrolls.
-        if !held || scroll.hasPending {
+        // Upstream: a hold may be ignored when someone scrolls or selects.
+        let selectionChanged = selectionDirty.exchange(false, ordering: .relaxed)
+        if !held || scroll.hasPending || selectionChanged {
             scroll.prepareFrame(terminal: t, renderState: rs, cellHeightPx: Int(cellHeightPx), generation: stateGeneration)
             ghostty_render_state_begin_update(rs, t)
             // Read in the same critical section so they describe the same moment as the rows.
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &viewportActive)
-            frameHandler?(t)
         }
         termLock.unlock()
         ghostty_render_state_end_update(rs)

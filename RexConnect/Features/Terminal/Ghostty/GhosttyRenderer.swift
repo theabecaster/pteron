@@ -147,7 +147,18 @@ final class GhosttyRenderer: @unchecked Sendable {
     /// False while the view is off-window or the app is in the background: no Metal work at all.
     func setVisible(_ v: Bool) { configure { visible = v } }
     /// An unfocused pane shows a hollow cursor, like Ghostty.
-    func setFocused(_ f: Bool) { configure { focused = f } }
+    func setFocused(_ f: Bool) {
+        configLock.lock()
+        let same = focused == f
+        configLock.unlock()
+        if !same { configure { focused = f } }
+    }
+    /// The pane draws the solid cursor (its view has the keyboard).
+    var isFocused: Bool {
+        configLock.lock()
+        defer { configLock.unlock() }
+        return focused
+    }
     func setAtlas(_ a: GhosttyGlyphAtlas) { configure { pendingAtlas = a } }
     func setSelectionColor(_ c: UInt32) { configure { pendingSelection = c } }
 
