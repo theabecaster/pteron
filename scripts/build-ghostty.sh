@@ -67,5 +67,8 @@ echo "zig build took $(( SECONDS - START ))s"
 
 rm -rf $STAMP $OUT
 cp -R $SRC/zig-out/lib/ghostty-vt.xcframework $OUT
+# No stamp for a framework that references private system symbols (App Store review rejects
+# those): a re-pin that brings one back stops here, and the app won't build against it.
+$ROOT/scripts/check-symbols.sh $OUT
 $CHECK --expected > $STAMP
 du -sh $OUT

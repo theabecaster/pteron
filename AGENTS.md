@@ -66,6 +66,12 @@ swift test --package-path Relay                 # helper and push policy tests
   - `scripts/check-ghostty.sh` compares the stamp with the pins. The app target runs it before
     compiling and the macdesk scripts run it before copying or archiving, so a missing or stale
     framework stops the build with one line that says to run `scripts/build-ghostty.sh`.
+  - `scripts/ghostty-patches/*.patch` are applied to the checkout and are part of the stamp, so
+    a new patch makes every existing framework stale. List each patch file in `project.yml`
+    (the check's `inputFiles`). What each patch does: docs/ghostty-engine.md, Patches.
+  - `scripts/check-symbols.sh` fails when the framework (or an app or archive given as argument)
+    imports a private system symbol, which App Store review rejects. The build script runs it
+    on the framework, `ship-macdesk.sh` on the framework and on the archived app.
   - An agent worktree can symlink another checkout's `Vendor` instead of building its own.
 - Use a concrete simulator id and pass `-skipPackagePluginValidation -skipMacroValidation`.
   SwiftTerm's build plugin fails validation in command-line builds otherwise, and

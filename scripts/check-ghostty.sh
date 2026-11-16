@@ -10,7 +10,19 @@ set -eu
 ROOT=${0:A:h:h}
 source $ROOT/scripts/ghostty.version
 PATCHES=($ROOT/scripts/ghostty-patches/*.patch(N))
-if (( $#PATCHES )); then PATCH_SUM=$(cat $PATCHES | shasum -a 256 | cut -c1-16); else PATCH_SUM=none; fi
+if (( $#PATCHES )); then
+  # Xcode's script sandbox denies files that are not inputs of the build phase. Without this
+  # check the hash would silently be that of no bytes.
+  for p in $PATCHES; do
+    if ! { : < $p } 2>/dev/null; then
+      echo "error: cannot read scripts/ghostty-patches/${p:t}. List it under the app target's preBuildScripts inputFiles in project.yml, then run xcodegen generate." >&2
+      exit 1
+    fi
+  done
+  PATCH_SUM=$(cat $PATCHES | shasum -a 256 | cut -c1-16)
+else
+  PATCH_SUM=none
+fi
 EXPECTED="GHOSTTY_COMMIT=$GHOSTTY_COMMIT
 ZIG_VERSION=$ZIG_VERSION
 PATCHES=$PATCH_SUM"

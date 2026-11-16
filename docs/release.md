@@ -45,6 +45,11 @@ ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc '~/rexconnec
 `ship-macdesk.sh` archives, exports with `destination=upload` (set `DEST=export` to only export) and
 logs to `macdesk:~/rexconnect-build/build/ship.log`. Builds appear in TestFlight 5–15 minutes later.
 
+It runs `scripts/check-symbols.sh` twice: on the framework before archiving (a failure prints to
+the caller) and on the archived app before export (`== SYMBOLS_FAILED` in the log, with the
+symbols above it). Nothing is exported or uploaded when the app imports a private system symbol,
+which App Store review rejects as ITMS-90338.
+
 What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 
 - libghostty-vt is linked statically: no `Frameworks/` folder, nothing embedded, arm64 only. It

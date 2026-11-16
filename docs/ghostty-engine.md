@@ -42,14 +42,54 @@ Why:
 - `scripts/build-ghostty.sh` (zsh, Apple silicon only) does all of the following:
   - Fetches Zig into `Vendor/zig-0.17.1/`.
   - Clones Ghostty into `Vendor/ghostty/` and checks out the pin.
-  - Applies `scripts/ghostty-patches/*.patch`. There are none yet.
+  - Applies `scripts/ghostty-patches/*.patch` (see Patches below).
   - Runs `zig build -Demit-lib-vt=true -Demit-xcframework=true -Doptimize=ReleaseFast` with
     `ZIG_GLOBAL_CACHE_DIR=Vendor/zig-global-cache`.
   - Copies the result to `Vendor/GhosttyVt.xcframework`.
+  - Runs `scripts/check-symbols.sh` on it and stops, without a stamp, if a slice references a
+    private system symbol.
   - Writes `Vendor/GhosttyVt.stamp` (Ghostty commit, Zig version, patch hash).
   - Skips the build when the stamp matches the pins. `--force` rebuilds.
 - `scripts/check-ghostty.sh` compares the stamp with the pins. The app target's pre-build phase
-  and the macdesk scripts run it (docs/release.md).
+  and the macdesk scripts run it (docs/release.md). A new or changed patch changes the hash, so
+  a framework built without it is stale.
+- `scripts/check-symbols.sh [path…]` fails when a framework, static library, app or archive
+  imports a system symbol that is not public API (rules in its header comment).
+  `ship-macdesk.sh` runs it on the framework before archiving and on the archived app before
+  export.
+
+### Patches
+
+`scripts/ghostty-patches/` holds our changes to the Ghostty checkout, applied in name order. To
+change one: edit `Vendor/ghostty`, write `git diff` over the file, run `scripts/build-ghostty.sh`.
+List every patch file under the app target's `preBuildScripts` `inputFiles` in `project.yml`:
+Xcode's script sandbox lets `check-ghostty.sh` read only listed files, and the check stops with
+that instruction when it cannot read one.
+
+- `0001-tinyio-public-darwin-futex.patch`: no private futex symbols.
+  - Before: `src/lib/tinyio/posix.zig` called `__ulock_wait` and `__ulock_wake` on Darwin.
+    libSystem exports them, but no SDK header declares them, and App Store review rejects
+    binaries that import such symbols (ITMS-90338). libc++ dropped the same two calls for that
+    reason (llvm-project PR 202519).
+  - They reached the app although nothing calls them on a 64-bit target. `TinyIo`, lib-vt's
+    `std.Io`, is a table of function pointers, its futex entries point at these functions, and
+    the linker cannot strip what a table references. The only `std.Io.Mutex` in lib-vt guards
+    the Kitty graphics generation counter on 32-bit targets; 64-bit targets use an atomic.
+  - After: the same entries call `os_sync_wait_on_address`, `os_sync_wait_on_address_with_timeout`,
+    `os_sync_wake_by_address_any` and `os_sync_wake_by_address_all` from
+    `<os/os_sync_wait_on_address.h>`: public since iOS 17.4 and macOS 14.4, and wrappers of the
+    same kernel operation. The futex stays a real one, so thread safety is unchanged.
+  - Upstream's `Io.Mutex` and futex tests pass through the new calls
+    (`zig build test-lib-vt -Demit-lib-vt=true -Dtest-filter=futex -Dtest-filter=Io.Mutex` in
+    `Vendor/ghostty`, with `ZIG_GLOBAL_CACHE_DIR` set as in the build script).
+  - Cost: 336 bytes in the iOS slice, 360 in the app. Of 2297 functions in the iOS slice, 18
+    changed, all in TinyIo or `std.Io` file reading; none in the parser, screen or render state.
+  - The library now needs iOS 17.4 or macOS 14.4 at load time (the app's target is iOS 18),
+    although its objects still say iOS 13. Drop the patch when Ghostty or Zig's std does the
+    same upstream.
+- Not built single-threaded instead, although the app serializes each terminal: that turns the
+  generation counter, which all terminals share, into a plain add, and terminals run on
+  different threads.
 - `Vendor/` is gitignored. Nothing is installed system-wide.
 - Cold build: 130 s wall (291 s CPU) on a 14-core M-series Mac, including the 51 MB Zig download.
 - Output sizes:
@@ -282,6 +322,17 @@ foreground.
   - Mode helpers such as `ghostty_mode_new` are static inline.
 - **Threading**: terminal calls aren't thread-safe. Serialize them. Only `render_state_end_update`
   is safe without the lock.
+- **Private system symbols** fail App Store review (ITMS-90338), and a static library can bring
+  them in without any call: a function pointer table is enough (Patches above).
+  - After a re-pin, `build-ghostty.sh` runs `scripts/check-symbols.sh` and says which symbol
+    came back.
+  - Symbols that look private and are fine, with the reason for each, are in that script's
+    `ALLOW` list. `__availability_version_check` is one: Zig's compiler-rt supplies
+    `__isPlatformVersionAtLeast` to the app's `#available` checks and imports it directly, and
+    so does Apple's own `libclang_rt`, which every app links. Localizing Zig's copy was tried:
+    the import stays and the app grows 16 KB.
+  - `close$NOCANCEL` and `realpath$DARWIN_EXTSN` are the names `<unistd.h>` and `<stdlib.h>`
+    give `close` and `realpath` through `__DARWIN_ALIAS_C` and `__DARWIN_EXTSN`.
 - **Worktree-isolated agents** must give git absolute paths inside the worktree, and can't run
   compound shell commands that use git.
 - **Simulator builds**: use a concrete simulator id. SwiftTerm's plugin fails on the generic
