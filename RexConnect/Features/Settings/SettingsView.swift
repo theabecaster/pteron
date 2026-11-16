@@ -164,7 +164,7 @@ struct SettingsView: View {
         case .online: return "Connected"
         case .connecting: return "Connecting…"
         case .idle: return "Idle"
-        case .offline(let m): return m
+        case .offline(let p): return OfflineCopy.short(p.kind)
         }
     }
 }

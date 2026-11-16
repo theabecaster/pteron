@@ -159,6 +159,7 @@ struct RootView: View {
                 }
             }
             .environment(\.division, division)
+            .environment(\.rootOrigin, geo.frame(in: .global).origin)
             .environment(\.verticalBarEdge, barEdge)
             .onChange(of: arr.inline, initial: true) { _, new in inline = new }
         }
@@ -182,12 +183,19 @@ struct RootView: View {
     @ViewBuilder
     private func tab(_ arr: Arrangement) -> some View {
         let mode: WindowScreen.Mode = arr.inline ? .wide(tabletop: arr.tabletop) : .narrow
-        if let cur = model.current {
-            WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
-                         mode: mode, sidebarVisible: sidebarBinding, onOpen: open)
-        } else {
-            EmptyState(sidebarVisible: sidebarBinding)
+        ZStack {
+            if let cur = model.current {
+                WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
+                             mode: mode, sidebarVisible: sidebarBinding, onOpen: open)
+                    .overlay { TabOfflineOverlay(server: cur.server, sidebarVisible: sidebarBinding) }
+                    .transition(.opacity)
+            } else {
+                EmptyState(sidebarVisible: sidebarBinding)
+                    .transition(.opacity)
+            }
         }
+        // Signal back: the offline screen dissolves into the tab.
+        .animation(.easeInOut(duration: 0.35), value: model.current == nil)
     }
 
     private var sidebarBinding: Binding<Bool> {
@@ -305,8 +313,25 @@ struct EmptyState: View {
     @Binding var sidebarVisible: Bool
 
     var body: some View {
+        if let down = downServer {
+            OfflineScreen(server: down, sidebarVisible: $sidebarVisible)
+        } else {
+            message
+        }
+    }
+
+    /// The server to show the offline screen for: only when no server is up, so one server down
+    /// among several stays a quiet note in the sidebar. The open tab's server first.
+    private var downServer: ServerConnection? {
+        guard !model.servers.contains(where: { $0.phase == .online && !$0.showsOffline }) else { return nil }
+        let last = model.prefs.lastSelection.flatMap { model.server($0.serverID) }
+        if let last, last.showsOffline { return last }
+        return model.servers.first { $0.showsOffline }
+    }
+
+    private var message: some View {
         let theme = prefs.theme(for: scheme)
-        VStack(spacing: 14) {
+        return VStack(spacing: 14) {
             Image(systemName: "terminal")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(theme.chrome.tertiary)
@@ -332,10 +357,25 @@ struct EmptyState: View {
             return "Add your Rex server's Tailscale address, https://<name>.<tailnet>.ts.net, in Settings."
         }
         if model.servers.contains(where: { $0.phase == .online }) { return "Pick a tab in the sidebar." }
-        if let s = model.servers.first, case .offline(let m) = s.phase {
-            return "Can't reach \(s.config.name).\n\(m)\n\nTailscale must be on, signed in as the same account as the Mac."
-        }
         return "Connecting to Rex…"
+    }
+}
+
+/// The open tab's server is down: the last known tab stays under the offline screen, dimmed and
+/// read-only, until the server is back and its sessions have reloaded. Its own view, so only it
+/// re-renders when the server's phase changes.
+struct TabOfflineOverlay: View {
+    let server: ServerConnection
+    @Binding var sidebarVisible: Bool
+
+    var body: some View {
+        ZStack {
+            if server.showsOffline {
+                OfflineScreen(server: server, overTab: true, sidebarVisible: $sidebarVisible)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.35), value: server.showsOffline)
     }
 }
 

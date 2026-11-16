@@ -32,11 +32,15 @@ struct SidebarView: View {
                 agentsSummary(theme)
                 ForEach(model.servers) { server in
                     hostHeader(server, theme)
+                    // A down server's last known sessions stay listed, dimmed: they open read-only.
+                    let dim = server.phase.problem != nil ? 0.45 : 1
                     ForEach(server.sessions) { s in
                         sessionHeader(server, s, theme)
+                            .opacity(dim)
                         if let v = server.views[s.id] {
                             ForEach(v.windows) { w in
                                 windowRow(server, v, w, theme, textSize: p.sidebarTextSize)
+                                    .opacity(dim)
                             }
                         }
                     }
@@ -128,35 +132,53 @@ struct SidebarView: View {
                 Image(systemName: server.config.name == "This Mac" ? "laptopcomputer" : "globe")
                     .font(.system(size: 13))
                     .foregroundStyle(theme.chrome.secondary)
-                Text(server.config.name)
-                    .font(.footnote.weight(.medium))
+                // Down: a quiet line under the name, never a takeover while another server is up.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(server.config.name)
+                        .font(.footnote.weight(.medium))
+                    if let p = server.phase.problem {
+                        Text(OfflineCopy.short(p.kind))
+                            .font(.caption2)
+                            .foregroundStyle(theme.chrome.tertiary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
-                phaseDot(server.phase, theme)
+                phaseDot(server, theme)
             }
+            .accessibilityElement(children: .combine)
             .padding(.horizontal, 8)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
             .contextMenu {
                 Button { Task { await server.createSession(label: nil) } } label: { Label("New Session", systemImage: "plus") }
-                Button { server.stop(); server.start() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+                Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
             }
             .swipeActions(edge: .leading, allowsFullSwipe: true) {
                 Button { Task { await server.createSession(label: nil) } } label: { Label("New Session", systemImage: "plus") }
                     .tint(theme.accent)
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button { server.stop(); server.start() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+                Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
                     .tint(theme.chrome.working)
             },
             theme)
     }
 
     @ViewBuilder
-    private func phaseDot(_ phase: ServerConnection.Phase, _ theme: TermTheme) -> some View {
-        switch phase {
+    private func phaseDot(_ server: ServerConnection, _ theme: TermTheme) -> some View {
+        switch server.phase {
         case .online: Circle().fill(theme.chrome.done).frame(width: 7, height: 7)
         case .connecting, .idle: ProgressView().controlSize(.mini)
-        case .offline: Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(theme.chrome.blocked)
+        case .offline:
+            if server.retrying {
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.chrome.tertiary)
+                    .accessibilityLabel("Offline")
+            }
         }
     }
 

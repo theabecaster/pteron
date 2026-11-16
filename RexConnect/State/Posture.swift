@@ -108,6 +108,9 @@ enum SidebarWidth {
 /// The fold, for views that adapt to it (an even column count in grids). Nil without one.
 extension EnvironmentValues {
     @Entry var division: Division? = nil
+    /// Where the root's coordinates (the ones `division` is in) start, in global coordinates. A view
+    /// subtracts it from its own global frame to place itself against the fold.
+    @Entry var rootOrigin: CGPoint = .zero
     /// The edge of the system's vertical bar (iPhone Duo: the outer screen, and the inner screen in
     /// landscape). Nil where bars are horizontal. Toolbar items go there instead of the title bar.
     @Entry var verticalBarEdge: HorizontalEdge? = nil
