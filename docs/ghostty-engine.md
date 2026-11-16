@@ -46,7 +46,10 @@ Why:
   - Runs `zig build -Demit-lib-vt=true -Demit-xcframework=true -Doptimize=ReleaseFast` with
     `ZIG_GLOBAL_CACHE_DIR=Vendor/zig-global-cache`.
   - Copies the result to `Vendor/GhosttyVt.xcframework`.
-  - Skips the build when the pins haven't changed. `--force` rebuilds.
+  - Writes `Vendor/GhosttyVt.stamp` (Ghostty commit, Zig version, patch hash).
+  - Skips the build when the stamp matches the pins. `--force` rebuilds.
+- `scripts/check-ghostty.sh` compares the stamp with the pins. The app target's pre-build phase
+  and the macdesk scripts run it (docs/release.md).
 - `Vendor/` is gitignored. Nothing is installed system-wide.
 - Cold build: 130 s wall (291 s CPU) on a 14-core M-series Mac, including the 51 MB Zig download.
 - Output sizes:

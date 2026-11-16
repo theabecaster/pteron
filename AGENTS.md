@@ -38,7 +38,7 @@ APNs topic depend on it.
 adding, moving or deleting a file; edit `project.yml`, never the project.
 
 ```sh
-scripts/build-ghostty.sh                       # once: builds Vendor/GhosttyVt.xcframework (gitignored)
+scripts/build-ghostty.sh                       # once per clone, before xcodegen: see below
 xcodegen generate
 xcrun simctl list devices available            # pick a simulator id
 xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<sim-id> \
@@ -48,6 +48,22 @@ swift test --package-path Packages/RexKit       # protocol tests on macOS, about
 swift test --package-path Relay                 # helper and push policy tests
 ```
 
+- `scripts/build-ghostty.sh` builds libghostty-vt into `Vendor/GhosttyVt.xcframework` (51 MB:
+  iOS, iOS Simulator and macOS slices). Apple silicon only. A fresh clone must run it before
+  `xcodegen generate` and the first build.
+  - A cold run takes about 130 s and 1.3 GB, all under `Vendor/` (gitignored, nothing installed
+    system-wide): Zig from ziglang.org (51 MB download, SHA-256 checked) in `Vendor/zig-<version>/`,
+    the Ghostty checkout in `Vendor/ghostty/`, Zig's package cache in `Vendor/zig-global-cache/`.
+  - It records what it built in `Vendor/GhosttyVt.stamp` and does nothing when that matches the
+    pins. `scripts/build-ghostty.sh --force` rebuilds anyway.
+  - To re-pin: change `GHOSTTY_COMMIT` in `scripts/ghostty.version` (and the Zig version and hash,
+    if Ghostty's `minimum_zig_version` moved), run the script, and check
+    `RexConnect/Resources/Acknowledgements.txt` against the entries marked `"use": "linked"` in
+    `Vendor/ghostty/deps/libghostty-vt-third-party.json`.
+  - `scripts/check-ghostty.sh` compares the stamp with the pins. The app target runs it before
+    compiling and the macdesk scripts run it before copying or archiving, so a missing or stale
+    framework stops the build with one line that says to run `scripts/build-ghostty.sh`.
+  - An agent worktree can symlink another checkout's `Vendor` instead of building its own.
 - Use a concrete simulator id and pass `-skipPackagePluginValidation -skipMacroValidation`.
   SwiftTerm's build plugin fails validation in command-line builds otherwise, and
   `generic/platform=iOS Simulator` fails with it.
@@ -96,7 +112,8 @@ shell. So:
 - For a launch check that touches no panes, use `-autoOpen zz-none -sizing mirror`.
 - Unit tests run inside the app, which doesn't connect while it hosts tests.
 - `scripts/install-duo.sh`, `scripts/ship-macdesk.sh` and `Relay/package.sh` (without
-  `--no-notarize`) install, upload or notarize. Run them only when asked.
+  `--no-notarize`) install, upload or notarize. Run them only when asked. `scripts/sync-macdesk.sh`
+  overwrites the build copy on macdesk; `-n` only lists what it would change.
 - `.asc.env` and `~/.appstoreconnect/private_keys/` hold App Store Connect and APNs keys. Don't
   print, copy or commit them. `Relay/dist` holds a build with the APNs key inside; it is gitignored.
 

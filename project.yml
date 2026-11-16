@@ -34,6 +34,22 @@ targets:
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
+    # Stops with one actionable line when the framework was built from other pins than
+    # scripts/ghostty.version, instead of a link error or a silently stale engine. (When the
+    # framework is missing altogether, Xcode stops earlier with "There is no XCFramework found".)
+    preBuildScripts:
+      - name: Check GhosttyVt.xcframework
+        script: '"$SRCROOT/scripts/check-ghostty.sh" && touch "$SCRIPT_OUTPUT_FILE_0"'
+        shell: /bin/zsh
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - $(SRCROOT)/scripts/check-ghostty.sh
+          - $(SRCROOT)/scripts/ghostty.version
+          - $(SRCROOT)/scripts/ghostty-patches
+          - $(SRCROOT)/Vendor/GhosttyVt.stamp
+          - $(SRCROOT)/Vendor/GhosttyVt.xcframework/Info.plist
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/ghostty-checked
     # Push from Rex Connect Helper. Development signing keeps "development" (sandbox tokens);
     # exporting for App Store Connect switches it to production. Blocked-agent pushes use the
     # time-sensitive interruption level, which needs its own entitlement.

@@ -159,6 +159,7 @@ struct SettingsView: View {
                 Section("About") {
                     LabeledContent("Version", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") + ")")
                     LabeledContent("Protocol", value: "rex.control.v1, API \(RexControl.apiRevision)")
+                    NavigationLink("Acknowledgements") { AcknowledgementsView() }
                 }
             }
             .navigationTitle("Settings")
@@ -184,6 +185,25 @@ struct SettingsView: View {
         case .idle: return "Idle"
         case .offline(let m): return m
         }
+    }
+}
+
+/// The licences of the open source code linked into the app (`Resources/Acknowledgements.txt`).
+/// Their terms require the notices to ship with the binary.
+struct AcknowledgementsView: View {
+    private let text = Bundle.main.url(forResource: "Acknowledgements", withExtension: "txt")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+
+    var body: some View {
+        ScrollView {
+            Text(text)
+                .font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .navigationTitle("Acknowledgements")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

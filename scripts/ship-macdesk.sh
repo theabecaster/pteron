@@ -2,7 +2,11 @@
 # Archive Rex Connect and upload it to App Store Connect. Runs on macdesk inside the GUI session
 # (keychain unlocked), from a copy of the repo that already has the generated project:
 # see docs/release.md. Usage: scripts/ship-macdesk.sh <build-number>
+# DEST=export writes build/export/RexConnect.ipa and uploads nothing.
 cd "${0:A:h}/.." || exit 1
+# The copy must hold the libghostty-vt framework for this tree's pins (scripts/sync-macdesk.sh
+# sends it). Checked before the log redirect so the reason reaches the caller.
+scripts/check-ghostty.sh || { echo "ship-macdesk.sh: run scripts/sync-macdesk.sh from a checkout with a current framework, then retry" >&2; exit 1; }
 BUILD=${1:-1}
 LOG=build/ship.log
 mkdir -p build
