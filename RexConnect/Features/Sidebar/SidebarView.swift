@@ -315,13 +315,15 @@ struct StatusBadge: View {
 }
 
 /// The "working" dot. A symbol effect, not a SwiftUI repeat-forever animation, so many rows stay cheap.
+/// With Reduce Motion on it holds still.
 struct PulsingDot: View {
     var color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Image(systemName: "circle.fill")
             .font(.system(size: 7))
             .foregroundStyle(color)
-            .symbolEffect(.pulse, options: .repeating)
+            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
     }
 }
 

@@ -328,8 +328,8 @@ struct WindowScreen: View {
         }
     }
 
-    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title, then status and the pane
-    /// menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
+    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title with the shown pane's
+    /// status beside it, then the page dots and the pane menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
     /// title and status. Under a short window (landscape iPhone) it is thinner, to leave rows for the
     /// panes.
     private func header(_ w: WindowInfo?, _ theme: TermTheme) -> some View {
@@ -353,10 +353,8 @@ struct WindowScreen: View {
             if let w, let b = activeBlock(w) {
                 let single = !useSplits(w)
                 WaitingPill(visible: single ? [b] : Set(w.orderedBlockIDs), theme: theme, onJump: jump)
-                BlockBadge(server: server, block: b, theme: theme)
-                    .padding(.horizontal, 6)
                 if single, w.orderedBlockIDs.count > 1 {
-                    PaneDots(server: server, ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
+                    PaneDots(ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
                 }
                 if !bar {
                     if zoomedHere { unzoomButton(theme, height: height) }
@@ -377,7 +375,7 @@ struct WindowScreen: View {
     }
 
     private func titleBar(_ w: WindowInfo, _ theme: TermTheme, subtitle showsSubtitle: Bool) -> some View {
-        TabTitleBar(server: server, sessionID: sessionID, window: w, subtitle: subtitle, showsSubtitle: showsSubtitle,
+        TabTitleBar(server: server, sessionID: sessionID, window: w, block: activeBlock(w), subtitle: subtitle, showsSubtitle: showsSubtitle,
                     theme: theme,
                     onSwipe: { switchTab(by: $0, haptic: false) },
                     onPick: { Haptic.selection(); onOpen($0) },
@@ -499,20 +497,34 @@ struct TabTitle: View {
     }
 }
 
-/// A block's status badge, observing only that block.
+/// A block's status badge, observing only that block. The same glyphs as the sidebar's rows.
 struct BlockBadge: View {
     let server: ServerConnection
     let block: String
     let theme: TermTheme
     var body: some View {
-        StatusBadge(status: server.meta[block]?.topStatus, theme: theme)
+        let status = server.meta[block]?.topStatus
+        StatusBadge(status: status, theme: theme)
+            .accessibilityLabel(Self.spoken(status?.state))
+    }
+
+    /// The status as VoiceOver reads it beside the title.
+    static func spoken(_ state: String?) -> String {
+        switch state {
+        case "working": "Working"
+        case "blocked": "Waiting for you"
+        case "done": "Done"
+        case "error": "Error"
+        default: ""
+        }
     }
 }
 
 /// Where the shown pane sits among the tab's panes, when one shows at a time (folded, splits too
-/// narrow). Blocked panes show in the "waiting" color. Swipe the terminal to move between them.
+/// narrow). A page control, not a status: neutral, in the theme's text colors, the shown pane a
+/// short bar. Status lives beside the title, and the waiting pill covers panes out of view.
+/// Swipe the terminal to move between them.
 struct PaneDots: View {
-    let server: ServerConnection
     let ids: [String]
     let current: String
     let theme: TermTheme
@@ -522,21 +534,23 @@ struct PaneDots: View {
         let idx = ids.firstIndex(of: current) ?? 0
         Group {
             if ids.count <= 6 {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     ForEach(ids, id: \.self) { bid in
-                        let blocked = server.meta[bid]?.topStatus?.state == "blocked"
-                        Circle()
-                            .fill(blocked ? theme.chrome.blocked : bid == current ? theme.accent : theme.chrome.tertiary)
-                            .frame(width: 5, height: 5)
+                        let on = bid == current
+                        Capsule()
+                            .fill(on ? theme.fg : theme.chrome.tertiary)
+                            .frame(width: on ? 9 : 4, height: 4)
                     }
                 }
+                .animation(.snappy(duration: 0.2), value: idx)
             } else {
                 Text("\(idx + 1)/\(ids.count)").font(.caption2.weight(.semibold)).monospacedDigit()
                     .foregroundStyle(theme.chrome.tertiary)
             }
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 8)
         .frame(minHeight: 44)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")
         .accessibilityHint("Swipe the terminal sideways to change pane.")
