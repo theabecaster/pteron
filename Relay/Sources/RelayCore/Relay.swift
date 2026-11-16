@@ -1,7 +1,8 @@
 import Foundation
 
-/// The relay: watches every Rex server it's given, turns agent and notification events into
-/// pushes, and serves the `register_push` / `unregister_push` / `push_presence` client actions.
+/// The relay: watches the Rex server (found automatically, or the ones in the config), turns
+/// agent and notification events into pushes, and serves the `register_push` /
+/// `unregister_push` / `push_presence` client actions.
 @MainActor
 public final class Relay {
     nonisolated public static let version = "0.1.0"
@@ -49,16 +50,15 @@ public final class Relay {
     final class Server {
         let conn: RexConnection
         /// The server's address as the app knows it (its Tailscale HTTPS URL), sent in payloads.
-        var name: String
+        var name = ""
+        /// Set up and watching events.
+        var ready = false
         var sessions: [String: String] = [:]
         var views: [String: SessionView] = [:]
         var latestRevision: [String: Int] = [:]
         /// App clients that said they went to the background (`push_presence {active: false}`).
         var backgrounded: Set<String> = []
-        init(conn: RexConnection) {
-            self.conn = conn
-            self.name = conn.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        }
+        init(conn: RexConnection) { self.conn = conn }
     }
 
     struct SessionView {
@@ -74,7 +74,14 @@ public final class Relay {
     private var limiter: RateLimiter
     private var dueTimer: Task<Void, Never>?
 
-    public init(config: RelayConfig, store: DeviceStore, sender: PushSender?, dryRun: Bool) {
+    /// Called when the relay starts or stops watching a server (for the app's window).
+    public var onWatchingChanged: ((Bool) -> Void)?
+    public var isWatching: Bool { servers.contains(where: \.ready) }
+
+    /// `resolvers` find each server before every connection attempt. Nil uses the servers in
+    /// `config`, or discovers the local one when it lists none.
+    public init(config: RelayConfig, store: DeviceStore, sender: PushSender?, dryRun: Bool,
+                resolvers: [RexConnection.Resolver]? = nil) {
         self.store = store
         self.sender = sender
         self.dryRun = dryRun
@@ -83,26 +90,29 @@ public final class Relay {
         var ident = RexConnection.Identity()
         ident.version = Self.version
         if let l = config.label, !l.isEmpty { ident.label = l }
-        for url in config.serverURLs {
-            let s = Server(conn: RexConnection(baseURL: url, identity: ident))
-            s.conn.onConnected = { [unowned self, unowned s] in try await self.setUp(s) }
+        let finders: [RexConnection.Resolver] = resolvers
+            ?? config.endpoints.map { eps in eps.map { ep in { ep } } }
+            ?? [{ await Discovery.find() }]
+        for find in finders {
+            let s = Server(conn: RexConnection(resolve: find, identity: ident))
+            s.conn.onConnected = { [unowned self, unowned s] in
+                try await self.setUp(s)
+                s.ready = true
+                self.onWatchingChanged?(self.isWatching)
+            }
+            s.conn.onDisconnected = { [unowned self, unowned s] _ in
+                s.ready = false
+                self.onWatchingChanged?(self.isWatching)
+            }
             s.conn.onEvent = { [unowned self, unowned s] ev in self.handle(s, ev) }
             servers.append(s)
         }
     }
 
     public func start() {
-        Log.info("rex-push-relay \(Self.version) starting; \(store.devices.count) registered device(s); "
-                 + (dryRun ? "dry run" : (sender == nil ? "pushes disabled (no APNs key)" : "APNs on")))
+        Log.info("Rex Connect Helper \(Self.version) starting; \(store.devices.count) registered device(s); "
+                 + (dryRun ? "dry run, no pushes are sent" : (sender == nil ? "pushes disabled (no APNs key)" : "APNs on")))
         for s in servers { s.conn.start() }
-        if sender == nil && !dryRun {
-            Task {
-                while true {
-                    Log.info("pushes are disabled: no APNs key configured (set apns.key_path and apns.key_id in config.json)")
-                    try? await Task.sleep(nanoseconds: 3600 * 1_000_000_000)
-                }
-            }
-        }
     }
 
     public func stop() {
@@ -113,9 +123,10 @@ public final class Relay {
 
     private func setUp(_ s: Server) async throws {
         let boot = try await s.conn.call("session.bootstrap", ["event_scope": "all", "attach_session_ids": [String]()])
-        if let url = boot.obj("server_status")?.obj("tailscale")?.obj("https")?.text("url") {
-            s.name = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        }
+        // Payloads name the server by its Tailscale URL, which is how Rex Connect knows it.
+        let url = boot.obj("server_status")?.obj("tailscale")?.obj("https")?.text("url")
+            ?? s.conn.endpoint?.description ?? ""
+        s.name = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         s.sessions = [:]
         for sess in boot.obj("attach_all")?.arr("sessions") ?? [] {
             if let id = sess.str("session_id") { s.sessions[id] = sess.str("label") ?? "" }

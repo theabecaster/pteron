@@ -138,3 +138,25 @@ public final class DryRunSender: PushSender {
         return "\(h) payload=\(JSONCodec.encode(m.payload))"
     }
 }
+
+/// `--check-apns`: pushes to a fake token in each APNs environment. Apple answering
+/// `BadDeviceToken` means it accepted the key; nothing is delivered anywhere.
+public enum APNsCheck {
+    @MainActor
+    public static func run(token: APNsToken, topic: String) async -> Bool {
+        let sender = APNsSender(token: token, topic: topic)
+        let msg = PushMessage.compose(
+            PushIntent(category: .notice, ref: BlockRef(server: "check", sessionID: "", blockID: "check"),
+                       headline: "Rex Connect Helper", text: "APNs check"),
+            context: BlockContext())
+        var ok = true
+        for env in ["sandbox", "production"] {
+            let fake = Device(token: String(repeating: "0", count: 64), environment: env)
+            let r = await sender.send(msg, to: fake)
+            let good = r == .dropDevice("BadDeviceToken")
+            ok = ok && good
+            Log.info("\(APNsSender.host(for: env)): \(r) \(good ? "-> key accepted" : "-> unexpected")")
+        }
+        return ok
+    }
+}

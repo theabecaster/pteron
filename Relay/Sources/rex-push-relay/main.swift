@@ -1,16 +1,20 @@
 import Foundation
 import RelayCore
 
+// Command-line build of the relay, for development. Friends use Rex Connect Helper.app instead.
+
 let usage = """
 usage: rex-push-relay [options]
 
-Watches Rex servers and sends Rex Connect push notifications when an agent is
-blocked or finishes, or a terminal raises a desktop notification.
+Watches Rex and sends Rex Connect push notifications when an agent is blocked or
+finishes, or a terminal raises a desktop notification. Finds the local Rex server
+by itself unless --server is given.
 
   --dry-run          print the pushes instead of sending them
-  --server URL       Rex server to watch (repeatable; overrides config.json)
+  --server ADDR      Rex server to watch: unix:///path/server.sock or https://host
+                     (repeatable; overrides config.json)
   --state-dir DIR    where config.json and devices.json live
-                     (default ~/Library/Application Support/rex-push-relay)
+                     (default ~/Library/Application Support/Rex Connect Helper)
   --config FILE      config file (default <state-dir>/config.json)
   --check-apns       send one push to a fake token in each APNs environment and
                      report Apple's answer (BadDeviceToken means the key works)
@@ -67,29 +71,14 @@ if !servers.isEmpty { config.servers = servers }
     }
 }
 
-@MainActor func runCheck() async -> Int32 {
-    guard let token = loadToken() else {
-        Log.info("no APNs key configured in \(configURL.path)")
-        return 1
-    }
-    let sender = APNsSender(token: token, topic: config.topic)
-    let msg = PushMessage.compose(
-        PushIntent(category: .notice, ref: BlockRef(server: "check", sessionID: "", blockID: "check"),
-                   headline: "rex-push-relay", text: "APNs check"),
-        context: BlockContext())
-    var ok = true
-    for env in ["sandbox", "production"] {
-        let fake = Device(token: String(repeating: "0", count: 64), environment: env)
-        let r = await sender.send(msg, to: fake)
-        let good = r == .dropDevice("BadDeviceToken")
-        ok = ok && good
-        Log.info("\(APNsSender.host(for: env)): \(r) \(good ? "-> key accepted" : "-> unexpected")")
-    }
-    return ok ? 0 : 1
-}
-
 Task { @MainActor in
-    if checkAPNs { exit(await runCheck()) }
+    if checkAPNs {
+        guard let token = loadToken() else {
+            Log.info("no APNs key configured in \(configURL.path)")
+            exit(1)
+        }
+        exit(await APNsCheck.run(token: token, topic: config.topic) ? 0 : 1)
+    }
     let sender: PushSender? = dryRun
         ? DryRunSender(topic: config.topic)
         : loadToken().map { APNsSender(token: $0, topic: config.topic) }
@@ -108,8 +97,11 @@ for sig in [SIGINT, SIGTERM] {
     signal(sig, SIG_IGN)
     let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     src.setEventHandler {
-        MainActor.assumeIsolated { RelayHolder.relay?.stop() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
+        Task { @MainActor in
+            RelayHolder.relay?.stop()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            exit(0)
+        }
     }
     src.resume()
     signalSources.append(src)
