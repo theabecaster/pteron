@@ -132,8 +132,50 @@ enum GhosttyInputKeymap {
 
     /// Routes a hardware key press. The arguments are `UIKey`'s properties (a `UIKey` can't be
     /// made in a test).
-    static func route(usage: Int, flags: UIKeyModifierFlags, characters: String, charactersIgnoringModifiers: String) -> Route {
-        let m = mods(flags)
+    /// What Option does to a key that types.
+    enum OptionRole: Equatable {
+        /// Alt (Meta): the program gets Alt and the key, as with "Option as Alt" on a Mac.
+        case alt
+        /// Part of the layout: the key types what the layout says, through the text system, so
+        /// dead keys compose. The program sees the character and no Alt.
+        case layout
+    }
+
+    /// Decides what Option (held without Control or Command) does to a key that types.
+    ///
+    /// Shells use Alt+letter and Alt+punctuation as commands (Alt+B, Alt+F, Alt+.), and a US
+    /// layout puts characters nobody types into a terminal on the same keys (∫, ƒ, ≥). German,
+    /// French and Spanish layouts need Option for `@ [ ] { } | \ ~`. In order:
+    ///
+    /// 1. Option makes a printable ASCII character other than the key's own: the layout's
+    ///    character (German Option+L is `@`, Spanish Option+2 is `@`, British Option+3 is `#`).
+    /// 2. An English layout: Alt, whatever else the key would type (å, ≥) and for its dead keys
+    ///    (Option+E, Option+N), which have no use in a terminal there.
+    /// 3. Another layout, on a key whose own character is an ASCII letter or digit: a dead key
+    ///    composes (German and French Option+N, then Space, is `~`); any other character
+    ///    (German Option+A, å) is Alt.
+    /// 4. Another layout, on any other key (punctuation, ñ, ç): the layout's character or dead
+    ///    key (Spanish Option+Ñ is `~`, Option+º is `\`), and Alt only where Option changes nothing.
+    ///
+    /// `characters` and `charactersIgnoringModifiers` are `UIKey`'s; `layoutLanguage` is the
+    /// keyboard's language (`UITextInputMode.primaryLanguage`), English when unknown.
+    static func optionRole(characters: String, charactersIgnoringModifiers: String, layoutLanguage: String?) -> OptionRole {
+        let typed = printable(characters), own = printable(charactersIgnoringModifiers)
+        if typed.unicodeScalars.count == 1, let s = typed.unicodeScalars.first, (0x21...0x7e).contains(s.value),
+           typed.lowercased() != own.lowercased() { return .layout }
+        let language = (layoutLanguage ?? "en").lowercased()
+        if language == "en" || language.hasPrefix("en-") || language.hasPrefix("en_") { return .alt }
+        // A dead key reports no character.
+        let dead = typed.isEmpty
+        if own.unicodeScalars.count == 1, let s = own.unicodeScalars.first, s.isASCII, s.properties.isAlphabetic || (0x30...0x39).contains(s.value) {
+            return dead ? .layout : .alt
+        }
+        return dead || typed != own ? .layout : .alt
+    }
+
+    static func route(usage: Int, flags: UIKeyModifierFlags, characters: String, charactersIgnoringModifiers: String,
+                      layoutLanguage: String? = nil) -> Route {
+        var m = mods(flags)
         if let key = modifierKeys[usage] { return .modifier(GhosttyInputKey(key, mods: m)) }
         // Command shortcuts belong to the app (key commands) and the system.
         if flags.contains(.command) { return .system }
@@ -144,7 +186,7 @@ enum GhosttyInputKeymap {
             return .encode(e)
         }
 
-        let direct = flags.contains(.control) || flags.contains(.alternate)
+        var direct = flags.contains(.control) || flags.contains(.alternate)
         var e: GhosttyInputKey
         switch usage {
         case enter: e = GhosttyInputKey(GHOSTTY_KEY_ENTER, mods: m)
@@ -152,6 +194,14 @@ enum GhosttyInputKeymap {
         default:
             let p = printableByUsage[usage]
             guard let key = usage == space ? GHOSTTY_KEY_SPACE : p?.key ?? otherTextKeys[usage] else { return .system }
+            // Option alone may belong to the layout (`optionRole`). Then the key types like any
+            // other, and the program sees no Alt. Space is always Alt+Space, never a no-break space.
+            if flags.contains(.alternate), !flags.contains(.control), usage != space,
+               optionRole(characters: characters, charactersIgnoringModifiers: charactersIgnoringModifiers,
+                          layoutLanguage: layoutLanguage) == .layout {
+                direct = false
+                m &= ~GhosttyInputKey.alt
+            }
             // The text before Control or Option change it (key/event.h). With Control, `characters`
             // is a control character; with Option, a composed one (∫ for Option+B).
             var text = printable(direct ? charactersIgnoringModifiers : characters)

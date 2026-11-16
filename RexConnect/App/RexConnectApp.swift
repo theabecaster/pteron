@@ -15,18 +15,42 @@ struct RexConnectApp: App {
     init() {
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
-        // An offline replay (`-replay <file>`) has no server either.
-        _model = State(initialValue: AppModel(prefs: prefs, connect: !Self.isTestHost && ReplayConfig.current == nil))
+        // An offline replay or demo has no server either.
+        _model = State(initialValue: AppModel(prefs: prefs, connect: !Self.isTestHost && !Self.runsOffline))
+    }
+
+    /// A launch argument asked for an offline screen instead of the app: `-replay <file>` (Debug
+    /// and benchmark builds) or `-ghosttyDemo <path>` (Debug builds). Never in a shipped app.
+    private static var runsOffline: Bool {
+        #if DEBUG || BENCH
+        if ReplayConfig.current != nil { return true }
+        #endif
+        #if DEBUG
+        if GhosttyDemo.path != nil { return true }
+        #endif
+        return false
+    }
+
+    /// The offline screen a launch argument asked for, if any.
+    @ViewBuilder private var offlineScreen: some View {
+        #if DEBUG || BENCH
+        if let replay = ReplayConfig.current {
+            // Offline replay through a real TerminalHost, either engine: `-replay <file>`.
+            ReplayScreen(config: replay).ignoresSafeArea()
+        }
+        #endif
+        #if DEBUG
+        if ReplayConfig.current == nil, let demo = GhosttyDemo.path {
+            // Offline replay of a capture file (development): `-ghosttyDemo <path>`.
+            GhosttyDemoScreen(path: demo).ignoresSafeArea()
+        }
+        #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            // Offline replay of a capture file (development): `-ghosttyDemo <path>`.
-            if let replay = ReplayConfig.current {
-                // Offline replay through a real TerminalHost, either engine: `-replay <file>`.
-                ReplayScreen(config: replay).ignoresSafeArea()
-            } else if let demo = GhosttyDemo.path {
-                GhosttyDemoScreen(path: demo).ignoresSafeArea()
+            if Self.runsOffline {
+                offlineScreen
             } else if Self.isTestHost {
                 // Show nothing, so no real pane is ever opened.
                 Color.clear

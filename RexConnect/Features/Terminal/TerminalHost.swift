@@ -35,8 +35,25 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var sizing: SizingMode
     var fontSize: CGFloat
     var theme: TermTheme
+    /// The tab's active pane. Only the active pane holds the keyboard: a pane that becomes
+    /// active takes it (`reclaimKeyboard`), and one that stops being active gives it up and
+    /// stops any key it was repeating.
     var isActive = false {
-        didSet { if isActive && !oldValue { reclaimKeyboard() } }
+        didSet {
+            guard isActive != oldValue else { return }
+            if isActive {
+                reclaimKeyboard()
+            } else {
+                stopKeyRepeats()
+                // After the new active pane had its turn to take the keyboard (its own hop to
+                // the main queue, which may have been queued after this one): taking it from
+                // this pane directly keeps the keyboard on screen, where resigning first would
+                // drop it and bring it back.
+                DispatchQueue.main.async { [weak self] in
+                    DispatchQueue.main.async { self?.resignIfInactive() }
+                }
+            }
+        }
     }
     var onFocus: (() -> Void)?
     var onTitle: ((String) -> Void)?
@@ -47,15 +64,19 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The server's keymap; hardware keys bound in it run their action instead of reaching the terminal.
     var keymap: KeymapStore?
 
+    /// The size the server confirmed for this pane in fit mode.
     private var claimedSize: (Int, Int)?
-    private var claimTask: Task<Void, Never>?
+    /// Own, resize, give back: every fit-mode call to the server goes through here, in order.
+    private let claim: FitClaim
     private var resyncTask: Task<Void, Never>?
     private var started = false
     private var lastBounds: CGSize = .zero
     private var serverSize: (Int, Int) = (80, 24)
     /// The grid the engine has now; reported by `engineGridChanged`.
     private var localGrid: (Int, Int) = (0, 0)
+    #if DEBUG
     private var typedTest = false
+    #endif
     private var lostOwnership = false
     /// A font change soft-reset the engine (modes lost), or the width changed and the engine can't
     /// reflow the way the server does; redraw from the server once sized.
@@ -68,7 +89,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// tells it that it leaves the window, so `isFirstResponder` is already false by then.
     private var lostKeyboardAt: CFTimeInterval = -1
     /// The key bar's hide key put the keyboard away; a tap brings it back.
-    private var userHidKeyboard = false
+    private(set) var userHidKeyboard = false
+    /// The terminal's input views are the quiet ones: as first responder it takes hardware keys
+    /// but shows no software keyboard and no key bar (`setKeyboardQuiet`).
+    private(set) var keyboardQuiet = false
+    /// An input view with no height: the system keyboard's place, empty.
+    private let quietInputView = UIView(frame: .zero)
+    /// A sheet, an alert or a menu covered the pane while it had the keyboard, and the pane
+    /// gave it up; it takes it back when the cover goes.
+    private var resignedUnderCover = false
+    /// Whether a hardware keyboard is attached. Tests put their own here.
+    var hardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
     /// The view let go of its stream for good (see `TerminalHostPool`).
@@ -78,8 +109,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var swipeGR: UIPanGestureRecognizer!
     private var pinchGR: UIPinchGestureRecognizer!
     private var pinchBase: CGFloat = 0
-    /// Our tap already focused the keyboard; skip the engine's delayed single tap for the same touch.
-    private var swallowSingleTap = false
+    /// What the pane knew when the latest touch went down: a tap is decided on this, not on
+    /// what the tap itself has changed by the time it is recognized.
+    private var touch = (keyboardUp: false, hadSelection: false)
     /// Copy and Paste at the selection, after a long press.
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
     private var menuTarget: CGRect?
@@ -94,9 +126,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     // Hardware keys.
     private var cachedCommands: (generation: Int, commands: [UIKeyCommand])?
-    private var repeatTimer: Timer?
-    private var repeatKey: UIKeyboardHIDUsage?
-    private var repeatCount = 0
+    /// Repeats a held key that a binding took from the engine. Tests put their own here.
+    var keyRepeat = KeyRepeater()
 
     // Output pacing: heavy output is parsed in slices, a frame's budget at a time.
     static let directFeedLimit = 8 * 1024
@@ -107,7 +138,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var output: [UInt8] = []
     private var outputLink: CADisplayLink?
     /// A Ghostty snapshot being received.
-    private var snapshot: [UInt8] = []
+    private var snapshot = SnapshotBuffer()
+    /// Asks before a paste that could run a command. Nil: an alert. Tests put their own here.
+    var confirmPaste: ((String, @escaping @MainActor (Bool) -> Void) -> Void)?
 
     /// Background longer than this re-reads the screen on return.
     static let staleAfterBackground: CFTimeInterval = 30
@@ -119,7 +152,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private static let lostText = "Resized elsewhere · tap to fit here"
 
     init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme,
-         engine: TerminalEngineKind) {
+         engine: TerminalEngineKind, claim: FitClaim? = nil) {
         PerfProbe.active?.paneOpening()  // PERF: pane open, before the engine view is made
         self.stream = stream
         self.sizing = sizing
@@ -128,7 +161,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term = engine.makeView(fontSize: fontSize, theme: theme)
         pacesOutput = !term.parsesOffMainThread
         keyBar = KeyBar()
+        self.claim = claim ?? FitClaim(transport: StreamFitTransport(stream: stream))
         super.init(frame: .zero)
+        self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
         term.engineDelegate = self
         keyBar.terminal = term
         keyBar.onPaste = { [weak self] in
@@ -173,6 +208,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         term.keyHook = { [weak self] key in self?.handleKey(key) ?? false }
         term.keyboardFocusHook = { [weak self] focused in self?.keyboardFocusChanged(focused) }
+        // A program may write the pasteboard (OSC 52) only from the pane the user works in.
+        term.setProgramClipboardGate { [weak self] in self?.isFrontPane ?? false }
         // The pane shows its own focus (cursor, border): no system focus halo on top of it.
         term.focusEffect = nil
         setupGestures()
@@ -191,9 +228,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         zoomer.panGate = { [weak self] pan in self?.canvasPanShouldBegin(pan) ?? true }
         term.panGate = { [weak self] pan in self?.termPanShouldBegin(pan) ?? true }
         term.tapGate = { [weak self] in
-            guard let self, self.swallowSingleTap else { return true }
-            self.swallowSingleTap = false
-            return false
+            guard let self else { return true }
+            // The host decides every tap (`tap(at:shift:)`) and sends the program its click
+            // itself, so the engine's own tap never fires. An engine without that (no host
+            // selection UI) clicks from its own tap: it may, when the tap is neither the one
+            // that brought the keyboard nor the one that cleared a selection, by what was true
+            // when the finger went down.
+            if self.term.usesHostSelectionUI { return false }
+            return self.touch.keyboardUp && !self.touch.hadSelection
         }
 
         // Long press selects the word under the finger and offers Copy.
@@ -329,6 +371,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
         if g === tapGR {
+            self.touch = (keyboardUp, term.hasActiveSelection)
             touchIsPointer = touch.type == .indirectPointer
             // SELECTION UI: a long press may follow; wake the haptics now so its start has no lag.
             if !touchIsPointer { selectionUI.touchDown() }
@@ -341,49 +384,50 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         g === tapGR || other === tapGR
     }
 
-    /// Tap: focus this pane, clear a selection, and raise the keyboard on the first tap.
+    /// A single-finger tap. What it does is decided once, in order, by `TerminalTapDecision`,
+    /// from what the pane knew when the finger went down.
     @objc private func tapped() {
-        let point = tapGR.location(in: term)
-        // TAP HOOK (links, prompts): a tap that hit an OSC 8 link or an OSC 133 prompt is handled
-        // here and returns, before the selection and focus logic below.
-        if term.tapOpensLinkOrMovesCursor(at: point, focused: term.isFirstResponder, shift: tapGR.modifierFlags.contains(.shift)) {
-            onFocus?()
-            editMenu.dismissMenu()
-            // No click for the program and no Paste menu; counted, so a second tap still selects the word.
-            swallowTermTap()
-            _ = selectionUI.tap(at: point, focused: true)
-            return
-        }
-
-        // SELECTION UI: a tap on a handle is not a tap; a second or third tap selects a word or a line.
-        let tap = selectionUI.tap(at: point, focused: term.isFirstResponder)
-        if tap == .handle { return }
-        onFocus?()
-        if tap == .selected {
-            swallowTermTap()
-            return
-        }
-        var skipTermTap = false
-        editMenu.dismissMenu()
-        if term.hasActiveSelection {
-            clearSelection()
-            skipTermTap = true
-        }
-        if !term.isFirstResponder {
-            // The engine's own tap may wait for a double-tap timeout, and with a mouse-tracking program
-            // it would send a click instead of focusing. Focus now and skip its tap for this touch.
-            skipTermTap = true
-            _ = term.becomeFirstResponder()
-        }
-        if skipTermTap { swallowTermTap() }
-        // SELECTION UI: a tap by the cursor offers Paste, as SwiftTerm's own view does.
-        if tap == .single(showsPaste: true) { presentEditMenu(at: CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4)) }
+        tap(at: tapGR.location(in: term), shift: tapGR.modifierFlags.contains(.shift),
+            keyboardUp: touch.keyboardUp, hadSelection: touch.hadSelection)
     }
 
-    /// The engine's own tap for this touch (a click for the program) must not fire.
-    private func swallowTermTap() {
-        swallowSingleTap = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.swallowSingleTap = false }
+    /// Decides a tap at `point` (engine view coordinates) and does the one thing it means.
+    @discardableResult
+    func tap(at point: CGPoint, shift: Bool, keyboardUp: Bool, hadSelection: Bool) -> TerminalTapOutcome {
+        // SELECTION UI: handles, and which tap of a double or triple tap this is.
+        let counted = selectionUI.countTap(at: point)
+        let facts = TerminalTapFacts(onHandle: counted.onHandle, tapCount: counted.count, keyboardUp: keyboardUp,
+                                     hadSelection: hadSelection, shift: shift, menuVisible: selectionUI.menuVisible)
+        let outcome = TerminalTapDecision.outcome(
+            facts,
+            // TAP HOOK (links, prompts): the engine opens the link or moves the shell's cursor.
+            engineUses: { term.tapOpensLinkOrMovesCursor(at: point, focused: true, shift: false) },
+            tracksMouse: { term.sendsTapsToProgram },
+            nearCursor: { selectionUI.tapIsByCursor(at: point) })
+        if outcome == .handle { return outcome }
+        onFocus?()
+        switch outcome {
+        case .handle:
+            break
+        case .select(let line):
+            selectionUI.selectTap(at: point, line: line)
+        case .focus(let clearsSelection):
+            editMenu.dismissMenu()
+            if clearsSelection { clearSelection() }
+            showKeyboard()
+        case .dismissSelection:
+            editMenu.dismissMenu()
+            clearSelection()
+        case .programClick:
+            editMenu.dismissMenu()
+            term.sendClickToProgram(at: point)
+        case .pasteMenu:
+            // SELECTION UI: a tap by the cursor offers Paste, as SwiftTerm's own view does.
+            presentEditMenu(at: CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4))
+        case .engineUsed, .nothing:
+            editMenu.dismissMenu()
+        }
+        return outcome
     }
 
     /// Two-finger tap: zoom this pane (or unzoom).
@@ -613,13 +657,34 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// A hardware key press, before the engine sees it (`keyHook`). True when a binding ran (the key doesn't reach the
     /// terminal). Only keys the keymap binds are taken; every other key is typed as usual.
     private func handleKey(_ key: UIKey) -> Bool {
+        // A sheet, an alert or a menu covers the pane: the key is not for it. (The pane gives
+        // the keyboard up when it is covered, `coverChanged`; this catches a cover that came
+        // without that.)
+        if KeyboardFocusPolicy.sheetUp(in: window) {
+            stopKeyRepeats()
+            return true
+        }
         guard let keymap, !KeyInput.isModifierKey(key.keyCode) else { return false }
         guard let (binding, action) = keymap.resolve(tiers: KeyInput.chordTiers(for: key)) else { return false }
         perform(action, key: key)
         if KeyActions.repeats(binding.action) {
-            startRepeat(key.keyCode) { [weak self] in self?.perform(action, key: key) }
+            keyRepeat.start(usage: key.keyCode.rawValue, timing: .command, while: { [weak self] in self?.mayRepeatKeys ?? false }) {
+                [weak self] in self?.perform(action, key: key)
+            }
         }
         return true
+    }
+
+    /// A held key repeats only in the active pane, on screen, while it has the keyboard and
+    /// nothing covers it. (`KeyRepeater` adds the app's state, the key's own state and a limit.)
+    private var mayRepeatKeys: Bool {
+        isActive && window != nil && term.isFirstResponder && !KeyboardFocusPolicy.sheetUp(in: window)
+    }
+
+    /// Ends every key repeat of this pane: the host's (bound keys) and the engine's.
+    private func stopKeyRepeats() {
+        keyRepeat.stop()
+        term.stopKeyRepeat()
     }
 
     private func perform(_ action: AppAction, key: UIKey?) {
@@ -659,46 +724,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
     }
 
-    /// Key repeat for keys taken from the engine (it repeats only the keys it handles itself).
-    private func startRepeat(_ code: UIKeyboardHIDUsage, _ fire: @escaping @MainActor () -> Void) {
-        stopRepeat()
-        repeatKey = code
-        repeatCount = 0
-        repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.repeatKey == code else { return }
-                self.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        self.repeatCount += 1
-                        guard self.repeatCount < 2000, self.keyIsDown(code), self.term.isFirstResponder else { self.stopRepeat(); return }
-                        fire()
-                    }
-                }
-            }
-        }
-    }
-
-    private func stopRepeat() {
-        repeatTimer?.invalidate()
-        repeatTimer = nil
-        repeatKey = nil
-    }
-
-    /// Whether a key is still held. A release can miss us (focus moved), so ask the keyboard itself.
-    private func keyIsDown(_ code: UIKeyboardHIDUsage) -> Bool {
-        guard let input = GCKeyboard.coalesced?.keyboardInput,
-              let button = input.button(forKeyCode: GCKeyCode(rawValue: code.rawValue)) else { return true }
-        return button.isPressed
-    }
-
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if let k = repeatKey, presses.contains(where: { $0.key?.keyCode == k }) { stopRepeat() }
+        for press in presses { if let key = press.key { keyRepeat.released(usage: key.keyCode.rawValue) } }
         super.pressesEnded(presses, with: event)
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if let k = repeatKey, presses.contains(where: { $0.key?.keyCode == k }) { stopRepeat() }
+        for press in presses { if let key = press.key { keyRepeat.released(usage: key.keyCode.rawValue) } }
         super.pressesCancelled(presses, with: event)
     }
 
@@ -711,16 +743,25 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         KeyboardFocusPolicy.Situation(
             paneActive: isActive, inWindow: window != nil,
             appActive: UIApplication.shared.applicationState == .active,
-            holdsKeyboard: term.isFirstResponder, hardwareKeyboard: GCKeyboard.coalesced != nil,
+            holdsKeyboard: term.isFirstResponder, hardwareKeyboard: hardwareKeyboard(),
             hadKeyboard: hadKeyboard, userHidKeyboard: userHidKeyboard,
             sheetUp: KeyboardFocusPolicy.sheetUp(in: window),
             holder: KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: term))
     }
 
+    /// The terminal has the keyboard and shows it (the system keyboard or the key bar).
+    private var keyboardUp: Bool { term.isFirstResponder && !keyboardQuiet }
+
+    /// The pane the user is working in: active, on screen, in the foreground app.
+    private var isFrontPane: Bool {
+        isActive && window != nil && UIApplication.shared.applicationState == .active
+    }
+
     /// Takes the keyboard when the policy says this pane should have it: with a hardware keyboard
     /// the active pane always does, as on a Mac, so keys go to the pane on screen without a tap
     /// first; without one, only to keep the keyboard it had (a fold moved the pane, or the active
-    /// pane changed). Never from a text field, under a sheet, or after the user put the keyboard away.
+    /// pane changed). Never from a text field or under a sheet. After the user put the keyboard
+    /// away the pane still takes it, quietly: hardware keys reach it, nothing shows.
     /// Called whenever the keyboard may have become free: the pane became active or came on screen,
     /// a keyboard connected, the app or its window became active, a text field finished.
     private func reclaimKeyboard(afterMove: Bool = false) {
@@ -738,16 +779,66 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 self.movedWithKeyboardAt = -10
                 return
             }
+            self.setKeyboardQuiet(KeyboardFocusPolicy.takesQuietly(self.keyboardSituation))
             _ = self.term.becomeFirstResponder()
         }
+    }
+
+    /// The pane stopped being the active one: it must not keep the keyboard, or keys would go
+    /// to a pane the user has left.
+    private func resignIfInactive() {
+        guard KeyboardFocusPolicy.mustResign(paneActive: isActive, holdsKeyboard: term.isFirstResponder) else { return }
+        _ = term.resignFirstResponder()
     }
 
     private func keyboardFocusChanged(_ focused: Bool) {
         if focused {
             movedWithKeyboardAt = -10
-            userHidKeyboard = false
+            resignedUnderCover = false
         } else {
             lostKeyboardAt = CACurrentMediaTime()
+            keyRepeat.stop()
+        }
+    }
+
+    /// Being first responder and showing a keyboard are two things. Quiet: the terminal's input
+    /// view is an empty one and it has no key bar, so as first responder it gets hardware keys
+    /// and nothing shows. Not quiet: the system keyboard and the key bar.
+    private func setKeyboardQuiet(_ quiet: Bool) {
+        guard quiet != keyboardQuiet else { return }
+        keyboardQuiet = quiet
+        term.inputView = quiet ? quietInputView : nil
+        term.inputAccessoryView = quiet ? nil : keyBar
+        if term.isFirstResponder { term.reloadInputViews() }
+    }
+
+    /// A tap on the pane: the keyboard comes up, also after the hide key.
+    private func showKeyboard() {
+        userHidKeyboard = false
+        setKeyboardQuiet(false)
+        if !term.isFirstResponder { _ = term.becomeFirstResponder() }
+    }
+
+    /// UIKit dims the tint of everything under a sheet, an alert or a menu, and tells each view:
+    /// the one sign a view gets that it has been covered. A covered pane gives up the keyboard,
+    /// so neither a hardware key nor the software keyboard types into it behind the cover, and
+    /// takes it back when the cover goes.
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        coverChanged(covered: tintAdjustmentMode == .dimmed)
+    }
+
+    func coverChanged(covered: Bool) {
+        if covered {
+            stopKeyRepeats()
+            guard term.isFirstResponder else { return }
+            resignedUnderCover = true
+            _ = term.resignFirstResponder()
+        } else if resignedUnderCover {
+            resignedUnderCover = false
+            // It had the keyboard: the policy lets it take it back without a hardware keyboard.
+            movedWithKeyboardAt = CACurrentMediaTime()
+            reclaimKeyboard()
         }
     }
 
@@ -759,11 +850,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if term.isFirstResponder || now - lostKeyboardAt < 0.05 { movedWithKeyboardAt = now }
     }
 
-    /// The key bar's hide key: the keyboard and the bar go away until the next tap on the pane,
-    /// with a hardware keyboard too. App shortcuts keep working meanwhile (`AppShortcutCommands`).
-    private func hideKeyboard() {
+    /// The key bar's hide key: the keyboard and the bar go away until the next tap on the pane.
+    /// With a hardware keyboard the terminal stays first responder, quietly, so its keys still
+    /// type into this pane; without one there is nothing left to type with and it resigns.
+    func hideKeyboard() {
         userHidKeyboard = true
-        _ = term.resignFirstResponder()
+        if hardwareKeyboard() {
+            setKeyboardQuiet(true)
+        } else {
+            _ = term.resignFirstResponder()
+        }
     }
 
     // MARK: App state
@@ -771,11 +867,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Hand fitted panes back to the Mac while the app is in the background.
     @objc private func didBackground() {
         backgroundedAt = CACurrentMediaTime()
-        guard claimedSize != nil else { return }
-        claimTask?.cancel()
+        stopKeyRepeats()
+        // Also when nothing is claimed yet: a claim on its way must not resize the pane now.
         claimedSize = nil
-        let s = stream
-        Task { await s.release() }
+        claim.release()
     }
 
     @objc private func willForeground() {
@@ -801,7 +896,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func focusKeyboard() {
-        _ = term.becomeFirstResponder()
+        showKeyboard()
     }
 
     func applyTheme(_ t: TermTheme) {
@@ -837,9 +932,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         guard m != sizing else { return }
         sizing = m
         if m == .mirror {
-            claimTask?.cancel()
             claimedSize = nil
-            Task { await stream.release() }
+            claim.release()
         }
         lastBounds = .zero
         setNeedsLayout()
@@ -855,10 +949,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
+            stopKeyRepeats()
+            // Off screen: no new size is claimed for a pane nobody sees. A fold brings it back
+            // in a moment; otherwise `stop()` gives the pane back.
+            claim.pause()
             scheduleStop()
         } else {
             stopWork?.cancel()
             stopWork = nil
+            // Claim again what was paused, if the size still isn't the one that fits.
+            lastBounds = .zero
+            setNeedsLayout()
             if !metalTried { metalTried = true; term.enableGPU() }
             yieldContentSwipeBack()
             // Moved by a fold or unfold while it had the keyboard, or a hardware keyboard is attached.
@@ -902,18 +1003,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
 
     func stop() {
-        stopRepeat()
-        claimTask?.cancel()
+        stopKeyRepeats()
         resyncTask?.cancel()
         outputLink?.invalidate()
         outputLink = nil
         output = []
+        // A snapshot half received is of no use to the next start.
+        snapshot.reset()
         stream.stop()
-        if claimedSize != nil {
-            claimedSize = nil
-            let s = stream
-            Task { await s.release() }
-        }
+        // Gives the pane back once any call in flight has returned; no resize follows.
+        claimedSize = nil
+        claim.release()
         started = false
     }
 
@@ -990,23 +1090,22 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { term }
 
+    /// Fit mode: own the pane and resize it, once the layout has settled (`FitClaim`).
     private func requestClaim(cols: Int, rows: Int) {
-        claimTask?.cancel()
-        claimTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)  // settle (fold/rotate/keyboard animations)
-            guard let self, !Task.isCancelled else { return }
-            await self.stream.claimAndResize(cols: cols, rows: rows)
-            guard !Task.isCancelled else { return }
-            self.claimedSize = (cols, rows)
-            if !self.started {
-                self.started = true
-                self.needsResync = false
-                self.stream.start()
-            } else if self.needsResync {
-                self.scheduleResync()
-            }
-            // Otherwise the stream carries the resize and the program's redraw; nothing to reload.
+        claim.request(cols: cols, rows: rows)
+    }
+
+    /// The pane is ours at this size (`FitClaim.onClaimed`: still wanted, never after a release).
+    private func claimed(cols: Int, rows: Int) {
+        claimedSize = (cols, rows)
+        if !started {
+            started = true
+            needsResync = false
+            stream.start()
+        } else if needsResync {
+            scheduleResync()
         }
+        // Otherwise the stream carries the resize and the program's redraw; nothing to reload.
     }
 
     /// Redraws from the server once the program has had a moment to redraw at the new size.
@@ -1038,16 +1137,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         PerfProbe.active?.snapshot(part, host: self)  // PERF
         switch part {
         case .begin:
-            snapshot.removeAll(keepingCapacity: true)
+            snapshot.reset()
         case .bytes(let b):
-            snapshot.append(contentsOf: b)
+            // Past the phone's limit the snapshot is refused and freed; the stream falls back
+            // to `terminal.format`.
+            return snapshot.append(b)
         case .ready:
             break
         case .end(let complete):
-            let bytes = snapshot
-            snapshot = []
-            guard complete else { return true }
-            return term.restoreSnapshot(bytes) { [weak self] in self?.stream.snapshotRestoreFailed() }
+            guard complete else {
+                snapshot.reset()
+                return true
+            }
+            // One contiguous copy, made while the parts are freed (`SnapshotBuffer.take`).
+            return term.restoreSnapshot(snapshot.take()) { [weak self] in self?.stream.snapshotRestoreFailed() }
         }
         return true
     }
@@ -1133,6 +1236,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
             claimedSize = nil
             lostOwnership = true
+            claim.lost()
             showStatus(Self.lostText)
         }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
@@ -1153,7 +1257,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
             #if DEBUG
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
-            #endif
+            // `-typeTest <text>` (Debug builds, testing): types into the live shell.
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true
                 let text = t.replacingOccurrences(of: "\\n", with: "\r")
@@ -1167,6 +1271,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5 + wait) { [weak self] in self?.term.send(txt: text) }
             }
+            #endif
         case .connecting: showStatus("Connecting…", after: Self.statusDelay)
         // A failure retries on its own; to the user it is still reconnecting.
         case .reconnecting, .failed: showStatus("Reconnecting…", after: Self.statusDelay)
@@ -1220,9 +1325,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyBar.consumedModifiers()
     }
 
+    /// Pastes through the engine, so the text is bracketed when the program asked for bracketed
+    /// paste. When it didn't, every line end is the Return key and a shell runs each line: such a
+    /// paste is asked about first (`PasteConfirmation`), with a preview and the line count.
     func paste(_ s: String) {
-        // Goes through the engine so it's bracketed when the program asked for bracketed paste.
-        term.pasteText(s)
+        guard term.pasteNeedsConfirmation(s) else { return term.pasteText(s) }
+        let answer: @MainActor (Bool) -> Void = { [weak self] yes in
+            if yes { self?.term.pasteText(s) }
+        }
+        if let confirmPaste {
+            confirmPaste(s, answer)
+        } else {
+            TerminalPrompt.ask(over: self, title: PasteConfirmation.title(s), message: PasteConfirmation.message(s),
+                               confirm: "Paste", answer: answer)
+        }
     }
 
     func sendKey(_ bytes: [UInt8]) { stream.send(bytes) }

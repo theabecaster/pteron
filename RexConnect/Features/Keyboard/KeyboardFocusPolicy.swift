@@ -5,7 +5,16 @@ import UIKit
 /// With a hardware keyboard the active pane holds the keyboard, as on a Mac: keys go to the pane on
 /// screen. Without one, a pane takes the keyboard only to keep what it had: across a fold or unfold
 /// (the pane's view moves to a new place), and from another pane when the active pane changes.
-/// A text field, a sheet and a keyboard the user put away are never overridden.
+/// A text field and a sheet are never overridden.
+///
+/// The invariant: at most one terminal is first responder, and it is the active pane's. A pane
+/// that becomes active takes the keyboard from the pane that had it (`takesKeyboard`), and a pane
+/// that is no longer active gives it up (`mustResign`).
+///
+/// Holding the keyboard and showing one are separate. After the key bar's hide key a pane shows
+/// no software keyboard and no key bar until it is tapped, but it still becomes first responder
+/// when the rules above say so, quietly (`takesQuietly`): otherwise a hardware keyboard would go
+/// on typing into the pane that had the keyboard before.
 enum KeyboardFocusPolicy {
     /// Who has the keyboard now.
     enum Holder: Equatable {
@@ -36,14 +45,23 @@ enum KeyboardFocusPolicy {
     }
 
     static func takesKeyboard(_ s: Situation) -> Bool {
-        guard s.paneActive, s.inWindow, s.appActive, !s.holdsKeyboard, !s.sheetUp, !s.userHidKeyboard else { return false }
+        guard s.paneActive, s.inWindow, s.appActive, !s.holdsKeyboard, !s.sheetUp else { return false }
         switch s.holder {
         case .textInput: return false
-        // The keyboard follows the active pane, hardware or not.
+        // The keyboard follows the active pane, hardware or not: no other pane may keep it.
         case .terminal: return true
-        case .nobody, .other: return s.hardwareKeyboard || s.hadKeyboard
+        // Free: a hardware keyboard always types into the active pane. Without one there is
+        // only a software keyboard to bring back, and not after the user put it away.
+        case .nobody, .other: return s.hardwareKeyboard || (s.hadKeyboard && !s.userHidKeyboard)
         }
     }
+
+    /// A pane that takes the keyboard after the user put it away there takes it quietly: first
+    /// responder, with no software keyboard and no key bar. A tap shows them again.
+    static func takesQuietly(_ s: Situation) -> Bool { s.userHidKeyboard }
+
+    /// A pane that is not the active one must not hold the keyboard.
+    static func mustResign(paneActive: Bool, holdsKeyboard: Bool) -> Bool { holdsKeyboard && !paneActive }
 
     /// App-wide shortcuts from the app's menu (`AppShortcutCommands`) run only when no terminal can
     /// take the key: never under a sheet, and never while a text field is being edited (⌘W in a
@@ -81,9 +99,11 @@ enum KeyboardFocusPolicy {
         return .other
     }
 
-    /// A sheet, an alert or a menu is presented over the window's root.
+    /// A sheet, an alert or a menu is presented over the window's root. One on its way out
+    /// no longer counts: the pane under it takes the keyboard back as it goes.
     @MainActor
     static func sheetUp(in window: UIWindow?) -> Bool {
-        window?.rootViewController?.presentedViewController != nil
+        guard let presented = window?.rootViewController?.presentedViewController else { return false }
+        return !presented.isBeingDismissed
     }
 }

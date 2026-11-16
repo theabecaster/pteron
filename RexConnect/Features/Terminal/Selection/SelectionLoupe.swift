@@ -20,8 +20,17 @@ final class SystemSelectionLoupe: SelectionLoupe {
     private var session: UITextLoupeSession?
     private let enabled: Bool
 
-    init(enabled: Bool = UserDefaults.standard.string(forKey: "selectionLoupe") != "off") {
+    init(enabled: Bool = SystemSelectionLoupe.enabledByDefault) {
         self.enabled = enabled
+    }
+
+    /// On, except with `-selectionLoupe off` in a Debug build.
+    static var enabledByDefault: Bool {
+        #if DEBUG
+        UserDefaults.standard.string(forKey: "selectionLoupe") != "off"
+        #else
+        true
+        #endif
     }
 
     func begin(at point: CGPoint, in view: UIView) {

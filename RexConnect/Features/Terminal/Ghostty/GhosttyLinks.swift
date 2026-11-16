@@ -137,6 +137,37 @@ extension GhosttyCore {
         return nil
     }
 
+    /// The visible text of the OSC 8 hyperlink on viewport cell (`col`, `row`): the run of cells
+    /// on that row that carry the same link. A program writes it and it can say anything, so it
+    /// is compared with the target before the link opens (`LinkOpenPolicy`). Nil without a
+    /// hyperlink there. Takes the terminal lock once.
+    func hyperlinkLabel(atViewportCol col: Int, row: Int) -> String? {
+        withTerminal { t -> String? in
+            guard let link = Self.hyperlink(t, col: col, row: row) else { return nil }
+            return Self.label(t, uri: link.url, col: col, row: row)
+        } ?? nil
+    }
+
+    private static func label(_ t: GhosttyTerminal, uri link: String, col: Int, row: Int) -> String {
+        var c: UInt16 = 0
+        ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_COLS, &c)
+        func linked(_ x: Int) -> Bool {
+            guard x >= 0, x < Int(c), var ref = viewportRef(t, x: x, y: row) else { return false }
+            return uri(&ref) == link
+        }
+        var first = col, last = col
+        while linked(first - 1) { first -= 1 }
+        while linked(last + 1) { last += 1 }
+        var out = String.UnicodeScalarView()
+        for x in first...last {
+            guard var ref = viewportRef(t, x: x, y: row) else { break }
+            let w = wide(&ref)
+            if w == GHOSTTY_CELL_WIDE_SPACER_TAIL || w == GHOSTTY_CELL_WIDE_SPACER_HEAD { continue }
+            out.append(scalar(ref))
+        }
+        return String(out)
+    }
+
     private static func uri(_ ref: inout GhosttyGridRef) -> String? {
         // Upstream: ask for the size first; a cell with no hyperlink answers success with 0.
         var length = 0
