@@ -28,9 +28,8 @@ struct ToastPolicyTests {
         #expect(decide(alert("block:a"), .init(visibleBlocks: ["block:a"])) == .suppress(.looking))
     }
 
-    @Test func suppressedInTheBackgroundAndWhenTurnedOff() {
+    @Test func suppressedInTheBackground() {
         #expect(decide(alert("block:a"), .init(appActive: false)) == .suppress(.background))
-        #expect(decide(alert("block:a"), .init(enabled: false)) == .suppress(.disabled))
     }
 
     @Test func heldWhileASheetCoversTheScreen() {

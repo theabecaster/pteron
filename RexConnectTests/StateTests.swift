@@ -17,29 +17,70 @@ struct PrefsTests {
         let (p, _) = fresh()
         #expect(p.sizing == .fit)
         #expect(p.fontSize == 11)
-        #expect(p.keyBar == KeyBarPreset.agents.keys)
-        #expect(p.haptics)
+        #expect(p.keyBarLayout == .agents)
+        #expect(p.darkThemeID == "github-dark-dimmed")
+        #expect(p.lightThemeID == "github-light-default")
+        #expect(!p.pushEnabled)
     }
 
     @Test func persistsToItsOwnDefaults() {
         let (p, d) = fresh()
         p.fontSize = 14
-        p.sizing = .mirror
+        p.keyBarLayout = .vim
         p.servers = [ServerConfig(name: "Mac", url: "https://mac.tail.ts.net")]
         let again = Prefs(defaults: d)
         #expect(again.fontSize == 14)
-        #expect(again.sizing == .mirror)
+        #expect(again.keyBar == KeyBarLayout.vim.keys)
         #expect(again.servers.map(\.url) == ["https://mac.tail.ts.net"])
     }
 
-    @Test func lightThemeOnlyWhenFollowingTheSystem() {
+    @Test func themeFollowsTheSystemNotTheViewsScheme() {
         let (p, _) = fresh()
-        p.themeID = "github-dark-dimmed"
+        p.darkThemeID = "github-dark-dimmed"
         p.lightThemeID = "github-light-default"
+        p.systemScheme = .light
+        #expect(p.theme.id == "github-light-default")
+        // The root forces views to the theme's scheme; that must not flip the theme back.
+        #expect(p.theme(for: .dark).id == "github-light-default")
+        p.systemScheme = .dark
         #expect(p.theme(for: .light).id == "github-dark-dimmed")
-        p.followSystemAppearance = true
-        #expect(p.theme(for: .light).id == "github-light-default")
-        #expect(p.theme(for: .dark).id == "github-dark-dimmed")
+    }
+
+    @Test func migratesRemovedSettings() {
+        let (_, d) = fresh()
+        d.set("whitby-bay", forKey: "themeID")
+        d.set(false, forKey: "followSystem")
+        d.set(KeyBarLayout.shell.keys, forKey: "keyBar")
+        d.set(["studio": "https://studio.tail.ts.net"], forKey: "hostURLs")
+        for key in ["sizing", "wideLayout", "haptics", "showAgentStatus", "notifyOnBlocked", "sidebarTextSize"] {
+            d.set("x", forKey: key)
+        }
+        let p = Prefs(defaults: d)
+        // One theme everywhere stays one theme everywhere.
+        #expect(p.lightThemeID == "whitby-bay")
+        #expect(p.keyBarLayout == .shell)
+        #expect(p.servers.contains { $0.name == "studio" && $0.id == AppModel.stableID("studio") })
+        #expect(p.sizing == .fit)
+        for key in ["followSystem", "keyBar", "hostURLs", "sizing", "wideLayout", "haptics", "showAgentStatus",
+                    "notifyOnBlocked", "sidebarTextSize"] {
+            #expect(d.object(forKey: key) == nil, "\(key)")
+        }
+    }
+
+    @Test func editedKeyBarFallsBackToTheDefaultLayout() {
+        let (_, d) = fresh()
+        d.set(["esc", "f1"], forKey: "keyBar")
+        #expect(Prefs(defaults: d).keyBarLayout == .agents)
+    }
+
+    @Test func serverAddresses() {
+        #expect(ServerConfig.url(from: " studio.tail1.ts.net ")?.absoluteString == "https://studio.tail1.ts.net")
+        #expect(ServerConfig.url(from: "http://127.0.0.1:8765")?.absoluteString == "http://127.0.0.1:8765")
+        #expect(ServerConfig.url(from: "") == nil)
+        #expect(ServerConfig.url(from: "ftp://studio") == nil)
+        #expect(ServerConfig.url(from: "two words") == nil)
+        #expect(ServerConfig.name(for: URL(string: "https://studio.tail1.ts.net")!) == "studio")
+        #expect(ServerConfig.name(for: URL(string: "http://127.0.0.1:8765")!) == "127.0.0.1")
     }
 }
 

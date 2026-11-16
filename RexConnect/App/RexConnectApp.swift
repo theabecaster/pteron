@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct RexConnectApp: App {
@@ -41,10 +42,23 @@ struct RexConnectApp: App {
         .onChange(of: phase) { _, p in
             guard !Self.isTestHost else { return }
             switch p {
-            case .active: model.foregroundResumed()
+            case .active:
+                readSystemScheme()
+                model.foregroundResumed()
             case .background: model.push.enteredBackground()
             default: break
             }
         }
+    }
+
+    /// Picks up Light or Dark Mode from the screen: SwiftUI puts the root's forced color scheme on
+    /// the window scene, so the scene and every view report the theme's mode, not the system's, and
+    /// get no trait change when the system's flips. Changing it means leaving the app (Control
+    /// Center or Settings), so reading it each time the app becomes active is enough.
+    private func readSystemScheme() {
+        let screens = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }
+        guard let style = screens.first?.traitCollection.userInterfaceStyle, style != .unspecified else { return }
+        let scheme: ColorScheme = style == .light ? .light : .dark
+        if prefs.systemScheme != scheme { prefs.systemScheme = scheme }
     }
 }

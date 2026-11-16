@@ -67,7 +67,7 @@ final class ReplayView: UIView {
 
     init(config: ReplayConfig) {
         self.config = config
-        theme = ThemeStore.theme(Prefs.shared.themeID)
+        theme = ThemeStore.theme(Prefs.shared.darkThemeID)
         super.init(frame: .zero)
         backgroundColor = theme.uiBG
     }

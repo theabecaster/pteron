@@ -11,7 +11,7 @@ enum TerminalEngineKind: String, CaseIterable, Identifiable {
             : "SwiftTerm with its Metal renderer. Seeds the screen from terminal.format."
     }
 
-    /// The engine new panes use. Stored in UserDefaults ("terminalEngine"); Ghostty by default on this branch.
+    /// The engine new panes use. Ghostty, unless UserDefaults ("terminalEngine") says otherwise.
     /// Launch argument `-terminalEngine swiftTerm` overrides it for a run.
     static var current: TerminalEngineKind {
         get { TerminalEngineKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .ghostty }

@@ -20,8 +20,6 @@ struct AgentToast: Equatable, Identifiable {
 ///   waiting doesn't nag.
 enum ToastPolicy {
     struct Context: Equatable {
-        /// Settings → Notifications → In-app alerts.
-        var enabled = true
         var appActive = true
         /// Blocks whose terminal is on screen now.
         var visibleBlocks: Set<String> = []
@@ -29,7 +27,7 @@ enum ToastPolicy {
         var modalPresented = false
     }
 
-    enum Reason: Equatable { case disabled, background, looking, recentlyShown }
+    enum Reason: Equatable { case background, looking, recentlyShown }
 
     enum Decision: Equatable {
         case show(AgentToast)
@@ -47,7 +45,6 @@ enum ToastPolicy {
 
     static func decide(_ a: AgentAlert, context c: Context, current: AgentToast?,
                        lastShown: [String: Date], now: Date) -> Decision {
-        guard c.enabled else { return .suppress(.disabled) }
         guard c.appActive else { return .suppress(.background) }
         if c.visibleBlocks.contains(a.blockID) { return .suppress(.looking) }
         if c.modalPresented { return .hold }

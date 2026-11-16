@@ -18,7 +18,7 @@ struct PaneView: View {
     @Environment(Prefs.self) private var prefs
 
     var body: some View {
-        let engine = prefs.terminalEngine
+        let engine = TerminalEngineKind.current
         PaneHostView(server: server, sessionID: sessionID, blockID: blockID, active: active,
                      engine: engine, onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand)
             // An engine can't be swapped inside a live pane: a new engine is a new pane.

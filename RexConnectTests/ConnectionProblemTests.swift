@@ -1,0 +1,151 @@
+import Foundation
+import Testing
+import RexKit
+@testable import RexConnect
+
+struct ConnectionProblemTests {
+    private let offTailnet = NetworkSnapshot(reachable: true, onPrivateNetwork: false)
+    private let onTailnet = NetworkSnapshot(reachable: true, onPrivateNetwork: true)
+    private let offline = NetworkSnapshot(reachable: false, onPrivateNetwork: false)
+
+    private func url(_ code: Int, posix: Int? = nil, status: Int? = nil) -> ConnectionFailure {
+        var info: [String: Any] = [:]
+        if let posix {
+            info[NSUnderlyingErrorKey] = NSError(domain: NSPOSIXErrorDomain, code: posix)
+            info["_kCFStreamErrorCodeKey"] = posix
+        }
+        return ConnectionFailure(NSError(domain: NSURLErrorDomain, code: code, userInfo: info), httpStatus: status)
+    }
+
+    private func kind(_ f: ConnectionFailure, _ n: NetworkSnapshot) -> ConnectionProblem.Kind {
+        ConnectionProblem.classify(f, network: n).kind
+    }
+
+    @Test func noPathIsNoInternetWhateverTheError() {
+        #expect(kind(url(NSURLErrorCannotFindHost), offline) == .noInternet)
+        #expect(kind(url(NSURLErrorTimedOut), offline) == .noInternet)
+        #expect(kind(url(NSURLErrorNotConnectedToInternet), onTailnet) == .noInternet)
+        #expect(kind(url(NSURLErrorDataNotAllowed), onTailnet) == .noInternet)
+    }
+
+    @Test func unresolvedPrivateNameOffTheTailnet() {
+        #expect(kind(url(NSURLErrorCannotFindHost), offTailnet) == .offPrivateNetwork)
+        #expect(kind(url(NSURLErrorDNSLookupFailed), offTailnet) == .offPrivateNetwork)
+        #expect(kind(url(NSURLErrorTimedOut), offTailnet) == .offPrivateNetwork)
+        // Can't tell whether the phone is on a tailnet: the private network is the likely cause.
+        #expect(kind(url(NSURLErrorCannotFindHost), .unknown) == .offPrivateNetwork)
+        #expect(kind(.timedOut(), .unknown) == .offPrivateNetwork)
+    }
+
+    @Test func unresolvedNameOnTheTailnetIsNotFound() {
+        #expect(kind(url(NSURLErrorCannotFindHost), onTailnet) == .hostNotFound)
+    }
+
+    @Test func silenceOnTheTailnetIsAMacNotAnswering() {
+        #expect(kind(url(NSURLErrorTimedOut), onTailnet) == .notAnswering)
+        #expect(kind(.timedOut(), onTailnet) == .notAnswering)
+        #expect(kind(url(NSURLErrorCannotConnectToHost, posix: Int(EHOSTUNREACH)), onTailnet) == .notAnswering)
+        #expect(kind(url(NSURLErrorCannotConnectToHost, posix: Int(EHOSTUNREACH)), offTailnet) == .offPrivateNetwork)
+    }
+
+    @Test func refusedOrNotRexIsNotAnswering() {
+        #expect(kind(url(NSURLErrorCannotConnectToHost, posix: Int(ECONNREFUSED)), offTailnet) == .notAnswering)
+        #expect(kind(url(NSURLErrorBadServerResponse, status: 502), onTailnet) == .notAnswering)
+        #expect(kind(url(NSURLErrorBadServerResponse, status: 404), onTailnet) == .notAnswering)
+        #expect(kind(url(NSURLErrorBadServerResponse), onTailnet) == .notAnswering)
+        #expect(kind(ConnectionFailure(domain: NSPOSIXErrorDomain, code: Int(ECONNREFUSED), message: ""), onTailnet) == .notAnswering)
+    }
+
+    @Test func rejectedIsNotAllowed() {
+        #expect(kind(url(NSURLErrorBadServerResponse, status: 403), onTailnet) == .notAllowed)
+        #expect(kind(url(NSURLErrorBadServerResponse, status: 401), offTailnet) == .notAllowed)
+        var closed = url(NSURLErrorNetworkConnectionLost)
+        closed.closeCode = 1008
+        #expect(kind(closed, onTailnet) == .notAllowed)
+    }
+
+    @Test func tlsIsInsecure() {
+        #expect(kind(url(NSURLErrorServerCertificateUntrusted), onTailnet) == .insecure)
+        #expect(kind(url(NSURLErrorSecureConnectionFailed), onTailnet) == .insecure)
+        #expect(kind(url(NSURLErrorAppTransportSecurityRequiresSecureConnection), onTailnet) == .insecure)
+        let ssl = ConnectionFailure(domain: "kCFErrorDomainCFNetwork", code: 0, message: "", streamCode: -9807)
+        #expect(kind(ssl, onTailnet) == .insecure)
+    }
+
+    @Test func badAddressBeatsEverything() {
+        #expect(kind(.invalidAddress("x"), offline) == .badAddress)
+    }
+
+    @Test func anythingElseIsUnknownWithDetail() {
+        let p = ConnectionProblem.classify(ConnectionFailure(domain: "Weird", code: 7, message: "odd"), network: onTailnet)
+        #expect(p.kind == .unknown)
+        #expect(p.detail == "Weird 7")
+    }
+
+    // MARK: Hysteresis
+
+    private func problem(_ k: ConnectionProblem.Kind, _ detail: String = "") -> ConnectionProblem {
+        ConnectionProblem(kind: k, detail: detail)
+    }
+
+    @Test func sameKindKeepsWhatIsShown() {
+        var g = ProblemGate()
+        #expect(g.observe(problem(.offPrivateNetwork, "a")).detail == "a")
+        // A new error string of the same kind doesn't change the screen.
+        #expect(g.observe(problem(.offPrivateNetwork, "b")).detail == "a")
+    }
+
+    @Test func otherKindNeedsTwoInARow() {
+        var g = ProblemGate()
+        _ = g.observe(problem(.offPrivateNetwork))
+        #expect(g.observe(problem(.notAnswering)).kind == .offPrivateNetwork)
+        #expect(g.observe(problem(.offPrivateNetwork)).kind == .offPrivateNetwork)
+        #expect(g.observe(problem(.notAnswering)).kind == .offPrivateNetwork)
+        #expect(g.observe(problem(.notAnswering)).kind == .notAnswering)
+    }
+
+    @Test func decisiveKindsSwitchAtOnce() {
+        var g = ProblemGate()
+        _ = g.observe(problem(.offPrivateNetwork))
+        #expect(g.observe(problem(.noInternet)).kind == .noInternet)
+        #expect(g.observe(problem(.notAllowed)).kind == .notAllowed)
+    }
+
+    @Test func networkChangeTakesTheNextProblemAsIs() {
+        var g = ProblemGate()
+        _ = g.observe(problem(.noInternet))
+        g.networkChanged()
+        #expect(g.observe(problem(.offPrivateNetwork)).kind == .offPrivateNetwork)
+    }
+
+    // MARK: Network
+
+    @Test func tailnetRanges() {
+        #expect(PrivateNetwork.isTailnet(ipv4: 0x646D_0631))   // 100.109.6.49
+        #expect(PrivateNetwork.isTailnet(ipv4: 0x6440_0000))   // 100.64.0.0
+        #expect(PrivateNetwork.isTailnet(ipv4: 0x647F_FFFF))   // 100.127.255.255
+        #expect(!PrivateNetwork.isTailnet(ipv4: 0x6480_0000))  // 100.128.0.0
+        #expect(!PrivateNetwork.isTailnet(ipv4: 0xC0A8_0101))  // 192.168.1.1
+        #expect(PrivateNetwork.isTailnet(ipv6: [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0] + Array(repeating: 0, count: 10)))
+        #expect(!PrivateNetwork.isTailnet(ipv6: [0xfe, 0x80] + Array(repeating: 0, count: 14)))
+    }
+
+    // MARK: Copy
+
+    @Test func copyNamesTheServer() {
+        #expect(OfflineCopy.of(.notAnswering, server: "Studio", address: "").title == "Studio isn't answering")
+        #expect(OfflineCopy.of(.notAnswering, server: "This Mac", address: "").title == "Your Mac isn't answering")
+        #expect(OfflineCopy.of(.hostNotFound, server: "This Mac", address: "").message
+            == "This iPhone is on a private network, but your Mac isn't on it.")
+    }
+
+    // MARK: Actions
+
+    @Test func secondaryActions() {
+        #expect(OfflineAction.secondary(for: .offPrivateNetwork, tailscaleInstalled: true) == .openTailscale)
+        #expect(OfflineAction.secondary(for: .offPrivateNetwork, tailscaleInstalled: false) == nil)
+        #expect(OfflineAction.secondary(for: .noInternet, tailscaleInstalled: true) == .openSettings)
+        #expect(OfflineAction.secondary(for: .insecure, tailscaleInstalled: true) == .serverSettings)
+        #expect(OfflineAction.secondary(for: .notAnswering, tailscaleInstalled: true) == nil)
+    }
+}

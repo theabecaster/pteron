@@ -148,13 +148,8 @@ struct WindowScreen: View {
     /// while every pane keeps a legible grid.
     private func splitsFit(_ w: WindowInfo) -> Bool {
         guard let layout = w.layout, w.orderedBlockIDs.count > 1 else { return false }
-        switch prefs.wideLayout {
-        case .single: return false
-        case .splits: return true
-        case .auto:
-            guard w.zoomedBlockID == nil else { return false }
-            return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
-        }
+        guard w.zoomedBlockID == nil else { return false }
+        return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
     }
 
     private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
@@ -328,8 +323,8 @@ struct WindowScreen: View {
         }
     }
 
-    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title, then status and the pane
-    /// menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
+    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title with the shown pane's
+    /// status beside it, then the page dots and the pane menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
     /// title and status. Under a short window (landscape iPhone) it is thinner, to leave rows for the
     /// panes.
     private func header(_ w: WindowInfo?, _ theme: TermTheme) -> some View {
@@ -353,10 +348,8 @@ struct WindowScreen: View {
             if let w, let b = activeBlock(w) {
                 let single = !useSplits(w)
                 WaitingPill(visible: single ? [b] : Set(w.orderedBlockIDs), theme: theme, onJump: jump)
-                BlockBadge(server: server, block: b, theme: theme)
-                    .padding(.horizontal, 6)
                 if single, w.orderedBlockIDs.count > 1 {
-                    PaneDots(server: server, ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
+                    PaneDots(ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
                 }
                 if !bar {
                     if zoomedHere { unzoomButton(theme, height: height) }
@@ -377,7 +370,7 @@ struct WindowScreen: View {
     }
 
     private func titleBar(_ w: WindowInfo, _ theme: TermTheme, subtitle showsSubtitle: Bool) -> some View {
-        TabTitleBar(server: server, sessionID: sessionID, window: w, subtitle: subtitle, showsSubtitle: showsSubtitle,
+        TabTitleBar(server: server, sessionID: sessionID, window: w, block: activeBlock(w), subtitle: subtitle, showsSubtitle: showsSubtitle,
                     theme: theme,
                     onSwipe: { switchTab(by: $0, haptic: false) },
                     onPick: { Haptic.selection(); onOpen($0) },
@@ -415,22 +408,11 @@ struct WindowScreen: View {
                     }
                 }
                 Button { Task { await server.clear(sessionID, block) } } label: { Label("Clear", systemImage: "eraser") }
-                Button {
-                    let p = prefs
-                    p.sizing = p.sizing == .fit ? .mirror : .fit
-                } label: {
-                    Label(prefs.sizing == .fit ? "Mirror Mac Size" : "Fit to Phone", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-                }
                 Button { rename() } label: { Label("Rename Tab…", systemImage: "pencil") }
             }
             Section {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }
                 Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
-            }
-            // Not an action: which engine draws the panes.
-            Section("Terminal Engine") {
-                Button {} label: { Label(prefs.terminalEngine.implemented.title, systemImage: "cpu") }
-                    .disabled(true)
             }
         } label: {
             // Not an ellipsis: Apple keeps that symbol for the system's overflow menu.
@@ -504,20 +486,34 @@ struct TabTitle: View {
     }
 }
 
-/// A block's status badge, observing only that block.
+/// A block's status badge, observing only that block. The same glyphs as the sidebar's rows.
 struct BlockBadge: View {
     let server: ServerConnection
     let block: String
     let theme: TermTheme
     var body: some View {
-        StatusBadge(status: server.meta[block]?.topStatus, theme: theme)
+        let status = server.meta[block]?.topStatus
+        StatusBadge(status: status, theme: theme)
+            .accessibilityLabel(Self.spoken(status?.state))
+    }
+
+    /// The status as VoiceOver reads it beside the title.
+    static func spoken(_ state: String?) -> String {
+        switch state {
+        case "working": "Working"
+        case "blocked": "Waiting for you"
+        case "done": "Done"
+        case "error": "Error"
+        default: ""
+        }
     }
 }
 
 /// Where the shown pane sits among the tab's panes, when one shows at a time (folded, splits too
-/// narrow). Blocked panes show in the "waiting" color. Swipe the terminal to move between them.
+/// narrow). A page control, not a status: neutral, in the theme's text colors, the shown pane a
+/// short bar. Status lives beside the title, and the waiting pill covers panes out of view.
+/// Swipe the terminal to move between them.
 struct PaneDots: View {
-    let server: ServerConnection
     let ids: [String]
     let current: String
     let theme: TermTheme
@@ -527,21 +523,23 @@ struct PaneDots: View {
         let idx = ids.firstIndex(of: current) ?? 0
         Group {
             if ids.count <= 6 {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     ForEach(ids, id: \.self) { bid in
-                        let blocked = server.meta[bid]?.topStatus?.state == "blocked"
-                        Circle()
-                            .fill(blocked ? theme.chrome.blocked : bid == current ? theme.accent : theme.chrome.tertiary)
-                            .frame(width: 5, height: 5)
+                        let on = bid == current
+                        Capsule()
+                            .fill(on ? theme.fg : theme.chrome.tertiary)
+                            .frame(width: on ? 9 : 4, height: 4)
                     }
                 }
+                .animation(.snappy(duration: 0.2), value: idx)
             } else {
                 Text("\(idx + 1)/\(ids.count)").font(.caption2.weight(.semibold)).monospacedDigit()
                     .foregroundStyle(theme.chrome.tertiary)
             }
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 8)
         .frame(minHeight: 44)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")
         .accessibilityHint("Swipe the terminal sideways to change pane.")
@@ -743,7 +741,7 @@ struct PressScale: ButtonStyle {
     }
 }
 
-/// System haptics, each used for its documented meaning. All behind the Haptics setting.
+/// System haptics, each used for its documented meaning. iOS mutes them when System Haptics is off.
 @MainActor
 enum Haptic {
     private static let light = UIImpactFeedbackGenerator(style: .light)
@@ -752,21 +750,19 @@ enum Haptic {
     private static let select = UISelectionFeedbackGenerator()
     private static var lastBump = Date.distantPast
 
-    private static var on: Bool { Prefs.shared.haptics }
-
     /// A button press.
-    static func tap() { if on { light.impactOccurred() } }
+    static func tap() { light.impactOccurred() }
     /// A value changed: pane, tab, font size, split detent.
-    static func selection() { if on { select.selectionChanged() } }
+    static func selection() { select.selectionChanged() }
     /// A gesture crossed its commit point. Played once, at the threshold.
-    static func threshold() { if on { medium.impactOccurred() } }
+    static func threshold() { medium.impactOccurred() }
     /// Zoom toggled: the layout snapping into place.
-    static func zoom() { if on { medium.impactOccurred() } }
+    static func zoom() { medium.impactOccurred() }
     /// Interrupt sent.
-    static func interrupt() { if on { rigid.impactOccurred() } }
+    static func interrupt() { rigid.impactOccurred() }
     /// Nothing there (end of panes or tabs). At most once a second.
     static func bump() {
-        guard on, Date().timeIntervalSince(lastBump) > 1 else { return }
+        guard Date().timeIntervalSince(lastBump) > 1 else { return }
         lastBump = Date()
         light.impactOccurred(intensity: 0.6)
     }

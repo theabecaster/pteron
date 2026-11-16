@@ -24,7 +24,8 @@ APNs topic depend on it.
 - `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures,
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → `TerminalEngineView`: `Engine/` has the
   seam and the SwiftTerm adapter, `Ghostty/` the libghostty-vt engine), KeyBar, Keyboard
-  (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card).
+  (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card),
+  Offline (the "signal lost" screen and its static backdrop).
 - `RexConnect/App`: entry point, `RootView` (sidebar + tab for the window's width and the fold, `Arrangement`
   and `SidebarWidth` in `State/Posture.swift`, `SidebarSplit` in Features/Sidebar), launch transition.
   Bars and the Duo's vertical bar: [docs/duo-layout.md](docs/duo-layout.md).
@@ -81,8 +82,8 @@ Pass after the bundle id: `xcrun simctl launch <id> dev.abrahamgonzalez.rexduo -
 Each is a UserDefaults key for that run only.
 
 - `-autoOpen <session label>`: open that session's first tab. A label that doesn't exist opens nothing.
-- `-sizing fit|mirror`: override the Pane Size setting.
-- `-terminalEngine ghostty|swiftTerm`: override the Engine setting.
+- `-sizing mirror`: keep the Mac's pane sizes for this run instead of fitting panes to the phone.
+- `-terminalEngine ghostty|swiftTerm`: pick the terminal engine for this run (Ghostty by default).
 - `-ghosttyDemo <path>`: no server; replay a capture file in a full-screen Ghostty view
   (`GhosttyDemoScreen`).
 - `-replay <file>`: no server; feed a capture or scenario file to a real pane, either engine
@@ -105,6 +106,15 @@ Each is a UserDefaults key for that run only.
   cycles every `-simulateDuoEvery` seconds (default 10), to check what a fold keeps.
 - `-focus none` (Debug builds): don't give the active pane the keyboard at launch.
 - `-sidebar closed` (Debug builds): start with the sidebar hidden (it starts open).
+- `-servers 'Name=https://…,Other=http://127.0.0.1:8765'` (Debug builds): use these servers for this run
+  instead of the saved ones. Point one at a missing `.ts.net` host, a closed port or a server that
+  answers 403 to see the real offline screens.
+- `-simulateOffline <kind>` (Debug builds): every server shows that offline screen and none connects.
+  Kinds: `noInternet`, `offPrivateNetwork`, `hostNotFound`, `notAnswering`, `notAllowed`, `insecure`,
+  `badAddress`, `unknown`. Add `-simulateRetrying YES` to hold Try Again in its "Trying…" state.
+- `-simulateNetwork offline|offPrivate|onPrivate` (Debug builds): pretend the phone's network is in that
+  state (no path, off the tailnet, on it), so real connection errors classify as they would there.
+- `-settings main|addServer|darkTheme|lightTheme` (Debug builds): open Settings at launch, at that page.
 - `-pushToken <hex>` (debug builds): use this APNs token and skip the permission check, to test
   push registration in a simulator.
 

@@ -82,12 +82,21 @@ final class AppModel {
     /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
     var hinge: HingeInfo?
 
+    /// The phone's network. Nil in tests and the test host.
+    @ObservationIgnored let network: NetworkWatch?
+
     /// `connect: false` builds no servers (unit tests and the test host).
     init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
         push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor))
+        network = connect ? NetworkWatch() : nil
         push.servers = { [weak self] in self?.servers ?? [] }
+        network?.onChange = { [weak self] _ in self?.networkChanged() }
         if connect { rebuildServers() }
+        #if DEBUG
+        // `-settings <page>` (testing): open Settings at launch, at that page.
+        if connect, SettingsPage.debugLaunch != nil { showSettings = true }
+        #endif
     }
 
     /// Pull to refresh: re-bootstrap every server (reconnect the ones that are down).
@@ -105,17 +114,54 @@ final class AppModel {
     }
 
     func rebuildServers() {
-        let configs = prefs.servers + prefs.hostURLs.compactMap { label, url in
-            url.isEmpty ? nil : ServerConfig(id: Self.stableID(label), name: label, url: url)
-        }
+        #if DEBUG
+        let configs = Self.debugServers ?? prefs.servers
+        #else
+        let configs = prefs.servers
+        #endif
         let old = Dictionary(uniqueKeysWithValues: servers.map { ($0.config.id, $0) })
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
-            return ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, deviceID: push.deviceID)
+            return ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, network: network,
+                                    deviceID: push.deviceID)
         }
+        #if DEBUG
+        if let kind = Self.simulatedProblem {
+            // `-simulateRetrying YES`: hold the Try Again button in its "Trying…" state.
+            let trying = UserDefaults.standard.bool(forKey: "simulateRetrying")
+            for s in servers {
+                s.simulate(kind)
+                if trying { s.retrying = true }
+            }
+            return
+        }
+        #endif
         for s in servers { s.start() }
     }
+
+    /// A new network path is when a down server can come back: retry those now.
+    private func networkChanged() {
+        for s in servers { s.networkChanged() }
+    }
+
+    #if DEBUG
+    /// `-servers 'Name=https://…,Other=https://…'` (testing): use these servers for this run only,
+    /// instead of the saved ones.
+    static var debugServers: [ServerConfig]? {
+        guard let raw = UserDefaults.standard.string(forKey: "servers"), !raw.isEmpty else { return nil }
+        return raw.split(separator: ",").compactMap { part in
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            guard kv.count == 2 else { return nil }
+            return ServerConfig(id: stableID("debug:" + kv[0]), name: kv[0], url: kv[1])
+        }
+    }
+
+    /// `-simulateOffline <kind>` (testing): every server shows that problem and none connects.
+    static var simulatedProblem: ConnectionProblem.Kind? {
+        UserDefaults.standard.string(forKey: "simulateOffline").flatMap(ConnectionProblem.Kind.init(rawValue:))
+    }
+    #endif
 
     /// The same id for the same host label on every launch: the first 16 bytes of its SHA-256.
     static func stableID(_ label: String) -> UUID {

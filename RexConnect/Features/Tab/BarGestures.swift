@@ -10,6 +10,8 @@ struct TabTitleBar: View {
     let server: ServerConnection
     let sessionID: String
     let window: WindowInfo
+    /// The pane on screen: its status sits right after the title.
+    let block: String?
     let subtitle: String
     /// A short title bar (landscape iPhone) keeps the title only.
     var showsSubtitle = true
@@ -33,11 +35,11 @@ struct TabTitleBar: View {
         let dir = dx < 0 ? 1 : -1
         let next = dx == 0 ? nil : neighbor(dir)
         ZStack(alignment: .leading) {
-            label(window, subtitle, menuChevron: true)
+            label(window, subtitle, current: true)
                 .offset(x: dx)
                 .opacity(dx == 0 ? 1 : max(0.2, 1 - abs(dx) / max(width * 0.8, 1)))
             if let n = next {
-                label(n.window, n.subtitle, menuChevron: false)
+                label(n.window, n.subtitle, current: false)
                     .offset(x: dx + (dir > 0 ? width : -width))
                     .opacity(min(1, abs(dx) / Self.commit))
             }
@@ -64,11 +66,23 @@ struct TabTitleBar: View {
         .accessibilityAdjustableAction { d in onSwipe(d == .increment ? 1 : -1) }
     }
 
-    private func label(_ w: WindowInfo, _ sub: String, menuChevron: Bool) -> some View {
+    /// Title, then status, then the menu chevron. The status rides with the title, so it stays
+    /// beside the text however long it is; the title truncates before the status does. The tab
+    /// sliding in under a swipe shows its own status, as its sidebar row does.
+    private func label(_ w: WindowInfo, _ sub: String, current: Bool) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 TabTitle(server: server, window: w)
-                if menuChevron {
+                Group {
+                    if current {
+                        if let block { BlockBadge(server: server, block: block, theme: theme) }
+                    } else {
+                        WindowBadge(server: server, window: w, theme: theme)
+                    }
+                }
+                .fixedSize()
+                .layoutPriority(1)
+                if current {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(theme.chrome.tertiary)

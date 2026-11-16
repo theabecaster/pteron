@@ -56,8 +56,6 @@ final class SeamTests: XCTestCase {
         for kind in TerminalEngineKind.allCases {
             XCTAssertFalse(kind.title.isEmpty)
             XCTAssertFalse(kind.detail.isEmpty)
-            XCTAssertFalse(SettingsView.engineInUse(kind).isEmpty)
-            XCTAssertTrue(SettingsView.engineInUse(kind).contains(kind.implemented.title))
         }
     }
 

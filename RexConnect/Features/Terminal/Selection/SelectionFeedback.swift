@@ -26,7 +26,7 @@ final class SystemSelectionFeedback: SelectionFeedback {
     private let copy = UINotificationFeedbackGenerator()
     private let enabled: () -> Bool
 
-    init(enabled: @escaping () -> Bool = { Prefs.shared.haptics }) {
+    init(enabled: @escaping () -> Bool = { true }) {
         self.enabled = enabled
     }
 
