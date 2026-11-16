@@ -282,10 +282,10 @@ struct WindowScreen: View {
         onOpen(sel)
     }
 
-    /// `goToTab(n)`: the n-th tab of this session, counting from 1; 9 is the last tab (as in Safari).
+    /// `goToTab(n)`: the n-th tab of this session, counting from 1; 9 or a negative index (Rex's keymap uses -1) is the last tab.
     private func goToTab(_ n: Int) {
         let ws = view?.windows ?? []
-        let i = n == 9 ? ws.count - 1 : n - 1
+        let i = (n == 9 || n < 0) ? ws.count - 1 : n - 1
         guard ws.indices.contains(i) else { Haptic.bump(); return }
         guard ws[i].id != windowID else { return }
         Haptic.selection()

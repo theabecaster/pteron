@@ -121,6 +121,10 @@ final class TerminalStream {
     private var inputBuffer: [UInt8] = []
     private var writing = false
     private var inputRetry: Task<Void, Never>?
+    /// Server actions bound to keys, each run after the keys typed before it.
+    private var orderedWork: [@MainActor () async -> Void] = []
+    private var runningWork = false
+    private var workToken = 0
 
     init(control: RexControl, sessionID: String, blockID: String) {
         self.control = control
@@ -137,6 +141,7 @@ final class TerminalStream {
         stopped = true
         inputRetry?.cancel()
         inputRetry = nil
+        orderedWork.removeAll()
         gen += 1
         ws?.cancel(with: .normalClosure, reason: nil)
         ws = nil
@@ -375,7 +380,8 @@ final class TerminalStream {
     /// Sends typed input now. Keys typed while a write is in flight go out together right after it.
     /// Input is never dropped by a lost connection: it waits and goes out once the server is back.
     private func pump() {
-        guard !writing, !inputBuffer.isEmpty, !stopped else { return }
+        guard !writing, !runningWork, !stopped else { return }
+        guard !inputBuffer.isEmpty else { runOrderedWork(); return }
         guard control.state == .connected else { retryInput(); return }
         writing = true
         let chunk = inputBuffer
@@ -395,6 +401,50 @@ final class TerminalStream {
             }
             self.writing = false
             self.pump()
+        }
+    }
+
+    /// Runs `work` once every key typed before it has been written; keys typed after wait for it.
+    private func afterInput(_ work: @escaping @MainActor () async -> Void) {
+        orderedWork.append(work)
+        pump()
+    }
+
+    private func runOrderedWork() {
+        guard !runningWork, !writing, inputBuffer.isEmpty, !orderedWork.isEmpty, !stopped else { return }
+        runningWork = true
+        workToken += 1
+        let token = workToken
+        let work = orderedWork.removeFirst()
+        // A slow action (a Lua function may run for seconds) holds typing back at most this long.
+        let release = { @MainActor in
+            guard self.runningWork, self.workToken == token else { return }
+            self.runningWork = false
+            self.pump()
+        }
+        Task { await work(); release() }
+        Task { try? await Task.sleep(nanoseconds: 1_500_000_000); release() }
+    }
+
+    /// Runs a block or configuration-file action on this pane (`client.action`), as a key binding
+    /// does on the Mac. Returns the client actions the server asks this client to perform.
+    func perform(action: String, args: JSONObject?, then: @escaping @MainActor ([JSONObject]) -> Void) {
+        afterInput { [sessionID, blockID, control] in
+            var p: JSONObject = ["action": action, "origin": "key", "session_id": sessionID, "block_id": blockID]
+            if let args, !args.isEmpty { p["args"] = args }
+            do {
+                let r = try await control.call("client.action", p)
+                then(r.arr("client_actions"))
+            } catch {
+                Notice.shared.show("Couldn't run \(action). \((error as? RexError)?.message ?? error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Sends a key to the server's Lua key bindings (`client.key`); unhandled, it reaches this pane.
+    func forward(key: JSONObject) {
+        afterInput { [sessionID, blockID, control] in
+            _ = try? await control.call("client.key", ["session_id": sessionID, "block_id": blockID, "key": key])
         }
     }
 
