@@ -61,7 +61,6 @@ enum ThemeStore {
 }
 
 enum RexFont {
-    static let family = "MesloLGS NF"
     static func ui(_ size: CGFloat, bold: Bool = false) -> UIFont {
         UIFont(name: bold ? "MesloLGS-NF-Bold" : "MesloLGS-NF-Regular", size: size)
             ?? UIFont.monospacedSystemFont(ofSize: size, weight: bold ? .bold : .regular)
