@@ -173,6 +173,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         clipsToBounds = true
         applyTheme(theme)
         stream.sink = self
+        // The data socket isn't read while megabytes wait to be parsed (`applyBackpressure`).
+        // The core calls from the thread that crossed a mark, so the state is read on arrival.
+        term.core.onBackpressureChange = { [weak self] in
+            DispatchQueue.main.async { self?.applyBackpressure() }
+        }
 
         NotificationCenter.default.addObserver(self, selector: #selector(didBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -1093,6 +1098,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         PerfProbe.active?.fed(bytes.count, host: self)  // PERF
         // The terminal copies the bytes and parses them on its own queue, in stream order.
         term.feed(buffer: bytes)
+    }
+
+    /// The engine's unparsed backlog crossed a mark (`GhosttyCore.isBackedUp`: on above 4 MB,
+    /// off below 1 MB). While it is backed up the data socket isn't read, so a program that
+    /// writes faster than the phone parses fills the server's buffer, not the phone's memory.
+    private func applyBackpressure() {
+        if term.core.isBackedUp { stream.pauseReading() } else { stream.resumeReading() }
     }
 
     func streamResized(cols: Int, rows: Int, owner: String?) {
