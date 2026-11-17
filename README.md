@@ -44,3 +44,11 @@ in the app under Settings → About → Acknowledgements.
 - [AGENTS.md](AGENTS.md): product principles, commands, debug launch arguments, safety rules, conventions.
 - [docs/](docs/): architecture, Rex protocol, terminal engine, layout, notifications, release.
 - [Relay/README.md](Relay/README.md): the helper app.
+
+## Licence
+
+Rex DUO is free software under the [GNU Affero General Public License, version 3](LICENSE)
+(AGPL-3.0-only). You may use, study, change and share it. Anything built from it, including a
+hosted service, must be released under the same licence with its full source. The names and
+artwork are not licensed for other products. Third-party code and its licences: [NOTICE](NOTICE).
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -2,6 +2,7 @@
 name = "rex-duo-helper"
 version = "0.2.0"
 edition = "2021"
+license = "AGPL-3.0-only"
 publish = false
 description = "Sends Rex DUO push notifications for the Rex server on this machine."
 build = "build.rs"
