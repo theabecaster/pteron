@@ -73,7 +73,7 @@ final class AppModel {
     var settingsStart: SettingsPage?
     @ObservationIgnored let prefs: Prefs
     @ObservationIgnored let notifier = AgentNotifier()
-    /// Push registration with each server's Rex Connect Helper.
+    /// Push registration with each server's Rex DUO Helper.
     @ObservationIgnored let push: PushRegistrar
     /// Latest request to show a tab; RootView observes it.
     var openRequest: OpenRequest?

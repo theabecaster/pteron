@@ -77,16 +77,16 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;
 the file is gitignored) and reads the key `~/.appstoreconnect/private_keys/AuthKey_2M674J7J7N.p8`.
 
-## Rex Connect Helper (Mac and Linux)
+## Rex DUO Helper (Mac and Linux)
 
 ```sh
 Relay/package.sh --no-notarize   # Mac app signed with Developer ID, plus Linux binaries: a quick local check
 Relay/package.sh                 # also notarize, staple and verify
 ```
 
-Output in `Relay/dist`: `Rex Connect Helper.zip` (universal Rust binary in a bundle with an icon
+Output in `Relay/dist`: `Rex DUO Helper.zip` (universal Rust binary in a bundle with an icon
 made from the iOS app icon, hardened runtime, no entitlements, notarized with the App Store Connect
-key) and static `rex-connect-helper-linux-x86_64` / `-aarch64` (cross-compiled with
+key) and static `rex-duo-helper-linux-x86_64` / `-aarch64` (cross-compiled with
 `cargo zigbuild`; set `ZIG` if zig isn't on PATH). `build.rs` embeds the APNs key
 `AuthKey_5G2D4URHAC.p8` in every binary: share them only with trusted people, never commit them,
 and revoke the key if a copy leaks. Details are in `Relay/README.md`.

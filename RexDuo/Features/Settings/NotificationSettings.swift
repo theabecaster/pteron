@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Settings → Notifications: one toggle for push, and a quiet line when something stands in the way
-/// (iOS permission, the Rex Connect Helper on each computer). In-app banners for waiting agents are always on.
+/// (iOS permission, the Rex DUO Helper on each computer). In-app banners for waiting agents are always on.
 struct NotificationSettingsSection: View {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
@@ -26,14 +26,14 @@ struct NotificationSettingsSection: View {
             let missing = push.missingHelpers
             if !missing.isEmpty { helperSteps(missing) }
             if push.wantsPush, model.servers.contains(where: { push.helpers[$0.id] == .running(pushEnabled: false) }) {
-                Text("Rex Connect Helper is in test mode and won't send notifications.")
+                Text("Rex DUO Helper is in test mode and won't send notifications.")
                     .font(.footnote)
                     .foregroundStyle(theme.chrome.secondary)
             }
         } header: {
             SettingsHeader("Notifications", theme)
         } footer: {
-            SettingsFooter("Rex Connect Helper on each computer sends them while this app is closed: when an agent needs you, finishes, or a terminal asks for attention.", theme)
+            SettingsFooter("Rex DUO Helper on each computer sends them while this app is closed: when an agent needs you, finishes, or a terminal asks for attention.", theme)
         }
         .settingsRows(theme)
     }
@@ -55,13 +55,13 @@ struct NotificationSettingsSection: View {
     /// Notifications are on but a connected server has no helper.
     private func helperSteps(_ servers: [ServerConnection]) -> some View {
         let title = model.servers.count > 1
-            ? "Rex Connect Helper isn't running on " + servers.map(\.config.name).joined(separator: ", ")
-            : "Rex Connect Helper isn't running on your computer"
+            ? "Rex DUO Helper isn't running on " + servers.map(\.config.name).joined(separator: ", ")
+            : "Rex DUO Helper isn't running on your computer"
         return VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(theme.fg)
-            Text("Mac: drag Rex Connect Helper to Applications and open it once.\nLinux: run rex-connect-helper install.")
+            Text("Mac: drag Rex DUO Helper to Applications and open it once.\nLinux: run rex-duo-helper install.")
                 .font(.footnote)
                 .foregroundStyle(theme.chrome.secondary)
         }

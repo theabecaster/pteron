@@ -1,6 +1,6 @@
-# Rex Connect Helper
+# Rex DUO Helper
 
-Sends Rex Connect push notifications for the Rex server on the same machine. Rex has no push
+Sends Rex DUO push notifications for the Rex server on the same machine. Rex has no push
 support of its own, so the helper connects to Rex as an ordinary client (named `rex-push-relay`,
 which is what the iOS app looks for), watches every session, and sends APNs pushes when:
 
@@ -10,20 +10,20 @@ which is what the iOS app looks for), watches every session, and sends APNs push
 | An agent reports `done` or `error` | `AGENT_DONE` | `passive`, no sound |
 | A terminal raises a desktop notification (OSC 9 / OSC 777) | `NOTICE` | `active`, sound |
 
-It skips a phone while Rex Connect is open on it, since the app shows its own toasts then.
+It skips a phone while Rex DUO is open on it, since the app shows its own toasts then.
 Phones register through Rex itself (client actions), so the helper opens no ports. Every
 machine that runs a Rex server needs its own helper.
 
-One Rust program, `rex-connect-helper`, runs on macOS and Linux. On a Mac it ships inside
-**Rex Connect Helper.app**, whose only executable is that same binary.
+One Rust program, `rex-duo-helper`, runs on macOS and Linux. On a Mac it ships inside
+**Rex DUO Helper.app**, whose only executable is that same binary.
 
 ## Install
 
 **Mac**
 
-1. Unzip `Rex Connect Helper.zip` and drag **Rex Connect Helper** to Applications.
+1. Unzip `Rex DUO Helper.zip` and drag **Rex DUO Helper** to Applications.
 2. Open it once. A small dialog says it's on. It keeps running and starts at every login.
-3. Open Rex Connect on the iPhone and turn on notifications.
+3. Open Rex DUO on the iPhone and turn on notifications.
 
 Open the app again to see whether it's connected, or click **Turn Off** to stop it. Then drag the
 app to the Trash to remove it. macOS lists it under System Settings > General > Login Items.
@@ -31,18 +31,18 @@ app to the Trash to remove it. macOS lists it under System Settings > General > 
 **Linux**
 
 ```sh
-chmod +x rex-connect-helper-linux-x86_64     # or -aarch64
-./rex-connect-helper-linux-x86_64 install
+chmod +x rex-duo-helper-linux-x86_64     # or -aarch64
+./rex-duo-helper-linux-x86_64 install
 ```
 
-`install` copies itself to `~/.local/bin/rex-connect-helper`, adds a systemd user service, starts
+`install` copies itself to `~/.local/bin/rex-duo-helper`, adds a systemd user service, starts
 it, turns on lingering so it survives logout (or says how, if it can't), and prints one line such
-as `Rex Connect Helper 0.2.0 is running and connected to Rex at https://….` Without systemd it
-says how to start it by hand. Then `rex-connect-helper status` and `rex-connect-helper uninstall`.
-Logs: `journalctl --user -u rex-connect-helper`.
+as `Rex DUO Helper 0.2.0 is running and connected to Rex at https://….` Without systemd it
+says how to start it by hand. Then `rex-duo-helper status` and `rex-duo-helper uninstall`.
+Logs: `journalctl --user -u rex-duo-helper`.
 
 The same three commands work on a Mac (from
-`/Applications/Rex Connect Helper.app/Contents/MacOS/rex-connect-helper`).
+`/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper`).
 
 ## How it finds Rex
 
@@ -56,17 +56,21 @@ Before each connection attempt, in order:
    its Tailscale HTTPS URL (over TLS).
 
 Pushes name the server by its Tailscale HTTPS URL, read from `session.bootstrap`, because that's
-how Rex Connect knows it.
+how Rex DUO knows it.
 
 ## Running in the background
 
-- **Mac:** opening the app writes `~/Library/LaunchAgents/dev.abrahamgonzalez.rexconnect.helper.plist`
+- **Mac:** opening the app writes `~/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.helper.plist`
   (runs the binary in the app with `run --log-file`, `KeepAlive` on crash, tied to the app in
   Login Items) and loads it with `launchctl`. If the app was updated, opening it restarts the
-  helper. Log: `~/Library/Logs/Rex Connect Helper.log` (rotated at 1 MB).
-- **Linux:** `~/.config/systemd/user/rex-connect-helper.service`, `Restart=on-failure`, `Nice=5`.
+  helper. Log: `~/Library/Logs/Rex DUO Helper.log` (rotated at 1 MB).
+- **Linux:** `~/.config/systemd/user/rex-duo-helper.service`, `Restart=on-failure`, `Nice=5`.
 - Either way only one helper runs per user (a lock in the state folder), and it writes
   `status.json` there for `status` and the Mac dialog.
+- **Upgrading from the old name** (`src/legacy.rs` lists it): on first run the helper stops the
+  old service, removes its LaunchAgent or unit and its `~/.local/bin` copy, and moves its state
+  folder (the registered phones in `devices.json`) to the new one. Then drag the old app to the
+  Trash.
 
 ## Performance
 
@@ -89,8 +93,8 @@ cargo run -- run --dry-run         # foreground relay, logs pushes instead of se
 ./package.sh --mac-only | --linux-only
 ```
 
-Output in `Relay/dist/` (gitignored): `Rex Connect Helper.zip` (universal) and
-`rex-connect-helper-linux-x86_64` / `-aarch64` (static musl, cross-compiled with `cargo zigbuild`;
+Output in `Relay/dist/` (gitignored): `Rex DUO Helper.zip` (universal) and
+`rex-duo-helper-linux-x86_64` / `-aarch64` (static musl, cross-compiled with `cargo zigbuild`;
 set `ZIG=/path/to/zig` if zig isn't on PATH). The script:
 
 - builds with `build.rs` embedding the APNs key `~/.appstoreconnect/private_keys/AuthKey_5G2D4URHAC.p8`
@@ -98,14 +102,14 @@ set `ZIG=/path/to/zig` if zig isn't on PATH). The script:
   `REX_APNS_KEY_ID`, `REX_APNS_TEAM_ID`, `REX_APNS_TOPIC`; `REX_APNS_KEY=none` builds without a key.
   The key only sits in `target/` and `dist/`, both gitignored; it's never committed;
 - wraps the universal Mac binary in a bundle (`LSUIElement`, bundle id
-  `dev.abrahamgonzalez.rexconnect.helper`, icon made from the iOS app icon by
+  `dev.abrahamgonzalez.rexduo.helper`, icon made from the iOS app icon by
   `Packaging/make-iconset.swift`);
 - signs with `Developer ID Application: Abraham Gonzalez (R2PVQ496X7)`, hardened runtime, no
   entitlements, and notarizes with `xcrun notarytool` and the App Store Connect API key
   `2M674J7J7N` (`ASC_ISS` from `~/rexduo/.asc.env`), staples, then checks `spctl`.
 
 **Every distributed binary contains the APNs push key**, the Mac app and the Linux files alike.
-Anyone with a copy can extract it and send pushes to Rex Connect users whose device tokens they
+Anyone with a copy can extract it and send pushes to Rex DUO users whose device tokens they
 know. That's fine for a few trusted machines and friends. If the helper is ever shared widely,
 move sending to a hosted push gateway that holds the key. Revoke `5G2D4URHAC` in the developer
 portal if a copy leaks.
@@ -119,14 +123,14 @@ portal if a copy leaks.
 | `check-apns` | Push to a fake token in both environments, then exit. `BadDeviceToken` means the key works. |
 
 `run` takes `--dry-run` (log each push, headers and payload, instead of sending it;
-`REX_CONNECT_DRY_RUN=1` works too), `--verbose` (also log working/idle reports and every "no push"
+`REX_DUO_DRY_RUN=1` works too), `--verbose` (also log working/idle reports and every "no push"
 decision), `--server ADDR` (repeatable, `unix:///…` or `https://…`), `--state-dir`, `--config`,
 and `--log-file`.
 
 ## Config (optional)
 
-`config.json` in the state folder: macOS `~/Library/Application Support/Rex Connect Helper/`,
-Linux `~/.local/state/rex-connect-helper/` (`$XDG_STATE_HOME`). The normal install has none.
+`config.json` in the state folder: macOS `~/Library/Application Support/Rex DUO Helper/`,
+Linux `~/.local/state/rex-duo-helper/` (`$XDG_STATE_HOME`). The normal install has none.
 Every field is optional.
 
 ```json
@@ -159,7 +163,7 @@ Pick a stable per-install id of 8 lowercase hex characters, e.g. the first 8 hex
 
 ```json
 {"type": "hello", "api_revision": 14,
- "client": {"kind": "app", "platform": "ios", "name": "Rex Connect", "version": "1.0",
+ "client": {"kind": "app", "platform": "ios", "name": "Rex DUO", "version": "1.0",
             "label": "Abe's iPhone #a1b2c3d4"}}
 ```
 
@@ -263,15 +267,15 @@ Stop the background helper (only one runs per user), run a dry run in the foregr
 throwaway session from another terminal:
 
 ```sh
-# Mac: launchctl kill TERM gui/$(id -u)/dev.abrahamgonzalez.rexconnect.helper
-# Linux: systemctl --user stop rex-connect-helper
-rex-connect-helper run --dry-run
+# Mac: launchctl kill TERM gui/$(id -u)/dev.abrahamgonzalez.rexduo.helper
+# Linux: systemctl --user stop rex-duo-helper
+rex-duo-helper run --dry-run
 rex new zz-push-test -- sh -c 'sleep 2
   printf "\033]7501;state=blocked:app=claude:msg=%s\033\\\\" "$(printf "Ready?" | base64)"
   printf "\033]9;Build finished\a"; sleep 30'
 rex kill zz-push-test
-# Mac: launchctl kickstart gui/$(id -u)/dev.abrahamgonzalez.rexconnect.helper
-# Linux: systemctl --user start rex-connect-helper
+# Mac: launchctl kickstart gui/$(id -u)/dev.abrahamgonzalez.rexduo.helper
+# Linux: systemctl --user start rex-duo-helper
 ```
 
 The dry run logs one `AGENT_BLOCKED` and one `NOTICE` push. `rex client list` shows the helper as

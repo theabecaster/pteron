@@ -1,10 +1,11 @@
-//! Rex Connect Helper: sends Rex Connect push notifications for the Rex server on this
+//! Rex DUO Helper: sends Rex DUO push notifications for the Rex server on this
 //! machine. One binary for macOS and Linux; see Relay/README.md.
 
 mod apns;
 mod config;
 mod devices;
 mod discovery;
+mod legacy;
 mod policy;
 mod push;
 mod relay;
@@ -18,9 +19,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const USAGE: &str = "\
-usage: rex-connect-helper <command> [options]
+usage: rex-duo-helper <command> [options]
 
-Sends Rex Connect push notifications when an agent in this machine's Rex needs you or
+Sends Rex DUO push notifications when an agent in this machine's Rex needs you or
 finishes, or a terminal raises a desktop notification.
 
 Commands:
@@ -32,7 +33,7 @@ Commands:
   version      print the version
 
 Options for run:
-  --dry-run          log each push instead of sending it (or REX_CONNECT_DRY_RUN=1)
+  --dry-run          log each push instead of sending it (or REX_DUO_DRY_RUN=1)
   --verbose          also log working/idle reports and every \"no push\" decision
   --server ADDR      Rex server to watch: unix:///path/server.sock or https://host
                      (repeatable; replaces discovery and config.json's servers)
@@ -99,7 +100,7 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn parse_run(args: &[String]) -> Result<RunOptions, String> {
-    let env_dry = std::env::var("REX_CONNECT_DRY_RUN").is_ok_and(|v| !v.is_empty() && v != "0");
+    let env_dry = std::env::var("REX_DUO_DRY_RUN").is_ok_and(|v| !v.is_empty() && v != "0");
     let mut o = RunOptions { dry_run: env_dry, servers: vec![], state_dir: default_state_dir(), config: None, log_file: false };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -168,6 +169,11 @@ async fn run(o: RunOptions) -> i32 {
             eprintln!("could not open the log file: {e}");
         }
     }
+    if o.state_dir == default_state_dir() {
+        for note in legacy::migrate() {
+            info!("moving from the old name: {note}");
+        }
+    }
     let cfg = match load_config(&o) {
         Ok(c) => c,
         Err(e) => {
@@ -184,7 +190,7 @@ async fn run(o: RunOptions) -> i32 {
     let _lock = match lock {
         Ok(f) if f.try_lock().is_ok() => f,
         _ => {
-            info!("Rex Connect Helper is already running for this user (see: rex-connect-helper status). Stop it first.");
+            info!("Rex DUO Helper is already running for this user (see: rex-duo-helper status). Stop it first.");
             return 1;
         }
     };
@@ -213,7 +219,7 @@ async fn run(o: RunOptions) -> i32 {
     );
     relay.start();
 
-    // On SIGINT/SIGTERM, close the Rex connections with a close frame so the server drops
+    // On SIGINT/SIGTERM, close the connections to Rex with a close frame so the server drops
     // this client at once instead of keeping it as "lost" for 60 s.
     use tokio::signal::unix::{signal, SignalKind};
     let (mut int, mut term) = match (signal(SignalKind::interrupt()), signal(SignalKind::terminate())) {

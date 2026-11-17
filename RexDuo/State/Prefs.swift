@@ -86,7 +86,7 @@ final class Prefs {
             NotificationCenter.default.post(name: .keyBarChanged, object: nil)
         }
     }
-    /// Push notifications through Rex Connect Helper. Off until the user turns them on.
+    /// Push notifications through Rex DUO Helper. Off until the user turns them on.
     var pushEnabled: Bool { didSet { d.set(pushEnabled, forKey: "pushEnabled") } }
     var servers: [ServerConfig] {
         didSet { if let data = try? JSONEncoder().encode(servers) { d.set(data, forKey: "servers") } }

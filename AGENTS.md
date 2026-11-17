@@ -3,7 +3,7 @@
 iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's control API and
 terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt and
 its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built
-for the iPhone Duo and works on any iPhone. `Relay/` holds Rex Connect Helper, a Rust program for
+for the iPhone Duo and works on any iPhone. `Relay/` holds Rex DUO Helper, a Rust program for
 macOS and Linux that sends push notifications for Rex events.
 
 Stack: Swift 6 language mode, SwiftUI + UIKit, iOS 18, Xcode 27.2, XcodeGen, libghostty-vt (a

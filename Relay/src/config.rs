@@ -62,24 +62,29 @@ pub fn expand(p: &str) -> PathBuf {
 }
 
 /// Where config.json, devices.json and status.json live.
-/// macOS: `~/Library/Application Support/Rex Connect Helper` (same as the Swift helper used).
-/// Linux: `$XDG_STATE_HOME/rex-connect-helper`, else `~/.local/state/rex-connect-helper`.
+/// macOS: `~/Library/Application Support/Rex DUO Helper`.
+/// Linux: `$XDG_STATE_HOME/rex-duo-helper`, else `~/.local/state/rex-duo-helper`.
 pub fn default_state_dir() -> PathBuf {
+    state_dir("Rex DUO Helper", "rex-duo-helper")
+}
+
+/// The state folder for an app name (macOS) or a binary name (Linux).
+pub fn state_dir(mac_name: &str, linux_name: &str) -> PathBuf {
     if cfg!(target_os = "macos") {
-        home().join("Library/Application Support/Rex Connect Helper")
+        home().join("Library/Application Support").join(mac_name)
     } else {
         std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home().join(".local/state"))
-            .join("rex-connect-helper")
+            .join(linux_name)
     }
 }
 
 /// The log file for `run --log-file` (the Mac's background job; Linux uses the journal).
 pub fn default_log_file() -> PathBuf {
     if cfg!(target_os = "macos") {
-        home().join("Library/Logs/Rex Connect Helper.log")
+        home().join("Library/Logs/Rex DUO Helper.log")
     } else {
         default_state_dir().join("helper.log")
     }

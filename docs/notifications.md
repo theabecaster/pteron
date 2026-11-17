@@ -38,14 +38,14 @@ has the toggle:
   by itself when the helper connects (`client_joined`).
 - A helper in `--dry-run` or without a key: "running in test mode".
 
-## While the app is closed: Rex Connect Helper
+## While the app is closed: Rex DUO Helper
 
-Rex has no push support, so `Relay/` builds **Rex Connect Helper**, one Rust program
-(`rex-connect-helper`) for macOS and Linux that connects to the local Rex as a client named
+Rex has no push support, so `Relay/` builds **Rex DUO Helper**, one Rust program
+(`rex-duo-helper`) for macOS and Linux that connects to the local Rex as a client named
 `rex-push-relay`, watches every session and sends APNs pushes to registered phones. Each machine
-with a Rex server runs its own. On a Mac it ships as `Rex Connect Helper.app` (bundle id
-`dev.abrahamgonzalez.rexconnect.helper`; open once, it runs as a LaunchAgent); on Linux
-`rex-connect-helper install` sets up a systemd user service. It is event driven: no polling
+with a Rex server runs its own. On a Mac it ships as `Rex DUO Helper.app` (bundle id
+`dev.abrahamgonzalez.rexduo.helper`; open once, it runs as a LaunchAgent); on Linux
+`rex-duo-helper install` sets up a systemd user service. It is event driven: no polling
 while connected. `Relay/README.md` is the full reference: install, discovery, config, debounce
 and rate limits, and how to verify by hand.
 

@@ -2,7 +2,7 @@ import UIKit
 import UserNotifications
 import RexKit
 
-/// Registers this phone with Rex Connect Helper on every server, so the Mac can push when the app
+/// Registers this phone with Rex DUO Helper on every server, so the Mac can push when the app
 /// is closed. The contract (actions, arguments, when to call them) is in docs/notifications.md.
 ///
 /// - After each new connection to a server: find the helper with `client.list`, then

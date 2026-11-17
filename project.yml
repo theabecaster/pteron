@@ -52,7 +52,7 @@ targets:
           - $(SRCROOT)/Vendor/GhosttyVt.xcframework/Info.plist
         outputFiles:
           - $(DERIVED_FILE_DIR)/ghostty-checked
-    # Push from Rex Connect Helper. Development signing keeps "development" (sandbox tokens);
+    # Push from Rex DUO Helper. Development signing keeps "development" (sandbox tokens);
     # exporting for App Store Connect switches it to production. Blocked-agent pushes use the
     # time-sensitive interruption level, which needs its own entitlement.
     entitlements:

@@ -255,7 +255,7 @@ pub async fn check(apns: &Apns) -> bool {
         PushCategory::Notice,
         BlockRef { server: "check".into(), session_id: String::new(), block_id: "check".into() },
     );
-    i.headline = Some("Rex Connect Helper".into());
+    i.headline = Some("Rex DUO Helper".into());
     i.text = Some("APNs check".into());
     let m = PushMessage::compose(&i, &BlockContext::default());
     let mut ok = true;

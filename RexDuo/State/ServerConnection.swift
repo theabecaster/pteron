@@ -68,7 +68,7 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored let keymap: KeymapStore
     /// In-app agent alerts and haptics; shared by every server.
     @ObservationIgnored let notifier: AgentNotifier
-    /// Push registration with this server's Rex Connect Helper.
+    /// Push registration with this server's Rex DUO Helper.
     @ObservationIgnored private weak var push: PushRegistrar?
     @ObservationIgnored let prefs: Prefs
     /// Counts successful connections, so per-connection work (push registration) can tell a new

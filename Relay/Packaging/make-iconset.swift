@@ -1,4 +1,4 @@
-// Turns the square Rex Connect iOS icon into a macOS .iconset: the artwork inset on the
+// Turns the square Rex DUO iOS icon into a macOS .iconset: the artwork inset on the
 // standard 1024 grid (824 pt body), with rounded corners and a soft shadow.
 //
 //   swift make-iconset.swift <icon.png> <out.iconset>

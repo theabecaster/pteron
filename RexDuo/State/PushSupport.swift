@@ -64,7 +64,7 @@ enum APNsEnvironment {
     }
 }
 
-/// Finds Rex Connect Helper among a server's clients.
+/// Finds Rex DUO Helper among a server's clients.
 enum RelayLookup {
     static let clientName = "rex-push-relay"
 
