@@ -44,7 +44,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   transition.
 - `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts.
 - `RexDuoTests`: app tests, run in the simulator. Helper tests live in `Relay/src`.
-- `scripts/`: the Ghostty build and checks, the benchmark (`bench/`), release to macdesk.
+- `scripts/`: the Ghostty build and checks, the benchmark (`bench/`), release through a build Mac.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane. Code keeps Rex's names
   (`WindowInfo`, `blockID`) to match the server's `/llms.txt`; user-facing text says tab and pane.
 
@@ -91,7 +91,8 @@ The full list (offline, network, layout, input, replay and perf arguments) is in
 
 ## Safety: the app drives real sessions
 
-The simulator connects to the owner's real Rex servers, where real agent sessions run. Fit mode
+A fresh install has no servers. A simulator connects to the servers saved in it or passed with
+`-servers`, which are real Rex servers where real agent sessions run. Fit mode
 claims the pane you view and resizes it on the Mac, and the key bar and `-typeTest` type into a real
 shell.
 
@@ -101,15 +102,15 @@ shell.
 - Unit tests run inside the app, which doesn't connect while it hosts tests.
 - `scripts/install-duo.sh`, `scripts/ship-macdesk.sh <build>` and `Relay/package.sh` (without
   `--no-notarize`) install on a phone, upload or notarize. Run them only when asked.
-  `scripts/sync-macdesk.sh` overwrites only a `rexduo-build*` folder in macdesk's home; `-n`
+  `scripts/sync-macdesk.sh` overwrites only a `rexduo-build*` folder in the build Mac's home; `-n`
   lists what it would change.
-- The helper runs on this Mac, macdesk and workdesk next to other agents' sessions. Test it with a
+- The helper runs on the developer's machines next to other agents' sessions. Test it with a
   foreground `--dry-run` after stopping the service (Relay/README.md, "Verify by hand"). Never
   restart Rex.
 - `.asc.env` and `~/.appstoreconnect/private_keys/` hold App Store Connect and APNs keys. Don't
   print, copy or commit them. `build.rs` embeds the APNs key in every helper binary, so
   `Relay/target`, `Relay/dist` and `Relay/.stage` hold it; all are gitignored and never sent to
-  macdesk.
+  the build Mac.
 
 ## Conventions
 
@@ -150,4 +151,4 @@ Read the one for the area you touch:
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.
 - [docs/sidebar.md](docs/sidebar.md): the sidebar's levels, folding, Agents mode, not-added hosts.
 - [docs/notifications.md](docs/notifications.md): toasts, permission, push through the helper.
-- [docs/release.md](docs/release.md): device installs, TestFlight via macdesk, helper packaging.
+- [docs/release.md](docs/release.md): device installs, TestFlight via a build Mac, helper packaging.

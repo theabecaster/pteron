@@ -356,7 +356,7 @@ scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
   resize) after `seq 1 3000` in its pane. Use a throwaway session. Live numbers have no budget:
   they depend on the network and the server.
 - On the iPhone Duo: `scripts/bench/run-device.sh [--runs 5] [--only …] [--live zz-bench]`
-  (header comment). It builds the `BENCH` Release on macdesk, installs it, copies the scenarios
+  (header comment). It builds the `BENCH` Release on the build Mac, installs it, copies the scenarios
   into the app's Documents and launches the app once per run through `devicectl`. `--tag` and
   `--args` compare builds or switches in one results folder; `--clean` deletes the files it left
   on the phone; `--stop` quits the app. The phone must be unlocked, awake and left alone.
@@ -509,7 +509,7 @@ Scroll (a 6 s fling through 1000 rows each way, one offset per refresh):
 
 Limits:
 
-- **No Instruments traces.** `xctrace` on macdesk lists the Duo as offline (it can't parse iOS
+- **No Instruments traces.** `xctrace` on the build Mac lists the Duo as offline (it can't parse iOS
   build 24B91034), so Time Profiler, Metal System Trace and Animation Hitches could not record,
   on the device or, as it turned out, on the simulator. Hitches here come from the probe's own
   display link and present times; time on the GPU and in the compositor is in no number. A

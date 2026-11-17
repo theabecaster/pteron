@@ -1,7 +1,12 @@
 # Release
 
-Device builds and TestFlight uploads run on macdesk, because signing needs its unlocked GUI
-keychain. Run these only when asked: they install on a real phone or upload to App Store Connect.
+Device builds and TestFlight uploads run on a build Mac over ssh, because signing needs its unlocked
+GUI keychain. Run these only when asked: they install on a real phone or upload to App Store Connect.
+
+The scripts default to the developer's setup: the build Mac is the ssh host `macdesk` (set
+`REXDUO_BUILD_HOST`), the phone is the developer's Duo (set `REXDUO_DEVICE` to a UDID) and the App
+Store Connect key is `2M674J7J7N` (set `ASC_KEY_ID` and `ASC_KEY`). Below, `macdesk` means the
+build Mac.
 
 - Bundle id `dev.abrahamgonzalez.rexduo` (fixed: App Store Connect and the APNs topic depend on
   it), team `R2PVQ496X7`, automatic signing. Display name "Rex DUO" (`CFBundleDisplayName`),
@@ -40,8 +45,8 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
 ## Install on the iPhone Duo
 
 The Duo is paired with this Mac. `scripts/install-duo.sh [build]` builds Release here and installs it
-with `devicectl`; the build log is `build/install-duo.log`. `VIA=macdesk scripts/install-duo.sh`
-does the same on macdesk (after `sync-macdesk.sh`) for when the Duo is paired there.
+with `devicectl`; the build log is `build/install-duo.log`. `VIA=<ssh host> scripts/install-duo.sh`
+(such as `VIA=macdesk`) does the same on that host (after `sync-macdesk.sh`) for when the Duo is paired there.
 
 ## TestFlight
 

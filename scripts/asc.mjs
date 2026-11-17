@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'; import fs from 'node:fs';
-const KID='2M674J7J7N', ISS=process.env.ASC_ISS;
-const key=fs.readFileSync(process.env.HOME+'/.appstoreconnect/private_keys/AuthKey_2M674J7J7N.p8','utf8');
+const KID=process.env.ASC_KEY_ID||'2M674J7J7N', ISS=process.env.ASC_ISS;
+const key=fs.readFileSync(process.env.ASC_KEY||process.env.HOME+'/.appstoreconnect/private_keys/AuthKey_'+KID+'.p8','utf8');
 const b=o=>Buffer.from(JSON.stringify(o)).toString('base64url');
 const now=Math.floor(Date.now()/1000);
 const h=b({alg:'ES256',kid:KID,typ:'JWT'}), p=b({iss:ISS,iat:now,exp:now+1100,aud:'appstoreconnect-v1'});

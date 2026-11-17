@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Copies the current tree to macdesk, ready for a device build or an archive there.
 # Usage: scripts/sync-macdesk.sh [-n] [remote-dir]
+#   REXDUO_BUILD_HOST  the ssh host to copy to (default macdesk, the developer's build Mac)
 #   -n          dry run: list what would be copied or deleted, change nothing on macdesk
 #   remote-dir  a folder directly under macdesk's home whose name starts with
 #               rexduo-build; default rexduo-build
@@ -10,6 +11,7 @@
 # framework is only sent again after a rebuild.
 set -euo pipefail
 cd ${0:A:h:h}
+HOST=${REXDUO_BUILD_HOST:-macdesk}
 
 DRY=()
 if [[ "${1:-}" == -n ]]; then DRY=(-n -v); shift; fi
@@ -47,8 +49,8 @@ SECRETS=(--exclude .asc.env --exclude '.env' --exclude '.env.*' --exclude '*.env
          --exclude '*.mobileprovision' --exclude '*.provisionprofile')
 
 # Vendor is a symlink in agent worktrees, and earlier versions of this copy sent the link itself.
-(( $#DRY )) || ssh macdesk "mkdir -p $DIR && { [ ! -L $DIR/Vendor ] || rm $DIR/Vendor; } && mkdir -p $DIR/Vendor && rm -rf $DIR/Relay/.stage"
+(( $#DRY )) || ssh $HOST "mkdir -p $DIR && { [ ! -L $DIR/Vendor ] || rm $DIR/Vendor; } && mkdir -p $DIR/Vendor && rm -rf $DIR/Relay/.stage"
 rsync -a --delete $DRY --exclude .claude --exclude build --exclude .build --exclude .git $SECRETS \
-  --exclude /Vendor ./ macdesk:$DIR/
+  --exclude /Vendor ./ $HOST:$DIR/
 # Paths through Vendor/ resolve the symlink; --delete only prunes inside the framework.
-rsync -a --delete $DRY Vendor/GhosttyVt.xcframework Vendor/GhosttyVt.stamp macdesk:$DIR/Vendor/
+rsync -a --delete $DRY Vendor/GhosttyVt.xcframework Vendor/GhosttyVt.stamp $HOST:$DIR/Vendor/

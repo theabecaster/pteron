@@ -1,11 +1,11 @@
 #!/bin/zsh
-# Runs the terminal benchmark on the iPhone Duo paired with macdesk and prints the report.
+# Runs the terminal benchmark on the iPhone Duo paired with the build Mac and prints the report.
 #
 #   scripts/bench/run-device.sh [--runs N] [--only a,b] [--out <dir>] [--fresh] [--skip-build]
 #                               [--tag <prefix>] [--args '<launch arguments>'] [--live <session label>]
 #                               [--remote <dir>] [--clean]
 #
-# Builds a Release copy of this tree with the BENCH condition on macdesk (in ~/<remote>, default
+# Builds a Release copy of this tree with the BENCH condition on the build Mac (in ~/<remote>, default
 # rexduo-build-bench) and installs it on the Duo, copies the scenarios into the app's
 # Documents/bench, launches the app once per scenario and run with `-replay bench/<file>
 # -perfLog <name>`, and copies each Documents/perf/<name>.json back to <out>/results
@@ -29,9 +29,10 @@
 # ends, so the phone stays awake from one run to the next and after the last one, with the app
 # open: end a session with --stop. The device build and install are the same as
 # scripts/install-duo.sh, plus BENCH; install the shipping build again with that script when done.
+# REXDUO_BUILD_HOST names the build Mac (default macdesk), REXDUO_DEVICE the phone's UDID.
 set -euo pipefail
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 runs=5; only=""; out=""; build=1; fresh=0; tag=""; extra=""; live=""; remote=rexduo-build-bench; clean=0; stop=0; liveRuns=5
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -53,7 +54,8 @@ done
 
 here=${0:A:h}
 root=${here:h:h}
-device=00008160-000602EC0EF00036
+device=${REXDUO_DEVICE:-00008160-000602EC0EF00036}
+host=${REXDUO_BUILD_HOST:-macdesk}
 bundle=dev.abrahamgonzalez.rexduo
 out=${out:-$root/build/bench-device}
 cols=60; rows=50   # the simulator benchmark's grid, so the numbers compare
@@ -62,9 +64,9 @@ mkdir -p "$out/results" "$out/scenarios"
 devicectl="/usr/bin/xcrun devicectl"
 container=(--domain-type appDataContainer --domain-identifier $bundle)
 
-launch() { ssh macdesk "$devicectl device process launch --device $device --terminate-existing $bundle -- $*" >/dev/null; }
+launch() { ssh $host "$devicectl device process launch --device $device --terminate-existing $bundle -- $*" >/dev/null; }
 terminate() {
-  ssh macdesk "pid=\$($devicectl device info processes --device $device 2>/dev/null | awk '/RexDuo.app\/RexDuo\$/ {print \$1; exit}'); [ -n \"\$pid\" ] && $devicectl device process terminate --device $device --pid \$pid >/dev/null 2>&1; true" || true
+  ssh $host "pid=\$($devicectl device info processes --device $device 2>/dev/null | awk '/RexDuo.app\/RexDuo\$/ {print \$1; exit}'); [ -n \"\$pid\" ] && $devicectl device process terminate --device $device --pid \$pid >/dev/null 2>&1; true" || true
 }
 
 if (( stop )); then terminate; exit 0; fi
@@ -75,18 +77,18 @@ if (( clean )); then
 fi
 
 if (( build )); then
-  echo "Building Release (BENCH) on macdesk in ~/$remote …" >&2
-  (cd "$root" && scripts/sync-macdesk.sh "$remote")
+  echo "Building Release (BENCH) on $host in ~/$remote …" >&2
+  (cd "$root" && REXDUO_BUILD_HOST=$host scripts/sync-macdesk.sh "$remote")
   # The same build as scripts/install-duo.sh, plus BENCH (`-replay`, `-perfLog`).
-  ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
+  ssh $host "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
 $devicectl device install app --device $device ~/$remote/build/dd/Build/Products/Release-iphoneos/RexDuo.app | grep -E 'App installed'"
 fi
 
-# Scenarios: generated here, sent to the phone through macdesk.
+# Scenarios: generated here, sent to the phone through the build Mac.
 node "$here/gen.mjs" "$out/scenarios" --cols $cols --rows $rows >&2
-ssh macdesk "mkdir -p ~/$remote-scenarios"
-rsync -a "$out/scenarios/" "macdesk:$remote-scenarios/"
-ssh macdesk "$devicectl device copy to --device $device ${container[*]} --source ~/$remote-scenarios --destination Documents/bench >/dev/null"
+ssh $host "mkdir -p ~/$remote-scenarios"
+rsync -a "$out/scenarios/" "$host:$remote-scenarios/"
+ssh $host "$devicectl device copy to --device $device ${container[*]} --source ~/$remote-scenarios --destination Documents/bench >/dev/null"
 
 missing=0
 # One run: launch with the arguments, wait for the probe's file, copy it back.
@@ -98,9 +100,9 @@ run_one() {
   fi
   echo "$name" >&2
   launch -perfLog "$name" "$@" || { echo "  $name: launch failed (is the phone unlocked?)" >&2; (( missing += 1 )); return 0; }
-  # Poll on macdesk: one ssh for the whole wait.
-  if ssh macdesk "mkdir -p ~/$remote-results; for i in \$(seq 1 $limit); do sleep 1; $devicectl device copy from --device $device ${container[*]} --source Documents/perf/$name.json --destination ~/$remote-results/$name.json >/dev/null 2>&1 && exit 0; done; exit 1"; then
-    scp -q "macdesk:$remote-results/$name.json" "$out/results/$name.json"
+  # Poll on the build Mac: one ssh for the whole wait.
+  if ssh $host "mkdir -p ~/$remote-results; for i in \$(seq 1 $limit); do sleep 1; $devicectl device copy from --device $device ${container[*]} --source Documents/perf/$name.json --destination ~/$remote-results/$name.json >/dev/null 2>&1 && exit 0; done; exit 1"; then
+    scp -q "$host:$remote-results/$name.json" "$out/results/$name.json"
   else
     echo "  $name: no result after $limit s" >&2
     (( missing += 1 ))
