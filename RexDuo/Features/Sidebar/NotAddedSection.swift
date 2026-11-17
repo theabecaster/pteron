@@ -22,10 +22,10 @@ struct NotAddedSection: View {
                 .padding(.top, gap)
                 .frame(maxWidth: .infinity, minHeight: 28, alignment: .bottomLeading)
                 .accessibilityAddTraits(.isHeader)
-                .modifier(SidebarRowStyle(theme: theme))
+                .modifier(SidebarStackRow(theme: theme))
             ForEach(hosts) { h in
                 NotAddedRow(host: h, theme: theme) { Self.add(h, model: model) }
-                    .modifier(SidebarRowStyle(theme: theme))
+                    .modifier(SidebarStackRow(theme: theme))
             }
         }
     }

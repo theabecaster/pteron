@@ -51,11 +51,13 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
                 sidebar
                     .frame(width: w)
                     .frame(maxHeight: .infinity)
-                    .background(theme.chrome.sidebar.ignoresSafeArea())
+                    // The drawer's shadow comes from its background alone. On the whole sidebar it
+                    // would shadow every row and glyph on its own, and show through rows that fade.
+                    .background(theme.chrome.sidebar.shadow(color: .black.opacity(inline ? 0 : 0.25), radius: 12)
+                        .ignoresSafeArea())
                     .overlay(alignment: .trailing) {
                         Rectangle().fill(theme.chrome.divider).frame(width: 1).ignoresSafeArea()
                     }
-                    .shadow(color: .black.opacity(inline ? 0 : 0.25), radius: 12)
                     // Dragged past the collapse point: letting go now hides it.
                     .opacity(willCollapse ? 0.55 : 1)
                     .offset(x: open ? 0 : -(w + 24))

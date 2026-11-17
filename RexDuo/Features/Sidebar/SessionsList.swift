@@ -2,16 +2,30 @@ import SwiftUI
 import RexKit
 
 /// Sessions mode: each machine, its sessions and their tabs, with machines and sessions folding.
-/// One flat `ForEach` over `SidebarOutline.rows`, so a fold animates only the rows it removes.
-/// Each row is its own equatable view that holds no closures, so a fold or a selection re-renders
-/// only the rows whose inputs changed.
+/// One flat `ForEach` over `SidebarOutline.rows` in a `LazyVStack`, so a fold inserts or removes
+/// only its rows and builds only the ones that come into view. Not a `List`: on the device a
+/// `List` sizes every visible cell again on each fold, 25 to 40 ms a fold (docs/sidebar.md,
+/// Performance). Each row is its own equatable view that holds no closures, so a fold or a
+/// selection re-renders only the rows whose inputs changed.
 struct SessionsList: View {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let theme: TermTheme
+    /// Where the list was scrolled to, kept by the sidebar across mode switches.
+    @Binding var scrollY: CGFloat
     var onSelect: (Selection) -> Void
 
     @State private var actions = SidebarActions()
+    @State private var reveal = SidebarReveal()
+    @State private var swipe = SwipeState()
+    @State private var position = ScrollPosition(edge: .top)
+    @State private var restored = false
+
+    private struct ScrollSpot: Equatable {
+        var y: CGFloat
+        var room: CGFloat
+    }
     /// Space above each machine after the first, and above each session after the first in its
     /// machine. Tighter within a group, looser between groups, and both follow Dynamic Type.
     @ScaledMetric(relativeTo: .headline) private var machineGapScaled: CGFloat = 18
@@ -24,28 +38,47 @@ struct SessionsList: View {
         actions.onSelect = onSelect
         let servers = Dictionary(model.servers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let collapsed = prefs.sidebarCollapsed
-        let rows = SidebarOutline.rows(model.servers.map { s in
+        let target = SidebarOutline.rows(model.servers.map { s in
             SidebarOutline.Machine(id: s.id, sessions: s.sessions.map { e in
                 SidebarOutline.Session(id: e.id, windowIDs: s.views[e.id]?.windows.map(\.id) ?? [])
             }, empty: s.phase == .online && s.synced && s.sessions.isEmpty)
         }, collapsed: collapsed)
+        let rows = reveal.rows(target, collapsed: collapsed)
         let selection = model.selection
-        return List {
-            if model.servers.isEmpty {
-                NoServersRow(theme: theme)
-                    .modifier(SidebarRowStyle(theme: theme))
-            }
-            ForEach(rows) { row in
-                if let server = servers[row.kind.serverID] {
-                    self.row(row, server, collapsed, selection)
+        return ScrollView {
+            LazyVStack(spacing: 0) {
+                if model.servers.isEmpty {
+                    NoServersRow(theme: theme)
+                        .modifier(SidebarStackRow(theme: theme))
                 }
+                ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
+                    if let server = servers[row.kind.serverID] {
+                        self.row(row, server, collapsed, selection)
+                            .transition(SidebarMotion.transition(row, reduceMotion: reduceMotion))
+                            // Each row is opaque and drawn over the ones above it, so the rows below
+                            // a group slide over its rows as they come and go instead of through them.
+                            .zIndex(Double(i))
+                    }
+                }
+                // Its own view: the host lists are read there, not on every change to this list.
+                NotAddedSection(theme: theme, gap: machineGap)
+                    .zIndex(Double(rows.count))
             }
-            // Its own view: the host lists are read there, not on every change to this list.
-            NotAddedSection(theme: theme, gap: machineGap)
+            .padding(.bottom, 8)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 30)
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: ScrollSpot.self) { g in
+            ScrollSpot(y: g.contentOffset.y + g.contentInsets.top, room: g.contentSize.height - g.containerSize.height)
+        } action: { _, spot in
+            // Back from Agents mode: go where the list was once its rows are tall enough, then follow.
+            guard restored else {
+                guard spot.room >= scrollY else { return }
+                restored = true
+                if scrollY > 0 { position.scrollTo(y: scrollY) }
+                return
+            }
+            scrollY = spot.y
+        }
         .refreshable { await model.refresh() }
         .onChange(of: PruneKey(model.servers), initial: true) { _, _ in prune() }
         #if DEBUG
@@ -59,8 +92,8 @@ struct SessionsList: View {
                      _ selection: Selection?) -> some View {
         // A down server's last known sessions stay listed, dimmed: they open read-only.
         let dim = server.phase.problem != nil
-        // List-row traits (insets, background, swipe actions) go outside `.equatable()`: inside an
-        // equatable view's body they don't reach the list.
+        // Row style and swipe actions go outside `.equatable()`, so a swipe or a selection change
+        // doesn't re-render the row's contents.
         switch row.kind {
         case .machine(let id):
             MachineRow(server: server, sessionCount: server.sessions.count,
@@ -68,15 +101,14 @@ struct SessionsList: View {
                        collapsed: collapsed.contains(SidebarCollapse.machine(id)),
                        topGap: row.first ? 4 : machineGap, theme: theme)
                 .equatable()
-                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button { Task { await server.createSession(label: nil) } } label: { Label("New Session", systemImage: "plus") }
-                        .tint(theme.accent)
-                }
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
-                        .tint(theme.chrome.working)
-                }
-                .modifier(SidebarRowStyle(theme: theme))
+                .modifier(SidebarStackRow(theme: theme))
+                .modifier(SidebarSwipe(id: row.id, leading: [
+                    SwipeAction(title: "New Session", symbol: "plus", tint: theme.accent) {
+                        Task { await server.createSession(label: nil) }
+                    },
+                ], trailing: [
+                    SwipeAction(title: "Reconnect", symbol: "arrow.clockwise", tint: theme.chrome.working) { server.reconnect() },
+                ], fullLeading: true, state: swipe))
         case .session(let id, let sid):
             if let entry = server.sessions.first(where: { $0.id == sid }) {
                 let target = SidebarActions.Target(server: server, sessionID: sid, label: entry.label)
@@ -85,38 +117,38 @@ struct SessionsList: View {
                            topGap: server.sessions.first?.id == sid ? 0 : sessionGap, dim: dim,
                            theme: theme, actions: actions)
                     .equatable()
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button { actions.closing = target } label: { Label("Close", systemImage: "xmark") }
-                            .tint(theme.chrome.error)
-                        Button { actions.rename(target, current: entry.label) } label: { Label("Rename", systemImage: "pencil") }
-                            .tint(theme.chrome.secondary)
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        Button { Task { await server.newWindow(sid) } } label: { Label("New Tab", systemImage: "plus.square") }
-                            .tint(theme.accent)
-                    }
-                    .modifier(SidebarRowStyle(theme: theme))
+                    .modifier(SidebarStackRow(theme: theme))
+                    .modifier(SidebarSwipe(id: row.id, leading: [
+                        SwipeAction(title: "New Tab", symbol: "plus.square", tint: theme.accent) {
+                            Task { await server.newWindow(sid) }
+                        },
+                    ], trailing: [
+                        SwipeAction(title: "Close", symbol: "xmark", tint: theme.chrome.error) { actions.closing = target },
+                        SwipeAction(title: "Rename", symbol: "pencil", tint: theme.chrome.secondary) {
+                            actions.rename(target, current: entry.label)
+                        },
+                    ], fullLeading: true, state: swipe))
             }
         case .tab(_, let sid, let wid):
             if let w = server.views[sid]?.window(wid) {
                 let selected = selection == Selection(serverID: server.id, sessionID: sid, windowID: wid)
                 let target = SidebarActions.Target(server: server, sessionID: sid, windowID: wid, label: w.label)
-                TabRow(server: server, sessionID: sid, window: w, last: row.last, selected: selected,
-                       dim: dim, theme: theme, actions: actions)
+                TabRow(server: server, sessionID: sid, window: w, selected: selected, dim: dim, theme: theme,
+                       actions: actions)
                     .equatable()
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button { actions.closeTab(target, hasAgent: server.windowAgent(w) != nil) } label: {
-                            Label("Close", systemImage: "xmark")
-                        }
-                        .tint(theme.chrome.error)
-                        Button { actions.rename(target, current: w.label) } label: { Label("Rename", systemImage: "pencil") }
-                            .tint(theme.chrome.secondary)
-                    }
-                    .modifier(SidebarRowStyle(theme: theme, selected: selected, selectionLeading: SidebarMetrics.tabLeading))
+                    .modifier(SidebarStackRow(theme: theme, selected: selected, selectionLeading: SidebarMetrics.tabLeading))
+                    .modifier(SidebarSwipe(id: row.id, trailing: [
+                        SwipeAction(title: "Close", symbol: "xmark", tint: theme.chrome.error) {
+                            actions.closeTab(target, hasAgent: server.windowAgent(w) != nil)
+                        },
+                        SwipeAction(title: "Rename", symbol: "pencil", tint: theme.chrome.secondary) {
+                            actions.rename(target, current: w.label)
+                        },
+                    ], state: swipe))
             }
         case .empty:
             NoSessionsRow(server: server, theme: theme)
-                .modifier(SidebarRowStyle(theme: theme))
+                .modifier(SidebarStackRow(theme: theme))
         }
     }
 
@@ -139,6 +171,103 @@ struct SessionsList: View {
             ids = servers.map(\.id)
             live = servers.map { $0.phase == .online && $0.synced ? $0.sessions.map(\.id) : [] }
         }
+    }
+}
+
+/// Opens a big group a few rows per frame, top first: each frame builds only the rows it adds, and
+/// the rows unfurl as a short cascade. After `maxSteps` the rest come at once; by then they are
+/// below the screen, so nothing builds them.
+@MainActor
+@Observable
+final class SidebarReveal {
+    private var tick = 0
+    @ObservationIgnored private var shown: Set<String>?
+    @ObservationIgnored private var collapsed: Set<String> = []
+    @ObservationIgnored private var steps = 0
+    /// A reveal is under way: rows of the target are still held back.
+    @ObservationIgnored private var stepping = false
+    @ObservationIgnored private var scheduled = false
+
+    /// The rows to show now for `target`. Steps only when the fold state changed, so a server's
+    /// first load or a new tab shows at once.
+    func rows(_ target: [SidebarOutline.Row], collapsed now: Set<String>) -> [SidebarOutline.Row] {
+        _ = tick
+        let folding = now != collapsed
+        collapsed = now
+        if folding { steps = 0 }
+        guard let shown, folding || stepping, steps < SidebarMotion.maxSteps else {
+            shown = Set(target.map(\.id))
+            stepping = false
+            return target
+        }
+        let out = SidebarOutline.stepped(target, shown: shown, adding: SidebarMotion.rowsPerStep)
+        self.shown = Set(out.map(\.id))
+        steps += 1
+        stepping = out.count < target.count
+        if stepping, !scheduled {
+            scheduled = true
+            Task { @MainActor [weak self] in
+                // The next frame (one refresh at 120 Hz).
+                try? await Task.sleep(nanoseconds: 8_000_000)
+                guard let self else { return }
+                self.scheduled = false
+                withAnimation(SidebarCollapse.animation) { self.tick += 1 }
+            }
+        }
+        return out
+    }
+}
+
+/// How rows come and go when a group folds: transforms and opacity only, so the GPU does the work.
+enum SidebarMotion {
+    /// Rows a reveal adds per frame, and how many frames it steps before adding the rest.
+    static let rowsPerStep = 3
+    static let maxSteps = 10
+
+    /// A header's folded summary and its `+` share a spot: the one leaving fades in 80 ms, the one
+    /// coming fades in after it, so they never show over each other.
+    static var handoff: AnyTransition {
+        .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.18).delay(0.08)),
+                    removal: .opacity.animation(.easeOut(duration: 0.08)))
+    }
+
+    /// Opening: a child row slides down a few points from under its header, grows from 97% and fades
+    /// in, on the fold's spring. Folding: the reverse, quicker, the lower rows first. Reduce Motion:
+    /// a plain fade.
+    static func transition(_ row: SidebarOutline.Row, reduceMotion: Bool) -> AnyTransition {
+        if reduceMotion { return .opacity }
+        if case .machine = row.kind { return .opacity }
+        let away = AnyTransition.opacity
+            .combined(with: .offset(y: -6))
+            .combined(with: .scale(scale: 0.97, anchor: .top))
+        // The top rows leave last, 4 ms apart, capped at 32 ms.
+        let delay = Double(max(0, 8 - row.index)) * 0.004
+        return .asymmetric(insertion: away, removal: away.animation(.snappy(duration: 0.18).delay(delay)))
+    }
+}
+
+/// A row's insets and selection in the sidebar's stack: 8 pt each side, the sidebar's color behind
+/// it (rows cover each other while a group folds), and a rounded highlight that can start at an indent.
+struct SidebarStackRow: ViewModifier {
+    let theme: TermTheme
+    var selected = false
+    var selectionLeading: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8)
+            .background {
+                ZStack {
+                    theme.chrome.sidebar
+                    if selected {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(theme.chrome.rowSelected)
+                            .padding(.leading, 6 + selectionLeading)
+                            .padding(.trailing, 6)
+                            .padding(.vertical, 1)
+                    }
+                }
+            }
     }
 }
 
@@ -296,7 +425,6 @@ struct TabRow: View, Equatable {
     let server: ServerConnection
     let sessionID: String
     let window: WindowInfo
-    let last: Bool
     let selected: Bool
     let dim: Bool
     let theme: TermTheme
@@ -305,7 +433,7 @@ struct TabRow: View, Equatable {
 
     /// What the row shows of its tab; the status comes from the block boxes the label observes.
     nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.server === b.server && a.sessionID == b.sessionID && a.last == b.last && a.selected == b.selected
+        a.server === b.server && a.sessionID == b.sessionID && a.selected == b.selected
             && a.dim == b.dim && a.theme.id == b.theme.id && a.actions === b.actions
             && SidebarRowKeys.windows([a.window]) == SidebarRowKeys.windows([b.window])
     }
@@ -315,21 +443,24 @@ struct TabRow: View, Equatable {
         let target = SidebarActions.Target(server: server, sessionID: sid, windowID: w.id, label: w.label)
         let close = { actions.closeTab(target, hasAgent: server.windowAgent(w) != nil) }
         let rename = { actions.rename(target, current: w.label) }
-        Button {
+        let open = {
             model.select(server, session: sid, window: w.id)
             actions.onSelect(Selection(serverID: server.id, sessionID: sid, windowID: w.id))
-        } label: {
+        }
+        Button(action: open) {
             TabRowLabel(server: server, window: w, textColor: selected ? theme.fg : theme.fg.opacity(0.8),
                         minHeight: 36, theme: theme)
                 .padding(.vertical, 2)
                 .padding(.leading, SidebarMetrics.tabLeading)
-                .background(alignment: .leading) {
-                    IndentGuide(last: last, theme: theme)
-                        .padding(.leading, SidebarMetrics.guideX)
-                }
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+        // Keyboard: Tab and the arrows move between rows, Return or Space opens the tab.
+        .focusable(interactions: .activate)
+        .onKeyPress(.return) {
+            open()
+            return .handled
+        }
         .contextMenu {
             Button(action: rename) { Label("Rename Tab", systemImage: "pencil") }
             Button { Task { await server.newWindow(sid) } } label: { Label("New Tab", systemImage: "plus.square") }
@@ -439,3 +570,4 @@ extension SidebarOutline.Row.Kind {
         }
     }
 }
+

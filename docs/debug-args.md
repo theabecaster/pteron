@@ -24,11 +24,12 @@ builds.
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
 - `-sidebarFoldBench <cycles>`: 8 s after launch, fold and open every machine and session that many
   times, as a tap does, and log one `SIDEBAR_FOLD_BENCH` line (rows, frames, late frames, worst
-  frame). `-sidebarFoldBenchScope session` folds only the biggest session;
-  `-sidebarFoldBenchAnimate never` switches at once, for comparison. The saved fold state is put
-  back.
+  frame, and the worst frame of each fold and each open, sorted). `-sidebarFoldBenchScope session`
+  folds only the biggest session; `-sidebarFoldBenchAnimate never` switches at once, for
+  comparison. The saved fold state is put back.
   Read it with `xcrun simctl spawn <id> log show --last 2m --predicate 'eventMessage CONTAINS
-  "SIDEBAR_FOLD_BENCH"'`. Numbers mean something only from an optimized build
+  "SIDEBAR_FOLD_BENCH"'`; on a phone the line also goes to stdout, so `xcrun devicectl device
+  process launch --console …` prints it. Numbers mean something only from an optimized build
   (`SWIFT_OPTIMIZATION_LEVEL=-O` on the Debug configuration).
 - `-typeTest 'text\n'`: type into the active pane once it is live. With `-scrollBackTest <seconds>`,
   scroll two pages back first and type that much later.

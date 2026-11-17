@@ -29,8 +29,11 @@ enum SidebarOutline {
         var kind: Kind
         /// The first machine: no divider above it.
         var first = false
-        /// The session's last tab: its guide line stops short.
+        /// The session's last tab.
         var last = false
+        /// Its place among its siblings: a session in its machine, a tab in its session. Folding
+        /// lets the lower rows go first.
+        var index = 0
 
         var id: String {
             switch kind {
@@ -42,17 +45,29 @@ enum SidebarOutline {
         }
     }
 
+    /// `target` with at most `adding` of the rows not in `shown`: the first ones, in order. The rest
+    /// wait for the next step, so opening a big group builds a few cells per frame.
+    static func stepped(_ target: [Row], shown: Set<String>, adding: Int) -> [Row] {
+        var left = adding
+        return target.filter { row in
+            if shown.contains(row.id) { return true }
+            guard left > 0 else { return false }
+            left -= 1
+            return true
+        }
+    }
+
     static func rows(_ machines: [Machine], collapsed: Set<String>) -> [Row] {
         var out: [Row] = []
         for (i, m) in machines.enumerated() {
             out.append(Row(kind: .machine(m.id), first: i == 0))
             guard !collapsed.contains(SidebarCollapse.machine(m.id)) else { continue }
             if m.empty, m.sessions.isEmpty { out.append(Row(kind: .empty(m.id))) }
-            for s in m.sessions {
-                out.append(Row(kind: .session(m.id, s.id)))
+            for (k, s) in m.sessions.enumerated() {
+                out.append(Row(kind: .session(m.id, s.id), index: k))
                 guard !collapsed.contains(SidebarCollapse.session(m.id, s.id)) else { continue }
                 for (j, w) in s.windowIDs.enumerated() {
-                    out.append(Row(kind: .tab(m.id, session: s.id, window: w), last: j == s.windowIDs.count - 1))
+                    out.append(Row(kind: .tab(m.id, session: s.id, window: w), last: j == s.windowIDs.count - 1, index: j))
                 }
             }
         }
@@ -77,10 +92,9 @@ enum SidebarCollapse {
         keys.subtracting([machine(selection.serverID), session(selection.serverID, selection.sessionID)])
     }
 
-    /// Every fold slides, however many rows it moves. A big fold costs one long frame either way:
-    /// the list lays out the new rows' cells in the update itself (measured with
-    /// `-sidebarFoldBench`), and switching at once only loses the slide.
-    static let animation = Animation.snappy(duration: 0.25)
+    /// The fold's spring: rows unfurl and the rows below move on it (`SidebarMotion`). A big
+    /// reveal adds a few rows per frame (`SidebarReveal`), so no frame builds a screenful.
+    static let animation = Animation.spring(duration: 0.32, bounce: 0.12)
 
     /// The saved keys without those of removed servers, and of sessions that a connected, synced
     /// server no longer has. `live` holds only such servers: a down server keeps its keys, since its

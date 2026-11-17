@@ -25,13 +25,15 @@ follows Dynamic Type.
 |---|---|---|---|
 | Machine | OS glyph, name, connection dot, chevron. A down machine adds one quiet line saying why. | headline, `fg` | 0 |
 | Session | name, `+` (New Tab, open sessions only), chevron | subheadline semibold, `fg` | under the machine's name |
-| Tab | agent tile, title, pane count, status | 14 pt regular (scaled), `fg` at 80% | one step further, on a guide line |
+| Tab | agent tile, title, pane count, status | 14 pt regular (scaled), `fg` at 80% | one step further |
 
 Sessions are what people look for, so their names are full contrast and semibold; tabs are lighter.
 
-- **Membership.** A hairline guide runs down the left of a session's tabs, from its header to its
-  last tab, so a tab's session is plain. The selection highlight starts at the tab's indent.
-  Machines are separated by extra space and are the heaviest rows, so a session's machine is plain too.
+- **Membership.** No lines: indentation, type and spacing say what holds what. A session's tabs
+  sit one step in from its name, lighter and smaller than it, with no gap between them, and the next
+  session starts after a gap. The selection highlight starts at the tab's indent, so a selected tab
+  still reads as part of its session. Machines are separated by extra space and are the heaviest
+  rows, so a session's machine is plain too.
 - **OS glyph.** From `server.version`'s `platform`: Apple logo for darwin, `server.rack` for Linux,
   `pc` for Windows, `desktopcomputer` otherwise.
 - **Rhythm.** Tighter within a group, looser between groups: 18 pt above each machine, 6 pt above
@@ -43,7 +45,19 @@ Sessions are what people look for, so their names are full contrast and semibold
 
 ## Collapse and expand
 
-- Tap a machine or session header to fold it. The rows slide in and out (`.snappy`, 0.25 s).
+- Tap a machine or session header to fold it, or press Return on a focused one.
+- **Motion** (`SidebarMotion`), transforms and opacity only:
+  - The chevron turns a quarter on its own spring.
+  - Opening: the rows unfurl from under the header, top first. Each starts 6 pt up at 97% and
+    transparent and settles on the fold's spring (`SidebarCollapse.animation`, 0.32 s, a little
+    bounce). The cascade is real: `SidebarReveal` adds 3 rows a frame, so each frame builds only
+    those. After 10 frames the rest come at once; they are below the screen by then.
+  - Folding is the reverse and quicker (0.18 s): the lower rows go first, 4 ms apart, capped at 32 ms.
+  - Rows are opaque and each is drawn over the rows above it, so the content below slides over a
+    group's rows as they come and go instead of through them.
+  - A header's folded summary and its `+` trade places: the leaving one fades in 80 ms, then the
+    other fades in.
+  - With Reduce Motion, rows and summaries only fade.
 - The state is saved per item in `Prefs.sidebarCollapsed`: `m:<server id>` and
   `s:<server id>:<session id>`. Everything starts open. Keys of sessions a connected server no
   longer has, and of removed servers, are dropped.
@@ -91,7 +105,7 @@ at `xxxLarge`; text follows every size.
 ## Performance
 
 - One flat `ForEach` over `SidebarOutline.rows`, with ids `m:`, `s:`, `t:` that never change for an
-  item, so `List` diffs folds as inserts and removes.
+  item, so a fold is inserts and removes.
 - Rows (`MachineRow`, `SessionRow`, `TabRow`) are equatable views without closures; actions and
   dialogs go through one `SidebarActions` object. A fold re-renders only the rows it changes.
 - Headers get their tabs from the row, so they don't read `server.views` themselves.
@@ -101,10 +115,55 @@ at `xxxLarge`; text follows every size.
   state, recomputed once per main-actor turn and set only when one of those changes. A title,
   directory or status line change in some pane doesn't re-render or re-sort the list. The mode
   switch and `WaitingWatcher` share `AppModel.waitingAgentIDs`, built on it.
-- `List` is lazy (a collection view). Agents mode is its own view, built only while it shows.
+- Sessions mode is a `LazyVStack` in a `ScrollView`, not a `List`. On the device a `List` sizes
+  every visible cell again on each fold (`UICollectionView` self-sizing in its batch update): 68% of
+  a fold's main-thread time, and 18 to 43 ms a fold however cheap the rows (rows of one `Text`
+  still took 18 to 42 ms). The stack builds only the rows that come into view and never measures the others again.
+- What `List` gave, kept by hand: swipe actions (`SidebarSwipe`: a sideways-only UIKit pan, the first
+  action at the edge, full swipe for the leading one, one row open at a time, a tap closes it,
+  VoiceOver gets the same actions), pull to refresh, context menus, keyboard focus and Return on
+  rows and headers, header traits for the VoiceOver rotor, and the scroll position, kept by the
+  sidebar across a trip to Agents mode.
+- Agents mode stays a `List` (it doesn't fold), its own view, built only while it shows.
+- The drawer's shadow comes from its background alone, not from every row.
 - `-sidebarFoldBench` (docs/debug-args.md) measures late frames while folding; it keeps the
   user's fold state aside and puts it back, also after a run that was cut short.
 - No work per event on the main thread beyond reading the boxes that changed.
+
+### Device measurements (iPhone Duo, 120 Hz)
+
+Measured 2026-11-17 on the iPhone Duo (iOS 27.2.1), Debug builds with `-O`, `-sidebarFoldBench 8
+-sidebarFoldBenchScope session`: a 50-tab throwaway session folded and opened 8 times each, on a
+test server (`-servers`) with 54 rows open. A late frame is a gap over 12.5 ms (1.5 refreshes).
+The worst frame per fold or open is the median of the 8 (the highest in brackets).
+
+Unfolded (inner screen, landscape, sidebar inline at 200 pt), 16 toggles a run:
+
+| Build | worst frame, fold ms | worst frame, open ms | late frames | late time ms |
+| --- | --- | --- | --- | --- |
+| `List` (main) | 30.4 (37.9) | 40.8 (42.9) | 102 | 792 |
+| `List`, second run | 23.8 (38.6) | 35.3 (40.2) | 109 | 736 |
+| `List`, rows only a `Text` | 24.6 (30.7) | 31.8 (41.7) | 61 | 518 |
+| `List`, 4 rows added a frame | 24.3 (34.3) | 29.1 (33.3) | 89 | 851 |
+| `List`, no animation | 19.2 (26.5) | 22.7 (26.2) | 24 | 280 |
+| `LazyVStack`, all rows at once | 12.5 (12.5) | 23.4 (28.8) | 52 | 303 |
+| `LazyVStack`, 4 rows a frame | 12.5 (12.5) | 17.3 (22.9) | 85 | 402 |
+| `LazyVStack`, 8 rows a frame | 12.5 (15.7) | 22.8 (26.6) | 86 | 445 |
+| Shipped: `LazyVStack`, 3 rows a frame, unfurl motion | pending | pending | pending | pending |
+
+Folded (outer screen, sidebar as the drawer): pending, before and after.
+
+Reading it: 12.5 ms is one refresh late at most, which doesn't count as late. With `List` every fold
+and open had a frame 17 to 43 ms long, animated or not. In the stack a fold is never late, and
+opening a few rows a frame cuts the worst open frame by more than half and the late time per run
+by half. The late frames left are short ones (about 13 ms) while the rows settle.
+
+Root cause (Time Profiler on the device, unfolded): 68% of a fold's main-thread time was
+`UICollectionView` `_updatePreferredAttributesForCurrentUpdate`, `List` building cells for the new
+rows and sizing every visible cell again, existing ones too. That is why the earlier attempts
+(no animation above 16 rows, no per-row insets) and adding rows a few per frame inside `List` did
+not help: every step sized the whole screen again. With trivial rows (one `Text`) `List` still took
+18 to 42 ms; a `LazyVStack` folded in under 12.5 ms on its first try.
 
 ## Accessibility
 

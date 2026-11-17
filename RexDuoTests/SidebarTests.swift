@@ -270,18 +270,18 @@ struct SidebarRowStateTests {
         let (_, server) = fixture()
         let theme = ThemeStore.fallback
         let actions = SidebarActions()
-        let tab = TabRow(server: server, sessionID: "s1", window: window("w1"), last: false, selected: false,
+        let tab = TabRow(server: server, sessionID: "s1", window: window("w1"), selected: false,
                          dim: false, theme: theme, actions: actions)
-        #expect(tab == TabRow(server: server, sessionID: "s1", window: window("w1"), last: false, selected: false,
+        #expect(tab == TabRow(server: server, sessionID: "s1", window: window("w1"), selected: false,
                               dim: false, theme: theme, actions: actions))
-        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1"), last: false, selected: true,
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1"), selected: true,
                               dim: false, theme: theme, actions: actions))
-        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1", label: "renamed"), last: false,
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1", label: "renamed"),
                               selected: false, dim: false, theme: theme, actions: actions))
-        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1", blocks: ["b", "c"]), last: false,
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1", blocks: ["b", "c"]),
                               selected: false, dim: false, theme: theme, actions: actions))
-        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1"), last: true, selected: false,
-                              dim: false, theme: theme, actions: actions))
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1"), selected: false,
+                              dim: true, theme: theme, actions: actions))
 
         let entry = SessionEntry(id: "s1", label: "work")
         let session = SessionRow(server: server, session: entry, windows: [window("w1")], collapsed: false, topGap: 6,
@@ -337,6 +337,68 @@ struct SidebarRowStateTests {
 }
 
 struct SidebarFoldPolicyTests {
+    private let mac = UUID()
+
+    private func open(_ tabs: Int) -> [SidebarOutline.Row] {
+        SidebarOutline.rows([.init(id: mac, sessions: [.init(id: "s1", windowIDs: (0..<tabs).map { "w\($0)" })])],
+                            collapsed: [])
+    }
+
+    @Test func rowsKnowTheirPlaceAmongSiblings() {
+        let rows = open(3)
+        #expect(rows.map(\.index) == [0, 0, 0, 1, 2])
+    }
+
+    @Test func steppedAddsTheFirstNewRowsAndKeepsTheShownOnes() {
+        let all = open(5)
+        let shown: Set = [all[0].id, all[1].id]
+        let step = SidebarOutline.stepped(all, shown: shown, adding: 2)
+        #expect(step.map(\.id) == all.prefix(4).map(\.id))
+        #expect(SidebarOutline.stepped(all, shown: shown, adding: 0).map(\.id) == [all[0].id, all[1].id])
+    }
+
+    /// Opening 50 tabs adds `rowsPerStep` rows a frame, then the rest at once after `maxSteps`.
+    @MainActor @Test func revealStepsABigOpenAndCapsIt() {
+        let reveal = SidebarReveal()
+        let key = SidebarCollapse.session(mac, "s1")
+        let folded = SidebarOutline.rows([.init(id: mac, sessions: [.init(id: "s1", windowIDs: (0..<50).map { "w\($0)" })])],
+                                         collapsed: [key])
+        #expect(reveal.rows(folded, collapsed: [key]).count == 2)
+        let all = open(50)
+        var counts: [Int] = []
+        for _ in 0..<(SidebarMotion.maxSteps + 1) {
+            counts.append(reveal.rows(all, collapsed: []).count)
+        }
+        let step = SidebarMotion.rowsPerStep
+        let expected: [Int] = [2 + step, 2 + 2 * step, 2 + 3 * step]
+        #expect(Array(counts.prefix(3)) == expected)
+        #expect(counts.last == all.count)
+        // A change that isn't a fold (a server loading, a new tab) shows at once.
+        #expect(reveal.rows(open(60), collapsed: []).count == 62)
+    }
+
+    @Test func swipeRestsWhereTheFingerLeavesIt() {
+        // Two trailing actions (144 pt), one leading (72 pt), a 300 pt row.
+        func rest(_ x: CGFloat, _ v: CGFloat = 0, full: Bool = true) -> SwipeSnap.Rest {
+            SwipeSnap.rest(offset: x, velocity: v, leading: 72, trailing: 144, width: 300, fullLeading: full)
+        }
+        #expect(rest(-80) == .trailing)
+        #expect(rest(-60) == .closed)
+        #expect(rest(-30, -900) == .trailing)
+        #expect(rest(-130, 900) == .closed)
+        #expect(rest(50) == .leading)
+        #expect(rest(200) == .fullLeading)
+        #expect(rest(200, full: false) == .leading)
+        #expect(SwipeSnap.rest(offset: 40, velocity: 0, leading: 0, trailing: 144, width: 300, fullLeading: false) == .closed)
+    }
+
+    @Test func swipeResistsPastItsActions() {
+        #expect(SwipeSnap.dragged(-100, leading: 72, trailing: 144, fullLeading: false) == -100)
+        #expect(SwipeSnap.dragged(-184, leading: 72, trailing: 144, fullLeading: false) == -154)
+        #expect(SwipeSnap.dragged(200, leading: 72, trailing: 144, fullLeading: true) == 200)
+        #expect(SwipeSnap.dragged(40, leading: 0, trailing: 144, fullLeading: false) == 0)
+    }
+
     @Test func revealingOpensTheSelectedTabsSessionAndMachine() {
         let server = UUID(), other = UUID()
         let keys: Set = [SidebarCollapse.machine(server), SidebarCollapse.session(server, "s1"),

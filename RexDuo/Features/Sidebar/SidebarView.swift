@@ -9,6 +9,8 @@ struct SidebarView: View {
     @Environment(Prefs.self) private var prefs
     @Binding var mode: SidebarMode
     var onSelect: (Selection) -> Void
+    /// Where Sessions mode was scrolled to, so a trip to Agents mode and back keeps it.
+    @State private var sessionsScrollY: CGFloat = 0
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -18,7 +20,7 @@ struct SidebarView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 2)
             switch mode {
-            case .sessions: SessionsList(theme: theme, onSelect: onSelect)
+            case .sessions: SessionsList(theme: theme, scrollY: $sessionsScrollY, onSelect: onSelect)
             case .agents: AgentsList(theme: theme, onSelect: onSelect)
             }
             bottomBar(theme)

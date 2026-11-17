@@ -2,8 +2,8 @@ import SwiftUI
 import RexKit
 
 /// The sidebar's three levels share one grid, so a session's name sits under its machine's name and
-/// a session's tabs hang from a guide just inside it. Type does the rest: machines are the largest
-/// and heaviest rows, sessions a full-contrast middle level, tabs lighter.
+/// its tabs one step further in. Indentation, type and spacing carry the hierarchy, with no lines:
+/// machines are the largest and heaviest rows, sessions a full-contrast middle level, tabs lighter.
 enum SidebarMetrics {
     /// Padding inside a row, both sides.
     static let pad: CGFloat = 8
@@ -12,8 +12,6 @@ enum SidebarMetrics {
     static let gap: CGFloat = 7
     /// A session's name starts under its machine's name.
     static var sessionLeading: CGFloat { pad + glyph + gap }
-    /// The guide line down a session's tabs, just inside the session's name.
-    static var guideX: CGFloat { sessionLeading + 2 }
     /// Where a tab row starts. `TabRowLabel` adds its own 8 pt before the tile.
     static var tabLeading: CGFloat { sessionLeading + 5 }
     /// Names stay on one line, except at accessibility sizes, where two keep them readable.
@@ -24,12 +22,15 @@ enum SidebarMetrics {
 struct Chevron: View {
     let open: Bool
     let theme: TermTheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Image(systemName: "chevron.right")
             .font(.caption.weight(.semibold))
             .foregroundStyle(theme.chrome.tertiary)
             .rotationEffect(.degrees(open ? 90 : 0))
+            // A springy quarter turn; with Reduce Motion it just turns.
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.3), value: open)
             .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .frame(width: 22)
             .accessibilityHidden(true)
@@ -132,6 +133,8 @@ struct MachineHeader: View {
         if foldable {
             Button(action: toggle) { content }
                 .buttonStyle(.plain)
+                .focusable(interactions: .activate)
+                .onKeyPress(.return) { toggle(); return .handled }
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
         } else {
@@ -166,6 +169,7 @@ struct MachineHeader: View {
                 if collapsed {
                     GroupSummary(server: server, windows: windows, count: sessionCount,
                                  noun: "session", theme: theme)
+                        .transition(SidebarMotion.handoff)
                 }
             }
             ConnectionDot(server: server, theme: theme)
@@ -206,6 +210,7 @@ struct SessionHeader: View {
                         .accessibilityLabel("\(name), session, \(windows.count) tab\(windows.count == 1 ? "" : "s")")
                     if collapsed {
                         GroupSummary(server: server, windows: windows, count: windows.count, noun: "tab", theme: theme)
+                            .transition(SidebarMotion.handoff)
                     }
                 }
                 // Room for `+`. Folded, the name gets it; New Tab stays in the swipe and the menu.
@@ -218,6 +223,8 @@ struct SessionHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focusable(interactions: .activate)
+        .onKeyPress(.return) { toggle(); return .handled }
         .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
         .overlay(alignment: .trailing) {
             if !collapsed {
@@ -232,6 +239,7 @@ struct SessionHeader: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("New Tab in \(name)")
                 .padding(.trailing, SidebarMetrics.pad + 22)
+                .transition(SidebarMotion.handoff)
             }
         }
     }
@@ -288,21 +296,6 @@ struct NameAndSummary: Layout {
         let summary = subviews[1].sizeThatFits(ProposedViewSize(width: room, height: nil))
         cache = Cache(width: width, split: (max(0, width - summary.width - spacing), summary))
         return cache.split
-    }
-}
-
-/// The hairline that ties a session's tabs to it. The last tab's stops short, closing the group.
-struct IndentGuide: View {
-    let last: Bool
-    let theme: TermTheme
-
-    var body: some View {
-        Rectangle()
-            .fill(theme.fg.opacity(theme.isDark ? 0.16 : 0.14))
-            .frame(width: 1)
-            .padding(.bottom, last ? 8 : 0)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .accessibilityHidden(true)
     }
 }
 
