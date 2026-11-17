@@ -159,12 +159,16 @@ struct WaitingPill: View {
                     Image(systemName: "hand.raised.fill").font(.system(size: 11, weight: .semibold))
                     Text("\(items.count)").font(.caption.weight(.bold)).monospacedDigit()
                 }
+                .lineLimit(1)
                 .foregroundStyle(theme.chrome.blocked)
                 .padding(.horizontal, 9)
-                .frame(height: 26)
+                .frame(minHeight: 26)
                 .background(Capsule().fill(theme.chrome.blocked.opacity(0.18)))
+                .fixedSize()
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
+                // The title bar keeps its height, so the count stops growing where it would clip.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             } primaryAction: {
                 Haptic.selection()
                 onJump(first)

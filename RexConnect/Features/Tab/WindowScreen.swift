@@ -350,6 +350,7 @@ struct WindowScreen: View {
             if let w, let b = activeBlock(w) {
                 let single = !useSplits(w)
                 WaitingPill(visible: single ? [b] : Set(w.orderedBlockIDs), theme: theme, onJump: jump)
+                    .layoutPriority(1)
                 if single, w.orderedBlockIDs.count > 1 {
                     PaneDots(ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
                 }
@@ -536,6 +537,7 @@ struct PaneDots: View {
                 .animation(.snappy(duration: 0.2), value: idx)
             } else {
                 Text("\(idx + 1)/\(ids.count)").font(.caption2.weight(.semibold)).monospacedDigit()
+                    .lineLimit(1).fixedSize()
                     .foregroundStyle(theme.chrome.tertiary)
             }
         }
@@ -674,12 +676,18 @@ struct TabCard: View {
                 HStack(spacing: 6) {
                     TabTitle(server: server, window: window)
                     Spacer(minLength: 2)
-                    if window.allBlocks.count > 1 {
-                        Text("\(window.allBlocks.count)")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(theme.chrome.tertiary)
+                    // The title truncates before the pane count and status do.
+                    HStack(spacing: 6) {
+                        if window.allBlocks.count > 1 {
+                            Text("\(window.allBlocks.count)")
+                                .font(.caption2.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(theme.chrome.tertiary)
+                        }
+                        WindowBadge(server: server, window: window, theme: theme)
                     }
-                    WindowBadge(server: server, window: window, theme: theme)
+                    .fixedSize()
+                    .layoutPriority(1)
                 }
                 .padding(.horizontal, 10)
                 .frame(minHeight: 36)

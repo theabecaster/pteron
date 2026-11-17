@@ -127,7 +127,7 @@ struct SettingsView: View {
         return HStack(spacing: 10) {
             ServerDot(server: s, theme: theme)
             VStack(alignment: .leading, spacing: 2) {
-                Text(s.config.name).fontWeight(.medium)
+                Text(s.config.name).fontWeight(.medium).lineLimit(1)
                 Text(URL(string: s.config.url)?.host() ?? s.config.url)
                     .font(.caption)
                     .foregroundStyle(theme.chrome.secondary)
@@ -135,9 +135,13 @@ struct SettingsView: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 8)
+            // One line; the name and address truncate first.
             Text(Self.status(s.phase))
                 .font(.caption)
                 .foregroundStyle(theme.chrome.secondary)
+                .lineLimit(1)
+                .fixedSize()
+                .layoutPriority(1)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)

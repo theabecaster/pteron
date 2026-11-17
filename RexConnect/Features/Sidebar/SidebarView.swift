@@ -313,19 +313,31 @@ struct SidebarView: View {
 }
 
 struct StatusBadge: View {
-    var status: ProgramStatus?
+    var state: String?
     var theme: TermTheme
+    /// The glyph's point size; the working dot is 0.7 of it.
+    var size: CGFloat = 10
+
+    init(status: ProgramStatus?, theme: TermTheme, size: CGFloat = 10) {
+        self.init(state: status?.state, theme: theme, size: size)
+    }
+
+    init(state: String?, theme: TermTheme, size: CGFloat = 10) {
+        self.state = state
+        self.theme = theme
+        self.size = size
+    }
 
     var body: some View {
-        switch status?.state {
+        switch state {
         case "working":
-            PulsingDot(color: theme.chrome.working)
+            PulsingDot(color: theme.chrome.working, size: size * 0.7)
         case "blocked":
-            Image(systemName: "hand.raised.fill").font(.system(size: 10)).foregroundStyle(theme.chrome.blocked)
+            Image(systemName: "hand.raised.fill").font(.system(size: size)).foregroundStyle(theme.chrome.blocked)
         case "done":
-            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(theme.chrome.done)
+            Image(systemName: "checkmark").font(.system(size: size, weight: .bold)).foregroundStyle(theme.chrome.done)
         case "error":
-            Image(systemName: "exclamationmark").font(.system(size: 10, weight: .bold)).foregroundStyle(theme.chrome.error)
+            Image(systemName: "exclamationmark").font(.system(size: size, weight: .bold)).foregroundStyle(theme.chrome.error)
         default:
             EmptyView()
         }
@@ -336,10 +348,11 @@ struct StatusBadge: View {
 /// With Reduce Motion on it holds still.
 struct PulsingDot: View {
     var color: Color
+    var size: CGFloat = 7
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Image(systemName: "circle.fill")
-            .font(.system(size: 7))
+            .font(.system(size: size))
             .foregroundStyle(color)
             .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
     }
@@ -351,28 +364,26 @@ struct AgentsSummaryLabel: View {
     let theme: TermTheme
 
     var body: some View {
-        let rows = servers.flatMap(\.agents)
-        let blocked = rows.filter { $0.status?.state == "blocked" }.count
-        let working = rows.filter { $0.status?.state == "working" }.count
+        let counts = AgentCounts(states: servers.flatMap(\.agents).map { $0.status?.state })
         HStack(spacing: 8) {
             Image(systemName: "sparkles").foregroundStyle(theme.accent)
-            Text("Agents").font(.footnote.weight(.semibold))
-            Spacer()
-            if blocked > 0 { pill("\(blocked) waiting", theme.chrome.blocked) }
-            if working > 0 { pill("\(working) working", theme.chrome.working) }
-            if blocked == 0 && working == 0 { pill(rows.isEmpty ? "none" : "\(rows.count) idle", theme.chrome.tertiary) }
+            // The pills' smallest form is their minimum width, so they shrink to glyphs before the
+            // word gives way, and they never wrap or clip. Where even the smallest pill leaves no
+            // room for the whole word, the sparkles alone name the row.
+            ViewThatFits(in: .horizontal) {
+                Text("Agents").font(.footnote.weight(.semibold)).lineLimit(1).fixedSize()
+                Color.clear.frame(width: 0, height: 0)
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 0)
+            AgentCountPills(counts: counts, theme: theme)
         }
         .padding(.horizontal, 10)
         .frame(minHeight: 44)
         .background(RoundedRectangle(cornerRadius: 10).fill(theme.fg.opacity(0.06)))
         .contentShape(Rectangle())
-    }
-
-    private func pill(_ t: String, _ c: Color) -> some View {
-        Text(t).font(.caption2.weight(.semibold))
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(c.opacity(0.2)))
-            .foregroundStyle(c)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Agents: " + counts.pills.map(\.spoken).joined(separator: ", "))
     }
 }
 
@@ -405,6 +416,7 @@ struct TabRowLabel: View {
                 if window.allBlocks.count > 1 {
                     Text("\(window.allBlocks.count)")
                         .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
                         .foregroundStyle(theme.chrome.tertiary)
                 }
                 StatusBadge(status: server.windowStatus(window), theme: theme)
