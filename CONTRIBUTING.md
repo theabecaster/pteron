@@ -1,7 +1,7 @@
 # Contributing
 
-Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) for how the project is built and
-tested.
+Issues and pull requests are welcome. [docs/development.md](docs/development.md) explains how to
+build and test the project, and [AGENTS.md](AGENTS.md) has the full working guide.
 
 ## Licence of contributions
 
