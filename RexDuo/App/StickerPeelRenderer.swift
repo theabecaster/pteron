@@ -104,6 +104,9 @@ final class StickerPeelKit: @unchecked Sendable {
     /// `LaunchRexie` at the screen's scale, premultiplied sRGB, with mipmaps for the shadow blur.
     let art: MTLTexture
     let artScale: CGFloat
+    /// Where the sticker's paper backing is: the art's alpha with the seams inside it filled
+    /// (`closedAlpha`), one byte a texel, on the art's pixel grid.
+    let backing: MTLTexture
     let indices: MTLBuffer
     let indexCount: Int
     /// Library compile plus both pipelines, and the whole build, in seconds.
@@ -164,7 +167,7 @@ final class StickerPeelKit: @unchecked Sendable {
         smooth = try sampler(.linear, mip: .linear)
         exact = try sampler(.nearest, mip: .notMipmapped)
 
-        (art, artScale) = try Self.loadArt(device: device, queue: queue)
+        (art, backing, artScale) = try Self.loadArt(device: device, queue: queue)
 
         let n = Self.grid
         var idx: [UInt16] = []
@@ -186,7 +189,7 @@ final class StickerPeelKit: @unchecked Sendable {
 
     /// Draws the art into a premultiplied BGRA sRGB bitmap ourselves, so alpha and color space are
     /// known, and generates mipmaps.
-    private static func loadArt(device: MTLDevice, queue: MTLCommandQueue) throws -> (MTLTexture, CGFloat) {
+    private static func loadArt(device: MTLDevice, queue: MTLCommandQueue) throws -> (MTLTexture, MTLTexture, CGFloat) {
         guard let img = UIImage(named: "LaunchRexie"), let cg = img.cgImage,
               let space = CGColorSpace(name: CGColorSpace.sRGB) else {
             throw StickerPeelError(description: "no LaunchRexie")
@@ -208,6 +211,15 @@ final class StickerPeelKit: @unchecked Sendable {
         d.storageMode = .shared
         guard let tex = device.makeTexture(descriptor: d) else { throw StickerPeelError(description: "no texture") }
         tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: bytes, bytesPerRow: w * 4)
+
+        // The backing's own coverage. BGRA, little-endian: alpha is every fourth byte, from the fourth.
+        let alpha = stride(from: 3, to: bytes.count, by: 4).map { bytes[$0] }
+        let closed = closedAlpha(alpha, width: w, height: h, radius: backingSeam)
+        let md = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: w, height: h, mipmapped: false)
+        md.usage = .shaderRead
+        md.storageMode = .shared
+        guard let mask = device.makeTexture(descriptor: md) else { throw StickerPeelError(description: "no backing texture") }
+        mask.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: closed, bytesPerRow: w)
         guard let cb = queue.makeCommandBuffer(), let blit = cb.makeBlitCommandEncoder() else {
             throw StickerPeelError(description: "no blit")
         }
@@ -215,7 +227,80 @@ final class StickerPeelKit: @unchecked Sendable {
         blit.endEncoding()
         cb.commit()
         cb.waitUntilCompleted()
-        return (tex, img.scale)
+        return (tex, mask, img.scale)
+    }
+
+    /// Seams up to twice this many texels wide are filled in the backing.
+    static let backingSeam = 2
+
+    /// The art's alpha with the thin seams inside the shape filled, for the paper backing.
+    ///
+    /// The art is drawn from shapes that meet edge to edge (Rexie's body and mouth), and where two
+    /// antialiased edges meet, the texels are not quite opaque: about 70% along that seam. On the
+    /// art side nothing shows, but a backing cut with the same alpha lets a hairline of whatever
+    /// lies behind it through, and behind it is the art's own colour where the sheet curls over
+    /// itself. A sheet of paper has no such gap.
+    ///
+    /// Each part-transparent texel inside the shape (no clear texel within `radius`) gets the value
+    /// a morphological closing gives it (grow by `radius`, then shrink by `radius`, with a square):
+    /// opaque when opaque texels stand on both sides of it within `radius`. Clear texels stay clear,
+    /// opaque ones opaque, and the outline keeps its antialiasing, so only the seam's few hundred
+    /// texels cost anything: this runs while the peel's kit is built, which has to be ready before
+    /// the peel starts.
+    static func closedAlpha(_ alpha: [UInt8], width: Int, height: Int, radius: Int) -> [UInt8] {
+        guard radius > 0, width > 0, height > 0, alpha.count == width * height else { return alpha }
+        var out = alpha
+        // The grown image, worked out only where it is asked for. -1: not yet.
+        var grown = [Int16](repeating: -1, count: alpha.count)
+        alpha.withUnsafeBufferPointer { a in
+            grown.withUnsafeMutableBufferPointer { g in
+                out.withUnsafeMutableBufferPointer { o in
+                    for y in 0..<height {
+                        let row = y * width
+                        for x in 0..<width {
+                            let v = a[row + x]
+                            if v == 0 || v == 255 { continue }
+                            // A clear texel nearby, or the image's edge (outside counts as clear):
+                            // this one is on the outline, and the outline stays as drawn. That is
+                            // nearly all of them, and it is settled in a read or two.
+                            if y < radius || x < radius || y >= height - radius || x >= width - radius { continue }
+                            var onOutline = false
+                            scan: for qy in (y - radius)...(y + radius) {
+                                for qx in (x - radius)...(x + radius) where a[qy * width + qx] == 0 {
+                                    onOutline = true
+                                    break scan
+                                }
+                            }
+                            if onOutline { continue }
+                            // Inside the shape. Shrink: the least of the grown image around it.
+                            var least: Int16 = 255
+                            do {
+                                for qy in (y - radius)...(y + radius) {
+                                    for qx in (x - radius)...(x + radius) {
+                                        let q = qy * width + qx
+                                        var most = g[q]
+                                        if most < 0 {
+                                            // Grow: the most of the art around that one.
+                                            most = 0
+                                            for ry in max(qy - radius, 0)...min(qy + radius, height - 1) {
+                                                for rx in max(qx - radius, 0)...min(qx + radius, width - 1) {
+                                                    most = max(most, Int16(a[ry * width + rx]))
+                                                }
+                                            }
+                                            g[q] = most
+                                        }
+                                        least = min(least, most)
+                                    }
+                                }
+                            }
+                            // Closing never removes coverage.
+                            o[row + x] = max(v, UInt8(least))
+                        }
+                    }
+                }
+            }
+        }
+        return out
     }
 }
 
@@ -546,6 +631,7 @@ final class StickerPeelRenderer: NSObject, CAMetalDisplayLinkDelegate, @unchecke
             enc.setVertexBytes(&u, length: MemoryLayout<StickerPeelUniforms>.stride, index: 0)
             enc.setFragmentBytes(&u, length: MemoryLayout<StickerPeelUniforms>.stride, index: 0)
             enc.setFragmentTexture(kit.art, index: 0)
+            enc.setFragmentTexture(kit.backing, index: 1)
             enc.setFragmentSamplerState(kit.smooth, index: 0)
             enc.setFragmentSamplerState(kit.exact, index: 1)
             enc.setRenderPipelineState(kit.sticker)
