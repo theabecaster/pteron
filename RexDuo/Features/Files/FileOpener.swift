@@ -1,3 +1,4 @@
+import CryptoKit
 import QuickLook
 import UIKit
 import RexKit
@@ -149,6 +150,13 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource {
     }
 
     private func show(_ url: URL, over view: UIView?) {
+        #if DEBUG
+        // `FILES_OPENED <name> <bytes> <sha256>` in the system log, to check against the computer's copy.
+        if let data = try? Data(contentsOf: url) {
+            let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            NSLog("FILES_OPENED %@ %ld %@", url.lastPathComponent, data.count, hex)
+        }
+        #endif
         guard var top = view?.window?.rootViewController else { return }
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
         showing = url

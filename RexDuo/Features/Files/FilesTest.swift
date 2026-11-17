@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// once it is live, where the simulator can't tap through a picker. Steps run a second apart:
 ///
 /// - `keyboard`: show the software keyboard and its key bar, even with a hardware keyboard.
-/// - `menu`: open the attach menu.
+/// - `menu`: open the attach menu. `reveal`: scroll the key bar to the attach key.
 /// - `send:<path>|<path>`: send these files (paths on the Mac running the simulator) as one batch,
 ///   prepared as Photos prepares them. `sendOriginal:` sends them untouched.
 /// - `paste:<path>`: put this image on the clipboard alone, then Paste.
@@ -39,8 +39,8 @@ enum FilesTest {
         case "keyboard":
             host.hardwareKeyboard = { false }
             host.focusKeyboard()
-        case "menu":
-            host.openAttachMenu()
+        case "menu", "reveal":
+            host.openAttachMenu(open: verb == "menu")
         case "send", "sendOriginal":
             let original = verb == "sendOriginal"
             let files = arg.split(separator: "|").compactMap { path -> StagedFile? in

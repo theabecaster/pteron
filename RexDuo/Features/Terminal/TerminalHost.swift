@@ -1261,7 +1261,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     #if DEBUG
     /// `-filesTest menu`: opens the attach key's menu as a tap does.
-    func openAttachMenu() { keyBar.openAttachMenu() }
+    func openAttachMenu(open: Bool = true) { keyBar.openAttachMenu(open: open) }
     #endif
 
     /// Shows the attach key once the server is known to take files.

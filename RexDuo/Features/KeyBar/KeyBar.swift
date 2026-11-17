@@ -230,8 +230,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private weak var attachButton: UIButton?
 
     #if DEBUG
-    /// `-filesTest menu`: opens the attach menu as a tap does.
-    func openAttachMenu() { attachButton?.performPrimaryAction() }
+    /// `-filesTest menu`: opens the attach menu as a tap does; `reveal` only scrolls to its key.
+    func openAttachMenu(open: Bool = true) {
+        guard let button = attachButton, let cap = button.superview else { return }
+        scroll.scrollRectToVisible(scroll.convert(cap.bounds, from: cap), animated: false)
+        if open { button.performPrimaryAction() }
+    }
     #endif
 
     /// The attach key opens its menu on a tap: a button over the key, which keeps the key's look.
