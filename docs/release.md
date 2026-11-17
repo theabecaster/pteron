@@ -39,8 +39,9 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
 
 ## Install on the iPhone Duo
 
-`scripts/install-duo.sh [build]` runs `sync-macdesk.sh`, builds Release for the Duo paired with
-macdesk and installs it with `devicectl`. The build log is `macdesk:~/rexduo-build/build.log`.
+The Duo is paired with this Mac. `scripts/install-duo.sh [build]` builds Release here and installs it
+with `devicectl`; the build log is `build/install-duo.log`. `VIA=macdesk scripts/install-duo.sh`
+does the same on macdesk (after `sync-macdesk.sh`) for when the Duo is paired there.
 
 ## TestFlight
 
