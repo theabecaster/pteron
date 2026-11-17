@@ -33,6 +33,9 @@ builds.
   camera had (the simulator has no camera). `open` only opens the scanner. With `-settings
   addServer` it scans from that page, and `-simulateOffline <kind>` makes the check fail that way.
   `-simulateCamera denied|restricted|unavailable` shows the scanner in that camera state.
+  `-simulateIdentity 'os=linux,account=sam,owner=sam@x.com,viewer=me@x.com,sessions=api|web,count=5,helper=no'`
+  gives a scanned code that identity card with no network. `-pairHost <https address>` opens the
+  flow at that address, as a tap on a known computer does.
 - `-pushToken <hex>`: use this APNs token and skip the permission check (push registration in a
   simulator).
 - `-launchPeel fold`, `-launchSlow <factor>`, `-launchHold <seconds>`: the launch transition

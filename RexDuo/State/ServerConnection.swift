@@ -33,6 +33,35 @@ struct HostEntry: Identifiable, Equatable {
     var endpoints: [String]
 }
 
+/// A computer from a server's host list that isn't saved in the app, for the sidebar.
+struct KnownHost: Identifiable, Equatable {
+    var id: String
+    var label: String
+    /// Its address, when it can be told (`PairingCode.candidate`).
+    var candidate: PairingCode.Candidate?
+
+    /// Every listed host that isn't a saved server, by name or by address, once each.
+    static func unsaved(_ servers: [(config: ServerConfig, hosts: [HostEntry])]) -> [KnownHost] {
+        let configs = servers.map(\.config)
+        let names = Set(configs.map { $0.name.lowercased() })
+        var seen = Set<String>()
+        var out: [KnownHost] = []
+        for (config, hosts) in servers {
+            for h in hosts {
+                let key = h.label.lowercased()
+                guard !names.contains(key), !seen.contains(key) else { continue }
+                let candidate = ServerConfig.url(from: config.url).flatMap {
+                    PairingCode.candidate(label: h.label, endpoints: h.endpoints, listedBy: $0)
+                }
+                if let candidate, PairingCode.existing(candidate.url, in: configs) != nil { continue }
+                seen.insert(key)
+                out.append(KnownHost(id: h.id.isEmpty ? key : h.id, label: h.label, candidate: candidate))
+            }
+        }
+        return out
+    }
+}
+
 /// Everything known about one Rex server: its sessions, their layouts, and live block metadata.
 ///
 /// Sync rules, kept simple:

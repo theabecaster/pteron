@@ -154,6 +154,15 @@ Every field is optional.
 
 `devices.json` in the same folder holds the registered phones. A device whose token APNs rejects with `410 Unregistered` or `BadDeviceToken` is removed.
 
+The first time a phone registers, the computer shows one desktop notification: "Rex DUO
+connected", "<device name> can now open your sessions on this computer." It shows once per
+`device_id`, ever: `seen_devices.json` in the same folder keeps every id that has registered, so
+a new token, a reconnect, a helper restart or an unregister followed by a register shows nothing.
+Phones already in `devices.json` when the helper is upgraded count as seen, and a registration
+without a `device_id` shows nothing. On a Mac the notification goes through `osascript`; on
+Linux through `notify-send`, and only if it is installed and a desktop session is there
+(otherwise the helper logs a line and carries on). `--dry-run` logs `DRY-RUN notice` instead.
+
 ## What the app must do
 
 ### 1. Put a device id in the Rex client label

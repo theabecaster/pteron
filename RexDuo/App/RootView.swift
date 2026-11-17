@@ -59,6 +59,10 @@ struct RootView: View {
                 if UserDefaults.standard.string(forKey: "simulateScan") != nil, SettingsPage.debugLaunch == nil {
                     model.showPairing = true
                 }
+                // `-pairHost <https address>` (testing): open the pairing flow at that address.
+                if let host = UserDefaults.standard.string(forKey: "pairHost").flatMap(URL.init(string:)) {
+                    model.startPairing(prefilled: host, guessed: true)
+                }
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
                 #endif

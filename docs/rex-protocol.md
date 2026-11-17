@@ -33,6 +33,9 @@ app relies on; update it when you use a new method or event.
   (`mode: "take"`), `disown_block`.
 - Other: `block.close`, `hosts.list`, `data.connect`, `client.keymap`, `client.action`,
   `client.key`.
+- Before a server is added (`ServerPreview`, one short connection that attaches to nothing):
+  `server.status` (owner, session count), `server.version` (platform), `server.whoami` (account,
+  this device's login), `session.list`, `client.list` (is a helper there).
 - Terminal block: `size`, `format` (`vt` with the `extra_*` flags for the screen, `text` for tab
   previews), `blob_read`, `write`, `resize`, `clear`, `title`, `process`, `program_status`.
 

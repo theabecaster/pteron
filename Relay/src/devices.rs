@@ -1,11 +1,12 @@
 //! Registered phones (devices.json) and "is Rex DUO open on this phone right now?".
 
 use crate::info;
+use crate::notice::SeenDevices;
 use crate::util::{now_iso, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One phone that asked for pushes. Field names and date format match the Swift helper's
 /// devices.json, so an existing file keeps working.
@@ -56,41 +57,78 @@ impl Device {
     }
 }
 
-/// devices.json: the registered phones, keyed by token.
+/// devices.json: the registered phones, keyed by token. Next to it, seen_devices.json: every
+/// device id that ever registered, which outlives an unregister.
 pub struct DeviceStore {
     pub path: PathBuf,
     pub devices: Vec<Device>,
+    seen: SeenDevices,
 }
+
+fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    match std::fs::read(path) {
+        Ok(data) => serde_json::from_slice(&data).unwrap_or_else(|e| {
+            info!("could not read {}: {e}", path.display());
+            T::default()
+        }),
+        Err(_) => T::default(),
+    }
+}
+
+/// Writes through a temporary file, readable by this user only.
+fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&tmp, path)
+    };
+    if let Err(e) = write() {
+        info!("could not write {}: {e}", path.display());
+    }
+}
+
+const SEEN_FILE: &str = "seen_devices.json";
 
 impl DeviceStore {
     pub fn open(path: PathBuf) -> DeviceStore {
-        let devices = match std::fs::read(&path) {
-            Ok(data) => serde_json::from_slice(&data).unwrap_or_else(|e| {
-                info!("could not read {}: {e}", path.display());
-                vec![]
-            }),
-            Err(_) => vec![],
-        };
-        DeviceStore { path, devices }
+        let devices: Vec<Device> = read_json(&path);
+        // A phone registered before this file existed (an older helper) counts as seen.
+        let on_disk = SeenDevices::new(read_json::<Vec<String>>(&path.with_file_name(SEEN_FILE)));
+        let mut seen = on_disk.clone();
+        for id in devices.iter().filter_map(|d| d.device_id.as_deref()) {
+            seen.observe(id);
+        }
+        let store = DeviceStore { path, devices, seen };
+        if store.seen != on_disk {
+            store.save_seen();
+        }
+        store
     }
 
     fn save(&self) {
-        let write = || -> std::io::Result<()> {
-            if let Some(dir) = self.path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            let tmp = self.path.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec_pretty(&self.devices)?)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-            }
-            std::fs::rename(&tmp, &self.path)
-        };
-        if let Err(e) = write() {
-            info!("could not write {}: {e}", self.path.display());
+        write_json(&self.path, &self.devices);
+    }
+
+    fn save_seen(&self) {
+        write_json(&self.path.with_file_name(SEEN_FILE), &self.seen.ids().collect::<Vec<_>>());
+    }
+
+    /// True the first time this device id registers, ever: not after a new token, an
+    /// unregister or a restart. A registration without an id is never new.
+    pub fn first_sight(&mut self, device_id: Option<&str>) -> bool {
+        let new = device_id.is_some_and(|id| self.seen.observe(id));
+        if new {
+            self.save_seen();
         }
+        new
     }
 
     /// Adds or updates a device. A device id that moves to a new token replaces the old entry
@@ -266,6 +304,82 @@ mod tests {
         assert!(s.remove(&"CD".repeat(32)));
         assert!(DeviceStore::open(path.clone()).devices.is_empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    fn temp_store(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("seen-{tag}-{}-{}", std::process::id(), crate::util::now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("devices.json")
+    }
+
+    fn phone(id: &str, token: &str) -> Device {
+        let mut d = Device::new(&token.repeat(32), "sandbox");
+        d.device_id = Some(id.into());
+        d
+    }
+
+    #[test]
+    fn first_sight_once_per_device_id() {
+        let path = temp_store("once");
+        let mut s = DeviceStore::open(path.clone());
+        assert!(s.first_sight(Some("a1b2c3d4")));
+        s.register(phone("a1b2c3d4", "ab"));
+        // Again, and with a new token.
+        assert!(!s.first_sight(Some("a1b2c3d4")));
+        s.register(phone("a1b2c3d4", "cd"));
+        assert!(!s.first_sight(Some("a1b2c3d4")));
+        assert!(s.first_sight(Some("ffff0000")));
+        assert!(!s.first_sight(None));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn ids_in_an_existing_devices_file_are_seen() {
+        let path = temp_store("upgrade");
+        std::fs::write(&path, serde_json::to_vec(&vec![phone("A1B2C3D4", "ab"), phone("ffff0000", "cd")]).unwrap()).unwrap();
+        let mut s = DeviceStore::open(path.clone());
+        assert!(!s.first_sight(Some("a1b2c3d4")));
+        assert!(!s.first_sight(Some("ffff0000")));
+        // Still seen once the phone is gone from devices.json, in this run and the next.
+        assert!(s.remove(&"ab".repeat(32)));
+        assert!(!s.first_sight(Some("a1b2c3d4")));
+        assert!(!DeviceStore::open(path.clone()).first_sight(Some("a1b2c3d4")));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unregister_then_register_is_not_new() {
+        let path = temp_store("unregister");
+        let mut s = DeviceStore::open(path.clone());
+        assert!(s.first_sight(Some("a1b2c3d4")));
+        s.register(phone("a1b2c3d4", "ab"));
+        assert!(s.remove(&"ab".repeat(32)));
+        assert!(!s.first_sight(Some("a1b2c3d4")));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn seen_devices_survive_a_reload() {
+        let path = temp_store("reload");
+        let mut s = DeviceStore::open(path.clone());
+        assert!(s.first_sight(Some("a1b2c3d4")));
+        // Never registered and nothing in devices.json: only seen_devices.json remembers it.
+        let mut again = DeviceStore::open(path.clone());
+        assert!(again.devices.is_empty());
+        assert!(!again.first_sight(Some("a1b2c3d4")));
+        assert!(again.first_sight(Some("ffff0000")));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unreadable_seen_file_falls_back_to_devices() {
+        let path = temp_store("corrupt");
+        std::fs::write(&path, serde_json::to_vec(&vec![phone("a1b2c3d4", "ab")]).unwrap()).unwrap();
+        std::fs::write(path.with_file_name(SEEN_FILE), "not json").unwrap();
+        let mut s = DeviceStore::open(path.clone());
+        assert!(!s.first_sight(Some("a1b2c3d4")));
+        assert!(s.first_sight(Some("ffff0000")));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

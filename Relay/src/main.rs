@@ -6,6 +6,7 @@ mod config;
 mod devices;
 mod discovery;
 mod legacy;
+mod notice;
 mod policy;
 mod push;
 mod relay;

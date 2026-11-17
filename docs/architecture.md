@@ -51,12 +51,22 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 
 `rex server tailscale pair` shows the server's https address as a QR code: no credential, nothing
 else. `Features/Pairing` scans it (AVFoundation; the camera permission is asked for when the scanner
-opens) and `PairingModel` (`State/Pairing.swift`) takes it from there: parse and normalize
-(`PairingCode`), stop at a server that is already saved, check that Rex answers
-(`ServerProbe` in RexKit: a plain `GET /api/control`, which Rex answers with 426, so no client ever
-shows on the server; redirects are not followed, so only the address asked can answer), then name and add. A failed check goes through `ConnectionProblem.classify`
-and is worded by `PairingProblem`. A server added this way connects and registers for pushes like
-any other.
+opens) and `PairingModel` (`State/Pairing.swift`) takes it from there, one step at a time:
+
+1. Parse and normalize (`PairingCode`). A server that is already saved is opened, not added again.
+2. Check (`AppModel.check`). `ServerProbe` (RexKit) sends a plain `GET /api/control`, which Rex
+   answers with 426; redirects are not followed, so only the address asked can answer. A failure
+   goes through `ConnectionProblem.classify` and is worded by `PairingProblem`.
+3. Identify. `ServerPreview` (RexKit) opens one control connection, makes five read-only calls
+   (`server.status`, `server.version`, `server.whoami`, `session.list`, `client.list`) and closes.
+   It attaches to nothing, so the server drops the client at once, and its label has no device id,
+   so the helper doesn't take it for the phone being open. `IdentityCopy` words the card.
+4. Add & Open. The server is saved, connects and registers for pushes like any other, and
+   `AppModel.openWhenReady` lands on its active tab once its sessions are in.
+
+The camera's picture freezes under a dim from the moment a code is read; the cards sit on it.
+`AppModel.startPairing(prefilled:name:guessed:)` starts at step 2 for an address that didn't come
+from a code (a computer another server lists), with no camera.
 
 Phone-only view state (zoomed tabs, when agents started waiting) lives in `PhoneState` and never
 goes to the server, so the Mac's layout doesn't change because of the phone.
