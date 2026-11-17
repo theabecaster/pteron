@@ -281,6 +281,9 @@ final class GhosttyCoreTests: XCTestCase {
             }
             drawn.set()
         }
+        // The first frame compiles the shaders and builds the atlas, which can take longer than
+        // all the restores: without this wait they could finish before anything was drawn.
+        while !frames.isSet { usleep(1000) }
         // The stream: a snapshot, then live bytes, again and again.
         let restores = 400
         let fed = GhosttyTestFlag()
