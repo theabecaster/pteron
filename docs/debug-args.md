@@ -27,7 +27,11 @@ builds.
   `-tapTestType <text>` types after the last tap.
 - `-ghosttyDemo <path>`: no server; replay a capture in a bare terminal view (`GhosttyDemoScreen`).
   `-replay <file>`: no server; feed a capture to a real pane (`ReplayScreen`, more arguments
-  there). `-perfLog <name>`: measure the pane into `Documents/perf/<name>.json` (`PerfProbe`).
+  there). `-perfLog <name>`: measure the pane into `Documents/perf/<name>.json` (`PerfProbe`);
+  with it, `-perfIdle <seconds>` and `-perfScroll <seconds>` add an idle phase and a scripted
+  fling through the scrollback. `-perfClean YES` deletes `Documents/perf` and `Documents/bench`
+  and quits. `-peelLeadIn <seconds>` and `-drawables 2` are A/B switches for the device
+  benchmark. All of these also work in the benchmark's `BENCH` Release build.
 - `-selectionDemo <steps>`, `-selectionLoupe off`: docs/selection.md.
 - `-simulateScan <payload>`: open "Pair via QR Code" at launch and read this payload as if the
   camera had (the simulator has no camera). `open` only opens the scanner. With `-settings

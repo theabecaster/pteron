@@ -92,6 +92,15 @@ final class GhosttyTerminalView: UIView {
     private var restoreEpoch = -1
     private var inForeground = true
 
+    /// Drawables per pane's layer. Benchmark builds take `-drawables 2` to compare.
+    nonisolated static let drawableCount: Int = {
+        #if DEBUG || BENCH
+        let n = UserDefaults.standard.integer(forKey: "drawables")
+        if n == 2 || n == 3 { return n }
+        #endif
+        return 3
+    }()
+
     init(frame: CGRect, fontSize: CGFloat, cols: Int = 80, rows: Int = 24) {
         self.fontSize = fontSize
         self.cols = cols
@@ -110,7 +119,7 @@ final class GhosttyTerminalView: UIView {
         layer.framebufferOnly = true
         layer.isOpaque = true
         layer.contentsScale = displayScale
-        layer.maximumDrawableCount = 3
+        layer.maximumDrawableCount = Self.drawableCount
         // `nextDrawable` runs on the render thread every pane shares. With the timeout it comes
         // back with nil after a second when no drawable is free; without it, it never would.
         // The renderer then leaves the pane alone for a while (`GhosttyRenderer.drawableRetryAt`).

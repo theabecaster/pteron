@@ -37,6 +37,38 @@ enum PerfSystem {
             + Double(info.system_time.seconds) + Double(info.system_time.microseconds) / 1e6
     }
 
+    /// The kernel's energy and wake-up counters for the process so far (`TASK_POWER_INFO_V2`).
+    struct Power: Sendable {
+        /// Energy the kernel charged to the process (CPU and what it attributes of the rest), in
+        /// nanojoules. Zero where the kernel doesn't count it (the simulator).
+        var energyNJ: UInt64 = 0
+        /// GPU time charged to the process, in nanoseconds.
+        var gpuNS: UInt64 = 0
+        /// Times a thread of the process was woken by an interrupt (timers included), and those
+        /// that took a core out of idle: what costs battery while the app looks idle.
+        var interruptWakeups: UInt64 = 0
+        var idleWakeups: UInt64 = 0
+    }
+
+    static func power() -> Power {
+        var info = task_power_info_v2_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_power_info_v2_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { p in
+            p.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(currentTask(), task_flavor_t(TASK_POWER_INFO_V2), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return Power() }
+        #if arch(arm64)
+        let energy = info.task_energy
+        #else
+        let energy: UInt64 = 0
+        #endif
+        return Power(energyNJ: energy, gpuNS: info.gpu_energy.task_gpu_utilisation,
+                     interruptWakeups: info.cpu_energy.task_interrupt_wakeups,
+                     idleWakeups: info.cpu_energy.task_platform_idle_wakeups)
+    }
+
     /// The calling thread's port, for `threadCPUSeconds`. No reference is taken.
     static func currentThread() -> thread_act_t { pthread_mach_thread_np(pthread_self()) }
 

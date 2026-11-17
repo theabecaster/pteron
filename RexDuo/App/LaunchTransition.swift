@@ -307,10 +307,12 @@ final class LaunchSplashView: UIView {
         let elapsed = Self.processUptime() ?? 0
         let delay = max(Self.minimumSplash - elapsed, Self.handoff) + Debug.hold
         let t0 = CACurrentMediaTime() + delay
+        PerfProbe.active?.launchStep("splash")  // PERF
 
         if UIAccessibility.isReduceMotionEnabled {
             CATransaction.begin()
             CATransaction.setCompletionBlock { [weak self] in
+                PerfProbe.active?.launchStep("done")  // PERF
                 self?.removeFromSuperview()
                 completion()
             }
@@ -354,6 +356,7 @@ final class LaunchSplashView: UIView {
 
     /// Picks the peel once: Metal if its renderer arrived in time, else the Core Animation fold.
     private func begin(with made: Result<StickerPeelRenderer, StickerPeelError>?) {
+        if case .success? = made { PerfProbe.active?.launchStep("rendererReady") }  // PERF
         guard let p = pending else { return }   // already decided; a late renderer is simply dropped
         pending = nil
         let now = CACurrentMediaTime()
@@ -361,17 +364,23 @@ final class LaunchSplashView: UIView {
         switch made {
         case .success(let r)? where now < p.t0 - Self.metalLead / 2:
             renderer = r
+            PerfProbe.active?.launchPeel("metal")  // PERF
         case .failure(let e)?:
             StickerPeel.log.debug("peel: Core Animation fold (\(e.description, privacy: .public))")
+            PerfProbe.active?.launchPeel("fold (\(e.description))")  // PERF
         default:
             StickerPeel.log.debug("peel: Core Animation fold (Metal not ready in time, or forced)")
+            PerfProbe.active?.launchPeel(made == nil ? "fold (Metal not ready in time)" : "fold (renderer too close to the start)")  // PERF
         }
+        PerfProbe.active?.launchStep("decided", at: now)  // PERF
         // A main thread blocked past the start would skip the beginning: start a beat later instead.
         animate(t0: max(p.t0, now + 0.03), renderer: renderer, content: p.content, completion: p.completion)
     }
 
     private func peelFinished(_ stats: StickerPeelStats) {
         StickerPeel.log.debug("peel: \(stats.summary, privacy: .public)")
+        PerfProbe.active?.launchPeelFrames(targets: stats.targets, leads: stats.leads, encode: stats.encode, gpu: stats.gpu,
+                                           late: stats.late)  // PERF
         peel?.layer.removeFromSuperlayer()
         peel = nil
     }
@@ -379,9 +388,11 @@ final class LaunchSplashView: UIView {
     private func animate(t0: CFTimeInterval, renderer: StickerPeelRenderer?, content: UIView?,
                          completion: @escaping () -> Void) {
         let k = Debug.slow
+        PerfProbe.active?.launchStep("start", at: t0)  // PERF
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         CATransaction.setCompletionBlock { [weak self] in
+            PerfProbe.active?.launchStep("done")  // PERF
             self?.peel?.cancel()
             self?.removeFromSuperview()
             completion()
@@ -516,7 +527,7 @@ final class LaunchSplashView: UIView {
     }
 
     /// Seconds since this process started (the user's tap, roughly).
-    private static func processUptime() -> CFTimeInterval? {
+    nonisolated static func processUptime() -> CFTimeInterval? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]

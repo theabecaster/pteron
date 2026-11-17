@@ -67,3 +67,36 @@ struct PerfBusyStats: Equatable {
         return s
     }
 }
+
+/// Hitches against the display's own frame interval: a gap between consecutive events (display
+/// link ticks, or frames presented while every interval should have one) longer than one and a
+/// half intervals, so at least one refresh went by without a new frame. At 120 Hz that is a gap
+/// over 12.5 ms. `hitchSeconds` is what those gaps took beyond one interval each (Apple's hitch
+/// time; divided by the window it is the hitch time ratio, in ms per second).
+struct PerfHitchStats: Equatable {
+    /// Events inside the window.
+    var events = 0
+    var hitches = 0
+    var hitchSeconds = 0.0
+    var worstSeconds = 0.0
+
+    /// `times` must be ascending. `period` is the display's frame interval in seconds. Only gaps
+    /// between two events inside the window count.
+    static func measure(_ times: [Double], in window: PerfWindow, period: Double) -> PerfHitchStats {
+        var s = PerfHitchStats()
+        var previous: Double?
+        for t in times where t > window.from && t <= window.to {
+            s.events += 1
+            if let p = previous {
+                let gap = t - p
+                if gap > period * 1.5 {
+                    s.hitches += 1
+                    s.hitchSeconds += gap - period
+                }
+                s.worstSeconds = max(s.worstSeconds, gap)
+            }
+            previous = t
+        }
+        return s
+    }
+}

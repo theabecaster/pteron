@@ -67,11 +67,8 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
 - Every app build runs `scripts/check-ghostty.sh` first. A missing or stale framework stops the build
   with one line saying to run `scripts/build-ghostty.sh`. How the build, patches and symbol check
   work: [docs/ghostty-engine.md](docs/ghostty-engine.md), Toolchain.
-- To re-pin Ghostty, change `GHOSTTY_COMMIT` in `scripts/ghostty.version` (and the Zig version and
-  hash if Ghostty's `minimum_zig_version` moved), run the build script, and check
-  `RexDuo/Resources/Acknowledgements.txt` against the `"use": "linked"` entries in
-  `Vendor/ghostty/deps/libghostty-vt-third-party.json`, because the app must ship every linked
-  licence.
+- To re-pin Ghostty: [docs/ghostty-engine.md](docs/ghostty-engine.md), Toolchain (it includes the
+  licence check).
 - Use a concrete simulator id: the framework's simulator slice is arm64 only, and
   `generic/platform=iOS Simulator` also builds x86_64. A Release simulator build needs
   `ONLY_ACTIVE_ARCH=YES` for the same reason.
