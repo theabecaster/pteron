@@ -12,6 +12,7 @@ private final class FakeRex: @unchecked Sendable {
     private var open = 0
     private var accepted = 0
     private var asked: [String] = []
+    private var closes = 0
     private let replies: [String: String]
     private let welcomes: Bool
 
@@ -55,6 +56,8 @@ private final class FakeRex: @unchecked Sendable {
 
     var methods: [String] { queue.sync { asked } }
     var openConnections: Int { queue.sync { open } }
+    /// Connections the client ended with a WebSocket close frame, not by dropping the socket.
+    var closeFrames: Int { queue.sync { closes } }
     /// Every connection made since the start, closed ones included.
     var connectionsMade: Int { queue.sync { accepted } }
     func stop() { queue.sync { listener.cancel(); for c in connections { c.cancel() } } }
@@ -67,9 +70,16 @@ private final class FakeRex: @unchecked Sendable {
 
     private func receive(_ c: NWConnection) {
         c.receiveMessage { [weak self] data, context, _, error in
-            guard let self, error == nil else { return }
+            guard let self else { return }
             if let meta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata,
                meta.opcode == .close {
+                self.closes += 1
+                c.cancel()
+                return
+            }
+            // The client's side of the socket is gone without a close frame. A server closes its
+            // side too: an NWConnection stays `ready` after the peer's end of file until then.
+            if error != nil || (data == nil && context == nil) {
                 c.cancel()
                 return
             }
@@ -218,6 +228,8 @@ struct ServerIdentityTests {
         for _ in 0..<200 where server.openConnections != 0 { try await Task.sleep(nanoseconds: 10_000_000) }
         #expect(server.openConnections == 0)
         #expect(server.connectionsMade == 1)
+        // And closed as a WebSocket closes, so the server sees a client that left.
+        #expect(server.closeFrames == 1)
     }
 
     @Test func aServerThatAnswersSomeCallsGivesWhatItAnswered() async throws {
