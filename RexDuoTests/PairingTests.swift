@@ -7,31 +7,31 @@ import Testing
 
 @MainActor
 struct PairingTests {
-    private let mac = ServerConfig(name: "Studio", url: "https://macbook-pro-rex.tail8657d0.ts.net")
+    private let mac = ServerConfig(name: "Studio", url: "https://office-mac-rex.tail1234.ts.net")
 
     // MARK: Parsing
 
     @Test func readsRexCodeAsItsAddress() {
-        #expect(PairingCode.address(from: "https://workdesk-rex.tail8657d0.ts.net")?.absoluteString
-                == "https://workdesk-rex.tail8657d0.ts.net")
+        #expect(PairingCode.address(from: "https://devbox-rex.tail1234.ts.net")?.absoluteString
+                == "https://devbox-rex.tail1234.ts.net")
     }
 
     @Test func normalizesCaseSpacePathAndDefaultPort() {
-        let want = "https://workdesk-rex.tail8657d0.ts.net"
-        for raw in ["  HTTPS://WorkDesk-Rex.Tail8657d0.ts.net/\n", "https://workdesk-rex.tail8657d0.ts.net:443",
-                    "https://workdesk-rex.tail8657d0.ts.net/api/control?x=1#y"] {
+        let want = "https://devbox-rex.tail1234.ts.net"
+        for raw in ["  HTTPS://DevBox-Rex.Tail1234.ts.net/\n", "https://devbox-rex.tail1234.ts.net:443",
+                    "https://devbox-rex.tail1234.ts.net/api/control?x=1#y"] {
             #expect(PairingCode.address(from: raw)?.absoluteString == want, "\(raw)")
         }
         #expect(PairingCode.address(from: "https://10.0.0.5:8443/")?.absoluteString == "https://10.0.0.5:8443")
         // A fully qualified name's trailing dot is the same host.
-        #expect(PairingCode.address(from: "https://workdesk-rex.tail8657d0.ts.net.")?.absoluteString == want)
+        #expect(PairingCode.address(from: "https://devbox-rex.tail1234.ts.net.")?.absoluteString == want)
         #expect(PairingCode.address(from: "https://[fd7a:115c:a1e0::1]:8443")?.host() == "fd7a:115c:a1e0::1")
     }
 
     @Test func rejectsWhatIsNotAnHTTPSAddress() {
-        for raw in ["", "hello", "workdesk-rex.tail8657d0.ts.net", "http://workdesk-rex.tail8657d0.ts.net",
+        for raw in ["", "hello", "devbox-rex.tail1234.ts.net", "http://devbox-rex.tail1234.ts.net",
                     "rex://pair?url=x", "WIFI:S:Home;T:WPA;P:secret;;", "https://", "https://localhost",
-                    "https://user:pw@workdesk-rex.tail8657d0.ts.net", "https://a.ts.net and more",
+                    "https://user:pw@devbox-rex.tail1234.ts.net", "https://a.ts.net and more",
                     "mailto:someone@example.com", "https://a.b", "https://.", "https://..", "https://studio",
                     "https://-a.example.com", "https://a-.example.com", "https://a..example.com", "https://a_b.example.com",
                     "https://example.123", "https://999.1.1.1", "https://1.2.3", "https://1.2.3.4.5"] {
@@ -42,21 +42,21 @@ struct PairingTests {
     // MARK: Saved servers
 
     @Test func findsTheSavedServerHoweverItWasTyped() throws {
-        let url = try #require(PairingCode.address(from: "https://macbook-pro-rex.tail8657d0.ts.net"))
-        for saved in ["https://macbook-pro-rex.tail8657d0.ts.net", "https://MacBook-Pro-Rex.tail8657d0.ts.net/",
-                      "macbook-pro-rex.tail8657d0.ts.net", "https://macbook-pro-rex.tail8657d0.ts.net:443"] {
-            let list = [ServerConfig(name: "Other", url: "https://workdesk-rex.tail8657d0.ts.net"), ServerConfig(name: "Mine", url: saved)]
+        let url = try #require(PairingCode.address(from: "https://office-mac-rex.tail1234.ts.net"))
+        for saved in ["https://office-mac-rex.tail1234.ts.net", "https://Office-Mac-Rex.tail1234.ts.net/",
+                      "office-mac-rex.tail1234.ts.net", "https://office-mac-rex.tail1234.ts.net:443"] {
+            let list = [ServerConfig(name: "Other", url: "https://devbox-rex.tail1234.ts.net"), ServerConfig(name: "Mine", url: saved)]
             #expect(PairingCode.existing(url, in: list)?.name == "Mine", "\(saved)")
         }
-        #expect(PairingCode.existing(url, in: [ServerConfig(name: "Port", url: "https://macbook-pro-rex.tail8657d0.ts.net:8443")]) == nil)
-        #expect(PairingCode.existing(url, in: [ServerConfig(name: "Plain", url: "http://macbook-pro-rex.tail8657d0.ts.net")]) == nil)
+        #expect(PairingCode.existing(url, in: [ServerConfig(name: "Port", url: "https://office-mac-rex.tail1234.ts.net:8443")]) == nil)
+        #expect(PairingCode.existing(url, in: [ServerConfig(name: "Plain", url: "http://office-mac-rex.tail1234.ts.net")]) == nil)
         #expect(PairingCode.existing(url, in: []) == nil)
     }
 
     @Test func namesAServerFromItsHost() throws {
         func name(_ s: String) throws -> String { ServerConfig.name(for: try #require(URL(string: s))) }
-        #expect(try name("https://workdesk-rex.tail8657d0.ts.net") == "workdesk")
-        #expect(try name("https://macbook-pro-rex.tail8657d0.ts.net") == "macbook-pro")
+        #expect(try name("https://devbox-rex.tail1234.ts.net") == "devbox")
+        #expect(try name("https://office-mac-rex.tail1234.ts.net") == "office-mac")
         #expect(try name("https://studio.tail1234.ts.net") == "studio")
         #expect(try name("https://rex.tail1234.ts.net") == "rex")
         #expect(try name("https://-rex.tail1234.ts.net") == "-rex")
@@ -65,8 +65,8 @@ struct PairingTests {
 
     @Test func tellsAForeignTailnet() throws {
         let other = try #require(URL(string: "https://studio-rex.tail999999.ts.net"))
-        let same = try #require(URL(string: "https://workdesk-rex.tail8657d0.ts.net"))
-        #expect(PairingCode.tailnet(of: same) == "tail8657d0.ts.net")
+        let same = try #require(URL(string: "https://devbox-rex.tail1234.ts.net"))
+        #expect(PairingCode.tailnet(of: same) == "tail1234.ts.net")
         #expect(PairingCode.tailnet(of: try #require(URL(string: "https://example.com"))) == nil)
         #expect(PairingCode.tailnet(of: try #require(URL(string: "https://ts.net"))) == nil)
         #expect(PairingCode.isForeignTailnet(other, servers: [mac]))
@@ -171,32 +171,32 @@ struct PairingTests {
 
     @Test func aReachableServerIsNamedThenAdded() async throws {
         let rig = Rig(servers: [mac])
-        #expect(rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net"))
-        let url = try #require(URL(string: "https://workdesk-rex.tail8657d0.ts.net"))
+        #expect(rig.model.scanned("https://devbox-rex.tail1234.ts.net"))
+        let url = try #require(URL(string: "https://devbox-rex.tail1234.ts.net"))
         #expect(rig.model.step == .checking(url))
         await rig.settle()
         #expect(rig.model.step == .found(url, nil))
-        #expect(rig.model.name == "workdesk")
+        #expect(rig.model.name == "devbox")
         #expect(rig.added.isEmpty)
 
         rig.model.name = "  Desk  "
         rig.model.add()
         #expect(rig.added.map(\.name) == ["Desk"])
-        #expect(rig.added.map(\.url) == ["https://workdesk-rex.tail8657d0.ts.net"])
+        #expect(rig.added.map(\.url) == ["https://devbox-rex.tail1234.ts.net"])
     }
 
     @Test func anEmptyNameFallsBackToTheHost() async {
         let rig = Rig(servers: [])
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         await rig.settle()
         rig.model.name = "   "
         rig.model.add()
-        #expect(rig.added.map(\.name) == ["workdesk"])
+        #expect(rig.added.map(\.name) == ["devbox"])
     }
 
     @Test func aSavedServerKeepsItsNameAndIsNotProbed() {
         let rig = Rig(servers: [mac])
-        #expect(rig.model.scanned("https://MACBOOK-PRO-REX.tail8657d0.ts.net/"))
+        #expect(rig.model.scanned("https://OFFICE-MAC-REX.tail1234.ts.net/"))
         #expect(rig.existing == [mac])
         #expect(rig.existing.first?.name == "Studio")
         #expect(rig.probed.isEmpty && rig.added.isEmpty)
@@ -210,7 +210,7 @@ struct PairingTests {
         #expect(rig.model.step == .scanning)
         #expect(rig.probed.isEmpty)
         // A real code right after clears the message.
-        #expect(rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net"))
+        #expect(rig.model.scanned("https://devbox-rex.tail1234.ts.net"))
         #expect(rig.model.rejection == nil)
     }
 
@@ -251,7 +251,7 @@ struct PairingTests {
 
     @Test func addingTwiceSavesOnce() async {
         let rig = Rig(servers: [])
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         await rig.settle()
         // Return on the name field, then a tap on Add.
         rig.model.add()
@@ -262,7 +262,7 @@ struct PairingTests {
         // Nothing restarts a finished run.
         let after = rig.model.step
         rig.model.rescan()
-        #expect(!rig.model.scanned("https://macdesk-rex.tail8657d0.ts.net"))
+        #expect(!rig.model.scanned("https://buildbox-rex.tail1234.ts.net"))
         #expect(rig.model.step == after)
         #expect(rig.probed.count == 1)
     }
@@ -270,7 +270,7 @@ struct PairingTests {
     @Test func addingAnywayTwiceSavesOnce() async {
         let rig = Rig(servers: [])
         rig.answers = [ConnectionProblem(kind: .notAnswering, detail: "d")]
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         await rig.settle()
         rig.model.addAnyway()
         rig.model.addAnyway()
@@ -280,27 +280,27 @@ struct PairingTests {
     @Test func aSavedServerSeenOnEveryFrameIsReportedOnce() {
         let rig = Rig(servers: [mac])
         let t = Date()
-        #expect(rig.model.scanned("https://macbook-pro-rex.tail8657d0.ts.net", at: t))
-        #expect(!rig.model.scanned("https://macbook-pro-rex.tail8657d0.ts.net", at: t + 0.03))
+        #expect(rig.model.scanned("https://office-mac-rex.tail1234.ts.net", at: t))
+        #expect(!rig.model.scanned("https://office-mac-rex.tail1234.ts.net", at: t + 0.03))
         // Another spelling of it, or the same one after a pause: the run is over either way.
-        #expect(!rig.model.scanned("https://MACBOOK-PRO-REX.tail8657d0.ts.net", at: t + 0.06))
-        #expect(!rig.model.scanned("https://macbook-pro-rex.tail8657d0.ts.net", at: t + 10))
+        #expect(!rig.model.scanned("https://OFFICE-MAC-REX.tail1234.ts.net", at: t + 0.06))
+        #expect(!rig.model.scanned("https://office-mac-rex.tail1234.ts.net", at: t + 10))
         #expect(rig.existing.count == 1)
     }
 
     @Test func aCodeReadWhileCheckingIsIgnored() async {
         let rig = Rig(servers: [])
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
-        #expect(!rig.model.scanned("https://macdesk-rex.tail8657d0.ts.net"))
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
+        #expect(!rig.model.scanned("https://buildbox-rex.tail1234.ts.net"))
         await rig.settle()
         #expect(rig.probed.count == 1)
-        #expect(!rig.model.scanned("https://macdesk-rex.tail8657d0.ts.net"))
+        #expect(!rig.model.scanned("https://buildbox-rex.tail1234.ts.net"))
     }
 
     @Test func cancellingACheckDoesNotStartItAgainWhileTheCodeIsStillInView() async {
         let rig = Rig(servers: [])
         rig.hold = true
-        let code = "https://workdesk-rex.tail8657d0.ts.net"
+        let code = "https://devbox-rex.tail1234.ts.net"
         let t = Date()
         #expect(rig.model.scanned(code, at: t))
         rig.model.rescan()
@@ -314,13 +314,13 @@ struct PairingTests {
         #expect(rig.model.scanned(code, at: t + 3 + PairingModel.outOfView + 0.1))
         // Another code needs no pause.
         rig.model.rescan()
-        #expect(rig.model.scanned("https://macdesk-rex.tail8657d0.ts.net", at: t + 5))
+        #expect(rig.model.scanned("https://buildbox-rex.tail1234.ts.net", at: t + 5))
     }
 
     @Test func anAnswerToACancelledCheckIsDropped() async {
         let rig = Rig(servers: [])
         rig.hold = true
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         for _ in 0..<50 where rig.gate == nil { await Task.yield() }
         rig.model.rescan()
         #expect(rig.model.step == .scanning)
@@ -334,7 +334,7 @@ struct PairingTests {
         for leave in [{ (m: PairingModel) in m.rescan() }, { $0.cancel() }] {
             let rig = Rig(servers: [])
             rig.sleeps = true
-            rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+            rig.model.scanned("https://devbox-rex.tail1234.ts.net")
             for _ in 0..<50 where rig.probed.isEmpty { await Task.yield() }
             leave(rig.model)
             for _ in 0..<200 where !rig.sawCancel { await Task.yield() }
@@ -361,11 +361,11 @@ struct PairingTests {
 
     @Test func theCardKeepsTheIdentityThroughAdding() async throws {
         let rig = Rig(servers: [])
-        let id = ServerIdentity(platform: .mac, account: "abe", sessionCount: 2, sessions: ["api", "web"], hasHelper: true)
+        let id = ServerIdentity(platform: .mac, account: "alex", sessionCount: 2, sessions: ["api", "web"], hasHelper: true)
         rig.identity = id
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         await rig.settle()
-        let url = try #require(URL(string: "https://workdesk-rex.tail8657d0.ts.net"))
+        let url = try #require(URL(string: "https://devbox-rex.tail1234.ts.net"))
         #expect(rig.model.step == .found(url, id))
         rig.model.add()
         #expect(rig.model.step == .added(url, id))
@@ -374,7 +374,7 @@ struct PairingTests {
     @Test func notThisOneGoesBackToTheCamera() async {
         let rig = Rig(servers: [])
         rig.identity = ServerIdentity(platform: .linux)
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         await rig.settle()
         rig.model.rescan()
         #expect(rig.model.step == .scanning)
@@ -383,9 +383,9 @@ struct PairingTests {
 
     @Test func theCardSummarizesAccountSystemAndSessions() {
         func copy(_ id: ServerIdentity?) -> IdentityCopy { .of(id) }
-        let mac = copy(ServerIdentity(platform: .mac, account: "abe", sessionCount: 3, sessions: ["api", "web", "docs"], hasHelper: true))
+        let mac = copy(ServerIdentity(platform: .mac, account: "alex", sessionCount: 3, sessions: ["api", "web", "docs"], hasHelper: true))
         #expect(mac.symbol == "laptopcomputer")
-        #expect(mac.summary == "abe · Mac · 3 sessions")
+        #expect(mac.summary == "alex · Mac · 3 sessions")
         #expect(mac.sessions == ["api", "web", "docs"])
         #expect(mac.more == 0)
         #expect(mac.owner == nil && mac.helper == nil)
@@ -402,8 +402,8 @@ struct PairingTests {
 
     @Test func whatTheComputerDidNotSayIsLeftOutNotShownAsNone() {
         // The session and client calls failed: no "No sessions yet", no helper line.
-        let partial = IdentityCopy.of(ServerIdentity(platform: .mac, account: "abe"))
-        #expect(partial.summary == "abe · Mac")
+        let partial = IdentityCopy.of(ServerIdentity(platform: .mac, account: "alex"))
+        #expect(partial.summary == "alex · Mac")
         #expect(partial.helper == nil)
         #expect(partial.sessions.isEmpty && partial.more == 0)
         // Nothing at all: a bare card.
@@ -427,9 +427,9 @@ struct PairingTests {
     }
 
     @Test func theOwnerLineShowsOnlyForSomeoneElsesComputer() {
-        let mine = ServerIdentity(owner: "abe@example.com", viewer: "ABE@example.com", hasHelper: true)
+        let mine = ServerIdentity(owner: "alex@example.com", viewer: "ALEX@example.com", hasHelper: true)
         #expect(IdentityCopy.of(mine).owner == nil)
-        let theirs = ServerIdentity(owner: "sam@example.com", viewer: "abe@example.com", hasHelper: true)
+        let theirs = ServerIdentity(owner: "sam@example.com", viewer: "alex@example.com", hasHelper: true)
         #expect(IdentityCopy.of(theirs).owner == "This computer belongs to sam@example.com.")
         #expect(IdentityCopy.of(ServerIdentity(owner: "sam@example.com", hasHelper: true)).owner == nil)
     }
@@ -446,10 +446,10 @@ struct PairingTests {
 
     @Test func aServerSavedWhileTheCardWasUpIsOpenedNotAddedTwice() async {
         let rig = Rig(servers: [])
-        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        rig.model.scanned("https://devbox-rex.tail1234.ts.net")
         await rig.settle()
         // Saved elsewhere, under the person's own name, before Add & Open is tapped.
-        let saved = ServerConfig(name: "Desk", url: "https://WORKDESK-rex.tail8657d0.ts.net/")
+        let saved = ServerConfig(name: "Desk", url: "https://DEVBOX-rex.tail1234.ts.net/")
         rig.servers = [saved]
         rig.model.add()
         #expect(rig.added.isEmpty)
@@ -462,42 +462,42 @@ struct PairingTests {
 
     // MARK: Computers a server already knows
 
-    private let home = URL(string: "https://macbook-pro-rex.tail8657d0.ts.net")!
+    private let home = URL(string: "https://office-mac-rex.tail1234.ts.net")!
 
     @Test func aListedAddressIsUsedAsIs() {
-        let c = PairingCode.candidate(label: "studio", endpoints: ["ssh://studio", "studio-box.tail8657d0.ts.net"], listedBy: home)
-        #expect(c == PairingCode.Candidate(url: URL(string: "https://studio-box.tail8657d0.ts.net")!, guessed: false))
+        let c = PairingCode.candidate(label: "studio", endpoints: ["ssh://studio", "studio-box.tail1234.ts.net"], listedBy: home)
+        #expect(c == PairingCode.Candidate(url: URL(string: "https://studio-box.tail1234.ts.net")!, guessed: false))
         let https = PairingCode.candidate(label: "studio", endpoints: ["https://Studio.example.com:8443/"], listedBy: home)
         #expect(https?.url.absoluteString == "https://studio.example.com:8443")
         #expect(https?.guessed == false)
     }
 
     @Test func anSSHOnlyHostFollowsTheListingServersNaming() {
-        let c = PairingCode.candidate(label: "MacDesk", endpoints: ["ssh://macdesk"], listedBy: home)
-        #expect(c == PairingCode.Candidate(url: URL(string: "https://macdesk-rex.tail8657d0.ts.net")!, guessed: true))
+        let c = PairingCode.candidate(label: "BuildBox", endpoints: ["ssh://buildbox"], listedBy: home)
+        #expect(c == PairingCode.Candidate(url: URL(string: "https://buildbox-rex.tail1234.ts.net")!, guessed: true))
     }
 
     @Test func noAddressWhenNothingSaysWhereItIs() {
         // The listing server isn't at a Rex-style private address, or the label can't be a host name.
-        for server in ["https://10.0.0.5", "https://studio.tail8657d0.ts.net", "https://rex.example.com"] {
-            #expect(PairingCode.candidate(label: "macdesk", endpoints: ["ssh://macdesk"], listedBy: URL(string: server)!) == nil, "\(server)")
+        for server in ["https://10.0.0.5", "https://studio.tail1234.ts.net", "https://rex.example.com"] {
+            #expect(PairingCode.candidate(label: "buildbox", endpoints: ["ssh://buildbox"], listedBy: URL(string: server)!) == nil, "\(server)")
         }
         #expect(PairingCode.candidate(label: "my desk", endpoints: ["unix:///tmp/rex.sock"], listedBy: home) == nil)
         #expect(PairingCode.candidate(label: "", endpoints: [], listedBy: home) == nil)
         // A bare word is an ssh alias, not an address.
-        #expect(PairingCode.candidate(label: "my desk", endpoints: ["macdesk", "macdesk.local"], listedBy: home) == nil)
+        #expect(PairingCode.candidate(label: "my desk", endpoints: ["buildbox", "buildbox.local"], listedBy: home) == nil)
     }
 
     @Test func theSidebarListsOnlyHostsThatAreNotSaved() {
-        let hosts = [HostEntry(id: "h1", label: "macdesk", endpoints: ["ssh://macdesk"]),
-                     HostEntry(id: "h2", label: "workdesk", endpoints: ["ssh://workdesk"]),
+        let hosts = [HostEntry(id: "h1", label: "buildbox", endpoints: ["ssh://buildbox"]),
+                     HostEntry(id: "h2", label: "devbox", endpoints: ["ssh://devbox"]),
                      HostEntry(id: "h3", label: "Studio", endpoints: ["unix:///tmp/rex.sock"])]
-        let saved = ServerConfig(name: "Mini", url: "https://macdesk-rex.tail8657d0.ts.net")
+        let saved = ServerConfig(name: "Mini", url: "https://buildbox-rex.tail1234.ts.net")
         let lan = ServerConfig(name: "studio", url: "https://10.0.0.5")
         let list = KnownHost.unsaved([(mac, hosts), (saved, hosts), (lan, [])])
-        // macdesk is saved under another name, Studio under its own; workdesk is listed twice.
-        #expect(list.map(\.label) == ["workdesk"])
-        #expect(list.first?.candidate?.url.absoluteString == "https://workdesk-rex.tail8657d0.ts.net")
+        // buildbox is saved under another name, Studio under its own; devbox is listed twice.
+        #expect(list.map(\.label) == ["devbox"])
+        #expect(list.first?.candidate?.url.absoluteString == "https://devbox-rex.tail1234.ts.net")
         let unknown = KnownHost.unsaved([(lan, [HostEntry(id: "h9", label: "attic", endpoints: ["ssh://attic"])])])
         #expect(unknown.map(\.label) == ["attic"])
         #expect(unknown.first?.candidate == nil)
@@ -505,13 +505,13 @@ struct PairingTests {
 
     @Test func aPickedHostRunsTheSameCheckUnderItsListedName() async throws {
         let rig = Rig(servers: [mac])
-        let url = try #require(URL(string: "https://macdesk-rex.tail8657d0.ts.net"))
-        rig.model.start(PairingCode.Candidate(url: url, guessed: true), name: "macdesk")
+        let url = try #require(URL(string: "https://buildbox-rex.tail1234.ts.net"))
+        rig.model.start(PairingCode.Candidate(url: url, guessed: true), name: "buildbox")
         #expect(rig.model.step == .checking(url))
         await rig.settle()
         #expect(rig.model.step == .found(url, nil))
         rig.model.add()
-        #expect(rig.added.map(\.name) == ["macdesk"])
+        #expect(rig.added.map(\.name) == ["buildbox"])
     }
 
     @Test func aPickedHostThatIsSavedIsOpenedNotAddedAgain() throws {
@@ -525,7 +525,7 @@ struct PairingTests {
         for kind in [ConnectionProblem.Kind.hostNotFound, .notAnswering, .offPrivateNetwork, .unknown] {
             let rig = Rig(servers: [mac])
             rig.answers = [ConnectionProblem(kind: kind, detail: "d")]
-            rig.model.start(PairingCode.Candidate(url: URL(string: "https://attic-rex.tail8657d0.ts.net")!, guessed: true), name: "attic")
+            rig.model.start(PairingCode.Candidate(url: URL(string: "https://attic-rex.tail1234.ts.net")!, guessed: true), name: "attic")
             await rig.settle()
             guard case .problem(_, let p) = rig.model.step else { Issue.record("\(rig.model.step)"); continue }
             #expect(p.message == "Pair it with a QR code from that computer.")
@@ -536,14 +536,14 @@ struct PairingTests {
         // A refusal says so: the computer is there.
         let rig = Rig(servers: [mac])
         rig.answers = [ConnectionProblem(kind: .notAllowed, detail: "d")]
-        rig.model.start(PairingCode.Candidate(url: URL(string: "https://attic-rex.tail8657d0.ts.net")!, guessed: true), name: "attic")
+        rig.model.start(PairingCode.Candidate(url: URL(string: "https://attic-rex.tail1234.ts.net")!, guessed: true), name: "attic")
         await rig.settle()
         guard case .problem(_, let p) = rig.model.step else { Issue.record("\(rig.model.step)"); return }
         #expect(p.title == "Not allowed in")
         // A listed address that fails keeps the usual choices.
         let listed = Rig(servers: [mac])
         listed.answers = [ConnectionProblem(kind: .notAnswering, detail: "d")]
-        listed.model.start(PairingCode.Candidate(url: URL(string: "https://attic-rex.tail8657d0.ts.net")!, guessed: false), name: "attic")
+        listed.model.start(PairingCode.Candidate(url: URL(string: "https://attic-rex.tail1234.ts.net")!, guessed: false), name: "attic")
         await listed.settle()
         guard case .problem(_, let q) = listed.model.step else { Issue.record("\(listed.model.step)"); return }
         #expect(q.actions == [.tryAgain, .addAnyway])
@@ -554,15 +554,15 @@ struct PairingTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let model = AppModel(prefs: Prefs(defaults: defaults), connect: false)
-        model.startPairing(prefilled: try #require(URL(string: "ssh://macdesk")))
+        model.startPairing(prefilled: try #require(URL(string: "ssh://buildbox")))
         #expect(!model.showPairing && model.pairingStart == nil)
-        model.startPairing(prefilled: try #require(URL(string: "https://MacDesk-Rex.tail8657d0.ts.net/x")), name: "Mini", guessed: true)
+        model.startPairing(prefilled: try #require(URL(string: "https://BuildBox-Rex.tail1234.ts.net/x")), name: "Mini", guessed: true)
         #expect(model.showPairing)
-        #expect(model.pairingStart?.candidate.url.absoluteString == "https://macdesk-rex.tail8657d0.ts.net")
+        #expect(model.pairingStart?.candidate.url.absoluteString == "https://buildbox-rex.tail1234.ts.net")
         #expect(model.pairingStart?.candidate.guessed == true)
         #expect(model.pairingStart?.name == "Mini")
-        model.startPairing(prefilled: try #require(URL(string: "https://workdesk-rex.tail8657d0.ts.net")))
-        #expect(model.pairingStart?.name == "workdesk")
+        model.startPairing(prefilled: try #require(URL(string: "https://devbox-rex.tail1234.ts.net")))
+        #expect(model.pairingStart?.name == "devbox")
     }
 
     // MARK: The app's side
@@ -586,14 +586,14 @@ struct PairingTests {
         let prefs = Prefs(defaults: defaults)
         prefs.servers = []
         let model = AppModel(prefs: prefs, connect: false)
-        model.addServer(ServerConfig(name: "Desk", url: "https://workdesk-rex.tail8657d0.ts.net"))
-        model.addServer(ServerConfig(name: "Again", url: "https://WorkDesk-Rex.tail8657d0.ts.net/"))
-        model.addServer(ServerConfig(name: "Mini", url: "https://macdesk-rex.tail8657d0.ts.net"))
+        model.addServer(ServerConfig(name: "Desk", url: "https://devbox-rex.tail1234.ts.net"))
+        model.addServer(ServerConfig(name: "Again", url: "https://DevBox-Rex.tail1234.ts.net/"))
+        model.addServer(ServerConfig(name: "Mini", url: "https://buildbox-rex.tail1234.ts.net"))
         #expect(prefs.servers.map(\.name) == ["Desk", "Mini"])
     }
 
     @Test func thePreviewLabelFitsRexsLimitInBytes() {
-        #expect(PushIdentity.previewLabel(deviceName: "Abe's iPhone") == "Abe's iPhone")
+        #expect(PushIdentity.previewLabel(deviceName: "Alex's iPhone") == "Alex's iPhone")
         #expect(PushIdentity.previewLabel(deviceName: "   ") == "iPhone")
         // 40 characters of four bytes each would be 160 bytes.
         let emoji = PushIdentity.previewLabel(deviceName: String(repeating: "🦖", count: 40))
@@ -617,7 +617,7 @@ struct PairingTests {
         defaults.removePersistentDomain(forName: suite)
         let prefs = Prefs(defaults: defaults)
         let model = AppModel(prefs: prefs, connect: false)
-        let config = ServerConfig(name: "Desk", url: "https://workdesk-rex.tail8657d0.ts.net")
+        let config = ServerConfig(name: "Desk", url: "https://devbox-rex.tail1234.ts.net")
         let server = ServerConnection(config: config, prefs: prefs, notifier: model.notifier, deviceID: "a1b2c3d4")
         model.servers = [server]
         return (model, config, server)
@@ -670,7 +670,7 @@ struct PairingTests {
 
     @Test func aNewLandingReplacesTheOneBefore() async throws {
         let (model, config, server) = try landingModel()
-        let other = ServerConfig(name: "Gone", url: "https://gone-rex.tail8657d0.ts.net")
+        let other = ServerConfig(name: "Gone", url: "https://gone-rex.tail1234.ts.net")
         model.land(on: other)
         model.land(on: config)
         server.sessions = [SessionEntry(id: "s1", label: "api")]

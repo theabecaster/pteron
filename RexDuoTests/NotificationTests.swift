@@ -89,10 +89,10 @@ struct PushRouteTests {
     @Test func parsesTheHelpersPayload() {
         let info: [AnyHashable: Any] = [
             "aps": ["alert": ["title": "Claude · api"], "category": "AGENT_BLOCKED", "thread-id": "block:b"],
-            "server": "https://macbook-pro-rex.tail8657d0.ts.net",
+            "server": "https://office-mac-rex.tail1234.ts.net",
             "session_id": "session:s", "window_id": "window:w", "block_id": "block:b",
         ]
-        #expect(PushRoute(userInfo: info) == PushRoute(server: "https://macbook-pro-rex.tail8657d0.ts.net",
+        #expect(PushRoute(userInfo: info) == PushRoute(server: "https://office-mac-rex.tail1234.ts.net",
                                                        sessionID: "session:s", windowID: "window:w", blockID: "block:b"))
     }
 
@@ -110,11 +110,11 @@ struct PushRouteTests {
     }
 
     @Test func matchesTheServerByHost() {
-        let r = PushRoute(server: "https://MacBook-Pro-Rex.tail8657d0.ts.net", sessionID: "session:s")
-        #expect(r.matches(serverURL: "https://macbook-pro-rex.tail8657d0.ts.net/", hostName: nil))
-        #expect(r.matches(serverURL: "macbook-pro-rex.tail8657d0.ts.net", hostName: nil))
-        #expect(r.matches(serverURL: "https://typo", hostName: "macbook-pro-rex.tail8657d0.ts.net."))
-        #expect(!r.matches(serverURL: "https://workdesk.tail8657d0.ts.net", hostName: "workdesk.tail8657d0.ts.net"))
+        let r = PushRoute(server: "https://Office-Mac-Rex.tail1234.ts.net", sessionID: "session:s")
+        #expect(r.matches(serverURL: "https://office-mac-rex.tail1234.ts.net/", hostName: nil))
+        #expect(r.matches(serverURL: "office-mac-rex.tail1234.ts.net", hostName: nil))
+        #expect(r.matches(serverURL: "https://typo", hostName: "office-mac-rex.tail1234.ts.net."))
+        #expect(!r.matches(serverURL: "https://devbox.tail1234.ts.net", hostName: "devbox.tail1234.ts.net"))
     }
 }
 
@@ -126,7 +126,7 @@ struct PushSupportTests {
     }
 
     @Test func labelEndsWithTheDeviceIDAndFitsRex() {
-        #expect(PushIdentity.clientLabel(deviceName: "Abe's iPhone", deviceID: "a1b2c3d4") == "Abe's iPhone #a1b2c3d4")
+        #expect(PushIdentity.clientLabel(deviceName: "Alex's iPhone", deviceID: "a1b2c3d4") == "Alex's iPhone #a1b2c3d4")
         let long = PushIdentity.clientLabel(deviceName: String(repeating: "ñ", count: 60), deviceID: "a1b2c3d4")
         #expect(long.utf8.count <= PushIdentity.maxLabelBytes)
         #expect(long.hasSuffix(" #a1b2c3d4"))

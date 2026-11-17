@@ -147,17 +147,9 @@ final class Prefs {
         systemScheme = UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
         // Only the launch argument is left: `migrate` cleared the saved setting.
         sizing = d.string(forKey: "sizing") == SizingMode.mirror.rawValue ? .mirror : .fit
-        if let data = d.data(forKey: "servers"), let s = try? JSONDecoder().decode([ServerConfig].self, from: data), !s.isEmpty {
-            servers = s
-        } else {
-            #if DEBUG
-            // The developer's Mac, so a fresh simulator connects without setup. Release builds go
-            // to other people and start empty.
-            servers = [ServerConfig(name: "This Mac", url: "https://macbook-pro-rex.tail8657d0.ts.net")]
-            #else
-            servers = []
-            #endif
-        }
+        // A fresh install has no servers and opens on pairing. In a simulator, `-servers` adds some
+        // for one run (docs/debug-args.md).
+        servers = d.data(forKey: "servers").flatMap { try? JSONDecoder().decode([ServerConfig].self, from: $0) } ?? []
     }
 
     /// Carries removed settings over to what they mean now, then clears their keys.

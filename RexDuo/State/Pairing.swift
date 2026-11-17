@@ -155,7 +155,7 @@ struct IdentityCopy: Equatable {
     static let maxSessions = 3
 
     var symbol: String
-    /// "abe · Mac · 3 sessions". Nil when the computer said nothing about itself.
+    /// "alex · Mac · 3 sessions". Nil when the computer said nothing about itself.
     var summary: String?
     /// The first few session names.
     var sessions: [String]

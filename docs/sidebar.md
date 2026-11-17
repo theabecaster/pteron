@@ -181,7 +181,7 @@ not help: every step sized the whole screen again. With trivial rows (one `Text`
 
 ## Accessibility
 
-- Headers are buttons with the header trait. VoiceOver reads "workdesk, machine, 3 sessions,
+- Headers are buttons with the header trait. VoiceOver reads "devbox, machine, 3 sessions,
   1 agent waiting, collapsed". Sessions read "qr-pairing, session, 2 tabs, expanded".
 - The mode switch reads as two selectable buttons, "Sessions" and "Agents, 2 waiting".
 - Rows are buttons, so Full Keyboard Access moves through them and Space opens or folds.

@@ -21,6 +21,16 @@ struct PrefsTests {
         #expect(p.darkThemeID == "github-dark-dimmed")
         #expect(p.lightThemeID == "github-light-default")
         #expect(!p.pushEnabled)
+        // A fresh install starts with no servers, in every build.
+        #expect(p.servers.isEmpty)
+    }
+
+    @Test func keepsSavedServersAndAnEmptyList() {
+        let (p, d) = fresh()
+        p.servers = [ServerConfig(name: "Studio", url: "https://studio-rex.tail1234.ts.net")]
+        #expect(Prefs(defaults: d).servers.map(\.url) == ["https://studio-rex.tail1234.ts.net"])
+        p.servers = []
+        #expect(Prefs(defaults: d).servers.isEmpty)
     }
 
     @Test func persistsToItsOwnDefaults() {

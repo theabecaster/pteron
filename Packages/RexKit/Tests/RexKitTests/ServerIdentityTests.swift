@@ -98,9 +98,9 @@ struct ServerIdentityTests {
         (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? JSONObject ?? [:]
     }
 
-    static let status = #"{"session_count":3,"tailscale":{"dns_name":"studio-rex.tail1234.ts.net","account":{"login_name":"abe@example.com"}}}"#
+    static let status = #"{"session_count":3,"tailscale":{"dns_name":"studio-rex.tail1234.ts.net","account":{"login_name":"alex@example.com"}}}"#
     static let version = #"{"rex_version":"0.1.0","platform":"darwin_arm64","api_revision":14}"#
-    static let whoami = #"{"principal":{"kind":"tailscale","login_name":"Abe@Example.com","node":"iphone"},"account":"abe"}"#
+    static let whoami = #"{"principal":{"kind":"tailscale","login_name":"Alex@Example.com","node":"iphone"},"account":"alex"}"#
     static let sessions = #"{"sessions":[{"session_id":"s1","label":"api"},{"session_id":"s2","label":"web"},{"session_id":"s3","label":""}]}"#
     static let clients = #"{"clients":[{"client_id":"c1","info":{"kind":"app","name":"Rex.app"}},{"client_id":"c2","info":{"name":"rex-push-relay"},"connection_state":"connected"}]}"#
     static let all = ["server.status": status, "server.version": version, "server.whoami": whoami,
@@ -118,9 +118,9 @@ struct ServerIdentityTests {
     @Test func readsTheFiveReplies() {
         let id = identity()
         #expect(id.platform == .mac)
-        #expect(id.account == "abe")
-        #expect(id.owner == "abe@example.com")
-        #expect(id.viewer == "Abe@Example.com")
+        #expect(id.account == "alex")
+        #expect(id.owner == "alex@example.com")
+        #expect(id.viewer == "Alex@Example.com")
         #expect(id.sessionCount == 3)
         // An unnamed session counts but has no label to show.
         #expect(id.sessions == ["api", "web"])
@@ -183,7 +183,7 @@ struct ServerIdentityTests {
         #expect(!identity(status: "{}").belongsToSomeoneElse)
         #expect(!identity(status: other, whoami: nil).belongsToSomeoneElse)
         // Reached without a private-network login (a local connection): nothing to compare.
-        #expect(!identity(status: other, whoami: #"{"principal":{"kind":"peer","login_name":"abe@example.com"},"account":"abe"}"#).belongsToSomeoneElse)
+        #expect(!identity(status: other, whoami: #"{"principal":{"kind":"peer","login_name":"alex@example.com"},"account":"alex"}"#).belongsToSomeoneElse)
     }
 
     @Test func machinesAndNamesThatAreNotLoginsAreNotCompared() {
@@ -191,15 +191,15 @@ struct ServerIdentityTests {
         let tagged = #"{"tailscale":{"account":{"login_name":"sam@example.com"},"tags":["tag:rex"]}}"#
         #expect(identity(status: tagged).owner == nil)
         #expect(!identity(status: tagged).belongsToSomeoneElse)
-        let runner = #"{"principal":{"kind":"tailscale","login_name":"ci@example.com","tags":["tag:ci"]},"account":"abe"}"#
+        let runner = #"{"principal":{"kind":"tailscale","login_name":"ci@example.com","tags":["tag:ci"]},"account":"alex"}"#
         #expect(identity(whoami: runner).viewer == nil)
         // Not account logins: a tag as a name, a device name, a placeholder.
-        for name in ["tagged-devices", "tag:server", "iphone194", "abe@", "@example.com", "a b@example.com", ""] {
+        for name in ["tagged-devices", "tag:server", "iphone194", "alex@", "@example.com", "a b@example.com", ""] {
             #expect(ServerIdentity.login(name) == nil, "\(name)")
             let status = #"{"tailscale":{"account":{"login_name":"\#(name)"}}}"#
             #expect(!identity(status: status).belongsToSomeoneElse, "\(name)")
         }
-        #expect(ServerIdentity.login(" abe@example.com ") == "abe@example.com")
+        #expect(ServerIdentity.login(" alex@example.com ") == "alex@example.com")
     }
 
     // MARK: Over a connection
