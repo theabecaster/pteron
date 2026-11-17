@@ -35,7 +35,7 @@ builds.
   scroll two pages back first and type that much later.
 - `-filesTest '<step>;<step>…'`: drive sending files and Open in the active pane once it is live
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
-  `send:<Mac path>|<Mac path>`, `sendOriginal:…`, `paste:<image path>`, `open:<text>`, `wait:<s>`.
+  `send:<Mac path>|<Mac path>`, `sendOriginal:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.
   The files land on the pane's computer and their paths are typed, so use a `zz-` session.
 - `-tapTest col,row[;col,row…]`: tap those cells as a focused finger would, `-tapTestAfter` seconds
   after the pane is live (default 3), and log each result to `Documents/tapTest.txt`.

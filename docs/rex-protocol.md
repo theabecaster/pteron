@@ -58,7 +58,11 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
   lost upload starts again with a new `upload_begin`.
 - **Batch.** A batch's files may arrive in any order; once all `count` have, the server types their
   paths in `index` order, separated by spaces, with a trailing space. A file without a batch is
-  typed when it arrives. Uploads to one block can run at the same time.
+  typed when it arrives; the app always sends a batch, one of a single file included. Reserving an
+  index twice is `bad_request` ("already reserved"). Reserving the next index and closing its
+  connection with 1000 right after the WELCOME aborts the batch and deletes its finished files,
+  which is how the app cancels between files. A batch left unfinished is aborted when its client
+  leaves the server. Uploads to one block can run at the same time.
 - **Limits and names.** `size` up to 104857600 bytes (100 MiB), else `too_large`; a negative size
   and a `ref` without a lower-case UUID are `bad_request`; `.` and `..` are not file names. The
   server drops directories and control characters from the name (an empty one becomes `upload`)

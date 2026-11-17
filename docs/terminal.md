@@ -193,45 +193,60 @@ to the phone. The wire rules are in [rex-protocol.md](rex-protocol.md), Files.
 
 - **Sending.** The key bar's attach key (paperclip, after Paste) opens a menu titled with where the
   files go: the agent working in the pane (OSC 7501), else the pane's computer. It offers Paste
-  Image (when the clipboard has one), Photos, Camera, Files, and Send Original. Paste, the paste
-  key and ⌘V still paste text whenever the clipboard has text; only a clipboard with just an image
-  or copied files sends them (`ClipboardChoice`). Files dragged in from another app can be dropped
-  on a pane (`PaneDrop`); the app's own drags, such as a selection, are left alone. Nothing is sent
-  without one of these actions.
-- **One batch.** The files of one action go as one `upload_begin` batch, one file at a time, each
-  with a ticket asked for just before its connection (`FileUploader`, RexKit). The server types
-  all the paths together, in order, once the last file has arrived, escaped with backslashes. A
-  notice shows progress with Cancel, then the result. A lost connection sends the batch again from
-  the start under a new ID, at most twice: the server deleted the aborted batch's files and can't
-  resume an upload.
+  Image or Paste File (when the clipboard has one), Photos, Camera, Files, and Send Original.
+  Paste, the paste key, ⌘V and the edit menu's Paste paste text whenever the clipboard has text;
+  they send an image or files only from a clipboard with no text at all (`ClipboardChoice`).
+  Images, movies and files dragged in from another app can be dropped on a pane (`PaneDrop`); a
+  drag of text or a link is refused, never sent as a `.txt`, and the app's own drags, such as a
+  selection, are left alone. Nothing is sent without one of these actions.
+- **One batch.** The files of one action go as one `upload_begin` batch, a single file included,
+  one file at a time, each with a ticket asked for just before its connection (`FileUploader`,
+  RexKit). The server types all the paths together, in order, once the last file has arrived,
+  escaped with backslashes. A notice shows progress with Cancel, then the result. A connection
+  lost before the last file went out whole sends the batch again from the start under a new ID,
+  at most twice: the server deleted the aborted batch's files and can't resume an upload. Once
+  the last file's end has gone out the server may type at any moment, so nothing is sent again
+  and Cancel no longer applies; a lost confirmation then says to check the pane.
+- **Cancel** cuts off the file on its way, and the server deletes the batch's earlier files and
+  types nothing. Between files, when the server may hold finished files and nothing is on its
+  way, the next file is reserved and cut off at once to the same effect (`FileUploader.abort`).
 - **Where files land.** `<state>/rex/uploads/<server pid>-<run>/<block>/<ref>/<name>`: on Linux
   `~/.local/state/rex/uploads/…`, on macOS `~/Library/Application Support/rex/uploads/…`. Files
   are mode 0600 and owned by the user, so the shell and any agent in the pane can read them.
   Closing the pane deletes its folder.
-- **Names** (`UploadName`). One path component, NFC, without control or bidi characters, at most
-  200 bytes with the extension kept. A photo without a name gets `Photo 2026-11-17 17.31.jpg`, a
-  pasted image `Pasted Image …`.
-- **Photos** (`ImagePrep`). HEIC and HEIF go as JPEG at 0.85, PNG stays PNG, anything longer than
-  2000 px is scaled down through ImageIO thumbnails with its EXIF orientation applied, and
-  location and other metadata are left out. Send Original sends the bytes untouched; the choice
-  lasts until the app quits. Live Photos send the still; videos go as they are.
+- **Names** (`UploadName`). One path component, NFC, at most 200 bytes with the extension kept,
+  without control characters, bidi embeddings, overrides and isolates (U+202A–202E,
+  U+2066–2069) or the zero-width space. The zero-width joiner and non-joiner stay (emoji,
+  Persian). A photo without a name gets `Photo 2026-11-17 17.31.jpg`, a pasted image
+  `Pasted Image …`.
+- **Photos** (`ImagePrep`). HEIC, HEIF and every other still format go as JPEG at 0.85 (PNG for a
+  PNG or an image with transparency), anything longer than 2000 px is scaled down through ImageIO
+  thumbnails with its EXIF orientation applied, and location and other metadata are left out. A
+  small upright JPEG or PNG is copied without being decoded. It fails closed: each copy is checked
+  for GPS, IPTC and XMP place names; one that can't be stripped is drawn again, and one that can't
+  be drawn either is sent only after "Couldn't remove location. Send original?". Send Original
+  sends the bytes untouched; the choice lasts until the app quits. Live Photos send the still;
+  videos, moving GIFs and files picked in Files go as they are, as the menu says.
 - **Limits.** The server takes files up to 100 MiB (`too_large`); a larger one is refused before
-  anything is sent. On an expensive network (cellular, a hotspot) a send over 25 MB asks first. A
-  send keeps running briefly in the background; cut off, its notice offers Retry.
+  anything is sent. On an expensive network (cellular, a hotspot) a send over 25 MB asks first; a
+  second send meanwhile is turned away with a notice. A send keeps running briefly in the
+  background; cut off, its notice offers Retry.
 - **Typing during a send.** The server types the paths itself, outside the input queue. Keys typed
   while a batch is on its way reach the pane first and the paths land after them. The app never
   sends keys for the paths; the progress notice is the cue to wait.
 - **Support.** The attach key shows only where the server has `upload_begin`, asked once per
   connection (`FileUploader.probeSupport`). Without it Paste stays text-only and Open isn't offered.
-- **Open.** When a selection reads as a path (`PathGuess`: absolute, `~`, relative, or a name with
-  an extension; shell escapes and quotes undone, `:line:column` dropped, a wrapped path joined),
-  the edit menu offers Open. It downloads the file with `download_begin` (relative to the
-  foreground process's directory) into the app's temporary folder, with progress and Cancel, up
-  to 100 MB, and shows it in Quick Look, which offers Share and Save to Files. A copy whose
-  `version` the server still has opens again without a download. Not found, a folder, a device
-  and an unreadable file each get a plain message.
-- **Temporary copies** live in the app's `tmp/Outgoing` and `tmp/Incoming`; a finished send
-  removes its own, and launch removes what is left.
+- **Open.** When a small selection (at most 4 rows and about 1 KB, all in view, checked before its
+  text is read) reads as a path (`PathGuess`: absolute, `~`, relative, or a name with an
+  extension; shell escapes and quotes undone, `:line:column` dropped, a wrapped path joined), the
+  edit menu offers Open. It downloads the file with `download_begin` (relative to the foreground
+  process's directory) into the app's temporary folder, with progress in 1% steps and Cancel, up
+  to 100 MB, writing off the main thread, and shows it in Quick Look, which offers Share and Save
+  to Files. The copy is deleted when Quick Look goes; none is kept for later, so nothing is left
+  when the pane closes or the app goes to the background. Not found, a folder, a device and an
+  unreadable file each get a plain message.
+- **Temporary copies** live in the app's `tmp/Outgoing` and `tmp/Incoming`; a finished send or a
+  closed preview removes its own, and launch removes what is left.
 - `-filesTest` drives all of this in the simulator, which can't tap through a picker
   ([debug-args.md](debug-args.md)). Debug builds log the SHA-256 of each file sent (`FILES_SENT`)
   and opened (`FILES_OPENED`), to check against the computer's copy.
