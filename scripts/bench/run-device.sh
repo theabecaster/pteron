@@ -6,7 +6,7 @@
 #                               [--remote <dir>] [--clean]
 #
 # Builds a Release copy of this tree with the BENCH condition on macdesk (in ~/<remote>, default
-# rexconnect-build-bench) and installs it on the Duo, copies the scenarios into the app's
+# rexduo-build-bench) and installs it on the Duo, copies the scenarios into the app's
 # Documents/bench, launches the app once per scenario and run with `-replay bench/<file>
 # -perfLog <name>`, and copies each Documents/perf/<name>.json back to <out>/results
 # (default build/bench-device). Resumable like run.sh: a result already there is skipped.
@@ -32,7 +32,7 @@
 set -euo pipefail
 
 usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-runs=5; only=""; out=""; build=1; fresh=0; tag=""; extra=""; live=""; remote=rexconnect-build-bench; clean=0; stop=0; liveRuns=5
+runs=5; only=""; out=""; build=1; fresh=0; tag=""; extra=""; live=""; remote=rexduo-build-bench; clean=0; stop=0; liveRuns=5
 while [[ $# -gt 0 ]]; do
   case $1 in
     --runs) runs=$2; shift 2 ;;
@@ -64,7 +64,7 @@ container=(--domain-type appDataContainer --domain-identifier $bundle)
 
 launch() { ssh macdesk "$devicectl device process launch --device $device --terminate-existing $bundle -- $*" >/dev/null; }
 terminate() {
-  ssh macdesk "pid=\$($devicectl device info processes --device $device 2>/dev/null | awk '/RexConnect.app\/RexConnect\$/ {print \$1; exit}'); [ -n \"\$pid\" ] && $devicectl device process terminate --device $device --pid \$pid >/dev/null 2>&1; true" || true
+  ssh macdesk "pid=\$($devicectl device info processes --device $device 2>/dev/null | awk '/RexDuo.app\/RexDuo\$/ {print \$1; exit}'); [ -n \"\$pid\" ] && $devicectl device process terminate --device $device --pid \$pid >/dev/null 2>&1; true" || true
 }
 
 if (( stop )); then terminate; exit 0; fi
@@ -78,8 +78,8 @@ if (( build )); then
   echo "Building Release (BENCH) on macdesk in ~/$remote …" >&2
   (cd "$root" && scripts/sync-macdesk.sh "$remote")
   # The same build as scripts/install-duo.sh, plus BENCH (`-replay`, `-perfLog`).
-  ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
-$devicectl device install app --device $device ~/$remote/build/dd/Build/Products/Release-iphoneos/RexConnect.app | grep -E 'App installed'"
+  ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
+$devicectl device install app --device $device ~/$remote/build/dd/Build/Products/Release-iphoneos/RexDuo.app | grep -E 'App installed'"
 fi
 
 # Scenarios: generated here, sent to the phone through macdesk.
