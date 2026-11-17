@@ -67,8 +67,15 @@ final class AppModel {
     func perform(_ command: RexCommand) { lastCommand = CommandRequest(command: command) }
 
     var servers: [ServerConnection] = []
-    /// The tab on screen. Remembered, so the next launch opens it again.
-    var selection: Selection? { didSet { if let selection, selection != oldValue { prefs.lastSelection = selection } } }
+    /// The tab on screen. Remembered, so the next launch opens it again; not in a test launch
+    /// (`-autoOpen`), whose throwaway session must not replace the tab the owner had open.
+    var selection: Selection? {
+        didSet {
+            guard let selection, selection != oldValue, !Self.isTestLaunch else { return }
+            prefs.lastSelection = selection
+        }
+    }
+    private static let isTestLaunch = UserDefaults.standard.string(forKey: "autoOpen") != nil
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false

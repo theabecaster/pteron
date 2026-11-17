@@ -113,6 +113,23 @@ final class PerfTests: XCTestCase {
         XCTAssertEqual(PerfGapStats.measure([0.5], in: PerfWindow(from: 0, to: 1), threshold: 0.025).events, 1)
     }
 
+    func testHitchesAreGapsOverOneAndAHalfFrames() {
+        let period = 1.0 / 120
+        // 120 Hz ticks with one interval missed (two frames) and one late by a third of a frame.
+        var t = (0..<10).map { Double($0) * period }
+        t.append(t.last! + 2 * period)
+        t.append(t.last! + period * 4 / 3)
+        let s = PerfHitchStats.measure(t, in: PerfWindow(from: -1, to: 1), period: period)
+        XCTAssertEqual(s.events, 12)
+        XCTAssertEqual(s.hitches, 1, "only the missed interval: 1.33 frames is under the threshold")
+        XCTAssertEqual(s.hitchSeconds, period, accuracy: 1e-9, "the time past one interval")
+        XCTAssertEqual(s.worstSeconds, 2 * period, accuracy: 1e-9)
+        // Events outside the window and the gap to them don't count.
+        let cut = PerfHitchStats.measure([0, 0.5, 0.53], in: PerfWindow(from: 0.1, to: 1), period: period)
+        XCTAssertEqual(cut.events, 2)
+        XCTAssertEqual(cut.hitches, 1)
+    }
+
     func testBusyTimeIsCutToTheWindow() {
         let slices = [PerfWindow(from: 0.0, to: 0.5), PerfWindow(from: 0.9, to: 1.1), PerfWindow(from: 1.5, to: 1.6),
                       PerfWindow(from: 1.9, to: 2.4), PerfWindow(from: 3, to: 4)]

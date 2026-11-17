@@ -47,6 +47,7 @@ enum StickerPeel {
                     ready \((CACurrentMediaTime() - kicked) * 1000, format: .fixed(precision: 1)) ms after prewarm
                     """)
                 outcome = .ready(kit)
+                PerfProbe.active?.launchStep("kitReady")  // PERF
             } catch {
                 log.error("peel kit failed: \(String(describing: error), privacy: .public)")
                 outcome = .failed(String(describing: error))

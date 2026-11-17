@@ -13,6 +13,9 @@ struct RexConnectApp: App {
     static let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     init() {
+        #if DEBUG || BENCH
+        PerfProbe.cleanUpIfAsked()
+        #endif
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
         // An offline replay or demo has no server either.

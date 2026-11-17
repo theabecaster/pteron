@@ -95,6 +95,17 @@ final class PerfProbe: Sendable {
     /// A run that hasn't finished by then is written as it is, with an error.
     static let runLimit = 120.0
 
+    #if DEBUG || BENCH
+    /// `-perfClean YES` (scripts/bench/run-device.sh --clean): deletes what the device benchmark
+    /// left in Documents (`perf`, the results, and `bench`, the scenarios) and quits.
+    static func cleanUpIfAsked() {
+        guard UserDefaults.standard.bool(forKey: "perfClean") else { return }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        for folder in ["perf", "bench"] { try? FileManager.default.removeItem(at: docs.appendingPathComponent(folder)) }
+        exit(0)
+    }
+    #endif
+
     static func make(name: String?, directory: URL? = nil) -> PerfProbe? {
         guard let name else { return nil }
         let safe = String(name.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0) })
@@ -129,6 +140,7 @@ final class PerfProbe: Sendable {
         var cpu: Double
         var mainCPU: Double
         var footprint: UInt64
+        var power = PerfSystem.power()
     }
 
     /// Everything more than one thread touches.
@@ -162,6 +174,14 @@ final class PerfProbe: Sendable {
         var peak: UInt64 = 0
         var error: String?
         var written = false
+        /// The launch transition (`LaunchSplashView`), `launch…` hooks: process start and the
+        /// times of its steps, all on the probe's clock.
+        var processStart: Double?
+        var launchSteps: [String: Double] = [:]
+        /// "metal" or "fold", and why the fold.
+        var launchPeel: String?
+        /// The Metal peel's frame times (`StickerPeelStats`), in milliseconds.
+        var launchPeelFrames: [String: Double] = [:]
 
         func sample(_ now: Double) -> Sample {
             Sample(at: now, cpu: PerfSystem.processCPUSeconds(), mainCPU: PerfSystem.threadCPUSeconds(mainThread),
@@ -207,6 +227,13 @@ final class PerfProbe: Sendable {
         var busy: [PerfWindow] = []
         var sliceStart: Double?
         var finishing = false
+        /// `phys_footprint` `settle` seconds after the window.
+        var idleFootprint: UInt64?
+        /// The phases after the window (`-perfIdle`, `-perfScroll`), for the result file.
+        var phases: JSONObject = [:]
+        /// The scroll phase's fling, driven from the display link: its start, length and travel.
+        var fling: (start: Double, seconds: Double, bottom: CGFloat, travel: CGFloat)?
+        var flingDone: CheckedContinuation<Void, Never>?
     }
 
     @MainActor private var main = MainState()
@@ -335,6 +362,47 @@ final class PerfProbe: Sendable {
         Task { @MainActor in self.write() }
     }
 
+    // MARK: Hooks in the launch transition (any thread)
+
+    /// A step of the launch transition happened now: `kitReady` (the peel's Metal kit is built),
+    /// `splash` (the app's first frame is committed and the transition is scheduled), `decided`
+    /// (Metal peel or fold chosen), `start` (the transition's first frame is due), `done` (the
+    /// splash is gone: the app is on screen and takes touches). The first time of each counts.
+    func launchStep(_ step: String, at time: Double? = nil) {
+        let now = time ?? Self.clock()
+        let uptime = LaunchSplashView.processUptime()
+        state.withLock { s in
+            if s.processStart == nil, let uptime { s.processStart = Self.clock() - uptime }
+            if s.launchSteps[step] == nil { s.launchSteps[step] = now }
+        }
+    }
+
+    /// Which peel ran: "metal", or "fold (<reason>)".
+    func launchPeel(_ kind: String) {
+        state.withLock { if $0.launchPeel == nil { $0.launchPeel = kind } }
+    }
+
+    /// The Metal peel's frames: when each was due, and its CPU encode and GPU times.
+    @MainActor
+    func launchPeelFrames(targets: [Double], encode: [Double], gpu: [Double], late: Int) {
+        let gaps = zip(targets.dropFirst(), targets).map { $0 - $1 }.sorted()
+        func pct(_ a: [Double], _ q: Double) -> Double {
+            a.isEmpty ? 0 : a[min(a.count - 1, Int((Double(a.count - 1) * q).rounded()))] * 1000
+        }
+        let period = 1 / Double(max(60, UIScreen.main.maximumFramesPerSecond))
+        let hitches = PerfHitchStats.measure(targets, in: PerfWindow(from: -.infinity, to: .infinity), period: period)
+        let e = encode.sorted(), g = gpu.sorted()
+        state.withLock { s in
+            s.launchPeelFrames = [
+                "frames": Double(targets.count), "intervalP50Ms": pct(gaps, 0.5), "intervalP95Ms": pct(gaps, 0.95),
+                "intervalMaxMs": (gaps.last ?? 0) * 1000, "hitches": Double(hitches.hitches),
+                "hitchMs": hitches.hitchSeconds * 1000, "gpuLate": Double(late),
+                "encodeP50Ms": pct(e, 0.5), "encodeMaxMs": (e.last ?? 0) * 1000,
+                "gpuP50Ms": pct(g, 0.5), "gpuMaxMs": (g.last ?? 0) * 1000,
+            ]
+        }
+    }
+
     // MARK: Hooks in the engine
 
     /// The snapshot's terminal was swapped in (GhosttyTerminalView, on the feed queue).
@@ -417,6 +485,8 @@ final class PerfProbe: Sendable {
         }
 
         main.sampler = startSampler()
+        // A run with nobody touching the phone must not lock it halfway.
+        UIApplication.shared.isIdleTimerDisabled = true
 
         Task { @MainActor [self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.runLimit * 1e9))
@@ -454,6 +524,7 @@ final class PerfProbe: Sendable {
     private func tick() {
         let now = Self.clock()
         main.ticks.append(now)
+        if main.fling != nil { flingStep(now) }
         // A target nothing decided in time takes the last frame handed over.
         let closed = state.withLock { s in
             var any = false
@@ -470,14 +541,154 @@ final class PerfProbe: Sendable {
 
     // MARK: Result
 
-    /// The window is closed: read the idle memory after `settle`, then write.
+    /// The window is closed: read the idle memory after `settle`, run the phases asked for,
+    /// then write.
     private func finishSoon() {
         Task { @MainActor [self] in
             guard !main.finishing else { return }
             main.finishing = true
             try? await Task.sleep(nanoseconds: UInt64(Self.settle * 1e9))
+            main.idleFootprint = PerfSystem.footprint()
+            await runPhases()
             write()
         }
+    }
+
+    // MARK: Phases after the window
+
+    /// `-perfIdle <seconds>`: the pane sits still for that long, with the probe's own display
+    /// link and memory timer stopped, and the result gets what the app cost meanwhile (CPU,
+    /// wake-ups, render passes, energy). `-perfScroll <seconds>`: then a fling by program through
+    /// the scrollback, up and back down, one scroll view offset per display frame, and the
+    /// result gets its frame pacing. Both run after the launch transition has finished.
+    @MainActor
+    private func runPhases() async {
+        let d = UserDefaults.standard
+        let idle = d.double(forKey: "perfIdle"), scroll = d.double(forKey: "perfScroll")
+        guard idle > 0 || scroll > 0 else { return }
+        // The transition must not land in a phase (5 s at most: one that never ends isn't waited for).
+        for _ in 0..<50 {
+            let waiting = state.withLock { $0.launchSteps["splash"] != nil && $0.launchSteps["done"] == nil }
+            guard waiting else { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if idle > 0 { main.phases["idle"] = await idlePhase(seconds: idle) }
+        if scroll > 0 { main.phases["scroll"] = await scrollPhase(seconds: scroll) }
+    }
+
+    /// What a phase measures from its start to its end.
+    private struct PhaseMark {
+        var at: Double
+        var cpu: Double
+        var mainCPU: Double
+        var power: PerfSystem.Power
+        var renderTicks: Int
+        var renderPasses: Int
+        var buildSeconds: Double
+        var encodeSeconds: Double
+        var passes: Int
+    }
+
+    @MainActor
+    private func phaseMark() -> PhaseMark {
+        let r = GhosttyRenderThread.shared
+        let (thread, build, encode, passes) = state.withLock { ($0.mainThread, $0.buildSeconds, $0.encodeSeconds, $0.passes) }
+        return PhaseMark(at: Self.clock(), cpu: PerfSystem.processCPUSeconds(), mainCPU: PerfSystem.threadCPUSeconds(thread),
+                         power: PerfSystem.power(), renderTicks: r.ticks.load(ordering: .relaxed),
+                         renderPasses: r.passes.load(ordering: .relaxed), buildSeconds: build, encodeSeconds: encode,
+                         passes: passes)
+    }
+
+    /// The numbers every phase reports, from `a` to `b`.
+    @MainActor
+    private func phaseResult(_ a: PhaseMark, _ b: PhaseMark) -> JSONObject {
+        let seconds = max(b.at - a.at, 1e-6)
+        func ms(_ v: Double) -> Double { (v * 1e6).rounded() / 1e3 }
+        func perSecond(_ v: Double) -> Double { (v / seconds * 10).rounded() / 10 }
+        let window = PerfWindow(from: a.at, to: b.at)
+        let busy = PerfBusyStats.measure(main.busy, in: window)
+        let wakes = main.busy.filter { $0.from >= a.at && $0.from < b.at }.count
+        let energy = Double(b.power.energyNJ &- a.power.energyNJ) / 1e6   // mJ
+        let cpu = b.cpu - a.cpu
+        return [
+            "seconds": (seconds * 1000).rounded() / 1000,
+            "cpu": ["processMs": ms(cpu), "mainMs": ms(b.mainCPU - a.mainCPU),
+                    "percent": (cpu / seconds * 1000).rounded() / 10],
+            "mainBusy": ["totalMs": ms(busy.totalSeconds), "worstMs": ms(busy.worstSeconds)],
+            "wakeups": ["mainPerSecond": perSecond(Double(wakes)),
+                        "processPerSecond": perSecond(Double(b.power.interruptWakeups &- a.power.interruptWakeups)),
+                        "idlePerSecond": perSecond(Double(b.power.idleWakeups &- a.power.idleWakeups))],
+            "power": ["energyMJ": (energy * 100).rounded() / 100, "averageMW": (energy / seconds * 10).rounded() / 10,
+                      "gpuMs": ms(Double(b.power.gpuNS &- a.power.gpuNS) / 1e9)],
+            "render": ["ticks": b.renderTicks - a.renderTicks, "passes": b.renderPasses - a.renderPasses,
+                       "panePasses": b.passes - a.passes,
+                       "buildMsPerPass": b.passes > a.passes ? ms((b.buildSeconds - a.buildSeconds) / Double(b.passes - a.passes)) : 0,
+                       "encodeMs": ms(b.encodeSeconds - a.encodeSeconds)],
+        ]
+    }
+
+    @MainActor
+    private func idlePhase(seconds: Double) async -> JSONObject {
+        // The probe's own wake-ups would be most of an idle app's.
+        main.link?.isPaused = true
+        main.sampler?.cancel()
+        main.sampler = nil
+        let a = phaseMark()
+        let presentsBefore = state.withLock { $0.presents.count }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
+        let b = phaseMark()
+        var out = phaseResult(a, b)
+        out["presents"] = state.withLock { $0.presents.count } - presentsBefore
+        main.link?.isPaused = false
+        return out
+    }
+
+    @MainActor
+    private func scrollPhase(seconds: Double) async -> JSONObject {
+        guard let term = main.host?.term else { return ["error": "no pane"] }
+        let surface = term.scroller.surface
+        let bottom = surface.contentSize.height - surface.bounds.height
+        // At most 1000 rows each way: a long, fast fling (about 5000 points a second at its
+        // fastest with 6 s and 11 pt), with new rows in every frame.
+        let travel = min(bottom, 1000 * term.cellSize.height)
+        guard travel > 0 else { return ["error": "no scrollback"] }
+        main.link?.isPaused = false
+        let a = phaseMark()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            main.flingDone = done
+            main.fling = (a.at, seconds, bottom, travel)
+        }
+        let b = phaseMark()
+        let window = PerfWindow(from: a.at, to: b.at)
+        let period = 1 / Double(max(60, UIScreen.main.maximumFramesPerSecond))
+        let presents = PerfHitchStats.measure(state.withLock { $0.presents }, in: window, period: period)
+        let link = PerfHitchStats.measure(main.ticks, in: window, period: period)
+        var out = phaseResult(a, b)
+        out["rows"] = Int((travel / term.cellSize.height).rounded())
+        out["presents"] = Self.hitchJSON(presents, window: window)
+        out["mainLink"] = Self.hitchJSON(link, window: window)
+        return out
+    }
+
+    /// One step of the fling: up and back down, the speed a smooth cosine, so it starts and
+    /// turns gently and moves fastest halfway each way.
+    @MainActor
+    private func flingStep(_ now: Double) {
+        guard let f = main.fling, let term = main.host?.term else { return }
+        let t = min(1, (now - f.start) / f.seconds)
+        let y = f.bottom - f.travel * (1 - cos(2 * .pi * t)) / 2
+        term.scroller.setOffset(y, animated: false)
+        guard t >= 1 else { return }
+        main.fling = nil
+        main.flingDone?.resume()
+        main.flingDone = nil
+    }
+
+    private static func hitchJSON(_ h: PerfHitchStats, window: PerfWindow) -> JSONObject {
+        let s = max(window.seconds, 1e-6)
+        return ["perSecond": (Double(h.events) / s * 10).rounded() / 10, "hitches": h.hitches,
+                "hitchMs": (h.hitchSeconds * 1e6).rounded() / 1e3, "hitchMsPerSecond": (h.hitchSeconds * 1e3 / s * 10).rounded() / 10,
+                "worstGapMs": (h.worstSeconds * 1e6).rounded() / 1e3]
     }
 
     @MainActor
@@ -488,12 +699,18 @@ final class PerfProbe: Sendable {
         main.observers = []
         main.sampler?.cancel()
         main.sampler = nil
+        main.fling = nil
+        main.flingDone?.resume()
+        main.flingDone = nil
+        // Auto-lock stays off until the process ends: the device benchmark launches the next run
+        // into this one, and a phone that locked in between could not be launched into.
     }
 
     @MainActor
     private func write() {
         let now = Self.clock()
-        let idle = PerfSystem.footprint()
+        let idle = main.idleFootprint ?? PerfSystem.footprint()
+        let phases = main.phases
         var busy = main.busy
         if let from = main.sliceStart { busy.append(PerfWindow(from: from, to: now)) }
         let ticks = main.ticks
@@ -504,8 +721,9 @@ final class PerfProbe: Sendable {
         }
         guard let s else { return }
         uninstall()
-        let json = Self.result(name: name, state: s, ticks: ticks, busy: busy, idle: idle, now: now,
+        var json = Self.result(name: name, state: s, ticks: ticks, busy: busy, idle: idle, now: now,
                                screenHz: UIScreen.main.maximumFramesPerSecond)
+        json.merge(phases) { a, _ in a }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Atomic: whoever waits for the file never reads half of it.
         try? JSONCodec.data(json, pretty: true).write(to: fileURL, options: .atomic)
@@ -547,6 +765,15 @@ final class PerfProbe: Sendable {
             "presentedAssumed": restored?.assumed ?? false,
             "snapshotBytes": s.snapshotBytes,
         ]
+        // Milliseconds after the process started.
+        if let p0 = s.processStart, !s.launchSteps.isEmpty {
+            var launch = s.launchSteps.reduce(into: JSONObject()) { $0[$1.key + "Ms"] = ms($1.value - p0) }
+            launch["paneOpenMs"] = since(p0, s.opening)
+            launch["paneFirstFrameMs"] = since(p0, restored?.shown)
+            launch["peel"] = s.launchPeel ?? NSNull()
+            launch["peelFrames"] = s.launchPeelFrames
+            out["launch"] = launch
+        }
 
         // The window: the flow when output was fed, else pane open to the first frame.
         let start = s.flowSample ?? s.openSample
@@ -586,11 +813,23 @@ final class PerfProbe: Sendable {
             "perSecond": window.seconds > 0 ? (Double(presents.events) / window.seconds * 10).rounded() / 10 : 0,
             "gapsOver25": presents.over, "gapsOver25Ms": ms(presents.overSeconds), "worstGapMs": ms(presents.worstSeconds),
         ]
+        // Against the display's frame interval: at 120 Hz, gaps over 12.5 ms. Main-thread ticks
+        // should never miss one; presents only when output arrives faster than the display.
+        let period = 1 / Double(max(60, screenHz))
+        out["hitches"] = ["periodMs": ms(period),
+                          "mainLink": hitchJSON(PerfHitchStats.measure(ticks, in: window, period: period), window: window),
+                          "presents": hitchJSON(PerfHitchStats.measure(s.presents, in: window, period: period), window: window)]
         let b = PerfBusyStats.measure(busy, in: window)
         out["mainBusy"] = ["totalMs": ms(b.totalSeconds), "worstMs": ms(b.worstSeconds),
                            "fraction": window.seconds > 0 ? (b.totalSeconds / window.seconds * 1000).rounded() / 1000 : 0]
         let cpu = end.cpu - start.cpu, mainCPU = end.mainCPU - start.mainCPU
         out["cpu"] = ["processMs": ms(cpu), "mainMs": ms(mainCPU), "otherMs": ms(cpu - mainCPU)]
+        let energy = Double(end.power.energyNJ &- start.power.energyNJ) / 1e6   // mJ
+        out["power"] = ["energyMJ": (energy * 100).rounded() / 100,
+                        "averageMW": window.seconds > 0 ? (energy / window.seconds * 10).rounded() / 10 : 0,
+                        "gpuMs": ms(Double(end.power.gpuNS &- start.power.gpuNS) / 1e9),
+                        "wakeups": end.power.interruptWakeups &- start.power.interruptWakeups,
+                        "idleWakeups": end.power.idleWakeups &- start.power.idleWakeups]
         out["memory"] = ["startMB": mb(start.footprint), "peakMB": mb(max(s.peak, end.footprint)), "endMB": mb(end.footprint),
                          "idleMB": mb(idle)]
         // The renderer's own timers, for tuning: row rebuild and encode, per pass.
