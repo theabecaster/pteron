@@ -33,10 +33,11 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   so it tests on macOS.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`.
-- `RexDuo/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures, split math),
+- `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
+  mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
-  (hardware keys, Rex's keymap), Agents, Settings, Notifications (toasts, permission card), Offline,
+  (hardware keys, Rex's keymap), Settings, Notifications (toasts, permission card), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`).
 - `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
@@ -147,5 +148,6 @@ Read the one for the area you touch:
 - [docs/terminal-checklist.md](docs/terminal-checklist.md): what the terminal must do, the test for
   each row, and the manual device scripts.
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.
+- [docs/sidebar.md](docs/sidebar.md): the sidebar's levels, folding, Agents mode, not-added hosts.
 - [docs/notifications.md](docs/notifications.md): toasts, permission, push through the helper.
 - [docs/release.md](docs/release.md): device installs, TestFlight via macdesk, helper packaging.

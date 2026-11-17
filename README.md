@@ -13,7 +13,8 @@ server's built-in Tailscale HTTPS address.
 - Fit to phone: the pane you view is resized to the phone and handed back to the Mac when you
   leave.
 - Sessions, tabs and splits; zoom, rename, clear; a key bar with Agents, Shell and Vim layouts; hardware keyboard
-  shortcuts from your Rex keymap; an Agents screen; a notification when an agent waits for you.
+  shortcuts from your Rex keymap; an Agents mode in the sidebar; a notification when an agent waits
+  for you.
 - **Rex DUO Helper** (`Relay/`): a small Mac app or Linux service that sends push
   notifications while the app is closed.
 
