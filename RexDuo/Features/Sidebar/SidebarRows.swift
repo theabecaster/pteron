@@ -117,6 +117,10 @@ struct GroupSummary: View {
 /// A machine: the sidebar's top level. Tap to fold or open everything on it.
 struct MachineHeader: View {
     let server: ServerConnection
+    /// Every tab on the machine, for the folded summary. Passed in, so the header doesn't read
+    /// `server.views` and re-render with every layout change.
+    let windows: [WindowInfo]
+    var sessionCount = 0
     let collapsed: Bool
     /// False in Agents mode, where a machine never folds.
     var foldable = true
@@ -160,7 +164,7 @@ struct MachineHeader: View {
                     }
                 }
                 if collapsed {
-                    GroupSummary(server: server, windows: allWindows, count: server.sessions.count,
+                    GroupSummary(server: server, windows: windows, count: sessionCount,
                                  noun: "session", theme: theme)
                 }
             }
@@ -173,12 +177,7 @@ struct MachineHeader: View {
     }
 
     private var spokenName: String {
-        let n = server.sessions.count
-        return "\(server.config.name), machine, \(n) session\(n == 1 ? "" : "s")"
-    }
-
-    private var allWindows: [WindowInfo] {
-        server.sessions.flatMap { server.views[$0.id]?.windows ?? [] }
+        "\(server.config.name), machine, \(sessionCount) session\(sessionCount == 1 ? "" : "s")"
     }
 }
 
@@ -186,6 +185,8 @@ struct MachineHeader: View {
 struct SessionHeader: View {
     let server: ServerConnection
     let session: SessionEntry
+    /// The session's tabs, passed in by the row (see `MachineHeader.windows`).
+    let windows: [WindowInfo]
     let collapsed: Bool
     let theme: TermTheme
     let toggle: () -> Void
@@ -193,7 +194,6 @@ struct SessionHeader: View {
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        let windows = server.views[session.id]?.windows ?? []
         let name = session.label.isEmpty ? "session" : session.label
         // One fold button across the row, chevron included; `+` sits over it, so VoiceOver finds
         // two elements: the session and New Tab.

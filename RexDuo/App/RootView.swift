@@ -51,9 +51,21 @@ struct RootView: View {
                 model.autoSelect()
             }
             .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
+            // The mode the sidebar had last time, and saved when it changes.
+            .onChange(of: sidebar.mode) { _, m in if prefs.sidebarMode != m { prefs.sidebarMode = m } }
+            // The tab on screen always has a row: its folded session and machine open (a tap, Jump to
+            // Waiting, a push, a toast, a new session).
+            .onChange(of: model.selection) { _, sel in
+                guard let sel else { return }
+                let open = SidebarCollapse.revealing(prefs.sidebarCollapsed, sel)
+                if open != prefs.sidebarCollapsed {
+                    withAnimation(SidebarCollapse.animation) { prefs.sidebarCollapsed = open }
+                }
+            }
             .onAppear {
                 // Nothing to list yet: the tab area, which says how to add a server, shows.
                 if model.servers.isEmpty { sidebar.open = false }
+                sidebar.mode = prefs.sidebarMode
                 #if DEBUG
                 // `-simulateScan <payload>` (testing): open the scanner at launch.
                 if UserDefaults.standard.string(forKey: "simulateScan") != nil, SettingsPage.debugLaunch == nil {
@@ -65,10 +77,6 @@ struct RootView: View {
                 }
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
-                // `-sidebarMode agents` (testing): start in Agents mode.
-                if let m = UserDefaults.standard.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) {
-                    sidebar.mode = m
-                }
                 #endif
             }
     }

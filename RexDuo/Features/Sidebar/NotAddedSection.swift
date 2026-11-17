@@ -1,61 +1,47 @@
 import SwiftUI
 
-/// Machines that a connected server lists in `hosts.list` but that aren't saved here, and how the
-/// sidebar's Add button starts adding one. The one place that knows both.
+/// Computers that a connected server lists in `hosts.list` but that aren't saved here
+/// (`KnownHost.unsaved`), each with an Add button. Add opens the pairing identity card for that
+/// host's address, as if its code had been scanned. `hosts.list` mostly gives ssh:// endpoints, so
+/// the address is often worked out from the listing server's (`guessed`): a failed check then says
+/// to pair with a code. With no address at all, Add opens the scanner.
 ///
-/// When the pairing identity card lands, `KnownHost.unsaved` replaces `list`, and `add` calls
-/// `model.startPairing(prefilled:name:guessed: true)` with `PairingCode.candidate`'s address:
-/// `hosts.list` gives only ssh:// endpoints, so the address is a guess.
-enum NotAddedHosts {
-    struct Host: Identifiable, Equatable {
-        /// The label, lowercased: one row per machine, whichever servers list it.
-        var id: String
-        var label: String
-        var endpoints: [String]
-    }
+/// Its own view, so the host lists are read here and not on every change to the sessions list.
+struct NotAddedSection: View {
+    @Environment(AppModel.self) private var model
+    let theme: TermTheme
+    let gap: CGFloat
 
-    struct Saved {
-        var name: String
-        var url: String
-        /// The server's own tailnet name, once connected (`rex.tail1234.ts.net`).
-        var hostName: String?
-    }
-
-    /// Every listed host, once, minus those saved here. A host matches a saved server by name, or by
-    /// the first label of the server's address or tailnet name (without Rex's `-rex` ending).
-    static func list(listed: [[HostEntry]], saved: [Saved]) -> [Host] {
-        var taken = Set<String>()
-        for s in saved {
-            taken.insert(s.name.lowercased())
-            if let u = ServerConfig.url(from: s.url) { taken.insert(ServerConfig.name(for: u).lowercased()) }
-            if let h = s.hostName, let u = ServerConfig.url(from: h) { taken.insert(ServerConfig.name(for: u).lowercased()) }
+    var body: some View {
+        let hosts = KnownHost.unsaved(model.servers.map { ($0.config, $0.hosts) })
+        if !hosts.isEmpty {
+            Text("Not added")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(theme.chrome.tertiary)
+                .padding(.horizontal, SidebarMetrics.pad)
+                .padding(.top, gap)
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .bottomLeading)
+                .accessibilityAddTraits(.isHeader)
+                .modifier(SidebarRowStyle(theme: theme))
+            ForEach(hosts) { h in
+                NotAddedRow(host: h, theme: theme) { Self.add(h, model: model) }
+                    .modifier(SidebarRowStyle(theme: theme))
+            }
         }
-        var out: [Host] = []
-        for h in listed.joined() {
-            let key = h.label.lowercased()
-            guard !key.isEmpty, !taken.contains(key) else { continue }
-            taken.insert(key)
-            out.append(Host(id: key, label: h.label, endpoints: h.endpoints))
+    }
+
+    static func add(_ host: KnownHost, model: AppModel) {
+        if let c = host.candidate {
+            model.startPairing(prefilled: c.url, name: host.label, guessed: c.guessed)
+        } else {
+            model.showPairing = true
         }
-        return out
-    }
-
-    @MainActor
-    static func list(_ model: AppModel) -> [Host] {
-        list(listed: model.servers.map(\.hosts),
-             saved: model.servers.map { Saved(name: $0.config.name, url: $0.config.url, hostName: $0.hostName) })
-    }
-
-    /// Starts adding the machine: Settings → Add Server for now.
-    @MainActor
-    static func add(_ host: Host, model: AppModel) {
-        model.openSettings(at: .addServer)
     }
 }
 
 /// One machine that isn't added yet: quiet, with a one-tap Add.
 struct NotAddedRow: View {
-    let host: NotAddedHosts.Host
+    let host: KnownHost
     let theme: TermTheme
     let add: () -> Void
 

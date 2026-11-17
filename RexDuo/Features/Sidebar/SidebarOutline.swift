@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// The sidebar's rows in Sessions mode, flattened: each machine, then (unless folded) its sessions,
 /// then (unless folded) each session's tabs. Pure, so it is tested; the view looks the ids up.
@@ -9,6 +9,8 @@ enum SidebarOutline {
     struct Machine: Equatable {
         var id: UUID
         var sessions: [Session]
+        /// Connected and synced with no sessions: a "No sessions" row shows under it.
+        var empty = false
     }
 
     struct Session: Equatable {
@@ -21,6 +23,8 @@ enum SidebarOutline {
             case machine(UUID)
             case session(UUID, String)
             case tab(UUID, session: String, window: String)
+            /// A machine's "No sessions" row.
+            case empty(UUID)
         }
         var kind: Kind
         /// The first machine: no divider above it.
@@ -33,6 +37,7 @@ enum SidebarOutline {
             case .machine(let m): "m:\(m.uuidString)"
             case .session(let m, let s): "s:\(m.uuidString):\(s)"
             case .tab(let m, _, let w): "t:\(m.uuidString):\(w)"
+            case .empty(let m): "e:\(m.uuidString)"
             }
         }
     }
@@ -42,6 +47,7 @@ enum SidebarOutline {
         for (i, m) in machines.enumerated() {
             out.append(Row(kind: .machine(m.id), first: i == 0))
             guard !collapsed.contains(SidebarCollapse.machine(m.id)) else { continue }
+            if m.empty, m.sessions.isEmpty { out.append(Row(kind: .empty(m.id))) }
             for s in m.sessions {
                 out.append(Row(kind: .session(m.id, s.id)))
                 guard !collapsed.contains(SidebarCollapse.session(m.id, s.id)) else { continue }
@@ -59,6 +65,22 @@ enum SidebarOutline {
 enum SidebarCollapse {
     static func machine(_ id: UUID) -> String { "m:\(id.uuidString)" }
     static func session(_ server: UUID, _ session: String) -> String { "s:\(server.uuidString):\(session)" }
+
+    /// Folds `key` if it is open, opens it if it is folded.
+    static func toggled(_ keys: Set<String>, _ key: String) -> Set<String> {
+        keys.contains(key) ? keys.subtracting([key]) : keys.union([key])
+    }
+
+    /// The keys with the selected tab's session and machine open, so the tab on screen always has a
+    /// row in the sidebar (after a tap, Jump to Waiting, a push, a toast or a new session).
+    static func revealing(_ keys: Set<String>, _ selection: Selection) -> Set<String> {
+        keys.subtracting([machine(selection.serverID), session(selection.serverID, selection.sessionID)])
+    }
+
+    /// Every fold slides, however many rows it moves. A big fold costs one long frame either way:
+    /// the list lays out the new rows' cells in the update itself (measured with
+    /// `-sidebarFoldBench`), and switching at once only loses the slide.
+    static let animation = Animation.snappy(duration: 0.25)
 
     /// The saved keys without those of removed servers, and of sessions that a connected, synced
     /// server no longer has. `live` holds only such servers: a down server keeps its keys, since its

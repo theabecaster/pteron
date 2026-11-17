@@ -27,36 +27,27 @@ struct SessionsList: View {
         let rows = SidebarOutline.rows(model.servers.map { s in
             SidebarOutline.Machine(id: s.id, sessions: s.sessions.map { e in
                 SidebarOutline.Session(id: e.id, windowIDs: s.views[e.id]?.windows.map(\.id) ?? [])
-            })
+            }, empty: s.phase == .online && s.synced && s.sessions.isEmpty)
         }, collapsed: collapsed)
-        let notAdded = NotAddedHosts.list(model)
         let selection = model.selection
         return List {
+            if model.servers.isEmpty {
+                NoServersRow(theme: theme)
+                    .modifier(SidebarRowStyle(theme: theme))
+            }
             ForEach(rows) { row in
                 if let server = servers[row.kind.serverID] {
                     self.row(row, server, collapsed, selection)
                 }
             }
-            if !notAdded.isEmpty {
-                Text("Not added")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(theme.chrome.tertiary)
-                    .padding(.horizontal, SidebarMetrics.pad)
-                    .padding(.top, machineGap)
-                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .bottomLeading)
-                    .accessibilityAddTraits(.isHeader)
-                    .modifier(SidebarRowStyle(theme: theme))
-                ForEach(notAdded) { h in
-                    NotAddedRow(host: h, theme: theme) { NotAddedHosts.add(h, model: model) }
-                        .modifier(SidebarRowStyle(theme: theme))
-                }
-            }
+            // Its own view: the host lists are read there, not on every change to this list.
+            NotAddedSection(theme: theme, gap: machineGap)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 30)
         .refreshable { await model.refresh() }
-        .onChange(of: PruneKey(model.servers)) { _, _ in prune() }
+        .onChange(of: PruneKey(model.servers), initial: true) { _, _ in prune() }
         #if DEBUG
         .modifier(SidebarFoldBench())
         #endif
@@ -72,7 +63,9 @@ struct SessionsList: View {
         // equatable view's body they don't reach the list.
         switch row.kind {
         case .machine(let id):
-            MachineRow(server: server, collapsed: collapsed.contains(SidebarCollapse.machine(id)),
+            MachineRow(server: server, sessionCount: server.sessions.count,
+                       windows: server.sessions.flatMap { server.views[$0.id]?.windows ?? [] },
+                       collapsed: collapsed.contains(SidebarCollapse.machine(id)),
                        topGap: row.first ? 4 : machineGap, theme: theme)
                 .equatable()
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -121,6 +114,9 @@ struct SessionsList: View {
                     }
                     .modifier(SidebarRowStyle(theme: theme, selected: selected, selectionLeading: SidebarMetrics.tabLeading))
             }
+        case .empty:
+            NoSessionsRow(server: server, theme: theme)
+                .modifier(SidebarRowStyle(theme: theme))
         }
     }
 
@@ -135,7 +131,7 @@ struct SessionsList: View {
     }
 
     /// What pruning depends on: the servers, and the sessions of each connected, synced one.
-    private struct PruneKey: Equatable {
+    struct PruneKey: Equatable {
         var ids: [UUID]
         var live: [[String]]
 
@@ -229,26 +225,29 @@ private struct SidebarDialogs: ViewModifier {
 @MainActor
 func toggleFold(_ key: String, _ prefs: Prefs) {
     Haptic.selection()
-    withAnimation(.snappy(duration: 0.25)) {
-        if prefs.sidebarCollapsed.contains(key) { prefs.sidebarCollapsed.remove(key) }
-        else { prefs.sidebarCollapsed.insert(key) }
+    withAnimation(SidebarCollapse.animation) {
+        prefs.sidebarCollapsed = SidebarCollapse.toggled(prefs.sidebarCollapsed, key)
     }
 }
 
 struct MachineRow: View, Equatable {
     let server: ServerConnection
+    let sessionCount: Int
+    let windows: [WindowInfo]
     let collapsed: Bool
     let topGap: CGFloat
     let theme: TermTheme
     @Environment(Prefs.self) private var prefs
 
     nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.server === b.server && a.collapsed == b.collapsed && a.topGap == b.topGap && a.theme.id == b.theme.id
+        a.server === b.server && a.sessionCount == b.sessionCount && a.collapsed == b.collapsed
+            && a.topGap == b.topGap && a.theme.id == b.theme.id
+            && SidebarRowKeys.windows(a.windows) == SidebarRowKeys.windows(b.windows)
     }
 
     var body: some View {
         let server = server
-        MachineHeader(server: server, collapsed: collapsed, theme: theme) {
+        MachineHeader(server: server, windows: windows, sessionCount: sessionCount, collapsed: collapsed, theme: theme) {
             toggleFold(SidebarCollapse.machine(server.id), prefs)
         }
         .contextMenu {
@@ -273,15 +272,14 @@ struct SessionRow: View, Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.server === b.server && a.session == b.session && a.collapsed == b.collapsed && a.topGap == b.topGap
             && a.dim == b.dim && a.theme.id == b.theme.id && a.actions === b.actions
-            && a.windows.map(\.id) == b.windows.map(\.id)
-            && a.windows.flatMap(\.allBlocks).map(\.id) == b.windows.flatMap(\.allBlocks).map(\.id)
+            && SidebarRowKeys.windows(a.windows) == SidebarRowKeys.windows(b.windows)
     }
 
     var body: some View {
         let server = server, s = session, actions = actions
         let target = SidebarActions.Target(server: server, sessionID: s.id, label: s.label)
         let newTab = { Task { await server.newWindow(s.id) } }
-        SessionHeader(server: server, session: s, collapsed: collapsed, theme: theme,
+        SessionHeader(server: server, session: s, windows: windows, collapsed: collapsed, theme: theme,
                       toggle: { toggleFold(SidebarCollapse.session(server.id, s.id), prefs) },
                       newTab: { _ = newTab() })
             .contextMenu {
@@ -309,9 +307,7 @@ struct TabRow: View, Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.server === b.server && a.sessionID == b.sessionID && a.last == b.last && a.selected == b.selected
             && a.dim == b.dim && a.theme.id == b.theme.id && a.actions === b.actions
-            && a.window.id == b.window.id && a.window.label == b.window.label
-            && a.window.focusedBlockID == b.window.focusedBlockID
-            && a.window.allBlocks.map(\.id) == b.window.allBlocks.map(\.id)
+            && SidebarRowKeys.windows([a.window]) == SidebarRowKeys.windows([b.window])
     }
 
     var body: some View {
@@ -343,6 +339,77 @@ struct TabRow: View, Equatable {
     }
 }
 
+/// What a row shows of its tabs, for the rows' `==`: ids, names, the focused pane and the panes.
+/// Statuses aren't in it: the labels read those from the block boxes themselves.
+enum SidebarRowKeys {
+    struct Window: Equatable {
+        var id: String
+        var label: String
+        var focused: String?
+        var blocks: [String]
+    }
+
+    static func windows(_ ws: [WindowInfo]) -> [Window] {
+        ws.map { Window(id: $0.id, label: $0.label, focused: $0.focusedBlockID, blocks: $0.allBlocks.map(\.id)) }
+    }
+}
+
+/// A connected machine without sessions: says so, with New Session.
+struct NoSessionsRow: View {
+    let server: ServerConnection
+    let theme: TermTheme
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("No sessions")
+                .font(.subheadline)
+                .foregroundStyle(theme.chrome.tertiary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button { Task { await server.createSession(label: nil) } } label: {
+                Text("New Session")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(theme.accent.opacity(0.16)))
+                    .foregroundStyle(theme.accent)
+                    .frame(minHeight: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("New Session on \(server.config.name)")
+        }
+        .padding(.leading, SidebarMetrics.sessionLeading)
+        .padding(.trailing, SidebarMetrics.pad)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+    }
+}
+
+/// No servers yet: how to add one, in the sidebar too.
+struct NoServersRow: View {
+    let theme: TermTheme
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("No computers yet. On your computer, run `rex server tailscale pair`, then scan the code it shows.")
+                .font(.footnote)
+                .foregroundStyle(theme.chrome.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { model.showPairing = true } label: {
+                Label("Pair via QR Code", systemImage: "qrcode.viewfinder")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, SidebarMetrics.pad)
+        .padding(.vertical, 12)
+    }
+}
+
 /// Rex's compact row on a plain list: no separators, a rounded selection that can start at an indent.
 struct SidebarRowStyle: ViewModifier {
     let theme: TermTheme
@@ -368,7 +435,7 @@ struct SidebarRowStyle: ViewModifier {
 extension SidebarOutline.Row.Kind {
     var serverID: UUID {
         switch self {
-        case .machine(let id), .session(let id, _), .tab(let id, _, _): id
+        case .machine(let id), .session(let id, _), .tab(let id, _, _), .empty(let id): id
         }
     }
 }

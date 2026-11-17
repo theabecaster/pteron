@@ -100,6 +100,9 @@ final class Prefs {
     var sidebarWidths: [String: Double] { didSet { d.set(sidebarWidths, forKey: "sidebarWidths") } }
     /// Sidebar groups the user folded (`SidebarCollapse` keys). Everything else is open.
     var sidebarCollapsed: Set<String> { didSet { d.set(sidebarCollapsed.sorted(), forKey: "sidebarCollapsed") } }
+    /// Sessions or Agents, as the Mac's sidebar keeps its mode. `-sidebarMode agents` overrides it
+    /// for one run.
+    var sidebarMode: SidebarMode { didSet { d.set(sidebarMode.rawValue, forKey: "sidebarMode") } }
     /// The tab open when the app last ran.
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
@@ -139,6 +142,7 @@ final class Prefs {
         pushPromptDismissed = d.bool(forKey: "pushPromptDismissed")
         sidebarWidths = d.dictionary(forKey: "sidebarWidths") as? [String: Double] ?? [:]
         sidebarCollapsed = Set(d.stringArray(forKey: "sidebarCollapsed") ?? [])
+        sidebarMode = d.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) ?? .sessions
         lastSelection = d.data(forKey: "lastSelection").flatMap { try? JSONDecoder().decode(Selection.self, from: $0) }
         systemScheme = UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
         // Only the launch argument is left: `migrate` cleared the saved setting.
