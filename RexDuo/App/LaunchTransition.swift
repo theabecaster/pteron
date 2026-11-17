@@ -67,6 +67,8 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
 /// Layers (bottom to top):
 /// - `cover`: the background with a Rexie-shaped hole. A huge border frames `hole`, a bitmap of the
 ///   background with Rexie cut out, so it needs no mask or offscreen pass. Zooming only scales `cover`.
+///   `depth` lies on the hole: the shadow and lit edge that make it read as a hole whatever the app
+///   shows through it (`LaunchHoleDepth`). It appears with the peel and lifts as the hole opens.
 /// - `shadow`: a flat, path-only shadow on the "screen" under the folding cutout (fallback only).
 /// - `piece`: the Rexie art, the same image as the static launch screen (`LaunchRexie`) on the same
 ///   pixel grid, so the first frame matches it exactly. `shade` darkens it as it tilts.
@@ -93,6 +95,7 @@ final class LaunchSplashView: UIView {
 
     private let cover = CALayer()
     private let hole = CALayer()
+    private let depth = CALayer()
     private let shadow = CALayer()
     private let piece = CALayer()
     private let shade = CALayer()
@@ -109,6 +112,13 @@ final class LaunchSplashView: UIView {
         let content: UIView?
         let completion: () -> Void
         let t0: CFTimeInterval
+    }
+
+    /// Carries an immutable Core Graphics object (a finished `CGPath`, a `CGImage`) to another
+    /// thread. `@unchecked Sendable` because those are safe to read from any thread once made.
+    private struct Shared<Value>: @unchecked Sendable {
+        let value: Value
+        init(_ value: Value) { self.value = value }
     }
 
     /// Set between `run` and the choice of peel.
@@ -189,6 +199,17 @@ final class LaunchSplashView: UIView {
         hole.contents = Self.holeImage(color: bg)
         hole.contentsGravity = .resize
         cover.addSublayer(hole)
+        // Hidden until the peel starts, so the first frame is the static launch screen to the pixel.
+        depth.contentsGravity = .resize
+        depth.opacity = 0
+        cover.addSublayer(depth)
+        // Drawn off the main thread: it isn't needed before the peel, a few hundred ms from now.
+        let outline = Shared(Self.silhouette)
+        let size = Metric.size, margin = Metric.holeMargin * 2, scale = Metric.holeScale
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let drawn = Shared(LaunchHoleDepth.image(silhouette: outline.value, size: size, margin: margin, scale: scale))
+            DispatchQueue.main.async { self?.depth.contents = drawn.value }
+        }
 
         shadow.shadowPath = Self.silhouette
         shadow.shadowColor = UIColor.black.cgColor
@@ -238,6 +259,7 @@ final class LaunchSplashView: UIView {
         cover.bounds = CGRect(x: 0, y: 0, width: art.width + 2 * (m + border), height: art.height + 2 * (m + border))
         cover.borderWidth = border
         hole.frame = CGRect(x: border - m, y: border - m, width: art.width + 4 * m, height: art.height + 4 * m)
+        depth.frame = hole.frame
         let pivot = pivotPoint(in: art)
         let local = CGPoint(x: border + m + pivot.x - art.minX, y: border + m + pivot.y - art.minY)
         cover.anchorPoint = CGPoint(x: local.x / cover.bounds.width, y: local.y / cover.bounds.height)
@@ -448,6 +470,20 @@ final class LaunchSplashView: UIView {
         cover.add(anim("opacity", from: 1, to: 0, start: t0 + irisStart + irisDuration * 0.85,
                        duration: irisDuration * 0.15, .linear), forKey: "fade")
         cover.opacity = 0
+
+        // The hole's depth: in as the sticker starts to lift, there for the whole peel, then lifting
+        // while the hole opens, so the app comes up into the light and nothing of it is left by the
+        // time the edge is large and soft.
+        let depthEnd = irisStart + irisDuration * 0.45
+        let shade = CAKeyframeAnimation(keyPath: "opacity")
+        shade.values = [0, 1, 1, 0]
+        shade.keyTimes = [0, NSNumber(value: 0.05 * k / depthEnd), NSNumber(value: irisStart / depthEnd), 1]
+        shade.timingFunctions = [CAMediaTimingFunction(name: .linear), CAMediaTimingFunction(name: .linear),
+                                 CAMediaTimingFunction(name: .easeIn)]
+        shade.beginTime = t0
+        shade.duration = depthEnd
+        shade.fillMode = .backwards
+        depth.add(shade, forKey: "depth")
         CATransaction.commit()
         metal?.noteSwap(CACurrentMediaTime() - swapStart)
 
