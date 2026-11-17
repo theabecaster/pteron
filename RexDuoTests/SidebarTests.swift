@@ -1,9 +1,10 @@
 import Foundation
 import Testing
+import RexKit
 @testable import RexDuo
 
 /// The sidebar's pure logic: which rows show for a fold state, how fold state is saved and pruned,
-/// the Agents mode's order, the hosts listed as not added, and the mode commands.
+/// the Agents mode's order, and the mode commands.
 struct SidebarOutlineTests {
     private let mac = UUID()
     private let box = UUID()
@@ -111,28 +112,7 @@ struct AgentOrderTests {
     }
 }
 
-struct NotAddedHostsTests {
-    private func host(_ label: String) -> HostEntry {
-        HostEntry(id: "host:\(label)", label: label, endpoints: ["ssh://\(label)"])
-    }
-
-    @Test func savedServersAreLeftOutByNameAddressOrTailnetName() {
-        let saved = [
-            NotAddedHosts.Saved(name: "This Mac", url: "https://studio-rex.tail1.ts.net", hostName: nil),
-            NotAddedHosts.Saved(name: "Box", url: "https://box.tail1.ts.net", hostName: "builder-rex.tail1.ts.net"),
-        ]
-        let listed = [[host("studio"), host("this mac"), host("builder"), host("workdesk")], [host("Workdesk"), host("macdesk")]]
-        let list = NotAddedHosts.list(listed: listed, saved: saved)
-        // studio: the address's name; this mac: the saved name; builder: the tailnet name. One row per machine.
-        #expect(list.map(\.label) == ["workdesk", "macdesk"])
-    }
-
-    @Test func nothingListedIsNothingToAdd() {
-        #expect(NotAddedHosts.list(listed: [], saved: []).isEmpty)
-        #expect(NotAddedHosts.list(listed: [[HostEntry(id: "x", label: "", endpoints: [])]], saved: []).isEmpty)
-    }
-}
-
+@MainActor
 struct SidebarModeTests {
     @Test func activityToggleShowsAgentsThenGoesBackToSessions() {
         var s = SidebarState()
@@ -162,10 +142,206 @@ struct SidebarModeTests {
         #expect(!RexCommand.toggleAgents.isWindowCommand)
     }
 
+    @Test func jumpToWaitingHasItsOwnActionAndKey() throws {
+        guard case .command(let c) = AppAction.resolve("client.agents.jump_to_waiting", nil) else {
+            Issue.record("not a command")
+            return
+        }
+        #expect(c == .jumpToWaiting)
+        let s = try #require(AppShortcuts.list(KeyDefaults.resolved).first { $0.command == .jumpToWaiting })
+        #expect(s.key.character == ".")
+        #expect(s.modifiers == [.command, .option])
+        #expect(s.title == "Jump to Waiting Agent")
+        // ⌘. stays the Agents toggle.
+        #expect(AppShortcuts.list(KeyDefaults.resolved).first { $0.id == "cmd+." }?.command == .toggleAgents)
+    }
+
     @Test func machineGlyphFollowsThePlatform() {
         #expect(MachineGlyph.symbol(platform: "darwin_arm64") == "apple.logo")
         #expect(MachineGlyph.symbol(platform: "linux_amd64") == "server.rack")
         #expect(MachineGlyph.symbol(platform: "windows_amd64") == "pc")
         #expect(MachineGlyph.symbol(platform: nil) == "desktopcomputer")
+    }
+}
+
+/// The sidebar's state against a real `ServerConnection`: the agent index, the rows' `==`, prune
+/// keys and folding.
+@MainActor
+struct SidebarRowStateTests {
+    private func fixture() -> (Prefs, ServerConnection) {
+        let name = "RexDuoTests.\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: name)!
+        d.removePersistentDomain(forName: name)
+        let prefs = Prefs(defaults: d)
+        let model = AppModel(prefs: prefs, connect: false)
+        let server = ServerConnection(config: ServerConfig(name: "Desk", url: "https://desk-rex.tail1.ts.net"),
+                                      prefs: prefs, notifier: model.notifier, deviceID: "a1b2c3d4")
+        return (prefs, server)
+    }
+
+    private func windowJSON(_ id: String, label: String = "", blocks: [String]) -> JSONObject {
+        ["window_id": id, "label": label,
+         "layers": [["kind": "tiled", "blocks": blocks.map { ["block_id": $0, "creator_name": "com.superlogical.terminal"] }]]]
+    }
+
+    private func window(_ id: String, label: String = "", blocks: [String] = ["b"]) -> WindowInfo {
+        WindowInfo(windowJSON(id, label: label, blocks: blocks))
+    }
+
+    private func status(_ state: String, app: String = "claude") -> BlockMeta {
+        var m = BlockMeta()
+        m.statuses[""] = ProgramStatus(["state": state, "app": app])
+        return m
+    }
+
+    /// Lets the coalesced agent index update.
+    private func settle() async {
+        for _ in 0..<3 { await Task.yield() }
+    }
+
+    @Test func agentKeysChangeOnlyForAgentStateNotForOtherMetadata() async {
+        let (_, server) = fixture()
+        server.sessions = [SessionEntry(id: "s1", label: "work")]
+        server.views = ["s1": SessionView(["session_id": "s1", "label": "work",
+                                           "windows": [windowJSON("w1", blocks: ["b1", "b2"])]])]
+        server.meta["b1"] = status("working")
+        await settle()
+        #expect(server.agentKeys.map(\.blockID) == ["b1"])
+        #expect(server.agentKeys.first?.state == "working")
+
+        // A title or status line change leaves the index as it was.
+        let before = server.agentKeys
+        var titled = status("working")
+        titled.title = "new title"
+        titled.statuses[""]?.text = "step 2"
+        server.meta["b1"] = titled
+        server.meta["b2"] = { var m = BlockMeta(); m.title = "zsh"; return m }()
+        await settle()
+        #expect(server.agentKeys == before)
+
+        // Waiting changes it.
+        server.meta["b1"] = status("blocked")
+        await settle()
+        #expect(server.agentKeys.first?.state == "blocked")
+    }
+
+    @Test func rowsCompareWhatTheyShow() {
+        let (_, server) = fixture()
+        let theme = ThemeStore.fallback
+        let actions = SidebarActions()
+        let tab = TabRow(server: server, sessionID: "s1", window: window("w1"), last: false, selected: false,
+                         dim: false, theme: theme, actions: actions)
+        #expect(tab == TabRow(server: server, sessionID: "s1", window: window("w1"), last: false, selected: false,
+                              dim: false, theme: theme, actions: actions))
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1"), last: false, selected: true,
+                              dim: false, theme: theme, actions: actions))
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1", label: "renamed"), last: false,
+                              selected: false, dim: false, theme: theme, actions: actions))
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1", blocks: ["b", "c"]), last: false,
+                              selected: false, dim: false, theme: theme, actions: actions))
+        #expect(tab != TabRow(server: server, sessionID: "s1", window: window("w1"), last: true, selected: false,
+                              dim: false, theme: theme, actions: actions))
+
+        let entry = SessionEntry(id: "s1", label: "work")
+        let session = SessionRow(server: server, session: entry, windows: [window("w1")], collapsed: false, topGap: 6,
+                                 dim: false, theme: theme, actions: actions)
+        #expect(session == SessionRow(server: server, session: entry, windows: [window("w1")], collapsed: false,
+                                      topGap: 6, dim: false, theme: theme, actions: actions))
+        #expect(session != SessionRow(server: server, session: entry, windows: [window("w1")], collapsed: true,
+                                      topGap: 6, dim: false, theme: theme, actions: actions))
+        #expect(session != SessionRow(server: server, session: entry, windows: [window("w1"), window("w2")],
+                                      collapsed: false, topGap: 6, dim: false, theme: theme, actions: actions))
+        #expect(session != SessionRow(server: server, session: SessionEntry(id: "s1", label: "renamed"),
+                                      windows: [window("w1")], collapsed: false, topGap: 6, dim: false, theme: theme,
+                                      actions: actions))
+
+        let machine = MachineRow(server: server, sessionCount: 1, windows: [window("w1")], collapsed: false, topGap: 4,
+                                 theme: theme)
+        #expect(machine == MachineRow(server: server, sessionCount: 1, windows: [window("w1")], collapsed: false,
+                                      topGap: 4, theme: theme))
+        #expect(machine != MachineRow(server: server, sessionCount: 2, windows: [window("w1")], collapsed: false,
+                                      topGap: 4, theme: theme))
+        #expect(machine != MachineRow(server: server, sessionCount: 1, windows: [window("w1")], collapsed: true,
+                                      topGap: 4, theme: theme))
+    }
+
+    @Test func pruneKeyListsOnlyConnectedSyncedSessions() {
+        let (_, server) = fixture()
+        server.sessions = [SessionEntry(id: "s1", label: "")]
+        // Not connected yet: its sessions don't count as the truth.
+        #expect(SessionsList.PruneKey([server]).live == [[]])
+        server.phase = .online
+        server.synced = true
+        #expect(SessionsList.PruneKey([server]).live == [["s1"]])
+        #expect(SessionsList.PruneKey([server]).ids == [server.id])
+    }
+
+    @Test func toggleFoldFoldsThenOpensAndSaves() {
+        let (prefs, _) = fixture()
+        toggleFold("s:A:s1", prefs)
+        #expect(prefs.sidebarCollapsed == ["s:A:s1"])
+        toggleFold("s:A:s1", prefs)
+        #expect(prefs.sidebarCollapsed.isEmpty)
+    }
+
+    @Test func sidebarModeIsSaved() {
+        let name = "RexDuoTests.\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: name)!
+        defer { d.removePersistentDomain(forName: name) }
+        let p = Prefs(defaults: d)
+        #expect(p.sidebarMode == .sessions)
+        p.sidebarMode = .agents
+        #expect(Prefs(defaults: d).sidebarMode == .agents)
+    }
+}
+
+struct SidebarFoldPolicyTests {
+    @Test func revealingOpensTheSelectedTabsSessionAndMachine() {
+        let server = UUID(), other = UUID()
+        let keys: Set = [SidebarCollapse.machine(server), SidebarCollapse.session(server, "s1"),
+                         SidebarCollapse.session(server, "s2"), SidebarCollapse.machine(other)]
+        let open = SidebarCollapse.revealing(keys, Selection(serverID: server, sessionID: "s1", windowID: "w1"))
+        #expect(open == [SidebarCollapse.session(server, "s2"), SidebarCollapse.machine(other)])
+    }
+
+    @Test func toggledFlipsOneKey() {
+        #expect(SidebarCollapse.toggled([], "m:A") == ["m:A"])
+        #expect(SidebarCollapse.toggled(["m:A", "m:B"], "m:A") == ["m:B"])
+    }
+
+    @Test func twoServersWithTheSameSessionIDStayApart() {
+        let a = UUID(), b = UUID()
+        let machines = [SidebarOutline.Machine(id: a, sessions: [.init(id: "s1", windowIDs: ["w1"])]),
+                        SidebarOutline.Machine(id: b, sessions: [.init(id: "s1", windowIDs: ["w1"])])]
+        let rows = SidebarOutline.rows(machines, collapsed: [SidebarCollapse.session(a, "s1")])
+        #expect(Set(rows.map(\.id)).count == rows.count)
+        // Folding a's s1 leaves b's s1 open.
+        #expect(rows.map(\.kind) == [.machine(a), .session(a, "s1"), .machine(b), .session(b, "s1"),
+                                     .tab(b, session: "s1", window: "w1")])
+    }
+
+    @Test func aConnectedMachineWithoutSessionsSaysSo() {
+        let a = UUID()
+        let rows = SidebarOutline.rows([SidebarOutline.Machine(id: a, sessions: [], empty: true)], collapsed: [])
+        #expect(rows.map(\.kind) == [.machine(a), .empty(a)])
+        #expect(SidebarOutline.rows([SidebarOutline.Machine(id: a, sessions: [], empty: true)],
+                                    collapsed: [SidebarCollapse.machine(a)]).map(\.kind) == [.machine(a)])
+        #expect(SidebarOutline.rows([SidebarOutline.Machine(id: a, sessions: [])], collapsed: []).map(\.kind) == [.machine(a)])
+    }
+}
+
+struct AgentRowOrderTests {
+    private func row(_ id: String, _ state: String?) -> ServerConnection.AgentRow {
+        ServerConnection.AgentRow(sessionID: "s", windowID: "w", blockID: id, kind: .claude,
+                                  status: state.map { ProgramStatus(["state": $0]) }, title: "", place: "")
+    }
+
+    @Test func realRowsSortWaitingFirstAndWaitingWithoutATimeLast() {
+        let now = Date()
+        let rows = [row("idle", "idle"), row("new", "blocked"), row("work", "working"), row("old", "blocked"),
+                    row("none", nil), row("err", "error")]
+        let sorted = AgentOrder.sorted(rows, state: { $0.status?.state }, id: \.blockID, since: ["old": now])
+        // "new" is waiting but hasn't been seen waiting yet: after the one that has.
+        #expect(sorted.map(\.blockID) == ["old", "new", "err", "work", "idle", "none"])
     }
 }
