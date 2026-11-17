@@ -82,7 +82,8 @@ before it closes a session.
 Touch and hold a word to select it. A magnifier shows what is under your finger; keep dragging to
 select more. When you lift your finger, the selection is copied to the clipboard straight away,
 and handles appear so you can adjust it (adjusting copies again). Double-tap selects a word and
-triple-tap a line. A menu offers Copy, Paste and Select All. Tap near the cursor for a Paste button.
+triple-tap a line. A menu offers Copy, Paste and Select All, and Open when the selection is a
+path. Tap near the cursor for a Paste button.
 
 ### The key bar
 
@@ -93,6 +94,10 @@ choices), **Shell** and **Vim**.
 - Tap **ctrl** or **alt** to apply it to the next key; double-tap to lock it on.
 - Hold an arrow to repeat it.
 - Drag the ✥ key like a trackpad to move through menus and history.
+- The paperclip sends a photo or a file to the pane's computer and types its path into the pane,
+  as dropping a file on a terminal does on a Mac. Its menu says where it goes. You can also drop
+  files on a pane from another app, and select a path the terminal shows to Open that file on the
+  phone.
 - The last key hides the keyboard.
 
 ### Hardware keyboards

@@ -41,7 +41,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `Selection/` the touch selection UI, `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts, permission card), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
-  `State/Pairing.swift`).
+  `State/Pairing.swift`), Files (sending photos and files to a pane, drops, Open from a selection;
+  docs/terminal.md, Files).
 - `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
 - `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts.
