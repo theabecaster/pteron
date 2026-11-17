@@ -54,6 +54,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   the bar's items (the whole column takes the tap), and the keys scroll across the full width
   (`KeyBarPlacement`). Elsewhere the hide key stays at the bar's end. With a vertical crease, the key
   that would sit on it moves 12 pt past it, with the bar scrolled to its start.
+- **Keyboard room.** The root ignores SwiftUI's keyboard safe area and pads its bottom by
+  `KeyboardInset`, computed from the keyboard's last reported frame and the root's frame on every
+  keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment
+  (both panes' key bars during a pane swipe) and leave a band of chrome above the key bar.
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.
   The panes stay inside the safe area, so no terminal text sits under system UI.
 - **Short windows** (landscape iPhone): the title bar is 34 pt with no subtitle, and the key bar is

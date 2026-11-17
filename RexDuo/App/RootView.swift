@@ -18,8 +18,9 @@ struct RootView: View {
     @State private var sidebar = SidebarState()
     /// The sidebar is inline (wide window). Mirrors the arrangement for commands.
     @State private var inline = false
-    /// The root's height without the keyboard.
-    @State private var keyboardFreeHeight: CGFloat = 0
+    /// The room the docked keyboard takes at the bottom (`KeyboardInset`). The root pads itself by
+    /// this instead of following SwiftUI's keyboard safe area.
+    @State private var keyboardPad: CGFloat = 0
     /// Where the system puts its vertical bar, if it has one here.
     @State private var barEdge: HorizontalEdge?
     /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
@@ -33,6 +34,8 @@ struct RootView: View {
     var body: some View {
         let theme = prefs.theme(for: scheme)
         rootContent(theme)
+            .ignoresSafeArea(.keyboard)
+            .background(KeyboardInsetReader { setKeyboardPad($0) }.ignoresSafeArea())
             .environment(hostPool)
             .overlay(alignment: .top) { NoticeBanner(theme: theme) }
             .background(CommandListener { handle($0) })
@@ -156,15 +159,19 @@ struct RootView: View {
     private func layout(_ theme: TermTheme, fake: Division??) -> some View {
         GeometryReader { geo in
             let division = fake ?? Self.division(geo)
-            // The keyboard shrinks the height; the arrangement must not change when it shows.
-            let size = CGSize(width: geo.size.width, height: max(geo.size.height, keyboardFreeHeight))
-            let arr = Arrangement.decide(size: size, division: division)
+            // The root ignores the keyboard, so the arrangement doesn't change when it shows.
+            let arr = Arrangement.decide(size: geo.size, division: division)
             NavigationStack {
                 SidebarSplit(arrangement: arr, theme: theme, open: $sidebar.open) {
                     SidebarView(mode: $sidebar.mode, onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
                 } tab: {
                     tab(arr)
                 }
+                // The keyboard's room, from its frames (`KeyboardInset`), not SwiftUI's keyboard
+                // safe area, which can stay at a frame the keyboard had for a moment. Here, inside
+                // the navigation stack: its content is hosted on its own.
+                .safeAreaPadding(.bottom, keyboardPad)
+                .ignoresSafeArea(.keyboard)
                 .background(theme.chrome.canvas.ignoresSafeArea())
                 .background(EdgeReveal(enabled: !sidebar.open) { revealSidebar() })
                 // Only where the system has a vertical bar: the toggle and the tab's actions go there.
@@ -185,11 +192,15 @@ struct RootView: View {
             .environment(\.verticalBarEdge, barEdge)
             .onChange(of: arr.inline, initial: true) { _, new in inline = new }
         }
-        .background {
-            Color.clear
-                .ignoresSafeArea(.keyboard)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { keyboardFreeHeight = $0 }
-        }
+    }
+
+    /// Not under `-simulateDuo`, which shrinks its root for the keyboard itself.
+    private func setKeyboardPad(_ pad: CGFloat) {
+        #if DEBUG
+        guard simulations.isEmpty else { return }
+        #endif
+        guard pad != keyboardPad else { return }
+        keyboardPad = pad
     }
 
     /// The fold, from the reserved regions (iOS 27.1+). Inactive regions count: a flat device still
