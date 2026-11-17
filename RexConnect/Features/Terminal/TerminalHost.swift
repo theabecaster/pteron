@@ -989,6 +989,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         switch sizing {
         case .fit:
             guard !lostOwnership else { return }
+            // In the background the pane belongs to the Mac. A layout change there (the keyboard
+            // leaving as the app goes away) must not claim it back; `willForeground` lays out again.
+            guard backgroundedAt == nil else { return }
             let want = fitGrid()
             // A new size needs no redraw from the server: the terminal reflows as the server's
             // does (both are Ghostty), and the stream carries the resize.
