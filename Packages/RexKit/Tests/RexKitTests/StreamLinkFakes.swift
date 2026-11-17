@@ -71,8 +71,12 @@ final class FakeLink: StreamLink {
         if held.contains(method) {
             try await withCheckedThrowingContinuation { waiting.append((call, $0)) }
         }
+        if let reply = replies[method] { return reply }
         return method == "data.connect" ? ["ticket": "AAECAwQFBgcICQoLDA0ODw"] : [:]
     }
+
+    /// Answers for methods, instead of an empty object.
+    var replies: [String: JSONObject] = [:]
 
     /// Answers the oldest held call.
     func release() {
@@ -93,10 +97,17 @@ final class FakeLink: StreamLink {
         }
     }
 
-    func openDataSocket() throws -> any StreamSocket {
+    /// Hears each socket as it opens, before it is used.
+    var onOpen: ((FakeSocket) -> Void)?
+    /// The subprotocol of each socket opened, in order.
+    private(set) var subprotocols: [String] = []
+
+    func openDataSocket(subprotocol: String) throws -> any StreamSocket {
+        subprotocols.append(subprotocol)
         let plan = plans.isEmpty ? defaultPlan : plans.removeFirst()
         let s = FakeSocket(plan)
         sockets.append(s)
+        onOpen?(s)
         return s
     }
 
@@ -118,6 +129,8 @@ final class FakeSocket: StreamSocket {
     private(set) var receives = 0
     private var inbox: [Result<Data?, Error>] = []
     private var waiter: CheckedContinuation<Data?, Error>?
+    /// Hears every message after the handshake.
+    var onSend: ((Data) -> Void)?
 
     init(_ plan: FakeLink.SocketPlan) { self.plan = plan }
 
@@ -132,6 +145,8 @@ final class FakeSocket: StreamSocket {
     func send(_ data: Data) async throws {
         if case .fail = plan { throw URLError(.notConnectedToInternet) }
         sent.append([UInt8](data))
+        // Only the handshake is answered; a file's bytes after it are not.
+        guard sent.count == 1 else { return onSend?(data) ?? () }
         switch plan {
         case .welcome(let keep): deliver(.success(Data(FakeLink.welcome(keepMs: keep))))
         case .reject(let reason): deliver(.success(Data([0x82, reason])))

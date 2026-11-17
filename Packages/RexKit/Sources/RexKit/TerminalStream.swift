@@ -797,7 +797,7 @@ public final class TerminalStream {
     }
 
     private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool = false) async throws {
-        let socket = try link.openDataSocket()
+        let socket = try link.openDataSocket(subprotocol: "rex.data.terminal.v1")
         ws = socket
         do {
             // `stop()` or `restart()` may run during either wait. A handshake that finishes

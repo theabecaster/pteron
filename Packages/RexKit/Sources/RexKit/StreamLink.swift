@@ -11,8 +11,9 @@ protocol StreamLink: AnyObject {
     /// Throws a `RexError`: with `neverSent` when the request never left, with the server's code
     /// when the server refused it, and a plain local one when the connection broke after the send.
     func call(_ method: String, _ payload: JSONObject?) async throws -> JSONObject
-    /// A new, unopened-handshake socket to `GET /api/data` (`rex.data.terminal.v1`).
-    func openDataSocket() throws -> any StreamSocket
+    /// A new socket to `GET /api/data` with `subprotocol`, before its handshake: a terminal stream
+    /// (`rex.data.terminal.v1`) or a file's bytes (`rex.data.bytes.v1`).
+    func openDataSocket(subprotocol: String) throws -> any StreamSocket
 }
 
 /// One data WebSocket.
@@ -31,9 +32,9 @@ protocol StreamSocket: AnyObject {
 extension RexControl: StreamLink {
     var isConnected: Bool { state == .connected }
 
-    func openDataSocket() throws -> any StreamSocket {
+    func openDataSocket(subprotocol: String) throws -> any StreamSocket {
         guard let base = wsBase else { throw RexError.local("invalid server address") }
-        let task = session.webSocketTask(with: base.appendingPathComponent("api/data"), protocols: ["rex.data.terminal.v1"])
+        let task = session.webSocketTask(with: base.appendingPathComponent("api/data"), protocols: [subprotocol])
         task.maximumMessageSize = 1 << 20
         task.resume()
         return URLSessionStreamSocket(task)
