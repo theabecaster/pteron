@@ -83,7 +83,8 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
   budget (docs/ghostty-engine.md, Measurements).
 - Releases (device installs, TestFlight, the helper's packaging): [docs/release.md](docs/release.md).
 - CI (`.github/workflows/ci.yml`): job `build` runs RexKit and app tests on macdesk, a self-hosted
-  runner on the latest Xcode; job `helper` runs `cargo test` on GitHub's Linux runners. `build` is
+  runner on the latest Xcode, for pushes to main and manual runs (pull requests get RexKit tests on
+  GitHub's macOS runner and never touch macdesk); job `helper` runs `cargo test` on GitHub's Linux runners. `build` is
   required for merging into main for outside contributors; their fork pull requests only run after
   the owner approves them. The owner and their agents may merge straight to main (admin bypass)
   after building and testing locally; don't wait on CI.
