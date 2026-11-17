@@ -90,27 +90,29 @@ enum Poll {
 @MainActor
 enum Waiting {
     struct Item: Identifiable {
-        var id: String { row.blockID }
+        var id: String { key.blockID }
         let server: ServerConnection
-        let row: ServerConnection.AgentRow
+        let key: AgentKey
     }
 
-    /// Every agent waiting for the user, oldest first.
+    /// Every agent waiting for the user, oldest first. Reads only each server's `agentKeys`, so a
+    /// view that calls it re-renders when an agent starts or stops waiting, not when a title,
+    /// directory or status line changes in some pane.
     static func all(_ servers: [ServerConnection]) -> [Item] {
         let since = PhoneState.shared.waitingSince
         return servers.flatMap { s in
-            s.agents.filter { $0.status?.state == "blocked" }.map { Item(server: s, row: $0) }
+            s.agentKeys.filter { $0.state == "blocked" }.map { Item(server: s, key: $0) }
         }
         .sorted { (since[$0.id] ?? .distantFuture) < (since[$1.id] ?? .distantFuture) }
     }
 
     /// Points the app at that agent's pane and returns the tab to open.
     static func prepare(_ model: AppModel, _ item: Item) -> Selection {
-        let r = item.row
-        model.focusedPane[r.windowID] = r.blockID
+        let k = item.key
+        model.focusedPane[k.windowID] = k.blockID
         let server = item.server
-        Task { await server.focus(r.sessionID, block: r.blockID) }
-        return Selection(serverID: server.id, sessionID: r.sessionID, windowID: r.windowID)
+        Task { await server.focus(k.sessionID, block: k.blockID) }
+        return Selection(serverID: server.id, sessionID: k.sessionID, windowID: k.windowID)
     }
 }
 
@@ -134,7 +136,8 @@ struct WaitingWatcher: View {
 }
 
 /// Header pill shown while an agent the user can't see is waiting. Tap jumps to the oldest;
-/// touch and hold lists every waiting agent.
+/// touch and hold lists every waiting agent. It reads only the agent index (`Waiting.all`), so it
+/// re-renders when an agent starts or stops waiting; each menu label reads the rest itself.
 struct WaitingPill: View {
     @Environment(AppModel.self) private var model
     /// Panes on screen right now; agents waiting there are already in view.
@@ -148,10 +151,7 @@ struct WaitingPill: View {
             Menu {
                 Section("Waiting for you") {
                     ForEach(items) { it in
-                        Button { onJump(it) } label: {
-                            Text(it.row.kind?.displayName ?? it.row.status?.app ?? "Program")
-                            Text(it.row.place.isEmpty ? WindowTitle.condense(it.row.title) : it.row.place)
-                        }
+                        Button { onJump(it) } label: { WaitingMenuLabel(item: it) }
                     }
                 }
             } label: {
@@ -177,5 +177,21 @@ struct WaitingPill: View {
             .accessibilityHint("Jumps to the one waiting longest. Touch and hold to pick one.")
             .transition(.scale.combined(with: .opacity))
         }
+    }
+}
+
+/// One waiting agent in the pill's menu: what it is and where. Reads the pane's metadata and the
+/// session's layout in its own body, so the pill doesn't.
+private struct WaitingMenuLabel: View {
+    let item: Waiting.Item
+
+    var body: some View {
+        let k = item.key, server = item.server
+        let meta = server.meta[k.blockID]
+        let view = server.views[k.sessionID]
+        let window = view?.window(k.windowID)
+        let place = [view?.label ?? "", window?.label ?? ""].filter { !$0.isEmpty }.joined(separator: " › ")
+        Text(k.kind?.displayName ?? meta?.topStatus?.app ?? "Program")
+        Text(place.isEmpty ? WindowTitle.condense(meta?.title ?? window?.block(k.blockID)?.label ?? "") : place)
     }
 }

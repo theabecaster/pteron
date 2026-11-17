@@ -1,7 +1,18 @@
 import Foundation
+import Observation
+import Synchronization
 import Testing
 import RexKit
 @testable import RexDuo
+
+/// Set from an observation's `onChange`, which may run on any thread.
+private final class Fired: Sendable {
+    private let flag = Atomic(false)
+    var value: Bool {
+        get { flag.load(ordering: .sequentiallyConsistent) }
+        set { flag.store(newValue, ordering: .sequentiallyConsistent) }
+    }
+}
 
 /// The sidebar's pure logic: which rows show for a fold state, how fold state is saved and pruned,
 /// the Agents mode's order, and the mode commands.
@@ -223,6 +234,36 @@ struct SidebarRowStateTests {
         server.meta["b1"] = status("blocked")
         await settle()
         #expect(server.agentKeys.first?.state == "blocked")
+    }
+
+    /// The title bar's waiting pill reads `Waiting.all`: a title or status line change in some pane
+    /// mustn't re-render it, an agent starting to wait must.
+    @Test func waitingListReadsOnlyTheAgentIndex() async {
+        let (_, server) = fixture()
+        server.sessions = [SessionEntry(id: "s1", label: "work")]
+        server.views = ["s1": SessionView(["session_id": "s1", "label": "work",
+                                           "windows": [windowJSON("w1", blocks: ["b1", "b2"])]])]
+        server.meta["b1"] = status("working")
+        await settle()
+
+        let fired = Fired()
+        let initial = withObservationTracking { Waiting.all([server]) } onChange: { fired.value = true }
+        #expect(initial.isEmpty)
+        var titled = status("working")
+        titled.title = "new title"
+        titled.statuses[""]?.text = "step 2"
+        server.meta["b1"] = titled
+        server.meta["b2"] = { var m = BlockMeta(); m.title = "zsh"; return m }()
+        await settle()
+        #expect(!fired.value)
+
+        server.meta["b1"] = status("blocked")
+        await settle()
+        #expect(fired.value)
+        let items = Waiting.all([server])
+        #expect(items.map(\.id) == ["b1"])
+        #expect(items.first?.key.windowID == "w1")
+        #expect(items.first?.key.sessionID == "s1")
     }
 
     @Test func rowsCompareWhatTheyShow() {

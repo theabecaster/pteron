@@ -70,7 +70,7 @@ private struct AgentToasts: ViewModifier {
     /// so once the user has answered, this reads nothing else.
     private var promptReady: Bool {
         model.push.offersPrompt && phase == .active
-            && model.servers.contains { $0.phase == .online && !$0.agents.isEmpty }
+            && model.servers.contains { $0.phase == .online && !$0.agentKeys.isEmpty }
     }
 
     private func consider(_ a: AgentAlert) {
