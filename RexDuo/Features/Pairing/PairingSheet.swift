@@ -50,6 +50,8 @@ struct PairingSheet: View {
     @State private var showDetails = false
     /// Opened for a computer picked from a list: there is no camera to go back to.
     @State private var picked = false
+    /// The pause that shows the checkmark before the sheet leaves.
+    @State private var leaving: Task<Void, Never>?
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -64,7 +66,10 @@ struct PairingSheet: View {
             .navigationTitle(picked ? "Add Computer" : "Pair via QR Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                // Once the server is added there is nothing left to cancel.
+                if pairing?.isFinished != true {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                }
                 if pairing?.step == .scanning, access == .granted, CameraAccess.hasTorch {
                     ToolbarItem(placement: .primaryAction) {
                         Button { torch.toggle() } label: {
@@ -78,7 +83,10 @@ struct PairingSheet: View {
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
         .task { await begin() }
-        .onDisappear { pairing?.cancel() }
+        .onDisappear {
+            pairing?.cancel()
+            leaving?.cancel()
+        }
         .onChange(of: pairing?.step) { _, _ in
             torch = false
             showDetails = false
@@ -296,11 +304,13 @@ struct PairingSheet: View {
             onAdd: { [model] config in
                 model.addServer(config)
                 Haptic.success()
-                Task {
+                UIAccessibility.post(notification: .announcement, argument: "\(config.name) added")
+                leaving = Task {
                     // Long enough to see the button turn into its checkmark.
                     try? await Task.sleep(nanoseconds: 450_000_000)
+                    guard !Task.isCancelled else { return }
                     finish()
-                    await model.openWhenReady(config)
+                    model.land(on: config)
                 }
             })
         pairing = p
@@ -345,6 +355,8 @@ private struct PairingCover: ViewModifier {
 
     func body(content: Content) -> some View {
         content.fullScreenCover(isPresented: $isPresented, onDismiss: {
+            // A picked computer the sheet never got to must not start the next scan.
+            model.pairingStart = nil
             guard wantsAddress else { return }
             wantsAddress = false
             enterAddress()
@@ -478,6 +490,7 @@ private struct IdentityCard: View {
             AddButton(done: added, theme: theme) { pairing.add() }
             SecondaryButton(title: "Not This One", theme: theme, action: decline)
                 .opacity(added ? 0 : 1)
+                .accessibilityHidden(added)
             if let helper = copy.helper {
                 Text(helper)
                     .font(.caption)
@@ -539,7 +552,10 @@ private struct AddButton: View {
             }
             .font(.body.weight(.semibold))
             .foregroundStyle(theme.bg)
-            .frame(width: 200, height: 46)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 18).padding(.vertical, 8)
+            // At least the offline screen's button; taller and wider for large text.
+            .frame(minWidth: 200, minHeight: 46)
             .background(Capsule().fill(done ? theme.chrome.done : theme.accent))
             .contentShape(Capsule())
         }

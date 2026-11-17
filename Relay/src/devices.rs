@@ -63,6 +63,8 @@ pub struct DeviceStore {
     pub path: PathBuf,
     pub devices: Vec<Device>,
     seen: SeenDevices,
+    /// A dry run keeps the seen ids in memory only, so it doesn't use up a phone's notice.
+    dry_run: bool,
 }
 
 fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
@@ -97,16 +99,29 @@ fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
 
 const SEEN_FILE: &str = "seen_devices.json";
 
+fn is_registered(devices: &[Device], id: &str) -> bool {
+    devices.iter().any(|d| d.device_id.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(id)))
+}
+
 impl DeviceStore {
     pub fn open(path: PathBuf) -> DeviceStore {
+        DeviceStore::load(path, false)
+    }
+
+    /// `open` for `--dry-run`: never writes seen_devices.json.
+    pub fn open_dry_run(path: PathBuf) -> DeviceStore {
+        DeviceStore::load(path, true)
+    }
+
+    fn load(path: PathBuf, dry_run: bool) -> DeviceStore {
         let devices: Vec<Device> = read_json(&path);
         // A phone registered before this file existed (an older helper) counts as seen.
         let on_disk = SeenDevices::new(read_json::<Vec<String>>(&path.with_file_name(SEEN_FILE)));
         let mut seen = on_disk.clone();
         for id in devices.iter().filter_map(|d| d.device_id.as_deref()) {
-            seen.observe(id);
+            seen.observe_keeping(id, |s| is_registered(&devices, s));
         }
-        let store = DeviceStore { path, devices, seen };
+        let store = DeviceStore { path, devices, seen, dry_run };
         if store.seen != on_disk {
             store.save_seen();
         }
@@ -117,14 +132,19 @@ impl DeviceStore {
         write_json(&self.path, &self.devices);
     }
 
+    /// An array of ids, oldest first.
     fn save_seen(&self) {
-        write_json(&self.path.with_file_name(SEEN_FILE), &self.seen.ids().collect::<Vec<_>>());
+        if !self.dry_run {
+            write_json(&self.path.with_file_name(SEEN_FILE), &self.seen.ids().collect::<Vec<_>>());
+        }
     }
 
-    /// True the first time this device id registers, ever: not after a new token, an
-    /// unregister or a restart. A registration without an id is never new.
+    /// True the first time this device id registers: not after a new token, an unregister or a
+    /// restart. A registration without an id is never new. A full seen set drops its oldest id
+    /// that isn't registered now.
     pub fn first_sight(&mut self, device_id: Option<&str>) -> bool {
-        let new = device_id.is_some_and(|id| self.seen.observe(id));
+        let devices = &self.devices;
+        let new = device_id.is_some_and(|id| self.seen.observe_keeping(id, |s| is_registered(devices, s)));
         if new {
             self.save_seen();
         }
@@ -368,6 +388,62 @@ mod tests {
         assert!(again.devices.is_empty());
         assert!(!again.first_sight(Some("a1b2c3d4")));
         assert!(again.first_sight(Some("ffff0000")));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_dry_run_does_not_use_up_first_sight() {
+        let path = temp_store("dry");
+        std::fs::write(&path, serde_json::to_vec(&vec![phone("0000aaaa", "ef")]).unwrap()).unwrap();
+        let mut dry = DeviceStore::open_dry_run(path.clone());
+        assert!(dry.first_sight(Some("a1b2c3d4")));
+        dry.register(phone("a1b2c3d4", "ab"));
+        // Once per device in the run, and nothing on disk.
+        assert!(!dry.first_sight(Some("a1b2c3d4")));
+        assert!(!dry.first_sight(Some("0000aaaa")));
+        assert!(!path.with_file_name(SEEN_FILE).exists());
+        assert!(dry.remove(&"ab".repeat(32)));
+        assert!(DeviceStore::open(path.clone()).first_sight(Some("a1b2c3d4")));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    fn seen_file(path: &Path) -> Vec<String> {
+        serde_json::from_slice(&std::fs::read(path.with_file_name(SEEN_FILE)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn seen_order_survives_a_reload() {
+        let path = temp_store("order");
+        let mut s = DeviceStore::open(path.clone());
+        for id in ["ffff0000", "A1B2C3D4", "0000aaaa", "not an id"] {
+            s.first_sight(Some(id));
+        }
+        assert_eq!(seen_file(&path), ["ffff0000", "a1b2c3d4", "0000aaaa"]);
+        let mut again = DeviceStore::open(path.clone());
+        assert!(again.first_sight(Some("77770000")));
+        assert_eq!(seen_file(&path), ["ffff0000", "a1b2c3d4", "0000aaaa", "77770000"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_full_seen_file_drops_its_oldest_id_but_not_a_registered_one() {
+        use crate::notice::SEEN_LIMIT;
+        let path = temp_store("cap");
+        let ids: Vec<String> = (0..SEEN_LIMIT).map(|n| format!("{n:08x}")).collect();
+        std::fs::write(path.with_file_name(SEEN_FILE), serde_json::to_vec(&ids).unwrap()).unwrap();
+        let mut s = DeviceStore::open(path.clone());
+        // The oldest id is a registered phone: the next oldest goes instead.
+        s.register(phone(&ids[0], "ab"));
+        assert!(s.first_sight(Some("ffff0000")));
+        let on_disk = seen_file(&path);
+        assert_eq!(on_disk.len(), SEEN_LIMIT);
+        assert_eq!(on_disk[..2], [ids[0].clone(), ids[2].clone()]);
+        assert_eq!(on_disk[SEEN_LIMIT - 1], "ffff0000");
+        // In the next run too: the registered phone is not new, the dropped id is.
+        let mut again = DeviceStore::open(path.clone());
+        assert!(!again.first_sight(Some(&ids[0])));
+        assert!(again.first_sight(Some(&ids[1])));
+        assert_eq!(seen_file(&path).len(), SEEN_LIMIT);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

@@ -59,8 +59,11 @@ opens) and `PairingModel` (`State/Pairing.swift`) takes it from there, one step 
    goes through `ConnectionProblem.classify` and is worded by `PairingProblem`.
 3. Identify. `ServerPreview` (RexKit) opens one control connection, makes five read-only calls
    (`server.status`, `server.version`, `server.whoami`, `session.list`, `client.list`) and closes.
-   It attaches to nothing, so the server drops the client at once, and its label has no device id,
-   so the helper doesn't take it for the phone being open. `IdentityCopy` words the card.
+   It attaches to nothing, so the server drops the client the moment it closes (checked on a
+   real server: gone from `client.list` right after, with no `lost` entry). It is one attempt,
+   never retried, and its label has no device id, so the helper doesn't take it for the phone
+   being open. A call that fails leaves its fields unknown, and `IdentityCopy` words the card
+   from what the computer did say.
 4. Add & Open. The server is saved, connects and registers for pushes like any other, and
    `AppModel.openWhenReady` lands on its active tab once its sessions are in.
 

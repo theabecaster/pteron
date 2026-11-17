@@ -17,10 +17,22 @@ enum PushIdentity {
     /// `"<device name> #<device id>"`, shortening the name (never the suffix) to fit 64 bytes.
     static func clientLabel(deviceName: String, deviceID: String) -> String {
         let suffix = " #" + deviceID
+        return fitted(deviceName, bytes: maxLabelBytes - suffix.utf8.count) + suffix
+    }
+
+    /// The label of the short connection that reads who a computer is before it is added: the
+    /// device name alone, within the 64 bytes. No device id, so the helper doesn't take it for
+    /// this iPhone having the app open.
+    static func previewLabel(deviceName: String) -> String {
+        fitted(deviceName, bytes: maxLabelBytes)
+    }
+
+    /// The name cut to whole characters that fit `bytes` of UTF-8; "iPhone" when nothing is left.
+    private static func fitted(_ deviceName: String, bytes: Int) -> String {
         var name = deviceName.trimmingCharacters(in: .whitespaces)
-        while name.utf8.count + suffix.utf8.count > maxLabelBytes { name.removeLast() }
+        while name.utf8.count > bytes { name.removeLast() }
         name = name.trimmingCharacters(in: .whitespaces)
-        return (name.isEmpty ? "iPhone" : name) + suffix
+        return name.isEmpty ? "iPhone" : name
     }
 
     static func hex(_ token: Data) -> String {

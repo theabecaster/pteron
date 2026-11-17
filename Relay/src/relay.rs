@@ -106,6 +106,7 @@ pub struct Relay {
     policy: Mutex<PushPolicy>,
     limiter: Mutex<RateLimiter>,
     store: Mutex<DeviceStore>,
+    notices: Mutex<notice::NoticeLimiter>,
     sender: Option<Sender>,
     dry_run: bool,
     identity: Identity,
@@ -133,6 +134,7 @@ impl Relay {
             policy: Mutex::new(PushPolicy::new(o.debounce)),
             limiter: Mutex::new(RateLimiter::new(o.burst, o.per_minute)),
             store: Mutex::new(store),
+            notices: Mutex::new(notice::NoticeLimiter::default()),
             sender,
             dry_run: o.dry_run,
             identity,
@@ -549,8 +551,14 @@ impl Relay {
                         d.device_name.as_deref().unwrap_or("device"),
                         &token[..8]
                     );
-                    if new {
+                    if new && self.notices.lock().unwrap().allow(Instant::now()) {
                         notice::post(&notice::body(d.device_name.as_deref()), self.dry_run);
+                    } else if new {
+                        info!(
+                            "holding back the desktop notice: more than {} new devices in {} s",
+                            notice::NOTICE_LIMIT,
+                            notice::NOTICE_WINDOW.as_secs()
+                        );
                     }
                     reply["result"] = json!({
                         "registered": true, "devices": count,

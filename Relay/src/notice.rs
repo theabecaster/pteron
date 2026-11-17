@@ -2,10 +2,10 @@
 //! Which phone is new and what the notice says are pure and unit-tested; `post` is the effect.
 
 use crate::{debug, info};
-use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const TITLE: &str = "Rex DUO connected";
 /// The program in the Mac app, next to the helper, that posts as Rex DUO Helper
@@ -14,24 +14,77 @@ pub const TITLE: &str = "Rex DUO connected";
 pub const NOTIFIER: &str = "rex-duo-notify";
 /// Longest device name shown, in characters.
 const NAME_LIMIT: usize = 64;
+/// Most device ids remembered. A new id past this pushes out the oldest.
+pub const SEEN_LIMIT: usize = 512;
+/// Longest device id remembered, in characters. The app sends 8.
+const ID_LIMIT: usize = 64;
+/// Most notices shown in any `NOTICE_WINDOW`, so a client that registers many new ids cannot
+/// flood the desktop.
+pub const NOTICE_LIMIT: usize = 3;
+pub const NOTICE_WINDOW: Duration = Duration::from_secs(60);
 
-/// Device ids that have registered at least once (seen_devices.json). An id stays here after
-/// the phone unregisters, so it gets one notice ever.
+/// Device ids that have registered at least once (seen_devices.json), oldest first. An id stays
+/// here after the phone unregisters, so it gets one notice, until `SEEN_LIMIT` newer ids push
+/// it out.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct SeenDevices(BTreeSet<String>);
+pub struct SeenDevices(Vec<String>);
+
+fn is_valid_id(id: &str) -> bool {
+    (1..=ID_LIMIT).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric())
+}
 
 impl SeenDevices {
+    /// `ids` oldest first, as the file has them.
     pub fn new(ids: impl IntoIterator<Item = String>) -> SeenDevices {
-        SeenDevices(ids.into_iter().map(|i| i.to_lowercase()).collect())
+        let mut seen = SeenDevices::default();
+        for id in ids {
+            seen.observe(&id);
+        }
+        seen
     }
 
-    /// Records the id. True the first time, which is when the notice is due.
+    /// Records the id. True the first time, which is when the notice is due. An id that is not
+    /// 1 to 64 letters or digits is no id: never new, never recorded.
     pub fn observe(&mut self, id: &str) -> bool {
-        self.0.insert(id.to_lowercase())
+        self.observe_keeping(id, |_| false)
     }
 
+    /// `observe`, where a full set drops its oldest id that `keep` doesn't hold on to (the
+    /// oldest of all when it holds on to every one).
+    pub fn observe_keeping(&mut self, id: &str, keep: impl Fn(&str) -> bool) -> bool {
+        let id = id.to_lowercase();
+        if !is_valid_id(&id) || self.0.contains(&id) {
+            return false;
+        }
+        if self.0.len() >= SEEN_LIMIT {
+            let oldest = self.0.iter().position(|s| !keep(s)).unwrap_or(0);
+            self.0.remove(oldest);
+        }
+        self.0.push(id);
+        true
+    }
+
+    /// Oldest first.
     pub fn ids(&self) -> impl Iterator<Item = &String> {
         self.0.iter()
+    }
+}
+
+/// Holds notices back past `NOTICE_LIMIT` in `NOTICE_WINDOW`. The caller passes the time.
+#[derive(Debug, Default)]
+pub struct NoticeLimiter(VecDeque<Instant>);
+
+impl NoticeLimiter {
+    /// True if a notice may show at `now`, which then counts against the window.
+    pub fn allow(&mut self, now: Instant) -> bool {
+        while self.0.front().is_some_and(|t| now.saturating_duration_since(*t) >= NOTICE_WINDOW) {
+            self.0.pop_front();
+        }
+        if self.0.len() >= NOTICE_LIMIT {
+            return false;
+        }
+        self.0.push_back(now);
+        true
     }
 }
 
@@ -53,15 +106,22 @@ pub fn body(device_name: Option<&str>) -> String {
 /// The program and arguments that show a notification on `os` (`std::env::consts::OS`), or
 /// None where there is no way: a Mac helper that isn't running from its app has no `notifier`.
 /// The texts are separate arguments after `--`, never part of an option, so nothing in a device
-/// name is run or parsed.
+/// name is run or parsed. Linux notification servers read the texts as markup, so there `&`,
+/// `<` and `>` are escaped; the Mac notifier shows text as it is.
 pub fn command(os: &str, notifier: Option<&Path>, title: &str, body: &str) -> Option<(String, Vec<String>)> {
-    let (program, fixed): (String, &[&str]) = match os {
-        "macos" => (notifier?.display().to_string(), &["post"]),
-        "linux" => ("notify-send".into(), &["--app-name", "Rex DUO"]),
+    let (program, fixed, markup): (String, &[&str], bool) = match os {
+        "macos" => (notifier?.display().to_string(), &["post"], false),
+        "linux" => ("notify-send".into(), &["--app-name", "Rex DUO"], true),
         _ => return None,
     };
-    let args = fixed.iter().copied().chain(["--", title, body]).map(String::from).collect();
+    let text = |s: &str| if markup { escape_markup(s) } else { s.to_string() };
+    let args = fixed.iter().map(|s| s.to_string()).chain(["--".to_string(), text(title), text(body)]).collect();
     Some((program, args))
+}
+
+/// `&` first, so the `&` of an escape written here is not escaped again.
+fn escape_markup(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 /// The notifier inside the app this helper runs from, if it is there.
@@ -144,6 +204,82 @@ mod tests {
         assert!(!seen.observe("A1B2C3D4"));
         assert!(seen.observe("ffff0000"));
         assert!(!SeenDevices::new(["AAAA1111".to_string()]).observe("aaaa1111"));
+    }
+
+    #[test]
+    fn a_full_set_drops_the_oldest_id() {
+        let id = |n: usize| format!("{n:08x}");
+        let mut seen = SeenDevices::new((0..SEEN_LIMIT).map(id));
+        assert!(seen.observe("ffff0000"));
+        assert_eq!(seen.ids().count(), SEEN_LIMIT);
+        assert_eq!(seen.ids().next(), Some(&id(1)));
+        assert_eq!(seen.ids().last().map(String::as_str), Some("ffff0000"));
+        // The id that was dropped is new again; one that stayed is not.
+        assert!(!seen.observe(&id(1)));
+        assert!(seen.observe(&id(0)));
+        assert_eq!(seen.ids().count(), SEEN_LIMIT);
+    }
+
+    #[test]
+    fn a_full_set_keeps_the_ids_it_is_told_to() {
+        let id = |n: usize| format!("{n:08x}");
+        let mut seen = SeenDevices::new((0..SEEN_LIMIT).map(id));
+        assert!(seen.observe_keeping("ffff0000", |s| s == id(0) || s == id(1)));
+        assert_eq!(seen.ids().take(3).collect::<Vec<_>>(), [&id(0), &id(1), &id(3)]);
+        // Everything kept: the oldest goes, so the set still cannot grow.
+        assert!(seen.observe_keeping("ffff0001", |_| true));
+        assert_eq!(seen.ids().count(), SEEN_LIMIT);
+        assert_eq!(seen.ids().next(), Some(&id(1)));
+    }
+
+    #[test]
+    fn invalid_ids_are_ignored() {
+        let mut seen = SeenDevices::default();
+        for id in ["", " ", "a1-b2", "a1b2c3d4\n", "../x", "é1b2c3d4", &"a".repeat(65)] {
+            assert!(!seen.observe(id), "{id:?}");
+        }
+        assert_eq!(seen.ids().count(), 0);
+        assert!(seen.observe("a"));
+        assert!(seen.observe(&"a".repeat(64)));
+        assert_eq!(SeenDevices::new(["a1b2c3d4".to_string(), "<b>".to_string()]).ids().collect::<Vec<_>>(), ["a1b2c3d4"]);
+    }
+
+    #[test]
+    fn notices_are_limited_per_window() {
+        let start = Instant::now();
+        let at = |s: u64| start + Duration::from_secs(s);
+        let mut limiter = NoticeLimiter::default();
+        for s in [0, 10, 20] {
+            assert!(limiter.allow(at(s)));
+        }
+        assert!(!limiter.allow(at(30)));
+        assert!(!limiter.allow(at(59)));
+        // The first one leaves the window at 60 s: one more passes, and only one.
+        assert!(limiter.allow(at(60)));
+        assert!(!limiter.allow(at(61)));
+        assert!(limiter.allow(at(70)));
+        assert_eq!(NOTICE_LIMIT, 3);
+        assert_eq!(NOTICE_WINDOW, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn linux_texts_are_escaped_as_markup_and_mac_texts_are_not() {
+        let notifier = Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-notify");
+        let name = "<b>x</b> & <a href=\"http://x\">y</a> &lt;";
+        let text = body(Some(name));
+        let (_, args) = command("linux", None, "a & b", &text).unwrap();
+        assert_eq!(
+            args,
+            [
+                "--app-name",
+                "Rex DUO",
+                "--",
+                "a &amp; b",
+                "&lt;b&gt;x&lt;/b&gt; &amp; &lt;a href=\"http://x\"&gt;y&lt;/a&gt; &amp;lt; can now open your sessions on this computer.",
+            ]
+        );
+        let (_, args) = command("macos", Some(notifier), "a & b", &text).unwrap();
+        assert_eq!(args, ["post", "--", "a & b", text.as_str()]);
     }
 
     #[test]

@@ -156,14 +156,21 @@ Every field is optional.
 
 The first time a phone registers, the computer shows one desktop notification: "Rex DUO
 connected", "<device name> can now open your sessions on this computer." It shows once per
-`device_id`, ever: `seen_devices.json` in the same folder keeps every id that has registered, so
+`device_id`: `seen_devices.json` in the same folder keeps the ids that have registered, so
 a new token, a reconnect, a helper restart or an unregister followed by a register shows nothing.
+The file holds at most 512 ids, oldest first; a new id past that pushes out the oldest one that
+is not registered now, and a phone pushed out gets a notice again if it comes back.
+At most 3 notices show in any 60 seconds; a new phone past that is still registered and
+remembered, and the log says its notice was held back.
 Phones already in `devices.json` when the helper is upgraded count as seen, and a registration
 without a `device_id` shows nothing. On a Mac it comes from Rex DUO Helper itself: `rex-duo-notify`
 (`Packaging/notify.swift`), a small program beside the helper in the app, posts it, and macOS
 asks once, when the app is first opened, whether the helper may show notifications. Answer no,
 or run the helper outside its app, and no notice is shown. On Linux it goes through `notify-send`, and only if it is installed and a desktop session is there
-(otherwise the helper logs a line and carries on). `--dry-run` logs `DRY-RUN notice` instead.
+(otherwise the helper logs a line and carries on), with `&`, `<` and `>` in the name escaped,
+because Linux notification servers read the text as markup. `--dry-run` logs `DRY-RUN notice`
+instead, once per new phone per run, and never writes `seen_devices.json`, so the real helper
+still shows that phone's notice.
 
 ## What the app must do
 

@@ -119,6 +119,14 @@ public final class RexControl {
         state = .idle
     }
 
+    /// Disconnects for good and releases the URLSession, which otherwise keeps its delegate queue
+    /// and connection pool for the life of the process. For a connection made for one short job;
+    /// the control must not be used again.
+    public func invalidate() {
+        disconnect()
+        session.invalidateAndCancel()
+    }
+
     /// Opens a socket and waits for the welcome. Every failure goes through `handleDrop`, which
     /// records it and schedules the next attempt; the throw only tells the caller.
     private func openSocket() async throws {

@@ -76,6 +76,7 @@ final class AppModel {
     var showSettings = false
     /// The "Pair via QR Code" scanner, opened from the screen shown when there are no servers.
     var showPairing = false
+    @ObservationIgnored private var landing: Task<Void, Never>?
     /// A computer picked from the sidebar's known hosts: the scanner opens straight at its check.
     var pairingStart: PairingStart?
 
@@ -162,11 +163,13 @@ final class AppModel {
 
     // MARK: Adding a server
 
-    /// Saves a server, unless one at the same address is already saved.
-    func addServer(_ config: ServerConfig) {
-        if let url = ServerConfig.url(from: config.url), PairingCode.existing(url, in: prefs.servers) != nil { return }
+    /// Saves a server, unless one at the same address is already saved. True when it was saved.
+    @discardableResult
+    func addServer(_ config: ServerConfig) -> Bool {
+        if let url = ServerConfig.url(from: config.url), PairingCode.existing(url, in: prefs.servers) != nil { return false }
         prefs.servers.append(config)
         rebuildServers()
+        return true
     }
 
     /// Checks a scanned address before it is saved. First a plain request that only that address
@@ -184,7 +187,7 @@ final class AppModel {
         let client = ClientInfo(
             name: "Rex DUO",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-            label: String(UIDevice.current.name.prefix(40)))
+            label: PushIdentity.previewLabel(deviceName: UIDevice.current.name))
         return .reachable(await ServerPreview.fetch(address: url.absoluteString, client: client))
     }
 
@@ -205,15 +208,25 @@ final class AppModel {
     }
     #endif
 
-    /// A server was just added: once it has connected and its sessions are in, land on its active
-    /// tab. Gives up after `timeout`, or as soon as the person has opened something themselves.
-    func openWhenReady(_ config: ServerConfig, timeout: Double = 15) async {
+    /// A server was just added: land on its active tab once it has connected and its sessions
+    /// are in. One landing at a time; a new one replaces it.
+    func land(on config: ServerConfig) {
+        landing?.cancel()
+        landing = Task { [weak self] in await self?.openWhenReady(config) }
+    }
+
+    /// Waits for `config`'s server to be online with a tab to show, then shows it. Ends without
+    /// showing anything after `timeout`, when its task is cancelled, or as soon as the person has
+    /// opened something themselves. True when it showed the tab.
+    @discardableResult
+    func openWhenReady(_ config: ServerConfig, timeout: Double = 15, poll: Double = 0.2) async -> Bool {
         let before = selection
         let end = Date().addingTimeInterval(timeout)
-        while Date() < end, selection == before {
-            if let s = server(config.id), s.phase == .online, show(config) { return }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+        while Date() < end, selection == before, !Task.isCancelled {
+            if let s = server(config.id), s.phase == .online, show(config) { return true }
+            try? await Task.sleep(nanoseconds: UInt64(poll * 1_000_000_000))
         }
+        return false
     }
 
     /// Shows a server's active tab: a saved server that was scanned again, or one just added. A

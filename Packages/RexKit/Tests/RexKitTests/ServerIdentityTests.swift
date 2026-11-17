@@ -10,6 +10,7 @@ private final class FakeRex: @unchecked Sendable {
     private let listener: NWListener
     private var connections: [NWConnection] = []
     private var open = 0
+    private var accepted = 0
     private var asked: [String] = []
     private let replies: [String: String]
     private let welcomes: Bool
@@ -30,6 +31,7 @@ private final class FakeRex: @unchecked Sendable {
             guard let self else { return }
             self.connections.append(c)
             self.open += 1
+            self.accepted += 1
             c.stateUpdateHandler = { [weak self] state in
                 if case .cancelled = state { self?.open -= 1 }
                 if case .failed = state { self?.open -= 1 }
@@ -53,6 +55,8 @@ private final class FakeRex: @unchecked Sendable {
 
     var methods: [String] { queue.sync { asked } }
     var openConnections: Int { queue.sync { open } }
+    /// Every connection made since the start, closed ones included.
+    var connectionsMade: Int { queue.sync { accepted } }
     func stop() { queue.sync { listener.cancel(); for c in connections { c.cancel() } } }
 
     private func send(_ text: String, on c: NWConnection) {
@@ -102,10 +106,11 @@ struct ServerIdentityTests {
     static let all = ["server.status": status, "server.version": version, "server.whoami": whoami,
                       "session.list": sessions, "client.list": clients]
 
-    private func identity(status: String = status, version: String = version, whoami: String = whoami,
-                          sessions: String = sessions, clients: String = clients) -> ServerIdentity {
-        ServerIdentity(status: object(status), version: object(version), whoami: object(whoami),
-                       sessions: object(sessions), clients: object(clients))
+    /// A nil argument is a call that got no reply.
+    private func identity(status: String? = status, version: String? = version, whoami: String? = whoami,
+                          sessions: String? = sessions, clients: String? = clients) -> ServerIdentity {
+        ServerIdentity(status: status.map(object), version: version.map(object), whoami: whoami.map(object),
+                       sessions: sessions.map(object), clients: clients.map(object))
     }
 
     // MARK: Parsing
@@ -119,7 +124,7 @@ struct ServerIdentityTests {
         #expect(id.sessionCount == 3)
         // An unnamed session counts but has no label to show.
         #expect(id.sessions == ["api", "web"])
-        #expect(id.hasHelper)
+        #expect(id.hasHelper == true)
     }
 
     @Test func tellsThePlatformFromRexsBuildTarget() {
@@ -127,22 +132,42 @@ struct ServerIdentityTests {
         #expect(ServerIdentity.platform("Darwin_amd64") == .mac)
         #expect(ServerIdentity.platform("linux_amd64") == .linux)
         #expect(ServerIdentity.platform("windows_amd64") == .other)
-        #expect(ServerIdentity.platform(nil) == .other)
     }
 
-    @Test func emptyOrMalformedRepliesLeaveFieldsEmpty() {
+    @Test func aCallWithNoReplyLeavesItsFieldsUnknownNotEmpty() {
+        // Nothing answered: nothing is known, and nothing reads as "none" or "no".
+        let none = identity(status: nil, version: nil, whoami: nil, sessions: nil, clients: nil)
+        #expect(none == ServerIdentity())
+        #expect(none.sessionCount == nil && none.hasHelper == nil && none.platform == nil)
+
+        // The client list failed: whether a helper is there is unknown, not "no".
+        #expect(identity(clients: nil).hasHelper == nil)
+        // The session list failed: the status still has the count, with no names.
+        let counted = identity(sessions: nil)
+        #expect(counted.sessionCount == 3 && counted.sessions.isEmpty)
+        // Both failed: unknown, not zero.
+        #expect(identity(status: nil, sessions: nil).sessionCount == nil)
+    }
+
+    @Test func aReplyWithoutTheFieldLeavesItUnknown() {
         let id = identity(status: "{}", version: "[]", whoami: #"{"account":"  "}"#, sessions: #"{"sessions":null}"#, clients: "{}")
         #expect(id == ServerIdentity())
         // The list is the count when the status has none.
         #expect(identity(status: "{}").sessionCount == 3)
     }
 
+    @Test func aServerThatSaysSoHasNoSessionsAndNoHelper() {
+        let id = identity(status: #"{"session_count":0}"#, sessions: #"{"sessions":[]}"#, clients: #"{"clients":[]}"#)
+        #expect(id.sessionCount == 0)
+        #expect(id.hasHelper == false)
+    }
+
     @Test func aHelperThatDroppedDoesNotCount() {
         let lost = #"{"clients":[{"client_id":"c2","info":{"name":"rex-push-relay"},"connection_state":"lost"}]}"#
-        #expect(!identity(clients: lost).hasHelper)
+        #expect(identity(clients: lost).hasHelper == false)
         let both = #"{"clients":[{"info":{"name":"rex-push-relay"},"connection_state":"lost"},{"info":{"name":"rex-push-relay"}}]}"#
-        #expect(identity(clients: both).hasHelper)
-        #expect(!identity(clients: #"{"clients":[{"info":{"name":"rex"}}]}"#).hasHelper)
+        #expect(identity(clients: both).hasHelper == true)
+        #expect(identity(clients: #"{"clients":[{"info":{"name":"rex"}}]}"#).hasHelper == false)
     }
 
     // MARK: Whose computer
@@ -154,9 +179,27 @@ struct ServerIdentityTests {
     }
 
     @Test func anUnknownOwnerOrViewerIsNotAMismatch() {
+        let other = #"{"tailscale":{"account":{"login_name":"sam@example.com"}}}"#
         #expect(!identity(status: "{}").belongsToSomeoneElse)
-        // Reached without a private-network login (a local address): nothing to compare.
-        #expect(!identity(whoami: #"{"principal":{"kind":"peer"},"account":"abe"}"#).belongsToSomeoneElse)
+        #expect(!identity(status: other, whoami: nil).belongsToSomeoneElse)
+        // Reached without a private-network login (a local connection): nothing to compare.
+        #expect(!identity(status: other, whoami: #"{"principal":{"kind":"peer","login_name":"abe@example.com"},"account":"abe"}"#).belongsToSomeoneElse)
+    }
+
+    @Test func machinesAndNamesThatAreNotLoginsAreNotCompared() {
+        // A tagged server has no owner; a tagged device isn't a person.
+        let tagged = #"{"tailscale":{"account":{"login_name":"sam@example.com"},"tags":["tag:rex"]}}"#
+        #expect(identity(status: tagged).owner == nil)
+        #expect(!identity(status: tagged).belongsToSomeoneElse)
+        let runner = #"{"principal":{"kind":"tailscale","login_name":"ci@example.com","tags":["tag:ci"]},"account":"abe"}"#
+        #expect(identity(whoami: runner).viewer == nil)
+        // Not account logins: a tag as a name, a device name, a placeholder.
+        for name in ["tagged-devices", "tag:server", "iphone194", "abe@", "@example.com", "a b@example.com", ""] {
+            #expect(ServerIdentity.login(name) == nil, "\(name)")
+            let status = #"{"tailscale":{"account":{"login_name":"\#(name)"}}}"#
+            #expect(!identity(status: status).belongsToSomeoneElse, "\(name)")
+        }
+        #expect(ServerIdentity.login(" abe@example.com ") == "abe@example.com")
     }
 
     // MARK: Over a connection
@@ -174,6 +217,7 @@ struct ServerIdentityTests {
         // Closed: nothing is left for the server to keep.
         for _ in 0..<200 where server.openConnections != 0 { try await Task.sleep(nanoseconds: 10_000_000) }
         #expect(server.openConnections == 0)
+        #expect(server.connectionsMade == 1)
     }
 
     @Test func aServerThatAnswersSomeCallsGivesWhatItAnswered() async throws {
@@ -183,7 +227,10 @@ struct ServerIdentityTests {
         let id = await ServerPreview.fetch(address: "http://127.0.0.1:\(port)", client: me, timeout: 0.5)
         #expect(id?.platform == .linux)
         #expect(id?.sessions == ["api", "web"])
+        #expect(id?.sessionCount == 3)
+        // The calls that got no answer are unknown, not "no helper" or "nobody".
         #expect(id?.account == nil)
+        #expect(id?.hasHelper == nil)
     }
 
     @Test func noWelcomeInTimeGivesNothing() async throws {
@@ -194,6 +241,10 @@ struct ServerIdentityTests {
         let id = await ServerPreview.fetch(address: "http://127.0.0.1:\(port)", client: me, timeout: 0.3)
         #expect(id == nil)
         #expect(Date().timeIntervalSince(started) < 3)
+        // One attempt: the control connection's own retry (1 s later) must not run.
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        #expect(server.connectionsMade == 1)
+        #expect(server.openConnections == 0)
     }
 
     @Test func nothingListeningGivesNothing() async {
@@ -211,5 +262,10 @@ struct ServerIdentityTests {
         task.cancel()
         #expect(await task.value == nil)
         #expect(Date().timeIntervalSince(started) < 5)
+        // Cancelled means closed, and not tried again.
+        for _ in 0..<200 where server.openConnections != 0 { try await Task.sleep(nanoseconds: 10_000_000) }
+        #expect(server.openConnections == 0)
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        #expect(server.connectionsMade == 1)
     }
 }

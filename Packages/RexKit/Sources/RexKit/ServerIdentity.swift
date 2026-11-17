@@ -6,21 +6,26 @@ import Foundation
 public struct ServerIdentity: Equatable, Sendable {
     public enum Platform: String, Equatable, Sendable { case mac, linux, other }
 
-    public var platform: Platform
+    // Every field is nil when the server didn't say: a call that failed or timed out is not an
+    // answer, so nothing here may be shown as "none" or "no" unless the server said so.
+
+    public var platform: Platform?
     /// The computer account Rex runs as (`server.whoami.account`).
     public var account: String?
-    /// The login that owns the server on its private network.
+    /// The account login that owns the server on its private network. Nil for a server with no
+    /// single owner (a tagged machine) or a name that isn't an account login.
     public var owner: String?
-    /// The login the server identified this device as.
+    /// The account login the server identified this device as. Nil when the device wasn't
+    /// identified by a login (a local connection, a tagged machine).
     public var viewer: String?
-    public var sessionCount: Int
+    public var sessionCount: Int?
     /// Session labels, in the server's order.
     public var sessions: [String]
     /// A push helper is connected to the server.
-    public var hasHelper: Bool
+    public var hasHelper: Bool?
 
-    public init(platform: Platform = .other, account: String? = nil, owner: String? = nil, viewer: String? = nil,
-                sessionCount: Int = 0, sessions: [String] = [], hasHelper: Bool = false) {
+    public init(platform: Platform? = nil, account: String? = nil, owner: String? = nil, viewer: String? = nil,
+                sessionCount: Int? = nil, sessions: [String] = [], hasHelper: Bool? = nil) {
         self.platform = platform
         self.account = account
         self.owner = owner
@@ -33,24 +38,31 @@ public struct ServerIdentity: Equatable, Sendable {
     /// The name the helper gives in its hello. A helper that dropped lingers as `lost` for a minute.
     public static let helperName = "rex-push-relay"
 
-    /// From the five replies. A missing or malformed reply leaves its fields empty.
-    public init(status: JSONObject, version: JSONObject, whoami: JSONObject, sessions: JSONObject, clients: JSONObject) {
-        let labels = sessions.arr("sessions").compactMap { $0.str("label") }.filter { !$0.isEmpty }
+    /// From the five replies; nil for a call that got no reply. A reply without the field asked
+    /// for leaves it unknown too.
+    public init(status: JSONObject?, version: JSONObject?, whoami: JSONObject?, sessions: JSONObject?, clients: JSONObject?) {
+        let listed = sessions?["sessions"] is [Any] ? sessions?.arr("sessions") : nil
+        let tailscale = status?.obj("tailscale")
+        let principal = whoami?.obj("principal")
         self.init(
-            platform: Self.platform(version.str("platform")),
-            account: Self.text(whoami.str("account")),
-            owner: Self.text(status.obj("tailscale")?.obj("account")?.str("login_name")),
-            viewer: Self.text(whoami.obj("principal")?.str("login_name")),
-            sessionCount: max(status.int("session_count") ?? 0, sessions.arr("sessions").count),
-            sessions: labels,
-            hasHelper: clients.arr("clients").contains {
-                $0.obj("info")?.str("name") == Self.helperName && $0.str("connection_state") != "lost"
-            })
+            platform: version?.str("platform").map(Self.platform),
+            account: Self.text(whoami?.str("account")),
+            // A tagged server has no owner.
+            owner: Self.tags(tailscale).isEmpty ? Self.login(tailscale?.obj("account")?.str("login_name")) : nil,
+            // Only a device a person signed in is compared with the owner.
+            viewer: principal?.str("kind") == "tailscale" && Self.tags(principal).isEmpty
+                ? Self.login(principal?.str("login_name")) : nil,
+            sessionCount: listed.map { max($0.count, status?.int("session_count") ?? 0) } ?? status?.int("session_count"),
+            sessions: (listed ?? []).compactMap { $0.str("label") }.filter { !$0.isEmpty },
+            hasHelper: clients?["clients"] is [Any]
+                ? clients?.arr("clients").contains {
+                    $0.obj("info")?.str("name") == Self.helperName && $0.str("connection_state") != "lost"
+                } : nil)
     }
 
     /// `darwin_arm64` is a Mac, `linux_amd64` is Linux.
-    static func platform(_ raw: String?) -> Platform {
-        guard let os = raw?.lowercased() else { return .other }
+    static func platform(_ raw: String) -> Platform {
+        let os = raw.lowercased()
         if os.hasPrefix("darwin") || os.hasPrefix("macos") { return .mac }
         if os.hasPrefix("linux") { return .linux }
         return .other
@@ -61,8 +73,21 @@ public struct ServerIdentity: Equatable, Sendable {
         return t
     }
 
-    /// The server belongs to someone other than the login this device connects as. False when
-    /// either is unknown: nothing to compare.
+    private static func tags(_ o: JSONObject?) -> [String] {
+        (o?["tags"] as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    /// An account login, `name@domain`. Anything else (a device name, a tag, a placeholder) isn't
+    /// one, and isn't compared.
+    static func login(_ s: String?) -> String? {
+        guard let t = text(s), !t.contains(where: \.isWhitespace) else { return nil }
+        let parts = t.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        return t
+    }
+
+    /// The server belongs to an account other than the one this device is signed in with. False
+    /// when either is unknown: nothing to compare.
     public var belongsToSomeoneElse: Bool {
         guard let owner, let viewer else { return false }
         return owner.caseInsensitiveCompare(viewer) != .orderedSame
@@ -74,7 +99,8 @@ public struct ServerIdentity: Equatable, Sendable {
 @MainActor
 public enum ServerPreview {
     /// Nil when the server didn't answer in `timeout`, or the calling task was cancelled. A server
-    /// that answers some calls and not others gives what it answered.
+    /// that answers some calls and not others gives what it answered, and the rest stays unknown.
+    /// One attempt: a failure is not retried.
     public static func fetch(address: String, client: ClientInfo, timeout: TimeInterval = 6) async -> ServerIdentity? {
         let control = RexControl(address: address, client: client)
         // Ends the connection, which fails whatever is still waiting on it, on timeout or cancel.
@@ -84,7 +110,7 @@ public enum ServerPreview {
         }
         defer {
             deadline.cancel()
-            control.disconnect()
+            control.invalidate()
         }
         return await withTaskCancellationHandler {
             do {
@@ -96,8 +122,8 @@ public enum ServerPreview {
                 async let clients = reply(control, "client.list")
                 let (st, ve, wh, se, cl) = await (status, version, whoami, sessions, clients)
                 guard st != nil || ve != nil || wh != nil || se != nil || cl != nil, !Task.isCancelled else { return nil }
-                return ServerIdentity(status: st?.value ?? [:], version: ve?.value ?? [:], whoami: wh?.value ?? [:],
-                                      sessions: se?.value ?? [:], clients: cl?.value ?? [:])
+                return ServerIdentity(status: st?.value, version: ve?.value, whoami: wh?.value,
+                                      sessions: se?.value, clients: cl?.value)
             } catch {
                 return nil
             }

@@ -166,6 +166,8 @@ struct IdentityCopy: Equatable {
     /// Only when no helper is running on the computer.
     var helper: String?
 
+    /// Only what the computer said. A count or a helper it didn't report is left out, never
+    /// shown as "none".
     static func of(_ id: ServerIdentity?) -> IdentityCopy {
         guard let id else { return IdentityCopy(symbol: "desktopcomputer", sessions: [], more: 0) }
         var parts: [String] = []
@@ -173,21 +175,22 @@ struct IdentityCopy: Equatable {
         switch id.platform {
         case .mac: parts.append("Mac")
         case .linux: parts.append("Linux")
-        case .other: break
+        case .other, nil: break
         }
         switch id.sessionCount {
+        case nil: break
         case 0: parts.append("No sessions yet")
         case 1: parts.append("1 session")
-        default: parts.append("\(id.sessionCount) sessions")
+        case let n?: parts.append("\(n) sessions")
         }
         let shown = Array(id.sessions.prefix(maxSessions))
         return IdentityCopy(
             symbol: id.platform == .mac ? "laptopcomputer" : id.platform == .linux ? "server.rack" : "desktopcomputer",
-            summary: parts.joined(separator: " · "),
+            summary: parts.isEmpty ? nil : parts.joined(separator: " · "),
             sessions: shown,
-            more: shown.isEmpty ? 0 : max(0, id.sessionCount - shown.count),
+            more: shown.isEmpty ? 0 : max(0, (id.sessionCount ?? 0) - shown.count),
             owner: id.belongsToSomeoneElse ? id.owner.map { "This computer belongs to \($0)." } : nil,
-            helper: id.hasHelper ? nil : "Notifications need Rex DUO Helper on this computer.")
+            helper: id.hasHelper == false ? "Notifications need Rex DUO Helper on this computer." : nil)
     }
 }
 
@@ -369,6 +372,12 @@ final class PairingModel {
 
     private func add(_ url: URL, _ identity: ServerIdentity?) {
         stopCheck()
+        // Saved in the meantime (another window, a second device syncing): open it, add nothing.
+        if let saved = PairingCode.existing(url, in: servers()) {
+            step = .done
+            onExisting(saved)
+            return
+        }
         step = .added(url, identity)
         let typed = name.trimmingCharacters(in: .whitespaces)
         onAdd(ServerConfig(name: typed.isEmpty ? ServerConfig.name(for: url) : typed, url: url.absoluteString))

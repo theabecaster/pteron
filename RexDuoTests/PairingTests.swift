@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Network
 import RexKit
 import Testing
 @testable import RexDuo
@@ -393,10 +394,24 @@ struct PairingTests {
         #expect(linux.symbol == "server.rack")
         #expect(linux.summary == "Linux · 1 session")
 
-        let empty = copy(ServerIdentity(platform: .other, account: "sam", hasHelper: true))
+        let empty = copy(ServerIdentity(platform: .other, account: "sam", sessionCount: 0, hasHelper: true))
         #expect(empty.symbol == "desktopcomputer")
         #expect(empty.summary == "sam · No sessions yet")
         #expect(empty.sessions.isEmpty && empty.more == 0)
+    }
+
+    @Test func whatTheComputerDidNotSayIsLeftOutNotShownAsNone() {
+        // The session and client calls failed: no "No sessions yet", no helper line.
+        let partial = IdentityCopy.of(ServerIdentity(platform: .mac, account: "abe"))
+        #expect(partial.summary == "abe · Mac")
+        #expect(partial.helper == nil)
+        #expect(partial.sessions.isEmpty && partial.more == 0)
+        // Nothing at all: a bare card.
+        let nothing = IdentityCopy.of(ServerIdentity())
+        #expect(nothing.summary == nil && nothing.helper == nil && nothing.owner == nil)
+        #expect(nothing.symbol == "desktopcomputer")
+        // Only a helper it reported missing gets the line.
+        #expect(IdentityCopy.of(ServerIdentity(hasHelper: false)).helper != nil)
     }
 
     @Test func onlyAFewSessionsAreNamed() {
@@ -407,6 +422,8 @@ struct PairingTests {
         let unnamed = IdentityCopy.of(ServerIdentity(sessionCount: 4, sessions: ["a"], hasHelper: true))
         #expect(unnamed.sessions == ["a"] && unnamed.more == 3)
         #expect(IdentityCopy.of(ServerIdentity(sessionCount: 2, hasHelper: true)).more == 0)
+        // Names without a count (the status call failed): no "+n" to invent.
+        #expect(IdentityCopy.of(ServerIdentity(sessions: ["a", "b", "c", "d"])).more == 0)
     }
 
     @Test func theOwnerLineShowsOnlyForSomeoneElsesComputer() {
@@ -425,6 +442,22 @@ struct PairingTests {
     @Test func aComputerThatSaidNothingGetsABareCard() {
         let bare = IdentityCopy.of(nil)
         #expect(bare.summary == nil && bare.sessions.isEmpty && bare.owner == nil && bare.helper == nil)
+    }
+
+    @Test func aServerSavedWhileTheCardWasUpIsOpenedNotAddedTwice() async {
+        let rig = Rig(servers: [])
+        rig.model.scanned("https://workdesk-rex.tail8657d0.ts.net")
+        await rig.settle()
+        // Saved elsewhere, under the person's own name, before Add & Open is tapped.
+        let saved = ServerConfig(name: "Desk", url: "https://WORKDESK-rex.tail8657d0.ts.net/")
+        rig.servers = [saved]
+        rig.model.add()
+        #expect(rig.added.isEmpty)
+        #expect(rig.existing == [saved])
+        // "Already added", not the checkmark.
+        #expect(rig.model.step == .done)
+        rig.model.add()
+        #expect(rig.existing.count == 1)
     }
 
     // MARK: Computers a server already knows
@@ -557,6 +590,151 @@ struct PairingTests {
         model.addServer(ServerConfig(name: "Again", url: "https://WorkDesk-Rex.tail8657d0.ts.net/"))
         model.addServer(ServerConfig(name: "Mini", url: "https://macdesk-rex.tail8657d0.ts.net"))
         #expect(prefs.servers.map(\.name) == ["Desk", "Mini"])
+    }
+
+    @Test func thePreviewLabelFitsRexsLimitInBytes() {
+        #expect(PushIdentity.previewLabel(deviceName: "Abe's iPhone") == "Abe's iPhone")
+        #expect(PushIdentity.previewLabel(deviceName: "   ") == "iPhone")
+        // 40 characters of four bytes each would be 160 bytes.
+        let emoji = PushIdentity.previewLabel(deviceName: String(repeating: "🦖", count: 40))
+        #expect(emoji == String(repeating: "🦖", count: 16))
+        #expect(emoji.utf8.count == 64)
+        let accents = PushIdentity.previewLabel(deviceName: String(repeating: "é", count: 100))
+        #expect(accents.utf8.count == 64)
+        // Never a device id: the helper reads ` #<id>` as this iPhone having the app open.
+        #expect(!PushIdentity.previewLabel(deviceName: "Phone").contains("#"))
+        // The full label still keeps its suffix whole.
+        let full = PushIdentity.clientLabel(deviceName: String(repeating: "🦖", count: 40), deviceID: "a1b2c3d4")
+        #expect(full.hasSuffix(" #a1b2c3d4") && full.utf8.count <= 64)
+    }
+
+    // MARK: Landing on the new server
+
+    /// An app model with one server that is online with two sessions, nothing connected.
+    private func landingModel() throws -> (AppModel, ServerConfig, ServerConnection) {
+        let suite = "pairing-landing-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let prefs = Prefs(defaults: defaults)
+        let model = AppModel(prefs: prefs, connect: false)
+        let config = ServerConfig(name: "Desk", url: "https://workdesk-rex.tail8657d0.ts.net")
+        let server = ServerConnection(config: config, prefs: prefs, notifier: model.notifier, deviceID: "a1b2c3d4")
+        model.servers = [server]
+        return (model, config, server)
+    }
+
+    private func view(_ session: String, active: String) -> SessionView {
+        let json = #"{"revision":1,"session_id":"\#(session)","active_window_id":"\#(active)","windows":[{"window_id":"w1"},{"window_id":"w2"}]}"#
+        return SessionView((try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? JSONObject ?? [:])
+    }
+
+    @Test func landsOnTheFirstSessionsActiveTabOnceTheServerIsIn() async throws {
+        let (model, config, server) = try landingModel()
+        // Still connecting when the sheet leaves; its sessions arrive a moment later.
+        let waiting = Task { await model.openWhenReady(config, timeout: 5, poll: 0.02) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(model.openRequest == nil)
+        server.sessions = [SessionEntry(id: "s1", label: "api"), SessionEntry(id: "s2", label: "web")]
+        server.views = ["s1": view("s1", active: "w2"), "s2": view("s2", active: "w1")]
+        server.phase = .online
+        #expect(await waiting.value)
+        #expect(model.openRequest?.selection == Selection(serverID: config.id, sessionID: "s1", windowID: "w2"))
+    }
+
+    @Test func landingGivesUpAfterItsTimeout() async throws {
+        let (model, config, _) = try landingModel()
+        let started = Date()
+        #expect(await model.openWhenReady(config, timeout: 0.3, poll: 0.02) == false)
+        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(model.openRequest == nil)
+    }
+
+    @Test func landingStopsWhenCancelledOrWhenThePersonOpensSomething() async throws {
+        let (model, config, server) = try landingModel()
+        let cancelled = Task { await model.openWhenReady(config, timeout: 30, poll: 0.02) }
+        try await Task.sleep(nanoseconds: 60_000_000)
+        cancelled.cancel()
+        #expect(await cancelled.value == false)
+
+        let overtaken = Task { await model.openWhenReady(config, timeout: 30, poll: 0.02) }
+        try await Task.sleep(nanoseconds: 60_000_000)
+        model.selection = Selection(serverID: UUID(), sessionID: "other", windowID: "w")
+        #expect(await overtaken.value == false)
+        // The server coming up afterwards doesn't pull the person away.
+        server.sessions = [SessionEntry(id: "s1", label: "api")]
+        server.views = ["s1": view("s1", active: "w1")]
+        server.phase = .online
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(model.openRequest == nil)
+    }
+
+    @Test func aNewLandingReplacesTheOneBefore() async throws {
+        let (model, config, server) = try landingModel()
+        let other = ServerConfig(name: "Gone", url: "https://gone-rex.tail8657d0.ts.net")
+        model.land(on: other)
+        model.land(on: config)
+        server.sessions = [SessionEntry(id: "s1", label: "api")]
+        server.views = ["s1": view("s1", active: "w1")]
+        server.phase = .online
+        for _ in 0..<100 where model.openRequest == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        #expect(model.openRequest?.selection.serverID == config.id)
+    }
+
+    // MARK: The real check
+
+    /// Accepts connections and never answers, like a computer that is up but stuck.
+    private final class SilentListener: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "test.silent")
+        private let listener: NWListener
+        private var held: [NWConnection] = []
+
+        init() throws {
+            listener = try NWListener(using: .tcp, on: .any)
+            listener.newConnectionHandler = { [weak self] c in
+                guard let self else { return }
+                self.held.append(c)
+                c.start(queue: self.queue)
+            }
+        }
+
+        func start() async -> UInt16 {
+            await withCheckedContinuation { done in
+                listener.stateUpdateHandler = { [listener] state in
+                    if case .ready = state {
+                        listener.stateUpdateHandler = nil
+                        done.resume(returning: listener.port?.rawValue ?? 0)
+                    }
+                }
+                listener.start(queue: queue)
+            }
+        }
+
+        func stop() { queue.sync { listener.cancel(); held.forEach { $0.cancel() } } }
+    }
+
+    @Test func cancellingTheRealCheckEndsItAtOnce() async throws {
+        let silent = try SilentListener()
+        let port = await silent.start()
+        defer { silent.stop() }
+        let (model, _, _) = try landingModel()
+        let url = try #require(URL(string: "http://127.0.0.1:\(port)"))
+        let started = Date()
+        let task = Task { await model.check(url) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+        // The probe's own limit is 6 s: an answer well before that is the cancellation.
+        guard case .problem = await task.value else { Issue.record("a cancelled check found a server"); return }
+        #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    @Test func theRealCheckReportsAComputerThatIsNotThere() async throws {
+        let (model, _, _) = try landingModel()
+        // Nothing listens on port 1.
+        guard case .problem(let p) = await model.check(try #require(URL(string: "http://127.0.0.1:1"))) else {
+            Issue.record("found a server where there is none")
+            return
+        }
+        #expect(p.kind != .notAllowed)
     }
 
     @Test func cameraAccessAsksOnlyWhenUndecided() async {
