@@ -41,10 +41,11 @@ enum FilesTest {
         case "menu":
             host.openAttachMenu()
         case "send", "sendOriginal":
+            let original = verb == "sendOriginal"
             let files = arg.split(separator: "|").compactMap { path -> StagedFile? in
                 let url = URL(fileURLWithPath: String(path))
                 guard let f = try? FileStaging.stage(copying: url, as: url.lastPathComponent) else { return nil }
-                return f
+                return ImagePrep.prepare(f, original: original)
             }
             host.files?.send(files)
         case "paste":

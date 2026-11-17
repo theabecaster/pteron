@@ -26,6 +26,7 @@ final class PaneFiles {
         sender = FileSender(control: server.control, sessionID: sessionID, blockID: blockID)
         sender.target = { [weak self] in self?.target ?? "this computer" }
         picker.onPicked = { [weak self] files in self?.send(files) }
+        picker.prepare = { ImagePrep.prepare($0, original: $1) }
     }
 
     // MARK: Support
