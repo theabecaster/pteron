@@ -42,7 +42,9 @@ To check the script before you run it, download it and compare its SHA-256 with 
 the current release:
 
 <!-- install-sha -->
-(set when a release is published)
+```
+ca42ec66c41db41acaf911ced36128a85971dfe951798e39dbd906be7ffebd13  install.sh
+```
 <!-- /install-sha -->
 
 ## On the phone
