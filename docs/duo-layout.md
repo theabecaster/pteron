@@ -49,6 +49,11 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
+- **Key bar.** The keyboard runs under the vertical bar, so the key bar has a safe-area inset there.
+  Where the bar sits beside it, the hide key moves into that column as a glass circle in line with
+  the bar's items (the whole column takes the tap), and the keys scroll across the full width
+  (`KeyBarPlacement`). Elsewhere the hide key stays at the bar's end. With a vertical crease, the key
+  that would sit on it moves 12 pt past it, with the bar scrolled to its start.
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.
   The panes stay inside the safe area, so no terminal text sits under system UI.
 - **Short windows** (landscape iPhone): the title bar is 34 pt with no subtitle, and the key bar is

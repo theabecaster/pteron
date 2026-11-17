@@ -877,6 +877,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
     }
 
+    /// What the key bar lays itself out around: the system's vertical bar edge (nil where bars are
+    /// horizontal) and a vertical crease in window coordinates (nil without one).
+    func setKeyBarSurroundings(barEdge: NSDirectionalRectEdge?, crease: CGRect?) {
+        keyBar.barEdge = barEdge
+        keyBar.crease = crease
+    }
+
     func setFontSize(_ s: CGFloat) {
         guard abs(s - fontSize) > 0.01 else { return }
         fontSize = s

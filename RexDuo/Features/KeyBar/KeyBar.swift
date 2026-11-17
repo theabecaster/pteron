@@ -6,6 +6,8 @@ import UIKit
 /// - Arrows and PgUp/PgDn auto-repeat while held.
 /// - ctrl / alt: tap = next key only, double-tap = locked until tapped again.
 /// - The "arrows" key is a trackpad: press and drag to send arrow keys.
+/// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key moves into
+///   its column and the keys get the bar's width. Keys stay off a vertical crease (`KeyBarPlacement`).
 @MainActor
 final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     weak var terminal: GhosttyTerminalView? {
@@ -13,6 +15,10 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     }
     var onPaste: (() -> Void)?
     var onHideKeyboard: (() -> Void)?
+    /// The edge of the system's vertical bar, nil where bars are horizontal.
+    var barEdge: NSDirectionalRectEdge? { didSet { if barEdge != oldValue { setNeedsLayout() } } }
+    /// A vertical crease, in the terminal's window coordinates. Nil without one.
+    var crease: CGRect? { didSet { if crease != oldValue { setNeedsLayout() } } }
 
     enum ModState { case off, once, locked }
 
@@ -21,6 +27,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     /// Under a short window (landscape iPhone) the bar is thinner, to leave rows for the panes.
     static let compactBarHeight: CGFloat = 40
     static let compactKeyHeight: CGFloat = 34
+    /// The hide key's glass circle in the vertical bar's column, near the size of the bar's own items.
+    static let stripKeySize: CGFloat = 48
+    static let compactStripKeySize: CGFloat = 38
 
     private var barHeightConstraint: NSLayoutConstraint?
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -28,6 +37,13 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private let scroll = KeyScroll()
     private let stack = UIStackView()
     private let hideKey = KeyCap(key: "hide", kind: .action)
+    private let stripHideKey = StripKey()
+    private var placement = KeyBarPlacement.HideKey.inBar
+    private var inBarConstraints: [NSLayoutConstraint] = []
+    private var stripConstraints: [NSLayoutConstraint] = []
+    private var stackLeading: NSLayoutConstraint?
+    private var creaseGap: (index: Int, extra: CGFloat)?
+    private static let spacing: CGFloat = 6
     private let divider = UIView()
     private let topLine = UIView()
     private var hairlines: [NSLayoutConstraint] = []
@@ -52,39 +68,48 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.alignment = .center
-        stack.spacing = 6
+        stack.spacing = Self.spacing
         stack.translatesAutoresizingMaskIntoConstraints = false
         hideKey.translatesAutoresizingMaskIntoConstraints = false
         divider.translatesAutoresizingMaskIntoConstraints = false
         topLine.translatesAutoresizingMaskIntoConstraints = false
         hideKey.onFire = { [weak self] in self?.fire("hide") }
+        stripHideKey.isHidden = true
+        stripHideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
+        stripHideKey.onFire = { [weak self] in self?.fire("hide") }
         addSubview(scroll)
         addSubview(divider)
         addSubview(hideKey)
+        addSubview(stripHideKey)
         addSubview(topLine)
         scroll.addSubview(stack)
         // One-pixel lines; the scale is known once the bar is on screen (see didMoveToWindow).
         hairlines = [topLine.heightAnchor.constraint(equalToConstant: 0.5), divider.widthAnchor.constraint(equalToConstant: 0.5)]
         let barHeight = heightAnchor.constraint(equalToConstant: Self.barHeight)
         barHeightConstraint = barHeight
-        NSLayoutConstraint.activate(hairlines + [
+        let leading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: Self.spacing)
+        stackLeading = leading
+        inBarConstraints = [
+            hideKey.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -6),
+            divider.trailingAnchor.constraint(equalTo: hideKey.leadingAnchor, constant: -5),
+            scroll.trailingAnchor.constraint(equalTo: divider.leadingAnchor, constant: -1),
+        ]
+        stripConstraints = [scroll.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor)]
+        NSLayoutConstraint.activate(hairlines + inBarConstraints + [
             barHeight,
             topLine.topAnchor.constraint(equalTo: topAnchor),
             topLine.leadingAnchor.constraint(equalTo: leadingAnchor),
             topLine.trailingAnchor.constraint(equalTo: trailingAnchor),
 
-            hideKey.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -6),
             hideKey.centerYAnchor.constraint(equalTo: centerYAnchor),
-            divider.trailingAnchor.constraint(equalTo: hideKey.leadingAnchor, constant: -5),
             divider.centerYAnchor.constraint(equalTo: centerYAnchor),
             divider.heightAnchor.constraint(equalToConstant: 26),
 
             scroll.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: divider.leadingAnchor, constant: -1),
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 6),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -6),
+            leading,
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -Self.spacing),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
@@ -99,6 +124,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         let c = compact
         barHeightConstraint?.constant = c ? Self.compactBarHeight : Self.barHeight
         for cap in caps + [hideKey] { cap.heightConstraint?.constant = c ? Self.compactKeyHeight : Self.keyHeight }
+        stripHideKey.diameter = c ? Self.compactStripKeySize : Self.stripKeySize
         invalidateIntrinsicContentSize()
     }
 
@@ -108,6 +134,57 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         super.didMoveToWindow()
         let scale = traitCollection.displayScale
         if scale > 0 { hairlines.forEach { $0.constant = 1 / scale } }
+    }
+
+    override func layoutSubviews() {
+        placeHideKey()
+        super.layoutSubviews()
+        if case .strip(let column, let midX) = placement {
+            stripHideKey.frame = column
+            stripHideKey.keyMidX = midX - column.minX
+        }
+        keepKeysOffCrease()
+    }
+
+    /// In the vertical bar's column when there is one beside the keyboard, else at the bar's end.
+    private func placeHideKey() {
+        let p = KeyBarPlacement.hideKey(barEdge: barEdge, rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft,
+                                        width: bounds.width, height: bounds.height,
+                                        leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right)
+        guard p != placement else { return }
+        let strip = p != .inBar
+        if strip != (placement != .inBar) {
+            NSLayoutConstraint.deactivate(strip ? inBarConstraints : stripConstraints)
+            NSLayoutConstraint.activate(strip ? stripConstraints : inBarConstraints)
+            hideKey.isHidden = strip
+            divider.isHidden = strip
+            stripHideKey.isHidden = !strip
+        }
+        placement = p
+    }
+
+    /// Adds space before the key that would sit on a vertical crease with the bar at its start, so
+    /// no key straddles the fold.
+    private func keepKeysOffCrease() {
+        var gap: (index: Int, extra: CGFloat)?
+        if let crease, effectiveUserInterfaceLayoutDirection == .leftToRight,
+           let tw = terminal?.window, let screen = tw.windowScene?.screen, window != nil {
+            let r = convert(tw.convert(crease, to: screen.coordinateSpace), from: screen.coordinateSpace)
+            let x = scroll.frame.minX
+            let widths = caps.map { $0.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width }
+            gap = KeyBarPlacement.creaseGap(widths: widths, start: Self.spacing, spacing: Self.spacing,
+                                            crease: (r.minX - x)...(r.maxX - x))
+        }
+        guard gap?.index != creaseGap?.index || gap?.extra != creaseGap?.extra else { return }
+        creaseGap = gap
+        for cap in caps { stack.setCustomSpacing(UIStackView.spacingUseDefault, after: cap) }
+        stackLeading?.constant = Self.spacing
+        guard let gap else { return }
+        if gap.index == 0 {
+            stackLeading?.constant = Self.spacing + gap.extra
+        } else {
+            stack.setCustomSpacing(Self.spacing + gap.extra, after: caps[gap.index - 1])
+        }
     }
 
     @objc private func prefsChanged() { rebuild() }
@@ -123,6 +200,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         divider.backgroundColor = theme.uiFG.withAlphaComponent(0.16)
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         caps = []
+        creaseGap = nil
+        stackLeading?.constant = Self.spacing
+        setNeedsLayout()
         for key in Prefs.shared.keyBar {
             let cap = KeyCap(key: key, kind: Self.kind(of: key))
             cap.theme = theme
@@ -135,6 +215,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             caps.append(cap)
         }
         hideKey.theme = theme
+        stripHideKey.tintColor = theme.uiCursor
         hideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
         refreshModifiers()
         applySize()
@@ -358,6 +439,75 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         "enter": "Return", "tab": "Tab", "shift-tab": "Shift-Tab", "arrows": "Arrow Trackpad", "esc": "Escape",
         "ctrl": "Control", "alt": "Alt",
     ]
+}
+
+/// The hide key in the vertical bar's column: a glass circle with a tinted symbol, like the bar's own
+/// items. The whole column beside the key bar is its touch target.
+@MainActor
+private final class StripKey: UIControl {
+    var onTouchDown: (() -> Void)?
+    var onFire: (() -> Void)?
+    var diameter: CGFloat = KeyBar.stripKeySize { didSet { if diameter != oldValue { setNeedsLayout() } } }
+    /// The circle's center, from the control's left edge: in line with the vertical bar's items.
+    var keyMidX: CGFloat = 0 { didSet { if keyMidX != oldValue { setNeedsLayout() } } }
+
+    private let glass = UIVisualEffectView()
+    private let icon = UIImageView()
+
+    init() {
+        super.init(frame: .zero)
+        glass.isUserInteractionEnabled = false
+        // Vertical bars only exist on iOS 27.1 and later; the material is a fallback that never shows.
+        if #available(iOS 26.0, *) {
+            glass.effect = UIGlassEffect()
+            glass.cornerConfiguration = .capsule()
+        } else {
+            glass.effect = UIBlurEffect(style: .systemMaterial)
+            glass.clipsToBounds = true
+        }
+        icon.image = UIImage(systemName: KeyBar.symbols["hide"] ?? "keyboard.chevron.compact.down",
+                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
+        icon.contentMode = .center
+        addSubview(glass)
+        glass.contentView.addSubview(icon)
+        addTarget(self, action: #selector(down), for: .touchDown)
+        addTarget(self, action: #selector(up), for: .touchUpInside)
+        isAccessibilityElement = true
+        accessibilityLabel = KeyBar.names["hide"]
+        accessibilityTraits = .button
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        glass.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        glass.center = CGPoint(x: keyMidX, y: bounds.midY)
+        if glass.clipsToBounds { glass.layer.cornerRadius = diameter / 2 }
+        icon.frame = glass.contentView.bounds
+    }
+
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        icon.tintColor = tintColor
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            guard isHighlighted != oldValue else { return }
+            UIView.animate(withDuration: isHighlighted ? 0.05 : 0.12, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                self.glass.transform = self.isHighlighted ? CGAffineTransform(scaleX: 0.93, y: 0.93) : .identity
+            }
+        }
+    }
+
+    @objc private func down() { onTouchDown?() }
+    @objc private func up() { onFire?() }
+
+    override func accessibilityActivate() -> Bool {
+        onFire?()
+        return true
+    }
 }
 
 /// Lets keys scroll the bar on a sideways drag, except the trackpad key, which keeps its touch.

@@ -37,6 +37,9 @@ struct PaneHostView: UIViewRepresentable {
     @Environment(Prefs.self) private var prefs
     @Environment(AppModel.self) private var model: AppModel?
     @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
+    @Environment(\.verticalBarEdge) private var barEdge
+    @Environment(\.division) private var division
+    @Environment(\.rootOrigin) private var rootOrigin
 
     private var commandHandler: ((RexCommand) -> Void)? {
         if let onCommand { return onCommand }
@@ -85,6 +88,8 @@ struct PaneHostView: UIViewRepresentable {
         host.isActive = active
         host.onFocus = onFocus
         host.onSwipe = onSwipe
+        let crease = division.flatMap { $0.isVertical ? $0.frame.offsetBy(dx: rootOrigin.x, dy: rootOrigin.y) : nil }
+        host.setKeyBarSurroundings(barEdge: barEdge.map { $0 == .leading ? .leading : .trailing }, crease: crease)
     }
 
     static func dismantleUIView(_ c: Container, coordinator: ()) {
