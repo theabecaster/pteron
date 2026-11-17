@@ -7,16 +7,16 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
 | Layer | Owns | Doesn't |
 |---|---|---|
 | `Packages/RexKit` | sockets, RPC, JSON → models, terminal byte stream | import UIKit or SwiftUI, read settings |
-| `RexConnect/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` | build views |
-| `RexConnect/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
-| `RexConnect/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
+| `RexDuo/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` | build views |
+| `RexDuo/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
+| `RexDuo/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
 
 `Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
 the app; it speaks the same control protocol over Rex's Unix socket.
 
 ## Data flow
 
-1. `RexConnectApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
+1. `RexDuoApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
 2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl` and a `KeymapStore`.
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
    loads block metadata (program status, title, process), hosts and the keymap.
@@ -78,8 +78,8 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - New server call: a method on `ServerConnection` using `control.call` or `blockCall`, then
   `refreshView`. Add it to [rex-protocol.md](rex-protocol.md).
 - New server event: `ServerConnection.handle(event:)` or `handle(sessionID:event:)`.
-- New screen: `RexConnect/Features/<Name>/`. Shared view pieces: `DesignSystem/`.
+- New screen: `RexDuo/Features/<Name>/`. Shared view pieces: `DesignSystem/`.
 - New setting: only for a choice a user would understand and want to make; otherwise pick the best
   value and add it to "Fixed choices" in `Prefs`. A setting is a property on `Prefs` (saved in
   `didSet`), read with `@Environment(Prefs.self)`; clear a removed one's key in `Prefs.migrate`.
-- Pure logic: its own type, with tests in `RexConnectTests` or `Packages/RexKit/Tests`.
+- Pure logic: its own type, with tests in `RexDuoTests` or `Packages/RexKit/Tests`.

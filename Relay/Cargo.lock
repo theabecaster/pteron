@@ -327,7 +327,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rex-connect-helper"
+name = "rex-duo-helper"
 version = "0.2.0"
 dependencies = [
  "bytes",

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Builds Rex Connect Helper for macOS and Linux into Relay/dist:
+# Builds Rex DUO Helper for macOS and Linux into Relay/dist:
 #
-#   Rex Connect Helper.zip             the Mac app: the Rust binary in a signed, notarized bundle
-#   rex-connect-helper-linux-x86_64    static Linux binaries (musl)
-#   rex-connect-helper-linux-aarch64
+#   Rex DUO Helper.zip                 the Mac app: the Rust binary in a signed, notarized bundle
+#   rex-duo-helper-linux-x86_64        static Linux binaries (musl)
+#   rex-duo-helper-linux-aarch64
 #
 #   Relay/package.sh                   everything: sign, notarize, staple, verify
 #   Relay/package.sh --no-notarize     sign only, for a quick local test
@@ -19,9 +19,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="Rex Connect Helper"
-BIN=rex-connect-helper
-BUNDLE_ID="dev.abrahamgonzalez.rexconnect.helper"
+APP_NAME="Rex DUO Helper"
+BIN=rex-duo-helper
+BUNDLE_ID="dev.abrahamgonzalez.rexduo.helper"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/Cargo.toml" | head -1)"
 BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$HERE" rev-list --count HEAD 2>/dev/null || echo 1)}"
 IDENTITY="${IDENTITY:-Developer ID Application: Abraham Gonzalez (R2PVQ496X7)}"
@@ -37,7 +37,7 @@ ASC_KEY_ID="${ASC_KEY_ID:-2M674J7J7N}"
 ASC_KEY="${ASC_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8}"
 ASC_ENV="${ASC_ENV:-$HOME/rexduo/.asc.env}"
 
-ICON_SRC="$HERE/../RexConnect/Resources/Assets.xcassets/AppIcon.appiconset/icon.png"
+ICON_SRC="$HERE/../RexDuo/Resources/Assets.xcassets/AppIcon.appiconset/icon.png"
 STAGE="$HERE/.stage"
 DIST="$HERE/dist"
 APP="$STAGE/$APP_NAME.app"
@@ -109,7 +109,7 @@ if [[ $MAC == 1 ]]; then
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>NSHumanReadableCopyright</key><string>Sends Rex Connect notifications from Rex on this Mac.</string>
+  <key>NSHumanReadableCopyright</key><string>Sends Rex DUO notifications from Rex on this Mac.</string>
 </dict>
 </plist>
 EOF

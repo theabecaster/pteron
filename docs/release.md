@@ -3,8 +3,9 @@
 Device builds and TestFlight uploads run on macdesk, because signing needs its unlocked GUI
 keychain. Run these only when asked: they install on a real phone or upload to App Store Connect.
 
-- Bundle id `dev.abrahamgonzalez.rexduo` (kept from before the rename), team `R2PVQ496X7`,
-  automatic signing. Display name "Rex DUO" (`CFBundleDisplayName`), product `RexConnect.app`.
+- Bundle id `dev.abrahamgonzalez.rexduo` (fixed: App Store Connect and the APNs topic depend on
+  it), team `R2PVQ496X7`, automatic signing. Display name "Rex DUO" (`CFBundleDisplayName`),
+  product `RexDuo.app`.
 - The build number is passed as `CURRENT_PROJECT_VERSION`; it must be higher than the last upload.
 - The project is generated and macdesk has no XcodeGen, so every flow generates it locally and
   copies the result.
@@ -13,10 +14,10 @@ keychain. Run these only when asked: they install on a real phone or upload to A
 
 `scripts/sync-macdesk.sh [-n] [remote-dir]` does the copy for both flows below. It checks the
 Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsyncs the tree to
-`macdesk:~/rexconnect-build/` (or `remote-dir`). `-n` is a dry run.
+`macdesk:~/rexduo-build/` (or `remote-dir`). `-n` is a dry run.
 
 - The copy uses `rsync --delete`, so the script refuses any `remote-dir` that is not a single
-  folder name starting with `rexconnect-build` under macdesk's home.
+  folder name starting with `rexduo-build` under macdesk's home.
 - Keys never go across: `.asc.env` and other `.env` files, `Relay/dist` and `Relay/.stage` (both
   hold the APNs key), and any `*.p8`, `*.p12`, `*.pem`, `*.key`, `*.cer`, `*.mobileprovision` or
   `*.provisionprofile`.
@@ -39,18 +40,18 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
 ## Install on the iPhone Duo
 
 `scripts/install-duo.sh [build]` runs `sync-macdesk.sh`, builds Release for the Duo paired with
-macdesk and installs it with `devicectl`. The build log is `macdesk:~/rexconnect-build/build.log`.
+macdesk and installs it with `devicectl`. The build log is `macdesk:~/rexduo-build/build.log`.
 
 ## TestFlight
 
 ```sh
 scripts/sync-macdesk.sh
-ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc '~/rexconnect-build/scripts/ship-macdesk.sh <build>'"
+ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc '~/rexduo-build/scripts/ship-macdesk.sh <build>'"
 ```
 
 `launchctl asuser` runs the script inside the GUI session; plain ssh can't reach the keychain.
 `ship-macdesk.sh` archives, exports with `destination=upload` (set `DEST=export` to only export) and
-logs to `macdesk:~/rexconnect-build/build/ship.log`. Builds appear in TestFlight 5–15 minutes later.
+logs to `macdesk:~/rexduo-build/build/ship.log`. Builds appear in TestFlight 5–15 minutes later.
 
 The build number is required; without one the script prints its usage and exits 2. It exits 0
 only when the export or upload succeeded, and the log then ends with `== done … rc=0`. A failed
@@ -66,7 +67,7 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 
 - libghostty-vt is linked statically: no `Frameworks/` folder, nothing embedded, arm64 only. It
   adds 1.48 MB to the app binary (6.46 MB stripped; the IPA is 13.4 MB).
-- Its objects carry DWARF, so `RexConnect.app.dSYM` covers it. Bitcode is not involved.
+- Its objects carry DWARF, so `RexDuo.app.dSYM` covers it. Bitcode is not involved.
 - No private system symbols: Zig's standard library called `__ulock_wait` and `__ulock_wake`,
   and `scripts/ghostty-patches/0001-tinyio-public-darwin-futex.patch` replaces them with the
   public `os_sync_wait_on_address` calls (iOS 17.4). `check-symbols.sh` guards it. No build with
@@ -76,16 +77,16 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;
 the file is gitignored) and reads the key `~/.appstoreconnect/private_keys/AuthKey_2M674J7J7N.p8`.
 
-## Rex Connect Helper (Mac and Linux)
+## Rex DUO Helper (Mac and Linux)
 
 ```sh
 Relay/package.sh --no-notarize   # Mac app signed with Developer ID, plus Linux binaries: a quick local check
 Relay/package.sh                 # also notarize, staple and verify
 ```
 
-Output in `Relay/dist`: `Rex Connect Helper.zip` (universal Rust binary in a bundle with an icon
+Output in `Relay/dist`: `Rex DUO Helper.zip` (universal Rust binary in a bundle with an icon
 made from the iOS app icon, hardened runtime, no entitlements, notarized with the App Store Connect
-key) and static `rex-connect-helper-linux-x86_64` / `-aarch64` (cross-compiled with
+key) and static `rex-duo-helper-linux-x86_64` / `-aarch64` (cross-compiled with
 `cargo zigbuild`; set `ZIG` if zig isn't on PATH). `build.rs` embeds the APNs key
 `AuthKey_5G2D4URHAC.p8` in every binary: share them only with trusted people, never commit them,
 and revoke the key if a copy leaks. Details are in `Relay/README.md`.

@@ -3,7 +3,7 @@
 # Usage: scripts/sync-macdesk.sh [-n] [remote-dir]
 #   -n          dry run: list what would be copied or deleted, change nothing on macdesk
 #   remote-dir  a folder directly under macdesk's home whose name starts with
-#               rexconnect-build; default rexconnect-build
+#               rexduo-build; default rexduo-build
 # From Vendor/ only GhosttyVt.xcframework and its stamp go across. The framework is built here by
 # scripts/build-ghostty.sh; macdesk never builds it, so the Zig toolchain, the Ghostty checkout and
 # the Zig cache stay behind. rsync skips files whose size and time are unchanged, so the 51 MB
@@ -17,12 +17,12 @@ if (( $# > 1 )); then
   echo "usage: scripts/sync-macdesk.sh [-n] [remote-dir]" >&2
   exit 2
 fi
-DIR=${1-rexconnect-build}
+DIR=${1-rexduo-build}
 # `rsync --delete` empties whatever folder it is pointed at of everything this tree doesn't have.
 # So the target is never taken on trust: one path component, no `.`, `..`, `~`, `/` or empty
 # name, nothing the remote shell would expand, and only a name that marks the folder as ours.
-if [[ ! $DIR =~ '^rexconnect-build[A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$' ]]; then
-  echo "sync-macdesk.sh: refusing to sync into '$DIR'. The remote folder must be directly under macdesk's home and its name must start with rexconnect-build (letters, digits, '-', '_' and '.' after that)." >&2
+if [[ ! $DIR =~ '^rexduo-build[A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$' ]]; then
+  echo "sync-macdesk.sh: refusing to sync into '$DIR'. The remote folder must be directly under macdesk's home and its name must start with rexduo-build (letters, digits, '-', '_' and '.' after that)." >&2
   exit 2
 fi
 

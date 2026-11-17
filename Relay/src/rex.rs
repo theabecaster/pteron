@@ -20,7 +20,7 @@ use tokio_tungstenite::WebSocketStream;
 
 pub const API_REVISION: i64 = 14;
 
-/// How the relay introduces itself. Rex Connect finds it by `name` in `client.list`.
+/// How the relay introduces itself. Rex DUO finds it by `name` in `client.list`.
 #[derive(Clone, Debug)]
 pub struct Identity {
     pub kind: String,
@@ -103,7 +103,7 @@ pub async fn open(ep: &Endpoint, me: &Identity, reconnect_token: Option<&str>) -
     };
     let mut req = url.into_client_request().map_err(|e| e.to_string())?;
     req.headers_mut().insert("Sec-WebSocket-Protocol", "rex.control.v1".parse().unwrap());
-    req.headers_mut().insert("User-Agent", "rex-connect-helper".parse().unwrap());
+    req.headers_mut().insert("User-Agent", "rex-duo-helper".parse().unwrap());
     let cfg = WebSocketConfig::default().max_message_size(Some(16 << 20));
     let (mut ws, _) = tokio_tungstenite::client_async_with_config(req, io, Some(cfg))
         .await

@@ -1,16 +1,15 @@
-# Rex Connect
+# Rex DUO
 
 iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's control API and
 terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt and
 its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built
-for the iPhone Duo and works on any iPhone. The home screen shows it as "Rex DUO"; the code and
-docs say Rex Connect. `Relay/` holds Rex Connect Helper, a Rust program for macOS and Linux that
-sends push notifications for Rex events.
+for the iPhone Duo and works on any iPhone. `Relay/` holds Rex DUO Helper, a Rust program for
+macOS and Linux that sends push notifications for Rex events.
 
 Stack: Swift 6 language mode, SwiftUI + UIKit, iOS 18, Xcode 27.2, XcodeGen, libghostty-vt (a
 static xcframework built locally), Swift Testing and XCTest. No other app dependencies. The helper
 is Rust (tokio, rustls, h2; `Relay/Cargo.lock` pins them). Bundle id `dev.abrahamgonzalez.rexduo`
-predates the name and stays: App Store Connect and the APNs topic depend on it.
+stays fixed: App Store Connect and the APNs topic depend on it.
 
 ## Product principles
 
@@ -32,25 +31,25 @@ predates the name and stays: App Store Connect and the APNs topic depend on it.
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
   `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`). Foundation only,
   so it tests on macOS.
-- `RexConnect/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
+- `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`.
-- `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures, split math),
+- `RexDuo/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures, split math),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Agents, Settings, Notifications (toasts, permission card), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`).
-- `RexConnect/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
+- `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
-- `RexConnect/DesignSystem`: terminal themes, chrome colors derived from them, fonts.
-- `RexConnectTests`: app tests, run in the simulator. Helper tests live in `Relay/src`.
+- `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts.
+- `RexDuoTests`: app tests, run in the simulator. Helper tests live in `Relay/src`.
 - `scripts/`: the Ghostty build and checks, the benchmark (`bench/`), release to macdesk.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane. Code keeps Rex's names
   (`WindowInfo`, `blockID`) to match the server's `/llms.txt`; user-facing text says tab and pane.
 
 ## Build, run, test
 
-`RexConnect.xcodeproj` is generated and untracked: edit `project.yml`, and run `xcodegen generate`
+`RexDuo.xcodeproj` is generated and untracked: edit `project.yml`, and run `xcodegen generate`
 after cloning and after adding, moving or deleting a file. `Vendor/` (gitignored) holds
 libghostty-vt, which a fresh clone builds once before anything else (Apple silicon, about 130 s
 and 1.3 GB). An agent worktree can symlink another checkout's `Vendor` instead.
@@ -59,8 +58,8 @@ and 1.3 GB). An agent worktree can symlink another checkout's `Vendor` instead.
 scripts/build-ghostty.sh                  # builds Vendor/GhosttyVt.xcframework; no-op when current
 xcodegen generate
 xcrun simctl list devices available       # pick a simulator id
-xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<sim-id> \
-  -derivedDataPath build/dd build         # `test` instead of `build` runs RexConnectTests (~1 min)
+xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<sim-id> \
+  -derivedDataPath build/dd build         # `test` instead of `build` runs RexDuoTests (~1 min)
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS, ~15 s
 cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payloads, JWT, devices
 ```
@@ -101,7 +100,7 @@ shell.
 - Unit tests run inside the app, which doesn't connect while it hosts tests.
 - `scripts/install-duo.sh`, `scripts/ship-macdesk.sh <build>` and `Relay/package.sh` (without
   `--no-notarize`) install on a phone, upload or notarize. Run them only when asked.
-  `scripts/sync-macdesk.sh` overwrites only a `rexconnect-build*` folder in macdesk's home; `-n`
+  `scripts/sync-macdesk.sh` overwrites only a `rexduo-build*` folder in macdesk's home; `-n`
   lists what it would change.
 - The helper runs on this Mac, macdesk and workdesk next to other agents' sessions. Test it with a
   foreground `--dry-run` after stopping the service (Relay/README.md, "Verify by hand"). Never

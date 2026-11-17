@@ -1,9 +1,9 @@
 [package]
-name = "rex-connect-helper"
+name = "rex-duo-helper"
 version = "0.2.0"
 edition = "2021"
 publish = false
-description = "Sends Rex Connect push notifications for the Rex server on this machine."
+description = "Sends Rex DUO push notifications for the Rex server on this machine."
 build = "build.rs"
 
 [dependencies]

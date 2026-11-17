@@ -1,4 +1,4 @@
-//! Registered phones (devices.json) and "is Rex Connect open on this phone right now?".
+//! Registered phones (devices.json) and "is Rex DUO open on this phone right now?".
 
 use crate::info;
 use crate::util::{now_iso, Json};
@@ -197,7 +197,7 @@ mod tests {
             client_id: id.into(),
             kind: Some("app".into()),
             platform: Some(platform.into()),
-            name: Some("Rex Connect".into()),
+            name: Some("Rex DUO".into()),
             label: Some(label.into()),
             connection_state: Some(state.into()),
             tailscale_node: node.map(Into::into),

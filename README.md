@@ -1,4 +1,4 @@
-# Rex Connect
+# Rex DUO
 
 A native iOS remote for [Rex](https://rex.superlogical.com) terminal servers, built for the iPhone
 Duo and fine on any iPhone. It speaks Rex's documented API (`/llms.txt` on any Rex server) over the
@@ -14,7 +14,7 @@ server's built-in Tailscale HTTPS address.
   leave.
 - Sessions, tabs and splits; zoom, rename, clear; a key bar with Agents, Shell and Vim layouts; hardware keyboard
   shortcuts from your Rex keymap; an Agents screen; a notification when an agent waits for you.
-- **Rex Connect Helper** (`Relay/`): a small Mac app or Linux service that sends push
+- **Rex DUO Helper** (`Relay/`): a small Mac app or Linux service that sends push
   notifications while the app is closed.
 
 ## Connect a server
@@ -30,12 +30,12 @@ Needs an Apple silicon Mac with Xcode 27.2 and XcodeGen (`brew install xcodegen`
 ```sh
 scripts/build-ghostty.sh   # once: builds the terminal engine into Vendor/ (about 130 s, not committed)
 xcodegen generate          # the Xcode project is generated, not committed
-xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<simulator id> build
+xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<simulator id> build
 ```
 
 Tests, debug launch arguments and the rules for working on the code are in [AGENTS.md](AGENTS.md).
 
-Licences of the bundled open source code are in `RexConnect/Resources/Acknowledgements.txt`, shown
+Licences of the bundled open source code are in `RexDuo/Resources/Acknowledgements.txt`, shown
 in the app under Settings → About → Acknowledgements.
 
 ## More

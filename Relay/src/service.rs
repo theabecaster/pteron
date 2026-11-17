@@ -15,9 +15,9 @@ macro_rules! say {
     }};
 }
 
-pub const NAME: &str = "rex-connect-helper";
+pub const NAME: &str = "rex-duo-helper";
 #[cfg(target_os = "macos")]
-pub const LABEL: &str = "dev.abrahamgonzalez.rexconnect.helper";
+pub const LABEL: &str = "dev.abrahamgonzalez.rexduo.helper";
 
 /// What the running helper last wrote to status.json, if it is alive.
 pub struct Running {
@@ -93,7 +93,7 @@ fn wait_for_start(limit: Duration) -> Option<Running> {
 /// One plain sentence about the running helper.
 pub fn describe(r: &Option<Running>) -> String {
     match r {
-        None => "Rex Connect Helper is not running.".into(),
+        None => "Rex DUO Helper is not running.".into(),
         Some(r) => {
             let mode = if r.dry_run {
                 " (dry run: pushes are logged, not sent)"
@@ -103,9 +103,9 @@ pub fn describe(r: &Option<Running>) -> String {
                 ""
             };
             if r.connected {
-                format!("Rex Connect Helper {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
+                format!("Rex DUO Helper {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
             } else {
-                format!("Rex Connect Helper {} is running and waiting for Rex to start{mode}.", r.version)
+                format!("Rex DUO Helper {} is running and waiting for Rex to start{mode}.", r.version)
             }
         }
     }
@@ -153,12 +153,17 @@ fn tilde(p: &Path) -> String {
 // MARK: Linux (systemd --user)
 
 #[cfg(not(target_os = "macos"))]
-fn unit_path() -> PathBuf {
+fn unit_path_for(name: &str) -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(".config"))
-        .join(format!("systemd/user/{NAME}.service"))
+        .join(format!("systemd/user/{name}.service"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unit_path() -> PathBuf {
+    unit_path_for(NAME)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -178,8 +183,30 @@ fn linger() -> Option<bool> {
     output("loginctl", &["show-user", &user(), "-p", "Linger", "--value"]).map(|v| v == "yes")
 }
 
+/// Stops and removes the service and binary of the helper's old name (legacy.rs).
+#[cfg(not(target_os = "macos"))]
+pub fn stop_legacy() -> Vec<String> {
+    let old = crate::legacy::OLD_NAME;
+    let mut notes = vec![];
+    let unit = unit_path_for(old);
+    if unit.exists() {
+        systemctl(&["disable", "--now", "--quiet", old]);
+        let _ = std::fs::remove_file(&unit);
+        systemctl(&["daemon-reload"]);
+        notes.push(format!("stopped and removed the old {old} service"));
+    }
+    let bin = home().join(".local/bin").join(old);
+    if std::fs::remove_file(&bin).is_ok() {
+        notes.push(format!("removed {}", tilde(&bin)));
+    }
+    notes
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn install() -> i32 {
+    for note in crate::legacy::migrate() {
+        say!("Moving from the old name: {note}");
+    }
     let bin = match install_binary() {
         Ok(b) => b,
         Err(e) => {
@@ -195,7 +222,7 @@ pub fn install() -> i32 {
     }
     let unit = format!(
         "[Unit]\n\
-         Description=Rex Connect Helper (push notifications from Rex to the Rex Connect iPhone app)\n\n\
+         Description=Rex DUO Helper (push notifications from Rex to the Rex DUO iPhone app)\n\n\
          [Service]\n\
          ExecStart={} run\n\
          Restart=on-failure\n\
@@ -257,7 +284,7 @@ pub fn uninstall() -> i32 {
     systemctl(&["daemon-reload"]);
     let _ = std::fs::remove_file(home().join(".local/bin").join(NAME));
     say!(
-        "Rex Connect Helper is stopped and removed. Registered phones stay in {}; delete that folder to forget them.",
+        "Rex DUO Helper is stopped and removed. Registered phones stay in {}; delete that folder to forget them.",
         tilde(&default_state_dir())
     );
     0
@@ -277,7 +304,38 @@ fn domain() -> String {
 
 #[cfg(target_os = "macos")]
 fn loaded() -> bool {
-    quiet("/bin/launchctl", &["print", &format!("{}/{LABEL}", domain())])
+    loaded_label(LABEL)
+}
+
+#[cfg(target_os = "macos")]
+fn loaded_label(label: &str) -> bool {
+    quiet("/bin/launchctl", &["print", &format!("{}/{label}", domain())])
+}
+
+/// Stops and removes the LaunchAgent and binary of the helper's old name (legacy.rs). The old
+/// app itself stays wherever the user put it.
+#[cfg(target_os = "macos")]
+pub fn stop_legacy() -> Vec<String> {
+    let old = crate::legacy::OLD_LABEL;
+    let mut notes = vec![];
+    if loaded_label(old) {
+        quiet("/bin/launchctl", &["bootout", &format!("{}/{old}", domain())]);
+        // bootout returns before the job is fully gone, and the job writes its state on exit.
+        let t = Instant::now();
+        while loaded_label(old) && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        notes.push(format!("stopped the old {old} LaunchAgent"));
+    }
+    let plist = home().join(format!("Library/LaunchAgents/{old}.plist"));
+    if std::fs::remove_file(&plist).is_ok() {
+        notes.push(format!("removed {}", tilde(&plist)));
+    }
+    let bin = home().join(".local/bin").join(crate::legacy::OLD_NAME);
+    if std::fs::remove_file(&bin).is_ok() {
+        notes.push(format!("removed {}", tilde(&bin)));
+    }
+    notes
 }
 
 /// The app bundle this binary runs from, if any.
@@ -360,8 +418,11 @@ fn stop_agent() {
 
 #[cfg(target_os = "macos")]
 pub fn install() -> i32 {
+    for note in crate::legacy::migrate() {
+        say!("Moving from the old name: {note}");
+    }
     if let Err(e) = start_agent() {
-        eprintln!("Could not start Rex Connect Helper: {e}");
+        eprintln!("Could not start Rex DUO Helper: {e}");
         return 1;
     }
     let r = wait_for_start(Duration::from_secs(6));
@@ -380,7 +441,7 @@ pub fn status() -> i32 {
             tilde(&crate::config::default_log_file())
         );
     } else {
-        say!("Not set up to start at login. Open Rex Connect Helper.app, or run: {NAME} install");
+        say!("Not set up to start at login. Open Rex DUO Helper.app, or run: {NAME} install");
     }
     say!("{}.", plural(phones()));
     if r.is_some() { 0 } else { 3 }
@@ -389,7 +450,7 @@ pub fn status() -> i32 {
 #[cfg(target_os = "macos")]
 pub fn uninstall() -> i32 {
     stop_agent();
-    say!("Rex Connect Helper is stopped and won't start at login. To remove it, drag the app to the Trash.");
+    say!("Rex DUO Helper is stopped and won't start at login. To remove it, drag the app to the Trash.");
     0
 }
 
@@ -404,7 +465,7 @@ fn dialog(text: &str, buttons: &[&str]) -> String {
         .map(|p| format!(" with icon (POSIX file \"{}\")", esc(&p.display().to_string())))
         .unwrap_or_default();
     let script = format!(
-        "display dialog \"{}\" with title \"Rex Connect Helper\" buttons {{{list}}} default button \"{}\"{icon}",
+        "display dialog \"{}\" with title \"Rex DUO Helper\" buttons {{{list}}} default button \"{}\"{icon}",
         esc(text),
         esc(buttons.last().unwrap())
     );
@@ -413,17 +474,18 @@ fn dialog(text: &str, buttons: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Opening Rex Connect Helper.app: start the background helper (and at every login), then
+/// Opening Rex DUO Helper.app: start the background helper (and at every login), then
 /// say so in one small dialog. The dialog's process exits; only the helper keeps running.
 #[cfg(target_os = "macos")]
 pub fn open_app() -> i32 {
     let in_place = bundle().is_some_and(|b| !b.to_string_lossy().contains("/AppTranslocation/"));
     if !in_place {
-        dialog("Move Rex Connect Helper to your Applications folder, then open it again.", &["OK"]);
+        dialog("Move Rex DUO Helper to your Applications folder, then open it again.", &["OK"]);
         return 0;
     }
+    crate::legacy::migrate();
     if let Err(e) = start_agent() {
-        dialog(&format!("Rex Connect Helper couldn't start.\n\n{e}"), &["OK"]);
+        dialog(&format!("Rex DUO Helper couldn't start.\n\n{e}"), &["OK"]);
         return 1;
     }
     let r = wait_for_start(Duration::from_secs(5));
@@ -433,12 +495,12 @@ pub fn open_app() -> i32 {
         None => "It's starting",
     };
     let text = format!(
-        "Rex Connect Helper is on.\n\n{state}, and it starts by itself when you log in.\n\n\
-         On your iPhone, open Rex Connect and turn on notifications. You'll get a push when an agent needs you or finishes."
+        "Rex DUO Helper is on.\n\n{state}, and it starts by itself when you log in.\n\n\
+         On your iPhone, open Rex DUO and turn on notifications. You'll get a push when an agent needs you or finishes."
     );
     if dialog(&text, &["Turn Off", "Done"]) == "Turn Off" {
         stop_agent();
-        dialog("Rex Connect Helper is off. Open it again to turn it back on.", &["OK"]);
+        dialog("Rex DUO Helper is off. Open it again to turn it back on.", &["OK"]);
     }
     0
 }

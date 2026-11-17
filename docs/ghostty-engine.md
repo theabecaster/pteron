@@ -1,6 +1,6 @@
 # The terminal engine
 
-Rex Connect's terminal: **libghostty-vt** (upstream's `ghostty-vt.xcframework`) parses the stream
+Rex DUO's terminal: **libghostty-vt** (upstream's `ghostty-vt.xcframework`) parses the stream
 and holds the terminal's state, and **our own Metal renderer** draws it. A pane starts by
 restoring the Ghostty snapshot (`GHOSTSNP`) that opens every Rex data stream.
 
@@ -52,7 +52,7 @@ The view reports back through `TerminalEngineDelegate` (`Features/Terminal/Termi
 the grid changed, bytes for the program). That protocol stays because the engine's tests put a
 spy there in place of a host.
 
-Files in `RexConnect/Features/Terminal/Ghostty/`:
+Files in `RexDuo/Features/Terminal/Ghostty/`:
 
 | File | Holds |
 | --- | --- |
@@ -240,7 +240,7 @@ server changed it. `ghostty_terminal_resize` reflows.
 - Swift module name: `GhosttyVt`. Umbrella header: `ghostty/vt.h`.
 - **Re-pin:** change `GHOSTTY_COMMIT` in `scripts/ghostty.version` (and the Zig version and hash
   if Ghostty's `minimum_zig_version` moved) and run `scripts/build-ghostty.sh`. Then check
-  `RexConnect/Resources/Acknowledgements.txt` against the `"use": "linked"` entries in
+  `RexDuo/Resources/Acknowledgements.txt` against the `"use": "linked"` entries in
   `Vendor/ghostty/deps/libghostty-vt-third-party.json`: the app must ship every linked licence.
   Re-check docs/ghostty-api-notes.md against the headers, and run the benchmark.
 
@@ -287,7 +287,7 @@ enough), and the next build stops with that instruction when it cannot read one.
 - `scripts/ghostty-tools/decode.c` decodes a capture with the macOS slice:
   `clang -O2 -I$X/Headers decode.c $X/libghostty-vt.a -lc++ -o decode`, where
   `X=Vendor/GhosttyVt.xcframework/macos-arm64_x86_64`.
-- `RexConnectTests/Ghostty*.swift` (fixtures in `RexConnectTests/Fixtures`) run in the simulator
+- `RexDuoTests/Ghostty*.swift` (fixtures in `RexDuoTests/Fixtures`) run in the simulator
   with the app scheme. They reach libghostty-vt only through the app's
   Swift types: the static library is linked into the app, not the test bundle.
 - `Packages/RexKit/Tests/RexKitTests/Stream*.swift` cover the filter and the stream on recorded
@@ -381,7 +381,7 @@ in the same commit.
 
 ### What is measured
 
-`PerfProbe` (`RexConnect/Features/Terminal/Perf/PerfProbe.swift`, launch argument `-perfLog
+`PerfProbe` (`RexDuo/Features/Terminal/Perf/PerfProbe.swift`, launch argument `-perfLog
 <name>`) writes one JSON file per run. Its header comment defines every number. In short:
 
 - **First frame**: pane open (`TerminalHost.init`) to the first frame that shows the restored

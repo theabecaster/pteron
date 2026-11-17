@@ -26,8 +26,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn actions() -> Value {
     json!([
         {
-            "name": "register_push", "kind": "client", "category": "Rex Connect",
-            "title": "Register for Rex Connect Pushes",
+            "name": "register_push", "kind": "client", "category": "Rex DUO",
+            "title": "Register for Rex DUO Pushes",
             "description": "Send push notifications for this server's agents to an iPhone.",
             "args": {
                 "type": "object",
@@ -41,15 +41,15 @@ pub fn actions() -> Value {
             }
         },
         {
-            "name": "unregister_push", "kind": "client", "category": "Rex Connect",
-            "title": "Unregister from Rex Connect Pushes",
+            "name": "unregister_push", "kind": "client", "category": "Rex DUO",
+            "title": "Unregister from Rex DUO Pushes",
             "description": "Stop sending pushes to an iPhone.",
             "args": {"type": "object", "properties": {"token": {"type": "string"}}, "required": ["token"]}
         },
         {
-            "name": "push_presence", "kind": "client", "category": "Rex Connect",
-            "title": "Rex Connect Presence",
-            "description": "Tell the relay whether the calling Rex Connect app is in the foreground.",
+            "name": "push_presence", "kind": "client", "category": "Rex DUO",
+            "title": "Rex DUO Presence",
+            "description": "Tell the relay whether the calling Rex DUO app is in the foreground.",
             "args": {"type": "object", "properties": {"active": {"type": "boolean"}}, "required": ["active"]}
         }
     ])
@@ -154,7 +154,7 @@ impl Relay {
         } else {
             "APNs on"
         };
-        info!("Rex Connect Helper {VERSION} starting; {n} registered device(s); {mode}");
+        info!("Rex DUO Helper {VERSION} starting; {n} registered device(s); {mode}");
         self.write_status();
         for s in &self.servers {
             tokio::spawn(self.clone().run_server(s.clone()));
@@ -171,7 +171,7 @@ impl Relay {
         let _ = std::fs::remove_file(&self.status_path);
     }
 
-    /// status.json, read by `rex-connect-helper status` and the Mac app's dialog.
+    /// status.json, read by `rex-duo-helper status` and the Mac app's dialog.
     fn write_status(&self) {
         let ready: Vec<String> =
             self.servers.iter().filter_map(|s| { let st = s.st.lock().unwrap(); st.ready.then(|| st.name.clone()) }).collect();
@@ -275,7 +275,7 @@ impl Relay {
 
     async fn set_up(&self, s: &Server) -> Result<(), rex::RexError> {
         let boot = s.conn.call("session.bootstrap", json!({"event_scope": "all", "attach_session_ids": []})).await?;
-        // Payloads name the server by its Tailscale URL, which is how Rex Connect knows it.
+        // Payloads name the server by its Tailscale URL, which is how Rex DUO knows it.
         let url = boot
             .obj("server_status")
             .and_then(|v| v.obj("tailscale"))
@@ -467,7 +467,7 @@ impl Relay {
         for d in devices {
             let who = d.who();
             if is_app_open(&d, &clients, &background) {
-                info!("skip {who}: Rex Connect is open");
+                info!("skip {who}: Rex DUO is open");
                 continue;
             }
             if !self.limiter.lock().unwrap().allow(&d.token, t) {
