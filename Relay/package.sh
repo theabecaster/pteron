@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds Rex DUO Helper for macOS and Linux into Relay/dist:
 #
-#   Rex DUO Helper.zip                 the Mac app: the Rust binary in a signed, notarized bundle
+#   Rex DUO Helper.zip                 the Mac app: the Rust binary in a signed, notarized bundle,
+#                                      with rex-duo-notify (Packaging/notify.swift) beside it
 #   rex-duo-helper-linux-x86_64        static Linux binaries (musl)
 #   rex-duo-helper-linux-aarch64
 #
@@ -21,6 +22,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="Rex DUO Helper"
 BIN=rex-duo-helper
+NOTIFIER=rex-duo-notify
 BUNDLE_ID="dev.abrahamgonzalez.rexduo.helper"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/Cargo.toml" | head -1)"
 BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$HERE" rev-list --count HEAD 2>/dev/null || echo 1)}"
@@ -89,6 +91,13 @@ if [[ $MAC == 1 ]]; then
   lipo -create -output "$APP/Contents/MacOS/$BIN" \
     "target/aarch64-apple-darwin/release/$BIN" "target/x86_64-apple-darwin/release/$BIN"
 
+  # The notifier: what posts a desktop notification under the app's own name (src/notice.rs).
+  for arch in arm64 x86_64; do
+    xcrun swiftc -O -swift-version 6 -parse-as-library -target "$arch-apple-macos14.0" \
+      -o "$STAGE/$NOTIFIER-$arch" "$HERE/Packaging/notify.swift"
+  done
+  lipo -create -output "$APP/Contents/MacOS/$NOTIFIER" "$STAGE/$NOTIFIER-arm64" "$STAGE/$NOTIFIER-x86_64"
+
   # The binary is the app: opened from Finder it starts itself as a LaunchAgent and shows
   # one dialog (src/service.rs, open_app). No Dock icon.
   cat > "$APP/Contents/Info.plist" <<EOF
@@ -119,6 +128,8 @@ EOF
   iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$STAGE/AppIcon.iconset"
 
   echo "==> Signing with $IDENTITY (hardened runtime, no entitlements)"
+  # Code inside the bundle is signed before the bundle that seals it.
+  codesign --force --timestamp --options runtime --sign "$IDENTITY" "$APP/Contents/MacOS/$NOTIFIER"
   codesign --force --timestamp --options runtime --sign "$IDENTITY" "$APP"
   codesign --verify --strict --verbose=2 "$APP"
 

@@ -159,8 +159,10 @@ connected", "<device name> can now open your sessions on this computer." It show
 `device_id`, ever: `seen_devices.json` in the same folder keeps every id that has registered, so
 a new token, a reconnect, a helper restart or an unregister followed by a register shows nothing.
 Phones already in `devices.json` when the helper is upgraded count as seen, and a registration
-without a `device_id` shows nothing. On a Mac the notification goes through `osascript`; on
-Linux through `notify-send`, and only if it is installed and a desktop session is there
+without a `device_id` shows nothing. On a Mac it comes from Rex DUO Helper itself: `rex-duo-notify`
+(`Packaging/notify.swift`), a small program beside the helper in the app, posts it, and macOS
+asks once, when the app is first opened, whether the helper may show notifications. Answer no,
+or run the helper outside its app, and no notice is shown. On Linux it goes through `notify-send`, and only if it is installed and a desktop session is there
 (otherwise the helper logs a line and carries on). `--dry-run` logs `DRY-RUN notice` instead.
 
 ## What the app must do

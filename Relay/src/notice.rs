@@ -3,10 +3,15 @@
 
 use crate::{debug, info};
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 pub const TITLE: &str = "Rex DUO connected";
+/// The program in the Mac app, next to the helper, that posts as Rex DUO Helper
+/// (Packaging/notify.swift). macOS names the app a notification comes from by its bundle, so a
+/// script runner would show under its own name.
+pub const NOTIFIER: &str = "rex-duo-notify";
 /// Longest device name shown, in characters.
 const NAME_LIMIT: usize = 64;
 
@@ -46,30 +51,57 @@ pub fn body(device_name: Option<&str>) -> String {
 }
 
 /// The program and arguments that show a notification on `os` (`std::env::consts::OS`), or
-/// None where there is no way. The texts are separate arguments after `--`, never part of
-/// the AppleScript source or an option, so nothing in a device name is run or parsed.
-pub fn command(os: &str, title: &str, body: &str) -> Option<(&'static str, Vec<String>)> {
-    let fixed: (&'static str, &[&str]) = match os {
-        "macos" => (
-            "/usr/bin/osascript",
-            &["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"],
-        ),
-        "linux" => ("notify-send", &["--app-name", "Rex DUO"]),
+/// None where there is no way: a Mac helper that isn't running from its app has no `notifier`.
+/// The texts are separate arguments after `--`, never part of an option, so nothing in a device
+/// name is run or parsed.
+pub fn command(os: &str, notifier: Option<&Path>, title: &str, body: &str) -> Option<(String, Vec<String>)> {
+    let (program, fixed): (String, &[&str]) = match os {
+        "macos" => (notifier?.display().to_string(), &["post"]),
+        "linux" => ("notify-send".into(), &["--app-name", "Rex DUO"]),
         _ => return None,
     };
-    let args = fixed.1.iter().copied().chain(["--", title, body]).map(String::from).collect();
-    Some((fixed.0, args))
+    let args = fixed.iter().copied().chain(["--", title, body]).map(String::from).collect();
+    Some((program, args))
 }
 
-/// Shows the notice without waiting for it. Nothing here fails the caller: a machine with no
-/// `notify-send` or no desktop session (a headless Linux box) only gets a log line.
+/// The notifier inside the app this helper runs from, if it is there.
+#[cfg(target_os = "macos")]
+fn notifier() -> Option<PathBuf> {
+    let p = crate::service::bundle()?.join("Contents/MacOS").join(NOTIFIER);
+    p.is_file().then_some(p)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn notifier() -> Option<PathBuf> {
+    None
+}
+
+/// Asks macOS, once, whether Rex DUO Helper may show notifications. Called when the app is
+/// opened, so the question comes with the welcome and not out of nowhere later. It doesn't
+/// wait for the answer, and a "no" only means the notice is never shown.
+pub fn authorize() {
+    let Some(notifier) = notifier() else { return };
+    let _ = std::process::Command::new(notifier)
+        .arg("authorize")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+/// Shows the notice without waiting for it. Nothing here fails the caller: a Mac where
+/// notifications are off, or a machine with no `notify-send` or no desktop session (a headless
+/// Linux box), only gets a log line.
 pub fn post(body: &str, dry_run: bool) {
     if dry_run {
         info!("DRY-RUN notice -> {TITLE}: {body}");
         return;
     }
-    let Some((program, args)) = command(std::env::consts::OS, TITLE, body) else { return };
-    let child = tokio::process::Command::new(program)
+    let Some((program, args)) = command(std::env::consts::OS, notifier().as_deref(), TITLE, body) else {
+        debug!("no desktop notice: nothing here can show one");
+        return;
+    };
+    let child = tokio::process::Command::new(&program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -88,8 +120,11 @@ pub fn post(body: &str, dry_run: bool) {
         }
     };
     tokio::spawn(async move {
-        match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+        // Long enough for the person to answer the permission question the first time.
+        match tokio::time::timeout(Duration::from_secs(330), child.wait()).await {
             Ok(Ok(status)) if status.success() => {}
+            // Notifications are turned off for the helper: the person's choice, not a fault.
+            Ok(Ok(status)) if status.code() == Some(1) => debug!("no desktop notice: not allowed"),
             Ok(Ok(status)) => info!("no desktop notice: {program} ended with {status}"),
             Ok(Err(e)) => info!("no desktop notice: {program}: {e}"),
             Err(_) => info!("no desktop notice: {program} did not finish"),
@@ -136,27 +171,32 @@ mod tests {
         for name in ["\"; do shell script \"touch /tmp/x\" --\"", "back\\slash \\\" quote", "-e", "--icon=x", "$(id) `id` 'q'"] {
             let text = body(Some(name));
             assert!(text.starts_with(name));
+            let notifier = Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-notify");
             for os in ["macos", "linux"] {
-                let (_, args) = command(os, TITLE, &text).unwrap();
+                let (_, args) = command(os, Some(notifier), TITLE, &text).unwrap();
                 let n = args.len();
                 // Both texts come after `--`, whole and unchanged; nothing before it varies.
                 assert_eq!(args[n - 3..], ["--".to_string(), TITLE.to_string(), text.clone()]);
-                assert_eq!(args[..n - 3], command(os, "", "").unwrap().1[..n - 3]);
+                assert_eq!(args[..n - 3], command(os, Some(notifier), "", "").unwrap().1[..n - 3]);
             }
         }
     }
 
     #[test]
     fn command_per_platform() {
-        let (program, args) = command("macos", "T", "B").unwrap();
-        assert_eq!(program, "/usr/bin/osascript");
-        assert_eq!(
-            args,
-            ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", "T", "B"]
-        );
-        let (program, args) = command("linux", "T", "B").unwrap();
+        let notifier = Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-notify");
+        let (program, args) = command("macos", Some(notifier), "T", "B").unwrap();
+        assert_eq!(program, "/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-notify");
+        assert_eq!(args, ["post", "--", "T", "B"]);
+        let (program, args) = command("linux", None, "T", "B").unwrap();
         assert_eq!(program, "notify-send");
         assert_eq!(args, ["--app-name", "Rex DUO", "--", "T", "B"]);
-        assert!(command("windows", "T", "B").is_none());
+        assert!(command("windows", None, "T", "B").is_none());
+    }
+
+    #[test]
+    fn a_mac_helper_outside_its_app_shows_nothing() {
+        // No script runner stands in: the notice would carry that program's name.
+        assert!(command("macos", None, "T", "B").is_none());
     }
 }
