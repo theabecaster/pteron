@@ -8,6 +8,8 @@ struct AgentsView: View {
     @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
     var onOpen: (Selection) -> Void
+    /// The state pill's glyph follows its text's Dynamic Type size.
+    @ScaledMetric(relativeTo: .caption2) private var pillGlyph: CGFloat = 10
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -97,8 +99,12 @@ struct AgentsView: View {
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
+                    // The name keeps its width while the state can shrink to its glyph; only then
+                    // does the name truncate.
                     Text(row.kind?.displayName ?? row.status?.app ?? "Program").font(.subheadline.weight(.semibold))
-                    Spacer()
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    Spacer(minLength: 0)
                     stateLabel(row.status, theme)
                 }
                 Text(WindowTitle.condense(row.title)).font(.caption).lineLimit(2).foregroundStyle(theme.chrome.secondary)
@@ -111,11 +117,13 @@ struct AgentsView: View {
         .padding(.vertical, 3)
     }
 
+    /// The state in words, or, where they don't fit, the row glyph (and progress) in the same pill.
     private func stateLabel(_ s: ProgramStatus?, _ theme: TermTheme) -> some View {
         let state = s?.state ?? "idle"
+        let progress = s?.progress.map { "\($0)%" }
         let (text, color): (String, Color) = {
             switch state {
-            case "working": return ("Working" + (s?.progress.map { " \($0)%" } ?? ""), theme.chrome.working)
+            case "working": return ("Working" + (progress.map { " \($0)" } ?? ""), theme.chrome.working)
             case "blocked":
                 switch s?.waitingFor {
                 case "permission": return ("Needs permission", theme.chrome.blocked)
@@ -128,9 +136,28 @@ struct AgentsView: View {
             default: return ("Idle", theme.chrome.tertiary)
             }
         }()
-        return Text(text).font(.caption2.weight(.semibold))
+        // Idle has no glyph, so it keeps its one short word.
+        let glyph = state == "working" || state == "blocked" || state == "done" || state == "error"
+        return ViewThatFits(in: .horizontal) {
+            statePill(Text(text).monospacedDigit(), color)
+            if glyph {
+                statePill(HStack(spacing: 3) {
+                    StatusBadge(state: state, theme: theme, size: pillGlyph)
+                    if let progress { Text(progress).monospacedDigit() }
+                }, color)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+    }
+
+    private func statePill(_ content: some View, _ color: Color) -> some View {
+        content
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.18)))
             .foregroundStyle(color)
+            .fixedSize()
     }
 }
