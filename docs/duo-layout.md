@@ -65,7 +65,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment
   (both panes' key bars during a pane swipe) and leave a band of chrome above the key bar.
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.
-  The panes stay inside the safe area, so no terminal text sits under system UI.
+  The panes stay inside the safe area, so no terminal text sits under system UI. Below the panes
+  the terminal's color runs on to the window's bottom: under the home indicator with the keyboard
+  down, and behind the key bar and the keyboard's corners with it up. No band of chrome shows
+  under the terminal.
 - **Short windows** (landscape iPhone): the title bar is 34 pt with no subtitle, and the key bar is
   42 pt.
 - **Offline screen** (`OfflineLayout`). It fills the tab, so an inline sidebar stays beside it. Where

@@ -133,6 +133,10 @@ struct WindowScreen: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
                 if !keyboardUp, s != canvasSize { canvasSize = s }
             }
+            // The rows stay above the home indicator, but the terminal's color runs on to the
+            // window's bottom: no band of chrome under the panes with the keyboard down, and the
+            // key bar's glass floats on the terminal with it up.
+            .background(theme.bg.ignoresSafeArea(.all, edges: .bottom))
     }
 
     /// Under compact height (landscape iPhone, folded Duo on its side) the title bar steps aside while
