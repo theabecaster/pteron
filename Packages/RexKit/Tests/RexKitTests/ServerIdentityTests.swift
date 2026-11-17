@@ -13,6 +13,8 @@ private final class FakeRex: @unchecked Sendable {
     private var accepted = 0
     private var asked: [String] = []
     private var closes = 0
+    private var live: Set<ObjectIdentifier> = []
+    private var endings: [String] = []
     private let replies: [String: String]
     private let welcomes: Bool
 
@@ -33,9 +35,15 @@ private final class FakeRex: @unchecked Sendable {
             self.connections.append(c)
             self.open += 1
             self.accepted += 1
+            let id = ObjectIdentifier(c)
+            self.live.insert(id)
             c.stateUpdateHandler = { [weak self] state in
-                if case .cancelled = state { self?.open -= 1 }
-                if case .failed = state { self?.open -= 1 }
+                switch state {
+                // Counted once: a connection that fails is then also cancelled.
+                case .cancelled, .failed:
+                    if self?.live.remove(id) != nil { self?.open -= 1 }
+                default: break
+                }
             }
             c.start(queue: self.queue)
             self.receive(c)
@@ -58,6 +66,8 @@ private final class FakeRex: @unchecked Sendable {
     var openConnections: Int { queue.sync { open } }
     /// Connections the client ended with a WebSocket close frame, not by dropping the socket.
     var closeFrames: Int { queue.sync { closes } }
+    /// How each connection ended, as the server saw it: for a failing test's message.
+    var ends: [String] { queue.sync { endings } }
     /// Every connection made since the start, closed ones included.
     var connectionsMade: Int { queue.sync { accepted } }
     func stop() { queue.sync { listener.cancel(); for c in connections { c.cancel() } } }
@@ -74,12 +84,19 @@ private final class FakeRex: @unchecked Sendable {
             if let meta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata,
                meta.opcode == .close {
                 self.closes += 1
-                c.cancel()
+                self.endings.append("close frame \(meta.closeCode)")
+                // Answer with a close frame, as the protocol asks, then hang up. A client waits
+                // for that answer before it lets go of the connection.
+                let reply = NWProtocolWebSocket.Metadata(opcode: .close)
+                reply.closeCode = meta.closeCode
+                let ctx = NWConnection.ContentContext(identifier: "close", metadata: [reply])
+                c.send(content: nil, contentContext: ctx, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
                 return
             }
             // The client's side of the socket is gone without a close frame. A server closes its
             // side too: an NWConnection stays `ready` after the peer's end of file until then.
             if error != nil || (data == nil && context == nil) {
+                self.endings.append(error.map { "error \($0)" } ?? "end of file")
                 c.cancel()
                 return
             }
@@ -229,7 +246,7 @@ struct ServerIdentityTests {
         #expect(server.openConnections == 0)
         #expect(server.connectionsMade == 1)
         // And closed as a WebSocket closes, so the server sees a client that left.
-        #expect(server.closeFrames == 1)
+        #expect(server.closeFrames == 1, "the server saw: \(server.ends)")
     }
 
     @Test func aServerThatAnswersSomeCallsGivesWhatItAnswered() async throws {

@@ -119,24 +119,30 @@ public final class RexControl {
         state = .idle
     }
 
+    /// The longest `invalidate` waits for the socket to finish closing before it drops it.
+    static let closeLimit: TimeInterval = 1.5
+
     /// Disconnects for good and releases the URLSession, which otherwise keeps its delegate queue
     /// and connection pool for the life of the process. For a connection made for one short job;
     /// the control must not be used again.
-    /// How long `invalidate` gives a close frame to leave before it drops the connection.
-    static let closeGrace: TimeInterval = 0.3
-
     public func invalidate() {
+        let closing = task
         disconnect()
-        // `disconnect` asked the socket to close with a close frame. Let that go out before the
-        // session ends: cancelling the session at once drops the TCP connection under it, and the
-        // server then sees a client that vanished instead of one that left.
-        session.finishTasksAndInvalidate()
-        // Then end whatever is left. A socket cancelled before it finished opening sends no close
-        // frame and its TCP connection stays in the session's pool, and one whose server stopped
-        // reading never finishes closing; neither may outlive the job. A close frame is one small
-        // write, so a short grace is enough for it.
+        // `disconnect` asked the socket to close with a close frame. The session must outlive
+        // that: cancelling it at once drops the TCP connection under the frame, and the server
+        // then sees a client that vanished instead of one that left. So wait for the socket task
+        // itself to finish (the frame is out and the connection is down), and only then end the
+        // session. The limit covers a server that stopped reading, and a socket cancelled before
+        // it finished opening, whose connection would otherwise stay in the session's pool.
         let session = session
-        DispatchQueue.global().asyncAfter(deadline: .now() + Self.closeGrace) { session.invalidateAndCancel() }
+        session.finishTasksAndInvalidate()
+        let deadline = Date().addingTimeInterval(Self.closeLimit)
+        Task.detached { [weak closing] in
+            while let state = closing?.state, state != .completed, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            session.invalidateAndCancel()
+        }
     }
 
     /// Opens a socket and waits for the welcome. Every failure goes through `handleDrop`, which
