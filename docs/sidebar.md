@@ -149,7 +149,7 @@ Unfolded (inner screen, landscape, sidebar inline at 200 pt), 16 toggles a run:
 | `LazyVStack`, all rows at once | 12.5 (12.5) | 23.4 (28.8) | 52 | 303 |
 | `LazyVStack`, 4 rows a frame | 12.5 (12.5) | 17.3 (22.9) | 85 | 402 |
 | `LazyVStack`, 8 rows a frame | 12.5 (15.7) | 22.8 (26.6) | 86 | 445 |
-| Shipped: `LazyVStack`, 3 rows a frame, unfurl motion | pending | pending | pending | pending |
+| Shipped: `LazyVStack`, 3 rows a frame, unfurl motion | pending, needs an unfolded device run | | | |
 
 Folded (outer screen, sidebar as the drawer over the tab):
 
