@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// The Ghostty engine's input, scrolling and selection working as one: what one part does to
 /// another, as TerminalHost, the key bar and the hardware keymap drive them.

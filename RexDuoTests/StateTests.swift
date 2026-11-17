@@ -2,12 +2,12 @@ import Foundation
 import SwiftUI
 import Testing
 import RexKit
-@testable import RexConnect
+@testable import RexDuo
 
 @MainActor
 struct PrefsTests {
     private func fresh() -> (Prefs, UserDefaults) {
-        let name = "RexConnectTests.\(UUID().uuidString)"
+        let name = "RexDuoTests.\(UUID().uuidString)"
         let d = UserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         return (Prefs(defaults: d), d)
@@ -93,7 +93,7 @@ struct AppModelTests {
     }
 
     @Test func doesNotConnectWhenAskedNotTo() {
-        let model = AppModel(prefs: Prefs(defaults: UserDefaults(suiteName: "RexConnectTests.model")!), connect: false)
+        let model = AppModel(prefs: Prefs(defaults: UserDefaults(suiteName: "RexDuoTests.model")!), connect: false)
         #expect(model.servers.isEmpty)
     }
 }

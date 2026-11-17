@@ -1,6 +1,6 @@
 import RexKit
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// Records the fit-mode calls in order and lets a test decide when each one returns.
 @MainActor

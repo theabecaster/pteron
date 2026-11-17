@@ -1,5 +1,5 @@
 import Testing
-@testable import RexConnect
+@testable import RexDuo
 
 /// The sidebar's agent count pills (`AgentCounts`): which show, in which order, and what they say.
 struct AgentCountsTests {

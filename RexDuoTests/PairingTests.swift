@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import RexKit
 import Testing
-@testable import RexConnect
+@testable import RexDuo
 
 @MainActor
 struct PairingTests {

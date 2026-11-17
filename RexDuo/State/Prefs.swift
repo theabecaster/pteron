@@ -102,7 +102,7 @@ final class Prefs {
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
     }
-    /// The system's Light or Dark Mode, which `RexConnectApp` reads each time the app becomes active.
+    /// The system's Light or Dark Mode, which `RexDuoApp` reads each time the app becomes active.
     /// Views can't read it from the environment: the root forces the app's scheme to the theme's own.
     var systemScheme: ColorScheme
 

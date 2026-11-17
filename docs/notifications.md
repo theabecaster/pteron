@@ -11,7 +11,7 @@ once every 3 s (`AgentNotifier.hapticInterval`). Both are always on; iOS's Syste
 mutes the haptic. Desktop notifications (OSC 9 / 777) show nothing in the app.
 
 `Features/Notifications` turns alerts into a toast. `.agentToasts()` is applied once, in
-`RexConnectApp`. The rules are in `ToastPolicy` (tested):
+`RexDuoApp`. The rules are in `ToastPolicy` (tested):
 
 - Only while the app is active, and only for a pane that isn't on screen. `ScreenInspector` reads
   the visible panes from UIKit (`TerminalHost` views at least half inside the key window), so the
@@ -78,7 +78,7 @@ Pushes carry `server` (the Tailscale URL as entered in the app), `session_id`, `
 ## The app's side
 
 `PushRegistrar` (`State/`, owned by `AppModel`) implements the contract; `PushSupport.swift` holds
-its pure parts, tested in `RexConnectTests/NotificationTests.swift`.
+its pure parts, tested in `RexDuoTests/NotificationTests.swift`.
 
 - Device id: the first 8 hex digits of `identifierForVendor`. `PushIdentity.clientLabel` builds
   `"<device name> #<id>"`, shortening the name to fit Rex's 64 bytes.

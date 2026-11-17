@@ -1,6 +1,6 @@
 import CoreText
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// The terminal view where the answer is a number or bytes that can be checked: the cell that
 /// decides the fit grid, the key bar's modifiers with keys that aren't characters, the theme.

@@ -1,7 +1,7 @@
 import Metal
 import Synchronization
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// What the renderer does to stay cheap: rows taken over from the frame before, glyphs drawn off
 /// the frame, small atlas uploads, frames drawn straight from a wake-up, and nothing at all

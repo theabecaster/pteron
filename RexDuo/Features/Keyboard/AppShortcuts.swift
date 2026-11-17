@@ -18,7 +18,7 @@ struct AppShortcut: Identifiable {
 /// else is first responder. Without them every shortcut would stop working whenever the terminal
 /// isn't first responder, since the terminal's host is the only responder that knows the keymap.
 enum AppShortcuts {
-    /// The shortcuts for a keymap: for each key with ⌘ or ⌃, the first binding Rex Connect can
+    /// The shortcuts for a keymap: for each key with ⌘ or ⌃, the first binding Rex DUO can
     /// perform, when that is an app command. Keys bound to something a pane does (send a key, copy,
     /// scroll) need a pane and stay with the terminal.
     static func list(_ bindings: [KeyBinding]) -> [AppShortcut] {

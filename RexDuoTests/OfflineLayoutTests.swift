@@ -1,6 +1,6 @@
 import CoreGraphics
 import Testing
-@testable import RexConnect
+@testable import RexDuo
 
 /// Where the offline screen puts the illustration and the card (`OfflineLayout.decide`).
 struct OfflineLayoutTests {

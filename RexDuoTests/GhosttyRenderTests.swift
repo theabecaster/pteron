@@ -1,6 +1,6 @@
 import Metal
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 final class GhosttyRenderTests: XCTestCase {
     private let red = GhosttyRowBuilder.pack(0xf4, 0x70, 0x67)

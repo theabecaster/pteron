@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import RexKit
-@testable import RexConnect
+@testable import RexDuo
 
 struct ConnectionProblemTests {
     private let offTailnet = NetworkSnapshot(reachable: true, onPrivateNetwork: false)

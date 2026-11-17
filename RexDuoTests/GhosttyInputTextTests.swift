@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 @MainActor
 private final class SendSpy: TerminalEngineDelegate {

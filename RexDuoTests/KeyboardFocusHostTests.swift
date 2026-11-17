@@ -1,6 +1,6 @@
 import RexKit
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// Who has the keyboard, with real hosts in a window: at most one terminal is first responder,
 /// and it is the active pane's.

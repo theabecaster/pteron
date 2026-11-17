@@ -1,7 +1,7 @@
 import Metal
 import Synchronization
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 func ghosttyFixture(_ name: String) throws -> [UInt8] {
     let url = try XCTUnwrap(Bundle(for: GhosttyCoreTests.self).url(forResource: name, withExtension: "bin"))

@@ -592,7 +592,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         var decided = Set<KeyChord>()
         for b in keymap.bindings where b.chord.mods.contains(.cmd) && !decided.contains(b.chord) {
-            // The first binding on a key that Rex Connect can perform runs; one it can't falls through.
+            // The first binding on a key that Rex DUO can perform runs; one it can't falls through.
             guard AppAction.resolve(b.action, b.args) != nil else { continue }
             decided.insert(b.chord)
             guard let input = KeyInput.commandInput(b.chord) else { continue }

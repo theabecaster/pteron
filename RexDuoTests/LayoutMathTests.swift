@@ -1,6 +1,6 @@
 import CoreGraphics
 import Testing
-@testable import RexConnect
+@testable import RexDuo
 
 struct TerminalLayoutTests {
     @Test func fitsWholeCells() {

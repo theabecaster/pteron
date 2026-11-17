@@ -18,7 +18,7 @@ struct NotificationSettingsSection: View {
                 set: { $0 ? push.enable() : push.disable() }))
                 .disabled(denied)
             if denied {
-                note("Notifications are off for Rex Connect in iOS Settings.", button: "Open Settings")
+                note("Notifications are off for Rex DUO in iOS Settings.", button: "Open Settings")
             } else if prefs.pushEnabled && push.authorization == .provisional {
                 note("Notifications arrive quietly in Notification Center. Allow banners in iOS Settings to see them right away.",
                      button: "Open Settings")

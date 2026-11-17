@@ -1,6 +1,6 @@
 import Testing
 import RexKit
-@testable import RexConnect
+@testable import RexDuo
 
 struct KeyChordTests {
     @Test(arguments: [

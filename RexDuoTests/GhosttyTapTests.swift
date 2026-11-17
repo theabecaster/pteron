@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 private let esc = "\u{1b}"
 private let bel = "\u{07}"

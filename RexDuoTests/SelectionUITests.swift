@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// The selection UI (docs/selection.md): the gesture's state machine, where the haptics fire,
 /// the handles' geometry, word and line taps, and when copy-on-select happens. The controller

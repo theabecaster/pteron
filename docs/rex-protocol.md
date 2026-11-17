@@ -1,4 +1,4 @@
-# Rex control protocol, as Rex Connect uses it
+# Rex control protocol, as Rex DUO uses it
 
 The source of truth is `https://<server>/llms.txt` on any Rex server. This file records what the
 app relies on; update it when you use a new method or event.
@@ -8,7 +8,7 @@ app relies on; update it when you use a new method or event.
 - `wss://<server>/api/control`, subprotocol `rex.control.v1`. Only servers with Rex's Tailscale on
   are reachable (`rex server tailscale enable`), and the phone must be on the same tailnet and user.
 - The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 13), `client`
-  (`kind`, `platform`, `name` "Rex Connect", `version`, `label` = device name) and
+  (`kind`, `platform`, `name` "Rex DUO", `version`, `label` = device name) and
   `reconnect_token` when resuming. The server answers `welcome` with `client.id`,
   `client.reconnect_token` and `limits.max_message_bytes`. No welcome in 8 s fails the connect.
 - The app pings every 30 s. On a drop, or a failed first connect, it backs off 1 s → 15 s,

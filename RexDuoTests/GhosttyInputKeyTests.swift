@@ -1,7 +1,7 @@
 import QuartzCore
 import RexKit
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// Helpers shared by the Ghostty input tests.
 @MainActor

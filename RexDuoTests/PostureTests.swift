@@ -1,7 +1,7 @@
 import CoreGraphics
 import SwiftUI
 import Testing
-@testable import RexConnect
+@testable import RexDuo
 
 /// Layout from the window's width and the fold (`Arrangement.decide`), and the folded split check.
 struct ArrangementTests {

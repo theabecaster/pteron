@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 final class GhosttyMouseTests: XCTestCase {
     /// 80 x 24 cells of 10 x 20 pixels.

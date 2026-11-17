@@ -1,5 +1,5 @@
 import Testing
-@testable import RexConnect
+@testable import RexDuo
 
 private func b(_ s: String) -> [UInt8] { Array(s.utf8) }
 

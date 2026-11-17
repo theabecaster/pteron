@@ -69,13 +69,13 @@ if (( build )); then
   # build (`#if DEBUG || BENCH`). It is set here, for this build only; the shipped Release
   # configuration doesn't have it, so a shipped app has neither argument.
   # Nothing else differs from an archive build's settings.
-  xcodebuild -project "$root/RexConnect.xcodeproj" -scheme RexConnect -configuration Release \
+  xcodebuild -project "$root/RexDuo.xcodeproj" -scheme RexDuo -configuration Release \
     -destination "id=$sim" -derivedDataPath "$dd" -jobs 4 ONLY_ACTIVE_ARCH=YES \
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) BENCH' \
     build > "$out/build.log" 2>&1 \
     || { tail -30 "$out/build.log" >&2; exit 1; }
 fi
-app="$dd/Build/Products/Release-iphonesimulator/RexConnect.app"
+app="$dd/Build/Products/Release-iphonesimulator/RexDuo.app"
 [[ -d $app ]] || { echo "no app at $app" >&2; exit 1; }
 
 xcrun simctl bootstatus "$sim" -b >/dev/null

@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// Selection for the Ghostty engine: the terminal's selection through `GhosttyCore`, the geometry
 /// math, and the selection members on `GhosttyTerminalView` as TerminalHost drives them.

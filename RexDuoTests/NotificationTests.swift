@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import RexKit
-@testable import RexConnect
+@testable import RexDuo
 
 private func alert(_ block: String, at date: Date = Date(timeIntervalSince1970: 1000), title: String = "Claude has a question") -> AgentAlert {
     AgentAlert(serverID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, sessionID: "session:s",
@@ -161,7 +161,7 @@ struct PushSupportTests {
     @Test func findsTheLastLiveRelay() {
         let clients: [JSONObject] = [
             ["client_id": "client:old", "info": ["name": "rex-push-relay"], "connection_state": "connected"],
-            ["client_id": "client:phone", "info": ["name": "Rex Connect"]],
+            ["client_id": "client:phone", "info": ["name": "Rex DUO"]],
             ["client_id": "client:new", "info": ["name": "rex-push-relay"]],
             ["client_id": "client:lost", "info": ["name": "rex-push-relay"], "connection_state": "lost"],
         ]

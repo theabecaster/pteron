@@ -1,5 +1,5 @@
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// OSC 52: what a program copies reaches the pasteboard sink, and a query is never answered.
 @MainActor

@@ -17,7 +17,7 @@ struct NotificationPromptCard: View {
                     Text("Get notified when an agent needs you")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(theme.fg)
-                    Text("While Rex Connect is closed, your Mac lets you know when an agent asks something or finishes.")
+                    Text("While Rex DUO is closed, your Mac lets you know when an agent asks something or finishes.")
                         .font(.caption)
                         .foregroundStyle(theme.chrome.secondary)
                         .fixedSize(horizontal: false, vertical: true)

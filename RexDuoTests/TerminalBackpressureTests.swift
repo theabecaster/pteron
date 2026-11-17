@@ -1,6 +1,6 @@
 import RexKit
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// The host stops its stream reading the data socket while the engine has megabytes still to
 /// parse, and lets it go on once the engine has caught up.

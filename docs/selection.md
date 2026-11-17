@@ -4,7 +4,7 @@ At 9 to 11 pt a row is 11 to 14 pt high and a fingertip covers 2 to 4 rows, so t
 what is under the finger. The selection UI answers that with the system loupe, handles placed off
 the text, and haptics at each step.
 
-Code: `RexConnect/Features/Terminal/Selection/`. Tests: `RexConnectTests/SelectionUITests.swift`.
+Code: `RexDuo/Features/Terminal/Selection/`. Tests: `RexDuoTests/SelectionUITests.swift`.
 Manual device script: [terminal-checklist.md](terminal-checklist.md), "Selection".
 
 ## What it does

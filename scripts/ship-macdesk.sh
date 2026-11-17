@@ -1,8 +1,8 @@
 #!/bin/zsh -l
-# Archive Rex Connect and upload it to App Store Connect. Runs on macdesk inside the GUI session
+# Archive Rex DUO and upload it to App Store Connect. Runs on macdesk inside the GUI session
 # (keychain unlocked), from a copy of the repo that already has the generated project:
 # see docs/release.md. Usage: scripts/ship-macdesk.sh <build-number>
-# DEST=export writes build/export/RexConnect.ipa and uploads nothing.
+# DEST=export writes build/export/RexDuo.ipa and uploads nothing.
 # Exits non-zero when any step fails. The log (build/ship.log) ends with "== done ... rc=0" only
 # after a successful export or upload, and with "== <STEP>_FAILED" otherwise.
 cd "${0:A:h}/.." || exit 1
@@ -25,16 +25,16 @@ LOG=build/ship.log
 mkdir -p build
 exec > $LOG 2>&1
 echo "== start $(date) build $BUILD"
-rm -rf build/RexConnect.xcarchive build/export
+rm -rf build/RexDuo.xcarchive build/export
 # Each xcodebuild's own status is taken from the pipe: the filter after it always succeeds.
-$XCODEBUILD -project RexConnect.xcodeproj -scheme RexConnect -configuration Release \
+$XCODEBUILD -project RexDuo.xcodeproj -scheme RexDuo -configuration Release \
   -destination "generic/platform=iOS" -derivedDataPath build/dd \
   -allowProvisioningUpdates \
-  CURRENT_PROJECT_VERSION=$BUILD -archivePath build/RexConnect.xcarchive archive | grep -E "error:|ARCHIVE|warning: .*sign"
+  CURRENT_PROJECT_VERSION=$BUILD -archivePath build/RexDuo.xcarchive archive | grep -E "error:|ARCHIVE|warning: .*sign"
 rc=$pipestatus[1]
-if (( rc != 0 )) || [[ ! -d build/RexConnect.xcarchive ]]; then echo "== ARCHIVE_FAILED $(date) rc=$rc"; exit 1; fi
+if (( rc != 0 )) || [[ ! -d build/RexDuo.xcarchive ]]; then echo "== ARCHIVE_FAILED $(date) rc=$rc"; exit 1; fi
 # The binary Apple will scan. Nothing is exported or uploaded if it imports a private symbol.
-scripts/check-symbols.sh build/RexConnect.xcarchive || { echo "== SYMBOLS_FAILED"; exit 1; }
+scripts/check-symbols.sh build/RexDuo.xcarchive || { echo "== SYMBOLS_FAILED"; exit 1; }
 cat > build/ExportOptions.plist <<P
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
 <key>method</key><string>app-store-connect</string><key>destination</key><string>${DEST:-upload}</string>
@@ -42,9 +42,9 @@ cat > build/ExportOptions.plist <<P
 <key>uploadSymbols</key><true/><key>manageAppVersionAndBuildNumber</key><false/>
 <key>testFlightInternalTestingOnly</key><false/></dict></plist>
 P
-PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH $XCODEBUILD -exportArchive -archivePath build/RexConnect.xcarchive -exportOptionsPlist build/ExportOptions.plist \
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH $XCODEBUILD -exportArchive -archivePath build/RexDuo.xcarchive -exportOptionsPlist build/ExportOptions.plist \
   -exportPath build/export -allowProvisioningUpdates 2>&1 | tail -25
 rc=$pipestatus[1]
 if (( rc != 0 )); then echo "== EXPORT_FAILED $(date) rc=$rc"; exit 1; fi
-if [[ "${DEST:-upload}" == export && ! -f build/export/RexConnect.ipa ]]; then echo "== EXPORT_FAILED $(date) no build/export/RexConnect.ipa"; exit 1; fi
+if [[ "${DEST:-upload}" == export && ! -f build/export/RexDuo.ipa ]]; then echo "== EXPORT_FAILED $(date) no build/export/RexDuo.ipa"; exit 1; fi
 echo "== done $(date) rc=0"

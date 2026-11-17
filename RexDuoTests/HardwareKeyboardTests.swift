@@ -2,7 +2,7 @@ import Testing
 import SwiftUI
 import UIKit
 import RexKit
-@testable import RexConnect
+@testable import RexDuo
 
 // Hardware keyboard: which binding a press runs on any layout, who holds the keyboard, and what
 // Toggle Sidebar does in each arrangement. Presses are `KeyInput.Press` values, since a `UIKey`

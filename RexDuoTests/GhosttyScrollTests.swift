@@ -1,6 +1,6 @@
 import Metal
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// Counts heap allocations on one thread through libmalloc's `malloc_logger` hook.
 ///

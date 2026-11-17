@@ -145,7 +145,7 @@ final class ServerConnection: Identifiable {
         self.push = push
         self.network = network
         control = RexControl(address: config.url, client: ClientInfo(
-            name: "Rex Connect",
+            name: "Rex DUO",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)))
         keymap = KeymapStore(control: control)

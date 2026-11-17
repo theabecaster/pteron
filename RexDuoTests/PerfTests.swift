@@ -1,6 +1,6 @@
 import RexKit
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// Records what a replay (or a stream) tells its sink, one entry per call.
 @MainActor

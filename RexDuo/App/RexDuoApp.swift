@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 @main
-struct RexConnectApp: App {
+struct RexDuoApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var prefs: Prefs
     @State private var model: AppModel

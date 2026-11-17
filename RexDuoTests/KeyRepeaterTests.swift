@@ -1,6 +1,6 @@
 import GameController
 import XCTest
-@testable import RexConnect
+@testable import RexDuo
 
 /// A clock the test moves by hand.
 @MainActor
