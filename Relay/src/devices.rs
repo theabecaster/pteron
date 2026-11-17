@@ -207,7 +207,7 @@ impl ClientSnapshot {
     }
 }
 
-/// The device id at the end of a label: "Abe's iPhone #a1b2c3d4" -> "a1b2c3d4".
+/// The device id at the end of a label: "Alex's iPhone #a1b2c3d4" -> "a1b2c3d4".
 pub fn device_id_from_label(label: Option<&str>) -> Option<String> {
     let label = label?;
     let id = label[label.rfind('#')? + 1..].trim();
@@ -246,7 +246,7 @@ mod tests {
     fn dev() -> Device {
         let mut d = Device::new(&"0".repeat(64), "sandbox");
         d.device_id = Some("a1b2c3d4".into());
-        d.tailscale_node = Some("abes-iphone".into());
+        d.tailscale_node = Some("alexs-iphone".into());
         d
     }
 
@@ -268,15 +268,15 @@ mod tests {
 
     #[test]
     fn label_device_id() {
-        assert_eq!(device_id_from_label(Some("Abe's iPhone #A1B2C3D4")).as_deref(), Some("a1b2c3d4"));
-        assert_eq!(device_id_from_label(Some("Abe's iPhone")), None);
+        assert_eq!(device_id_from_label(Some("Alex's iPhone #A1B2C3D4")).as_deref(), Some("a1b2c3d4"));
+        assert_eq!(device_id_from_label(Some("Alex's iPhone")), None);
         assert_eq!(device_id_from_label(Some("Room #1")), None);
     }
 
     #[test]
     fn matches_by_label_device_id() {
         assert!(is_app_open(&dev(), &[app("c1", "iPhone #a1b2c3d4", "connected", None, "ios")], &none()));
-        assert!(!is_app_open(&dev(), &[app("c1", "iPhone #ffff0000", "connected", Some("abes-iphone"), "ios")], &none()));
+        assert!(!is_app_open(&dev(), &[app("c1", "iPhone #ffff0000", "connected", Some("alexs-iphone"), "ios")], &none()));
     }
 
     #[test]
@@ -291,21 +291,21 @@ mod tests {
     fn tailscale_node_fallback_only_without_device_id() {
         // Registered with a device id: an unlabeled client on the same node is someone else.
         let c = |label: &str, node: &str| vec![app("c1", label, "connected", Some(node), "ios")];
-        assert!(!is_app_open(&dev(), &c("iPhone", "abes-iphone"), &none()));
+        assert!(!is_app_open(&dev(), &c("iPhone", "alexs-iphone"), &none()));
         let mut old = dev();
         old.device_id = None;
-        assert!(is_app_open(&old, &c("iPhone", "abes-iphone"), &none()));
+        assert!(is_app_open(&old, &c("iPhone", "alexs-iphone"), &none()));
         assert!(!is_app_open(&old, &c("iPhone", "other"), &none()));
-        assert!(!is_app_open(&old, &c("iPhone #a1b2c3d4", "abes-iphone"), &none()));
+        assert!(!is_app_open(&old, &c("iPhone #a1b2c3d4", "alexs-iphone"), &none()));
     }
 
     #[test]
     fn client_snapshot_parsing() {
         let c = ClientSnapshot::parse(&json!({"client_id": "client:1", "connection_state": "connected",
             "info": {"kind": "app", "platform": "ios", "label": "iPhone #abcd1234"},
-            "principal": {"kind": "tailscale", "node": "abes-iphone"}}))
+            "principal": {"kind": "tailscale", "node": "alexs-iphone"}}))
         .unwrap();
-        assert_eq!(c.tailscale_node.as_deref(), Some("abes-iphone"));
+        assert_eq!(c.tailscale_node.as_deref(), Some("alexs-iphone"));
         assert_eq!(c.label.as_deref(), Some("iPhone #abcd1234"));
     }
 

@@ -68,6 +68,10 @@ if [[ $MAC == 1 && $NOTARIZE == 1 ]]; then
   [[ -n "${ASC_ISS:-}" ]] || die "ASC_ISS is not set (looked in $ASC_ENV)"
 fi
 
+# Panic messages carry source paths, and every one starts in this Mac's home folder (the
+# registry, the toolchain, this checkout), which names its user. The binaries say ~ instead.
+REMAP="--remap-path-prefix=$HOME=~"
+
 trap 'rm -rf "$STAGE"' EXIT
 rm -rf "$STAGE"
 mkdir -p "$STAGE" "$DIST"
@@ -77,7 +81,8 @@ if [[ $LINUX == 1 ]]; then
   echo "==> Building Linux x86_64 and aarch64 (static, musl)"
   [[ -n "${ZIG:-}" ]] && export PATH="$(dirname "$ZIG"):$PATH"
   command -v zig >/dev/null || die "zig not found: set ZIG=/path/to/zig"
-  cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$REMAP" CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$REMAP" \
+    cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
   for arch in x86_64 aarch64; do
     install -m 0755 "target/$arch-unknown-linux-musl/release/$BIN" "$DIST/$BIN-linux-$arch"
   done
@@ -89,7 +94,7 @@ if [[ $MAC == 1 ]]; then
   # (MACOSX_DEPLOYMENT_TARGET), it also reaches the proc-macro crates cargo builds for this Mac,
   # and rustc then fails to find them ("can't find crate for tokio_macros").
   MIN_MACOS="-C link-arg=-mmacosx-version-min=14.0"
-  CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS" CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS" \
+  CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS $REMAP" CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS $REMAP" \
     cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   lipo -create -output "$APP/Contents/MacOS/$BIN" \

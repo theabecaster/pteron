@@ -11,6 +11,7 @@ pub const TITLE: &str = "Rex DUO connected";
 /// The program in the Mac app, next to the helper, that posts as Rex DUO Helper
 /// (Packaging/notify.swift). macOS names the app a notification comes from by its bundle, so a
 /// script runner would show under its own name.
+#[cfg(target_os = "macos")]
 pub const NOTIFIER: &str = "rex-duo-notify";
 /// Longest device name shown, in characters.
 const NAME_LIMIT: usize = 64;
@@ -139,6 +140,7 @@ fn notifier() -> Option<PathBuf> {
 /// Asks macOS, once, whether Rex DUO Helper may show notifications. Called when the app is
 /// opened, so the question comes with the welcome and not out of nowhere later. It doesn't
 /// wait for the answer, and a "no" only means the notice is never shown.
+#[cfg(target_os = "macos")]
 pub fn authorize() {
     let Some(notifier) = notifier() else { return };
     let _ = std::process::Command::new(notifier)
@@ -284,7 +286,7 @@ mod tests {
 
     #[test]
     fn body_names_the_device() {
-        assert_eq!(body(Some("Abe's iPhone")), "Abe's iPhone can now open your sessions on this computer.");
+        assert_eq!(body(Some("Alex's iPhone")), "Alex's iPhone can now open your sessions on this computer.");
     }
 
     #[test]

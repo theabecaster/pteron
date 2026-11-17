@@ -182,7 +182,7 @@ Pick a stable per-install id of 8 lowercase hex characters, e.g. the first 8 hex
 ```json
 {"type": "hello", "api_revision": 14,
  "client": {"kind": "app", "platform": "ios", "name": "Rex DUO", "version": "1.0",
-            "label": "Abe's iPhone #a1b2c3d4"}}
+            "label": "Alex's iPhone #a1b2c3d4"}}
 ```
 
 Rex caps labels at 64 bytes, so shorten the device name, never the suffix.
@@ -204,7 +204,7 @@ registration quietly and try again on the next connect.
   "client_id": "client:<relay id>",
   "action": "register_push",
   "args": {"token": "<APNs token, hex>", "environment": "sandbox",
-           "device_name": "Abe's iPhone", "device_id": "a1b2c3d4"},
+           "device_name": "Alex's iPhone", "device_id": "a1b2c3d4"},
   "timeout_ms": 5000}}
 ```
 
@@ -254,7 +254,7 @@ Result `{"removed": true|false}`.
     "thread-id": "block:<uuid>",
     "category": "AGENT_BLOCKED"
   },
-  "server": "https://macbook-pro-rex.tail8657d0.ts.net",
+  "server": "https://office-mac-rex.tail1234.ts.net",
   "session_id": "session:<uuid>",
   "window_id": "window:<uuid>",
   "block_id": "block:<uuid>"

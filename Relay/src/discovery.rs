@@ -195,10 +195,10 @@ mod tests {
             Some(Endpoint::Unix("/Users/me/Library/Application Support/rex/server.sock".into()))
         );
         assert_eq!(Endpoint::parse("unix:///run/user/1000/rex/server.sock").unwrap().to_string(), "unix:/run/user/1000/rex/server.sock");
-        match Endpoint::parse("https://workdesk-rex.tail8657d0.ts.net/").unwrap() {
+        match Endpoint::parse("https://devbox-rex.tail1234.ts.net/").unwrap() {
             Endpoint::Url { secure, host, port, .. } => {
                 assert!(secure);
-                assert_eq!(host, "workdesk-rex.tail8657d0.ts.net");
+                assert_eq!(host, "devbox-rex.tail1234.ts.net");
                 assert_eq!(port, 443);
             }
             e => panic!("{e:?}"),
