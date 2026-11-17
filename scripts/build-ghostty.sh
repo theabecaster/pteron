@@ -7,6 +7,13 @@
 #   scripts/build-ghostty.sh --force   rebuild
 set -euo pipefail
 
+# Anything but --force is refused, so a mistyped flag can't start a 130 s build.
+case "${1:-}" in
+  ""|--force) ;;
+  -h|--help) echo "usage: scripts/build-ghostty.sh [--force]   (--force rebuilds even when up to date)"; exit 0 ;;
+  *) echo "usage: scripts/build-ghostty.sh [--force]" >&2; exit 2 ;;
+esac
+
 ROOT=${0:A:h:h}
 VENDOR=$ROOT/Vendor
 source $ROOT/scripts/ghostty.version

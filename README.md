@@ -14,8 +14,8 @@ server's built-in Tailscale HTTPS address.
   leave.
 - Sessions, tabs and splits; zoom, rename, clear; a key bar with Agents, Shell and Vim layouts; hardware keyboard
   shortcuts from your Rex keymap; an Agents screen; a notification when an agent waits for you.
-- **Rex Connect Helper** (`Relay/`): a small Mac app that sends push notifications while the app is
-  closed.
+- **Rex Connect Helper** (`Relay/`): a small Mac app or Linux service that sends push
+  notifications while the app is closed.
 
 ## Connect a server
 
@@ -25,30 +25,21 @@ same user.
 
 ## Build
 
+Needs an Apple silicon Mac with Xcode 27.2 and XcodeGen (`brew install xcodegen`).
+
 ```sh
-brew install xcodegen
-scripts/build-ghostty.sh   # once, before xcodegen: builds Vendor/GhosttyVt.xcframework (not committed)
+scripts/build-ghostty.sh   # once: builds the terminal engine into Vendor/ (about 130 s, not committed)
 xcodegen generate          # the Xcode project is generated, not committed
 xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<simulator id> build
-swift test --package-path Packages/RexKit
 ```
 
-Or open `RexConnect.xcodeproj` in Xcode 27.2 after `xcodegen generate`.
-
-`scripts/build-ghostty.sh` builds the Ghostty terminal engine (libghostty-vt) from the commit pinned
-in `scripts/ghostty.version`. It needs an Apple silicon Mac. The first run downloads the Zig
-compiler (51 MB) and Ghostty with its dependencies, takes about 130 seconds and leaves 1.3 GB in
-`Vendor/`, which is gitignored; nothing is installed system-wide. Later runs do nothing unless the
-pins changed. `scripts/build-ghostty.sh --force` rebuilds. To move to another Ghostty commit, edit
-`scripts/ghostty.version` and run the script again. A build with a missing or out-of-date framework
-stops with a message that says to run it. The engine needs iOS 17.4 or later; the app's target is
-iOS 18.
+Tests, debug launch arguments and the rules for working on the code are in [AGENTS.md](AGENTS.md).
 
 Licences of the bundled open source code are in `RexConnect/Resources/Acknowledgements.txt`, shown
 in the app under Settings → About → Acknowledgements.
 
 ## More
 
-- [AGENTS.md](AGENTS.md): working conventions, commands, debug launch arguments and safety rules.
-- [docs/](docs/): architecture, Rex protocol, terminal, notifications, release.
+- [AGENTS.md](AGENTS.md): product principles, commands, debug launch arguments, safety rules, conventions.
+- [docs/](docs/): architecture, Rex protocol, terminal engine, layout, notifications, release.
 - [Relay/README.md](Relay/README.md): the helper app.

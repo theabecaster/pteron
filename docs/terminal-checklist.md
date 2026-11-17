@@ -4,8 +4,8 @@ What the terminal must do, row by row, and how each row is checked. Run the test
 to the terminal; run the two manual scripts at the end on a device before a release that touched
 gestures, input, selection or rendering.
 
-The list started as the audit that made Ghostty the app's only terminal engine (2026-11-16). How
-the engine is built: [ghostty-engine.md](ghostty-engine.md). The stream and input rules:
+Add a row when the terminal gains a behaviour, with the test that pins it. How the engine is
+built: [ghostty-engine.md](ghostty-engine.md). The stream and input rules:
 [terminal.md](terminal.md). Selection: [selection.md](selection.md).
 
 How a row is verified:
@@ -46,7 +46,7 @@ How a row is verified:
 | 18 | Pinch font size (fit mode) | hand | The text scales under the fingers; on release the font and the grid change. The terminal keeps its modes and its screen, so nothing is reloaded from the server. |
 | 19 | Long press selects a word | `GhosttySelectionTests` (words, paths, URLs, wide characters); hand | Words end at spaces, quotes, brackets, pipes, separators and the box-drawing bar. A word follows a soft wrap onto the next row. |
 | 20 | Drag to extend, edge autoscroll | `GhosttySelectionTests.testDraggingToTheTopEdgeScrollsALinePerMoveThroughTheScroller`, `testHitTestingAndRectsAtAFractionalScrollOffsetInHistory`; hand | Hit-testing and rects use the scroller's position (right at any fraction of a row and in history), and the edge scroll goes through the scroll surface, one line per finger move. |
-| 20a | The highlight is on the row under the finger | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) | Reported from a device on build 7a0d37c ("highlights a row above"). See "The row-above bug" below. |
+| 20a | The highlight is on the row under the finger | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) Hit-testing uses the frame's scroll shift. See "Hit-testing" below. |
 | 21 | Copy, copy-on-select, shimmer, edit menu | `GhosttySelectionTests` (text and rects), `SelectionUITests.testCopyOnSelectHappensOnLiftAndAfterAnAdjustmentThatChangedSomething`; hand | The host does all four from `selectedText` and `selectionRects`, with the loupe, the selection haptics, handles and Select All in the menu ([selection.md](selection.md)). |
 | 22 | Copied text | `GhosttySelectionTests` | What the Ghostty app copies: soft-wrapped rows joined into one line, trailing spaces trimmed. |
 | 23 | Selection through output and resize | `GhosttySelectionTests.testTheSelectionSurvivesAReflow`, `testTheSelectionAndItsRectFollowOutput` | The terminal tracks the selection: it stays on its text through output, scrolling and a reflow. |
@@ -120,28 +120,13 @@ With the selection UI (rows 27 and 28):
   the same way and are taken too. Only the pane the user works in may write (`setGate`). Live: the
   Rex server's terminal also set the Mac's clipboard from the same sequence.
 
-## The row-above bug (build 7a0d37c)
+## Hit-testing
 
-Reported from an iPhone Duo: a long press highlighted the row above the finger. Row 20a keeps it
-from coming back.
-
-Cause: the selection code had its own point-to-cell conversion (`GhosttySelectionGeometry`), which
-divided the touch's y by the cell height and took the grid to start at the view's top edge. The
-renderer draws the grid shifted up by the part of the first row that is scrolled past (the scroll
-surface is a `UIScrollView` and rests at any pixel offset, not on row boundaries). The shift was a
-placeholder that returned 0 (`selectionScrollShift`), so with a shift of `f` pixels a touch in the
-bottom `f` pixels of every row was mapped to the row above, and the terminal highlighted that row.
-At the bottom of the output the shift is 0 and the mapping was right, but a second bug put the
-view off the bottom without the user scrolling: when the view grew (keyboard hidden, unfold), UIKit
-pulled the scroll offset back and that was sent to the terminal as a scroll (row 45). After that,
-every press was off by up to a row.
-
-It was not the view's position (the host reads the press in the terminal view's coordinates, also
-when the view sits at a negative y or is scaled in mirror mode), not the display scale, and not
-cell-height rounding: the error did not grow with the row number.
-
-Fix: one mapping, `GhosttyGridGeometry`, in device pixels with the frame's scroll shift, used for
-selection points, selection rects and the shimmer. The old conversion is gone.
+Every touch maps to a cell through one function, `GhosttyGridGeometry`, in device pixels with the
+frame's scroll shift: selection points, selection rects and the shimmer all use it. The scroll
+surface rests at any pixel offset, so the grid is drawn shifted up by the part of the first row
+scrolled past. A second conversion that ignored that shift once highlighted the row above the
+finger whenever the view was off the bottom. Don't add another.
 
 ## Reflow
 
@@ -162,10 +147,6 @@ Where the two can still differ:
 - **Programs that redraw on SIGWINCH on the main screen** (a shell prompt): the redraw is output in
   the stream after the resize, applied to the same reflowed screen on both sides.
 
-An early report of a blank pane when unfolded on an iPhone 17 simulator did not reproduce on an
-iPad simulator. The resize bug of row 45 is a possible cause: it left a taller pane scrolled away
-from the bottom.
-
 ## Locks
 
 `termLock` guards the terminal, `stateLock` the render state, the input mirror and the scroll state
@@ -174,8 +155,8 @@ lock; the mirror's lock is taken under `termLock` or alone. No path takes them t
 
 Rules that were once broken, and must stay kept:
 
-- Only the render thread moves the viewport, inside the frame's update. Input (`followOutput`) and
-  an edge drag leave a request with the scroll state; they never scroll on the feed queue or under
+- Only the render thread moves the viewport, inside the frame's update. Input (`scrollToBottomForInput`)
+  and an edge drag leave a request with the scroll state; they never scroll on the feed queue or under
   the terminal lock on the main thread.
 - `scrollPage` on an alternate screen uses the input mirror, not the terminal lock.
 - Nothing takes `termLock` per frame without telling the feed queue.

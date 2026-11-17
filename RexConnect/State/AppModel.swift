@@ -8,16 +8,6 @@ struct Selection: Hashable, Codable {
     var windowID: String
 }
 
-/// What the device reports about its fold (iPhone Duo). Nil in `AppModel.hinge` means no hinge info.
-struct HingeInfo: Equatable {
-    enum Status: String { case unknown, closed, partial, full }
-    var status: Status
-    /// Radians, as UIKit reports it.
-    var angle: Double
-
-    var isOpen: Bool { status == .partial || status == .full }
-}
-
 /// A short, unobtrusive notice (e.g. an action the server refused). One at a time; fades on its own.
 @MainActor
 @Observable
@@ -86,9 +76,6 @@ final class AppModel {
     /// Latest request to show a tab; RootView observes it.
     var openRequest: OpenRequest?
 
-    /// Live hinge state from `UIHingeInteraction` (iOS 27.1+). Nil when the device or OS gives none.
-    var hinge: HingeInfo?
-
     /// The phone's network. Nil in tests and the test host.
     @ObservationIgnored let network: NetworkWatch?
 
@@ -111,13 +98,6 @@ final class AppModel {
         await withTaskGroup(of: Void.self) { g in
             for s in servers { g.addTask { await s.refresh() } }
         }
-    }
-
-    /// `-hinge closed|partial|full` launch argument (testing): pretend the hinge reports this.
-    static var hingeOverride: HingeInfo? {
-        guard let raw = UserDefaults.standard.string(forKey: "hinge"), let st = HingeInfo.Status(rawValue: raw) else { return nil }
-        let angle: Double = st == .closed ? 0 : st == .partial ? 1.9 : .pi
-        return HingeInfo(status: st, angle: angle)
     }
 
     func rebuildServers() {

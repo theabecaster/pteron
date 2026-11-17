@@ -4,7 +4,7 @@ Device builds and TestFlight uploads run on macdesk, because signing needs its u
 keychain. Run these only when asked: they install on a real phone or upload to App Store Connect.
 
 - Bundle id `dev.abrahamgonzalez.rexduo` (kept from before the rename), team `R2PVQ496X7`,
-  automatic signing. Display name "Rex Connect", product `RexConnect.app`.
+  automatic signing. Display name "Rex DUO" (`CFBundleDisplayName`), product `RexConnect.app`.
 - The build number is passed as `CURRENT_PROJECT_VERSION`; it must be higher than the last upload.
 - The project is generated and macdesk has no XcodeGen, so every flow generates it locally and
   copies the result.

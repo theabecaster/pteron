@@ -148,8 +148,7 @@ Every field is optional.
 `servers` replaces discovery. `apns.key_path` with `key_id` replaces the built-in key. The JWT
 (ES256, `ring`) is reused for 50 minutes, then re-signed.
 
-`devices.json` in the same folder holds the registered phones (same format as the old Swift
-helper's). A device whose token APNs rejects with `410 Unregistered` or `BadDeviceToken` is removed.
+`devices.json` in the same folder holds the registered phones. A device whose token APNs rejects with `410 Unregistered` or `BadDeviceToken` is removed.
 
 ## What the app must do
 

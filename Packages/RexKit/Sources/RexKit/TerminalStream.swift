@@ -1146,12 +1146,7 @@ public final class TerminalStream {
         })
     }
 
-    // MARK: Ownership / sizing
-
-    public func claimAndResize(cols: Int, rows: Int) async {
-        _ = try? await link.call("session.own_block", ["session_id": sessionID, "block_ids": [blockID], "mode": "take"])
-        _ = try? await blockCall("com.superlogical.terminal.resize", args: ["columns": cols, "rows": rows])
-    }
+    // MARK: Ownership
 
     public func release() async {
         _ = try? await link.call("session.disown_block", ["session_id": sessionID, "block_ids": [blockID]])
