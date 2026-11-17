@@ -151,7 +151,21 @@ Unfolded (inner screen, landscape, sidebar inline at 200 pt), 16 toggles a run:
 | `LazyVStack`, 8 rows a frame | 12.5 (15.7) | 22.8 (26.6) | 86 | 445 |
 | Shipped: `LazyVStack`, 3 rows a frame, unfurl motion | pending | pending | pending | pending |
 
-Folded (outer screen, sidebar as the drawer): pending, before and after.
+Folded (outer screen, sidebar as the drawer over the tab):
+
+| Build | worst frame, fold ms | worst frame, open ms | late frames | late time ms |
+| --- | --- | --- | --- | --- |
+| `List` (main before), the 50-tab session | 24.7 (40.1) | 36.7 (42.3) | 74 | 625 |
+| `List`, every machine and session | 26.8 (41.5) | 40.7 (43.6) | 77 | 667 |
+| Shipped, the 50-tab session | 12.5 (21.7) | 16.7 (19.5) | 64 | 322 |
+| Shipped, second run | 12.5 (21.8) | 18.0 (25.0) | 28 | 186 |
+| Shipped, every machine and session | 14.6 (25.9) | 16.7 (20.9) | 23 | 170 |
+
+Instruments' Animation Hitches template over the same 21 s run (launch included), folded: hitch
+time 13.2 s before, 2.8 s after; the median hitch 12.1 ms before, 2.4 ms after. The device can't
+screen-record (CoreDevice says the capability isn't supported), so the motion was checked from
+screenshots taken during a run: rows dissolve under the content rising from below, open rows unfurl
+with the chevron mid-turn, and the `+` comes in only after the summary has gone.
 
 Reading it: 12.5 ms is one refresh late at most, which doesn't count as late. With `List` every fold
 and open had a frame 17 to 43 ms long, animated or not. In the stack a fold is never late, and
