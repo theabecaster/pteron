@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Checks what runs without the Xcode beta and the Ghostty framework: RexKit and the helper.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: RexKit tests
+        run: swift test --package-path Packages/RexKit
+      - name: Helper tests
+        working-directory: Relay
+        run: cargo test --locked
