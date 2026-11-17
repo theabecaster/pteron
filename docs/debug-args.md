@@ -20,6 +20,13 @@ builds.
   `-simulateDuoEvery` seconds (default 10).
 - `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
   keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
+- `-sidebarMode agents`: start the sidebar in Agents mode. `-sidebarCollapsed '("m:<server id>",
+  "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
+- `-sidebarFoldBench <cycles>`: 8 s after launch, fold and open every machine and session that many
+  times, animated, and log one `SIDEBAR_FOLD_BENCH` line (rows, frames, late frames, worst frame).
+  Read it with `xcrun simctl spawn <id> log show --last 2m --predicate 'eventMessage CONTAINS
+  "SIDEBAR_FOLD_BENCH"'`. Numbers mean something only from an optimized build
+  (`SWIFT_OPTIMIZATION_LEVEL=-O` on the Debug configuration).
 - `-typeTest 'text\n'`: type into the active pane once it is live. With `-scrollBackTest <seconds>`,
   scroll two pages back first and type that much later.
 - `-tapTest col,row[;col,row…]`: tap those cells as a focused finger would, `-tapTestAfter` seconds

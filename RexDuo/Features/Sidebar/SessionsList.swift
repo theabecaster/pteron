@@ -57,6 +57,9 @@ struct SessionsList: View {
         .environment(\.defaultMinListRowHeight, 30)
         .refreshable { await model.refresh() }
         .onChange(of: PruneKey(model.servers)) { _, _ in prune() }
+        #if DEBUG
+        .modifier(SidebarFoldBench())
+        #endif
         .modifier(SidebarDialogs(actions: actions))
     }
 
