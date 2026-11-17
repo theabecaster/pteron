@@ -3,21 +3,27 @@ import RexKit
 
 /// Agents mode, like the Rex Mac app's activity sidebar: every agent on every machine, grouped by
 /// machine, the ones waiting for you first. Machines don't fold here, so a waiting agent never hides.
-/// Its own view: it reads every block's status only while it shows.
+///
+/// The list reads only `agentKeys`, which change when an agent comes, goes or changes state. Each
+/// row is equatable and its label reads its own block's box, so a title or status line change in
+/// one pane re-renders that row alone, and nothing re-sorts.
 struct AgentsList: View {
     @Environment(AppModel.self) private var model
     let theme: TermTheme
     var onSelect: (Selection) -> Void
+    @State private var actions = SidebarActions()
     @ScaledMetric(relativeTo: .headline) private var machineGapScaled: CGFloat = 18
     private var machineGap: CGFloat { min(machineGapScaled, 30) }
 
     var body: some View {
+        actions.onSelect = onSelect
         let since = PhoneState.shared.waitingSince
         let groups = model.servers.map { s in
-            (server: s, rows: AgentOrder.sorted(s.agents, state: { $0.status?.state }, id: \.blockID, since: since))
+            (server: s, keys: AgentOrder.sorted(s.agentKeys, state: \.state, id: \.blockID, since: since))
         }
-        .filter { !$0.rows.isEmpty }
-        List {
+        .filter { !$0.keys.isEmpty }
+        let selection = model.selection
+        return List {
             if model.push.offersPrompt {
                 NotificationPromptCard(theme: theme)
                     .padding(.vertical, 6)
@@ -26,12 +32,33 @@ struct AgentsList: View {
                     .listRowBackground(Color.clear)
             }
             ForEach(Array(groups.enumerated()), id: \.element.server.id) { i, g in
-                MachineHeader(server: g.server, collapsed: false, foldable: false, theme: theme) {}
+                MachineHeader(server: g.server, windows: [], sessionCount: g.server.sessions.count, collapsed: false, foldable: false, theme: theme) {}
                     .padding(.top, i == 0 ? 4 : machineGap)
                     .modifier(SidebarRowStyle(theme: theme))
-                ForEach(g.rows) { row in
-                    agentRow(g.server, row)
-                        .opacity(g.server.phase.problem != nil ? 0.45 : 1)
+                ForEach(g.keys) { key in
+                    let selected = selection == Selection(serverID: g.server.id, sessionID: key.sessionID, windowID: key.windowID)
+                        && (model.focusedPane[key.windowID].map { $0 == key.blockID } ?? true)
+                    AgentRow(server: g.server, key: key, dim: g.server.phase.problem != nil, theme: theme, actions: actions)
+                        .equatable()
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if key.state == "blocked" || key.state == "working" {
+                                Button { AgentRow.send(g.server, key, "\u{1b}", interrupt: true) } label: {
+                                    Label("Interrupt", systemImage: "escape")
+                                }
+                                .tint(theme.chrome.error)
+                            }
+                            if key.state == "blocked" {
+                                Button { AgentRow.send(g.server, key, "\r") } label: { Label("Enter", systemImage: "return") }
+                                    .tint(theme.chrome.blocked)
+                            }
+                            Button { AgentRow.open(g.server, key, model, actions) } label: {
+                                Label("Jump", systemImage: "arrow.up.forward.square")
+                            }
+                            .tint(theme.accent)
+                        }
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .modifier(SidebarRowStyle(theme: theme, selected: selected,
+                                                  selectionLeading: SidebarMetrics.sessionLeading - 10))
                 }
             }
             if groups.isEmpty {
@@ -48,72 +75,68 @@ struct AgentsList: View {
         .environment(\.defaultMinListRowHeight, 30)
         .refreshable { await model.refresh() }
     }
+}
 
-    private func agentRow(_ server: ServerConnection, _ row: ServerConnection.AgentRow) -> some View {
-        let selected = model.selection == Selection(serverID: server.id, sessionID: row.sessionID, windowID: row.windowID)
-            && model.focusedPane[row.windowID].map { $0 == row.blockID } ?? true
-        // Where it runs, as the sidebar names the tab: "session › tab".
-        let place = server.views[row.sessionID].map { v in
-            [v.label, v.window(row.windowID).map { WindowTitle.of($0, server: server) } ?? ""]
-                .filter { !$0.isEmpty }.joined(separator: " › ")
-        } ?? row.place
-        return Button { open(server, row) } label: {
-            AgentRowLabel(row: row, place: place, theme: theme)
+/// One agent. Tap, or Return on a focused row, opens its tab with its pane in view.
+struct AgentRow: View, Equatable {
+    let server: ServerConnection
+    let key: AgentKey
+    let dim: Bool
+    let theme: TermTheme
+    let actions: SidebarActions
+    @Environment(AppModel.self) private var model
+
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.server === b.server && a.key == b.key && a.dim == b.dim && a.theme.id == b.theme.id && a.actions === b.actions
+    }
+
+    var body: some View {
+        Button { Self.open(server, key, model, actions) } label: {
+            AgentRowLabel(server: server, key: key, theme: theme)
                 .padding(.leading, SidebarMetrics.sessionLeading - SidebarMetrics.pad)
                 .padding(.horizontal, SidebarMetrics.pad)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            let state = row.status?.state
-            if state == "blocked" || state == "working" {
-                Button { interrupt(server, row) } label: { Label("Interrupt", systemImage: "escape") }
-                    .tint(theme.chrome.error)
-            }
-            if state == "blocked" {
-                Button { send(server, row, "\r") } label: { Label("Enter", systemImage: "return") }
-                    .tint(theme.chrome.blocked)
-            }
-            Button { open(server, row) } label: { Label("Jump", systemImage: "arrow.up.forward.square") }
-                .tint(theme.accent)
+        .onKeyPress(.return) {
+            Self.open(server, key, model, actions)
+            return .handled
         }
-        .modifier(SidebarRowStyle(theme: theme, selected: selected, selectionLeading: SidebarMetrics.sessionLeading - 10))
-    }
-
-    private func send(_ server: ServerConnection, _ row: ServerConnection.AgentRow, _ text: String) {
-        Haptic.tap()
-        Task { await server.write(row.sessionID, row.blockID, text) }
-    }
-
-    /// Esc stops an agent's current turn.
-    private func interrupt(_ server: ServerConnection, _ row: ServerConnection.AgentRow) {
-        Haptic.interrupt()
-        Task { await server.write(row.sessionID, row.blockID, "\u{1b}") }
+        .opacity(dim ? 0.45 : 1)
     }
 
     /// Opens the agent's tab with its pane in view.
-    private func open(_ server: ServerConnection, _ row: ServerConnection.AgentRow) {
-        let sel = Waiting.prepare(model, Waiting.Item(server: server, row: row))
-        model.select(server, session: sel.sessionID, window: sel.windowID)
-        onSelect(sel)
+    static func open(_ server: ServerConnection, _ key: AgentKey, _ model: AppModel, _ actions: SidebarActions) {
+        model.select(server, session: key.sessionID, window: key.windowID, block: key.blockID)
+        Task { await server.focus(key.sessionID, block: key.blockID) }
+        actions.onSelect(Selection(serverID: server.id, sessionID: key.sessionID, windowID: key.windowID))
+    }
+
+    /// Types into the agent's pane: Esc stops its turn, Return answers.
+    static func send(_ server: ServerConnection, _ key: AgentKey, _ text: String, interrupt: Bool = false) {
+        if interrupt { Haptic.interrupt() } else { Haptic.tap() }
+        Task { await server.write(key.sessionID, key.blockID, text) }
     }
 }
 
 /// One agent: its tile, name and state, then the pane's title, its status line and where it runs.
+/// Reads its own block's box, like `TabRowLabel`.
 struct AgentRowLabel: View {
-    let row: ServerConnection.AgentRow
-    let place: String
+    let server: ServerConnection
+    let key: AgentKey
     let theme: TermTheme
     /// The state pill's glyph follows its text's Dynamic Type size.
     @ScaledMetric(relativeTo: .caption2) private var pillGlyph: CGFloat = 10
 
     var body: some View {
+        let meta = server.meta[key.blockID]
+        let status = meta?.topStatus
+        let kind = meta?.agentKind ?? key.kind
         HStack(alignment: .top, spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 5).fill(TabRowLabel.tint(row.kind, theme).opacity(0.9))
-                Image(systemName: row.kind?.symbol ?? "cpu")
+                RoundedRectangle(cornerRadius: 5).fill(TabRowLabel.tint(kind, theme).opacity(0.9))
+                Image(systemName: kind?.symbol ?? "cpu")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(theme.bg)
             }
@@ -124,18 +147,18 @@ struct AgentRowLabel: View {
                 HStack(spacing: 6) {
                     // The name keeps its width while the state can shrink to its glyph; only then
                     // does the name truncate.
-                    Text(row.kind?.displayName ?? row.status?.app ?? "Program")
+                    Text(kind?.displayName ?? status?.app ?? "Program")
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .layoutPriority(1)
                     Spacer(minLength: 0)
-                    stateLabel(row.status)
+                    stateLabel(status)
                 }
-                Text(WindowTitle.condense(row.title))
+                Text(WindowTitle.condense(meta?.title ?? "shell"))
                     .font(.caption)
                     .lineLimit(1)
                     .foregroundStyle(theme.chrome.secondary)
-                if let t = row.status?.text, !t.isEmpty {
+                if let t = status?.text, !t.isEmpty {
                     Text(t).font(.caption).lineLimit(2).foregroundStyle(theme.fg.opacity(0.8))
                 }
                 if !place.isEmpty {
@@ -145,6 +168,13 @@ struct AgentRowLabel: View {
         }
         .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
+    }
+
+    /// Where it runs, as the sidebar names the tab: "session › tab".
+    private var place: String {
+        guard let v = server.views[key.sessionID] else { return "" }
+        return [v.label, v.window(key.windowID).map { WindowTitle.of($0, server: server) } ?? ""]
+            .filter { !$0.isEmpty }.joined(separator: " › ")
     }
 
     /// The state in words, or, where they don't fit, the row glyph (and progress) in the same pill.

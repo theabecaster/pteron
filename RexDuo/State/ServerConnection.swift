@@ -22,7 +22,12 @@ struct MetaTable {
         get { server.metaBox(id).value }
         nonmutating set {
             let box = server.metaBox(id)
-            if box.value != newValue { box.value = newValue }
+            guard box.value != newValue else { return }
+            let old = box.value
+            box.value = newValue
+            if old?.agentKind != newValue?.agentKind || old?.topStatus?.state != newValue?.topStatus?.state {
+                server.agentsMayHaveChanged()
+            }
         }
     }
 }
@@ -31,6 +36,16 @@ struct HostEntry: Identifiable, Equatable {
     var id: String
     var label: String
     var endpoints: [String]
+}
+
+/// Where an agent runs and what it is doing, without the details that change all the time.
+struct AgentKey: Equatable, Identifiable {
+    var id: String { blockID }
+    var sessionID: String
+    var windowID: String
+    var blockID: String
+    var kind: AgentKind?
+    var state: String?
 }
 
 /// A computer from a server's host list that isn't saved in the app, for the sidebar.
@@ -106,8 +121,13 @@ final class ServerConnection: Identifiable {
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
-    var sessions: [SessionEntry] = []
-    var views: [String: SessionView] = [:]
+    var sessions: [SessionEntry] = [] { didSet { agentsMayHaveChanged() } }
+    var views: [String: SessionView] = [:] { didSet { agentsMayHaveChanged() } }
+    /// Every agent's place, kind and state, in sidebar order. It changes only when an agent comes,
+    /// goes, moves or changes kind or state, so the Agents list and the waiting count don't
+    /// re-render for a title, directory or progress change in some pane.
+    private(set) var agentKeys: [AgentKey] = []
+    @ObservationIgnored private var agentKeysPending = false
     /// Live per-block metadata. Each block has its own observable box, so a status change in one pane
     /// only re-renders the views that read that pane (not every view that touches the server).
     var meta: MetaTable { MetaTable(server: self) }
@@ -159,6 +179,35 @@ final class ServerConnection: Identifiable {
     static let minRetryShow: Double = 0.9
     static let coalesce: Double = 0.15
     static let minStatusHold: Double = 1.0
+
+    /// Recomputes `agentKeys` once, after the changes of this turn of the main actor.
+    fileprivate func agentsMayHaveChanged() {
+        guard !agentKeysPending else { return }
+        agentKeysPending = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.agentKeysPending = false
+            let keys = self.currentAgentKeys()
+            if keys != self.agentKeys { self.agentKeys = keys }
+        }
+    }
+
+    /// The same agents as `agents`, without their titles and status lines.
+    func currentAgentKeys() -> [AgentKey] {
+        var keys: [AgentKey] = []
+        for s in sessions {
+            guard let v = views[s.id] else { continue }
+            for w in v.windows {
+                for b in w.allBlocks where b.isTerminal {
+                    let m = metaBoxes[b.id]?.value ?? BlockMeta()
+                    guard m.agentKind != nil || m.topStatus != nil else { continue }
+                    keys.append(AgentKey(sessionID: s.id, windowID: w.id, blockID: b.id, kind: m.agentKind,
+                                         state: m.topStatus?.state))
+                }
+            }
+        }
+        return keys
+    }
 
     fileprivate func metaBox(_ id: String) -> BlockMetaBox {
         if let b = metaBoxes[id] { return b }

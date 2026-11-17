@@ -24,9 +24,6 @@ struct SidebarView: View {
             bottomBar(theme)
         }
         .foregroundStyle(theme.fg)
-        // Past this a machine's name no longer fits a 260 pt sidebar even on two lines, and single
-        // words break mid-word. The levels keep their ratios up to here.
-        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     private func bottomBar(_ theme: TermTheme) -> some View {
@@ -61,8 +58,8 @@ struct SidebarView: View {
 }
 
 /// Sessions | Agents, at the sidebar's top. The Agents segment carries the waiting count, so a
-/// waiting agent shows from Sessions mode too. It reads every block's status, so it is its own view:
-/// a status change re-renders only this switch.
+/// waiting agent shows from Sessions mode too. The count comes from `AppModel.waitingAgentIDs`, the
+/// same set `WaitingWatcher` reads, so it re-renders only when an agent starts or stops waiting.
 struct SidebarModeSwitch: View {
     @Environment(AppModel.self) private var model
     @Binding var mode: SidebarMode
@@ -70,7 +67,7 @@ struct SidebarModeSwitch: View {
     @Namespace private var selection
 
     var body: some View {
-        let waiting = model.servers.reduce(0) { $0 + $1.agents.count { $0.status?.state == "blocked" } }
+        let waiting = model.waitingAgentIDs.count
         HStack(spacing: 2) {
             ForEach(SidebarMode.allCases) { m in
                 Button {
@@ -96,9 +93,12 @@ struct SidebarModeSwitch: View {
             ViewThatFits(in: .horizontal) {
                 Text(m.title).font(.footnote.weight(.semibold)).lineLimit(1).fixedSize()
                 Image(systemName: m.symbol).font(.footnote.weight(.semibold))
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             }
             if waiting > 0 {
+                // Stops where the other pills stop, so both segments keep their room.
                 StatusPill(pill: AgentCounts.Pill(kind: .waiting, count: waiting), compact: true, theme: theme)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                     .layoutPriority(1)
             }
         }

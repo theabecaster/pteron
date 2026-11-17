@@ -119,7 +119,7 @@ struct WaitingWatcher: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let ids = Set(model.servers.flatMap { s in s.agents.filter { $0.status?.state == "blocked" }.map(\.blockID) })
+        let ids = model.waitingAgentIDs
         Color.clear
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)

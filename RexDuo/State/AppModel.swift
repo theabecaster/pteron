@@ -276,6 +276,12 @@ final class AppModel {
 
     func server(_ id: UUID?) -> ServerConnection? { servers.first { $0.id == id } }
 
+    /// The block of every agent waiting for the user, on every server. Reads only `agentKeys`, so a
+    /// view that shows it re-renders when an agent starts or stops waiting, not on other metadata.
+    var waitingAgentIDs: Set<String> {
+        Set(servers.flatMap { $0.agentKeys.filter { $0.state == "blocked" }.map(\.blockID) })
+    }
+
     var current: (server: ServerConnection, view: SessionView, window: WindowInfo)? {
         guard let sel = selection, let s = server(sel.serverID), let v = s.views[sel.sessionID],
               let w = v.window(sel.windowID) else { return nil }
