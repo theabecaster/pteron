@@ -95,3 +95,55 @@ final class DropRuleTests: XCTestCase {
         XCTAssertFalse(DropRule.accepts(fromThisApp: false, canSend: true, hasFiles: false))
     }
 }
+
+/// Open: whether selected text names a file, and which.
+final class PathGuessTests: XCTestCase {
+    private func g(_ s: String) -> String? { PathGuess.path(in: s) }
+
+    func testPathsAsTerminalsShowThem() {
+        XCTAssertEqual(g("/tmp/zz-files/dl one.bin"), "/tmp/zz-files/dl one.bin")
+        XCTAssertEqual(g("  ~/notes/todo.md \n"), "~/notes/todo.md")
+        XCTAssertEqual(g("./build/out.log"), "./build/out.log")
+        XCTAssertEqual(g("../a.txt"), "../a.txt")
+        XCTAssertEqual(g("src/main.swift"), "src/main.swift")
+        XCTAssertEqual(g("README.md"), "README.md")
+    }
+
+    func testShellEscapesAndQuotesAreUndone() {
+        // The server types an uploaded file's path this way.
+        XCTAssertEqual(g(#"/home/u/.local/state/rex/uploads/1/2/3/probe\ three.bin"#),
+                       "/home/u/.local/state/rex/uploads/1/2/3/probe three.bin")
+        XCTAssertEqual(g(#"/tmp/it\'s\ \"q\".txt"#), #"/tmp/it's "q".txt"#)
+        XCTAssertEqual(g("'/tmp/a b.txt'"), "/tmp/a b.txt")
+        XCTAssertEqual(g(#""docs/x.md""#), "docs/x.md")
+    }
+
+    func testLineNumbersAndSentencePunctuationAreDropped() {
+        XCTAssertEqual(g("Sources/App.swift:12:5"), "Sources/App.swift")
+        XCTAssertEqual(g("Sources/App.swift:12"), "Sources/App.swift")
+        XCTAssertEqual(g("/tmp/x.txt,"), "/tmp/x.txt")
+        XCTAssertEqual(g("/tmp/x.txt."), "/tmp/x.txt")
+        XCTAssertNil(g("see /tmp/x.txt"), "a sentence isn't a path")
+    }
+
+    func testAWrappedPathIsJoined() {
+        XCTAssertEqual(g("/home/theabecaster/.local/state/rex/upl\noads/x/y.png"), "/home/theabecaster/.local/state/rex/uploads/x/y.png")
+        XCTAssertNil(g("two words\nover rows"))
+    }
+
+    func testWhatIsNotAPath() {
+        XCTAssertNil(g(""))
+        XCTAssertNil(g("hello world"))
+        XCTAssertNil(g("https://example.com/a.png"))
+        XCTAssertNil(g("someone@example.com"))
+        XCTAssertNil(g("-rf"))
+        XCTAssertNil(g("3.14"))
+        XCTAssertNil(g(String(repeating: "a/", count: 600)))
+    }
+
+    func testFailuresInPlainWords() {
+        XCTAssertEqual(PathGuess.message(.notFound, path: "/tmp/x.txt", machine: "workdesk"), "There's no x.txt on workdesk.")
+        XCTAssertEqual(PathGuess.message(.folder, path: "/tmp/zz", machine: "workdesk"), "zz is a folder.")
+        XCTAssertTrue(PathGuess.message(.tooBig(200_000_000), path: "big.mov", machine: "m").hasPrefix("big.mov is too big to open here ("))
+    }
+}

@@ -16,6 +16,7 @@ final class PaneFiles {
     var onSupportChanged: (() -> Void)?
 
     private let sender: FileSender
+    private let opener: FileOpener
     private let picker = AttachPicker()
     private var drop: PaneDrop?
     private var probing = false
@@ -25,6 +26,7 @@ final class PaneFiles {
         self.sessionID = sessionID
         self.blockID = blockID
         sender = FileSender(control: server.control, sessionID: sessionID, blockID: blockID)
+        opener = FileOpener(control: server.control, sessionID: sessionID, blockID: blockID)
         sender.target = { [weak self] in self?.target ?? "this computer" }
         picker.onPicked = { [weak self] files in self?.send(files) }
         picker.prepare = { ImagePrep.prepare($0, original: $1) }
@@ -59,6 +61,8 @@ final class PaneFiles {
     var target: String {
         SendTarget.name(agent: server.meta[blockID]?.agentKind, machine: machine)
     }
+
+    private var machineName: String { machine ?? "this computer" }
 
     private var machine: String? {
         let block = server.views[sessionID]?.windowContaining(block: blockID)?.block(blockID)
@@ -154,6 +158,20 @@ final class PaneFiles {
                 c.resume(returning: try? FileStaging.stage(copying: url, as: name))
             }
         }
+    }
+
+    // MARK: Open
+
+    /// The path selected text names, where the server can send files; the edit menu offers Open for it.
+    func openablePath(in selection: String) -> String? {
+        guard supported == true else { return nil }
+        return PathGuess.path(in: selection)
+    }
+
+    /// Opens the file `selection` names, from the pane's computer, in Quick Look.
+    func open(selection: String) {
+        guard let path = openablePath(in: selection) else { return }
+        opener.open(path, machine: machineName, over: view)
     }
 
     /// Lets files from other apps be dropped on `view`, the pane.

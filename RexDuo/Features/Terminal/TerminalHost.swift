@@ -495,6 +495,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 self.clearSelection()
             })
         }
+        // A selection that names a file: Open brings it from the pane's computer into Quick Look.
+        if term.hasActiveSelection, let text = term.selectedText, files?.openablePath(in: text) != nil {
+            items.append(UIAction(title: "Open", image: UIImage(systemName: "doc.viewfinder")) { [weak self] _ in
+                guard let self else { return }
+                self.clearSelection()
+                self.files?.open(selection: text)
+            })
+        }
         if UIPasteboard.general.hasStrings || [.files, .image].contains(files?.pasteChoice) {
             items.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
                 guard let self else { return }

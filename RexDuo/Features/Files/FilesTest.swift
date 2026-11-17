@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 /// - `send:<path>|<path>`: send these files (paths on the Mac running the simulator) as one batch,
 ///   prepared as Photos prepares them. `sendOriginal:` sends them untouched.
 /// - `paste:<path>`: put this image on the clipboard alone, then Paste.
+/// - `open:<text>`: open what `<text>` names, as the edit menu's Open does for a selection.
 /// - `wait:<seconds>`: pause.
 ///
 /// Use only with a throwaway `zz-` session: the files land on its computer and their paths are typed.
@@ -53,6 +54,8 @@ enum FilesTest {
             let type = UTType(filenameExtension: (arg as NSString).pathExtension) ?? .png
             UIPasteboard.general.items = [[type.identifier: data]]
             host.pasteFromClipboard()
+        case "open":
+            host.files?.open(selection: arg)
         case "wait":
             try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
         default:
