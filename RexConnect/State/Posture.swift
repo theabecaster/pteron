@@ -196,6 +196,28 @@ struct DuoSimulation: Equatable {
         }
     }
 
+    /// The system's insets in that posture, roughly: the vertical bar (about 84 pt, on the outer screen
+    /// and the inner screen in landscape), the status bar and the home indicator. Without them the
+    /// simulation hides layouts that only fit the full window.
+    var safeArea: EdgeInsets {
+        switch name {
+        case "unfolded", "book", "folded", "foldedLandscape", "halfWindow":
+            return EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: 84)
+        case "unfoldedPortrait", "tabletop":
+            return EdgeInsets(top: 44, leading: 0, bottom: 20, trailing: 0)
+        case "iPhone":
+            return EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0)
+        default:
+            return EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)
+        }
+    }
+
+    /// The fold as `reservedRegions` reports it: in the coordinates of the root, which sits inside the
+    /// safe area.
+    var rootDivision: Division? {
+        division.map { Division(frame: $0.frame.offsetBy(dx: -safeArea.leading, dy: -safeArea.top), isActive: $0.isActive) }
+    }
+
     static var sequence: [DuoSimulation] {
         (UserDefaults.standard.string(forKey: "simulateDuo") ?? "").split(separator: ",").compactMap { named(String($0)) }
     }

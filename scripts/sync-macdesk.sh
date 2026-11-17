@@ -36,12 +36,13 @@ xcodegen generate -q
 #   .asc.env, .env*      App Store Connect and other credentials
 #   /Relay/dist          a helper build with the APNs key inside
 #   /Relay/.stage        the bundle Relay/package.sh assembles, APNs key included, while it runs
+#   /Relay/target       cargo's output: build.rs embeds the APNs key in every helper binary
 #   *.p8 *.p12 *.pem *.key *.cer *.mobileprovision *.provisionprofile
 #                        keys, certificates and profiles, wherever they are dropped
 # Excluded paths are also left alone on macdesk (`--delete` doesn't touch them), so the staging
 # folder is removed there by name, in case an earlier copy took it.
 SECRETS=(--exclude .asc.env --exclude '.env' --exclude '.env.*' --exclude '*.env'
-         --exclude /Relay/dist --exclude /Relay/.stage
+         --exclude /Relay/dist --exclude /Relay/.stage --exclude /Relay/target
          --exclude '*.p8' --exclude '*.p12' --exclude '*.pem' --exclude '*.key' --exclude '*.cer'
          --exclude '*.mobileprovision' --exclude '*.provisionprofile')
 
