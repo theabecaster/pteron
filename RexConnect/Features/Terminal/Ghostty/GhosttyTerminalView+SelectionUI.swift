@@ -1,12 +1,11 @@
 import UIKit
 
-// What the host's selection UI (Selection/, docs/selection.md) needs from the Ghostty engine:
+// What the host's selection UI (Selection/, docs/selection.md) needs from the terminal view:
 // the ends of the selection for the handles, a drag that moves one end, line selection, and
 // cells for haptic ticks and the cursor's Paste menu. Points, cells and rects all go through
 // `gridGeometry` (GhosttyTerminalView+Scroll.swift), the one mapping.
 extension GhosttyTerminalView {
-    var usesHostSelectionUI: Bool { true }
-
+    /// Where the selection's first and last cells are drawn, or nil without a selection.
     var selectionEnds: TerminalSelectionEnds? {
         guard hasActiveSelection else { return nil }
         let scroll = scrollSnapshot
@@ -34,6 +33,8 @@ extension GhosttyTerminalView {
         return stamp &* 1_000_003 &+ s.cellHeight
     }
 
+    /// Starts a drag that moves one end of the selection while the other stays; continue with
+    /// `extendSelection` and finish with `endSelectionDrag`. False without a selection.
     func beginSelectionAdjust(movingStart: Bool) -> Bool {
         guard hasActiveSelection, core.beginSelectionAdjust(movingStart: movingStart, anchor: selectionAnchor) else { return false }
         // `moved`: the finger starts on a handle, not on the anchor, so every move extends.
@@ -43,6 +44,7 @@ extension GhosttyTerminalView {
         return true
     }
 
+    /// Selects the line under `p` (a triple tap). False if there is nothing on it.
     func selectLine(at p: CGPoint) -> Bool {
         let cell = viewportCell(at: p)
         let selected = core.selectLine(col: cell.col, row: cell.row)
@@ -51,17 +53,21 @@ extension GhosttyTerminalView {
         return selected
     }
 
-    func gridCell(at p: CGPoint) -> TerminalGridCell? {
+    /// The cell under `p`, with rows counted from the top of the scrollback, so a row keeps its
+    /// number while the view scrolls.
+    func gridCell(at p: CGPoint) -> TerminalGridCell {
         let cell = viewportCell(at: p)
         return TerminalGridCell(col: cell.col, row: scrollbackRow(ofViewportRow: cell.row))
     }
 
-    /// Takes the terminal lock (bounded, see docs/ghostty-parity.md "Locks"): asked on a tap.
-    var cursorGridCell: TerminalGridCell? {
+    /// The cursor's cell, in `gridCell(at:)`'s space.
+    /// Takes the terminal lock (bounded, see docs/terminal-checklist.md "Locks"): asked on a tap.
+    var cursorGridCell: TerminalGridCell {
         let cursor = core.cursorPosition
         return TerminalGridCell(col: cursor.x, row: scrollSnapshot.maxRow + cursor.y)
     }
 
-    /// Takes the terminal lock like the engine's own tap does for the same question.
+    /// The program tracks the mouse: a tap is a click for it.
+    /// Takes the terminal lock like the view's own tap does for the same question.
     var sendsTapsToProgram: Bool { core.programScrollModes().mouseTracking }
 }

@@ -84,7 +84,7 @@ enum LinkOpenPolicy {
 /// A paste into a program that asked for bracketed paste arrives as one block the program knows
 /// is pasted; it goes straight in. Anywhere else each newline is the Return key, so a shell runs
 /// every line as it arrives. The engine says whether the text has such characters
-/// (`TerminalEngineView.pasteNeedsConfirmation`: libghostty-vt's unsafe-paste check).
+/// (`GhosttyTerminalView.pasteNeedsConfirmation`: libghostty-vt's unsafe-paste check).
 enum PasteConfirmation {
     static let previewLines = 3
     static let previewWidth = 60

@@ -32,31 +32,27 @@ struct PerfReplayInfo: Sendable {
 /// **Time to first frame** (`firstFrame`, milliseconds after pane open). Pane open is the start
 /// of `TerminalHost.init`, so making the engine view counts.
 /// - `connecting`, `live`: the stream's first `.connecting` and `.live` status. `live` is the
-///   data socket's WELCOME. SwiftTerm reads the screen (`terminal.format`) before it opens the
-///   data socket, so its `live` comes after its first frame; Ghostty's comes before.
-/// - `snapshotBegin`: Ghostty only, the snapshot's first bytes arrived.
-/// - `snapshotReceived`: the whole snapshot is here. Ghostty: the `end` part. SwiftTerm:
-///   `streamSnapshot` was called with the text.
-/// - `restored`: the engine holds the restored screen. Ghostty: the decoder's terminal was
-///   swapped in (feed queue). SwiftTerm: `feed(text:)` returned (it parses on the caller).
+///   data socket's WELCOME.
+/// - `snapshotBegin`: the snapshot's first bytes arrived.
+/// - `snapshotReceived`: the whole snapshot is here: its `end` part (or, for a snapshot that
+///   could not be restored, `streamSnapshot` was called with the screen as text).
+/// - `restored`: the engine holds the restored screen: the decoder's terminal was swapped in,
+///   or the text was parsed (both on the feed queue).
 /// - `presented`: the first frame that shows the restored screen was handed to the GPU. See
 ///   "A frame that shows a state" below.
 ///
 /// **Flow** (`flow`), when output was fed: the window runs from the first `streamFeed` to the
 /// frame that shows the final state.
-/// - `parseMs`: first byte fed to last byte parsed. Ghostty: its feed queue ran dry (a marker
-///   queued behind the last bytes). SwiftTerm: the host's paced output queue is empty and the
-///   last slice was parsed.
+/// - `parseMs`: first byte fed to last byte parsed: the feed queue ran dry (a marker queued
+///   behind the last bytes).
 /// - `drawnMs`: first byte fed to the frame that shows the final state.
 /// - `firstOutputMs`: first byte fed to the first frame that shows the first chunk.
 ///
 /// **Frame pacing**, over the window.
 /// - `mainLink`: the probe's own main-thread `CADisplayLink`. A gap between two callbacks over
 ///   25 ms is a main-thread hitch: the main thread could not run a display callback in time.
-/// - `presents`: frames handed to the GPU. Ghostty: each `present` committed on the render
-///   thread. SwiftTerm: each increase of its `diagnostics.renders`, seen at the end of the main
-///   run loop pass that drew it. Gaps over 25 ms count the same way; they only mean a stall
-///   while output arrives faster than that.
+/// - `presents`: frames handed to the GPU: each `present` committed on the render thread. Gaps
+///   over 25 ms count the same way; they only mean a stall while output arrives faster than that.
 ///
 /// **Main-thread busy time** (`mainBusy`): the main run loop's slices between `afterWaiting`
 /// and `beforeWaiting`, summed over the window, and the longest slice.
@@ -71,16 +67,11 @@ struct PerfReplayInfo: Sendable {
 ///
 /// "The frame that shows the state at time T" has to be decided without guessing, because a
 /// frame handed over just after T may have been built just before it.
-/// - Ghostty: the renderer reports each pass with the time it started (before it locks the
-///   terminal). The first pass that started at or after T decides: if it presented, that
-///   present; if it found nothing to draw, the present before it already showed the state. The
-///   probe marks the core dirty once at T, so there is always such a pass.
-/// - SwiftTerm: it counts frames prepared (`frames`) and frames drawn (`renders`), both on the
-///   main thread. The probe reads both at T, before and after Core Animation's commit in every
-///   run loop pass, and on its display link. A draw seen between two reads shows a frame at
-///   least as new as the first read counted, so it shows T once that count is past the count
-///   at T.
-/// - If neither decides within 0.5 s (a view that isn't drawing), the last frame handed over is
+/// - The renderer reports each pass with the time it started (before it locks the terminal).
+///   The first pass that started at or after T decides: if it presented, that present; if it
+///   found nothing to draw, the present before it already showed the state. The probe marks
+///   the core dirty once at T, so there is always such a pass.
+/// - If none decides within 0.5 s (a view that isn't drawing), the last frame handed over is
 ///   taken and the result says so (`…Assumed`).
 final class PerfProbe: Sendable {
     /// The run's probe. Nil without `-perfLog <name>`.
@@ -128,8 +119,6 @@ final class PerfProbe: Sendable {
     private struct Target: Sendable {
         /// T: when the engine held the state.
         var at: Double
-        /// SwiftTerm's `frames` at T.
-        var frames = 0
         /// When the frame that shows it was handed to the GPU.
         var shown: Double?
         var assumed = false
@@ -144,7 +133,6 @@ final class PerfProbe: Sendable {
 
     /// Everything more than one thread touches.
     private struct State: Sendable {
-        var engine = ""
         var core: GhosttyCore?
         var mainThread: thread_act_t = 0
         var replay: PerfReplayInfo?
@@ -166,7 +154,6 @@ final class PerfProbe: Sendable {
         var lastFed: Double?
         var bytesFed = 0
         var chunks = 0
-        var bytesParsedOnMain = 0
         var sourceDone = false
         var openSample: Sample?
         var flowSample: Sample?
@@ -182,9 +169,9 @@ final class PerfProbe: Sendable {
         }
 
         /// Sets a mark once.
-        mutating func mark(_ m: Mark, at: Double, frames: Int = 0) {
+        mutating func mark(_ m: Mark, at: Double) {
             guard targets[m.rawValue] == nil else { return }
-            targets[m.rawValue] = Target(at: at, frames: frames)
+            targets[m.rawValue] = Target(at: at)
         }
 
         /// The run has shown everything it was going to.
@@ -212,7 +199,6 @@ final class PerfProbe: Sendable {
     /// what they collect.
     private struct MainState {
         weak var host: TerminalHost?
-        weak var swiftTerm: RexTerminalView?
         var installed = false
         var link: CADisplayLink?
         var observers: [CFRunLoopObserver] = []
@@ -220,8 +206,6 @@ final class PerfProbe: Sendable {
         var ticks: [Double] = []
         var busy: [PerfWindow] = []
         var sliceStart: Double?
-        /// SwiftTerm's counters at the last read.
-        var seen: (frames: Int, renders: Int)?
         var finishing = false
     }
 
@@ -243,12 +227,10 @@ final class PerfProbe: Sendable {
         guard !main.installed else { return }
         main.installed = true
         main.host = host
-        main.swiftTerm = host.term as? RexTerminalView
-        let core = (host.term as? GhosttyTerminalView)?.core
+        let core = host.term.core
         let thread = PerfSystem.currentThread()
         let now = Self.clock()
         state.withLock { s in
-            s.engine = host.engineKind.rawValue
             s.core = core
             s.mainThread = thread
             s.openSample = s.sample(s.opening ?? now)
@@ -286,7 +268,8 @@ final class PerfProbe: Sendable {
         }
     }
 
-    /// `streamSnapshot` was called with the screen as escape sequences (SwiftTerm).
+    /// `streamSnapshot` was called with the screen as escape sequences (the fallback for a
+    /// snapshot that could not be restored).
     @MainActor
     func seedReceived(_ bytes: Int, host: TerminalHost) {
         guard tracks(host), bytes > 0 else { return }
@@ -298,19 +281,11 @@ final class PerfProbe: Sendable {
         }
     }
 
-    /// The engine parsed that text.
+    /// That text was handed to the engine, which parses it on its feed queue.
     @MainActor
     func seedParsed(host: TerminalHost) {
         guard tracks(host) else { return }
-        let now = Self.clock()
-        let frames = counters()?.frames ?? 0
-        let core: GhosttyCore? = state.withLock { s in
-            guard s.snapshotReceived != nil else { return nil }
-            // Ghostty (after a snapshot it couldn't restore) parses the text on its feed queue.
-            if let core = s.core { return core }
-            s.mark(.restored, at: now, frames: frames)
-            return nil
-        }
+        let core = state.withLock { $0.snapshotReceived != nil ? $0.core : nil }
         if let core { holdsWhenParsed(.restored, core: core) }
     }
 
@@ -329,28 +304,10 @@ final class PerfProbe: Sendable {
             s.peak = s.flowSample?.footprint ?? 0
             return s.core
         }
-        // Ghostty parses elsewhere: the mark is set on its feed queue once the first chunk is
+        // The engine parses elsewhere: the mark is set on its feed queue once the first chunk is
         // parsed. The host calls this before it hands the bytes to the core, so the mark is
         // queued from the next main-queue turn: behind the first chunk, ahead of the second.
         if let core = first { DispatchQueue.main.async { self.holdsWhenParsed(.firstOutput, core: core) } }
-    }
-
-    /// The host parsed `count` bytes on the main thread (an engine that doesn't parse elsewhere).
-    @MainActor
-    func parsedOnMain(_ count: Int, host: TerminalHost) {
-        guard tracks(host) else { return }
-        let now = Self.clock()
-        let wanted = state.withLock { s in
-            s.bytesParsedOnMain += count
-            return s.firstFed != nil
-                && (s.targets[Mark.firstOutput.rawValue] == nil || (s.sourceDone && s.bytesParsedOnMain >= s.bytesFed))
-        }
-        guard wanted else { return }
-        let frames = counters()?.frames ?? 0
-        state.withLock { s in
-            s.mark(.firstOutput, at: now, frames: frames)
-            if s.sourceDone, s.bytesParsedOnMain >= s.bytesFed { s.mark(.final, at: now, frames: frames) }
-        }
     }
 
     // MARK: Replay
@@ -365,10 +322,8 @@ final class PerfProbe: Sendable {
     func sourceFinished(_ host: TerminalHost) {
         guard tracks(host) else { return }
         let now = Self.clock()
-        let frames = counters()?.frames ?? 0
         let (core, closed): (GhosttyCore?, Bool) = state.withLock { s in
             s.sourceDone = true
-            if s.core == nil, s.firstFed != nil, s.bytesParsedOnMain >= s.bytesFed { s.mark(.final, at: now, frames: frames) }
             return (s.firstFed != nil ? s.core : nil, s.closeIfComplete(now))
         }
         if let core { holdsWhenParsed(.final, core: core) }
@@ -380,7 +335,7 @@ final class PerfProbe: Sendable {
         Task { @MainActor in self.write() }
     }
 
-    // MARK: Hooks in the Ghostty engine
+    // MARK: Hooks in the engine
 
     /// The snapshot's terminal was swapped in (GhosttyTerminalView, on the feed queue).
     func ghosttyRestored(_ core: GhosttyCore) { ghosttyHolds(.restored, core: core) }
@@ -432,22 +387,18 @@ final class PerfProbe: Sendable {
     // MARK: Main-thread collection
 
     @MainActor
-    private func counters() -> (frames: Int, renders: Int)? { main.swiftTerm?.perfCounters }
-
-    @MainActor
     private func install(_ now: Double) {
         main.ticks.reserveCapacity(1 << 14)
         main.busy.reserveCapacity(1 << 16)
         main.sliceStart = now
-        main.seen = counters()
 
         let link = CADisplayLink(target: Ticker(self), selector: #selector(Ticker.tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         main.link = link
 
-        // Core Animation commits (and MTKView draws) from a `beforeWaiting` observer of order
-        // 2,000,000. One read just before it, one after everything.
+        // The main run loop's slices, from the first observer after a wait to the last before
+        // the next.
         func observe(_ activity: CFRunLoopActivity, order: CFIndex, _ body: @escaping @MainActor (PerfProbe) -> Void) {
             let o = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, activity.rawValue, true, order) { [self] _, _ in
                 MainActor.assumeIsolated { body(self) }
@@ -459,10 +410,8 @@ final class PerfProbe: Sendable {
         observe(.afterWaiting, order: CFIndex.min) { p in
             if p.main.sliceStart == nil { p.main.sliceStart = Self.clock() }
         }
-        observe(.beforeWaiting, order: 1_999_999) { p in p.readSwiftTerm(Self.clock()) }
         observe(.beforeWaiting, order: CFIndex.max) { p in
             let now = Self.clock()
-            p.readSwiftTerm(now)
             if let from = p.main.sliceStart { p.main.busy.append(PerfWindow(from: from, to: now)) }
             p.main.sliceStart = nil
         }
@@ -505,7 +454,6 @@ final class PerfProbe: Sendable {
     private func tick() {
         let now = Self.clock()
         main.ticks.append(now)
-        readSwiftTerm(now)
         // A target nothing decided in time takes the last frame handed over.
         let closed = state.withLock { s in
             var any = false
@@ -513,28 +461,6 @@ final class PerfProbe: Sendable {
                 guard let t = s.targets[i], t.shown == nil, now - t.at > Self.frameWait else { continue }
                 s.targets[i]?.shown = s.lastPresent ?? now
                 s.targets[i]?.assumed = true
-                any = true
-            }
-            return any && s.closeIfComplete(now)
-        }
-        if closed { finishSoon() }
-    }
-
-    /// Reads SwiftTerm's counters. A draw since the last read shows a frame at least as new as
-    /// the last read counted.
-    @MainActor
-    private func readSwiftTerm(_ now: Double) {
-        guard let c = counters() else { return }
-        defer { main.seen = c }
-        guard let before = main.seen, c.renders > before.renders else { return }
-        let drawn = c.renders - before.renders
-        let closed = state.withLock { s in
-            for _ in 0..<drawn { s.presents.append(now) }
-            s.lastPresent = now
-            var any = false
-            for i in s.targets.indices {
-                guard let t = s.targets[i], t.shown == nil, before.frames > t.frames else { continue }
-                s.targets[i]?.shown = now
                 any = true
             }
             return any && s.closeIfComplete(now)
@@ -600,7 +526,6 @@ final class PerfProbe: Sendable {
         var out: JSONObject = [
             "schema": 1,
             "name": name,
-            "engine": s.engine,
             "mode": s.replay == nil ? "live" : "replay",
             "build": ["assertions": asserts, "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""],
             "device": device(screenHz: screenHz),
@@ -668,11 +593,9 @@ final class PerfProbe: Sendable {
         out["cpu"] = ["processMs": ms(cpu), "mainMs": ms(mainCPU), "otherMs": ms(cpu - mainCPU)]
         out["memory"] = ["startMB": mb(start.footprint), "peakMB": mb(max(s.peak, end.footprint)), "endMB": mb(end.footprint),
                          "idleMB": mb(idle)]
-        if s.core != nil {
-            // The Ghostty renderer's own timers, for tuning: row rebuild and encode, per pass.
-            out["ghosttyRender"] = ["passes": s.passes, "buildMs": ms(s.buildSeconds), "buildWorstMs": ms(s.buildWorst),
-                                    "encodeMs": ms(s.encodeSeconds), "encodeWorstMs": ms(s.encodeWorst)]
-        }
+        // The renderer's own timers, for tuning: row rebuild and encode, per pass.
+        out["ghosttyRender"] = ["passes": s.passes, "buildMs": ms(s.buildSeconds), "buildWorstMs": ms(s.buildWorst),
+                                "encodeMs": ms(s.encodeSeconds), "encodeWorstMs": ms(s.encodeWorst)]
         return out
     }
 

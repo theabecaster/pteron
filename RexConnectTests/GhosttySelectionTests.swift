@@ -2,7 +2,7 @@ import XCTest
 @testable import RexConnect
 
 /// Selection for the Ghostty engine: the terminal's selection through `GhosttyCore`, the geometry
-/// math, and the seam members on `GhosttyTerminalView` as TerminalHost drives them.
+/// math, and the selection members on `GhosttyTerminalView` as TerminalHost drives them.
 final class GhosttySelectionTests: XCTestCase {
     private func makeCore(_ text: String, cols: Int = 20, rows: Int = 4) -> GhosttyCore {
         let core = GhosttyCore(cols: cols, rows: rows)
@@ -99,7 +99,7 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertEqual(core.selectionExtent, GhosttySelectionExtent(cols: 20, rows: 4, startCol: 0, startRow: 0, endCol: 7, endRow: 0))
     }
 
-    /// Ghostty follows the soft wrap; the SwiftTerm engine stops at the row's edge.
+    /// The word follows the soft wrap; it doesn't stop at the row's edge.
     func testAWordThatWrapsIsSelectedAcrossTheRows() {
         let core = makeCore("aaaaaaaaaabbbbb ccc", cols: 10)
         XCTAssertEqual(word(core, 2, 1), "aaaaaaaaaabbbbb")
@@ -129,7 +129,7 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertTrue(core.beginSelection(col: 7, row: 0, word: true, anchor: anchor))
         XCTAssertEqual(core.extendSelection(col: 7, row: 0, anchor: anchor, keepOnAnchor: true), .onAnchor)
         XCTAssertEqual(core.selectedText, "world")
-        // Leaving the cell turns the word into anchor...finger, as in the SwiftTerm engine.
+        // Leaving the cell turns the word into anchor...finger.
         XCTAssertEqual(core.extendSelection(col: 9, row: 0, anchor: anchor, keepOnAnchor: true), .extended(changed: true))
         XCTAssertEqual(core.selectedText, "orl")
         XCTAssertEqual(core.extendSelection(col: 9, row: 0, anchor: anchor, keepOnAnchor: false), .extended(changed: false))
@@ -399,7 +399,7 @@ final class GhosttySelectionTests: XCTestCase {
         XCTAssertEqual(rects(under), [], "nothing of it shows without the shift")
     }
 
-    // MARK: The seam, as TerminalHost drives it
+    // MARK: The view's selection members, as TerminalHost drives them
 
     @MainActor
     private func makeView(_ text: String, cols: Int = 20, rows: Int = 4) -> GhosttyTerminalView {
@@ -429,14 +429,10 @@ final class GhosttySelectionTests: XCTestCase {
     @MainActor
     func testTheViewHasAPlainLongPressForTheHostToRetarget() {
         let view = makeView("")
-        let press = view.selectionPressRecognizer
-        XCTAssertNotNil(press)
-        XCTAssertTrue(press.map { type(of: $0) == UILongPressGestureRecognizer.self } ?? false)
-        XCTAssertTrue(press?.view === view)
-        XCTAssertTrue(view.selectionPressRecognizer === press, "one recognizer, not one per call")
-        XCTAssertFalse(view.isBuiltInSelectionPan(UIPanGestureRecognizer()))
-        XCTAssertFalse(view.isBuiltInSelectionPan(view.scroller.surface.panGestureRecognizer))
-        XCTAssertFalse(view.isBuiltInSelectionPan(view.scroller.programPan))
+        let press = view.selectionPress
+        XCTAssertTrue(type(of: press) == UILongPressGestureRecognizer.self)
+        XCTAssertTrue(press.view === view)
+        XCTAssertTrue(view.selectionPress === press, "one recognizer, not one per call")
         XCTAssertFalse(view.hasActiveSelection)
         XCTAssertNil(view.selectedText)
         XCTAssertEqual(view.selectionRects, [])

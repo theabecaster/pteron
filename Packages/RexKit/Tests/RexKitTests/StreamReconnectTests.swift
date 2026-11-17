@@ -10,15 +10,15 @@ final class StreamReconnectTests: XCTestCase {
     /// Nothing else owns a stream: its tasks hold it weakly, as in the app.
     private var streams: [TerminalStream] = []
 
-    private func makeStream(link: FakeLink, sink: Sink, ghostty: Bool = true) -> (TerminalStream, SleepLog) {
-        let made = RexKitTests.makeStream(link: link, sink: sink, ghostty: ghostty)
+    private func makeStream(link: FakeLink, sink: Sink) -> (TerminalStream, SleepLog) {
+        let made = RexKitTests.makeStream(link: link, sink: sink)
         streams.append(made.0)
         return made
     }
 
-    private func liveStream(_ link: FakeLink, ghostty: Bool = true) async -> (TerminalStream, Sink, SleepLog) {
+    private func liveStream(_ link: FakeLink) async -> (TerminalStream, Sink, SleepLog) {
         let sink = Sink()
-        let (stream, log) = makeStream(link: link, sink: sink, ghostty: ghostty)
+        let (stream, log) = makeStream(link: link, sink: sink)
         stream.start()
         let live = await eventually { sink.statuses.last == .live }
         XCTAssertTrue(live)
@@ -137,10 +137,12 @@ final class StreamReconnectTests: XCTestCase {
     }
 
     func testStartWithoutAControlConnectionWaitsAndCallsNothing() async {
-        for ghostty in [true, false] {
+        // Before and after a snapshot failed (the stream then reads `terminal.format` first).
+        for snapshots in [true, false] {
             let link = FakeLink(connected: false)
             let sink = Sink()
-            let (stream, log) = makeStream(link: link, sink: sink, ghostty: ghostty)
+            let (stream, log) = makeStream(link: link, sink: sink)
+            if !snapshots { stream.snapshotRestoreFailed() }
             stream.start()
             let waiting = await eventually { stream.waitingForControl }
             XCTAssertTrue(waiting)
@@ -154,8 +156,12 @@ final class StreamReconnectTests: XCTestCase {
             await settle()
             XCTAssertEqual(link.count("data.connect"), 1)
             XCTAssertEqual(link.sockets.count, 1)
-            if !ghostty {
+            if snapshots {
+                XCTAssertEqual(link.methods, ["data.connect"])
+                XCTAssertEqual(sink.calls, [])
+            } else {
                 XCTAssertEqual(link.methods, ["com.superlogical.terminal.size", "com.superlogical.terminal.format", "data.connect"])
+                XCTAssertEqual(sink.calls, [.reset(80, 24), .resized(80, 24, nil), .snapshot(0)])
             }
         }
     }

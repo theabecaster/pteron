@@ -8,7 +8,7 @@ import UIKit
 /// - The "arrows" key is a trackpad: press and drag to send arrow keys.
 @MainActor
 final class KeyBar: UIInputView, UIInputViewAudioFeedback {
-    weak var terminal: (any TerminalKeyTarget)? {
+    weak var terminal: GhosttyTerminalView? {
         didSet { observe(terminal, old: oldValue); syncModifiers() }
     }
     var onPaste: (() -> Void)?
@@ -166,7 +166,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    private func observe(_ t: (any TerminalKeyTarget)?, old: (any TerminalKeyTarget)?) {
+    private func observe(_ t: GhosttyTerminalView?, old: GhosttyTerminalView?) {
         let nc = NotificationCenter.default
         if let old {
             nc.removeObserver(self, name: .terminalEngineControlModifierReset, object: old)
@@ -292,7 +292,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         return nil
     }
 
-    /// The control character for a byte, matching what SwiftTerm does for the system keyboard.
+    /// The control character for a byte, as the terminal sends it for the system keyboard.
     static func control(_ b: UInt8) -> UInt8? {
         switch b {
         case 0x61...0x7a: return b - 0x60          // a-z

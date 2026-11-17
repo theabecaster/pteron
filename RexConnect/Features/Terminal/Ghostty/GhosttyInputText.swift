@@ -19,8 +19,8 @@ struct GhosttyInputEdit: Equatable {
 ///
 /// A terminal has no document, but iOS's input methods, dictation and the space-bar trackpad need
 /// one (`UITextInput`): marked text to compose in, a range to replace when dictation revises a
-/// phrase, a caret to move. This is a shadow of what was typed since the last Return, as the
-/// SwiftTerm engine keeps. Offsets are UTF-16, as `UITextInput` counts.
+/// phrase, a caret to move. This is a shadow of what was typed since the last Return.
+/// Offsets are UTF-16, as `UITextInput` counts.
 ///
 /// The keyboard edits anywhere in this text, but the program only deletes before its own cursor.
 /// So the document also knows where the program's cursor is in the text (`programCaret`), and
@@ -255,14 +255,14 @@ final class GhosttyInputState {
 
 // MARK: UITextInput
 
-/// Full `UITextInput`, not just `UIKeyInput`, because the SwiftTerm engine has it and these need
-/// it: input methods that compose (Chinese, Japanese, Korean, and dead keys on a hardware
-/// keyboard), dictation, and the space-bar trackpad. Like SwiftTerm, marked text is not drawn in
-/// the terminal: the keyboard's candidate bar shows it, and it is sent when committed.
+/// Full `UITextInput`, not just `UIKeyInput`, because these need it: input methods that
+/// compose (Chinese, Japanese, Korean, and dead keys on a hardware keyboard), dictation, and
+/// the space-bar trackpad. Marked text is not drawn in the terminal: the keyboard's candidate
+/// bar shows it, and it is sent when committed.
 extension GhosttyTerminalView: UITextInput {
     private var document: GhosttyInputDocument { inputState.document }
 
-    /// Changes the shadow document and tells the keyboard, as SwiftTerm does around every edit.
+    /// Changes the shadow document and tells the keyboard, around every edit.
     func editInputDocument<R>(_ body: (inout GhosttyInputDocument) -> R) -> R {
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.textWillChange(self)
@@ -403,7 +403,7 @@ extension GhosttyTerminalView: UITextInput {
     func dictationRecognitionFailed() {}
 
     // The space-bar trackpad: a horizontal drag sends Left and Right; on the alternate screen a
-    // vertical drag sends Up and Down. Same distances as SwiftTerm.
+    // vertical drag sends Up and Down.
 
     func beginFloatingCursor(at point: CGPoint) {
         inputState.floatingCursor = point

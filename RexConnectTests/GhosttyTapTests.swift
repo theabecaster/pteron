@@ -457,16 +457,15 @@ final class GhosttyTapRoutingTests: XCTestCase {
 
     private var now: CFTimeInterval = 100
 
-    /// A tap in the middle of a cell, as the host's tap passes it on through the seam, `after`
-    /// seconds after the one before.
+    /// A tap in the middle of a cell, as the host's tap passes it on, `after` seconds after the
+    /// one before.
     private func tap(_ view: GhosttyTerminalView, col: Int, row: Int, focused: Bool = true, shift: Bool = false,
                      after: CFTimeInterval = 2) -> Bool {
         let rect = view.viewportRect(row: row, columns: col..<(col + 1))
         now += after
         let at = now
         view.taps.clock = { at }
-        let engine: any TerminalEngineView = view
-        return engine.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), focused: focused, shift: shift)
+        return view.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), focused: focused, shift: shift)
     }
 
     func testTheNextTapOfADoubleTapIsLeftToTheSelection() {
@@ -491,10 +490,6 @@ final class GhosttyTapRoutingTests: XCTestCase {
         XCTAssertTrue(tap(view, col: 8, row: 2, after: 0.1))
     }
 
-    func testAnEngineWithoutLinksLeavesEveryTapToTheHost() {
-        let engine: any TerminalEngineView = RexTerminalView(fontSize: 12, theme: ThemeStore.fallback)
-        XCTAssertFalse(engine.tapOpensLinkOrMovesCursor(at: CGPoint(x: 5, y: 5), focused: true, shift: false))
-    }
 
     func testATapOnALinkOpensItOnlyOnAFocusedPane() {
         let (view, sink) = make("\(esc)]8;;https://osc8.example/a?b=c\(esc)\\link\(esc)]8;;\(esc)\\ and https://text.example/z ok")
@@ -529,7 +524,7 @@ final class GhosttyTapRoutingTests: XCTestCase {
         // The cursor is on column 18: 14 steps left to column 4, in one write.
         XCTAssertTrue(tap(view, col: 4, row: 0))
         XCTAssertEqual(sink.sent, [Array(String(repeating: "\(esc)[D", count: 14).utf8)])
-        // Within 3 columns of the cursor nothing is sent (SwiftTerm shows its menu there).
+        // Within 3 columns of the cursor nothing is sent (the host shows its Paste menu there).
         XCTAssertFalse(tap(view, col: 16, row: 0))
         XCTAssertEqual(sink.sent.count, 1)
         // Application cursor keys (DECCKM).

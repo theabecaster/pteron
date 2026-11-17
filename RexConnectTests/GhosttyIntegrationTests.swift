@@ -2,7 +2,7 @@ import XCTest
 @testable import RexConnect
 
 /// The Ghostty engine's input, scrolling and selection working as one: what one part does to
-/// another, as TerminalHost, the key bar and the hardware keymap drive them through the seam.
+/// another, as TerminalHost, the key bar and the hardware keymap drive them.
 @MainActor
 final class GhosttyIntegrationTests: XCTestCase {
     private final class Sink: TerminalEngineDelegate {
@@ -42,7 +42,7 @@ final class GhosttyIntegrationTests: XCTestCase {
 
     // MARK: Input returns a scrolled-back view to the bottom
 
-    /// Everything SwiftTerm's `send(data:)` carries jumps to the bottom there (`ensureCaretIsVisible`):
+    /// Every kind of input jumps to the bottom:
     /// typed text, Backspace, the key bar's keys and raw bytes, `send(txt:)`, a paste, hardware keys.
     func testEveryKindOfInputJumpsToTheBottomThroughTheScroller() {
         let inputs: [(String, (GhosttyTerminalView) -> Void)] = [
@@ -86,7 +86,7 @@ final class GhosttyIntegrationTests: XCTestCase {
         XCTAssertEqual(view.core.scroll.viewportCalls, calls)
     }
 
-    /// SwiftTerm sends mouse and focus reports without `ensureCaretIsVisible`: the view stays.
+    /// Mouse and focus reports are not typing: the view stays.
     func testMouseAndFocusReportsLeaveAScrolledUpViewWhereItIs() throws {
         let (view, sink) = make(100, setup: "\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1004h")
         let cell = view.cellSize
@@ -119,7 +119,7 @@ final class GhosttyIntegrationTests: XCTestCase {
 
     // MARK: Key-driven scrolling
 
-    /// Hardware Page Up and Page Down go through the seam's `scrollPage`, which moves the scroll
+    /// Hardware Page Up and Page Down go through the view's `scrollPage`, which moves the scroll
     /// surface with the viewport.
     func testHardwarePageKeysScrollTheSurface() {
         let (view, sink) = make(100)
@@ -201,10 +201,6 @@ final class GhosttyIntegrationTests: XCTestCase {
         XCTAssertEqual(asked.count, 5)
         view.panGate = { _ in true }
         XCTAssertTrue(view.gestureRecognizerShouldBegin(hostPan))
-        // None of the engine's pans selects.
-        for pan in [scroller.surface.panGestureRecognizer, scroller.programPan] + scroller.pointerScrolls {
-            XCTAssertFalse(view.isBuiltInSelectionPan(pan))
-        }
     }
 
     /// What the host relies on when it sets up its gestures (`TerminalHost.setupGestures`).
@@ -213,17 +209,17 @@ final class GhosttyIntegrationTests: XCTestCase {
         let scroller = view.scroller
         let direct = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         // The host limits the scroll pan to fingers; the wheel-drag pan is already.
-        view.scrollPanRecognizer?.allowedTouchTypes = direct
+        view.scrollPanRecognizer.allowedTouchTypes = direct
         XCTAssertEqual(scroller.programPan.allowedTouchTypes, direct, "a mouse drag selects; it never reports a wheel")
         XCTAssertEqual(scroller.programPan.maximumNumberOfTouches, 1)
         // The host lets through, unasked, pans without touches (trackpad and wheel scrolls).
         XCTAssertTrue(scroller.pointerScrolls.allSatisfy { $0.allowedTouchTypes.isEmpty })
         // The long press is on the view, with no target until the host gives it one.
-        XCTAssertTrue(view.selectionPressRecognizer?.view === view)
+        XCTAssertTrue(view.selectionPress.view === view)
         XCTAssertTrue(scroller.tap.view === scroller.surface)
     }
 
-    /// With mouse tracking on, a long press still selects (the host's rule for both engines):
+    /// With mouse tracking on, a long press still selects (the host's rule):
     /// the engine's tap doesn't fire for the lifted press, and no click is sent.
     func testALiftedLongPressIsNotAClickForATrackingProgram() {
         let (view, sink) = make(5, setup: "\u{1b}[?1000h\u{1b}[?1006h")
@@ -236,8 +232,7 @@ final class GhosttyIntegrationTests: XCTestCase {
 
     // MARK: Cursor
 
-    /// Solid with the keyboard, hollow without it or off screen (SwiftTerm's caret follows the
-    /// first responder the same way).
+    /// Solid with the keyboard, hollow without it or off screen.
     func testTheCursorIsSolidOnlyWhileTheViewIsFirstResponderInAWindow() throws {
         let view = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: 12, cols: 40, rows: 10)
         let renderer = view.renderer

@@ -5,7 +5,7 @@ import UIKit
 /// Clipboard writes from the program (OSC 52, and the other protocols libghostty-vt reports the
 /// same way: iTerm2's OSC 1337 Copy and Kitty's OSC 5522) go to the iOS pasteboard.
 ///
-/// The policy is the SwiftTerm engine's (`RexTerminalView.clipboardCopy`):
+/// The policy:
 /// - Every destination (`c`, `p`, `s`) is the one iOS pasteboard.
 /// - Only text that is valid UTF-8 is taken; anything else is dropped.
 /// - An empty write empties the pasteboard's text.

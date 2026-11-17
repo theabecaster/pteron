@@ -24,15 +24,15 @@ extension GhosttyTerminalView {
         return super.gestureRecognizerShouldBegin(g)
     }
 
-    // MARK: Seam
+    // MARK: For the host
 
     /// The scroll view's own pan: one finger for scrollback, two while the program takes
     /// one-finger drags. The host limits it to direct touches; trackpad and wheel scrolls still
     /// reach it.
-    var scrollPanRecognizer: UIPanGestureRecognizer? { scroller.surface.panGestureRecognizer }
+    var scrollPanRecognizer: UIPanGestureRecognizer { scroller.surface.panGestureRecognizer }
 
     /// Scrolls the scrollback a page. On an alternate screen there is none, so the program gets
-    /// Page Up or Page Down instead (SwiftTerm's rule). The screen and the key's bytes come from
+    /// Page Up or Page Down instead. The screen and the key's bytes come from
     /// the input mirror, so a key press never waits for the terminal lock.
     func scrollPage(up: Bool) {
         if core.input.modes.alternateScreen {
@@ -52,7 +52,7 @@ extension GhosttyTerminalView {
     // MARK: For input (chunk 2a)
 
     /// Called after typed or pasted bytes went to the program: a scrolled-up view jumps back to
-    /// the bottom, as in SwiftTerm. Output alone never moves a scrolled-up view.
+    /// the bottom. Output alone never moves a scrolled-up view.
     func scrollToBottomForInput() { scroller.scrollToBottomForInput() }
 
     // MARK: For selection (chunk 2c)

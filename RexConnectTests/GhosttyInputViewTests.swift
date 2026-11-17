@@ -24,7 +24,8 @@ private final class ResetCounts: NSObject {
     @objc func metaReset() { meta += 1 }
 }
 
-/// The Ghostty view's input, driven through the seam and compared with the SwiftTerm engine.
+/// The terminal view's input: what the key bar's keys, the system keyboard, a paste and a raw
+/// send put on the wire, in the modes that change it.
 @MainActor
 final class GhosttyInputViewTests: XCTestCase {
     private typealias P = GhosttyInputProbe
@@ -38,45 +39,23 @@ final class GhosttyInputViewTests: XCTestCase {
         return (view, spy)
     }
 
-    private func makeSwiftTerm(_ setup: String = "") -> (RexTerminalView, SendSpy) {
-        let view = RexTerminalView(fontSize: 12, theme: ThemeStore.fallback)
-        // As TerminalHost does: with SwiftTerm's own accessory in place, its ctrl flag wins over the view's.
-        view.inputAccessoryView = UIView()
-        let spy = SendSpy()
-        view.engineDelegate = spy
-        view.feed(text: setup)
-        return (view, spy)
-    }
-
-    /// What `action` makes an engine send. The SwiftTerm adapter delivers on a later main-actor turn.
-    private func sent(_ view: any TerminalEngineView, _ spy: SendSpy, _ action: (any TerminalEngineView) -> Void) async -> [UInt8] {
-        spy.sent = []
+    /// Runs `action` on a fresh view in the mode `setup` sets and checks what it sends.
+    private func assertSends(_ setup: String, _ what: String, _ want: [UInt8], file: StaticString = #filePath, line: UInt = #line,
+                             _ action: (GhosttyTerminalView) -> Void) {
+        let (view, spy) = makeGhostty(setup)
         action(view)
-        if view.engineKind == .swiftTerm {
-            for _ in 0..<10 { await Task.yield() }
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        return spy.all
+        XCTAssertEqual(spy.all, want, "\(what): sent \(P.show(spy.all)), want \(P.show(want))", file: file, line: line)
     }
 
-    /// Runs `action` on both engines in the same mode and checks they send the same bytes.
-    private func assertSame(_ setup: String, _ what: String, file: StaticString = #filePath, line: UInt = #line,
-                            _ action: (any TerminalEngineView) -> Void) async {
-        let (g, gs) = makeGhostty(setup), (s, ss) = makeSwiftTerm(setup)
-        let ghostty = await sent(g, gs, action), swiftTerm = await sent(s, ss, action)
-        XCTAssertFalse(swiftTerm.isEmpty, "\(what): SwiftTerm sent nothing", file: file, line: line)
-        XCTAssertEqual(ghostty, swiftTerm, "\(what): Ghostty sent \(P.show(ghostty)), SwiftTerm \(P.show(swiftTerm))", file: file, line: line)
-    }
+    // MARK: The legacy encoding every shell and editor expects
 
-    // MARK: Parity with the SwiftTerm engine
-
-    func testCursorKeysMatchSwiftTermInBothCursorModes() async {
-        let keys: [(String, (any TerminalEngineView) -> Void)] = [
-            ("up", { $0.sendKeyUp() }), ("down", { $0.sendKeyDown() }), ("left", { $0.sendKeyLeft() }),
-            ("right", { $0.sendKeyRight() }), ("home", { $0.sendKeyHome() }), ("end", { $0.sendKeyEnd() }),
+    func testCursorKeysInBothCursorModes() {
+        let keys: [(String, String, (GhosttyTerminalView) -> Void)] = [
+            ("up", "A", { $0.sendKeyUp() }), ("down", "B", { $0.sendKeyDown() }), ("left", "D", { $0.sendKeyLeft() }),
+            ("right", "C", { $0.sendKeyRight() }), ("home", "H", { $0.sendKeyHome() }), ("end", "F", { $0.sendKeyEnd() }),
         ]
-        for (mode, setup) in [("normal", ""), ("DECCKM", P.cursorKeys)] {
-            for (name, action) in keys { await assertSame(setup, "\(mode) \(name)", action) }
+        for (mode, setup, lead) in [("normal", "", "\u{1b}["), ("DECCKM", P.cursorKeys, "\u{1b}O")] {
+            for (name, final, action) in keys { assertSends(setup, "\(mode) \(name)", P.bytes(lead + final), action) }
         }
         let (g, spy) = makeGhostty(P.cursorKeys)
         g.sendKeyUp()
@@ -84,53 +63,69 @@ final class GhosttyInputViewTests: XCTestCase {
         XCTAssertEqual(spy.sent, [P.bytes("\u{1b}OA"), P.bytes("\u{1b}OF")])
     }
 
-    func testTypedTextMatchesSwiftTerm() async {
+    func testTypedTextIsSentAsItsBytesInEveryMode() {
         for (mode, setup) in [("normal", ""), ("DECCKM", P.cursorKeys), ("DECBKM", P.backarrow), ("bracketed", P.bracketedPaste)] {
-            for text in ["a", "A", "~", " ", "é", "日本語", "😀", "👨‍👩‍👧", "e\u{301}", "\n", "ls -la"] {
-                await assertSame(setup, "\(mode) insertText \(text.debugDescription)") { ($0 as? any UIKeyInput)?.insertText(text) }
+            for text in ["a", "A", "~", " ", "é", "日本語", "😀", "👨‍👩‍👧", "e\u{301}", "ls -la"] {
+                assertSends(setup, "\(mode) insertText \(text.debugDescription)", P.bytes(text)) { $0.insertText(text) }
             }
-            await assertSame(setup, "\(mode) deleteBackward") { ($0 as? any UIKeyInput)?.deleteBackward() }
+            // A line feed from the keyboard is the Return key.
+            assertSends(setup, "\(mode) insertText \\n", [0x0d]) { $0.insertText("\n") }
+            // DECBKM really changes Backspace.
+            assertSends(setup, "\(mode) deleteBackward", [mode == "DECBKM" ? 0x08 : 0x7f]) { $0.deleteBackward() }
         }
-        // DECBKM really changes Backspace, on both.
-        let (g, spy) = makeGhostty(P.backarrow)
-        g.deleteBackward()
-        XCTAssertEqual(spy.all, [0x08])
     }
 
-    func testOneShotControlMatchesSwiftTerm() async {
-        // Every character SwiftTerm has a control character for.
-        let characters = Array("abcdefghijklmnopqrstuvwxyzACZ[\\]^_@ /?2345678").map(String.init)
-        for text in characters {
-            await assertSame("", "ctrl + \(text.debugDescription)") {
+    func testOneShotControlSendsTheControlCharacter() {
+        // Every character a legacy terminal has a control character for.
+        var table: [(String, UInt8)] = Array("abcdefghijklmnopqrstuvwxyz").map { (String($0), $0.asciiValue! - 0x60) }
+        table += [("A", 0x01), ("C", 0x03), ("Z", 0x1a), ("[", 0x1b), ("\\", 0x1c), ("]", 0x1d), ("^", 0x1e), ("_", 0x1f),
+                  ("@", 0x00), (" ", 0x00), ("/", 0x1f), ("?", 0x7f),
+                  ("2", 0x00), ("3", 0x1b), ("4", 0x1c), ("5", 0x1d), ("6", 0x1e), ("7", 0x1f), ("8", 0x7f)]
+        for (text, byte) in table {
+            assertSends("", "ctrl + \(text.debugDescription)", [byte]) {
                 $0.controlModifier = true
-                ($0 as? any UIKeyInput)?.insertText(text)
+                $0.insertText(text)
             }
         }
     }
 
-    func testOneShotMetaMatchesSwiftTerm() async {
+    func testOneShotMetaSendsEscapeThenTheText() {
         for text in ["b", "B", ".", "1", " ", "é", "日本"] {
-            await assertSame("", "alt + \(text.debugDescription)") {
+            assertSends("", "alt + \(text.debugDescription)", [0x1b] + P.bytes(text)) {
                 $0.metaModifier = true
-                ($0 as? any UIKeyInput)?.insertText(text)
+                $0.insertText(text)
             }
         }
     }
 
-    func testPasteMatchesSwiftTerm() async {
-        for (mode, setup) in [("plain", ""), ("bracketed", P.bracketedPaste)] {
-            for text in ["hello", "two words", "a\nb", "a\r\nb\n", "x\u{1b}[201~y", "tab\there", "nul\u{0}\u{7f}\u{3}z", "日本語 😀"] {
-                await assertSame(setup, "\(mode) paste \(text.debugDescription)") { $0.pasteText(text) }
+    func testPasteInBothPasteModes() {
+        // In both modes the bytes that could end a bracket or act as a key (ESC, NUL, DEL, ^C)
+        // are replaced by spaces. Without bracketed paste a line end is what Return sends.
+        let plain: [(String, String)] = [
+            ("hello", "hello"), ("two words", "two words"), ("a\nb", "a\rb"), ("a\r\nb\n", "a\r\rb\r"),
+            ("x\u{1b}[201~y", "x [201~y"), ("tab\there", "tab\there"), ("nul\u{0}\u{7f}\u{3}z", "nul   z"),
+            ("日本語 😀", "日本語 😀"),
+        ]
+        for (text, want) in plain { assertSends("", "plain paste \(text.debugDescription)", P.bytes(want)) { $0.pasteText(text) } }
+        // Bracketed: the text between the two marks, line ends as they are.
+        let bracketed: [(String, String)] = [
+            ("hello", "hello"), ("two words", "two words"), ("a\nb", "a\nb"), ("a\r\nb\n", "a\r\nb\n"),
+            ("x\u{1b}[201~y", "x [201~y"), ("tab\there", "tab\there"), ("nul\u{0}\u{7f}\u{3}z", "nul   z"),
+            ("日本語 😀", "日本語 😀"),
+        ]
+        for (text, want) in bracketed {
+            assertSends(P.bracketedPaste, "bracketed paste \(text.debugDescription)", P.bytes("\u{1b}[200~" + want + "\u{1b}[201~")) {
+                $0.pasteText(text)
             }
         }
     }
 
-    func testRawSendsMatchSwiftTerm() async {
-        await assertSame("", "send(data:)") { $0.send(data: [0x1b, 0x5b, 0x41, 0x03][...]) }
+    func testRawSendsGoOutUnchanged() {
+        assertSends("", "send(data:)", [0x1b, 0x5b, 0x41, 0x03]) { $0.send(data: [0x1b, 0x5b, 0x41, 0x03][...]) }
         // Text for the program, as a debug launch types it. In legacy mode typing it is the same bytes.
         for text in ["ls -la\r", "echo hi\r", "q", "\u{03}", "\u{1b}", "x\ty"] {
-            await assertSame("", "send(txt:) \(text.debugDescription)") { $0.send(txt: text) }
-            await assertSame(P.cursorKeys, "DECCKM send(txt:) \(text.debugDescription)") { $0.send(txt: text) }
+            assertSends("", "send(txt:) \(text.debugDescription)", P.bytes(text)) { $0.send(txt: text) }
+            assertSends(P.cursorKeys, "DECCKM send(txt:) \(text.debugDescription)", P.bytes(text)) { $0.send(txt: text) }
         }
     }
 
@@ -367,7 +362,7 @@ final class GhosttyInputViewTests: XCTestCase {
         let (shell, shellSpy) = makeGhostty()
         XCTAssertTrue(down(shell, "pageup"))
         XCTAssertTrue(down(shell, "pagedown"))
-        XCTAssertEqual(shellSpy.sent, [], "plain Page Up / Down scroll the scrollback, as on SwiftTerm")
+        XCTAssertEqual(shellSpy.sent, [], "plain Page Up / Down scroll the scrollback")
         XCTAssertTrue(down(shell, "shift+pageup"))
         XCTAssertEqual(shellSpy.sent, [P.bytes("\u{1b}[5;2~")])
 

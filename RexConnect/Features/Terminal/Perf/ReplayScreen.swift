@@ -6,10 +6,10 @@ import UIKit
 // driven by launch arguments, not in a shipped app.
 #if DEBUG || BENCH
 /// Offline replay: one real `TerminalHost` fed from a file, with no server and no network.
-/// It is the deterministic benchmark (with `-perfLog`) and a screenshot check, for both engines.
+/// It is the deterministic benchmark (with `-perfLog`) and a screenshot check.
 ///
 /// Launch arguments:
-/// `-replay <file> [-terminalEngine ghostty|swiftTerm] [-replayCols N -replayRows N]
+/// `-replay <file> [-replayCols N -replayRows N]
 ///  [-replayChunk <bytes>] [-replayRate max|<bytes/s>] [-replayDelay <seconds>]
 ///  [-replayFontSize <points>]`.
 ///
@@ -22,13 +22,12 @@ import UIKit
 ///   the others.
 /// - `-replayDelay`: seconds between the pane being live and the first output of a file that
 ///   holds no snapshot (default 1), so launch work stays out of the measured window.
-/// - A SwiftTerm replay of a `rex` capture seeds the screen from `<file>.vt` if it exists (what
-///   `terminal.format` returned when the capture was made), else from nothing.
+/// - If the snapshot in a `rex` capture can't be restored, the screen is seeded from `<file>.vt`
+///   if it exists (what `terminal.format` returned when the capture was made), else from nothing.
 struct ReplayConfig {
     static let argument = "replay"
 
     var path: String
-    var engine: TerminalEngineKind
     var cols: Int
     var rows: Int
     var chunk: Int
@@ -43,7 +42,6 @@ struct ReplayConfig {
         guard let p = d.string(forKey: Self.argument), !p.isEmpty else { return nil }
         path = p.hasPrefix("/") ? p
             : FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(p).path
-        engine = .current
         cols = d.integer(forKey: "replayCols")
         rows = d.integer(forKey: "replayRows")
         chunk = d.integer(forKey: "replayChunk") > 0 ? d.integer(forKey: "replayChunk") : ReplayCapture.defaultChunk
@@ -108,7 +106,7 @@ final class ReplayView: UIView {
         let control = RexControl(address: "", client: ClientInfo(name: "replay", version: "0", label: "replay"))
         let stream = TerminalStream(control: control, sessionID: "replay", blockID: "replay")
         // Mirror: the host shows the grid the "server" has and never claims or resizes.
-        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: config.fontSize, theme: theme, engine: config.engine)
+        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: config.fontSize, theme: theme)
         stream.sink = nil
         host.frame = area
         addSubview(host)
@@ -121,8 +119,7 @@ final class ReplayView: UIView {
         // What `TerminalHost.positionTerm` will make of it in mirror mode.
         let zoom = min(area.width / (ceil(CGFloat(shown.cols) * cell.width) + 0.5), 1)
 
-        let source = ReplaySource(capture: capture, seed: seed, grid: grid,
-                                  restoresSnapshot: host.engineKind == .ghostty, delay: config.delay)
+        let source = ReplaySource(capture: capture, seed: seed, grid: grid, delay: config.delay)
         source.sink = host
         source.onFinished = { [weak host] in
             if let host { PerfProbe.active?.sourceFinished(host) }

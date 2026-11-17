@@ -8,13 +8,13 @@ import GhosttyVt
 //   and reflow, and the render state reports it per row. Nothing here keeps a range of its own.
 // - The fixed end of a drag is one tracked grid reference (`GhosttySelectionAnchor`), alive only
 //   while the gesture is.
-// - Words come from `ghostty_terminal_select_word`, with the boundary characters the SwiftTerm
-//   engine uses.
+// - Words come from `ghostty_terminal_select_word`, with our own boundary characters
+//   (`selectionWordBoundaries`).
 // - Copy is a formatter over the selection, with UNWRAP and TRIM: the text Ghostty itself puts
 //   on the clipboard.
 //
-// Why not the selection gesture object: the seam's contract is SwiftTerm's ("from the anchor to
-// the cell under the finger, both included"). The gesture's cell drag includes an end cell only
+// Why not the selection gesture object: the host's contract is "from the anchor to the cell
+// under the finger, both included". The gesture's cell drag includes an end cell only
 // past 60% of its width, in a direction fixed at the press, and its word press makes the whole
 // drag word-granular; neither can be turned off.
 //
@@ -73,8 +73,8 @@ enum GhosttySelectionExtendResult: Equatable {
 }
 
 extension GhosttyCore {
-    /// What ends a word for a long press: the SwiftTerm engine's set (spaces, quotes, brackets,
-    /// pipes, separators and the box-drawing bar), so paths, URLs and flags select whole.
+    /// What ends a word for a long press: spaces, quotes, brackets, pipes, separators and the
+    /// box-drawing bar, so paths, URLs and flags select whole.
     static let selectionWordBoundaries: [UInt32] = " \t\"'`()[]{}<>|;,│".unicodeScalars.map(\.value)
     /// Left out at the end of a word: there it reads as sentence punctuation.
     static let selectionTrailingPunctuation: [UInt32] = ".:!?".unicodeScalars.map(\.value)

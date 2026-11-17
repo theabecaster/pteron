@@ -176,11 +176,11 @@ final class TerminalPromptTests: XCTestCase {
     private func makeHost(_ setup: String = "") -> (TerminalHost, SendSpy) {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .mirror,
-                                fontSize: 12, theme: ThemeStore.fallback, engine: .ghostty)
+                                fontSize: 12, theme: ThemeStore.fallback)
         let spy = SendSpy()
         host.term.engineDelegate = spy
         host.term.feed(text: setup)
-        (host.term as? GhosttyTerminalView)?.core.sync()
+        host.term.core.sync()
         return (host, spy)
     }
 
@@ -263,7 +263,7 @@ final class TerminalPromptTests: XCTestCase {
     func testOnlyTheActivePaneOnScreenMayWriteThePasteboard() async throws {
         let (host, _) = makeHost()
         host.hardwareKeyboard = { false }
-        let view = try XCTUnwrap(host.term as? GhosttyTerminalView)
+        let view = host.term
         var texts: [String] = []
         view.core.clipboard.setSink { texts.append($0) }
 

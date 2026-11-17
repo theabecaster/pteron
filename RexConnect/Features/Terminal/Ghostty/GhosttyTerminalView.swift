@@ -1,12 +1,13 @@
 import UIKit
 import GhosttyVt
 
-/// The Ghostty engine's view: libghostty-vt for terminal state, drawn by our Metal renderer.
+/// The terminal view: libghostty-vt for terminal state, drawn by our Metal renderer.
+/// `TerminalHost` lays it out, zooms it and makes it first responder.
 ///
 /// This file is the output side: feeding, snapshot restore, grid, font, theme, cursor and the
 /// drawable's lifetime. Input, scrolling and selection live in the `+Input`, `+Scroll` and
 /// `+Selection` extension files.
-final class GhosttyTerminalView: UIView, TerminalEngineView {
+final class GhosttyTerminalView: UIView {
     /// Hosts the CAMetalLayer. The scroll surface (`GhosttyScroller`) lies over it.
     final class MetalView: UIView {
         override class var layerClass: AnyClass { CAMetalLayer.self }
@@ -14,12 +15,7 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     }
 
-    let engineKind = TerminalEngineKind.ghostty
-    let parsesOffMainThread = true
-    let fontChangeResetsModes = false
-    /// The server's terminal is Ghostty too.
-    let reflowsLikeServer = true
-
+    /// Held weakly. Setting it reports the current grid once.
     weak var engineDelegate: (any TerminalEngineDelegate)? {
         didSet { engineDelegate?.engineGridChanged(cols: cols, rows: rows) }
     }
@@ -38,12 +34,18 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     // Input: stored state for GhosttyTerminalView+Input.swift and GhosttyInputText.swift, which
     // hold the first-responder overrides and the UIKeyInput / UITextInput conformance.
+    /// Asked before any of this view's pans begins (scroll, wheel or arrow drag).
     var panGate: ((UIPanGestureRecognizer) -> Bool)?
+    /// Asked before the view's own single tap (a mouse click for the program) fires.
     var tapGate: (() -> Bool)?
     /// Sees each hardware key press before it is encoded; true means a key binding ran and the
     /// key must not reach the program.
     var keyHook: ((UIKey) -> Bool)?
+    /// Called when the view becomes (true) or stops being (false) first responder.
     var keyboardFocusHook: ((Bool) -> Void)?
+    /// One-shot ctrl / alt for the next key typed on the system keyboard (the key bar sets
+    /// them). Cleared after use, with `.terminalEngineControlModifierReset` /
+    /// `.terminalEngineMetaModifierReset` posted (object: this view).
     var controlModifier = false
     var metaModifier = false
     var keyboardAppearance: UIKeyboardAppearance = .dark
@@ -152,10 +154,8 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     // MARK: Output
 
-    func feed(byteArray: ArraySlice<UInt8>) {
-        byteArray.withUnsafeBytes { core.feed($0) }
-    }
-
+    /// The hot path for live output. The buffer is only valid during the call; the core copies
+    /// it once and parses on its own queue.
     func feed(buffer: UnsafeBufferPointer<UInt8>) {
         core.feed(UnsafeRawBufferPointer(buffer))
     }
@@ -165,6 +165,8 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         t.withUTF8 { core.feed(UnsafeRawBufferPointer($0)) }
     }
 
+    /// Restores a `GHOSTSNP` snapshot. False if `bytes` is none; `failed` runs on the main
+    /// thread if decoding fails later.
     func restoreSnapshot(_ bytes: [UInt8], failed: @escaping @MainActor () -> Void) -> Bool {
         restoreSnapshot(bytes, trailing: nil, failed: failed)
     }
@@ -216,8 +218,10 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     // MARK: Geometry
 
+    /// One cell in points at the current font.
     var cellSize: CGSize { atlas.metrics.cellSizePoints }
 
+    /// Sizes the local grid. Never resets modes the program set. Reports through the delegate.
     func setGrid(cols: Int, rows: Int, force: Bool) {
         let c = max(1, cols), r = max(1, rows)
         guard force || c != self.cols || r != self.rows else { return }
@@ -249,7 +253,7 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         core.setColors(GhosttyThemeColors(
             foreground: Self.rgb(t.foreground), background: Self.rgb(t.background), cursor: Self.rgb(t.cursor),
             ansi: (0..<16).map { Self.rgb(t.ansi[safe: $0] ?? t.foreground) }))
-        // The same 55% wash SwiftTerm draws (TermTheme.uiSelection).
+        // A 55% wash, as TermTheme.uiSelection is.
         let s = Self.rgb(t.selectionBackground)
         renderer.setSelectionColor(GhosttyRowBuilder.pack(UInt8((s >> 16) & 0xff), UInt8((s >> 8) & 0xff), UInt8(s & 0xff), 140))
     }
@@ -265,9 +269,6 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         }
         return UInt32(v & 0xff_ffff)
     }
-
-    /// Ghostty always draws with Metal. Nothing to turn on.
-    func enableGPU() {}
 
     // MARK: Drawable lifetime
 

@@ -15,9 +15,6 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    exactVersion: 1.99.3
   RexKit:
     path: Packages/RexKit
 targets:
@@ -27,8 +24,6 @@ targets:
     sources:
       - path: RexConnect
     dependencies:
-      - package: SwiftTerm
-        product: SwiftTerm
       - package: RexKit
         product: RexKit
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).

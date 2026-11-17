@@ -81,10 +81,10 @@ final class TerminalTapTests: XCTestCase {
 
     // MARK: Through the host
 
-    private func makeHost(_ setup: String, engine: TerminalEngineKind = .ghostty) -> (TerminalHost, SendSpy) {
+    private func makeHost(_ setup: String) -> (TerminalHost, SendSpy) {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .mirror,
-                                fontSize: 12, theme: ThemeStore.fallback, engine: engine)
+                                fontSize: 12, theme: ThemeStore.fallback)
         // What the engine sends is recorded instead of going to the stream.
         let spy = SendSpy()
         host.term.engineDelegate = spy
@@ -93,11 +93,10 @@ final class TerminalTapTests: XCTestCase {
         host.term.frame = CGRect(x: 0, y: 0, width: cell.width * 40, height: cell.height * 10)
         host.term.layoutIfNeeded()
         host.term.feed(text: setup)
-        if let view = host.term as? GhosttyTerminalView {
-            view.core.sync()
-            _ = view.renderer.frame.update(core: view.core)
-            view.scroller.apply(view.core.scroll.snapshot)
-        }
+        let view = host.term
+        view.core.sync()
+        _ = view.renderer.frame.update(core: view.core)
+        view.scroller.apply(view.core.scroll.snapshot)
         return (host, spy)
     }
 
@@ -118,10 +117,13 @@ final class TerminalTapTests: XCTestCase {
 
     func testTheEnginesOwnTapNeverFiresUnderAHost() {
         // The host sends the click itself, so the engine's recognizer is always refused: the
-        // order of the two recognizers can't matter.
+        // order of the two recognizers can't matter. Also before anything was touched, and
+        // whatever a tap changed.
         let (host, _) = makeHost(mouseProgram)
         XCTAssertEqual(host.term.tapGate?(), false)
         _ = host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: false, hadSelection: false)
+        XCTAssertEqual(host.term.tapGate?(), false)
+        _ = host.tap(at: CGPoint(x: 200, y: 100), shift: false, keyboardUp: true, hadSelection: false)
         XCTAssertEqual(host.term.tapGate?(), false)
     }
 
@@ -149,13 +151,5 @@ final class TerminalTapTests: XCTestCase {
         let (host, spy) = makeHost(mouseProgram)
         XCTAssertEqual(host.tap(at: CGPoint(x: 20, y: 20), shift: true, keyboardUp: true, hadSelection: false), .nothing)
         XCTAssertEqual(spy.sent, [])
-    }
-
-    func testAnEngineThatClicksFromItsOwnTapIsGatedByWhatWasTrueAtTouchTime() {
-        // SwiftTerm has no host selection UI and sends clicks from its own tap, which asks the
-        // gate. Nothing was touched yet: the pane had no keyboard, so no click.
-        let (host, _) = makeHost("", engine: .swiftTerm)
-        XCTAssertFalse(host.term.usesHostSelectionUI)
-        XCTAssertEqual(host.term.tapGate?(), false)
     }
 }

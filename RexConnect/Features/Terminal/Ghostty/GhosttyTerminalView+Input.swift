@@ -63,7 +63,7 @@ extension GhosttyTerminalView {
     }
 }
 
-// MARK: TerminalKeyTarget, paste
+// MARK: Key bar keys, raw sends, paste
 
 extension GhosttyTerminalView {
     func sendKeyUp() { sendKey(GHOSTTY_KEY_ARROW_UP) }
@@ -90,8 +90,12 @@ extension GhosttyTerminalView {
         sendInput(core.input.paste(s))
     }
 
+    /// True when pasting `s` now could run a command (a line end, outside bracketed paste): the
+    /// host asks the user first.
     func pasteNeedsConfirmation(_ s: String) -> Bool { core.input.pasteNeedsConfirmation(s) }
 
+    /// Who may let the program write the pasteboard (OSC 52): asked on the main actor for each
+    /// write; a refused write is dropped.
     func setProgramClipboardGate(_ gate: @escaping @MainActor () -> Bool) { core.clipboard.setGate(gate) }
 }
 
@@ -153,7 +157,7 @@ extension GhosttyTerminalView {
 // MARK: System keyboard
 
 extension GhosttyTerminalView {
-    /// Like SwiftTerm: true while the shadow document has text. Delete still arrives when it is
+    /// True while the shadow document has text. Delete still arrives when it is
     /// empty, and then sends one Backspace.
     var hasText: Bool { !inputState.document.isEmpty }
 
@@ -190,8 +194,8 @@ extension GhosttyTerminalView {
 
     /// The key bar's ctrl with Return or Tab from the system keyboard, for a program that asked
     /// for no keyboard protocol: the plain key. Ctrl+M and Ctrl+I already are Return and Tab
-    /// there, while the encoder's `CSI 27 ; 5 ; 13 ~` would show up as text in a shell. (SwiftTerm
-    /// sends nothing at all.) A hardware Ctrl+Return stays what Ghostty sends.
+    /// there, while the encoder's `CSI 27 ; 5 ; 13 ~` would show up as text in a shell.
+    /// A hardware Ctrl+Return stays what Ghostty sends.
     private func legacyControl(_ key: GhosttyInputKey) -> GhosttyInputKey {
         guard key.mods & GhosttyInputKey.ctrl != 0, key.key == GHOSTTY_KEY_ENTER.rawValue || key.key == GHOSTTY_KEY_TAB.rawValue,
               core.input.modes.kittyFlags == 0 else { return key }
@@ -302,7 +306,7 @@ extension GhosttyTerminalView {
         }
     }
 
-    /// Like SwiftTerm: plain Page Up and Page Down scroll the scrollback, unless the program
+    /// Plain Page Up and Page Down scroll the scrollback, unless the program
     /// took the cursor keys (DECCKM), as full-screen programs do.
     private func scrollsLocally(_ k: GhosttyInputKey) -> Bool {
         guard k.key == GHOSTTY_KEY_PAGE_UP.rawValue || k.key == GHOSTTY_KEY_PAGE_DOWN.rawValue else { return false }
@@ -326,7 +330,7 @@ extension GhosttyTerminalView {
     }
 
     // Keys that type repeat through the text system. Keys encoded here repeat through
-    // `KeyRepeater`, with SwiftTerm's delay and rate; only the latest key repeats. The repeater
+    // `KeyRepeater` (`Timing.program`); only the latest key repeats. The repeater
     // ends by itself when the key comes up, the app leaves the foreground, a keyboard goes away
     // or its limit is reached; this view ends it when it stops being first responder or leaves
     // its window.

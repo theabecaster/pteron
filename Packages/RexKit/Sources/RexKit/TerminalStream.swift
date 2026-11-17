@@ -279,12 +279,14 @@ public struct APCFilter {
 }
 
 public protocol TerminalSink: AnyObject {
-    /// Clears the terminal and sets the server's grid; a snapshot follows.
+    /// Clears the terminal and sets the server's grid; `streamSnapshot` follows. Only after a
+    /// Ghostty snapshot could not be restored.
     @MainActor func streamReset(cols: Int, rows: Int)
-    /// The screen and scrollback as escape sequences, applied at once.
+    /// The screen and scrollback as escape sequences, applied at once: the fallback for a
+    /// Ghostty snapshot that could not be restored.
     @MainActor func streamSnapshot(_ text: String)
-    /// The whole terminal as a Ghostty snapshot (`GHOSTSNP`), in parts as it arrives. Only sent
-    /// when the stream's `restoresGhosttySnapshot` is set. The parts come in this order: `begin`;
+    /// The whole terminal as a Ghostty snapshot (`GHOSTSNP`), in parts as it arrives, at the
+    /// start of every fresh stream. The parts come in this order: `begin`;
     /// `bytes` as often as chunks arrive; `ready` once, right after the bytes that end the READY
     /// record; more `bytes` (older history); `end`.
     ///
@@ -316,26 +318,18 @@ public protocol TerminalSink: AnyObject {
     @MainActor func streamStatus(_ status: TerminalStream.Status)
 }
 
-extension TerminalSink {
-    /// A sink that restores no snapshots refuses the first part.
-    @MainActor public func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool { false }
-}
-
 /// Streams one terminal block's output over `GET /api/data` (subprotocol rex.data.terminal.v1)
 /// and sends typed input back over the control connection.
 ///
 /// What the sink sees, after `streamStatus(.connecting)` and `streamStatus(.live)`:
 ///
-/// - Normally (`restoresGhosttySnapshot` off): `streamReset`, `streamResized` and `streamSnapshot`
-///   (from `terminal.format`, all three before `.live`), then `streamFeed` and messages in stream
-///   order.
-/// - With `restoresGhosttySnapshot`, on a fresh stream (HELLO: `start()`, `restart()`, `resync()`,
-///   or a reconnect that could not resume): `streamGhosttySnapshot` with `begin`, `bytes`…,
+/// - On a fresh stream (HELLO: `start()`, `restart()`, `resync()`, or a reconnect that could
+///   not resume): `streamGhosttySnapshot` with `begin`, `bytes`…,
 ///   `ready`, `bytes`…, `end(complete: true)`; then `streamResized` from the `resize` message that
 ///   follows the snapshot, then `streamTheme` if the server sends one, then `streamFeed` and
 ///   messages in stream order. There is no `streamReset`, and nothing is fed between `.live` and
 ///   the snapshot's `end`. Until `begin` the sink keeps showing what it had.
-/// - On a resume (RESUME), either way: `streamStatus(.reconnecting)`, `streamStatus(.live)`, then
+/// - On a resume (RESUME): `streamStatus(.reconnecting)`, `streamStatus(.live)`, then
 ///   the stream goes on from the first byte not yet received, which may be in the middle of the
 ///   snapshot. No reset and no new snapshot.
 /// - If the Ghostty snapshot can't be used (the sink returns false for a part, the snapshot ends
@@ -343,8 +337,15 @@ extension TerminalSink {
 ///   data stream stays open. Once the snapshot's bytes have gone by, the stream's output is
 ///   dropped while `terminal.size` and `terminal.format` are read, then come `streamReset`,
 ///   `streamResized`, `streamSnapshot`, and output again. Messages (`streamResized` and the
-///   others) still arrive meanwhile. From then on this stream behaves as if
-///   `restoresGhosttySnapshot` were off.
+///   others) still arrive meanwhile. From then on this stream uses no snapshots
+///   (`ghosttySnapshotFailed`): a fresh start sends `streamReset`, `streamResized` and
+///   `streamSnapshot` (from `terminal.format`) before `.live`, then `streamFeed` and messages in
+///   stream order, and `resync()` reads the screen the same way.
+///
+/// Backpressure. `pauseReading()` stops the stream from asking its data socket for more, so
+/// output piles up at the server (which holds a bounded buffer and drops the stream past it:
+/// close 1013, then a fresh start with a snapshot) instead of in the sink. `resumeReading()`
+/// goes on with the next message, in order. Control messages and input are not affected.
 ///
 /// Reconnecting. `RexControl` is the only thing that retries a lost connection. The stream:
 ///
@@ -407,20 +408,22 @@ public final class TerminalStream {
     /// True while a resync reads the screen; stream output is dropped meanwhile.
     private var resyncing = false
     private var resyncSeq = 0
+    /// True between `pauseReading()` and `resumeReading()`.
+    public private(set) var readingPaused = false
+    /// The receive loop, waiting to be allowed its next read.
+    private var readWaiter: CheckedContinuation<Void, Never>?
 
-    /// Restore the terminal from the Ghostty snapshot that starts every fresh data stream, instead
-    /// of reading it as escape sequences with `terminal.format`. Set it before `start()`.
-    /// It saves the `terminal.size`, `terminal.format` and `blob_read` round trips, and the server
-    /// places the snapshot exactly in the stream, so no output is lost or repeated around it.
-    public var restoresGhosttySnapshot = false
     /// True once a Ghostty snapshot could not be restored. The stream then reads the screen with
-    /// `terminal.format` for the rest of its life.
+    /// `terminal.format` for the rest of its life. Until then the terminal is restored from the
+    /// snapshot that starts every fresh data stream: no `terminal.size`, `terminal.format` and
+    /// `blob_read` round trips, and the server places the snapshot exactly in the stream, so no
+    /// output is lost or repeated around it.
     public private(set) var ghosttySnapshotFailed = false
     /// Where a fresh stream's snapshot stands: expected, being passed to the sink, or going by
     /// unused (the old path takes over at the first Rex message, which follows the snapshot).
     private enum SnapshotState { case none, awaiting, restoring, refused }
     private var snapshotState = SnapshotState.none
-    private var usesGhosttySnapshot: Bool { restoresGhosttySnapshot && !ghosttySnapshotFailed }
+    private var usesGhosttySnapshot: Bool { !ghosttySnapshotFailed }
 
     /// The server refused the HELLO or RESUME (REJECT).
     struct Refused: LocalizedError {
@@ -481,6 +484,7 @@ public final class TerminalStream {
         dropInput()
         ws?.close()
         ws = nil
+        wakeReader()
     }
 
     /// Re-read the whole screen and open a fresh stream. Queued input is kept.
@@ -492,8 +496,35 @@ public final class TerminalStream {
         token = nil
         ws?.close()
         ws = nil
+        wakeReader()
         stopped = false
         Task { await self.fullStart() }
+    }
+
+    /// Stops reading the data socket: the message being waited for, if any, is still taken and
+    /// passed on, and no further one is asked for until `resumeReading()`. For a sink that has
+    /// more output than it can hold (see "Backpressure" above). The state outlives reconnects,
+    /// `stop()` and `restart()`: only `resumeReading()` ends it. The byte count a RESUME sends
+    /// is not affected: it counts what was taken.
+    public func pauseReading() { readingPaused = true }
+
+    /// Goes on reading where `pauseReading()` stopped.
+    public func resumeReading() {
+        readingPaused = false
+        wakeReader()
+    }
+
+    /// Lets a paused receive loop look again: reading was resumed, or its stream is over (`gen`).
+    private func wakeReader() {
+        readWaiter?.resume()
+        readWaiter = nil
+    }
+
+    /// Returns once reading is allowed, or at once when `myGen` is no longer the stream's.
+    private func waitToRead(gen myGen: Int) async {
+        while readingPaused, myGen == gen {
+            await withCheckedContinuation { readWaiter = $0 }
+        }
     }
 
     /// The control connection is connected (again).
@@ -530,8 +561,8 @@ public final class TerminalStream {
     /// before the read's last call returns, is dropped and lost; output from before the format
     /// whose frames arrive after the read is drawn a second time.
     ///
-    /// With `restoresGhosttySnapshot` it opens a fresh data stream instead (`restart()`), whose
-    /// snapshot redraws everything. That costs a ticket and a WebSocket handshake where the read
+    /// That is the path of a stream whose snapshot failed. Otherwise it opens a fresh data
+    /// stream instead (`restart()`), whose snapshot redraws everything. That costs a ticket and a WebSocket handshake where the read
     /// costs two or three calls on the open control connection (about 5 to 16 ms against 2 ms on
     /// the same host), but it is the one that is exact: the snapshot holds all history, both
     /// screens, every mode and unfinished input, and sits at a known place in the stream. A read
@@ -622,6 +653,7 @@ public final class TerminalStream {
         // `stop()` may have run between the call that asked for this start and the start itself.
         guard !stopped else { return }
         gen += 1
+        wakeReader()
         resyncing = false
         snapshotState = .none
         live = false
@@ -802,10 +834,14 @@ public final class TerminalStream {
         sink?.streamStatus(.live)
     }
 
-    /// Reads the socket until it fails or the stream moves on (`gen`).
+    /// Reads the socket until it fails or the stream moves on (`gen`). While reading is paused
+    /// it asks for nothing (`pauseReading()`).
     private func receive(_ socket: any StreamSocket, gen myGen: Int) {
         Task { [weak self] in
             while true {
+                // Holds the stream while it waits: a paused stream lives until it is resumed
+                // or stopped.
+                await self?.waitToRead(gen: myGen)
                 let message: Data?
                 do {
                     message = try await socket.receive()

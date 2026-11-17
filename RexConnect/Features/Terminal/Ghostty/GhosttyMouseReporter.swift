@@ -2,8 +2,7 @@ import CoreGraphics
 import Foundation
 import GhosttyVt
 
-/// Where a vertical drag or a wheel goes. The rules are SwiftTerm's (`ProgramScrollRouting`),
-/// so both engines behave the same.
+/// Where a vertical drag or a wheel goes.
 enum GhosttyScrollRoute: Equatable {
     /// Wheel reports (buttons 4 and 5) to a program that tracks the mouse.
     case mouse
@@ -51,7 +50,7 @@ enum GhosttyScrollRouting {
     }
 }
 
-/// Drag distance kept until it adds up to a whole line. SwiftTerm's `WheelDistanceAccumulator`.
+/// Drag distance kept until it adds up to a whole line.
 struct GhosttyWheelAccumulator {
     private(set) var remainder: CGFloat = 0
     private var route: GhosttyScrollRoute?
@@ -77,7 +76,7 @@ struct GhosttyWheelAccumulator {
 }
 
 /// Token bucket for generated wheel reports and arrow keys, so a fast drag can't flood a slow
-/// program. SwiftTerm's `WheelReportBudget`: 100 a second, bursts of 6.
+/// program: 100 a second, bursts of 6.
 struct GhosttyWheelBudget {
     static let perSecond: Double = 100
     static let burst = 6

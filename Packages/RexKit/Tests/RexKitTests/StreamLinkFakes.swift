@@ -114,6 +114,8 @@ final class FakeSocket: StreamSocket {
     private(set) var sent: [[UInt8]] = []
     private(set) var closed = false
     private(set) var closeCode = 0
+    /// How often the stream asked for a message (the handshake's answer included).
+    private(set) var receives = 0
     private var inbox: [Result<Data?, Error>] = []
     private var waiter: CheckedContinuation<Data?, Error>?
 
@@ -138,6 +140,7 @@ final class FakeSocket: StreamSocket {
     }
 
     func receive() async throws -> Data? {
+        receives += 1
         if !inbox.isEmpty { return try inbox.removeFirst().get() }
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
@@ -209,11 +212,10 @@ final class SleepLog {
 }
 
 @MainActor
-func makeStream(link: FakeLink, sink: TerminalSink, ghostty: Bool = true) -> (TerminalStream, SleepLog) {
+func makeStream(link: FakeLink, sink: TerminalSink) -> (TerminalStream, SleepLog) {
     let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
     let s = TerminalStream(control: control, link: link, sessionID: "session:test", blockID: "block:test")
     s.sink = sink
-    s.restoresGhosttySnapshot = ghostty
     let log = SleepLog()
     log.attach(to: s)
     return (s, log)

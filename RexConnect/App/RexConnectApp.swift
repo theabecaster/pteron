@@ -35,7 +35,7 @@ struct RexConnectApp: App {
     @ViewBuilder private var offlineScreen: some View {
         #if DEBUG || BENCH
         if let replay = ReplayConfig.current {
-            // Offline replay through a real TerminalHost, either engine: `-replay <file>`.
+            // Offline replay through a real TerminalHost: `-replay <file>`.
             ReplayScreen(config: replay).ignoresSafeArea()
         }
         #endif

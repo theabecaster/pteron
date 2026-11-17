@@ -154,7 +154,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         if !interacting, snapshot.appliedSequence >= lastRequest { y = CGFloat(snapshot.position) / scale }
         if abs(y - surface.contentOffset.y) > 0.01 { surface.contentOffset = CGPoint(x: 0, y: y) }
 
-        // Like SwiftTerm: while the program takes one-finger drags, scrollback needs two.
+        // While the program takes one-finger drags, scrollback needs two.
         let pan = surface.panGestureRecognizer
         let fingers = snapshot.programScroll ? 2 : 1
         if pan.minimumNumberOfTouches != fingers { pan.minimumNumberOfTouches = fingers }
@@ -226,7 +226,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         }
         if g === tap {
             // Lifting a long press that selected is not a tap.
-            if let press = view.selectionPressRecognizer, press.state == .began || press.state == .changed || press.state == .ended {
+            let press = view.selectionPress
+            if press.state == .began || press.state == .changed || press.state == .ended {
                 return false
             }
             return view.tapGate?() ?? true
@@ -315,7 +316,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         guard view.isFirstResponder, !g.modifierFlags.contains(.shift) else { return }
         guard core.programScrollModes().mouseTracking else { return }
         if view.hasActiveSelection {
-            // SwiftTerm: with a selection up, the tap dismisses it instead of clicking.
+            // With a selection up, the tap dismisses it instead of clicking.
             view.clearSelectedRange()
             return
         }
@@ -323,7 +324,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     }
 
     /// A left click at `point` (this view's coordinates): press, then release if the program's
-    /// tracking mode reports releases. Uses up a one-shot ctrl from the key bar, as SwiftTerm does.
+    /// tracking mode reports releases. Uses up a one-shot ctrl from the key bar.
     @discardableResult
     func forwardTap(at point: CGPoint) -> [UInt8] {
         guard let view, let position = mousePosition(point) else { return [] }
@@ -393,8 +394,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         return m
     }
 
-    /// A mouse report (click, wheel, motion). Like SwiftTerm, it leaves a scrolled-up view where
-    /// it is: only keys and pastes bring it back to the bottom.
+    /// A mouse report (click, wheel, motion). It leaves a scrolled-up view where it is: only
+    /// keys and pastes bring it back to the bottom.
     private func sendReport(_ bytes: [UInt8]) {
         guard !bytes.isEmpty, let view else { return }
         view.engineDelegate?.engineSend(bytes)
@@ -407,8 +408,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         scrollToBottomForInput()
     }
 
-    /// SwiftTerm's rule for input (`ensureCaretIsVisible`, run for everything its `send(data:)`
-    /// carries): keys and pastes sent while the view is scrolled up jump back to the bottom.
+    /// The rule for input: keys and pastes sent while the view is scrolled up jump back to the
+    /// bottom.
     /// Output, mouse reports and focus reports never move the view.
     func scrollToBottomForInput() {
         let bottom = surface.contentSize.height - surface.bounds.height

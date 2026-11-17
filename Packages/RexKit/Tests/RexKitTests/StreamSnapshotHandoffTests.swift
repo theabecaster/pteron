@@ -55,11 +55,16 @@ final class StreamSnapshotHandoffTests: XCTestCase {
         var ghostty: [StreamEvent] { calls.compactMap { if case .ghostty(let e) = $0 { return e } else { return nil } } }
     }
 
-    /// A sink that doesn't know about Ghostty snapshots, like TerminalHost today.
-    final class OldSink: TerminalSink {
+    /// A sink that can restore no snapshot: it refuses every part.
+    final class RefusingSink: TerminalSink {
         var fed = 0
+        var parts = 0
         func streamReset(cols: Int, rows: Int) {}
         func streamSnapshot(_ text: String) {}
+        func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool {
+            parts += 1
+            return false
+        }
         func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>) { fed += bytes.count }
         func streamResized(cols: Int, rows: Int, owner: String?) {}
         func streamTheme(_ theme: JSONObject) {}
@@ -71,7 +76,6 @@ final class StreamSnapshotHandoffTests: XCTestCase {
         // Never connected: nothing here reaches a server.
         let s = TerminalStream(control: RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test")), sessionID: "session:test", blockID: "block:test")
         s.sink = sink
-        s.restoresGhosttySnapshot = true
         return s
     }
 
@@ -114,7 +118,9 @@ final class StreamSnapshotHandoffTests: XCTestCase {
         }
     }
 
-    func testFlagOffSeesTheSameCallsWithoutTheSnapshot() throws {
+    /// A stream that gave up on snapshots opens its next data stream without collecting one
+    /// (`fullStart`): the snapshot's bytes go by unseen and everything else is the same.
+    func testStreamOpenedWithoutCollectingSeesTheSameCallsWithoutTheSnapshot() throws {
         for name in StreamFixture.names {
             let fx = try StreamFixture.load(name)
             let onSink = Sink(), on = makeStream(onSink)
@@ -122,13 +128,13 @@ final class StreamSnapshotHandoffTests: XCTestCase {
             feed(on, fx.bytes, chunk: 512)
 
             let offSink = Sink(), off = makeStream(offSink)
-            off.restoresGhosttySnapshot = false
+            off.snapshotRestoreFailed()
+            XCTAssertTrue(off.ghosttySnapshotFailed)
             off.beginStream(nonce: fx.nonce, collectSnapshot: false)
             feed(off, fx.bytes, chunk: 512)
 
             XCTAssertFalse(offSink.calls.contains(where: \.isGhostty), name)
             XCTAssertEqual(onSink.calls.filter { !$0.isGhostty }, offSink.calls, name)
-            XCTAssertFalse(off.ghosttySnapshotFailed)
         }
     }
 
@@ -167,12 +173,13 @@ final class StreamSnapshotHandoffTests: XCTestCase {
         }
     }
 
-    func testSinkWithoutSnapshotSupportUsesTheDefault() throws {
+    func testSinkThatRestoresNoSnapshotIsAskedOnceAndStillGetsTheOutput() throws {
         let fx = try StreamFixture.load("live")
-        let sink = OldSink(), stream = makeStream(sink)
+        let sink = RefusingSink(), stream = makeStream(sink)
         stream.beginStream(nonce: fx.nonce, collectSnapshot: true)
         feed(stream, fx.bytes, chunk: 4096)
         XCTAssertTrue(stream.ghosttySnapshotFailed)
+        XCTAssertEqual(sink.parts, 1)
         XCTAssertGreaterThan(sink.fed, 0)
     }
 

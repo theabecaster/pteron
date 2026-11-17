@@ -260,10 +260,9 @@ final class KeyRepeaterTests: XCTestCase {
         // The host's way to stop it (the pane is no longer the active one).
         _ = press(view, "right")
         clock.advance(0.45)
-        let engine: any TerminalEngineView = view
-        engine.stopKeyRepeat()
+        view.stopKeyRepeat()
         count = spy.sent.count
         clock.advance(30)
-        XCTAssertEqual(spy.sent.count, count, "stopped through the seam")
+        XCTAssertEqual(spy.sent.count, count, "stopped by the host")
     }
 }

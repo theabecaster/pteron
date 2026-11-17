@@ -246,18 +246,16 @@ struct KeyboardFocusPolicyTests {
     }
 
     @Test func panesStayOutOfTheSystemFocus() {
-        // No focus halo on a pane: the focus system has nothing to land on in the default engine.
+        // No focus halo on a pane: the focus system has nothing to land on in the terminal view.
         let ghostty = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: 12, cols: 40, rows: 10)
         #expect(!ghostty.canBecomeFocused)
         #expect(ghostty.canBecomeFirstResponder)
         // And where the focus system does reach it (Full Keyboard Access), it draws no halo of its own.
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
-        for engine in [TerminalEngineKind.ghostty, .swiftTerm] {
-            let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .mirror,
-                                    fontSize: 12, theme: ThemeStore.fallback, engine: engine)
-            #expect(host.term.focusEffect == nil, "\(engine)")
-            #expect(!host.canBecomeFocused, "\(engine)")
-        }
+        let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .mirror,
+                                fontSize: 12, theme: ThemeStore.fallback)
+        #expect(host.term.focusEffect == nil)
+        #expect(!host.canBecomeFocused)
     }
 }
 
@@ -397,18 +395,17 @@ struct HardwareKeyPathTests {
         return key
     }
 
-    private func makeHost(_ engine: TerminalEngineKind) -> (TerminalHost, KeymapStore) {
+    private func makeHost() -> (TerminalHost, KeymapStore) {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b")
-        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: 12, theme: ThemeStore.fallback, engine: engine)
+        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: 12, theme: ThemeStore.fallback)
         let keymap = KeymapStore(control: control)
         host.keymap = keymap
         return (host, keymap)
     }
 
-    @Test(arguments: [TerminalEngineKind.ghostty, .swiftTerm])
-    func cmdSlashOnTheEngineViewRunsToggleSidebar(engine: TerminalEngineKind) throws {
-        let (host, _) = makeHost(engine)
+    @Test func cmdSlashOnTheEngineViewRunsToggleSidebar() throws {
+        let (host, _) = makeHost()
         var commands: [RexCommand] = []
         host.onCommand = { commands.append($0) }
         let key = try makeKey(usage: keySlash, flags: cmd, characters: "/")
@@ -433,7 +430,7 @@ struct HardwareKeyPathTests {
 
     @Test func aBoundKeyRepeatsThroughTheSharedRepeaterAndStopsWhenThePaneIsLeft() throws {
         // ⌥⌘← is Focus Pane Left in the default keymap, and repeats while held.
-        let (host, _) = makeHost(.ghostty)
+        let (host, _) = makeHost()
         let clock = ManualKeyRepeatClock()
         host.keyRepeat = KeyRepeater(clock: clock, notifications: NotificationCenter(), keyIsDown: { _ in true })
         var ran = 0
@@ -461,25 +458,23 @@ struct HardwareKeyPathTests {
     }
 
     @Test func theKeyCommandListCarriesToggleSidebar() throws {
-        let (host, _) = makeHost(.ghostty)
+        let (host, _) = makeHost()
         let commands = try #require(host.keyCommands)
         let slash = try #require(commands.first { $0.input == "/" && $0.modifierFlags == .command })
         #expect(slash.title == "Toggle Sidebar")
         #expect(slash.wantsPriorityOverSystemBehavior)
     }
 
-    @Test func theKeyboardFocusHookReportsBothEngines() {
-        for kind in [TerminalEngineKind.ghostty, .swiftTerm] {
-            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
-            let view = kind.makeView(fontSize: 12, theme: ThemeStore.fallback)
-            var events: [Bool] = []
-            view.keyboardFocusHook = { events.append($0) }
-            window.addSubview(view)
-            window.makeKeyAndVisible()
-            guard view.becomeFirstResponder() else { continue }  // no key window in this test host
-            _ = view.resignFirstResponder()
-            #expect(events == [true, false], "\(kind)")
-            window.isHidden = true
-        }
+    @Test func theKeyboardFocusHookReportsTakingAndLosingTheKeyboard() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        let view = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: 12)
+        var events: [Bool] = []
+        view.keyboardFocusHook = { events.append($0) }
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        guard view.becomeFirstResponder() else { return }  // no key window in this test host
+        _ = view.resignFirstResponder()
+        #expect(events == [true, false])
+        window.isHidden = true
     }
 }

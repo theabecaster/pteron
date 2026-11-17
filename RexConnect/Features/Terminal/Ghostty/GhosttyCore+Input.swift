@@ -81,7 +81,7 @@ final class GhosttyInputMirror: @unchecked Sendable {
         ghostty_key_encoder_free(encoder)
     }
 
-    /// Option is Alt, as `optionAsMetaKey = true` on the SwiftTerm engine. On the iOS slices the
+    /// Option is Alt. On the iOS slices the
     /// legacy Alt prefix ignores this option but the modifyOtherKeys path honors it
     /// (`input/key_encode.zig`), so it must be TRUE for Alt to behave one way.
     private func applyOptionAsAlt() {
@@ -136,7 +136,7 @@ final class GhosttyInputMirror: @unchecked Sendable {
     /// Escape, and shells and editors rely on it (Ctrl+[ leaves insert mode in vi). Ghostty's
     /// legacy encoder follows "fixterms" and sends `CSI <char> ; 5 u` for exactly these three
     /// (`input/key_encode.zig`, `ctrlSeq`: "purposely NOT handled here"), which programs that
-    /// never asked for an extended keyboard protocol print as text. The SwiftTerm engine sends
+    /// never asked for an extended keyboard protocol print as text. Every legacy terminal sends
     /// 0x09, 0x0D and 0x1B. To keep that, in legacy mode only, such a press is encoded again as
     /// the key it stands for, so the bytes still come from the encoder. With the Kitty protocol
     /// on, or modifyOtherKeys 2 (which encodes them as `CSI 27 ; 5 ; <char> ~`), nothing changes.

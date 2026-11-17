@@ -14,7 +14,7 @@ import GhosttyVt
 //   (guides/custom-sequences.md). Options are read the way `osc/parsers/semantic_prompt.zig` does.
 // - The move is `Screen.promptClickLine` again, over cells read through grid references.
 //
-// Rules, from `Surface.maybePromptClick` and SwiftTerm's `handleSemanticPromptClick` (they agree):
+// Rules, from Ghostty's `Surface.maybePromptClick`:
 // the shell must have asked for clicks, the cursor must be at a prompt (never on an alternate
 // screen, never while a command runs), there is no selection, and the tap is not above the prompt.
 

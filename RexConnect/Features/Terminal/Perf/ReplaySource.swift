@@ -135,14 +135,11 @@ struct ReplayCapture {
 /// It makes the calls `TerminalStream` documents, in the same order, through the same
 /// `APCFilter`, one chunk per main-actor turn:
 ///
-/// - `restoresSnapshot` off (SwiftTerm): `streamStatus(.connecting)`, `streamReset`,
-///   `streamResized`, `streamSnapshot(seed)`, `streamStatus(.live)`, then the chunks: the
-///   snapshot in a `rex` capture is dropped by the filter, messages and output follow in order.
-///   The seed stands for `terminal.format`'s answer; a replay has no server to ask.
-/// - `restoresSnapshot` on (Ghostty): `streamStatus(.connecting)`, `streamStatus(.live)`, then
-///   the chunks: `streamGhosttySnapshot` parts, `streamResized` from the message that follows,
-///   then output and messages. If the sink refuses the snapshot, the seed is used instead at the
-///   first message (`streamReset`, `streamResized`, `streamSnapshot`), as the stream does.
+/// - A `rex` capture: `streamStatus(.connecting)`, `streamStatus(.live)`, then the chunks:
+///   `streamGhosttySnapshot` parts, `streamResized` from the message that follows, then output
+///   and messages. If the sink refuses the snapshot, the seed is used instead at the first
+///   message (`streamReset`, `streamResized`, `streamSnapshot`), as the stream does. The seed
+///   stands for `terminal.format`'s answer; a replay has no server to ask.
 /// - `vt` and `timed` files hold no snapshot and no messages. They go through the filter behind
 ///   one `resize` message, so the sink sees `streamResized`, then `streamFeed` per chunk.
 ///
@@ -158,7 +155,6 @@ final class ReplaySource {
     private let capture: ReplayCapture
     private let seed: String
     private let grid: (cols: Int, rows: Int)
-    private let restoresSnapshot: Bool
     private let delay: TimeInterval
     private var filter: APCFilter
     /// Stands in for the socket's delegate queue.
@@ -171,23 +167,20 @@ final class ReplaySource {
     /// `grid` is the server's size for `vt` and `timed` files, and for a `rex` capture without a
     /// `resize` message. `delay` is waited between `.live` and the first chunk of a file that
     /// holds no snapshot, so the output doesn't land in the middle of the app's launch.
-    init(capture: ReplayCapture, seed: String = "", grid: (cols: Int, rows: Int), restoresSnapshot: Bool,
-         delay: TimeInterval = 0) {
+    init(capture: ReplayCapture, seed: String = "", grid: (cols: Int, rows: Int), delay: TimeInterval = 0) {
         self.capture = capture
         self.seed = seed
         self.grid = capture.grid ?? grid
-        self.restoresSnapshot = restoresSnapshot
         self.delay = capture.format == .rex ? 0 : delay
         filter = APCFilter(nonce: capture.nonce)
     }
 
     func start() {
         gen += 1
-        let passes = restoresSnapshot && capture.format == .rex
+        let passes = capture.format == .rex
         filter = APCFilter(nonce: capture.nonce, passesSnapshot: passes)
         snapshotState = passes ? .awaiting : .none
         sink?.streamStatus(.connecting)
-        if !restoresSnapshot { redrawFromSeed() }
         sink?.streamStatus(.live)
         if capture.format != .rex { consume(ReplayCapture.resizeMessage(cols: grid.cols, rows: grid.rows)) }
         next(0, from: .now() + delay, gen: gen)

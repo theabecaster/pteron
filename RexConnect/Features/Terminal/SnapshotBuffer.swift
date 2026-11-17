@@ -2,7 +2,7 @@ import Foundation
 
 /// Collects a Ghostty snapshot as it arrives, for one restore at its end.
 ///
-/// The restore needs one contiguous buffer (`TerminalEngineView.restoreSnapshot`), and the size
+/// The restore needs one contiguous buffer (`GhosttyTerminalView.restoreSnapshot`), and the size
 /// isn't known until the last byte. An array that grows by doubling holds the old and the new
 /// storage at every step: up to three times the snapshot near the end. So the bytes are kept in
 /// blocks of a fixed size, which never move, and `take()` joins them into an array of the exact
