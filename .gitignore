@@ -1,4 +1,15 @@
 .asc.env
+# Signing and API keys never belong in the repo (scripts/sync-macdesk.sh skips the same patterns).
+.env
+.env.*
+*.env
+*.p8
+*.p12
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.provisionprofile
 .claude/worktrees/
 .DS_Store
 *.xcuserstate

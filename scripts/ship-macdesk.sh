@@ -28,7 +28,7 @@ echo "== start $(date) build $BUILD"
 rm -rf build/RexConnect.xcarchive build/export
 # Each xcodebuild's own status is taken from the pipe: the filter after it always succeeds.
 $XCODEBUILD -project RexConnect.xcodeproj -scheme RexConnect -configuration Release \
-  -destination "generic/platform=iOS" -derivedDataPath build/dd -clonedSourcePackagesDirPath build/spm \
+  -destination "generic/platform=iOS" -derivedDataPath build/dd \
   -allowProvisioningUpdates \
   CURRENT_PROJECT_VERSION=$BUILD -archivePath build/RexConnect.xcarchive archive | grep -E "error:|ARCHIVE|warning: .*sign"
 rc=$pipestatus[1]

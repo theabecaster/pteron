@@ -7,6 +7,6 @@ BUILD=${1:-$(date +%y%m%d%H%M)}
 cd "$(dirname "$0")/.."
 # Checks Vendor/GhosttyVt.xcframework, generates the project and copies both with the sources.
 scripts/sync-macdesk.sh
-ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/rexconnect-build && xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -configuration Release -destination id=$DEVICE -derivedDataPath build/dd -clonedSourcePackagesDirPath build/spm -allowProvisioningUpdates -allowProvisioningDeviceRegistration CURRENT_PROJECT_VERSION=$BUILD build > build.log 2>&1' || { grep -E 'error:' ~/rexconnect-build/build.log | head -20; exit 1; }
+ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/rexconnect-build && xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -configuration Release -destination id=$DEVICE -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration CURRENT_PROJECT_VERSION=$BUILD build > build.log 2>&1' || { grep -E 'error:' ~/rexconnect-build/build.log | head -20; exit 1; }
 /usr/bin/xcrun devicectl device install app --device $DEVICE ~/rexconnect-build/build/dd/Build/Products/Release-iphoneos/RexConnect.app | grep -E 'App installed'"
 echo "installed build $BUILD"
