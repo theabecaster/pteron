@@ -54,7 +54,7 @@ else. `Features/Pairing` scans it (AVFoundation; the camera permission is asked 
 opens) and `PairingModel` (`State/Pairing.swift`) takes it from there: parse and normalize
 (`PairingCode`), stop at a server that is already saved, check that Rex answers
 (`ServerProbe` in RexKit: a plain `GET /api/control`, which Rex answers with 426, so no client ever
-shows on the server), then name and add. A failed check goes through `ConnectionProblem.classify`
+shows on the server; redirects are not followed, so only the address asked can answer), then name and add. A failed check goes through `ConnectionProblem.classify`
 and is worded by `PairingProblem`. A server added this way connects and registers for pushes like
 any other.
 

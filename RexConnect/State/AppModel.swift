@@ -13,10 +13,15 @@ struct Selection: Hashable, Codable {
 @Observable
 final class Notice {
     static let shared = Notice()
+    /// An error (an action the server refused) or plain news.
+    enum Style { case error, neutral }
+
     private(set) var message: String?
+    private(set) var style = Style.error
     @ObservationIgnored private var hide: Task<Void, Never>?
 
-    func show(_ text: String) {
+    func show(_ text: String, style: Style = .error) {
+        self.style = style
         message = text
         hide?.cancel()
         hide = Task { [weak self] in
@@ -131,7 +136,9 @@ final class AppModel {
 
     // MARK: Adding a server
 
+    /// Saves a server, unless one at the same address is already saved.
     func addServer(_ config: ServerConfig) {
+        if let url = ServerConfig.url(from: config.url), PairingCode.existing(url, in: prefs.servers) != nil { return }
         prefs.servers.append(config)
         rebuildServers()
     }
@@ -146,10 +153,16 @@ final class AppModel {
         return ConnectionProblem.classify(failure, network: network?.snapshot ?? .unknown)
     }
 
-    /// A saved server was scanned again: if it is down, try it now.
-    func kick(_ config: ServerConfig) {
-        guard let s = server(config.id), s.phase != .online else { return }
-        s.reconnect()
+    /// A saved server was scanned again: show its active tab, or try it now if it is down.
+    func show(_ config: ServerConfig) {
+        guard let s = server(config.id) else { return }
+        guard s.phase == .online else { s.reconnect(); return }
+        for e in s.sessions {
+            if let w = s.views[e.id]?.activeWindow {
+                openRequest = OpenRequest(selection: Selection(serverID: s.id, sessionID: e.id, windowID: w.id))
+                return
+            }
+        }
     }
 
     /// A new network path is when a down server can come back: retry those now.

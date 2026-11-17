@@ -260,9 +260,7 @@ struct AddServerView: View {
                     .disabled(url == nil)
             }
         }
-        .fullScreenCover(isPresented: $showPairing) {
-            PairingSheet { addressFocused = true }.environment(model)
-        }
+        .pairingCover(isPresented: $showPairing, model: model) { addressFocused = true }
     }
 
     private func add(_ url: URL) {

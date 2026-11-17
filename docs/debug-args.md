@@ -32,7 +32,7 @@ builds.
 - `-simulateScan <payload>`: open "Pair via QR Code" at launch and read this payload as if the
   camera had (the simulator has no camera). `open` only opens the scanner. With `-settings
   addServer` it scans from that page, and `-simulateOffline <kind>` makes the check fail that way.
-  `-simulateCamera denied` shows the scanner with camera access refused.
+  `-simulateCamera denied|restricted|unavailable` shows the scanner in that camera state.
 - `-pushToken <hex>`: use this APNs token and skip the permission check (push registration in a
   simulator).
 - `-launchPeel fold`, `-launchSlow <factor>`, `-launchHold <seconds>`: the launch transition

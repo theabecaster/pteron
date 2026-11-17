@@ -34,13 +34,15 @@ enum PairingLayout: Equatable {
 /// this iPhone can reach it, name it, add it. Full screen, in the offline screen's look: the
 /// theme's background, one bordered card, the capsule button.
 struct PairingSheet: View {
-    /// The person would rather type the address. Called as the sheet is dismissed.
+    /// The person would rather type the address. The presenter acts on it once the sheet is gone
+    /// (`pairingCover`).
     let onEnterAddress: () -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var pairing: PairingModel?
     @State private var access = CameraAccess.asking
     @State private var torch = false
@@ -73,9 +75,20 @@ struct PairingSheet: View {
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
         .task { await begin() }
+        .onDisappear { pairing?.cancel() }
         .onChange(of: pairing?.step) { _, _ in
             torch = false
             showDetails = false
+            // VoiceOver moves to the new step's card.
+            UIAccessibility.post(notification: .screenChanged, argument: nil)
+        }
+        .onChange(of: pairing?.rejection) { _, text in
+            if let text { UIAccessibility.post(notification: .announcement, argument: text) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Back from Settings, where the person may have allowed the camera.
+            guard phase == .active, access == .denied else { return }
+            Task { access = await CameraAccess.resolve() }
         }
     }
 
@@ -99,9 +112,14 @@ struct PairingSheet: View {
                     }
                     SecondaryButton(title: "Enter Address Instead", theme: theme, action: enterAddress)
                 }
+            case .restricted:
+                PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera is restricted",
+                            message: "This iPhone doesn't allow apps to use the camera, so Rex DUO can't scan a pairing code.") {
+                    PrimaryButton(title: "Enter Address Instead", busy: false, theme: theme, action: enterAddress)
+                }
             case .unavailable:
-                PairingCard(theme: theme, glyph: .symbol("camera"), title: "No camera",
-                            message: "This device has no camera to scan a pairing code with.") {
+                PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera isn't available",
+                            message: "Rex DUO can't use the camera right now to scan a pairing code.") {
                     PrimaryButton(title: "Enter Address Instead", busy: false, theme: theme, action: enterAddress)
                 }
             }
@@ -112,6 +130,8 @@ struct PairingSheet: View {
             }
         case .found(let url):
             FoundCard(pairing: pairing, theme: theme, url: url) { dismiss() }
+        case .done:
+            Color.clear
         case .problem(let url, let problem):
             PairingCard(theme: theme, glyph: .glitch(problem.symbol), title: problem.title, message: problem.message) {
                 if problem.actions.contains(.tryAgain) {
@@ -129,31 +149,37 @@ struct PairingSheet: View {
         }
     }
 
-    @ViewBuilder
+    /// One camera and one set of instructions in one stack, whichever way it runs, so a fold, a
+    /// rotation or a resize moves the camera instead of rebuilding it and restarting its session.
     private func scanner(_ pairing: PairingModel, _ theme: TermTheme, _ layout: PairingLayout) -> some View {
+        let stack: AnyLayout
+        var width: CGFloat?, height: CGFloat?
+        var paged = true
         switch layout {
-        case .sideBySide(let width):
-            HStack(spacing: 0) {
-                camera(pairing, theme).frame(width: width)
-                instructions(theme).frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .stacked(let height):
-            VStack(spacing: 0) {
-                if let height {
-                    camera(pairing, theme).frame(height: height)
-                    instructions(theme).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    camera(pairing, theme)
-                    instructions(theme).padding(.top, 8).padding(.bottom, 16)
-                }
-            }
+        case .sideBySide(let camera):
+            stack = AnyLayout(HStackLayout(spacing: 0))
+            width = camera
+        case .stacked(let camera):
+            stack = AnyLayout(VStackLayout(spacing: 0))
+            height = camera
+            paged = camera != nil
+        }
+        return stack {
+            camera(pairing, theme)
+                .frame(width: width, height: height)
+            instructions(theme)
+                .padding(.top, paged ? 0 : 8)
+                .padding(.bottom, paged ? 0 : 16)
+                .frame(maxWidth: .infinity, maxHeight: paged ? .infinity : nil)
         }
     }
 
     private func camera(_ pairing: PairingModel, _ theme: TermTheme) -> some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-        return QRCameraView(torch: torch) { code in
+        return QRCameraView(torch: $torch) { code in
             if pairing.scanned(code) { Haptic.success() }
+        } onFailure: {
+            access = .unavailable
         }
         .overlay { Viewfinder(color: theme.accent).padding(36) }
         .overlay(alignment: .bottom) {
@@ -223,8 +249,8 @@ struct PairingSheet: View {
     // MARK: Wiring
 
     private func enterAddress() {
-        dismiss()
         onEnterAddress()
+        dismiss()
     }
 
     private func begin() async {
@@ -234,8 +260,8 @@ struct PairingSheet: View {
             probe: { [model] url in await model.probe(url) },
             onExisting: { [model] saved in
                 finish()
-                Notice.shared.show("\(saved.name) is already added.")
-                model.kick(saved)
+                Notice.shared.show("\(saved.name) is already added.", style: .neutral)
+                model.show(saved)
             },
             onAdd: { [model] config in
                 model.addServer(config)
@@ -258,6 +284,31 @@ struct PairingSheet: View {
     private func finish() {
         dismiss()
         model.showSettings = false
+    }
+}
+
+extension View {
+    /// Presents "Pair via QR Code" full screen. `enterAddress` runs after the cover is gone when the
+    /// person chose to type the address, so what it presents or focuses next sticks.
+    func pairingCover(isPresented: Binding<Bool>, model: AppModel, enterAddress: @escaping () -> Void) -> some View {
+        modifier(PairingCover(isPresented: isPresented, model: model, enterAddress: enterAddress))
+    }
+}
+
+private struct PairingCover: ViewModifier {
+    @Binding var isPresented: Bool
+    let model: AppModel
+    let enterAddress: () -> Void
+    @State private var wantsAddress = false
+
+    func body(content: Content) -> some View {
+        content.fullScreenCover(isPresented: $isPresented, onDismiss: {
+            guard wantsAddress else { return }
+            wantsAddress = false
+            enterAddress()
+        }, content: {
+            PairingSheet { wantsAddress = true }.environment(model)
+        })
     }
 }
 

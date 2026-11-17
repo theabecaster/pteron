@@ -44,8 +44,8 @@ struct RootView: View {
             .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 })) {
                 SettingsView().environment(model)
             }
-            .fullScreenCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 })) {
-                PairingSheet { model.openSettings(at: .addServer) }.environment(model)
+            .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
+                model.openSettings(at: .addServer)
             }
             .onChange(of: model.servers.map { $0.views.count }) { _, _ in
                 model.autoSelect()
@@ -399,7 +399,7 @@ struct NoticeBanner: View {
                     .foregroundStyle(theme.fg)
                     .padding(.horizontal, 14).padding(.vertical, 9)
                     .background(Capsule().fill(theme.chrome.sidebar))
-                    .overlay(Capsule().stroke(theme.chrome.error.opacity(0.5), lineWidth: 1))
+                    .overlay(Capsule().stroke(notice.style == .error ? theme.chrome.error.opacity(0.5) : theme.chrome.divider, lineWidth: 1))
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
                     .padding(.horizontal, 24)
                     .padding(.top, 6)
