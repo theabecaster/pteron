@@ -412,7 +412,7 @@ Pick a stable per-install id of 8 lowercase hex characters, e.g. the first 8 hex
 `identifierForVendor`. End the `label` in the hello with ` #<device_id>`:
 
 ```json
-{"type": "hello", "api_revision": 14,
+{"type": "hello", "api_revision": 13,
  "client": {"kind": "app", "platform": "ios", "name": "Rex DUO", "version": "1.0",
             "label": "Alex's iPhone #a1b2c3d4"}}
 ```

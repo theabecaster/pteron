@@ -224,7 +224,7 @@ server changed it. `ghostty_terminal_resize` reflows.
     counts as not built.
 - `scripts/check-ghostty.sh` compares the stamp with the pins, and checks that every iOS
   deployment target in `project.yml` is at least 17.4 (see the patch below). The app target's
-  pre-build phase runs it on every build, and the macdesk scripts run it before copying or
+  pre-build phase runs it on every build, and the build Mac scripts run it before copying or
   archiving (docs/release.md).
 - `scripts/check-symbols.sh [path…]` fails when a framework, static library, app or archive
   imports a system symbol that is not public API (rules in its header comment).
@@ -367,7 +367,7 @@ scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
 `scripts/bench/budgets.mjs` holds them, one small file. The median of a scenario's runs must not
 pass:
 
-| Number | Budget | Measured (simulator comparison, below) |
+| Number | Budget | Measured (iPhone 17 simulator, `983d27f`) |
 | --- | --- | --- |
 | main-thread hitches over 25 ms | 1, every scenario | 0 |
 | worst main slice | 8 ms, every scenario | 0.3 to 1.2 ms |
@@ -432,50 +432,30 @@ one chunk per main-actor hop. So the feed path is the production code.
 Measured 2026-11-17 with `scripts/bench/run-device.sh` on the iPhone Duo (`iPhone19,4`, iOS
 27.2.1, 6 cores, ProMotion at 120 Hz), on the charger; the fold posture was not recorded. Release builds
 with `BENCH`, assertions off; grid 60×50 at 12 pt (the phone's font size), drawn 1:1. Each cell is
-the median of 5 runs, with the p95 in brackets (with 5 runs, the highest). SwiftTerm and the first
-Ghostty row are one build, `983d27f`, switched with `-terminalEngine`; the last row is `main`.
+the median of 5 runs, with the p95 in brackets (with 5 runs, the highest).
 
 Replay:
 
-| Scenario | Engine | drawn ms | first output ms | main busy ms | worst main slice ms | main hitches | worst main gap ms | frames/s | CPU ms | CPU energy mJ | peak MB |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| seq | SwiftTerm (983d27f) | 55.4 (61.3) | 29.9 (30.2) | 41.8 (45.5) | 22.7 (26.7) | 1 (1) | 13.2 (14.0) | 61.8 (66.0) | 45.3 (50.2) | 10.2 (14.6) | 100 (103) |
-| seq | Ghostty (983d27f) | 26.1 (31.6) | 7.9 (10.7) | 4.8 (5.5) | 1.5 (1.7) | 0 (0) | 8.4 (8.4) | 127 (154) | 34.5 (37.8) | 4.8 (8.2) | 92.8 (93.1) |
-| seq | Ghostty (main) | 24.5 (31.4) | 5.5 (7.9) | 4.6 (5.1) | 1.4 (1.8) | 0 (0) | 8.4 (8.4) | 145 (163) | 33.4 (35.9) | 4.6 (7.9) | 92.5 (108) |
-| unicode | SwiftTerm (983d27f) | 134 (162) | 61.3 (107) | 105 (141) | 47.8 (95.2) | 1 (1) | 50.2 (100) | 42.3 (47.0) | 108 (130) | 157 (220) | 108 (108) |
-| unicode | Ghostty (983d27f) | 39.7 (47.8) | 39.7 (47.8) | 6.3 (7.1) | 1.3 (1.9) | 0 (0) | 8.4 (8.4) | 126 (147) | 68.4 (73.6) | 17.1 (27.6) | 95.8 (95.8) |
-| unicode | Ghostty (main) | 40.2 (101) | 40.2 (101) | 6.4 (6.7) | 1.2 (1.7) | 0 (0) | 8.4 (8.4) | 124 (131) | 70.5 (111) | 13.0 (80.1) | 95.8 (98.1) |
-| claude | SwiftTerm (983d27f) | 9977 (9985) | 24.3 (25.2) | 3153 (3347) | 17.1 (19.1) | 1 (2) | 16.3 (24.3) | 60.0 (60.0) | 3453 (3738) | 421 (508) | 94.3 (106) |
-| claude | Ghostty (983d27f) | 9961 (9968) | 6.3 (11.2) | 84.9 (106) | 1.7 (1.8) | 0 (1) | 8.5 (12.7) | 60.1 (60.2) | 643 (828) | 44.3 (58.1) | 87.3 (87.5) |
-| claude | Ghostty (main) | 9962 (9963) | 5.7 (11.6) | 79.5 (82.1) | 1.5 (1.8) | 0 (0) | 8.4 (8.6) | 60.1 (60.2) | 630 (642) | 44.0 (48.5) | 87.2 (87.3) |
-| top | SwiftTerm (983d27f) | 10005 (10011) | 22.6 (26.5) | 173 (230) | 16.4 (18.8) | 1 (1) | 16.3 (24.7) | 2.2 (2.2) | 212 (278) | 31.7 (34.2) | 81.3 (81.5) |
-| top | Ghostty (983d27f) | 9982 (9985) | 4.5 (10.4) | 44.9 (49.4) | 1.1 (2.2) | 0 (0) | 10.9 (11.5) | 2.1 (2.2) | 120 (125) | 9 (10.6) | 83.2 (86.6) |
-| top | Ghostty (main) | 9982 (9985) | 4.7 (5.4) | 44.0 (45.9) | 1 (1.1) | 0 (0) | 8.5 (10.3) | 2.1 (2.1) | 119 (124) | 8 (8.3) | 73.3 (78.7) |
+| Scenario | drawn ms | first output ms | main busy ms | worst main slice ms | main hitches | worst main gap ms | frames/s | CPU ms | CPU energy mJ | peak MB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| seq | 24.5 (31.4) | 5.5 (7.9) | 4.6 (5.1) | 1.4 (1.8) | 0 (0) | 8.4 (8.4) | 145 (163) | 33.4 (35.9) | 4.6 (7.9) | 92.5 (108) |
+| unicode | 40.2 (101) | 40.2 (101) | 6.4 (6.7) | 1.2 (1.7) | 0 (0) | 8.4 (8.4) | 124 (131) | 70.5 (111) | 13.0 (80.1) | 95.8 (98.1) |
+| claude | 9962 (9963) | 5.7 (11.6) | 79.5 (82.1) | 1.5 (1.8) | 0 (0) | 8.4 (8.6) | 60.1 (60.2) | 630 (642) | 44.0 (48.5) | 87.2 (87.3) |
+| top | 9982 (9985) | 4.7 (5.4) | 44.0 (45.9) | 1 (1.1) | 0 (0) | 8.5 (10.3) | 2.1 (2.1) | 119 (124) | 8 (8.3) | 73.3 (78.7) |
 
 Live, time to first frame (ms after pane open, `zz-bench` after `seq 1 3000`, mirror sizing, 5
 cold launches each):
 
-| Engine | connecting | socket live | first frame | peak MB |
-| --- | --- | --- | --- | --- |
-| SwiftTerm (983d27f) | 77.0 (97.9) | 204 (2519) | 157 (2284) | 190 (191) |
-| Ghostty (983d27f) | 73.7 (79.6) | 144 (205) | 150 (210) | 187 (188) |
-| Ghostty (main) | 76.2 (99.0) | 144 (209) | 149 (212) | 184 (188) |
+| connecting | socket live | first frame | peak MB |
+| --- | --- | --- | --- |
+| 76.2 (99.0) | 144 (209) | 149 (212) | 184 (188) |
 
 Reading it:
 
-- **Ghostty against SwiftTerm.** Ghostty's main thread does 9 to 40 times less (4.6 against 42 ms
-  for `seq`, 80 against 3153 ms for `claude`), its longest main-thread slice is under 2 ms where
-  SwiftTerm's is 16 to 95 ms, and it uses 5.5 times less CPU and about 10 times less CPU energy in
-  `claude` (44 against 421 mJ for 10 s of repaints). Bursts reach the final frame 2.3 (`seq`) to
-  3.3 (`unicode`) times sooner. First frame live: 149 against 157 ms (SwiftTerm's p95 was 2.3 s:
-  one launch waited on its screen read).
-- **Hitches at 120 Hz** (a refresh with no frame: a gap over 12.5 ms). Ghostty's main thread
-  never missed a refresh in any replay run (one `claude` run at `983d27f` missed one). SwiftTerm
-  missed one in every run of every scenario, 50 to 100 ms long in `unicode`. Ghostty presents
-  bursts at 124 to 145 frames a second (frames drawn straight from a wake-up, plus the ticks)
-  with no present hitch at the median; `claude` and `top` present as fast as they draw (60 and
+- **Hitches at 120 Hz** (a refresh with no frame: a gap over 12.5 ms). The main thread never
+  missed a refresh in any replay run. Bursts present at 124 to 145 frames a second (frames drawn
+  straight from a wake-up, plus the ticks) with no present hitch at the median; `claude` and `top` present as fast as they draw (60 and
   2 a second).
-- **`main` against `983d27f`**: the same within noise. The review fixes cost nothing measurable.
 - **Memory is about three times the simulator's** (65 to 96 MB in replay, against 25 to 32): on
   the device the Metal drawables and textures count in the footprint (a full-screen drawable
   is about 11 MB folded, three per pane). Live runs peak at 184 MB
@@ -529,14 +509,6 @@ What the measurements changed:
   <s>` (draw still frames before the start, so ProMotion is at 120 Hz when the motion starts)
   and `-drawables 2` (one less full-screen drawable per pane, about 11 MB folded) are benchmark
   switches for the comparison that was cut short; neither changes a shipped build.
-
-### The simulator comparison (a record)
-
-Until November 2026 the app also had SwiftTerm 1.99.3. On the iPhone 17 simulator at 60 Hz
-(`983d27f`, 7 scenarios, 5 runs) Ghostty beat it on every criterion: first frame (454 against
-501 ms live), main-thread time (2 to 122 ms against 41 to 2384), hitches, and memory within 10%;
-SwiftTerm was removed. The budgets above come from that run. The device table above replaces its
-numbers; the full simulator table is in this file's history (`473faa3`).
 
 ## Not done
 

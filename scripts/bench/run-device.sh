@@ -11,9 +11,8 @@
 # -perfLog <name>`, and copies each Documents/perf/<name>.json back to <out>/results
 # (default build/bench-device). Resumable like run.sh: a result already there is skipped.
 #
-# --tag prefixes every result name (`<tag>-seq__1`), so builds or engines can share one results
-# folder. --args adds launch arguments to every run (`--args '-terminalEngine swiftTerm'` on a
-# build that has both engines).
+# --tag prefixes every result name (`<tag>-seq__1`), so builds or switches can share one results
+# folder. --args adds launch arguments to every run (`--args '-drawables 2'`).
 #
 # --live <label> also opens that Rex session 5 times (--live-runs N) (cold launches, mirror sizing: no claim, no
 # resize), after `seq 1 3000` in its pane, with `-perfIdle 10 -perfScroll 6`: time to first

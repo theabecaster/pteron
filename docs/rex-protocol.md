@@ -6,7 +6,7 @@ app relies on; update it when you use a new method or event.
 ## Connection
 
 - `wss://<server>/api/control`, subprotocol `rex.control.v1`. Only servers with Rex's Tailscale on
-  are reachable (`rex server tailscale enable`), and the phone must be on the same tailnet and user.
+  are reachable (`rex server tailscale on`), and the phone must be on the same tailnet and user.
 - The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 13), `client`
   (`kind`, `platform`, `name` "Rex DUO", `version`, `label` = device name) and
   `reconnect_token` when resuming. The server answers `welcome` with `client.id`,

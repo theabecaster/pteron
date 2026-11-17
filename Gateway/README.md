@@ -95,9 +95,9 @@ compact, which is what the helper sends. The 4096-byte limit applies to that tex
 - `owner_key` and `push_secret` are 32 random bytes each. The gateway returns each once and
   stores only its SHA-256, so a copy of the database can't push to anyone or manage a device.
 - The APNs key is the Workers Secret `APNS_KEY_P8` (the `.p8` file's text). `scripts/deploy.sh`
-  reads it from `~/.appstoreconnect/private_keys/AuthKey_5G2D4URHAC.p8`, or from the path in
-  `APNS_KEY`, and pipes it to `wrangler secret put`. It is in no file of this repo and must never
-  be. The key id, team id and topic are plain vars in `wrangler.toml`.
+  reads it from the APNs key file in `~/.appstoreconnect/private_keys/` (the default name is in
+  the script), or from the path in `APNS_KEY`, and pipes it to `wrangler secret put`. It is in no
+  file of this repo and must never be. The key id, team id and topic are plain vars in `wrangler.toml`.
 - The provider JWT is cached per isolate. Its `iat` is the start of a fixed 30-minute bucket, so
   every isolate signs the same claims and Apple never sees the token change more often than it
   allows (every 20 minutes) or age past its limit (an hour).
@@ -232,11 +232,6 @@ secondary indexes between them. Refused requests write nothing. Past a cap the W
 so a request this Worker refuses with `429` is a billed request like any other. The limits
 keep such requests away from D1 and Apple, which is where a request costs more than itself.
 
-## Later
-
-- Device attestation (App Attest) at registration is planned, so only the Rex DUO app can
-  register.
-
 ## Test
 
 ```sh
@@ -297,7 +292,7 @@ A deployed Worker reaches APNs because Cloudflare's proxy speaks HTTP/2 to the o
 and step 4 of the smoke test fails.
 
 The fallback is to run the same API as a small always-on service on a full runtime with its own
-HTTP/2 client: Railway (about $5 a month, the account exists) or Fly.io (about $2 a month). The
+HTTP/2 client: Railway (about $5 a month) or Fly.io (about $2 a month). The
 contract and the D1 schema carry over; only the transport to Apple changes. In this code that
 is one place, the `fetch` in `Deps` that `sendPush` calls. Phones and helpers only need the new
 base URL. Not an option: a Worker opening its own TCP socket, because the sockets API can't
