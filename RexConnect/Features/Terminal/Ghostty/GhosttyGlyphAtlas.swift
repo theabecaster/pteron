@@ -550,7 +550,7 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
             if fallbackTraits.isEmpty { return base }
             return CTFontCreateCopyWithSymbolicTraits(base, px, nil, fallbackTraits, fallbackTraits) ?? base
         }
-        // The same faces RexFont.all loads.
+        // The bundled MesloLGS NF faces.
         fonts = [
             font("MesloLGS-NF-Regular", []),
             font("MesloLGS-NF-Bold", .traitBold),

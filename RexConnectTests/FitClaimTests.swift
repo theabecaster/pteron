@@ -272,7 +272,7 @@ final class FitClaimTests: XCTestCase {
     private func makeHost(sizing: SizingMode = .fit) -> (TerminalHost, UIWindow) {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b")
-        let host = TerminalHost(stream: stream, sizing: sizing, fontSize: 12, theme: ThemeStore.fallback, engine: .ghostty,
+        let host = TerminalHost(stream: stream, sizing: sizing, fontSize: 12, theme: ThemeStore.fallback,
                                 claim: FitClaim(transport: transport, settle: {}))
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
@@ -309,7 +309,7 @@ final class FitClaimTests: XCTestCase {
             transport.held = ["own", "resize"]
             let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
             let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .fit,
-                                    fontSize: 12, theme: ThemeStore.fallback, engine: .ghostty,
+                                    fontSize: 12, theme: ThemeStore.fallback,
                                     claim: FitClaim(transport: transport, settle: {}))
             let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
             if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }

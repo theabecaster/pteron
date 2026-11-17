@@ -1,15 +1,15 @@
 import GhosttyVt
 import UIKit
 
-// What a single tap on the terminal does. The order is the one SwiftTerm's `singleTap` and
-// TerminalHost's focus tap give together:
+// What a single tap on the terminal does, in order (with TerminalHost's focus tap,
+// `TerminalTapDecision`):
 //
 // 1. A tap on a pane that doesn't have the keyboard only focuses it (the host does that).
 // 2. A tap while text is selected only clears the selection.
 // 3. An OSC 8 hyperlink opens, even in a program that tracks the mouse.
 // 4. A program that tracks the mouse gets a click.
 // 5. A web address in the text opens.
-// 6. A tap next to the cursor is left alone (SwiftTerm shows its Paste menu there).
+// 6. A tap next to the cursor is left alone (the host shows its Paste menu there).
 // 7. A tap on the shell's prompt moves the shell's cursor (OSC 133).
 //
 // Steps 3, 5 and 7 are this file's: TerminalHost's tap asks `tapOpensLinkOrMovesCursor` first
@@ -20,7 +20,7 @@ import UIKit
 struct GhosttyTapProbe: Equatable {
     var link: GhosttyTappedLink?
     var mouseTracking = false
-    /// SwiftTerm's "near the cursor": fewer than 4 columns and fewer than 2 rows away.
+    /// Near the cursor: fewer than 4 columns and fewer than 2 rows away.
     var nearCursor = false
     var prompt = GhosttyPromptClick.none
 }
@@ -107,11 +107,6 @@ final class GhosttyTapState {
     func used(at point: CGPoint) { last = (clock(), point) }
 }
 
-/// Engines without links or prompt clicks leave every tap to the host.
-extension TerminalEngineView {
-    func tapOpensLinkOrMovesCursor(at p: CGPoint, focused: Bool, shift: Bool) -> Bool { false }
-}
-
 extension GhosttyTerminalView {
     /// Asked by the host's tap before anything else (`TAP HOOK` in TerminalHost). True if the tap
     /// opened a link or moved the shell's cursor, and so is used up.
@@ -194,9 +189,8 @@ extension GhosttyTerminalView {
 enum GhosttyTapTest {
     private static var ran = false
 
-    static func run(on engine: any TerminalEngineView) {
-        guard !ran, let view = engine as? GhosttyTerminalView,
-              let spec = UserDefaults.standard.string(forKey: "tapTest") else { return }
+    static func run(on view: GhosttyTerminalView) {
+        guard !ran, let spec = UserDefaults.standard.string(forKey: "tapTest") else { return }
         ran = true
         let cells = spec.split(separator: ";").compactMap { pair -> (Int, Int)? in
             let n = pair.split(separator: ",").compactMap { Int($0) }

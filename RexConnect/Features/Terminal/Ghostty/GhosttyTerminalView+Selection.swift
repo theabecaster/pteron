@@ -24,8 +24,7 @@ struct GhosttySelectionState: Equatable {
 /// `place` says where cells of one row are drawn.
 enum GhosttySelectionRects {
     /// One rectangle per selected stretch, clipped to `bounds`: the first row from its start to
-    /// the right edge, the rows between as one block, and the last row up to its end. The same
-    /// shapes the SwiftTerm engine reports.
+    /// the right edge, the rows between as one block, and the last row up to its end.
     static func make(_ e: GhosttySelectionExtent, bounds: CGRect, place: (_ row: Int, _ columns: Range<Int>) -> CGRect) -> [CGRect] {
         guard e.endRow >= e.startRow else { return [] }
         let cols = max(e.cols, 1)
@@ -52,9 +51,8 @@ enum GhosttySelectionRects {
 
 
 
-// Selection for the Ghostty engine. TerminalHost owns the gestures, the clipboard, the shimmer
-// and the edit menu, and drives these members (see `TerminalEngineView`); they do what
-// `RexTerminalView` in Engine/SwiftTermEngine.swift does. The terminal owns the range
+// Selection. TerminalHost owns the gestures (long press, pointer drag), the clipboard, the
+// shimmer and the edit menu, and drives these members. The terminal owns the range
 // (GhosttyCore+Selection.swift) and the renderer draws it from the render state.
 //
 // Where the grid is comes from the scroller (GhosttyTerminalView+Scroll.swift): `viewportCell(at:)`
@@ -63,7 +61,7 @@ enum GhosttySelectionRects {
 // right at any fraction of a row and anywhere in the scrollback. This view doesn't scroll, so
 // points and rects are in the viewport's coordinates.
 //
-// Unlike SwiftTerm, the selection survives a resize: the terminal tracks it through the reflow.
+// The selection survives a resize: the terminal tracks it through the reflow.
 extension GhosttyTerminalView {
     var hasActiveSelection: Bool {
         guard selectionState.active else { return false }
@@ -74,27 +72,27 @@ extension GhosttyTerminalView {
         return selectionState.active
     }
 
-    /// A plain long press, as SwiftTerm's view has one: the host gives it its target and timing.
-    var selectionPressRecognizer: UILongPressGestureRecognizer? { selectionPress }
+    // The view has no pan that selects: its pans are the scroll surface's own
+    // (`scrollPanRecognizer`), the one-finger pan that sends wheel reports or arrow keys to a
+    // program, and the pointer-scroll pans. All of them ask `panGate`, where the host refuses
+    // every pan while it selects, so a selection is only ever changed by the host's long press
+    // (`selectionPress`) or pointer drag through `beginSelection` / `extendSelection`.
 
-    /// This engine has no pan that selects: its pans are the scroll surface's own
-    /// (`scrollPanRecognizer`), the one-finger pan that sends wheel reports or arrow keys to a
-    /// program, and the pointer-scroll pans. All of them ask `panGate`, where the host refuses
-    /// every pan while it selects, so a selection is only ever changed by the host's long press
-    /// or pointer drag through `beginSelection` / `extendSelection`.
-    func isBuiltInSelectionPan(_ pan: UIPanGestureRecognizer) -> Bool { false }
-
+    /// Starts a selection anchored at the cell under `p`. With `word`, selects the word there (or
+    /// path, URL, …); otherwise, or when there is no word, clears the selection.
     func beginSelection(at p: CGPoint, word: Bool) {
         let cell = viewportCell(at: p)
         let selected = core.beginSelection(col: cell.col, row: cell.row, word: word, anchor: selectionAnchor)
         selectionState = GhosttySelectionState(active: selected, fromGesture: selected, dragging: true, moved: false, point: p)
     }
 
+    /// Selects from the anchor to the cell under `p`, both included, in reading order. With
+    /// `autoscroll`, first scrolls a line when `p` is at the top or bottom edge.
     func extendSelection(to p: CGPoint, autoscroll: Bool) {
         guard selectionState.dragging else { return }
         selectionState.point = p
         extendSelectionToPoint()
-        // At an edge, one line per move, like the SwiftTerm engine. The scroller moves the
+        // At an edge, one line per move. The scroller moves the
         // viewport with the next frame; `selectionScrollApplied` then extends to the row that
         // scrolled under the finger.
         if autoscroll, autoscrollSelection(at: p) != 0 { selectionState.autoscrollRequest = scroller.lastRequest }

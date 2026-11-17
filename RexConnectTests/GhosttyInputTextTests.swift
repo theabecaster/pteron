@@ -23,8 +23,7 @@ final class GhosttyInputTextTests: XCTestCase {
     func testTypedTextIsSentAsIsInLegacyModes() {
         for setup in ["", P.cursorKeys, P.keypadApplication, P.bracketedPaste] {
             let core = P.core(setup)
-            // Every ASCII byte: typing it sends it, as SwiftTerm's `send(txt:)` does. A line feed is
-            // the Return key (SwiftTerm's `insertText` sends CR for it too).
+            // Every ASCII byte: typing it sends it. A line feed is the Return key.
             for byte in UInt8(0)..<128 {
                 let text = String(UnicodeScalar(byte))
                 XCTAssertEqual(typed(core, text), byte == 0x0a ? [0x0d] : [byte], "byte \(byte)")

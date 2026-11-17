@@ -1,13 +1,13 @@
-# Ghostty engine
+# The terminal engine
 
-The terminal engine of Rex Connect: **libghostty-vt** (upstream's `ghostty-vt.xcframework`) parses
-the stream and holds the terminal's state, and **our own Metal renderer** draws it. A pane starts
-by restoring the Ghostty snapshot (`GHOSTSNP`) that opens every Rex data stream.
+Rex Connect's terminal: **libghostty-vt** (upstream's `ghostty-vt.xcframework`) parses the stream
+and holds the terminal's state, and **our own Metal renderer** draws it. A pane starts by
+restoring the Ghostty snapshot (`GHOSTSNP`) that opens every Rex data stream.
 
 This document describes the engine as built. The stream, reconnecting and input are in
 [terminal.md](terminal.md); touch selection in [selection.md](selection.md); the C API in
-[ghostty-api-notes.md](ghostty-api-notes.md). [ghostty-parity.md](ghostty-parity.md) is the audit
-against SwiftTerm, the engine this one replaced.
+[ghostty-api-notes.md](ghostty-api-notes.md). [terminal-checklist.md](terminal-checklist.md) lists
+what the terminal must do and how each point is checked.
 
 ## Why this design
 
@@ -31,22 +31,26 @@ against SwiftTerm, the engine this one replaced.
 ```
 TerminalStream (RexKit, main actor)          data socket, APCFilter, snapshot parts, input queue
   └─ TerminalHost (UIKit, main)              gestures, clipboard, edit menu, keymap, sizing
-       └─ any TerminalEngineView             the seam (Engine/TerminalEngine.swift)
-            └─ GhosttyTerminalView           the view: +Input, +Scroll, +Selection, +SelectionUI
-                 ├─ GhosttyCore              the terminal, its feed queue, restore, render state
-                 ├─ GhosttyRenderer          Metal layer, pipelines, one frame
-                 └─ GhosttyScroller          a transparent UIScrollView over the Metal view
+       └─ GhosttyTerminalView                the view: +Input, +Scroll, +Selection, +SelectionUI
+            ├─ GhosttyCore                   the terminal, its feed queue, restore, render state
+            ├─ GhosttyRenderer               Metal layer, pipelines, one frame
+            └─ GhosttyScroller               a transparent UIScrollView over the Metal view
 GhosttyRenderThread.shared                   one render thread and display link for all panes
 GhosttyGlyphAtlas, GhosttyGlyphWorker.shared glyph pages; CoreText fallback off the frame
 ```
 
-`TerminalHost` knows no engine. It holds `any TerminalEngineView`
-(`RexConnect/Features/Terminal/Engine/TerminalEngine.swift`) and reads three flags from it:
-`parsesOffMainThread` (true: the host passes chunks straight on, with no pacing of its own),
-`reflowsLikeServer` (true: no redraw from the server after a width change) and
-`fontChangeResetsModes` (false). The protocol's other members are output (`feed`,
-`restoreSnapshot`), geometry (`cellSize`, `setGrid`, `setFont`, `apply(theme:)`), selection and
-its UI, scrolling, and input (`keyHook`, `send(txt:)`, `pasteText`).
+`TerminalHost` holds the view directly: there is one engine and no protocol in front of it. What
+the host uses is the view's output side (`feed`, `restoreSnapshot`), geometry (`cellSize`,
+`setGrid`, `setFont`, `apply(theme:)`), selection and its UI, scrolling, and input (`keyHook`,
+`send(txt:)`, `pasteText`); it never reaches into the core, the renderer or the scroller, except
+to hear the core's backpressure signal. Three properties of the engine shape the host: it parses
+off the main thread (the host passes chunks straight on, with no pacing of its own), it reflows
+as the server does (no redraw from the server after a width change), and a font change keeps the
+terminal's modes (no redraw then either).
+
+The view reports back through `TerminalEngineDelegate` (`Features/Terminal/TerminalEngineDelegate.swift`:
+the grid changed, bytes for the program). That protocol stays because the engine's tests put a
+spy there in place of a host.
 
 Files in `RexConnect/Features/Terminal/Ghostty/`:
 
@@ -57,7 +61,7 @@ Files in `RexConnect/Features/Terminal/Ghostty/`:
 | `GhosttyRenderer.swift` | `GhosttyMetal`, `GhosttyRenderer`, `GhosttyRenderThread` |
 | `GhosttyRowBuilder.swift`, `GhosttyShaders.swift` | cells to instances (`GhosttyRowBuilder`, `GhosttyFrameBuilder`); the Metal source |
 | `GhosttyGlyphAtlas.swift`, `GhosttySprites.swift` | metrics, atlas pages, the glyph worker; box, block, braille and Powerline glyphs drawn by rule |
-| `GhosttyTerminalView*.swift` | the `TerminalEngineView` |
+| `GhosttyTerminalView*.swift` | the view `TerminalHost` holds: output, input, scrolling, selection and what the selection UI asks |
 | `GhosttyScroller.swift`, `GhosttyMouseReporter.swift` | native scrolling; wheel, mouse and arrow reports |
 | `GhosttyInputKeymap.swift`, `GhosttyInputText.swift` | iOS keys to Ghostty key events; the `UITextInput` shadow text |
 | `GhosttyTap.swift`, `GhosttyLinks.swift`, `GhosttyPrompts.swift` | what a tap does; OSC 8 and plain URLs; OSC 133 prompts and click-to-move |
@@ -133,6 +137,11 @@ Rules that keep the UI and the frame from waiting:
 - **Memory.** 10,000 lines of scrollback, at most 64 MB (`scrollbackMaxLines`,
   `scrollbackMaxBytes`); no Kitty image storage. History is compressed on restore, and in small
   steps after 0.25 s without output.
+- **Backpressure.** The core counts the bytes it holds unparsed. Above 4 MB `isBackedUp` turns
+  true, below 1 MB false again, and `onBackpressureChange` runs on the thread that crossed the
+  mark. `TerminalHost` reads the state on the main actor and pauses or resumes its stream's reads
+  of the data socket ([terminal.md](terminal.md), Output). A source that never pauses and gets
+  64 MB ahead has its backlog dropped (`droppedBytes`).
 
 ## Restoring the snapshot
 
@@ -143,8 +152,8 @@ A fresh stream (HELLO) starts with a snapshot; a resumed one (RESUME) does not.
    renderable state and an empty FINISH record at the end. It keeps none of the bytes. Each
    received chunk's snapshot bytes are passed on as a view, as `GhosttySnapshotPart`s: `begin`,
    `bytes`…, `ready`, `bytes`…, `end(complete:)`, all before the first Rex message.
-2. **`TerminalHost.streamGhosttySnapshot`** joins the bytes on the main thread and, at
-   `end(complete: true)`, calls `restoreSnapshot`. It does not use `ready`: the whole snapshot
+2. **`TerminalHost.streamGhosttySnapshot`** joins the bytes on the main thread (`SnapshotBuffer`,
+   which refuses more than 16 MiB) and, at `end(complete: true)`, calls `restoreSnapshot`. It does not use `ready`: the whole snapshot
    is decoded at once. (Showing the screen at READY would matter for a long history over a slow
    link; a 22 KB snapshot arrives in one message.)
 3. **`GhosttyCore.restore`** runs on the feed queue, so it keeps its place among fed bytes:
@@ -249,13 +258,13 @@ enough), and the next build stops with that instruction when it cannot read one.
 - `scripts/ghostty-tools/decode.c` decodes a capture with the macOS slice:
   `clang -O2 -I$X/Headers decode.c $X/libghostty-vt.a -lc++ -o decode`, where
   `X=Vendor/GhosttyVt.xcframework/macos-arm64_x86_64`.
-- `RexConnectTests/Ghostty*.swift` and `SeamTests.swift` (fixtures in `RexConnectTests/Fixtures`)
-  run in the simulator with the app scheme. They reach libghostty-vt only through the app's
+- `RexConnectTests/Ghostty*.swift` (fixtures in `RexConnectTests/Fixtures`) run in the simulator
+  with the app scheme. They reach libghostty-vt only through the app's
   Swift types: the static library is linked into the app, not the test bundle.
 - `Packages/RexKit/Tests/RexKitTests/Stream*.swift` cover the filter and the stream on recorded
   streams, split at every chunk boundary, and the stream's reconnect and input rules against a
   fake control connection (`swift test --package-path Packages/RexKit`).
-- Offline: `-ghosttyDemo <path>` replays a capture in a bare Ghostty view; `-replay <file>` feeds
+- Offline: `-ghosttyDemo <path>` replays a capture in a bare terminal view; `-replay <file>` feeds
   one to a real pane through the same `APCFilter`.
 
 ## Gotchas
@@ -295,45 +304,53 @@ enough), and the next build stops with that instruction when it cannot read one.
 
 ## Measurements
 
-Ghostty against SwiftTerm, the engine it replaced, taken while both were in the app.
-
-- Code: `ghostty-engine` at `983d27f`.
-- Where: iPhone 17 simulator (`iPhone18,3`), iOS 27.2, 60 Hz, on a 14-core Apple silicon Mac.
-  Release build, assertions off (each result file records it), grid 60×50 at 11 pt, drawn 1:1.
-- Replay: 7 scenarios × 2 engines × 5 runs. Live: 5 cold launches per engine. Median (min–max).
-- All pass criteria met: see Pass / fail below.
-
-Read them with these limits in mind:
-
-- **A simulator draws with the Mac's GPU and runs on the Mac's cores.** The numbers compare the
-  two engines; they are not device numbers.
-- **No device run has been made.** It needs the owner's yes. The steps are under How to run.
-- **The two engines' frame-gap counts measure different things.** Ghostty presents when a frame
-  arrives (at most one per display interval), so its count is stalls of the renderer. SwiftTerm
-  draws from its display link, so its count also includes a frame that slipped past a vsync. To
-  compare what reaches the glass, count display intervals with no new frame for both. Not done.
+`scripts/bench/run.sh` measures the terminal on generated output and checks the numbers against
+fixed budgets, so a regression in the feed path, the renderer or the host's main-thread work
+fails the run.
 
 ### How to run
 
 ```sh
 xcrun simctl create zz-bench "iPhone 17"                    # prints the simulator id
 rex session new zz-bench                                    # only for --live
-scripts/bench/run.sh <simulator id> --fresh --runs 5 --live zz-bench
+scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
 ```
 
 - One command: it builds Release once (`build/dd-bench`), generates the scenarios, runs every
-  scenario on each engine, then 5 cold launches per engine for `--live`, and prints the report.
-- Results: `build/bench/results/<scenario>__<engine>__<run>.json`, one file per run.
-  `node scripts/bench/report.mjs build/bench/results` prints the report again.
+  scenario `--runs` times (default 3), then 5 cold launches for `--live`, prints the report and
+  exits 1 if a budget is passed, a run failed or a scenario has no result.
+- Results: `build/bench/results/<scenario>__<run>.json`, one file per run.
+  `node scripts/bench/report.mjs build/bench/results` prints and checks the report again.
 - Resumable: a run whose file exists is skipped, so the same command without `--fresh` goes on
-  after an interruption. `--only seq,claude` and `--runs N` narrow it.
+  after an interruption. `--only seq,claude` and `--runs N` narrow it (with `--only`, only the
+  scenarios that ran are checked).
 - The app is terminated after each run and when the script ends or is interrupted.
 - Replay runs use no server. `--live` opens the named session in mirror mode (no claim, no
-  resize) after `seq 1 3000` in its pane. Use a throwaway session.
-- Device, untested: install a Release build, copy the scenario files into the app's Documents
-  (`xcrun devicectl device copy to … --domain-type appDataContainer`), launch with `-replay
-  <name> -perfLog <name>` (a relative `-replay` path is read from Documents), and copy
-  `Documents/perf/*.json` back.
+  resize) after `seq 1 3000` in its pane. Use a throwaway session. Live numbers have no budget:
+  they depend on the network and the server.
+- Device, untested: install a Release build made with the `BENCH` compilation condition, copy the
+  scenario files into the app's Documents (`xcrun devicectl device copy to … --domain-type
+  appDataContainer`), launch with `-replay <name> -perfLog <name>` (a relative `-replay` path is
+  read from Documents), and copy `Documents/perf/*.json` back. The budgets are simulator budgets.
+
+### Budgets
+
+`scripts/bench/budgets.mjs` holds them, one small file. The median of a scenario's runs must not
+pass:
+
+| Number | Budget | Measured (comparison run, below) |
+| --- | --- | --- |
+| main-thread hitches over 25 ms | 1, every scenario | 0 |
+| worst main slice | 8 ms, every scenario | 0.3 to 1.2 ms |
+| main busy | `seq`, `yes` 10 ms; `unicode` 15; `yes-wire` 35; `seq-wire` 90; `top` 160; `claude` 250 | 2.2, 1.7; 4.4; 13.3; 40; 78; 122 |
+| frame gaps over 25 ms | 1, every scenario but `top` (it draws twice a second by itself) | 0 |
+| first byte to the final frame | `seq`, `yes` 60 ms; `unicode` 150 | 19.7, 21.4; 38.3 |
+| memory peak, at rest | 40 MB, 32 MB | 23.5 to 32, 23.4 to 26.6 |
+
+Times have about twice the measured median as headroom, memory a quarter, so a busy Mac doesn't
+fail a run and a real regression does. They hold for the iPhone 17 simulator at 60 Hz, grid 60×50
+at 11 pt; they are not device numbers. A change that moves a number on purpose moves its budget
+in the same commit.
 
 ### What is measured
 
@@ -344,16 +361,15 @@ scripts/bench/run.sh <simulator id> --fresh --runs 5 --live zz-bench
   screen, with the steps between (connecting, socket live, snapshot received, restored).
 - **First output, parsed, drawn**: from the first `streamFeed` to the first frame that shows the
   first chunk, to the last byte parsed, and to the frame that shows the final state. The
-  first-output mark is queued behind the first chunk's bytes, and a Ghostty frame that still
-  waits for glyphs decides no mark: "drawn" means drawn with every glyph.
+  first-output mark is queued behind the first chunk's bytes, and a frame that still waits for
+  glyphs decides no mark: "drawn" means drawn with every glyph.
 - **Main gaps**: gaps over 25 ms between callbacks of a main-thread display link (hitches).
-- **Frame gaps, frames/s**: frames handed to the GPU. Ghostty: presents on its render thread.
-  SwiftTerm: its own `diagnostics.renders`.
+- **Frame gaps, frames/s**: frames handed to the GPU: presents on the render thread.
 - **Main busy**: main run loop time between waking and sleeping; the worst slice is the longest
   time the main thread could not react.
 - **CPU**: user + system time of the process, and of the main thread.
-- **Memory**: `phys_footprint`, peak during the run and 2 s after it. Both engines keep 10,000
-  lines of scrollback.
+- **Memory**: `phys_footprint`, peak during the run and 2 s after it, with 10,000 lines of
+  scrollback.
 
 Without `-perfLog`, `PerfProbe.active` is nil and every hook is one branch.
 
@@ -369,13 +385,39 @@ Scenarios (`scripts/bench/gen.mjs`, deterministic):
 
 Replay (`-replay <file>`, `ReplayScreen.swift`) hosts a real `TerminalHost` and feeds it through
 `ReplaySource`, which makes the sink calls `TerminalStream` makes, through the same `APCFilter`,
-one chunk per main-actor hop. So each engine's feed path is the production code.
+one chunk per main-actor hop. So the feed path is the production code.
 
-### Results
+## The comparison with SwiftTerm (a record)
+
+Until November 2026 the app had a second engine, SwiftTerm 1.99.3, and this benchmark ran every
+scenario on both. Ghostty met every criterion and SwiftTerm was removed. **The comparison cannot
+be run again**: the SwiftTerm engine, its package and the benchmark's engine dimension are gone
+from the code. What follows is the last run, kept as the record and as the source of the budgets
+above.
+
+- Code: `ghostty-engine` at `983d27f` (the last commit with both engines is `307a4c4`).
+- Where: iPhone 17 simulator (`iPhone18,3`), iOS 27.2, 60 Hz, on a 14-core Apple silicon Mac.
+  Release build, assertions off (each result file recorded it), grid 60×50 at 11 pt, drawn 1:1.
+- Replay: 7 scenarios × 2 engines × 5 runs. Live: 5 cold launches per engine. Median (min–max).
+- Criteria then: Ghostty better on first frame, gaps and main-thread time in every scenario, and
+  within 10% on memory. All met.
+
+Read the numbers with these limits in mind:
+
+- **A simulator draws with the Mac's GPU and runs on the Mac's cores.** The numbers compare the
+  two engines; they are not device numbers.
+- **No device run was made.**
+- **The two engines' frame-gap counts measured different things.** Ghostty presents when a frame
+  arrives (at most one per display interval), so its count is stalls of the renderer. SwiftTerm
+  drew from its display link, so its count also included a frame that slipped past a vsync.
+- **The engine has changed since `983d27f`** (review fixes up to `307a4c4`, then the removal), so
+  today's numbers for Ghostty need not equal this table's. The budgets are what is checked now.
+
+### Results of the comparison
 
 Replay: 5 runs per cell, median (min–max). iPhone18,3 simulator, Version 27.2 (Build 24B8117), 60 Hz, grid 60×50, 11 pt.
 
-#### Replay
+Replay:
 
 | Scenario | Engine | first output ms | parsed ms | drawn ms | frames/s | frame gaps >25 ms | main gaps >25 ms | worst main gap ms | main busy ms | worst main slice ms | CPU ms (main) | peak MB | idle MB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -394,14 +436,14 @@ Replay: 5 runs per cell, median (min–max). iPhone18,3 simulator, Version 27.2 
 | yes | SwiftTerm | 34.3 (31.1–38.8) | 56 (38.9–58.4) | 73.5 (57.3–75.8) | 52.3 (39.6–54.4) | 1 (1–2) | 0 (0–0) | 17.2 (16.9–18) | 41.1 (28.3–46.2) | 14.1 (10.6–16.8) | 36.9 (23.3–40.9), main 34.4 | 30 (29.9–30.4) | 30 (29.9–30.2) |
 | yes | Ghostty | 9.82 (5.78–13.9) | 12.9 (9.61–15.4) | 21.4 (13.9–25.4) | 118 (93.4–144) | 0 (0–0) | 0 (0–0) | 16.7 (12.9–16.7) | 1.74 (1.11–2.11) | 0.31 (0.18–0.61) | 18.5 (12.7–18.6), main 2.16 | 29.1 (28.7–29.6) | 24.4 (24.1–24.5) |
 
-#### Live: time to first frame, ms after pane open (5 cold launches per engine)
+Live: time to first frame, ms after pane open (5 cold launches per engine):
 
 | Scenario | Engine | connecting | socket live | snapshot received | restored | first frame | snapshot bytes | peak MB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | live | SwiftTerm | 334 (333–389) | 502 (478–607) | 467 (445–588) | 468 (446–589) | 501 (480–607) | 23036 (23036–23036) | 46.1 (45.9–47.8) |
 | live | Ghostty | 320 (305–330) | 452 (412–480) | 452 (412–485) | 454 (414–486) | 454 (414–487) | 22861 (22861–22861) | 38.1 (37.9–38.3) |
 
-#### Pass / fail
+Pass / fail, as the comparison's report printed it:
 
 - first frame: **pass**
 - main gaps >25 ms: **pass**
@@ -415,7 +457,7 @@ Replay: 5 runs per cell, median (min–max). iPhone18,3 simulator, Version 27.2 
 
 Criteria (first frame, gaps, main-thread time, memory within 10%): **PASS**
 
-### Reading them
+### Reading the comparison
 
 - **Ghostty wins every main-thread number.** Its main thread only passes chunks on: 2 to 122 ms
   busy where SwiftTerm needs 41 to 2384 ms, and a worst slice of about 1 ms where SwiftTerm has
@@ -436,7 +478,7 @@ Criteria (first frame, gaps, main-thread time, memory within 10%): **PASS**
 - **Noisy cells**: first output on both engines (a wait for the next vsync, see below), and
   `unicode` on SwiftTerm (first output 64 to 328 ms).
 
-### Fairness and limits
+### Fairness and limits of the comparison
 
 - The probe adds the same main-thread display link and run loop observers to both engines:
   about 6 ms of main busy time per second. SwiftTerm also pays three reads of its counters per
@@ -454,17 +496,17 @@ Criteria (first frame, gaps, main-thread time, memory within 10%): **PASS**
 - Live first frame is a cold app launch into `-autoOpen`: launch work is inside it for both.
   Mirror mode skips fit mode's 120 ms settle and claim, for both.
 
-### Not done
+## Not done
 
 Two ideas from the measurements that were not built:
 
-1. **Start the stream before the host's first layout.** In the live runs about 320 of Ghostty's
-   454 ms pass between `TerminalHost.init` and `streamStatus(.connecting)` (cold launch: SwiftUI
+1. **Start the stream before the host's first layout.** In the live runs about 320 of the
+   454 ms to the first frame pass between `TerminalHost.init` and `streamStatus(.connecting)` (cold launch: SwiftUI
    and the launch transition). A snapshot needs no size from the client, so a mirror-mode pane
    could start its stream in `init`. The gain on a warm pane switch was not measured.
 2. **One main-actor hop per chunk.** `TerminalStream` takes every WebSocket message on the main
    actor, runs `APCFilter` there, and `GhosttyCore.feed` copies the bytes into its queue. That
-   is all of Ghostty's main-thread time under output: about 30 µs a chunk. Running the filter on
+   is all of the main-thread time under output: about 30 µs a chunk. Running the filter on
    the socket's queue and handing output straight to the core would bring it near zero.
 
 Not a problem at today's sizes: the host joins snapshot bytes and decodes at `end` instead of at

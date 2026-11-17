@@ -5,11 +5,11 @@ import UIKit
 ///
 /// TerminalHost keeps its recognizers and their arbitration and reports to this object: touch
 /// down, the long press's phases, taps, Select All, a cleared selection. `SelectionSession`
-/// decides what follows; this object does it, through the engine seam (`TerminalEngineView`)
+/// decides what follows; this object does it, through the terminal view's selection members
 /// and a few closures the host fills in (clipboard, shimmer, edit menu).
 ///
-/// Cost: a drag event makes one seam call to extend and one to read the selection's ends (three
-/// short, bounded waits for the terminal lock on the Ghostty engine) and allocates nothing. The
+/// Cost: a drag event makes one call to extend and one to read the selection's ends (three
+/// short, bounded waits for the terminal lock) and allocates nothing. The
 /// display link runs only while a selection is up, and reads the ends again only when the
 /// scroll position changed.
 @MainActor
@@ -25,7 +25,7 @@ final class TerminalSelectionController: NSObject {
         case single(showsPaste: Bool)
     }
 
-    let term: any TerminalEngineView
+    let term: GhosttyTerminalView
     private let feedback: any SelectionFeedback
     private let loupe: any SelectionLoupe
     let handles = SelectionHandlesView()
@@ -66,7 +66,7 @@ final class TerminalSelectionController: NSObject {
     /// drop it by itself (a reset, the program's own click handling).
     private static let pollInterval: TimeInterval = 0.1
 
-    init(term: any TerminalEngineView, feedback: any SelectionFeedback = SystemSelectionFeedback(),
+    init(term: GhosttyTerminalView, feedback: any SelectionFeedback = SystemSelectionFeedback(),
          loupe: any SelectionLoupe = SystemSelectionLoupe()) {
         self.term = term
         self.feedback = feedback
@@ -113,9 +113,8 @@ final class TerminalSelectionController: NSObject {
         pressCell = term.gridCell(at: p)
         pressWord = nil
         let selected = term.hasActiveSelection
-        if selected, let ends = term.selectionEnds, let a = ends.start, let b = ends.end,
-           let first = term.gridCell(at: CGPoint(x: a.midX, y: a.midY)), let last = term.gridCell(at: CGPoint(x: b.midX, y: b.midY)) {
-            pressWord = (first, last)
+        if selected, let ends = term.selectionEnds, let a = ends.start, let b = ends.end {
+            pressWord = (term.gridCell(at: CGPoint(x: a.midX, y: a.midY)), term.gridCell(at: CGPoint(x: b.midX, y: b.midY)))
         }
         perform(session.pressBegan(selected: selected, cell: pressCell))
     }
@@ -150,7 +149,6 @@ final class TerminalSelectionController: NSObject {
         // is still a tap on the text.
         if !taps.continues(at: inWindow, now: now), handles.showsHandles,
            handles.layout.handle(at: handles.convert(p, from: term)) != nil { return (true, 1) }
-        guard term.usesHostSelectionUI else { return (false, 1) }
         return (false, taps.tap(at: inWindow, now: now))
     }
 
@@ -166,7 +164,7 @@ final class TerminalSelectionController: NSObject {
         }
     }
 
-    /// SwiftTerm's zone for the cursor's Paste menu: within 3 columns and 1 row of the cursor.
+    /// The zone for the cursor's Paste menu: within 3 columns and 1 row of the cursor.
     func tapIsByCursor(at p: CGPoint) -> Bool {
         SelectionRules.tapShowsPaste(tap: term.gridCell(at: p), cursor: term.cursorGridCell, focused: true,
                                      clearedSelection: false, tapsGoToProgram: false, menuVisible: false)
@@ -178,7 +176,6 @@ final class TerminalSelectionController: NSObject {
     func tap(at p: CGPoint, focused: Bool) -> Tap {
         let (onHandle, count) = countTap(at: p)
         if onHandle { return .handle }
-        guard term.usesHostSelectionUI else { return .single(showsPaste: false) }
         if count >= 2 {
             selectTap(at: p, line: count >= 3)
             return .selected
@@ -395,7 +392,7 @@ final class TerminalSelectionController: NSObject {
 
     private func showHandles(_ ends: TerminalSelectionEnds?) {
         shownEnds = ends
-        guard term.usesHostSelectionUI, let ends else { handles.hide(); return }
+        guard let ends else { handles.hide(); return }
         handles.show(SelectionHandleLayout(start: ends.start.map { handles.convert($0, from: term) },
                                            end: ends.end.map { handles.convert($0, from: term) }, in: handles.bounds))
     }

@@ -420,8 +420,6 @@ final class GhosttyRenderTests: XCTestCase {
         window.addSubview(view!)
         window.isHidden = false
         view!.layoutIfNeeded()
-        XCTAssertTrue(view!.parsesOffMainThread)
-        XCTAssertFalse(view!.fontChangeResetsModes)
         XCTAssertGreaterThan(view!.cellSize.width, 0)
 
         view!.setGrid(cols: 30, rows: 8, force: false)
@@ -430,7 +428,7 @@ final class GhosttyRenderTests: XCTestCase {
         view!.setGrid(cols: 30, rows: 8, force: false)
         XCTAssertEqual(grid.count, 2, "once on setting the delegate, once for the change; an unchanged grid isn't reported again")
         view!.feed(text: "hello \u{1b}[2 q")
-        view!.feed(byteArray: Array("world".utf8)[...])
+        Array("world".utf8).withUnsafeBufferPointer { view!.feed(buffer: $0) }
         view!.core.sync()
         XCTAssertEqual(view!.core.rowText(0), "hello world")
         XCTAssertEqual(view!.core.gridSize.cols, 30)

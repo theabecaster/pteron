@@ -5,12 +5,12 @@ as I don't know where it is starting. Also give me haptic feedback as I'm holdin
 starts highlighting."
 
 Two causes. The row-above bug was a hit-testing error and is fixed (see
-[ghostty-parity.md](ghostty-parity.md), "The row-above bug"). The second is physical: at 9 to 11 pt
+[terminal-checklist.md](terminal-checklist.md), "The row-above bug"). The second is physical: at 9 to 11 pt
 a row is about 11 to 14 pt high and a fingertip covers 2 to 4 rows, so even with correct hit-testing
 the user cannot see what is under the finger. This document is about the second.
 
 Code: `RexConnect/Features/Terminal/Selection/`. Tests: `RexConnectTests/SelectionUITests.swift`.
-Manual checklist: [ghostty-parity.md](ghostty-parity.md), "Selection".
+Manual checklist: [terminal-checklist.md](terminal-checklist.md), "Selection".
 
 ## What it does now
 
@@ -27,7 +27,7 @@ Manual checklist: [ghostty-parity.md](ghostty-parity.md), "Selection".
   menu returns. Dragging one handle past the other turns the selection around.
 - **Double tap** selects a word, **triple tap** the line; both copy and show handles and menu.
 - **Tap elsewhere** clears. A tap within 3 columns and 1 row of the cursor (terminal focused, no
-  selection, no mouse-tracking program) shows Paste, as SwiftTerm's view does.
+  selection, no mouse-tracking program) shows Paste.
 - No selection: nothing is drawn and no touch is intercepted.
 
 ## Research
@@ -63,8 +63,7 @@ exactly as the app configures it (`framebufferOnly = true`, presented from the r
 loupe magnifies what the compositor shows, not what the app can read back, which is why
 `framebufferOnly` does not matter. Prior art agrees: Compose Multiplatform, which draws through
 Metal, ships its iOS 17 magnifier on `UITextLoupeSession`
-([PR 1000](https://github.com/JetBrains/compose-multiplatform-core/pull/1000)), and a SwiftTerm fork
-uses it the same way we do ([acmore/SwiftTerm PR 6](https://github.com/acmore/SwiftTerm/pull/6)).
+([PR 1000](https://github.com/JetBrains/compose-multiplatform-core/pull/1000)).
 **Not verified: a real device.** If the loupe is blank there, `-selectionLoupe off` (UserDefaults
 `selectionLoupe`) turns it off, and the fallback would be a loupe we draw ourselves from the cell
 text (not built).
@@ -100,7 +99,6 @@ overusing them.
 | App | How it selects | Loupe | Handles | Haptics | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Blink Shell (hterm in WKWebView) | WebKit's own selection, character granularity ([TermView.m:181](https://github.com/blinksh/blink/blob/HEAD/Blink/Terminal/TermView.m#L181)) | WebKit's | WebKit's | none of its own | While a selection exists it disables pinch and tap and drops scroll touches ([WKWebView.swift:131](https://github.com/blinksh/blink/blob/HEAD/Blink/WebKit/WKWebView.swift#L131-L142)). A keyboard selection mode (`h/j/k/l`, `w/b`, `o` swaps ends, `y` copies). Complaints: imprecise and slow ([#126](https://github.com/blinksh/blink/issues/126)), long selections truncated ([#2278](https://github.com/blinksh/blink/issues/2278)), steals drags from mouse programs ([#2309](https://github.com/blinksh/blink/issues/2309)). |
-| SwiftTerm iOS | Long press (0.7 s) opens a menu with "Select"; double tap word, triple tap line; a pan near an end extends | none | Drawn in the text pass: 2 pt line, 12 pt circle, no enlarged hit target ([AppleTerminalView.swift:4020](https://github.com/migueldeicaza/SwiftTerm/blob/HEAD/Sources/SwiftTerm/Apple/AppleTerminalView.swift#L4020-L4066)) | none | `UITextInput` for the keyboard only, as ours. Open issues: mouse programs eat handle drags ([#221](https://github.com/migueldeicaza/SwiftTerm/issues/221)), extending one end snaps the other ([#274](https://github.com/migueldeicaza/SwiftTerm/issues/274)). |
 | Termius | "Press and hold the word, then release"; handles at both ends ([docs](https://docs.termius.com/terminal/mobile-terminal)) | not confirmed | yes | not confirmed | Lift-to-select exists because its long-press-drag sends arrow keys. |
 | Secure ShellFish | Double tap starts, triple tap a line ([help](https://secureshellfish.app/help/cursor-and-selection)) | not confirmed | not confirmed | not confirmed | Under mouse programs: Option passes clicks, Shift keeps them local. |
 | Prompt 3 | not documented | | | | Release notes mention only a "Send Mouse Events" toggle. |
@@ -119,7 +117,7 @@ handles too small to grab, and selection fighting scroll or mouse reporting.
 
 - **A program that tracks the mouse** (vim, tmux): long press and handles are ours and never reach
   the program. A single tap is still its click, so the first tap of a double tap clicks. The
-  engine's own tap clears a selection instead of clicking, as SwiftTerm does.
+  engine's own tap clears a selection instead of clicking.
 - **Output while selecting**: the selection is the terminal's tracked selection, so it stays on its
   text. Handles follow on the next display frame (the controller's display link compares
   `selectionGeometryStamp`, the scroll position of the last drawn frame). A reset drops the
@@ -155,7 +153,8 @@ which work. Rejected.
 (system look, zero rendering cost for us), handles sized for small fonts, haptics, word and line
 taps. The selection stays the terminal's; nothing touches `UITextInput`. Costs: handles are ours to
 draw and hit-test (about 150 lines); the loupe over Metal is confirmed in the simulator only.
-Performance: a drag event costs two seam calls and no allocation; nothing runs without a selection.
+Performance: a drag event costs two calls into the terminal view and no allocation; nothing runs
+without a selection.
 Chosen.
 
 **C. Hybrid: ours for gestures, `UITextSelectionDisplayInteraction` for the handle views.** The
@@ -179,7 +178,7 @@ TerminalSelectionController ── SelectionSession (pure state machine → effe
    │        └────────── SelectionLoupe     (SystemSelectionLoupe: UITextLoupeSession)
    │                    SelectionHandlesView + SelectionHandleLayout (pure geometry)
    ▼
-TerminalEngineView seam (points, cells and rects all from GhosttyGridGeometry)
+GhosttyTerminalView (points, cells and rects all from GhosttyGridGeometry)
 ```
 
 - `SelectionSession` holds the phase (`idle`, `pressing`, `selected`, `adjusting`) and turns events
@@ -187,9 +186,9 @@ TerminalEngineView seam (points, cells and rects all from GhosttyGridGeometry)
   loupe, handles and menu show. It has no UIKit in it.
 - `TerminalSelectionController` performs effects and owns the one display link, which runs only
   while a selection is up and the pane is in a window.
-- Point to cell and cell to rect come only from the engine (`gridCell(at:)`, `selectionEnds`,
-  `selectionRects`), which on Ghostty is `GhosttyGridGeometry`. The Selection folder does no grid
-  math.
+- Point to cell and cell to rect come only from the terminal view (`gridCell(at:)`,
+  `selectionEnds`, `selectionRects`), which is `GhosttyGridGeometry`. The Selection folder does
+  no grid math.
 
 ### Haptics
 
@@ -216,7 +215,7 @@ TerminalEngineView seam (points, cells and rects all from GhosttyGridGeometry)
   drag moved its end to another cell. A handle that was only touched copies nothing. Double and
   triple taps copy at once. Select All never copies by itself (it can be the whole scrollback);
   Copy in the menu does.
-- **Word-anchored drag**: the seam's drag runs from the pressed cell to the finger, which cut the
+- **Word-anchored drag**: the view's drag runs from the pressed cell to the finger, which cut the
   pressed word in two. The controller now waits until the finger leaves the word, then anchors the
   drag on the word's far end with `beginSelectionAdjust`.
 - **Edge autoscroll**: the engine scrolls one line when asked with a point within half a cell of
@@ -229,16 +228,14 @@ TerminalEngineView seam (points, cells and rects all from GhosttyGridGeometry)
 - **Edit menu**: Copy, Paste, Select All, above the selection when there is room (the end handle
   hangs below it). Hidden while a finger is on the selection.
 - **Pointer (mouse, trackpad) drags**: unchanged. No loupe, handles or new haptics.
-- **SwiftTerm engine**: gets the loupe and the haptics through the same controller; no handles, taps stay its own (`usesHostSelectionUI` is false). Nothing in
-  `SwiftTermEngine.swift` changed.
 
 ### Performance
 
 - No selection: no display link, no layers shown, `point(inside:)` of the overlay returns false
   after one comparison.
-- A drag event: `extendSelection`, then `selectionEnds` (for the loupe and handles). On Ghostty that
+- A drag event: `extendSelection`, then `selectionEnds` (for the loupe and handles). That
   is three short `termLock` sections on the main thread, each bounded by one parser slice (the
-  bound in ghostty-parity.md, "Locks"). Effects are an `OptionSet`; rects and cells are values;
+  bound in terminal-checklist.md, "Locks"). Effects are an `OptionSet`; rects and cells are values;
   layers are reused with implicit animations off. Nothing is allocated per event.
 - A frame with a standing selection: one read of the scroll state's own lock. The ends are read
   again (terminal lock) only when that position changed, or every 0.1 s to notice a dropped
@@ -248,14 +245,13 @@ TerminalEngineView seam (points, cells and rects all from GhosttyGridGeometry)
   scrollback rows and shift them by the scroll delta.
 - The loupe is drawn by the system from the composited screen: no extra render pass, no readback.
 
-## Seam members added (`TerminalEngineView`)
+## What the selection UI asks of the terminal view
 
-All have defaults in `Selection/SelectionSeam.swift`; Ghostty implements them in
-`Ghostty/GhosttyTerminalView+SelectionUI.swift`.
+In `Ghostty/GhosttyTerminalView+SelectionUI.swift`; the two value types (`TerminalGridCell`,
+`TerminalSelectionEnds`) are in `Selection/SelectionSeam.swift`.
 
 | Member | For |
 | --- | --- |
-| `usesHostSelectionUI: Bool` | Handles, taps and the cursor menu are the host's for this engine |
 | `selectionEnds: TerminalSelectionEnds?` | Rects of the first and last selected cell; an end out of view is nil |
 | `selectionGeometryStamp: Int` | Cheap "did the grid move" check, per frame |
 | `beginSelectionAdjust(movingStart:) -> Bool` | Handle drags and the word-anchored drag |
@@ -300,14 +296,14 @@ Verified by tests (23 in `SelectionUITests`): the state machine through press, d
 adjustment and clear; every haptic trigger point with a recording sink, including the prepare
 before the start, the rate limit, the copy confirmation and the copy after an adjustment; handle
 geometry, flipping and hit targets; word and line taps; the word-anchored drag; copy-on-select
-timing; the cursor menu rule; the seam members on a real Ghostty view.
+timing; the cursor menu rule; the members above on a real terminal view.
 
 Verified by screenshot in the simulator (replay screen, 10 pt, iPhone 17, iOS 27.2): the loupe over
 the Metal grid during a press, a drag and a handle drag, showing text, highlight and handle; both
 handles on the selection's edges; the knob flipping under the top row; handles at full size on a
 zoomed-out mirror grid; the menu with Copy, Paste, Select All.
 
-Needs a person with a device (the checklist in ghostty-parity.md):
+Needs a person with a device (the checklist in terminal-checklist.md):
 
 - The loupe over Metal on real hardware, and whether its magnification is enough at 9 pt.
 - How every haptic feels, and that the start arrives with no lag.
@@ -324,6 +320,6 @@ Needs a person with a device (the checklist in ghostty-parity.md):
    that is too much, a single `.rigid` impact is the alternative.
 2. A double tap raises the keyboard when it was down (its first tap is a normal tap). Delaying the
    single tap by 0.35 s would avoid that and make every tap feel slower.
-3. The tap-near-cursor Paste menu matches SwiftTerm. It can show when the tap was only meant to
-   focus the prompt; drop it if it annoys.
+3. The tap-near-cursor Paste menu can show when the tap was only meant to focus the prompt; drop
+   it if it annoys.
 4. Per-word ticks were left out as noisy. Easy to add in `SelectionSession` if wanted.

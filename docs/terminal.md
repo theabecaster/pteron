@@ -11,15 +11,11 @@ main thread, and reflows on a resize the way the server does, because the server
 Ghostty too. How it is built: [ghostty-engine.md](ghostty-engine.md). Upstream C API notes:
 [ghostty-api-notes.md](ghostty-api-notes.md).
 
-`TerminalHost` reaches it only through `any TerminalEngineView`
-(`Features/Terminal/Engine/TerminalEngine.swift`). The host owns the gestures, the clipboard, the
-edit menu and the hardware keymap; the engine owns the screen, scrolling, the selected range and
-key encoding.
-
-History: until November 2026 the app had a second engine, SwiftTerm, behind the same seam. It read
-the screen as escape sequences (`terminal.format`) instead of restoring the snapshot. The stream
-keeps that path as its fallback (below); [ghostty-parity.md](ghostty-parity.md) is the audit that
-compared the two.
+`TerminalHost` holds the engine's view, `GhosttyTerminalView`, directly, and hears from it through
+`TerminalEngineDelegate` (grid changes, bytes for the program). The host owns the gestures, the
+clipboard, the edit menu and the hardware keymap; the view owns the screen, scrolling, the
+selected range and key encoding. What must keep working, and the manual script for a device:
+[terminal-checklist.md](terminal-checklist.md).
 
 ## Start
 
@@ -49,6 +45,9 @@ have gone by, the stream reads `terminal.size` and `terminal.format` (`vt`, then
 feeds that. Output that arrives during the read is dropped. From then on that stream reads the
 screen this way on every start, and `resync()` re-reads it on the open stream.
 
+The host refuses a snapshot of more than 16 MiB (`SnapshotBuffer`), so a server with a huge
+history takes this path too.
+
 ## Output
 
 - Rex messages are APC sequences, `ESC _ rex1;<nonce>;<json> ESC \`, and can split across frames.
@@ -57,6 +56,13 @@ screen this way on every start, and `resync()` re-reads it on the open stream.
   received chunk.
 - The host passes each chunk to the engine at once. The engine copies it to its feed queue and
   parses there; the main thread does no parsing and no pacing.
+- **Backpressure.** When more than 4 MB wait unparsed, the engine says so
+  (`GhosttyCore.isBackedUp`) and the host calls `TerminalStream.pauseReading()`: the stream takes
+  the message it is waiting for and asks the socket for no other. Below 1 MB the host calls
+  `resumeReading()` and the stream goes on in order. So a program that writes faster than the
+  phone parses fills the socket's and the server's buffers, not the phone's memory. Input and
+  control calls are not held, and a RESUME still counts only the bytes taken. Past 64 MB unparsed
+  (a source that never pauses) the engine drops the backlog instead (`GhosttyCore.droppedBytes`).
 - A `resize` applies at its place in the stream: the local grid changes between the bytes written
   before and after it.
 
@@ -106,7 +112,7 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 - Long press: select a word (haptic, loupe), drag to extend; on release copy (copy-on-select, with a
   shimmer and a confirming haptic), show handles to adjust with, and Copy / Paste / Select All.
   Double tap selects a word, triple tap a line. Mouse or trackpad drags select directly.
-  Design, haptics and the seam: [selection.md](selection.md).
+  Design and haptics: [selection.md](selection.md).
 - Pinch: in fit mode changes the font size (one resize claim at the end); in mirror mode zooms.
 - Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%.
 - A tab shows its splits as the Mac lays them out while every pane keeps 40×8 cells

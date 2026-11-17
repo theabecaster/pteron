@@ -25,7 +25,7 @@ final class KeyboardFocusHostTests: XCTestCase {
     private func makeHost() -> TerminalHost {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .mirror,
-                                fontSize: 12, theme: ThemeStore.fallback, engine: .ghostty)
+                                fontSize: 12, theme: ThemeStore.fallback)
         host.hardwareKeyboard = { [unowned self] in self.hardware }
         // Too small to lay out, so the host never starts its stream.
         host.frame = CGRect(x: 0, y: 0, width: 10, height: 10)

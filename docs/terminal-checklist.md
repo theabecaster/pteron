@@ -1,0 +1,304 @@
+# Terminal regression checklist
+
+What the terminal must do, row by row, and how each row is checked. Run the tests after a change
+to the terminal; run the two manual scripts at the end on a device before a release that touched
+gestures, input, selection or rendering.
+
+The list started as the audit that made Ghostty the app's only terminal engine (2026-11-16). How
+the engine is built: [ghostty-engine.md](ghostty-engine.md). The stream and input rules:
+[terminal.md](terminal.md). Selection: [selection.md](selection.md).
+
+How a row is verified:
+
+- a test name: an XCTest or Swift Testing test in `RexConnectTests` (runs in the simulator), or
+  in RexKit where it says so.
+- **live**: run in the simulator in a throwaway `zz-` session, checked with screenshots and
+  `rex capture` of that pane.
+- **hand**: needs touches, a hardware keyboard or a device. Touches can't be injected with this
+  Xcode, so these rows are only as good as the last run of the manual scripts.
+
+## Table
+
+| # | Item | Verified by | What must hold |
+| --- | --- | --- | --- |
+| 1 | Feed, snapshot restore | `GhosttyCoreTests`, RexKit `Stream*` tests, live | The pane restores Rex's snapshot: the screen, the scrollback and the prompt are the server's (live: `seq 1 300` and a prompt). A snapshot that can't be restored falls back to `terminal.format` (row 49). |
+| 2 | Resize and reflow | `GhosttyCoreTests`, live (fold cycle against `rex capture`) | The terminal reflows locally the way the server does, so a new width needs no redraw from the server. After folded → unfolded → folded the local screen matches `rex capture` line for line. See "Reflow" below for where it can differ. |
+| 3 | Fit grid (cell size) | `GhosttyViewTests.testFitGridFollowsTheFontAtEveryFontSize` | At every font size from 7 to 20 pt in 0.5 steps a cell is the font's advance wide and its line height tall, both in whole device pixels. The height is never more than the line height rounded up to a whole point and less than a point under it, so a pane fits up to about 10% more rows than whole-point rows would, never fewer. The Mac's pane is resized to that grid. |
+| 4 | System keyboard text | `GhosttyInputViewTests.testTypedTextIsSentAsItsBytesInEveryMode`, `testRawSendsGoOutUnchanged`, live (`-typeTest`) | Typed text goes out as its bytes in normal, DECCKM, DECBKM and bracketed-paste modes; a line feed is Return; DECBKM changes Backspace. Under the Kitty protocol the key is named. |
+| 5 | Key bar keys and trackpad | `GhosttyInputViewTests.testCursorKeysInBothCursorModes`, `testRawSendsGoOutUnchanged` | The bar encodes its own bytes; arrows, Home and End follow DECCKM. |
+| 6 | Key bar ctrl / alt, one shot and locked, with characters | `GhosttyInputViewTests.testOneShotControlSendsTheControlCharacter`, `testOneShotMetaSendsEscapeThenTheText`, `testOneShotModifiersClearAndNotify` | Includes Ctrl+I, Ctrl+M and Ctrl+[ as Tab, Return and Escape in legacy mode. |
+| 7 | Key bar ctrl / alt with Backspace, Return, Tab | `GhosttyViewTests.testOneShotControlWithReturnOrTabSendsThePlainKeyInLegacyMode`, `testOneShotModifiersApplyToBackspaceAndReturn` | Alt+Backspace sends `ESC DEL` (delete a word) and uses up the flag. Ctrl+Backspace sends `0x08`, as Ghostty does. Ctrl+Alt+letter applies both. Ctrl+Return and Ctrl+Tab send the plain key in legacy mode (never `CSI 27;5;13~`, which a shell prints). |
+| 8 | Hardware keyboard | `GhosttyInputKeyTests`, `GhosttyInputViewTests.testHardwareKeysAreEncodedOrLeftToTheTextSystem`, `testHeldKeyRepeatsUntilReleased`; hand | Tests drive `hardwareKeyDown` with `UIKey`'s properties, since a `UIKey` can't be made. Real presses, layouts, dead keys and key repeat need a keyboard. With one-shot ctrl from the key bar a hardware function key takes the modifier. |
+| 9 | Keymap bindings (`keyHook`), ⌘ commands | hand | The hook sees each press before the terminal does (`pressesBegan` asks it first). |
+| 9a | Hardware keyboard: no system focus halo on a pane | `KeyboardFocusPolicyTests.panesStayOutOfTheSystemFocus`; live (iPad simulator, real key events: Tab and arrows with and without a focused terminal, screenshots) | The terminal view can't become focused and draws no focus effect. iPhone has no focus system at all (`UIFocusSystem.focusSystem(for:)` is nil) unless Full Keyboard Access is on; that ring is the system's and is left alone. |
+| 9b | Hardware keyboard: arrows, Tab, Enter, Escape reach the program | `GhosttyInputViewTests.testHardwareKeysAreEncodedOrLeftToTheTextSystem`; live (real key events: arrows and Tab reached `pressesBegan` and the shell) | True whenever the terminal is first responder, which `KeyboardFocusPolicy` keeps it with a hardware keyboard. |
+| 9c | Hardware keyboard: a pane switch moves the keyboard | `KeyboardFocusPolicyTests`; live (⌥⌘←, ⌘], ⌘[ in splits and one pane at a time: the next key typed landed in the new pane, checked with `rex capture`) | Also across a fold or unfold (the pool moves the host, UIKit takes the keyboard, the host takes it back), after Settings, and back from the background. |
+| 9d | ⌘/ toggles the sidebar in each posture | `ToggleSidebarKeyTests`, `KeyboardLayoutTests`, `SidebarStateTests`, `HardwareKeyPathTests`, `AppShortcutTests`; live (inline on the unfolded size, drawer on the folded size and on an iPhone, and with no first responder at all) | With a terminal focused the key runs through `keyHook`; with none, through the app's menu (`AppShortcutCommands`). |
+| 9e | The pool never strands a pane off screen | `TerminalHostPoolTests`; live (three panes on the unfolded size) | The newest container in a window shows the host, not the newest one made. (Before: the active pane was blank and had no keyboard.) |
+| 10 | Paste | `GhosttyInputViewTests.testPasteInBothPasteModes`, `testPasteIsBracketedOnlyWhenTheProgramAsked` | Bracketed when the program asked; unsafe control bytes replaced by spaces in both modes. |
+| 11 | Empty paste | `GhosttyViewTests.testAnEmptyPasteSendsNothing` | Nothing is sent, as in the Ghostty app: no empty bracket under mode 2004. The host only pastes a non-nil pasteboard string, so this needs an empty string on the pasteboard. |
+| 12 | Input methods, dictation, space-bar trackpad | `GhosttyInputTextTests`; hand | Marked text is not drawn in the terminal; the keyboard's candidate bar shows it. |
+| 13 | Scrollback: one-finger scroll, deceleration, rubber band, indicator | `GhosttyScrollTests`, `GhosttyScrollViewTests`; hand | 10,000 lines. Scrolls by pixels (sub-row). |
+| 14 | Input returns a scrolled-back view to the bottom | `GhosttyIntegrationTests.testEveryKindOfInputJumpsToTheBottomThroughTheScroller`, `testInputAtTheBottomAsksForNoScroll`, live (`-scrollBackTest`) | Typed text, Backspace, key bar keys, `send(txt:)`, paste and hardware keys jump to the bottom through the scroller. |
+| 15 | Mouse and focus reports leave the view where it is | `GhosttyIntegrationTests.testMouseAndFocusReportsLeaveAScrolledUpViewWhereItIs` | Clicks and wheel reports are not typing: a scrolled-up view stays. |
+| 16 | Page Up / Page Down (hardware, keymap actions) | `GhosttyIntegrationTests.testHardwarePageKeysScrollTheSurface`, `GhosttyInputViewTests.testPageKeysScrollLocallyUnlessTheProgramTookTheCursorKeys` | Local scroll, or the key to the program on an alternate screen or under DECCKM. No key repeat for a local page scroll. |
+| 17 | Scroll to previous / next prompt | `GhosttyIntegrationTests.testScrollToPromptMovesTheSurfaceBetweenShellPrompts` | Needs OSC 133 marks. |
+| 18 | Pinch font size (fit mode) | hand | The text scales under the fingers; on release the font and the grid change. The terminal keeps its modes and its screen, so nothing is reloaded from the server. |
+| 19 | Long press selects a word | `GhosttySelectionTests` (words, paths, URLs, wide characters); hand | Words end at spaces, quotes, brackets, pipes, separators and the box-drawing bar. A word follows a soft wrap onto the next row. |
+| 20 | Drag to extend, edge autoscroll | `GhosttySelectionTests.testDraggingToTheTopEdgeScrollsALinePerMoveThroughTheScroller`, `testHitTestingAndRectsAtAFractionalScrollOffsetInHistory`; hand | Hit-testing and rects use the scroller's position (right at any fraction of a row and in history), and the edge scroll goes through the scroll surface, one line per finger move. |
+| 20a | The highlight is on the row under the finger | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) | Reported from a device on build 7a0d37c ("highlights a row above"). See "The row-above bug" below. |
+| 21 | Copy, copy-on-select, shimmer, edit menu | `GhosttySelectionTests` (text and rects), `SelectionUITests.testCopyOnSelectHappensOnLiftAndAfterAnAdjustmentThatChangedSomething`; hand | The host does all four from `selectedText` and `selectionRects`, with the loupe, the selection haptics, handles and Select All in the menu ([selection.md](selection.md)). |
+| 22 | Copied text | `GhosttySelectionTests` | What the Ghostty app copies: soft-wrapped rows joined into one line, trailing spaces trimmed. |
+| 23 | Selection through output and resize | `GhosttySelectionTests.testTheSelectionSurvivesAReflow`, `testTheSelectionAndItsRectFollowOutput` | The terminal tracks the selection: it stays on its text through output, scrolling and a reflow. |
+| 24 | Selection drawn during synchronized output | `GhosttySelectionTests.testASelectionChangeIsDrawnDuringARenderHold` | A selection made while a program holds the screen is drawn at once. |
+| 25 | Pointer (mouse / trackpad) drag selects, wheel scrolls | `GhosttySelectionTests.testPointerDrag`, `GhosttyIntegrationTests.testEveryPanOfTheEngineAsksThePanGate`, `testTheEnginesRecognizersAreTheShapeTheHostExpects`; hand | The host's pointer pan on the terminal view asks `panGate`; the wheel-drag pan takes fingers only. |
+| 26 | Gesture arbitration: scroll, drag-select, pane swipe, mirror canvas pan, pinch, two-finger tap | `GhosttyIntegrationTests.testEveryPanOfTheEngineAsksThePanGate`, `GhosttyScrollViewTests.testGatesDecideWhetherPansAndTheTapBegin`; hand | Every pan of the terminal view asks `panGate`; its tap asks `tapGate`. The view has no pan that selects. |
+| 27 | Double tap (word), triple tap (line) | `SelectionUITests.testDoubleTapSelectsAWordAndTripleTapTheLine`, `testSelectionEndsAdjustAndLine`; hand (Selection 7) | The host counts taps (`TerminalSelectionController.tap`), so the first tap acts at once instead of waiting for a second. Both copy, and show handles and the edit menu. A line follows soft wraps. |
+| 28 | Tap near the cursor shows a Paste menu | `SelectionUITests.testATapByTheCursorOffersPaste`, `testRules`; hand (Selection 8) | The trigger (`SelectionRules.tapShowsPaste`): within 3 columns and 1 row of the cursor, terminal focused, no selection cleared by the tap, no mouse tracking, no menu up. Shown with `UIEditMenuInteraction`. |
+| 29 | Tap on a link opens it | `GhosttyLinkLookupTests`, `GhosttyTapRoutingTests`; live (`-tapTest` on an OSC 8 link and on a web address, Safari opened); hand (a real finger) | A tap on a focused pane opens an OSC 8 hyperlink (also in a mouse-tracking program), and an `http(s)` address written as text (soft-wrapped ones too) unless the program tracks the mouse. See "Taps" below. |
+| 30 | Tap on a prompt line moves the cursor (OSC 133 click) | `GhosttyPromptClickTests`, `GhosttyTapRoutingTests`; live (`-tapTest`, then a typed character landed at the tapped cell); hand | The shell must announce `cl=…` or `click_events=…`, the cursor must be at a prompt, primary screen, no mouse tracking, no selection, not within 3 columns and 1 row of the cursor. Arrow keys go through the key encoder (DECCKM). As in Ghostty, every `cl` value moves within one input line. See "Taps" below. |
+| 31 | OSC 52 copy to the pasteboard | `GhosttyClipboardTests`; live (`printf '\e]52;c;…'`, then `xcrun simctl pbpaste`) | Every destination is the iOS pasteboard, only valid UTF-8 text, an empty write empties it, silent (no haptic, no shimmer). A query is never answered. One-letter destinations only (`52;pc;…` is dropped). |
+| 32 | Theme: foreground, background, cursor, selection, ANSI 16, keyboard appearance, indicator | `GhosttyViewTests.testThemeReachesEveryPart`, `GhosttyScrollViewTests.testThemeStylesTheIndicator`, `GhosttyRenderTests.testExplicitAndPaletteColors`; live (dark theme) | Light themes: by test only. |
+| 33 | Colour rendering | live (screenshots) | The theme's hex values are drawn as they are. |
+| 34 | Fonts: MesloLGS NF regular, bold, italic, bold italic; fallback | `GhosttyRenderTests.testBoldItalicFaintInvisible`, `testWideCharactersAndGraphemes`, `testEmojiUsesTheColorAtlas`; live (regular, bold) | Italic and bold italic have not been looked at live. |
+| 35 | Box drawing, blocks, braille, Powerline | `GhosttyRenderTests.testBoxAndBlockSpritesFillTheCellEdgeToEdge`; live (Powerline prompt) | Drawn as cell-exact sprites, so lines and separators join with no gaps. |
+| 36 | Cursor shapes (block, bar, underline) | `GhosttyRenderTests.testCursorFollowsTheTerminal`, `testRendererDrawsBackgroundsGlyphsAndCursor` | |
+| 37 | Cursor solid with the keyboard, hollow without | `GhosttyIntegrationTests.testTheCursorIsSolidOnlyWhileTheViewIsFirstResponderInAWindow`; live (solid focused, hollow with `-focus none`) | The cursor follows the first responder. |
+| 38 | Cursor blink | `GhosttyIntegrationTests.testTheCursorBlinksOnlyWhenTheTerminalSaysSoAndThePaneIsFocusedAndVisible`, `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread` | Blinks only when the terminal says so (DECSCUSR, mode 12), focused and on screen. The timer exists only then. Whether a fresh shell's cursor blinks depends on the mode the server's snapshot carries; not checked live. |
+| 39 | Mouse clicks and wheel reports, alternate scroll (arrows) | `GhosttyMouseTests`, `GhosttyScrollViewTests.testWheelDragSendsWheelReportsLineByLine`, `testTapSendsPressAndReleaseAtTheCell`, `testAlternateScrollSendsArrowKeysAndRespectsCursorKeyMode`; hand | Routing rules, wheel budget and formats as in `GhosttyMouseReporter`. A long press selects even when the program tracks the mouse (`testALiftedLongPressIsNotAClickForATrackingProgram`). |
+| 40 | Mode 1002 drag reports | read of the pan handlers | Touch sends none: a one-finger drag is the wheel, a pointer drag selects. Hover motion is reported under mode 1003. |
+| 41 | 120 Hz | `GhosttyRenderTests` (frame cost); hand on a device | The render thread's display link asks for 120 Hz. The simulator can't show it. |
+| 42 | Mirror-mode zoom and pan | hand | The terminal view is scaled by the zooming scroll view, so it is soft above 1×. Hit-testing uses the view's own coordinates. Mirror is only behind `-sizing mirror`; not run since the audit. |
+| 43 | Fit-mode claim | `FitClaimTests`; live (the pane took the phone's grid and this client as owner; the owner was gone once the app was terminated) | Host code. |
+| 44 | "Resized elsewhere · tap to fit here", status chip | hand | Host code. Not run since the audit. |
+| 45 | Keyboard show / hide, any new view size | `GhosttyIntegrationTests.testResizingTheViewNeverScrollsTheTerminal`; hand | A view that grew (keyboard gone, unfold) stays at the bottom. (Before: UIKit's offset fix-up for the new size was sent on as a scroll, and the terminal was left scrolled into history.) |
+| 46 | Fold / unfold: the pool moves a live pane | `GhosttyIntegrationTests.testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached`, `testSelectionAndCursorSurviveTheMove`; live (`-simulateDuo folded,unfolded,folded` on an iPad simulator) | Draws at once on return, at the new size and scale, without new output. Draws nothing and wakes nothing while detached. |
+| 47 | Reconnect and resume | RexKit `Stream*` tests | Host and stream code. A fresh connection brings a snapshot; a resume carries none. Not run live. |
+| 48 | Background and foreground | `GhosttyIntegrationTests` (visibility), `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread`; hand | No Metal work and no display-link wake in the background; one frame on return. After more than 30 s the host opens a fresh stream. |
+| 49 | Reset and the `terminal.format` fallback | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `StreamSnapshotHandoffTests` | A snapshot that doesn't decode, or is over the 16 MiB cap, falls back: `streamReset` feeds RIS and clear-scrollback, then `streamSnapshot` feeds the screen as text. |
+| 50 | Teardown | `GhosttyIntegrationTests.testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane` | No terminal, render-thread pane or thread left. |
+| 51 | Backpressure | `TerminalBackpressureTests`, RexKit `StreamBackpressureTests`, `GhosttyCoreTests.testABacklogAboveTheMarkSignalsAndClears` | Above 4 MB of unparsed output the stream stops reading its data socket; below 1 MB it goes on, in order. Input and control calls are not held. Not run live against a real flood. |
+
+## Taps: links, prompt clicks, OSC 52 (rows 29 to 31)
+
+Code: `Ghostty/GhosttyTap.swift` (the order of things a tap does, as a table with a test),
+`GhosttyLinks.swift`, `GhosttyPrompts.swift`, `GhosttyClipboard.swift`. The host's tap asks the
+terminal view (`tapOpensLinkOrMovesCursor`, at `TAP HOOK` in `TerminalHost.tap`) before the
+selection UI and the focus logic see the tap; one hold of the terminal lock reads everything. A
+tap that opened a link or moved the cursor is used up: it is no click for the program and shows
+no menu.
+
+Order: an unfocused pane is only focused; a selection is only cleared; an OSC 8 hyperlink opens;
+a mouse-tracking program gets its click; a web address in the text opens; next to the cursor
+nothing moves (the Paste menu, row 28); a tap on the prompt moves the cursor.
+
+With the selection UI (rows 27 and 28):
+
+- **Paste by the cursor wins over a prompt click.** Both use the same zone (within 3 columns and
+  1 row of the cursor): inside it the tap offers Paste and moves nothing, outside it the tap moves
+  the cursor and shows no menu.
+- **A double or triple tap still selects.** A used-up tap is counted as the first tap, and a tap
+  that follows one within 0.5 s in the same place is never a link or prompt tap (the shell may not
+  have moved its cursor yet, and the keys would go out twice). So a double tap on a word of the
+  prompt moves the cursor there and selects the word; on a link it opens the link once.
+
+- **Links.** The hyperlink of a cell is `ghostty_grid_ref_hyperlink_uri`. A plain address is
+  looked for in the cell's logical line, built from the rows' wrap flags, in view only. Only
+  `http` and `https` are found in text. A link a program wrote opens at once when it is a web or
+  mail address; anything else, and a label that names another site, is asked about first
+  (`LinkOpenPolicy`). Links are not underlined: Ghostty underlines them only under a hovering
+  pointer with a modifier.
+- **Prompt click.** libghostty-vt has the grid data (input cells, prompt rows, "cursor at prompt")
+  but its C API has neither the click mode the shell announced nor `promptClickMove`. The mode is
+  read from the stream with `ghostty_terminal_vt_write_until` at OSC boundaries (upstream's way to
+  see a string's bytes); the move is `Screen.promptClickLine` again, with a wide character
+  counted once (upstream counts both cells). A snapshot doesn't carry the mode, so after opening a
+  pane a click works from the next prompt the shell draws.
+- **OSC 52.** `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE`. The callback copies the text and leaves; a
+  burst becomes one hop to the main actor and the last write wins. No clipboard-read and no
+  write-pty callback exist, so nothing can be sent back. OSC 1337 Copy and OSC 5522 writes arrive
+  the same way and are taken too. Only the pane the user works in may write (`setGate`). Live: the
+  Rex server's terminal also set the Mac's clipboard from the same sequence.
+
+## The row-above bug (build 7a0d37c)
+
+Reported from an iPhone Duo: a long press highlighted the row above the finger. Row 20a keeps it
+from coming back.
+
+Cause: the selection code had its own point-to-cell conversion (`GhosttySelectionGeometry`), which
+divided the touch's y by the cell height and took the grid to start at the view's top edge. The
+renderer draws the grid shifted up by the part of the first row that is scrolled past (the scroll
+surface is a `UIScrollView` and rests at any pixel offset, not on row boundaries). The shift was a
+placeholder that returned 0 (`selectionScrollShift`), so with a shift of `f` pixels a touch in the
+bottom `f` pixels of every row was mapped to the row above, and the terminal highlighted that row.
+At the bottom of the output the shift is 0 and the mapping was right, but a second bug put the
+view off the bottom without the user scrolling: when the view grew (keyboard hidden, unfold), UIKit
+pulled the scroll offset back and that was sent to the terminal as a scroll (row 45). After that,
+every press was off by up to a row.
+
+It was not the view's position (the host reads the press in the terminal view's coordinates, also
+when the view sits at a negative y or is scaled in mirror mode), not the display scale, and not
+cell-height rounding: the error did not grow with the row number.
+
+Fix: one mapping, `GhosttyGridGeometry`, in device pixels with the frame's scroll shift, used for
+selection points, selection rects and the shimmer. The old conversion is gone.
+
+## Reflow
+
+The server's terminal and the local one are both Ghostty, the stream carries the server's resize
+at its place in the output, and both reflow there. So the host redraws nothing from the server
+after a width change. Checked live: after folded → unfolded → folded the local screen and
+`rex capture` had the same lines and the same wraps.
+
+Where the two can still differ:
+
+- **History the client doesn't hold.** A wider grid pulls rows back out of scrollback. The client
+  keeps 10,000 lines; if the server holds more, rows above that can differ until the next snapshot.
+  Only the top of deep history is affected.
+- **Different Ghostty versions.** The server's Ghostty and the pin here must stay close (the
+  snapshot format requires that anyway).
+- **Alternate screen.** Neither side reflows it. The program redraws on SIGWINCH and that output
+  comes through the stream, so both end up the same.
+- **Programs that redraw on SIGWINCH on the main screen** (a shell prompt): the redraw is output in
+  the stream after the resize, applied to the same reflowed screen on both sides.
+
+An early report of a blank pane when unfolded on an iPhone 17 simulator did not reproduce on an
+iPad simulator. The resize bug of row 45 is a possible cause: it left a taller pane scrolled away
+from the bottom.
+
+## Locks
+
+`termLock` guards the terminal, `stateLock` the render state, the input mirror and the scroll state
+have their own small locks. Order everywhere: `termLock`, then `stateLock`, then the scroll state's
+lock; the mirror's lock is taken under `termLock` or alone. No path takes them the other way round.
+
+Rules that were once broken, and must stay kept:
+
+- Only the render thread moves the viewport, inside the frame's update. Input (`followOutput`) and
+  an edge drag leave a request with the scroll state; they never scroll on the feed queue or under
+  the terminal lock on the main thread.
+- `scrollPage` on an alternate screen uses the input mirror, not the terminal lock.
+- Nothing takes `termLock` per frame without telling the feed queue.
+
+Accepted, with the bound:
+
+- **Main-thread waits.** Selection calls, mouse reports, the wheel's mode read and the cursor
+  position during composition take `termLock` on the main thread. The feed queue lets a waiter in
+  between slices, so the wait is one slice of 64 KB of output, plus one row build if the feed queue
+  is itself waiting for the renderer at the start of a synchronized update. Typing, pasting and
+  scrolling take no terminal lock.
+- **Stale input modes.** A key is encoded with the modes of the last parsed slice. Output still in
+  the queue (including a snapshot being restored after a reconnect) hasn't changed them yet. The
+  window is the feed queue's backlog.
+- **Stale scroll routing.** Whether one-finger drags go to the program follows the last drawn
+  frame, at most 33 ms behind, and is not updated during a synchronized-output hold (1 s at most).
+- **Hit-testing against the last frame.** A touch is mapped with the scroll position of the last
+  drawn frame, and the terminal may have scrolled since (one frame of output at most).
+
+## Choices on record
+
+Three behaviours were choices, not necessities. They stand; each is one small change to undo.
+
+1. **Row height (row 3).** The line height is a whole number of device pixels, not of points, so
+   a pane has up to about 10% more rows and the Mac's pane is resized to that.
+2. **Link taps (row 29).** A finger tap opens links, and web addresses in plain text open too.
+3. **Row 7.** Ctrl+Return from the key bar sends Return.
+
+## Manual script (about 5 minutes)
+
+Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 29, 30, 39, 41, 42, 44, 45, 48.
+
+Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In the app open
+`zz-manual` (panes fit the phone by default). Close the session when done.
+
+1. **Scroll (13).** Drag down with one finger, flick, let it coast, pull past the top. Expected:
+   smooth pixel scrolling, a rubber band at both ends, an indicator at the right.
+2. **Type while scrolled (14).** Scrolled up, type `a`. Expected: the view jumps to the prompt.
+3. **Long press (19, 20a, 21).** Scroll up a little so a row is cut at the top. Long press a
+   number, with the finger low on its row, then on rows near the top, middle and bottom of the pane.
+   Expected: each time the number under the finger is highlighted (never the one above), no keyboard
+   pops up; on release a shimmer plays exactly over it and Copy / Paste appear. Repeat at the bottom
+   of the output after raising and hiding the keyboard, and once in mirror mode (step 9). Tap Copy,
+   then long press the prompt and Paste: the number is typed.
+4. **Drag select and edge scroll (20).** Long press a number, drag up to the top edge and keep
+   moving slightly. Expected: the view scrolls a line per move and the selection grows; nothing
+   else scrolls or swipes. Release: the shimmer covers the visible part.
+5. **Gestures (26).** Flick horizontally: the pane swipes (with two panes) and the terminal doesn't
+   scroll. Two-finger tap: the pane zooms. Pinch: the text scales, and on release the font and
+   grid change without the screen being reloaded (18).
+6. **Keyboard (45, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
+   stays at the bottom both times. Hold the space bar and slide: the cursor moves along the line.
+7. **Mouse program (39).** Run `vim` (or `less` on a long file). One-finger drag: the file scrolls
+   (arrows or wheel), not the scrollback. Two-finger drag: nothing to scroll on the alternate
+   screen. In vim with `:set mouse=a`, tap a line: the cursor goes there. Long press a word: it is
+   selected, vim's cursor doesn't move. Quit.
+8. **Hardware keyboard (8, 9, 25), if at hand.** Type, hold an arrow (it repeats), Ctrl+C, Option+B,
+   Page Up / Page Down (scrollback), a ⌘ shortcut from the keymap. With a trackpad: drag selects and
+   copies, two-finger scroll scrolls.
+9. **Mirror (42, 44).** Mirror has no setting: launch a Debug build with `-sizing mirror`. The pane
+   shows the Mac's grid; pinch zooms, drag pans, a long press still selects the right word. Back
+   in fit mode (a normal launch), resize the pane on the Mac: the chip "Resized elsewhere · tap to
+   fit here" appears; tap it.
+10. **Taps (29, 30).** With the keyboard up, run
+    `printf '\e]8;;https://example.com\e\\LINK\e]8;;\e\\ https://example.org\n'` and tap `LINK`,
+    then the address: each opens in Safari. Hide the keyboard and tap `LINK`: only the keyboard
+    comes back. In a shell with Ghostty's shell integration (`OSC 133;A;cl=line`), type
+    `echo abcdefghij` and tap the `c`: the cursor goes there; a tap within 3 columns of the cursor
+    moves nothing.
+11. **Background (48).** Send the app to the background for a few seconds and return: the screen is
+    there at once and current. On a device, scrolling should run at 120 Hz (41).
+
+## Selection (about 5 minutes, on a device)
+
+Touches can't be injected into the simulator, and haptics and the loupe over Metal can only be
+judged on hardware. Design and what is already verified: [selection.md](selection.md).
+
+Setup: as above (`zz-manual`, `seq 1 400`, then `echo The quick brown fox jumps over /usr/local/bin/rex`),
+font 9 to 11 pt, System Haptics on in iOS Settings (the app follows it). Keyboard down unless a
+step says so.
+
+1. **Start of a selection.** Touch and hold a word for half a second. Expected: one firm haptic at
+   the instant the word highlights; a loupe above the finger shows the word magnified with its
+   highlight (text, not a blank or black lens); the word under the finger is the one highlighted;
+   the keyboard stays down.
+2. **Drag.** Without lifting, drag right along the row, then down three rows. Expected: the pressed
+   word stays whole and the selection grows from it; the loupe follows and shows where the
+   selection ends; no tick while moving along a row, one light tick per new row; nothing scrolls or
+   swipes. Drag back up past the word: the selection turns around and still holds the whole word.
+3. **Lift.** Expected: a two-beat haptic, clearly different from the start, together with the
+   shimmer; the loupe goes; two handles appear (start: knob above its row, end: knob below);
+   Copy / Paste / Select All appears, above the selection if there is room. Paste somewhere: the
+   text is what was highlighted.
+4. **Handles.** Drag the end handle's knob down and right, then release; do the same with the start
+   handle, up and left. Expected: a light haptic on grab; the selection does not jump when the knob
+   is taken; the finger sits beside the row, not on it; the loupe shows the edge being moved; row
+   ticks; on release the two-beat haptic and the shimmer again, and the clipboard holds the new
+   text. Touch a handle and release without moving: no haptic but the grab, clipboard unchanged.
+   Drag one handle past the other: the selection turns around.
+5. **Edges.** Drag a handle to within a finger's width of the top edge and hold still. Expected: the
+   view scrolls steadily (about 16 lines a second) with a tick per line, the selection grows, and it
+   stops when the finger moves away. Same at the bottom after scrolling up. Select on the top row:
+   the start knob hangs below the row instead of leaving the pane.
+6. **Scroll and output with a selection.** With a selection standing, scroll with one finger away
+   from the handles. Expected: scrolling starts as fast as without a selection; the handles move
+   with the text and disappear when their end leaves the view. Run `seq 1 50` from the Mac: the
+   selection and handles ride up with their text.
+7. **Taps.** Double tap a word: selected, copied (two-beat haptic, shimmer), handles and menu. Triple
+   tap: the whole line (a wrapped line: all of it). Tap elsewhere: selection, handles and menu go.
+   With the keyboard down, the first tap of a double tap raises the keyboard (known; see
+   selection.md, open question 2).
+8. **Paste by the cursor.** Keyboard up, tap within a few characters of the cursor: Paste appears.
+   Tap again: it goes. Tap far from the cursor: no menu.
+9. **Select All.** Long press a word, choose Select All. Expected: everything highlights, no copy
+   haptic, the menu returns with Copy; the visible end handle pulls the selection back in.
+10. **Small targets and reach.** At 9 pt, select a two-letter word and grab each handle (above for
+    the start, below for the end). One-handed, repeat steps 1 to 4 near the top of the pane, and on
+    the Duo with the pane on each half.
+11. **Other modes.** Mirror mode (`-sizing mirror`), zoomed out: handles are full size on the small
+    text and stay on the selection while the canvas pans and zooms. In `vim` with `:set mouse=a`:
+    long press and handles work and vim's cursor does not move; a double tap selects (its first
+    tap is a click).
+12. **Haptics off.** System Haptics off in iOS Settings: steps 1 to 4 again with no haptics at all.
+
+If the loupe is blank on the device, relaunch with `-selectionLoupe off` and report it: the fallback
+is a loupe drawn from the cell text.

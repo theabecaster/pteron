@@ -1,4 +1,5 @@
-Rex Connect includes the open source software below, under these licences.
+Rex Connect includes the open source software and fonts below, under these
+licences.
 
 
 Ghostty (libghostty-vt), https://github.com/ghostty-org/ghostty
@@ -25,35 +26,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-
-SwiftTerm, https://github.com/migueldeicaza/SwiftTerm
-=====================================================
-
-Copyright (c) 2019-2026 Miguel de Icaza (https://github.com/migueldeicaza)
-Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
-Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)
-Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)
-Copyright (c) 2016 Ryan L McIntyre (Powerline Extra Symbols flame silhouette, https://github.com/ryanoasis/powerline-extra-symbols)
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 simdutf 9.0.0, https://github.com/simdutf/simdutf (used under the MIT licence)
@@ -230,3 +202,39 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+
+MesloLGS NF (Regular, Bold, Italic, Bold Italic)
+================================================
+
+The fonts the terminal is drawn with: Meslo LG S version 1.210, patched with
+Nerd Fonts 2.3.3, as distributed at
+https://github.com/romkatv/powerlevel10k-media
+
+Copyright 2009, 2010, 2013 André Berg
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Meslo LG is based on Apple's Menlo, which is based on Bitstream Vera and
+DejaVu. The fonts carry these notices:
+Copyright © 2009 Apple Inc. Copyright © 2006 by Tavmjong Bah.
+Copyright © 2003 by Bitstream, Inc. All Rights Reserved.
+Menlo is a Trademark of Apple Inc.
+
+The icon glyphs were added by the Nerd Fonts patcher,
+https://github.com/ryanoasis/nerd-fonts
+(Copyright (c) 2014 Ryan L McIntyre, MIT License). The glyph sets (Font
+Awesome, Devicons, Octicons, Codicons, Material Design Icons, Weather Icons,
+Pomicons, Powerline, Seti-UI, Font Logos, IEC Power Symbols) keep their own
+licences, listed at
+https://github.com/ryanoasis/nerd-fonts/blob/v2.3.3/license-audit.md

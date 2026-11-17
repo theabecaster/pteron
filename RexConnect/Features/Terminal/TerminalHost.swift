@@ -11,7 +11,7 @@ final class ZoomScrollView: UIScrollView {
     }
 }
 
-/// A UIKit view that shows one Rex terminal block with a terminal engine (`TerminalEngineView`).
+/// A UIKit view that shows one Rex terminal block in a `GhosttyTerminalView`.
 /// Fit mode: claims the block and resizes it to this view. Mirror mode: keeps the server's size, zoom/pan.
 ///
 /// The local grid always follows the server: it changes only when the stream says the server's
@@ -23,11 +23,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     static let fontRange: ClosedRange<CGFloat> = 7...20
 
     let stream: TerminalStream
-    let term: any TerminalEngineView
-    /// The engine that really runs in this pane.
-    var engineKind: TerminalEngineKind { term.engineKind }
-    /// The engine parses on the main thread: heavy output is paced by the display link.
-    private let pacesOutput: Bool
+    let term: GhosttyTerminalView
     private let zoomer = ZoomScrollView()
     private let statusLabel = UILabel()
     private let keyBar: KeyBar
@@ -68,7 +64,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var claimedSize: (Int, Int)?
     /// Own, resize, give back: every fit-mode call to the server goes through here, in order.
     private let claim: FitClaim
-    private var resyncTask: Task<Void, Never>?
     private var started = false
     private var lastBounds: CGSize = .zero
     private var serverSize: (Int, Int) = (80, 24)
@@ -78,9 +73,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var typedTest = false
     #endif
     private var lostOwnership = false
-    /// A font change soft-reset the engine (modes lost), or the width changed and the engine can't
-    /// reflow the way the server does; redraw from the server once sized.
-    private var needsResync = false
     /// When its view was moved or left the window while it had the keyboard (see `scheduleStop`).
     /// It takes the keyboard back only if it lands again within a second.
     private var movedWithKeyboardAt: CFTimeInterval = -10
@@ -129,14 +121,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Repeats a held key that a binding took from the engine. Tests put their own here.
     var keyRepeat = KeyRepeater()
 
-    // Output pacing: heavy output is parsed in slices, a frame's budget at a time.
-    static let directFeedLimit = 8 * 1024
-    static let feedSlice = 16 * 1024
-    static let frameBudget: CFTimeInterval = 0.004
-    static let frameBudgetBehind: CFTimeInterval = 0.010
-    static let backlogCatchUp = 2 << 20
-    private var output: [UInt8] = []
-    private var outputLink: CADisplayLink?
     /// A Ghostty snapshot being received.
     private var snapshot = SnapshotBuffer()
     /// Asks before a paste that could run a command. Nil: an alert. Tests put their own here.
@@ -145,21 +129,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Background longer than this re-reads the screen on return.
     static let staleAfterBackground: CFTimeInterval = 30
     private var backgroundedAt: CFTimeInterval?
-    private var metalTried = false
     /// Transient states (connecting, reconnecting) show only if they last this long.
     static let statusDelay: TimeInterval = 1.0
     private var statusWork: DispatchWorkItem?
     private static let lostText = "Resized elsewhere · tap to fit here"
 
-    init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme,
-         engine: TerminalEngineKind, claim: FitClaim? = nil) {
+    init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme, claim: FitClaim? = nil) {
         PerfProbe.active?.paneOpening()  // PERF: pane open, before the engine view is made
         self.stream = stream
         self.sizing = sizing
         self.fontSize = fontSize
         self.theme = theme
-        term = engine.makeView(fontSize: fontSize, theme: theme)
-        pacesOutput = !term.parsesOffMainThread
+        term = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: fontSize)
         keyBar = KeyBar()
         self.claim = claim ?? FitClaim(transport: StreamFitTransport(stream: stream))
         super.init(frame: .zero)
@@ -192,8 +173,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         clipsToBounds = true
         applyTheme(theme)
         stream.sink = self
-        // Ghostty restores Rex's own snapshot; no terminal.format round trip.
-        stream.restoresGhosttySnapshot = term.engineKind == .ghostty
+        // The data socket isn't read while megabytes wait to be parsed (`applyBackpressure`).
+        // The core calls from the thread that crossed a mark, so the state is read on arrival.
+        term.core.onBackpressureChange = { [weak self] in
+            DispatchQueue.main.async { self?.applyBackpressure() }
+        }
 
         NotificationCenter.default.addObserver(self, selector: #selector(didBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -227,31 +211,21 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // loses most of the drag. Each pan decides at once whether the motion is its own.
         zoomer.panGate = { [weak self] pan in self?.canvasPanShouldBegin(pan) ?? true }
         term.panGate = { [weak self] pan in self?.termPanShouldBegin(pan) ?? true }
-        term.tapGate = { [weak self] in
-            guard let self else { return true }
-            // The host decides every tap (`tap(at:shift:)`) and sends the program its click
-            // itself, so the engine's own tap never fires. An engine without that (no host
-            // selection UI) clicks from its own tap: it may, when the tap is neither the one
-            // that brought the keyboard nor the one that cleared a selection, by what was true
-            // when the finger went down.
-            if self.term.usesHostSelectionUI { return false }
-            return self.touch.keyboardUp && !self.touch.hadSelection
-        }
+        // The host decides every tap (`tap(at:shift:)`) and sends the program its click itself,
+        // so the terminal view's own tap never fires.
+        term.tapGate = { false }
 
         // Long press selects the word under the finger and offers Copy.
-        let lp = term.selectionPressRecognizer
-        if let lp {
-            lp.removeTarget(nil, action: nil)
-            lp.addTarget(self, action: #selector(longPressed(_:)))
-            lp.minimumPressDuration = 0.45
-            // A pointer selects by dragging; holding the button must not start a touch selection.
-            lp.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-        }
+        let lp = term.selectionPress
+        lp.addTarget(self, action: #selector(longPressed(_:)))
+        lp.minimumPressDuration = 0.45
+        // A pointer selects by dragging; holding the button must not start a touch selection.
+        lp.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
 
         tapGR = UITapGestureRecognizer(target: self, action: #selector(tapped))
         tapGR.cancelsTouchesInView = false
         tapGR.delegate = self
-        if let lp { tapGR.require(toFail: lp) }  // releasing a long press is not a tap
+        tapGR.require(toFail: lp)  // releasing a long press is not a tap
         addGestureRecognizer(tapGR)
 
         // Fingers only: a mouse or trackpad drag selects text instead.
@@ -273,7 +247,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         addGestureRecognizer(twoTapGR)
 
         // Pointer drag selects at once, like a Mac. Wheel and trackpad scrolls still scroll.
-        term.scrollPanRecognizer?.allowedTouchTypes = direct
+        term.scrollPanRecognizer.allowedTouchTypes = direct
         pointerSelectGR = UIPanGestureRecognizer(target: self, action: #selector(pointerDragged(_:)))
         pointerSelectGR.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         pointerSelectGR.maximumNumberOfTouches = 1
@@ -337,8 +311,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     private func termPanShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
         if pan === pointerSelectGR { return !selecting }
-        // The engine's own selection pan never runs: only a long press or a pointer drag selects.
-        if selecting || term.isBuiltInSelectionPan(pan) { return false }
+        // Only a long press or a pointer drag selects; nothing scrolls meanwhile.
+        if selecting { return false }
         // Trackpad and wheel scrolls (no touches) and multi-finger drags go to the engine.
         if pan.allowedTouchTypes.isEmpty || pan.numberOfTouches == 0 || pan.numberOfTouches > 1 { return true }
         // A pointer drag selects (pointerSelectGR); it never scrolls or reports a wheel.
@@ -422,7 +396,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             editMenu.dismissMenu()
             term.sendClickToProgram(at: point)
         case .pasteMenu:
-            // SELECTION UI: a tap by the cursor offers Paste, as SwiftTerm's own view does.
+            // SELECTION UI: a tap by the cursor offers Paste.
             presentEditMenu(at: CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4))
         case .engineUsed, .nothing:
             editMenu.dismissMenu()
@@ -473,7 +447,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .changed:
             term.extendSelection(to: p, autoscroll: true)
         case .ended:
-            finishSelection(menuAt: nil)
+            finishPointerSelection()
         default:
             clearSelection()
             endSelection()
@@ -485,26 +459,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term.endSelectionDrag()
     }
 
-    /// Release: copy the selection to the clipboard (copy-on-select), play the shimmer, and for touch
-    /// show the edit menu at the selection (Paste alone when nothing was selected).
-    private func finishSelection(menuAt point: CGPoint?) {
+    /// The pointer's button came up: copy the selection to the clipboard (copy-on-select) and
+    /// play the shimmer. No menu follows a pointer drag.
+    private func finishPointerSelection() {
         endSelection()
         let text = term.hasActiveSelection ? term.selectedText ?? "" : ""
         // Empty when the selection isn't one this gesture made.
         let rects = text.isEmpty ? [] : term.selectionRects
-        var target: CGRect?
         if !rects.isEmpty {
             UIPasteboard.general.string = text
             Haptic.tap()
             SelectionShimmer.play(on: term.layer, rects: rects, dark: theme.isDark)
-            target = rects.dropFirst().reduce(rects.first) { $0?.union($1) }
         } else {
             clearSelection()
         }
-        guard let point else { return }
-        let rect = target ?? CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4)
-        menuTarget = rect
-        editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: CGPoint(x: rect.midX, y: rect.minY)))
     }
 
     // MARK: Edit menu
@@ -527,15 +495,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             })
         }
         // SELECTION UI: Select All, with handles to pull it back in from.
-        if term.usesHostSelectionUI {
-            items.append(UIAction(title: "Select All", image: UIImage(systemName: "character.textbox")) { [weak self] _ in
-                guard let self else { return }
-                self.selectionUI.selectAll(showsMenu: false)
-                // Once this menu has gone: Copy for what is selected now.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.selectionUI.showMenu() }
-            })
-        }
-        return items.isEmpty ? nil : UIMenu(children: items)
+        items.append(UIAction(title: "Select All", image: UIImage(systemName: "character.textbox")) { [weak self] _ in
+            guard let self else { return }
+            self.selectionUI.selectAll(showsMenu: false)
+            // Once this menu has gone: Copy for what is selected now.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.selectionUI.showMenu() }
+        })
+        return UIMenu(children: items)
     }
 
     // SELECTION UI: the controller needs to know whether the menu is up (a tap then hides it
@@ -915,15 +881,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func setFontSize(_ s: CGFloat) {
         guard abs(s - fontSize) > 0.01 else { return }
         fontSize = s
-        // An engine may resize to its frame and soft-reset here (SwiftTerm does). Put the server's grid
-        // back at the new cell size, then redraw from the server once the new size is settled.
+        // The server's grid at the new cell size. The terminal keeps its modes and its content;
+        // fit mode then claims the grid that fits now and the program redraws itself.
         term.setFont(size: s)
         applyLocalGrid(serverSize.0, serverSize.1, force: true)
         positionTerm()
-        if started, term.fontChangeResetsModes {
-            needsResync = true
-            if !fitted { scheduleResync() }
-        }
         lastBounds = .zero
         setNeedsLayout()
     }
@@ -960,7 +922,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // Claim again what was paused, if the size still isn't the one that fits.
             lastBounds = .zero
             setNeedsLayout()
-            if !metalTried { metalTried = true; term.enableGPU() }
             yieldContentSwipeBack()
             // Moved by a fold or unfold while it had the keyboard, or a hardware keyboard is attached.
             reclaimKeyboard(afterMove: true)
@@ -1004,10 +965,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func stop() {
         stopKeyRepeats()
-        resyncTask?.cancel()
-        outputLink?.invalidate()
-        outputLink = nil
-        output = []
         // A snapshot half received is of no use to the next start.
         snapshot.reset()
         stream.stop()
@@ -1033,13 +990,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .fit:
             guard !lostOwnership else { return }
             let want = fitGrid()
-            // A new width (fold, unfold, rotation) leaves lines drawn at the old width cut off or
-            // short in an engine that resizes without reflowing (SwiftTerm). Redraw from the server
-            // once the claim lands. A new height alone (the keyboard) needs nothing, and neither
-            // does an engine that reflows the way the server does.
-            if started, !term.reflowsLikeServer, want.0 != serverSize.0 { needsResync = true }
-            if started, !needsResync, let c = claimedSize, c == want, serverSize == want { return }
-            requestClaim(cols: want.0, rows: want.1)
+            // A new size needs no redraw from the server: the terminal reflows as the server's
+            // does (both are Ghostty), and the stream carries the resize.
+            if started, let c = claimedSize, c == want, serverSize == want { return }
+            claim.request(cols: want.0, rows: want.1)
         case .mirror:
             if !started { started = true; stream.start() }
         }
@@ -1090,41 +1044,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { term }
 
-    /// Fit mode: own the pane and resize it, once the layout has settled (`FitClaim`).
-    private func requestClaim(cols: Int, rows: Int) {
-        claim.request(cols: cols, rows: rows)
-    }
-
     /// The pane is ours at this size (`FitClaim.onClaimed`: still wanted, never after a release).
+    /// Once started, the stream carries the resize and the program's redraw; nothing to reload.
     private func claimed(cols: Int, rows: Int) {
         claimedSize = (cols, rows)
         if !started {
             started = true
-            needsResync = false
             stream.start()
-        } else if needsResync {
-            scheduleResync()
-        }
-        // Otherwise the stream carries the resize and the program's redraw; nothing to reload.
-    }
-
-    /// Redraws from the server once the program has had a moment to redraw at the new size.
-    private func scheduleResync() {
-        resyncTask?.cancel()
-        resyncTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, !Task.isCancelled, self.needsResync else { return }
-            self.needsResync = false
-            self.stream.resync()
         }
     }
 
     // MARK: TerminalSink
 
+    /// Only when a snapshot could not be restored (`TerminalStream`): the screen follows as text.
     func streamReset(cols: Int, rows: Int) {
-        // Output still queued predates the snapshot that follows; drop it.
-        output.removeAll(keepingCapacity: true)
-        outputLink?.isPaused = true
         // RIS + clear scrollback, then match the server's grid.
         term.feed(text: "\u{1b}c\u{1b}[3J")
         serverSize = (cols, rows)
@@ -1133,7 +1066,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func streamGhosttySnapshot(_ part: GhosttySnapshotPart) -> Bool {
-        guard term.engineKind == .ghostty else { return false }
         PerfProbe.active?.snapshot(part, host: self)  // PERF
         switch part {
         case .begin:
@@ -1155,8 +1087,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         return true
     }
 
+    /// The fallback for a snapshot that could not be restored: the screen as escape sequences.
     func streamSnapshot(_ text: String) {
-        // One parse, one frame: the restored screen appears at once instead of scrolling in.
         PerfProbe.active?.seedReceived(text.utf8.count, host: self)  // PERF
         term.feed(text: text)
         PerfProbe.active?.seedParsed(host: self)  // PERF
@@ -1164,72 +1096,19 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func streamFeed(_ bytes: UnsafeBufferPointer<UInt8>) {
         PerfProbe.active?.fed(bytes.count, host: self)  // PERF
-        // An engine that parses off the main thread takes everything at once.
-        guard pacesOutput else {
-            term.feed(buffer: bytes)
-            return
-        }
-        // Light output (echo, prompts) goes straight in for the lowest latency.
-        if output.isEmpty, bytes.count <= Self.directFeedLimit {
-            feed(ArraySlice(bytes))
-            return
-        }
-        // Heavy output is parsed in per-frame slices so scrolling and typing stay smooth.
-        output.append(contentsOf: bytes)
-        startOutputLink()
+        // The terminal copies the bytes and parses them on its own queue, in stream order.
+        term.feed(buffer: bytes)
     }
 
-    /// Parses queued output: a frame's budget from the display link, or all of it before a resize.
-    private func drainOutput(all: Bool) {
-        guard !output.isEmpty else { outputLink?.isPaused = true; return }
-        let start = CACurrentMediaTime()
-        // Fall behind a little to keep 120 Hz; catch up harder when far behind.
-        let budget = output.count > Self.backlogCatchUp ? Self.frameBudgetBehind : Self.frameBudget
-        var done = 0
-        while done < output.count {
-            let end = min(done + Self.feedSlice, output.count)
-            feed(output[done..<end])
-            done = end
-            if !all, CACurrentMediaTime() - start > budget { break }
-        }
-        if done == output.count {
-            output.removeAll(keepingCapacity: output.capacity <= 1 << 20)
-            outputLink?.isPaused = true
-        } else {
-            output.removeSubrange(0..<done)
-        }
-    }
-
-    private func feed(_ bytes: ArraySlice<UInt8>) {
-        term.feed(byteArray: bytes)
-        PerfProbe.active?.parsedOnMain(bytes.count, host: self)  // PERF
-    }
-
-    private func startOutputLink() {
-        if outputLink == nil {
-            let link = CADisplayLink(target: WeakTarget(self), selector: #selector(WeakTarget.tick(_:)))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-            link.add(to: .main, forMode: .common)
-            outputLink = link
-        }
-        outputLink?.isPaused = false
-    }
-
-    /// Display-link target that doesn't keep the host alive.
-    /// Main-actor isolated: the link runs on the main run loop.
-    @MainActor
-    private final class WeakTarget: NSObject {
-        weak var host: TerminalHost?
-        init(_ host: TerminalHost) { self.host = host }
-        @objc func tick(_ link: CADisplayLink) {
-            host?.drainOutput(all: false)
-        }
+    /// The engine's unparsed backlog crossed a mark (`GhosttyCore.isBackedUp`: on above 4 MB,
+    /// off below 1 MB). While it is backed up the data socket isn't read, so a program that
+    /// writes faster than the phone parses fills the server's buffer, not the phone's memory.
+    private func applyBackpressure() {
+        if term.core.isBackedUp { stream.pauseReading() } else { stream.resumeReading() }
     }
 
     func streamResized(cols: Int, rows: Int, owner: String?) {
-        // Output before the resize belongs to the old size. (Nothing is queued here when the engine
-        // parses off the main thread; it keeps stream order itself.)
-        if pacesOutput { drainOutput(all: true) }
+        // The terminal keeps stream order itself: output fed before this is parsed at the old size.
         serverSize = (cols, rows)
         let wasFitted = fitted
         if sizing == .fit, let c = claimedSize, c != (cols, rows), owner != stream.control.clientID {

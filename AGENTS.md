@@ -22,8 +22,8 @@ APNs topic depend on it.
   (sessions, layouts, block metadata, server events, actions), `Prefs`, `AgentNotifier`,
   `PushRegistrar` (push registration with the Mac helper).
 - `RexConnect/Features/<Feature>`: Sidebar, Tab (window screen, title bar gestures,
-  split math), Terminal (`PaneView` → UIKit `TerminalHost` → `TerminalEngineView`: `Engine/` has the
-  seam, `Ghostty/` the libghostty-vt engine), KeyBar, Keyboard
+  split math), Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is
+  the terminal engine: libghostty-vt and our Metal renderer), KeyBar, Keyboard
   (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card),
   Offline (the "signal lost" screen and its static backdrop).
 - `RexConnect/App`: entry point, `RootView` (sidebar + tab for the window's width and the fold, `Arrangement`
@@ -45,7 +45,7 @@ scripts/build-ghostty.sh                       # once per clone, before xcodegen
 xcodegen generate
 xcrun simctl list devices available            # pick a simulator id
 xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<sim-id> \
-  -derivedDataPath build/dd -skipPackagePluginValidation -skipMacroValidation build
+  -derivedDataPath build/dd build
 xcodebuild ... test                             # same flags: RexConnectTests in the simulator
 swift test --package-path Packages/RexKit       # protocol tests on macOS, about a second
 swift test --package-path Relay                 # helper and push policy tests
@@ -79,10 +79,14 @@ swift test --package-path Relay                 # helper and push policy tests
     imports a private system symbol, which App Store review rejects. The build script runs it
     on the framework, `ship-macdesk.sh` on the framework and on the archived app.
   - An agent worktree can symlink another checkout's `Vendor` instead of building its own.
-- Use a concrete simulator id and pass `-skipPackagePluginValidation -skipMacroValidation`: a
-  package build plugin fails validation in command-line builds otherwise, and
-  `generic/platform=iOS Simulator` fails with it.
+- Use a concrete simulator id as the destination: libghostty-vt's simulator slice is arm64 only,
+  and `generic/platform=iOS Simulator` also builds x86_64. A Release build for the simulator
+  needs `ONLY_ACTIVE_ARCH=YES` for the same reason.
 - The app builds with zero warnings from our code; keep it that way.
+- `scripts/bench/run.sh <sim-id>` measures the terminal on generated output (about 5 minutes, no
+  server) and fails when a number passes its budget in `scripts/bench/budgets.mjs`. Run it after
+  a change to the feed path, the renderer or the host's main-thread work
+  (docs/ghostty-engine.md, Measurements).
 - After a change, run the tests for the layer you touched. For UI changes, run the app and look at a
   screenshot (`xcrun simctl io <id> screenshot --display=LCD out.png` on the Duo simulator; it shows
   the folded screen only). For other layouts use `-simulateDuo` on an iPad simulator, building with
@@ -95,8 +99,8 @@ Each is a UserDefaults key for that run only.
 
 - `-autoOpen <session label>`: open that session's first tab. A label that doesn't exist opens nothing.
 - `-sizing mirror`: keep the Mac's pane sizes for this run instead of fitting panes to the phone.
-- `-ghosttyDemo <path>`: no server; replay a capture file in a full-screen Ghostty view
-  (`GhosttyDemoScreen`).
+- `-ghosttyDemo <path>`: no server; replay a capture file in a full-screen terminal view with no
+  host around it (`GhosttyDemoScreen`).
 - `-replay <file>`: no server; feed a capture or scenario file to a real pane
   (`ReplayScreen`; more arguments there). `-perfLog <name>`: measure the pane and write
   `Documents/perf/<name>.json` (`PerfProbe`). `scripts/bench/run.sh` uses both.
@@ -164,8 +168,7 @@ shell. So:
   because `terminal.write` has no sequence number (docs/terminal.md, Input).
 - `RexControl` is the only thing that retries a lost connection. Code that depends on it waits
   for `observeConnected` instead of polling or looping.
-- Other sessions work in parallel worktrees (Ghostty engine work is on branch `ghostty-engine`).
-  Keep diffs to what the task needs, and move files with `git mv`.
+- Other sessions work in parallel worktrees. Keep diffs to what the task needs, and move files with `git mv`.
 - Commits: imperative subject, plain message, no AI attribution or trailers (no `Co-Authored-By`,
   "Generated with", or session links).
 - Clean up what you create: delete simulators you made (`xcrun simctl delete <id>`), `build/`,
@@ -178,9 +181,11 @@ Read the one for the area you touch:
 - [docs/architecture.md](docs/architecture.md): data flow, state, concurrency, where new code goes.
 - [docs/rex-protocol.md](docs/rex-protocol.md): control API methods and events the app uses.
 - [docs/terminal.md](docs/terminal.md): data stream, reconnect, fit and mirror, gestures, input.
-- [docs/selection.md](docs/selection.md): touch selection (loupe, handles, haptics): research, design, seam.
+- [docs/selection.md](docs/selection.md): touch selection (loupe, handles, haptics): research, design.
 - [docs/ghostty-engine.md](docs/ghostty-engine.md): the terminal engine: architecture, threads and
-  locks, snapshot restore, toolchain and patches, gotchas, measurements;
+  locks, snapshot restore, toolchain and patches, gotchas, measurements and the benchmark;
   [docs/ghostty-api-notes.md](docs/ghostty-api-notes.md): libghostty-vt API notes.
+- [docs/terminal-checklist.md](docs/terminal-checklist.md): what the terminal must do, row by row,
+  with the test or the manual step that checks it; the device scripts.
 - [docs/notifications.md](docs/notifications.md): local notifications, the helper, the relay contract.
 - [docs/release.md](docs/release.md): device installs, TestFlight via macdesk, helper packaging.

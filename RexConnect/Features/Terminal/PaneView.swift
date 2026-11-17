@@ -18,12 +18,8 @@ struct PaneView: View {
     @Environment(Prefs.self) private var prefs
 
     var body: some View {
-        let engine = TerminalEngineKind.current
         PaneHostView(server: server, sessionID: sessionID, blockID: blockID, active: active,
-                     engine: engine, onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand)
-            // An engine can't be swapped inside a live pane: a new engine is a new pane.
-            // Keyed on what really runs, so a pick that falls back doesn't rebuild the pane.
-            .id(engine.implemented)
+                     onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand)
     }
 }
 
@@ -33,7 +29,6 @@ struct PaneHostView: UIViewRepresentable {
     let sessionID: String
     let blockID: String
     let active: Bool
-    let engine: TerminalEngineKind
     let onFocus: () -> Void
     var onSwipe: ((Int) -> Void)?
     var onCommand: ((RexCommand) -> Void)?
@@ -52,11 +47,7 @@ struct PaneHostView: UIViewRepresentable {
     func makeUIView(context: Context) -> Container {
         let key = TerminalHostPool.Key(server: server.id, session: sessionID, block: blockID)
         // A fold or unfold rebuilt the layout: take over the pane's live host instead of starting over.
-        if let pool, let host = pool.host(for: key), host.term.engineKind != engine.implemented {
-            // The engine setting changed: this pane's pooled host runs the old engine. Let it go;
-            // the new host below takes its place in the pool.
-            host.stop()
-        } else if let pool, let host = pool.host(for: key) {
+        if let pool, let host = pool.host(for: key) {
             let c = Container(host, key: key, pool: pool)
             pool.attach(c)
             apply(host)
@@ -65,8 +56,7 @@ struct PaneHostView: UIViewRepresentable {
         let p = prefs
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
         stream.onActionFailed = { Notice.shared.show($0) }
-        let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme),
-                                engine: engine)
+        let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
         apply(host)
         let c = Container(host, key: key, pool: pool)

@@ -29,8 +29,7 @@ same user.
 brew install xcodegen
 scripts/build-ghostty.sh   # once, before xcodegen: builds Vendor/GhosttyVt.xcframework (not committed)
 xcodegen generate          # the Xcode project is generated, not committed
-xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<simulator id> \
-  -skipPackagePluginValidation -skipMacroValidation build
+xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -destination id=<simulator id> build
 swift test --package-path Packages/RexKit
 ```
 

@@ -66,13 +66,6 @@ enum RexFont {
         UIFont(name: bold ? "MesloLGS-NF-Bold" : "MesloLGS-NF-Regular", size: size)
             ?? UIFont.monospacedSystemFont(ofSize: size, weight: bold ? .bold : .regular)
     }
-    static func all(_ size: CGFloat) -> (UIFont, UIFont, UIFont, UIFont) {
-        let n = ui(size)
-        let b = ui(size, bold: true)
-        let i = UIFont(name: "MesloLGS-NF-Italic", size: size) ?? n
-        let bi = UIFont(name: "MesloLGS-NF-Bold-Italic", size: size) ?? b
-        return (n, b, i, bi)
-    }
 }
 
 extension Array {

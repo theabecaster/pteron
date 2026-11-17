@@ -104,7 +104,7 @@ final class GhosttyInputKeyTests: XCTestCase {
            "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"]
 
     /// Where Ghostty's legacy encoding is not `KeyInput.bytes` (the xterm-style bytes the app sends
-    /// for key bindings and the SwiftTerm engine's reference in `KeyEncodingTests`), with what
+    /// for key bindings, checked in `KeyEncodingTests`), with what
     /// Ghostty sends. All of it is Ghostty's own choice (`input/key_encode.zig`,
     /// `input/function_keys.zig`), the same bytes the Rex Mac app sends:
     /// - Enter, Tab and Escape with a modifier use xterm's `CSI 27 ; mod ; char ~`, so a program can
@@ -151,7 +151,7 @@ final class GhosttyInputKeyTests: XCTestCase {
         XCTAssertGreaterThan(same, 400)
     }
 
-    /// The expectations `KeyEncodingTests` holds the SwiftTerm side to.
+    /// What `KeyEncodingTests` expects of `KeyInput.bytes` holds for the terminal's encoder too.
     func testKeyEncodingTestsExpectationsHold() {
         expect(P.core(), [
             ("ctrl+u", "\u{15}"), ("ctrl+a", "\u{01}"), ("alt+b", "\u{1b}b"), ("alt+backspace", "\u{1b}\u{7f}"),
@@ -163,7 +163,7 @@ final class GhosttyInputKeyTests: XCTestCase {
     }
 
     /// Control with a shifted letter is a key of its own in Ghostty (as in Kitty), not the control
-    /// character: programs can bind Ctrl+Shift+C apart from Ctrl+C. SwiftTerm sends 0x03 for both.
+    /// character: programs can bind Ctrl+Shift+C apart from Ctrl+C.
     func testControlShiftLetterIsItsOwnKey() {
         expect(P.core(), [("shift+ctrl+c", "\u{1b}[99;6u"), ("shift+ctrl+a", "\u{1b}[97;6u"), ("shift+ctrl+2", "\u{1b}[64;5u")], "normal")
     }
@@ -171,7 +171,7 @@ final class GhosttyInputKeyTests: XCTestCase {
     // MARK: Control keys that are other keys
 
     func testControlIMAndBracketAreTabEnterEscapeInLegacyMode() {
-        // The SwiftTerm engine (and every legacy terminal) sends these; Ghostty's encoder alone
+        // Every legacy terminal sends these; Ghostty's encoder alone
         // would send CSI 105;5u, CSI 109;5u and CSI 91;5u.
         let legacy: [(String, String)] = [("ctrl+i", "\t"), ("ctrl+m", "\r"), ("ctrl+[BracketLeft]", "\u{1b}")]
         expect(P.core(), legacy, "normal")
@@ -325,7 +325,7 @@ final class GhosttyInputKeyTests: XCTestCase {
     }
 
     func testOptionIsAlt() {
-        // iOS composes Option+B into "∫"; the terminal gets Alt+b, as with `optionAsMetaKey` on SwiftTerm.
+        // iOS composes Option+B into "∫"; the terminal gets Alt+b.
         expect(P.core(), [("alt+b", "\u{1b}b"), ("shift+alt+b", "\u{1b}B"), ("alt+.", "\u{1b}."), ("alt+1", "\u{1b}1"),
                           ("alt+enter", "\u{1b}\r"), ("alt+left", "\u{1b}[1;3D"), ("ctrl+alt+c", "\u{1b}\u{03}")], "normal")
         // Mode 1036 off: Alt no longer prefixes ESC.

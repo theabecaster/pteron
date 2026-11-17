@@ -233,7 +233,7 @@ enum SelectionRules {
         return 0
     }
 
-    /// SwiftTerm's rule for the cursor's menu: a tap within 3 columns and 1 row of the cursor,
+    /// The rule for the cursor's menu: a tap within 3 columns and 1 row of the cursor,
     /// on a focused terminal, that cleared no selection and isn't a click for the program.
     static func tapShowsPaste(tap: TerminalGridCell?, cursor: TerminalGridCell?, focused: Bool, clearedSelection: Bool,
                               tapsGoToProgram: Bool, menuVisible: Bool) -> Bool {

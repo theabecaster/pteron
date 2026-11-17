@@ -93,8 +93,8 @@ enum KeyboardFocusPolicy {
     static func holder(_ responder: UIResponder?, own: UIView?) -> Holder {
         guard let responder else { return .nobody }
         if responder === own { return .nobody }
-        // An engine view may decline unknown actions, so a focused terminal can report its host.
-        if responder is any TerminalEngineView || responder is TerminalHost { return .terminal }
+        // The terminal view may decline unknown actions, so a focused terminal can report its host.
+        if responder is GhosttyTerminalView || responder is TerminalHost { return .terminal }
         if responder is any UIKeyInput { return .textInput }
         return .other
     }

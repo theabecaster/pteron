@@ -107,7 +107,7 @@ enum GhosttyInputKeymap {
         var m: GhosttyMods = 0
         if f.contains(.shift) { m |= GhosttyInputKey.shift }
         if f.contains(.control) { m |= GhosttyInputKey.ctrl }
-        // Option is Alt (Meta), as on the SwiftTerm engine.
+        // Option is Alt (Meta).
         if f.contains(.alternate) { m |= GhosttyInputKey.alt }
         if f.contains(.command) { m |= GhosttyInputKey.superKey }
         if f.contains(.alphaShift) { m |= GhosttyInputKey.capsLock }

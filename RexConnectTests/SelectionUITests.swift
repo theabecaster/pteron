@@ -475,7 +475,7 @@ final class SelectionUITests: XCTestCase {
         XCTAssertFalse(r.ui.handles.showsHandles)
     }
 
-    // MARK: The seam members on the Ghostty view
+    // MARK: The selection UI members on the terminal view
 
     @MainActor
     func testSelectionEndsAdjustAndLine() {

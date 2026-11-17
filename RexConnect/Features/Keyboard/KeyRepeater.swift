@@ -51,7 +51,7 @@ final class KeyRepeater: NSObject {
         /// The longest a key repeats when no keyboard confirms that it is down.
         var longestUnverified: TimeInterval = 10
 
-        /// SwiftTerm's delay and rate, for keys sent to the program.
+        /// The delay and rate for keys sent to the program.
         static let program = Timing()
         /// Faster, for the app's own repeating commands (pane focus, resize).
         static let command = Timing(interval: 0.05)

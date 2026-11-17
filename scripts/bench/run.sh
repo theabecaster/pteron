@@ -1,24 +1,25 @@
 #!/bin/zsh
-# Runs the terminal engine benchmark in a simulator and prints the report.
+# Runs the terminal benchmark in a simulator, prints the report and checks it against the
+# budgets in scripts/bench/budgets.mjs. Exit status 1 when a budget is passed or a run failed.
 #
 #   scripts/bench/run.sh <simulator id> [--live <session label>] [--runs N] [--only a,b]
 #                        [--out <dir>] [--fresh] [--skip-build]
 #
-# Builds the app once (Release), then for every scenario, engine and run launches it with
+# Builds the app once (Release), then for every scenario and run launches it with
 # `-replay <file> -perfLog <name>`, waits for the result file in the app's Documents/perf and
-# copies it to <out>/results. Replay runs touch no server. About 8 minutes for the 42 replay
-# runs after the build; --live adds about 2.
+# copies it to <out>/results. Replay runs touch no server. About 4 minutes for the 21 replay
+# runs after the build; --live adds about 1.
 #
 # Results land in <out>/results, one JSON per run (default <out>: build/bench in the repo,
 # an ignored directory). The report is printed at the end; `node scripts/bench/report.mjs
-# <out>/results` prints it again.
+# <out>/results` prints and checks it again.
 #
 # Resumable: a run whose result file is already there is skipped, so after an interruption the
 # same command goes on where it stopped. --fresh deletes the old results first; use it after
 # changing the code.
 #
-# --live <session label> also measures time to first frame on a real pane: 5 cold launches per
-# engine with `-autoOpen <label> -sizing mirror`, after `seq 1 3000` in that session's pane.
+# --live <session label> also measures time to first frame on a real pane: 5 cold launches
+# with `-autoOpen <label> -sizing mirror`, after `seq 1 3000` in that session's pane.
 # The app then connects to the local Rex server and opens that session, so the label must be a
 # throwaway session of your own (`rex session new zz-…`). Mirror sizing never claims or
 # resizes the pane.
@@ -29,7 +30,7 @@
 # Environment: BENCH_DD (derived data, default build/dd-bench).
 set -euo pipefail
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
 live=""; runs=3; only=""; out=""; build=1; fresh=0
@@ -71,7 +72,7 @@ if (( build )); then
   xcodebuild -project "$root/RexConnect.xcodeproj" -scheme RexConnect -configuration Release \
     -destination "id=$sim" -derivedDataPath "$dd" -jobs 4 ONLY_ACTIVE_ARCH=YES \
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) BENCH' \
-    -skipPackagePluginValidation -skipMacroValidation build > "$out/build.log" 2>&1 \
+    build > "$out/build.log" 2>&1 \
     || { tail -30 "$out/build.log" >&2; exit 1; }
 fi
 app="$dd/Build/Products/Release-iphonesimulator/RexConnect.app"
@@ -82,6 +83,7 @@ xcrun simctl install "$sim" "$app"
 node "$here/gen.mjs" "$out/scenarios" --cols $cols --rows $rows >&2
 
 # One run: launches with the given arguments and waits for the probe's file.
+missing=0
 run_one() {
   local name=$1 limit=$2; shift 2
   if [[ -f "$out/results/$name.json" ]]; then
@@ -101,6 +103,7 @@ run_one() {
     if (( waited > limit * 4 )); then
       echo "  $name: no result after $limit s" >&2
       xcrun simctl terminate "$sim" $bundle >/dev/null 2>&1 || true
+      (( missing += 1 ))
       return 0
     fi
   done
@@ -120,18 +123,12 @@ scenarios=(
   "top|top.timed|"
   "claude|claude.timed|"
 )
-engines=(swiftTerm ghostty)
 
 for run in $(seq 1 $runs); do
   for s in $scenarios; do
     name=${s%%|*}; rest=${s#*|}; file=${rest%%|*}; extra=${rest#*|}
     [[ -z $only || ",$only," == *",$name,"* ]] || continue
-    # Alternate which engine goes first, so drift over the session doesn't favour one.
-    order=($engines); (( run % 2 == 0 )) && order=(${(Oa)engines})
-    for engine in $order; do
-      run_one "${name}__${engine}__${run}" 60 -replay "$out/scenarios/$file" -terminalEngine $engine \
-        -replayCols $cols -replayRows $rows ${=extra}
-    done
+    run_one "${name}__${run}" 60 -replay "$out/scenarios/$file" -replayCols $cols -replayRows $rows ${=extra}
   done
 done
 
@@ -148,12 +145,16 @@ print("<" + s.encode().hex() + ">")')
   rex send -s "$session" $'clear; seq 1 3000\n'
   sleep 2
   for run in $(seq 1 5); do
-    order=($engines); (( run % 2 == 0 )) && order=(${(Oa)engines})
-    for engine in $order; do
-      run_one "live__${engine}__${run}" 45 -autoOpen "$live" -sizing mirror -terminalEngine $engine -servers "$servers"
-    done
+    run_one "live__${run}" 45 -autoOpen "$live" -sizing mirror -servers "$servers"
   done
 fi
 
 echo "Results in $out/results" >&2
-node "$here/report.mjs" "$out/results"
+# With --only, the scenarios left out are not missing.
+failed=0
+node "$here/report.mjs" "$out/results" ${only:+--partial} || failed=1
+if (( missing )); then
+  echo "$missing run(s) wrote no result" >&2
+  failed=1
+fi
+exit $failed

@@ -64,8 +64,7 @@ final class PerfTests: XCTestCase {
         try XCTSkipIf(PerfProbe.active != nil)
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b")
-        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: 11, theme: ThemeStore.theme("github-dark-dimmed"),
-                                engine: .swiftTerm)
+        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: 11, theme: ThemeStore.theme("github-dark-dimmed"))
         stream.sink = nil
         host.streamStatus(.live)
         Array("hello".utf8).withUnsafeBufferPointer { host.streamFeed($0) }
@@ -163,10 +162,10 @@ final class PerfTests: XCTestCase {
 
     // MARK: The replay makes the calls a stream makes
 
-    private func replay(_ capture: ReplayCapture, seed: String = "", snapshots: Bool, accept: Bool = true) async -> SinkLog {
+    private func replay(_ capture: ReplayCapture, seed: String = "", accept: Bool = true) async -> SinkLog {
         let log = SinkLog()
         log.acceptsSnapshot = accept
-        let source = ReplaySource(capture: capture, seed: seed, grid: (60, 20), restoresSnapshot: snapshots)
+        let source = ReplaySource(capture: capture, seed: seed, grid: (60, 20))
         source.sink = log
         let done = expectation(description: "replay finished")
         source.onFinished = { done.fulfill() }
@@ -186,8 +185,8 @@ final class PerfTests: XCTestCase {
         return (snapshot, fed)
     }
 
-    /// `TerminalStream`, with `restoresGhosttySnapshot`: connecting, live, the snapshot's parts,
-    /// `streamResized` from the message after it, then output.
+    /// As `TerminalStream`: connecting, live, the snapshot's parts, `streamResized` from the
+    /// message after it, then output.
     func testReplayOfACaptureRestoringTheSnapshot() async throws {
         let file = try ghosttyFixture("ghostty-history")
         for chunk in [97, 1800, 1 << 20] {
@@ -195,7 +194,7 @@ final class PerfTests: XCTestCase {
             XCTAssertEqual(capture.format, .rex)
             XCTAssertEqual(capture.nonce, 16_849_154_322_261_473_715)
             XCTAssertEqual(capture.grid?.cols, 80)
-            let log = await replay(capture, snapshots: true)
+            let log = await replay(capture)
             XCTAssertEqual(log.shape, [
                 "status connecting", "status live",
                 "snapshot begin", "snapshot bytes", "snapshot ready", "snapshot bytes", "snapshot end true",
@@ -208,40 +207,26 @@ final class PerfTests: XCTestCase {
         }
     }
 
-    /// `TerminalStream`, without: connecting, reset, resized and the screen as text, live, then
-    /// the stream with its snapshot dropped.
-    func testReplayOfACaptureSeedingTheScreen() async throws {
+    /// A sink that refuses the snapshot gets the screen as text at the first message instead,
+    /// then the stream with its snapshot dropped.
+    func testReplayFallsBackWhenTheSnapshotIsRefused() async throws {
         let file = try ghosttyFixture("ghostty-history")
         let capture = ReplayCapture(file: Data(file), chunk: 1800)
-        let log = await replay(capture, seed: "SEED", snapshots: false)
+        let log = await replay(capture, seed: "SEED", accept: false)
         XCTAssertEqual(log.shape, [
-            "status connecting", "reset 80x24", "resized 80x24", "seed SEED", "status live",
-            "resized 80x24", "feed",
+            "status connecting", "status live", "snapshot begin",
+            "reset 80x24", "resized 80x24", "seed SEED", "resized 80x24", "feed",
         ])
         XCTAssertEqual(log.fed, reference(file, nonce: capture.nonce, snapshots: false).fed)
         XCTAssertTrue(log.snapshot.isEmpty)
     }
 
-    /// A sink that refuses the snapshot gets the screen as text at the first message instead.
-    func testReplayFallsBackWhenTheSnapshotIsRefused() async throws {
-        let file = try ghosttyFixture("ghostty-history")
-        let log = await replay(ReplayCapture(file: Data(file), chunk: 1800), seed: "SEED", snapshots: true, accept: false)
-        XCTAssertEqual(log.shape, [
-            "status connecting", "status live", "snapshot begin",
-            "reset 80x24", "resized 80x24", "seed SEED", "resized 80x24", "feed",
-        ])
-    }
-
     /// Plain output has no snapshot and no messages: one `resize`, then a feed per chunk.
     func testReplayOfPlainOutput() async {
         let text = Array("1\r\n2\r\n\u{1b}[31m3\u{1b}[0m\r\n".utf8)
-        for snapshots in [true, false] {
-            let log = await replay(ReplayCapture(file: Data(text), chunk: 4), snapshots: snapshots)
-            let start = snapshots ? ["status connecting", "status live"]
-                : ["status connecting", "reset 60x20", "resized 60x20", "seed ", "status live"]
-            XCTAssertEqual(log.shape, start + ["resized 60x20", "feed"])
-            XCTAssertEqual(log.fed, text)
-            XCTAssertEqual(log.calls.filter { $0 == "feed" }.count, 5, "one call per chunk")
-        }
+        let log = await replay(ReplayCapture(file: Data(text), chunk: 4))
+        XCTAssertEqual(log.shape, ["status connecting", "status live", "resized 60x20", "feed"])
+        XCTAssertEqual(log.fed, text)
+        XCTAssertEqual(log.calls.filter { $0 == "feed" }.count, 5, "one call per chunk")
     }
 }
