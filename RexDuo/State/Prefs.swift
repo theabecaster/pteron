@@ -98,6 +98,8 @@ final class Prefs {
     var pushPromptDismissed: Bool { didSet { d.set(pushPromptDismissed, forKey: "pushPromptDismissed") } }
     /// The sidebar's width per posture, keyed by `SidebarWidth.key`.
     var sidebarWidths: [String: Double] { didSet { d.set(sidebarWidths, forKey: "sidebarWidths") } }
+    /// Sidebar groups the user folded (`SidebarCollapse` keys). Everything else is open.
+    var sidebarCollapsed: Set<String> { didSet { d.set(sidebarCollapsed.sorted(), forKey: "sidebarCollapsed") } }
     /// The tab open when the app last ran.
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
@@ -136,6 +138,7 @@ final class Prefs {
         pushEnabled = d.bool(forKey: "pushEnabled")
         pushPromptDismissed = d.bool(forKey: "pushPromptDismissed")
         sidebarWidths = d.dictionary(forKey: "sidebarWidths") as? [String: Double] ?? [:]
+        sidebarCollapsed = Set(d.stringArray(forKey: "sidebarCollapsed") ?? [])
         lastSelection = d.data(forKey: "lastSelection").flatMap { try? JSONDecoder().decode(Selection.self, from: $0) }
         systemScheme = UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
         // Only the launch argument is left: `migrate` cleared the saved setting.

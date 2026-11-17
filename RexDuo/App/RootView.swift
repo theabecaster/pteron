@@ -61,6 +61,10 @@ struct RootView: View {
                 }
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
+                // `-sidebarMode agents` (testing): start in Agents mode.
+                if let m = UserDefaults.standard.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) {
+                    sidebar.mode = m
+                }
                 #endif
             }
     }
@@ -141,7 +145,7 @@ struct RootView: View {
             let arr = Arrangement.decide(size: size, division: division)
             NavigationStack {
                 SidebarSplit(arrangement: arr, theme: theme, open: $sidebar.open) {
-                    SidebarView(onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
+                    SidebarView(mode: $sidebar.mode, onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
                 } tab: {
                     tab(arr)
                 }
@@ -224,7 +228,7 @@ struct RootView: View {
         guard PhoneState.shared.claim(r) else { return }
         switch r.command {
         case .newSession: newSession()
-        case .toggleSidebar:
+        case .toggleSidebar, .toggleAgents:
             Haptic.tap()
             _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()

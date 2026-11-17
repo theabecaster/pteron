@@ -303,7 +303,7 @@ struct WindowScreen: View {
         case .toggleZoom: toggleZoom()
         case .clear: if let b = activeBlock(w) { Task { await server.clear(sessionID, b) } }
         case .tabOverview: openOverview()
-        case .newSession, .toggleSidebar, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
+        case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
         }
     }
 

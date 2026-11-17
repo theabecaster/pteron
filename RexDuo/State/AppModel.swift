@@ -39,7 +39,7 @@ final class Notice {
 enum RexCommand: Equatable {
     case newTab, newSession, splitRight, splitDown, closePane, closeTab, renameTab
     case nextTab, previousTab, goToTab(Int), nextPane, previousPane
-    case toggleZoom, clear, toggleSidebar, tabOverview, jumpToWaiting
+    case toggleZoom, clear, toggleSidebar, toggleAgents, tabOverview, jumpToWaiting
     case fontBigger, fontSmaller, fontReset, settings
 }
 

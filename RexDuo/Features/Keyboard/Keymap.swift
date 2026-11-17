@@ -133,7 +133,7 @@ enum AppAction {
         case "client.font.decrease": return .command(.fontSmaller)
         case "client.font.reset": return .command(.fontReset)
         case "client.sidebar.toggle": return .command(.toggleSidebar)
-        case "client.sidebar.activity.toggle": return .command(.jumpToWaiting)
+        case "client.sidebar.activity.toggle": return .command(.toggleAgents)
         case "client.settings": return .command(.settings)
         case "pane.send_key":
             guard let k = a.str("key"), let c = KeyChord(spelling: k) else { return nil }
@@ -168,7 +168,7 @@ enum KeyActions {
         Info(name: "client.close", title: "Close", category: "Window", repeats: false),
         Info(name: "client.settings", title: "Settings…", category: "App", repeats: false),
         Info(name: "client.sidebar.toggle", title: "Toggle Sidebar", category: "View", repeats: false),
-        Info(name: "client.sidebar.activity.toggle", title: "Jump to Waiting Agent", category: "View", repeats: false),
+        Info(name: "client.sidebar.activity.toggle", title: "Toggle Agents", category: "View", repeats: false),
         Info(name: "session.new", title: "New Session", category: "Session", repeats: false),
         Info(name: "session.switch", title: "Change Session…", category: "Session", repeats: false),
         Info(name: "client.tab.new", title: "New Tab", category: "Tab", repeats: false),

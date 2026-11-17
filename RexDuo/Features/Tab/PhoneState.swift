@@ -44,7 +44,7 @@ extension RexCommand {
     /// Commands that act on the tab on screen. The visible WindowScreen runs these; RootView runs the rest.
     var isWindowCommand: Bool {
         switch self {
-        case .newSession, .toggleSidebar, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: return false
+        case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: return false
         default: return true
         }
     }

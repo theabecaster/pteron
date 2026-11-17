@@ -1,289 +1,37 @@
 import SwiftUI
 import RexKit
 
-/// Rex's vertical-tab sidebar: hosts, then sessions, then each session's tabs.
-/// A plain `List` styled like Rex: swipe actions on rows, pull to refresh, 44 pt rows.
+/// Rex's sidebar, in one of two modes like the Rex Mac app's: Sessions (machines, then sessions,
+/// then each session's tabs) or Agents (every agent, the ones waiting for you first).
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
+    @Binding var mode: SidebarMode
     var onSelect: (Selection) -> Void
-
-    @State private var renaming: RenameTarget?
-    @State private var renameText = ""
-    @State private var closing: RenameTarget?
-    /// A tab with an agent in it: closing asks first.
-    @State private var closingTab: RenameTarget?
-    @State private var showAgents = false
-
-    struct RenameTarget: Identifiable {
-        var id: String { (windowID ?? "") + sessionID }
-        var server: ServerConnection
-        var sessionID: String
-        var windowID: String?
-        var label: String = ""
-    }
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
         VStack(spacing: 0) {
-            List {
-                agentsSummary(theme)
-                ForEach(model.servers) { server in
-                    hostHeader(server, theme)
-                    // A down server's last known sessions stay listed, dimmed: they open read-only.
-                    let dim = server.phase.problem != nil ? 0.45 : 1
-                    ForEach(server.sessions) { s in
-                        sessionHeader(server, s, theme)
-                            .opacity(dim)
-                        if let v = server.views[s.id] {
-                            ForEach(v.windows) { w in
-                                windowRow(server, v, w, theme)
-                                    .opacity(dim)
-                            }
-                        }
-                    }
-                }
-                remoteHosts(theme)
+            SidebarModeSwitch(mode: $mode, theme: theme)
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
+            switch mode {
+            case .sessions: SessionsList(theme: theme, onSelect: onSelect)
+            case .agents: AgentsList(theme: theme, onSelect: onSelect)
             }
-            .listStyle(.plain)
-            .confirmationDialog("Close this tab?",
-                                isPresented: Binding(get: { closingTab != nil }, set: { if !$0 { closingTab = nil } }),
-                                titleVisibility: .visible) {
-                Button("Close Tab", role: .destructive) {
-                    if let c = closingTab, let w = c.windowID { Task { await c.server.closeWindow(c.sessionID, w) } }
-                    closingTab = nil
-                }
-                Button("Cancel", role: .cancel) { closingTab = nil }
-            } message: {
-                Text("The agent running there stops, on the Mac too.")
-            }
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 44)
-            .refreshable { await model.refresh() }
             bottomBar(theme)
         }
         .foregroundStyle(theme.fg)
-        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("Name", text: $renameText)
-            Button("Cancel", role: .cancel) { renaming = nil }
-            Button("Rename") {
-                if let r = renaming {
-                    Task {
-                        if let w = r.windowID { await r.server.renameWindow(r.sessionID, w, renameText) }
-                        else { await r.server.renameSession(r.sessionID, renameText) }
-                    }
-                }
-                renaming = nil
-            }
-        }
-        .confirmationDialog(closing.map { "Close session “\($0.label.isEmpty ? "session" : $0.label)”?" } ?? "",
-                            isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } }),
-                            titleVisibility: .visible) {
-            Button("Close Session", role: .destructive) {
-                if let c = closing { Task { await c.server.destroySession(c.sessionID) } }
-                closing = nil
-            }
-            Button("Cancel", role: .cancel) { closing = nil }
-        } message: {
-            Text("Every tab in it closes and its programs stop, on the Mac too.")
-        }
-        .sheet(isPresented: $showAgents) {
-            AgentsView(onOpen: { sel in
-                showAgents = false
-                onSelect(sel)
-            })
-            .environment(model)
-            .presentationDetents([.medium, .large])
-        }
-    }
-
-    // MARK: Pieces
-
-    /// Shared row styling: Rex's compact look on a plain list.
-    private func styled<V: View>(_ v: V, selected: Bool = false, _ theme: TermTheme) -> some View {
-        v.listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-            .listRowSeparator(.hidden)
-            .listRowBackground(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(selected ? theme.chrome.rowSelected : .clear)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-            )
-    }
-
-    private func agentsSummary(_ theme: TermTheme) -> some View {
-        styled(
-            Button { showAgents = true } label: {
-                AgentsSummaryLabel(servers: model.servers, theme: theme)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 6).padding(.bottom, 4),
-            theme)
-    }
-
-    private func hostHeader(_ server: ServerConnection, _ theme: TermTheme) -> some View {
-        styled(
-            HStack(spacing: 8) {
-                Image(systemName: server.config.name == "This Mac" ? "laptopcomputer" : "globe")
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.chrome.secondary)
-                // Down: a quiet line under the name, never a takeover while another server is up.
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(server.config.name)
-                        .font(.footnote.weight(.medium))
-                    if let p = server.phase.problem {
-                        Text(OfflineCopy.short(p.kind))
-                            .font(.caption2)
-                            .foregroundStyle(theme.chrome.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                phaseDot(server, theme)
-            }
-            .accessibilityElement(children: .combine)
-            .padding(.horizontal, 8)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-            .contextMenu {
-                Button { Task { await server.createSession(label: nil) } } label: { Label("New Session", systemImage: "plus") }
-                Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
-            }
-            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                Button { Task { await server.createSession(label: nil) } } label: { Label("New Session", systemImage: "plus") }
-                    .tint(theme.accent)
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
-                    .tint(theme.chrome.working)
-            },
-            theme)
-    }
-
-    @ViewBuilder
-    private func phaseDot(_ server: ServerConnection, _ theme: TermTheme) -> some View {
-        switch server.phase {
-        case .online: Circle().fill(theme.chrome.done).frame(width: 7, height: 7)
-        case .connecting, .idle: ProgressView().controlSize(.mini)
-        case .offline:
-            if server.retrying {
-                ProgressView().controlSize(.mini)
-            } else {
-                Image(systemName: "antenna.radiowaves.left.and.right.slash")
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.chrome.tertiary)
-                    .accessibilityLabel("Offline")
-            }
-        }
-    }
-
-    private func sessionHeader(_ server: ServerConnection, _ s: SessionEntry, _ theme: TermTheme) -> some View {
-        let target = RenameTarget(server: server, sessionID: s.id, label: s.label)
-        let name = s.label.isEmpty ? "session" : s.label
-        return styled(
-            HStack(spacing: 4) {
-                Text(name)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(theme.chrome.tertiary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Button { Task { await server.newWindow(s.id) } } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(theme.chrome.tertiary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("New Tab in \(name)")
-            }
-            .padding(.leading, 10)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-            .contextMenu {
-                Button { Task { await server.newWindow(s.id) } } label: { Label("New Tab", systemImage: "plus.square") }
-                Button { renameText = s.label; renaming = target } label: { Label("Rename Session", systemImage: "pencil") }
-                Button(role: .destructive) { closing = target } label: { Label("Close Session…", systemImage: "xmark") }
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button { closing = target } label: { Label("Close", systemImage: "xmark") }
-                    .tint(theme.chrome.error)
-                Button { renameText = s.label; renaming = target } label: { Label("Rename", systemImage: "pencil") }
-                    .tint(theme.chrome.secondary)
-            }
-            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                Button { Task { await server.newWindow(s.id) } } label: { Label("New Tab", systemImage: "plus.square") }
-                    .tint(theme.accent)
-            },
-            theme)
-    }
-
-    private func windowRow(_ server: ServerConnection, _ v: SessionView, _ w: WindowInfo, _ theme: TermTheme) -> some View {
-        let selected = model.selection == Selection(serverID: server.id, sessionID: v.sessionID, windowID: w.id)
-        let rename = { renameText = w.label; renaming = RenameTarget(server: server, sessionID: v.sessionID, windowID: w.id) }
-        // Destructive: never a full swipe, and a confirmation when an agent would stop.
-        let close = {
-            if server.windowAgent(w) != nil {
-                closingTab = RenameTarget(server: server, sessionID: v.sessionID, windowID: w.id, label: w.label)
-            } else {
-                Task { await server.closeWindow(v.sessionID, w.id) }
-            }
-        }
-        return styled(
-            Button {
-                let sel = Selection(serverID: server.id, sessionID: v.sessionID, windowID: w.id)
-                model.select(server, session: v.sessionID, window: w.id)
-                onSelect(sel)
-            } label: {
-                TabRowLabel(server: server, window: w, theme: theme)
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button(action: rename) { Label("Rename Tab", systemImage: "pencil") }
-                Button { Task { await server.newWindow(v.sessionID) } } label: { Label("New Tab", systemImage: "plus.square") }
-                Button(role: .destructive, action: close) { Label("Close Tab", systemImage: "xmark") }
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button(action: close) { Label("Close", systemImage: "xmark") }
-                    .tint(theme.chrome.error)
-                Button(action: rename) { Label("Rename", systemImage: "pencil") }
-                    .tint(theme.chrome.secondary)
-            },
-            selected: selected, theme)
-    }
-
-    @ViewBuilder
-    private func remoteHosts(_ theme: TermTheme) -> some View {
-        let known = Set(model.servers.map(\.config.name))
-        let hosts = model.servers.flatMap(\.hosts).filter { !known.contains($0.label) }
-        ForEach(hosts) { h in
-            styled(
-                Button { model.showSettings = true } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(theme.chrome.secondary)
-                            Text(h.label).font(.footnote.weight(.medium))
-                            Spacer()
-                        }
-                        Text("Reachable from the Mac over SSH only. Turn on Rex's Tailscale there (rex server tailscale enable), then add its address in Settings.")
-                            .font(.caption2)
-                            .foregroundStyle(theme.chrome.tertiary)
-                            .padding(.leading, 2)
-                    }
-                    .padding(.horizontal, 8).padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain),
-                theme)
-        }
+        // Past this a machine's name no longer fits a 260 pt sidebar even on two lines, and single
+        // words break mid-word. The levels keep their ratios up to here.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     private func bottomBar(_ theme: TermTheme) -> some View {
         HStack(spacing: 4) {
             IconButton(symbol: "gearshape", label: "Settings") { model.showSettings = true }
-            IconButton(symbol: "sparkles", label: "Agents") { showAgents = true }
             Spacer()
             Menu {
                 ForEach(model.servers) { s in
@@ -312,151 +60,59 @@ struct SidebarView: View {
     }
 }
 
-struct StatusBadge: View {
-    var state: String?
-    var theme: TermTheme
-    /// The glyph's point size; the working dot is 0.7 of it.
-    var size: CGFloat = 10
-
-    init(status: ProgramStatus?, theme: TermTheme, size: CGFloat = 10) {
-        self.init(state: status?.state, theme: theme, size: size)
-    }
-
-    init(state: String?, theme: TermTheme, size: CGFloat = 10) {
-        self.state = state
-        self.theme = theme
-        self.size = size
-    }
-
-    var body: some View {
-        switch state {
-        case "working":
-            PulsingDot(color: theme.chrome.working, size: size * 0.7)
-        case "blocked":
-            Image(systemName: "hand.raised.fill").font(.system(size: size)).foregroundStyle(theme.chrome.blocked)
-        case "done":
-            Image(systemName: "checkmark").font(.system(size: size, weight: .bold)).foregroundStyle(theme.chrome.done)
-        case "error":
-            Image(systemName: "exclamationmark").font(.system(size: size, weight: .bold)).foregroundStyle(theme.chrome.error)
-        default:
-            EmptyView()
-        }
-    }
-}
-
-/// The "working" dot. A symbol effect, not a SwiftUI repeat-forever animation, so many rows stay cheap.
-/// With Reduce Motion on it holds still.
-struct PulsingDot: View {
-    var color: Color
-    var size: CGFloat = 7
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        Image(systemName: "circle.fill")
-            .font(.system(size: size))
-            .foregroundStyle(color)
-            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-    }
-}
-
-/// The agents count row. Reads every block's status, so it lives in its own view.
-struct AgentsSummaryLabel: View {
-    let servers: [ServerConnection]
+/// Sessions | Agents, at the sidebar's top. The Agents segment carries the waiting count, so a
+/// waiting agent shows from Sessions mode too. It reads every block's status, so it is its own view:
+/// a status change re-renders only this switch.
+struct SidebarModeSwitch: View {
+    @Environment(AppModel.self) private var model
+    @Binding var mode: SidebarMode
     let theme: TermTheme
+    @Namespace private var selection
 
     var body: some View {
-        let counts = AgentCounts(states: servers.flatMap(\.agents).map { $0.status?.state })
-        HStack(spacing: 8) {
-            Image(systemName: "sparkles").foregroundStyle(theme.accent)
-            // The pills' smallest form is their minimum width, so they shrink to glyphs before the
-            // word gives way, and they never wrap or clip. Where even the smallest pill leaves no
-            // room for the whole word, the sparkles alone name the row.
-            ViewThatFits(in: .horizontal) {
-                Text("Agents").font(.footnote.weight(.semibold)).lineLimit(1).fixedSize()
-                Color.clear.frame(width: 0, height: 0)
-            }
-            .layoutPriority(1)
-            Spacer(minLength: 0)
-            AgentCountPills(counts: counts, theme: theme)
-        }
-        .padding(.horizontal, 10)
-        .frame(minHeight: 44)
-        .background(RoundedRectangle(cornerRadius: 10).fill(theme.fg.opacity(0.06)))
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Agents: " + counts.pills.map(\.spoken).joined(separator: ", "))
-    }
-}
-
-/// One tab row's contents. It reads block metadata in its own body, so a status change in one tab
-/// re-renders only that row, not the whole sidebar.
-struct TabRowLabel: View {
-    let server: ServerConnection
-    let window: WindowInfo
-    var textSize: Double = 14
-    let theme: TermTheme
-    /// Scales the text size with Dynamic Type.
-    @ScaledMetric(relativeTo: .subheadline) private var scale: CGFloat = 1
-
-    var body: some View {
-        let agent = server.windowAgent(window)
-        HStack(spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5).fill(Self.tint(agent, theme).opacity(0.9))
-                Image(systemName: agent?.symbol ?? "terminal")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(theme.bg)
-            }
-            .frame(width: 18, height: 18)
-            // One line: the row's height stays put and the badges keep their room.
-            Text(WindowTitle.of(window, server: server))
-                .font(.system(size: textSize * scale))
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Group {
-                if window.allBlocks.count > 1 {
-                    Text("\(window.allBlocks.count)")
-                        .font(.caption2.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(theme.chrome.tertiary)
+        let waiting = model.servers.reduce(0) { $0 + $1.agents.count { $0.status?.state == "blocked" } }
+        HStack(spacing: 2) {
+            ForEach(SidebarMode.allCases) { m in
+                Button {
+                    guard mode != m else { return }
+                    Haptic.selection()
+                    withAnimation(.snappy(duration: 0.2)) { mode = m }
+                } label: {
+                    segment(m, waiting: m == .agents ? waiting : 0)
                 }
-                StatusBadge(status: server.windowStatus(window), theme: theme)
+                .buttonStyle(.plain)
+                .accessibilityLabel(m == .agents && waiting > 0 ? "\(m.title), \(waiting) waiting" : m.title)
+                .accessibilityAddTraits(mode == m ? .isSelected : [])
             }
-            .fixedSize()
-            .layoutPriority(1)
         }
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(3)
+        .background(RoundedRectangle(cornerRadius: 10).fill(theme.fg.opacity(0.06)))
+    }
+
+    private func segment(_ m: SidebarMode, waiting: Int) -> some View {
+        let on = mode == m
+        return HStack(spacing: 5) {
+            // The word, or where it doesn't fit, the mode's symbol. The waiting count always shows.
+            ViewThatFits(in: .horizontal) {
+                Text(m.title).font(.footnote.weight(.semibold)).lineLimit(1).fixedSize()
+                Image(systemName: m.symbol).font(.footnote.weight(.semibold))
+            }
+            if waiting > 0 {
+                StatusPill(pill: AgentCounts.Pill(kind: .waiting, count: waiting), compact: true, theme: theme)
+                    .layoutPriority(1)
+            }
+        }
+        .foregroundStyle(on ? theme.fg : theme.chrome.secondary)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, minHeight: 32)
+        .background {
+            if on {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(theme.chrome.rowSelected)
+                    .matchedGeometryEffect(id: "segment", in: selection)
+            }
+        }
+        .frame(minHeight: 38)
         .contentShape(Rectangle())
-    }
-
-    static func tint(_ a: AgentKind?, _ theme: TermTheme) -> Color {
-        switch a {
-        case .claude: return Color(hex: "#d97757")
-        case .codex: return theme.fg
-        case .gemini: return theme.ansiColor(4)
-        case .some: return theme.ansiColor(5)
-        case nil: return theme.chrome.secondary
-        }
-    }
-}
-
-enum WindowTitle {
-    @MainActor
-    static func of(_ w: WindowInfo, server: ServerConnection) -> String {
-        let generic = w.label.isEmpty || w.label.hasPrefix("Window ")
-        if !generic { return w.label }
-        if let f = w.focusedBlockID ?? w.orderedBlockIDs.first, let t = server.meta[f]?.title, !t.isEmpty { return condense(t) }
-        return w.block(w.focusedBlockID ?? "")?.label ?? "shell"
-    }
-
-    /// Shell titles like "user@host:~/code/project" become "project": the part that tells tabs apart.
-    static func condense(_ t: String) -> String {
-        let s = t.trimmingCharacters(in: .whitespaces)
-        guard let at = s.firstIndex(of: "@"), let colon = s[at...].firstIndex(of: ":"),
-              !s[..<at].contains(" ") else { return s }
-        let path = s[s.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        if path.isEmpty { return s }
-        if path == "~" || path == "/" { return path }
-        return path.split(separator: "/").last.map(String.init) ?? path
     }
 }

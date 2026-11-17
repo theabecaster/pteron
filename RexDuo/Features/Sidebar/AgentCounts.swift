@@ -51,35 +51,10 @@ struct AgentCounts: Equatable {
         if p.isEmpty { p.append(total == 0 ? Pill(kind: .none, count: 0) : Pill(kind: .idle, count: total)) }
         return p
     }
-}
 
-/// The agent count pills, always on one line. They take the widest form that fits: words
-/// ("2 waiting"), then the status glyph and count, then only the most important pill. VoiceOver
-/// reads every count in words in each form.
-struct AgentCountPills: View {
-    let counts: AgentCounts
-    let theme: TermTheme
-
-    var body: some View {
-        let pills = counts.pills
-        ViewThatFits(in: .horizontal) {
-            row(pills, compact: false)
-            row(pills, compact: true)
-            row(Array(pills.prefix(1)), compact: true)
-        }
-        // Past this the smallest pill alone would outgrow a 200 pt sidebar. The title bar's
-        // waiting pill stops at the same size.
-        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(pills.map(\.spoken).joined(separator: ", "))
-    }
-
-    private func row(_ pills: [AgentCounts.Pill], compact: Bool) -> some View {
-        HStack(spacing: 6) {
-            ForEach(pills) { StatusPill(pill: $0, compact: compact, theme: theme) }
-        }
-        .fixedSize()
-    }
+    /// Only the waiting and working pills: what a folded sidebar group shows. Empty when no agent
+    /// there waits or works.
+    var activePills: [Pill] { pills.filter { $0.kind == .waiting || $0.kind == .working } }
 }
 
 /// One count pill. Compact, it shows the status glyph the sidebar and title bar use, then the count.

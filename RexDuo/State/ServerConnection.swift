@@ -84,6 +84,8 @@ final class ServerConnection: Identifiable {
     var meta: MetaTable { MetaTable(server: self) }
     var hosts: [HostEntry] = []
     var hostName: String?
+    /// What the server was built for (`server.version`), such as darwin_arm64: the sidebar's OS glyph.
+    var platform: String?
     var lastError: String?
     /// The user asked to try again and that attempt hasn't finished: the offline screen's feedback.
     var retrying = false
@@ -363,6 +365,7 @@ final class ServerConnection: Identifiable {
             }
             await loadMeta(blocks)
             await loadHosts()
+            if platform == nil, let v = try? await control.call("server.version") { platform = v.str("platform") }
             await keymap.load()
             lastError = nil
             push?.serverReady(self)

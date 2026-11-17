@@ -55,6 +55,8 @@ struct Arrangement: Equatable {
 struct SidebarState: Equatable {
     /// Starts open, so a launch shows the last tab with the sidebar beside or over it.
     var open = true
+    /// What the sidebar lists: machines, sessions and tabs, or every agent (the Mac's activity mode).
+    var mode = SidebarMode.sessions
 
     enum Presentation: Equatable { case hidden, inline, drawer }
 
@@ -71,12 +73,33 @@ struct SidebarState: Equatable {
     /// A tab was picked to be shown: a drawer closes so the tab shows; an inline sidebar stays.
     mutating func tabShown(inline: Bool) { if !inline { open = false } }
 
+    /// `client.sidebar.activity.toggle` (⌘.): shows the sidebar in Agents mode, or goes back to
+    /// Sessions when Agents mode is already showing.
+    mutating func toggleAgents() {
+        if open && mode == .agents {
+            mode = .sessions
+        } else {
+            open = true
+            mode = .agents
+        }
+    }
+
     /// Runs an app command that is the sidebar's. False for any other command.
     mutating func perform(_ command: RexCommand) -> Bool {
-        guard command == .toggleSidebar else { return false }
-        toggle()
+        switch command {
+        case .toggleSidebar: toggle()
+        case .toggleAgents: toggleAgents()
+        default: return false
+        }
         return true
     }
+}
+
+enum SidebarMode: String, CaseIterable, Identifiable {
+    case sessions, agents
+    var id: String { rawValue }
+    var title: String { self == .sessions ? "Sessions" : "Agents" }
+    var symbol: String { self == .sessions ? "list.bullet.indent" : "sparkles" }
 }
 
 /// The sidebar's width: limits, snap points and what a drag does. Pure, so it is tested.

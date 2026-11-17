@@ -1,0 +1,438 @@
+import SwiftUI
+import RexKit
+
+/// The sidebar's three levels share one grid, so a session's name sits under its machine's name and
+/// a session's tabs hang from a guide just inside it. Type does the rest: machines are the largest
+/// and heaviest rows, sessions a full-contrast middle level, tabs lighter.
+enum SidebarMetrics {
+    /// Padding inside a row, both sides.
+    static let pad: CGFloat = 8
+    /// The machine glyph's column and the space after it.
+    static let glyph: CGFloat = 20
+    static let gap: CGFloat = 7
+    /// A session's name starts under its machine's name.
+    static var sessionLeading: CGFloat { pad + glyph + gap }
+    /// The guide line down a session's tabs, just inside the session's name.
+    static var guideX: CGFloat { sessionLeading + 2 }
+    /// Where a tab row starts. `TabRowLabel` adds its own 8 pt before the tile.
+    static var tabLeading: CGFloat { sessionLeading + 5 }
+    /// Names stay on one line, except at accessibility sizes, where two keep them readable.
+    static func lines(_ size: DynamicTypeSize) -> Int { size.isAccessibilitySize ? 2 : 1 }
+}
+
+/// The disclosure chevron: points to the trailing side while folded, down while open (HIG).
+struct Chevron: View {
+    let open: Bool
+    let theme: TermTheme
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(theme.chrome.tertiary)
+            .rotationEffect(.degrees(open ? 90 : 0))
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            .frame(width: 22)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The machine's operating system, from `server.version`.
+enum MachineGlyph {
+    static func symbol(platform: String?) -> String {
+        let p = platform?.lowercased() ?? ""
+        if p.hasPrefix("darwin") || p.hasPrefix("macos") { return "apple.logo" }
+        if p.hasPrefix("linux") || p.hasPrefix("freebsd") { return "server.rack" }
+        if p.hasPrefix("windows") { return "pc" }
+        return "desktopcomputer"
+    }
+}
+
+/// Connected: a green dot. Connecting or trying again: a spinner. Offline: a crossed antenna.
+struct ConnectionDot: View {
+    let server: ServerConnection
+    let theme: TermTheme
+
+    var body: some View {
+        switch server.phase {
+        case .online:
+            Circle().fill(theme.chrome.done).frame(width: 7, height: 7)
+                .accessibilityHidden(true)
+        case .connecting, .idle:
+            ProgressView().controlSize(.mini)
+                .accessibilityLabel("Connecting")
+        case .offline:
+            if server.retrying {
+                ProgressView().controlSize(.mini)
+                    .accessibilityLabel("Connecting")
+            } else {
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                    .font(.caption2)
+                    .foregroundStyle(theme.chrome.tertiary)
+                    .accessibilityLabel("Offline")
+            }
+        }
+    }
+}
+
+/// What a folded group holds: its count ("3 tabs") and its waiting and working pills. Reads the
+/// group's block statuses in its own body, so a status change re-renders only this summary.
+/// It takes the widest form that fits and never wraps: words, then digits and glyphs, then the pills
+/// alone, then the most urgent pill.
+struct GroupSummary: View {
+    let server: ServerConnection
+    let windows: [WindowInfo]
+    let count: Int
+    /// "tab" or "session".
+    let noun: String
+    let theme: TermTheme
+
+    var body: some View {
+        let counts = AgentCounts(states: windows.flatMap(\.allBlocks).map { server.meta[$0.id]?.topStatus?.state })
+        let pills = counts.activePills
+        let words = "\(count) \(noun)\(count == 1 ? "" : "s")"
+        ViewThatFits(in: .horizontal) {
+            row(Text(words), pills, compact: false)
+            row(Text(words), pills, compact: true)
+            row(Text("\(count)"), pills, compact: true)
+            row(nil, pills, compact: true)
+            row(nil, Array(pills.prefix(1)), compact: true)
+        }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(pills.map(\.spoken).joined(separator: ", "))
+    }
+
+    private func row(_ text: Text?, _ pills: [AgentCounts.Pill], compact: Bool) -> some View {
+        HStack(spacing: 5) {
+            if let text {
+                text.font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(theme.chrome.tertiary)
+            }
+            ForEach(pills) { StatusPill(pill: $0, compact: compact, theme: theme) }
+        }
+        .lineLimit(1)
+        .fixedSize()
+    }
+}
+
+/// A machine: the sidebar's top level. Tap to fold or open everything on it.
+struct MachineHeader: View {
+    let server: ServerConnection
+    let collapsed: Bool
+    /// False in Agents mode, where a machine never folds.
+    var foldable = true
+    let theme: TermTheme
+    let toggle: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        if foldable {
+            Button(action: toggle) { content }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+        } else {
+            content
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+        }
+    }
+
+    private var content: some View {
+        HStack(spacing: SidebarMetrics.gap) {
+            Image(systemName: MachineGlyph.symbol(platform: server.platform))
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(theme.chrome.secondary)
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+                .frame(width: SidebarMetrics.glyph)
+                .accessibilityHidden(true)
+            NameAndSummary {
+                // Down: a quiet line under the name, never a takeover while another server is up.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(server.config.name)
+                        .font(.headline)
+                        .lineLimit(SidebarMetrics.lines(typeSize))
+                        .accessibilityLabel(spokenName)
+                    if let p = server.phase.problem {
+                        Text(OfflineCopy.short(p.kind))
+                            .font(.caption2)
+                            .foregroundStyle(theme.chrome.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                if collapsed {
+                    GroupSummary(server: server, windows: allWindows, count: server.sessions.count,
+                                 noun: "session", theme: theme)
+                }
+            }
+            ConnectionDot(server: server, theme: theme)
+            if foldable { Chevron(open: !collapsed, theme: theme) }
+        }
+        .padding(.horizontal, SidebarMetrics.pad)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var spokenName: String {
+        let n = server.sessions.count
+        return "\(server.config.name), machine, \(n) session\(n == 1 ? "" : "s")"
+    }
+
+    private var allWindows: [WindowInfo] {
+        server.sessions.flatMap { server.views[$0.id]?.windows ?? [] }
+    }
+}
+
+/// A session: the middle level, under its machine's name. Tap to fold its tabs; `+` adds a tab.
+struct SessionHeader: View {
+    let server: ServerConnection
+    let session: SessionEntry
+    let collapsed: Bool
+    let theme: TermTheme
+    let toggle: () -> Void
+    let newTab: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        let windows = server.views[session.id]?.windows ?? []
+        let name = session.label.isEmpty ? "session" : session.label
+        // One fold button across the row, chevron included; `+` sits over it, so VoiceOver finds
+        // two elements: the session and New Tab.
+        Button(action: toggle) {
+            HStack(spacing: 0) {
+                NameAndSummary {
+                    Text(name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(SidebarMetrics.lines(typeSize))
+                        .accessibilityLabel("\(name), session, \(windows.count) tab\(windows.count == 1 ? "" : "s")")
+                    if collapsed {
+                        GroupSummary(server: server, windows: windows, count: windows.count, noun: "tab", theme: theme)
+                    }
+                }
+                // Room for `+`. Folded, the name gets it; New Tab stays in the swipe and the menu.
+                Color.clear.frame(width: collapsed ? 0 : 36, height: 1)
+                Chevron(open: !collapsed, theme: theme)
+            }
+            .padding(.leading, SidebarMetrics.sessionLeading)
+            .padding(.trailing, SidebarMetrics.pad)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+        .overlay(alignment: .trailing) {
+            if !collapsed {
+                Button(action: newTab) {
+                    Image(systemName: "plus")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(theme.chrome.tertiary)
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("New Tab in \(name)")
+                .padding(.trailing, SidebarMetrics.pad + 22)
+            }
+        }
+    }
+}
+
+/// A header's name, then its summary at the trailing edge. The name keeps its whole width, or at
+/// least `share` of the row, before the summary gives up room: the summary then takes its smaller
+/// forms (`GroupSummary` is a `ViewThatFits`), and only past that does the name truncate. Sessions
+/// are what people look for, so their names win over counts.
+struct NameAndSummary: Layout {
+    var spacing: CGFloat = 6
+    var share: CGFloat = 0.55
+
+    /// The last split, so placing doesn't measure the summary's forms again.
+    struct Cache {
+        var width: CGFloat = -1
+        var split: (CGFloat, CGSize) = (0, .zero)
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = Cache() }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        guard let width = proposal.width else {
+            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            let ideal = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(subviews.count - 1, 0))
+            return CGSize(width: ideal, height: sizes.map(\.height).max() ?? 0)
+        }
+        let (nameWidth, summary) = split(width, subviews, &cache)
+        // A name that wraps (accessibility sizes) makes the row taller.
+        let nameHeight = subviews.first?.sizeThatFits(ProposedViewSize(width: nameWidth, height: nil)).height ?? 0
+        return CGSize(width: width, height: max(nameHeight, summary.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        guard let name = subviews.first else { return }
+        let (nameWidth, summary) = split(bounds.width, subviews, &cache)
+        if subviews.count > 1 {
+            subviews[1].place(at: CGPoint(x: bounds.maxX - summary.width, y: bounds.midY), anchor: .leading,
+                              proposal: ProposedViewSize(summary))
+        }
+        name.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                   proposal: ProposedViewSize(width: nameWidth, height: bounds.height))
+    }
+
+    /// The name's width and the summary's size in a row this wide.
+    private func split(_ width: CGFloat, _ subviews: Subviews, _ cache: inout Cache) -> (CGFloat, CGSize) {
+        guard subviews.count > 1, let name = subviews.first else { return (width, .zero) }
+        if cache.width == width { return cache.split }
+        let nameIdeal = name.sizeThatFits(.unspecified).width
+        let room = max(0, width - min(nameIdeal, width * share) - spacing)
+        // Even its smallest form never clips: past that the name gives way.
+        let summary = subviews[1].sizeThatFits(ProposedViewSize(width: room, height: nil))
+        cache = Cache(width: width, split: (max(0, width - summary.width - spacing), summary))
+        return cache.split
+    }
+}
+
+/// The hairline that ties a session's tabs to it. The last tab's stops short, closing the group.
+struct IndentGuide: View {
+    let last: Bool
+    let theme: TermTheme
+
+    var body: some View {
+        Rectangle()
+            .fill(theme.fg.opacity(theme.isDark ? 0.16 : 0.14))
+            .frame(width: 1)
+            .padding(.bottom, last ? 8 : 0)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .accessibilityHidden(true)
+    }
+}
+
+struct StatusBadge: View {
+    var state: String?
+    var theme: TermTheme
+    /// The glyph's point size; the working dot is 0.7 of it.
+    var size: CGFloat = 10
+
+    init(status: ProgramStatus?, theme: TermTheme, size: CGFloat = 10) {
+        self.init(state: status?.state, theme: theme, size: size)
+    }
+
+    init(state: String?, theme: TermTheme, size: CGFloat = 10) {
+        self.state = state
+        self.theme = theme
+        self.size = size
+    }
+
+    var body: some View {
+        switch state {
+        case "working":
+            PulsingDot(color: theme.chrome.working, size: size * 0.7)
+                .accessibilityLabel("working")
+        case "blocked":
+            Image(systemName: "hand.raised.fill").font(.system(size: size)).foregroundStyle(theme.chrome.blocked)
+                .accessibilityLabel("waiting for you")
+        case "done":
+            Image(systemName: "checkmark").font(.system(size: size, weight: .bold)).foregroundStyle(theme.chrome.done)
+                .accessibilityLabel("done")
+        case "error":
+            Image(systemName: "exclamationmark").font(.system(size: size, weight: .bold)).foregroundStyle(theme.chrome.error)
+                .accessibilityLabel("error")
+        default:
+            EmptyView()
+        }
+    }
+}
+
+/// The "working" dot. A symbol effect, not a SwiftUI repeat-forever animation, so many rows stay cheap.
+/// With Reduce Motion on it holds still.
+struct PulsingDot: View {
+    var color: Color
+    var size: CGFloat = 7
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Image(systemName: "circle.fill")
+            .font(.system(size: size))
+            .foregroundStyle(color)
+            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+    }
+}
+
+/// One tab row's contents. It reads block metadata in its own body, so a status change in one tab
+/// re-renders only that row, not the whole sidebar.
+struct TabRowLabel: View {
+    let server: ServerConnection
+    let window: WindowInfo
+    var textSize: Double = 14
+    /// The title's color; nil is the theme's text color.
+    var textColor: Color?
+    var minHeight: CGFloat = 44
+    let theme: TermTheme
+    /// Scales the text size with Dynamic Type.
+    @ScaledMetric(relativeTo: .subheadline) private var scale: CGFloat = 1
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        let agent = server.windowAgent(window)
+        HStack(spacing: 9) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5).fill(Self.tint(agent, theme).opacity(0.9))
+                Image(systemName: agent?.symbol ?? "terminal")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(theme.bg)
+            }
+            .frame(width: 18, height: 18)
+            // One line, so the row's height stays put and the badges keep their room; two at
+            // accessibility sizes, where one would hold a few letters.
+            Text(WindowTitle.of(window, server: server))
+                .font(.system(size: textSize * scale))
+                .foregroundStyle(textColor ?? theme.fg)
+                .lineLimit(SidebarMetrics.lines(typeSize))
+            Spacer(minLength: 4)
+            Group {
+                if window.allBlocks.count > 1 {
+                    Text("\(window.allBlocks.count)")
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(theme.chrome.tertiary)
+                        .accessibilityLabel("\(window.allBlocks.count) panes")
+                }
+                StatusBadge(status: server.windowStatus(window), theme: theme)
+            }
+            .fixedSize()
+            .layoutPriority(1)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    static func tint(_ a: AgentKind?, _ theme: TermTheme) -> Color {
+        switch a {
+        case .claude: return Color(hex: "#d97757")
+        case .codex: return theme.fg
+        case .gemini: return theme.ansiColor(4)
+        case .some: return theme.ansiColor(5)
+        case nil: return theme.chrome.secondary
+        }
+    }
+}
+
+enum WindowTitle {
+    @MainActor
+    static func of(_ w: WindowInfo, server: ServerConnection) -> String {
+        let generic = w.label.isEmpty || w.label.hasPrefix("Window ")
+        if !generic { return w.label }
+        if let f = w.focusedBlockID ?? w.orderedBlockIDs.first, let t = server.meta[f]?.title, !t.isEmpty { return condense(t) }
+        return w.block(w.focusedBlockID ?? "")?.label ?? "shell"
+    }
+
+    /// Shell titles like "user@host:~/code/project" become "project": the part that tells tabs apart.
+    static func condense(_ t: String) -> String {
+        let s = t.trimmingCharacters(in: .whitespaces)
+        guard let at = s.firstIndex(of: "@"), let colon = s[at...].firstIndex(of: ":"),
+              !s[..<at].contains(" ") else { return s }
+        let path = s[s.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        if path.isEmpty { return s }
+        if path == "~" || path == "/" { return path }
+        return path.split(separator: "/").last.map(String.init) ?? path
+    }
+}
