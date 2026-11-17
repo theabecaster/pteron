@@ -79,7 +79,10 @@ final class FileTransferTests: XCTestCase {
         let args = try XCTUnwrap(begin.payload.obj("args"))
         XCTAssertEqual(args.str("name"), "a b.bin")
         XCTAssertEqual(args.int("size"), 200_000)
-        XCTAssertNil(args["batch"])
+        // A batch of one: a retry after its end went out can't type its path twice.
+        XCTAssertNotNil(args.str("batch"))
+        XCTAssertEqual(args.int("index"), 0)
+        XCTAssertEqual(args.int("count"), 1)
         XCTAssertTrue(args.str("ref")?.hasPrefix("upload:") == true)
         let sent = link.sockets[0].sent
         XCTAssertEqual(sent.first, [0x01] + Array(0..<16))
@@ -121,14 +124,63 @@ final class FileTransferTests: XCTestCase {
 
     func testRetriesStopAtTheLimit() async {
         let link = link()
+        // The first file of two is lost every time.
         serveAll(link, codes: Array(repeating: 1006, count: 10))
         do {
-            try await uploader(link).send([item("a", bytes(10))]) { _, _ in }
+            try await uploader(link).send([item("a", bytes(10)), item("b", bytes(10))]) { _, _ in }
             XCTFail("expected a failure")
         } catch let f as FileUploader.Failure {
             XCTAssertTrue(f.isRetryable)
         } catch { XCTFail("\(error)") }
         XCTAssertEqual(link.sockets.count, 1 + FileUploader.retryLimit)
+    }
+
+    func testABatchWhoseLastFileWentOutWholeIsNotSentAgain() async {
+        let link = link()
+        // The end went out, then the connection was lost before the server confirmed: it may have
+        // typed the path already.
+        serveAll(link, codes: [1006])
+        do {
+            try await uploader(link).send([item("a", bytes(10))]) { _, _ in }
+            XCTFail("expected a failure")
+        } catch let f as FileUploader.Failure {
+            XCTAssertEqual(f, .unconfirmed)
+            XCTAssertFalse(f.isRetryable)
+        } catch { XCTFail("\(error)") }
+        XCTAssertEqual(link.sockets.count, 1)
+    }
+
+    func testCancelBetweenFilesCutsOffTheNextSoTheServerDropsTheBatch() async throws {
+        let link = link()
+        let u = uploader(link)
+        // The server never confirms the first file; the test cancels while the upload waits for it.
+        let task = Task { @MainActor in
+            do {
+                try await u.send([self.item("a", self.bytes(10)), self.item("b", self.bytes(10))]) { _, _ in }
+                return FileUploader.Failure?.none
+            } catch { return error as? FileUploader.Failure }
+        }
+        _ = await eventually { link.sockets.first?.sent.last == [] }
+        u.cancel()
+        let result = await task.value
+        XCTAssertEqual(result, .cancelled)
+        let args = link.calls.filter { $0.method == Self.upload }.compactMap { $0.payload.obj("args") }
+        XCTAssertEqual(args.map { $0.int("index") }, [0, 1], "the next file is reserved…")
+        XCTAssertEqual(args[0].str("batch"), args[1].str("batch"))
+        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertEqual(link.sockets[1].sent, [[0x01] + Array(0..<16)], "…opened, and cut off with no bytes")
+        XCTAssertTrue(link.sockets[1].closed)
+    }
+
+    func testCancelAfterTheLastFileWentOutChangesNothing() async throws {
+        let link = link()
+        let u = uploader(link)
+        let task = Task { @MainActor in try await u.send([self.item("a", self.bytes(10))]) { _, _ in } }
+        _ = await eventually { link.sockets.first?.sent.last == [] }
+        u.cancel()
+        XCTAssertFalse(link.sockets[0].closed, "too late: the server may be typing the path")
+        link.sockets[0].drop(code: 1000)
+        try await task.value
     }
 
     func testAFileOfTheWrongSizeIsNotRetried() async {
@@ -159,15 +211,16 @@ final class FileTransferTests: XCTestCase {
 
     func testCancelClosesTheConnectionAndIsNotRetried() async {
         let link = link()
+        // The server takes the HELLO and says nothing: the file is on its way when the test cancels.
+        link.defaultPlan = .silent
         let u = uploader(link)
-        // The server never takes the end; the test cancels while the upload waits for it.
         let task = Task { @MainActor in
             do {
                 try await u.send([item("a", self.bytes(10))]) { _, _ in }
                 return FileUploader.Failure?.none
             } catch { return error as? FileUploader.Failure }
         }
-        _ = await eventually { link.sockets.first?.sent.last == [] }
+        _ = await eventually { link.sockets.first?.sent.count == 1 }
         u.cancel()
         let result = await task.value
         XCTAssertEqual(result, .cancelled)
@@ -228,18 +281,20 @@ final class FileTransferTests: XCTestCase {
         let link = FakeLink()
         link.replies[Self.download] = info(size: 6)
         let d = downloader(link)
-        var got = Data()
+        let got = Received()
+        var shown: [Int64] = []
         let task = Task { @MainActor in
-            try await d.download(path: "a b.txt", limit: 100, write: { got.append($0) })
+            try await d.download(path: "a b.txt", limit: 100, write: { got.append($0) }, progress: { n, _ in shown.append(n) })
         }
         _ = await eventually { link.sockets.first?.receives ?? 0 >= 2 }
         let s = link.sockets[0]
         s.push([1, 2, 3])
         s.push([4, 5, 6])
-        _ = await eventually { got.count == 6 }
+        _ = await eventually { link.sockets[0].receives >= 4 }
         s.drop(code: 1000)
         let outcome = try await task.value
-        XCTAssertEqual(got, Data([1, 2, 3, 4, 5, 6]))
+        XCTAssertEqual(got.data, Data([1, 2, 3, 4, 5, 6]), "written in order, all of it, before the download ends")
+        XCTAssertEqual(shown, [0, 3, 6])
         XCTAssertEqual(outcome, .downloaded(FileDownloader.Info(path: "/tmp/a b.txt", name: "a b.txt", size: 6,
                                                                  modifiedAt: "2026-11-17T17:55:17Z", version: "v1")))
         XCTAssertEqual(link.subprotocols, [BytesStream.subprotocol])
@@ -301,6 +356,14 @@ final class FileTransferTests: XCTestCase {
         XCTAssertTrue(link.sockets[0].closed)
     }
 
+    func testProgressIsReportedOncePerPercent() {
+        XCTAssertEqual(FileDownloader.percent(0, of: 1000), 0)
+        XCTAssertEqual(FileDownloader.percent(9, of: 1000), 0)
+        XCTAssertEqual(FileDownloader.percent(10, of: 1000), 1)
+        XCTAssertEqual(FileDownloader.percent(2000, of: 1000), 100)
+        XCTAssertEqual(FileDownloader.percent(0, of: 0), 100)
+    }
+
     func testDownloadRefusalsInPlainCategories() {
         func f(_ code: String, _ msg: String) -> FileDownloader.Failure {
             FileDownloader.failure(beginning: RexError(code: code, message: msg, status: 400))
@@ -313,4 +376,14 @@ final class FileTransferTests: XCTestCase {
         XCTAssertEqual(f("method_not_found", "method not found"), .unsupported)
         XCTAssertEqual(f("bad_request", "something else"), .refused("something else"))
     }
+}
+
+/// A download's bytes, written from the downloader's own queue.
+private final class Received: @unchecked Sendable {
+    // Safe: every access holds the lock.
+    private let lock = NSLock()
+    private var bytes = Data()
+
+    func append(_ d: Data) { lock.lock(); bytes.append(d); lock.unlock() }
+    var data: Data { lock.lock(); defer { lock.unlock() }; return bytes }
 }

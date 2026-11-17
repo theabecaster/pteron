@@ -496,7 +496,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             })
         }
         // A selection that names a file: Open brings it from the pane's computer into Quick Look.
-        if term.hasActiveSelection, let text = term.selectedText, files?.openablePath(in: text) != nil {
+        // Only a small one is read as text here, on the main thread (`PathGuess.isSmall`).
+        if term.hasActiveSelection, files?.supported == true, let e = term.core.selectionExtent,
+           PathGuess.isSmall(rows: e.endRow - e.startRow + 1, cols: e.cols, startCol: e.startCol, endCol: e.endCol,
+                             clipped: e.startClipped || e.endClipped),
+           let text = term.selectedText, files?.openablePath(in: text) != nil {
             items.append(UIAction(title: "Open", image: UIImage(systemName: "doc.viewfinder")) { [weak self] _ in
                 guard let self else { return }
                 self.clearSelection()
@@ -995,6 +999,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         claimedSize = nil
         claim.release()
         started = false
+        files?.close()
     }
 
     override func layoutSubviews() {

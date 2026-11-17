@@ -1,5 +1,6 @@
 import Foundation
 import RexKit
+import UniformTypeIdentifiers
 
 // The pure rules of sending files to a pane: the names files get, where the menu says they go,
 // and what Paste does with what is on the clipboard. Tested in FileRulesTests.
@@ -23,11 +24,13 @@ enum UploadName {
         return cut(clean)
     }
 
-    /// Control characters (C0, DEL, C1) and the invisible formatting marks that can reorder or hide
-    /// text (bidi overrides, zero-width joiners).
-    private static func isControl(_ s: Unicode.Scalar) -> Bool {
-        switch s.properties.generalCategory {
-        case .control, .format, .lineSeparator, .paragraphSeparator: return true
+    /// Control characters (C0, DEL, C1), the bidi embeddings, overrides and isolates that can make
+    /// a name read in another order (U+202A–202E, U+2066–2069), and the zero-width space. The
+    /// zero-width joiner and non-joiner stay: scripts such as Persian and Hindi and emoji need them.
+    static func isControl(_ s: Unicode.Scalar) -> Bool {
+        if s.properties.generalCategory == .control { return true }
+        switch s.value {
+        case 0x202A...0x202E, 0x2066...0x2069, 0x200B: return true
         default: return false
         }
     }
@@ -104,8 +107,9 @@ enum SendTarget {
     static let expensiveLimit: Int64 = 25_000_000
 }
 
-/// What Paste does with the clipboard. Text always wins, so pasting text never changes: an image
-/// or a file is sent only when the clipboard holds no text. Everything here is read from the
+/// What Paste (the paste key, ⌘V, the edit menu) does with the clipboard. Text always wins, so
+/// pasting text never changes: an image or a file is sent only when the clipboard holds no text at
+/// all. Otherwise only the attach menu's Paste Image or Paste File sends it. Everything here is read from the
 /// pasteboard's types, which iOS lets an app check without asking the user.
 enum ClipboardChoice: Equatable {
     case text
@@ -121,7 +125,18 @@ enum ClipboardChoice: Equatable {
         return .nothing
     }
 
-    /// The attach menu offers "Paste Image" whenever there is an image, even beside text (an image
-    /// copied from Safari also carries its address).
+    /// The attach menu offers Paste Image or Paste File whenever there is one, even beside text (an
+    /// image copied from Safari also carries its address).
     static func offersPasteImage(hasImage: Bool, canSend: Bool) -> Bool { hasImage && canSend }
+}
+
+/// Which of an item's types is read as the file to send: an image, else a movie, else, for an item
+/// backed by a file, its data. Text and addresses on their own are never sent as files.
+enum FileItemType {
+    static func pick(_ types: [UTType], fileBacked: Bool) -> UTType? {
+        if let t = types.first(where: { $0.conforms(to: .image) && !$0.conforms(to: .url) }) { return t }
+        if let t = types.first(where: { $0.conforms(to: .movie) }) { return t }
+        guard fileBacked else { return nil }
+        return types.first { ($0.conforms(to: .data) || $0.conforms(to: .content)) && !$0.conforms(to: .url) && !$0.conforms(to: .text) }
+    }
 }

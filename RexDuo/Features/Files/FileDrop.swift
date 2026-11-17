@@ -8,8 +8,9 @@ enum DropRule {
         !fromThisApp && canSend && hasFiles
     }
 
-    /// The types a drop can bring as files.
-    static let types: [UTType] = [.image, .movie, .data, .content]
+    /// The types a drop can bring as files: images, movies, and items backed by a file. Text and
+    /// web addresses are not files: a drag of them is refused rather than sent as a `.txt`.
+    static let types: [UTType] = [.image, .movie, .fileURL]
 }
 
 /// Drops onto one pane: files dragged in from another app go to the pane's computer, as the

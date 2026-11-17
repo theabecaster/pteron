@@ -11,14 +11,18 @@ final class FileSender {
     private let control: RexControl
     let sessionID: String
     let blockID: String
-    /// Where the send goes, in words ("Claude", "workdesk"), read when it starts.
+    /// Where the send goes, in words ("Claude", "studio"), read when it starts.
     var target: () -> String = { "this computer" }
     private var uploader: FileUploader?
     private var background = UIBackgroundTaskIdentifier.invalid
     private var cutOff = false
     private var shownPercent = -1
 
-    var busy: Bool { uploader != nil }
+    /// From the moment a send is asked for (its cellular question included) until it ends, so a
+    /// second one is turned away with a word instead of lost.
+    private var claimed = false
+
+    var busy: Bool { claimed || uploader != nil }
 
     init(control: RexControl, sessionID: String, blockID: String) {
         self.control = control
@@ -42,12 +46,18 @@ final class FileSender {
             return
         }
         let total = files.reduce(Int64(0)) { $0 + $1.size }
+        claimed = true
         Task { @MainActor in
             if total > SendTarget.expensiveLimit, await FileStaging.networkIsExpensive(), let view {
                 TerminalPrompt.ask(over: view, title: "Send \(SendTarget.size(total)) on cellular?",
                                    message: "\(SendTarget.what(files.map(\.name))) for \(self.target()).",
                                    confirm: "Send") { yes in
-                    if yes { self.start(files, over: view) } else { FileStaging.discard(files) }
+                    if yes {
+                        self.start(files, over: view)
+                    } else {
+                        self.claimed = false
+                        FileStaging.discard(files)
+                    }
                 }
             } else {
                 self.start(files, over: view)
@@ -58,7 +68,7 @@ final class FileSender {
     func cancel() { uploader?.cancel() }
 
     private func start(_ files: [StagedFile], over view: UIView?) {
-        guard !busy else { return FileStaging.discard(files) }
+        guard uploader == nil else { return FileStaging.discard(files) }
         let names = files.map(\.name)
         let to = target()
         let up = FileUploader(control: control, sessionID: sessionID, blockID: blockID)
@@ -83,6 +93,7 @@ final class FileSender {
         Task { @MainActor in
             defer {
                 self.uploader = nil
+                self.claimed = false
                 self.endBackground()
             }
             do {
@@ -120,6 +131,9 @@ final class FileSender {
         case .unsupported:
             FileStaging.discard(files)
             Notice.shared.show("This computer's Rex can't take files. Update Rex there.")
+        case .unconfirmed:
+            FileStaging.discard(files)
+            Notice.shared.show("Sent \(what), but \(to) didn't confirm it. Check the pane before sending it again.")
         case .tooLarge:
             FileStaging.discard(files)
             Notice.shared.show(SendTarget.tooLarge(what))

@@ -7,10 +7,10 @@ import UniformTypeIdentifiers
 @MainActor
 final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerDelegate,
     UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-    /// What a picker produced: staged copies, and whether photos were to go untouched.
-    var onPicked: (([StagedFile]) -> Void)?
+    /// What a picker produced: staged copies, prepared. Files from Files go as they are.
+    var onPicked: (([ImagePrep.Result]) -> Void)?
     /// Turns a picked photo into what is sent (`ImagePrep`); the identity until set.
-    var prepare: @Sendable (StagedFile, _ original: Bool) -> StagedFile = { f, _ in f }
+    var prepare: @Sendable (StagedFile, _ original: Bool) -> ImagePrep.Result = { f, _ in .ready(f) }
     private var original = false
 
     static let maxPhotos = 20
@@ -63,7 +63,7 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
         let original = self.original
         let prepare = self.prepare
         Task { @MainActor in
-            var files: [StagedFile] = []
+            var files: [ImagePrep.Result] = []
             for p in providers {
                 if let f = await Self.load(p) { files.append(await Self.prepared(f, original, prepare)) }
             }
@@ -93,7 +93,7 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
     }
 
     private static func prepared(_ f: StagedFile, _ original: Bool,
-                                 _ prepare: @escaping @Sendable (StagedFile, Bool) -> StagedFile) async -> StagedFile {
+                                 _ prepare: @escaping @Sendable (StagedFile, Bool) -> ImagePrep.Result) async -> ImagePrep.Result {
         await Task.detached(priority: .userInitiated) { prepare(f, original) }.value
     }
 
@@ -130,7 +130,7 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
                 }
             }.value
             if files.count < urls.count { Notice.shared.show("Couldn't read some of the files.") }
-            if !files.isEmpty { self.onPicked?(files) }
+            if !files.isEmpty { self.onPicked?(files.map { .ready($0) }) }
         }
     }
 }

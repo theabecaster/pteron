@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 ///   prepared as Photos prepares them. `sendOriginal:` sends them untouched.
 /// - `paste:<path>`: put this image on the clipboard alone, then Paste.
 /// - `open:<text>`: open what `<text>` names, as the edit menu's Open does for a selection.
+/// - `cancel`: cancel the send on its way, as the notice's Cancel does.
 /// - `wait:<seconds>`: pause.
 ///
 /// Use only with a throwaway `zz-` session: the files land on its computer and their paths are typed.
@@ -43,7 +44,7 @@ enum FilesTest {
             host.openAttachMenu(open: verb == "menu")
         case "send", "sendOriginal":
             let original = verb == "sendOriginal"
-            let files = arg.split(separator: "|").compactMap { path -> StagedFile? in
+            let files = arg.split(separator: "|").compactMap { path -> ImagePrep.Result? in
                 let url = URL(fileURLWithPath: String(path))
                 guard let f = try? FileStaging.stage(copying: url, as: url.lastPathComponent) else { return nil }
                 return ImagePrep.prepare(f, original: original)
@@ -56,6 +57,8 @@ enum FilesTest {
             host.pasteFromClipboard()
         case "open":
             host.files?.open(selection: arg)
+        case "cancel":
+            host.files?.cancel()
         case "wait":
             try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
         default:

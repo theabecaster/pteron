@@ -76,12 +76,14 @@ final class PaneFiles {
     func menu() -> UIMenu {
         let board = UIPasteboard.general
         var items: [UIMenuElement] = []
-        if ClipboardChoice.offersPasteImage(hasImage: board.hasImages, canSend: true) {
-            items.append(UIAction(title: "Paste Image", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
-                self?.pasteImage()
+        if ClipboardChoice.offersPasteImage(hasImage: board.hasImages || Self.hasFiles(board), canSend: true) {
+            let title = Self.hasFiles(board) ? "Paste File" : "Paste Image"
+            items.append(UIAction(title: title, image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
+                self?.pasteFiles()
             })
         }
-        items.append(UIAction(title: "Photos", image: UIImage(systemName: "photo")) { [weak self] _ in
+        items.append(UIAction(title: "Photos", subtitle: "Without location. Videos are sent as they are.",
+                              image: UIImage(systemName: "photo")) { [weak self] _ in
             guard let self, let view = self.view else { return }
             self.picker.pickPhotos(over: view, original: self.sendOriginals)
         })
@@ -115,24 +117,23 @@ final class PaneFiles {
     /// What Paste does now. Text always pastes as text; only a clipboard without text sends.
     var pasteChoice: ClipboardChoice {
         let b = UIPasteboard.general
-        let files = b.types.contains(UTType.fileURL.identifier)
-        return ClipboardChoice.paste(hasText: b.hasStrings && !files, hasImage: b.hasImages, hasFiles: files,
+        return ClipboardChoice.paste(hasText: b.hasStrings, hasImage: b.hasImages, hasFiles: Self.hasFiles(b),
                                      canSend: supported == true)
     }
+
+    static func hasFiles(_ b: UIPasteboard) -> Bool { b.types.contains(UTType.fileURL.identifier) }
 
     /// Sends what the clipboard holds as files: copied files, or else an image.
     func pasteFiles() {
         send(providers: UIPasteboard.general.itemProviders, unnamed: "Pasted Image", empty: "Nothing on the clipboard to send.")
     }
 
-    func pasteImage() { pasteFiles() }
-
     /// Sends the items of a paste or a drop as one batch, prepared as picked photos are.
     func send(providers: [NSItemProvider], unnamed: String, empty: String) {
         let original = sendOriginals
         let prepare = picker.prepare
         Task { @MainActor in
-            var files: [StagedFile] = []
+            var files: [ImagePrep.Result] = []
             for p in providers {
                 if let f = await Self.load(p, unnamed: unnamed) { files.append(await Task.detached { prepare(f, original) }.value) }
             }
@@ -143,11 +144,8 @@ final class PaneFiles {
     /// An item as a staged file: a file keeps its name; an image without one gets a readable one
     /// ("Pasted Image 2026-11-17 17.31.png").
     static func load(_ p: NSItemProvider, unnamed: String) async -> StagedFile? {
-        let types = p.registeredContentTypes
-        let type = types.first { $0.conforms(to: .image) && !$0.conforms(to: .url) }
-            ?? types.first { $0.conforms(to: .data) && !$0.conforms(to: .url) && !$0.conforms(to: .text) }
-            ?? types.first { $0.conforms(to: .content) && !$0.conforms(to: .url) }
-        guard let type else { return nil }
+        guard let type = FileItemType.pick(p.registeredContentTypes,
+                                           fileBacked: p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)) else { return nil }
         let suggested = p.suggestedName
         return await withCheckedContinuation { (c: CheckedContinuation<StagedFile?, Never>) in
             _ = p.loadFileRepresentation(for: type, openInPlace: false) { url, _, _ in
@@ -161,6 +159,9 @@ final class PaneFiles {
     }
 
     // MARK: Open
+
+    /// The pane let go of its stream (closed, or long off screen): stop a download and drop its copy.
+    func close() { opener.close() }
 
     /// The path selected text names, where the server can send files; the edit menu offers Open for it.
     func openablePath(in selection: String) -> String? {
@@ -181,6 +182,26 @@ final class PaneFiles {
     }
 
     // MARK: Send
+
+    /// Sends prepared files. An image whose location couldn't be removed goes only if the user
+    /// says so; without a yes it is left out.
+    func send(_ results: [ImagePrep.Result]) {
+        let ready = results.compactMap { if case .ready(let f) = $0 { f } else { nil } }
+        let kept = results.compactMap { if case .locationKept(let f) = $0 { f } else { nil } }
+        guard !kept.isEmpty else { return send(ready) }
+        guard let view else {
+            FileStaging.discard(kept)
+            return send(ready)
+        }
+        let what = kept.count == 1 ? kept[0].name : "\(kept.count) images"
+        TerminalPrompt.ask(over: view, title: "Couldn't remove location. Send original?",
+                           message: "\(what) would go with its location and other details.",
+                           confirm: "Send Original") { [weak self] yes in
+            if !yes { FileStaging.discard(kept) }
+            let files = yes ? results.map(\.file) : ready
+            if !files.isEmpty { self?.send(files) }
+        }
+    }
 
     func send(_ files: [StagedFile]) {
         guard supported == true else {
