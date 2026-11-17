@@ -379,7 +379,8 @@ final class LaunchSplashView: UIView {
 
     private func peelFinished(_ stats: StickerPeelStats) {
         StickerPeel.log.debug("peel: \(stats.summary, privacy: .public)")
-        PerfProbe.active?.launchPeelFrames(targets: stats.targets, encode: stats.encode, gpu: stats.gpu, late: stats.late)  // PERF
+        PerfProbe.active?.launchPeelFrames(targets: stats.targets, leads: stats.leads, encode: stats.encode, gpu: stats.gpu,
+                                           late: stats.late)  // PERF
         peel?.layer.removeFromSuperlayer()
         peel = nil
     }

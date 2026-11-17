@@ -182,6 +182,8 @@ final class PerfProbe: Sendable {
         var launchPeel: String?
         /// The Metal peel's frame times (`StickerPeelStats`), in milliseconds.
         var launchPeelFrames: [String: Double] = [:]
+        /// Where its frames skipped refreshes: "<ms after the start>+<refreshes skipped>", in order.
+        var launchPeelHitchesAt = ""
 
         func sample(_ now: Double) -> Sample {
             Sample(at: now, cpu: PerfSystem.processCPUSeconds(), mainCPU: PerfSystem.threadCPUSeconds(mainThread),
@@ -382,24 +384,37 @@ final class PerfProbe: Sendable {
         state.withLock { if $0.launchPeel == nil { $0.launchPeel = kind } }
     }
 
-    /// The Metal peel's frames: when each was due, and its CPU encode and GPU times.
+    /// The Metal peel's frames: when each was due, how long before that its callback ran, and its
+    /// CPU encode and GPU times. Frames due before the start (`launchStep("start")`) are the
+    /// still lead-in and count apart.
     @MainActor
-    func launchPeelFrames(targets: [Double], encode: [Double], gpu: [Double], late: Int) {
-        let gaps = zip(targets.dropFirst(), targets).map { $0 - $1 }.sorted()
+    func launchPeelFrames(targets all: [Double], leads: [Double], encode: [Double], gpu: [Double], late: Int) {
+        let start = state.withLock { $0.launchSteps["start"] } ?? -.infinity
+        let first = all.firstIndex { $0 >= start - 0.001 } ?? all.count
+        let targets = Array(all[first...])
+        let gaps = zip(targets.dropFirst(), targets).map { $0 - $1 }
         func pct(_ a: [Double], _ q: Double) -> Double {
-            a.isEmpty ? 0 : a[min(a.count - 1, Int((Double(a.count - 1) * q).rounded()))] * 1000
+            let a = a.sorted()
+            return a.isEmpty ? 0 : a[min(a.count - 1, Int((Double(a.count - 1) * q).rounded()))] * 1000
         }
         let period = 1 / Double(max(60, UIScreen.main.maximumFramesPerSecond))
         let hitches = PerfHitchStats.measure(targets, in: PerfWindow(from: -.infinity, to: .infinity), period: period)
-        let e = encode.sorted(), g = gpu.sorted()
+        // Where the missed refreshes were: ms after the start, and how many refreshes each skipped.
+        let at = zip(targets, gaps).filter { $0.1 > period * 1.5 }.map { target, gap in
+            "\(Int(((target - start) * 1000).rounded()))+\(Int((gap / period).rounded()) - 1)"
+        }
+        let frameLeads = Array(leads.suffix(targets.count))
         state.withLock { s in
             s.launchPeelFrames = [
-                "frames": Double(targets.count), "intervalP50Ms": pct(gaps, 0.5), "intervalP95Ms": pct(gaps, 0.95),
-                "intervalMaxMs": (gaps.last ?? 0) * 1000, "hitches": Double(hitches.hitches),
+                "frames": Double(targets.count), "leadInFrames": Double(first),
+                "intervalP50Ms": pct(gaps, 0.5), "intervalP95Ms": pct(gaps, 0.95),
+                "intervalMaxMs": (gaps.max() ?? 0) * 1000, "hitches": Double(hitches.hitches),
                 "hitchMs": hitches.hitchSeconds * 1000, "gpuLate": Double(late),
-                "encodeP50Ms": pct(e, 0.5), "encodeMaxMs": (e.last ?? 0) * 1000,
-                "gpuP50Ms": pct(g, 0.5), "gpuMaxMs": (g.last ?? 0) * 1000,
+                "callbackLeadMinMs": (frameLeads.min() ?? 0) * 1000, "callbackLeadP50Ms": pct(frameLeads, 0.5),
+                "encodeP50Ms": pct(encode, 0.5), "encodeMaxMs": (encode.max() ?? 0) * 1000,
+                "gpuP50Ms": pct(gpu, 0.5), "gpuMaxMs": (gpu.max() ?? 0) * 1000,
             ]
+            s.launchPeelHitchesAt = at.joined(separator: " ")
         }
     }
 
@@ -722,7 +737,7 @@ final class PerfProbe: Sendable {
         guard let s else { return }
         uninstall()
         var json = Self.result(name: name, state: s, ticks: ticks, busy: busy, idle: idle, now: now,
-                               screenHz: UIScreen.main.maximumFramesPerSecond)
+                               screenHz: UIScreen.main.maximumFramesPerSecond, screen: UIScreen.main.bounds.size, scale: UIScreen.main.scale)
         json.merge(phases) { a, _ in a }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Atomic: whoever waits for the file never reads half of it.
@@ -730,7 +745,7 @@ final class PerfProbe: Sendable {
     }
 
     private static func result(name: String, state s: State, ticks: [Double], busy: [PerfWindow], idle: UInt64,
-                               now: Double, screenHz: Int) -> JSONObject {
+                               now: Double, screenHz: Int, screen: CGSize = .zero, scale: CGFloat = 0) -> JSONObject {
         func ms(_ seconds: Double) -> Double { (seconds * 1e6).rounded() / 1e3 }
         func mb(_ bytes: UInt64) -> Double { (Double(bytes) / 1_048_576 * 100).rounded() / 100 }
         func since(_ base: Double?, _ t: Double?) -> Any {
@@ -746,7 +761,7 @@ final class PerfProbe: Sendable {
             "name": name,
             "mode": s.replay == nil ? "live" : "replay",
             "build": ["assertions": asserts, "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""],
-            "device": device(screenHz: screenHz),
+            "device": device(screenHz: screenHz, screen: screen, scale: scale),
         ]
         if let e = s.error { out["error"] = e }
         if let r = s.replay {
@@ -772,6 +787,15 @@ final class PerfProbe: Sendable {
             launch["paneFirstFrameMs"] = since(p0, restored?.shown)
             launch["peel"] = s.launchPeel ?? NSNull()
             launch["peelFrames"] = s.launchPeelFrames
+            launch["peelHitchesAt"] = s.launchPeelHitchesAt
+            // The main thread during the transition, on the probe's display link (it runs from pane
+            // open, so it covers the transition when the pane opened before it).
+            if let a = s.launchSteps["start"], let b = s.launchSteps["done"] {
+                let w = PerfWindow(from: a, to: b)
+                let period = 1 / Double(max(60, screenHz))
+                launch["mainDuringTransition"] = hitchJSON(PerfHitchStats.measure(ticks, in: w, period: period), window: w)
+                launch["mainBusyDuringTransitionMs"] = ms(PerfBusyStats.measure(busy, in: w).totalSeconds)
+            }
             out["launch"] = launch
         }
 
@@ -838,7 +862,7 @@ final class PerfProbe: Sendable {
         return out
     }
 
-    private static func device(screenHz: Int) -> JSONObject {
+    private static func device(screenHz: Int, screen: CGSize, scale: CGFloat) -> JSONObject {
         let env = ProcessInfo.processInfo.environment
         var system = utsname()
         uname(&system)
@@ -849,6 +873,8 @@ final class PerfProbe: Sendable {
             "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "cores": ProcessInfo.processInfo.activeProcessorCount,
             "screenHz": screenHz,
+            "screenPoints": "\(Int(screen.width))x\(Int(screen.height))@\(Int(scale))x",
+            "drawables": GhosttyTerminalView.drawableCount,
         ]
     }
 }

@@ -15,7 +15,7 @@
 # folder. --args adds launch arguments to every run (`--args '-terminalEngine swiftTerm'` on a
 # build that has both engines).
 #
-# --live <label> also opens that Rex session 5 times (cold launches, mirror sizing: no claim, no
+# --live <label> also opens that Rex session 5 times (--live-runs N) (cold launches, mirror sizing: no claim, no
 # resize), after `seq 1 3000` in its pane, with `-perfIdle 10 -perfScroll 6`: time to first
 # frame, the launch transition, 10 s of idle and a 6 s fling through the scrollback. The phone
 # uses its saved servers, so the session must be on one of them, and it must be a throwaway
@@ -32,7 +32,7 @@
 set -euo pipefail
 
 usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-runs=5; only=""; out=""; build=1; fresh=0; tag=""; extra=""; live=""; remote=rexconnect-build-bench; clean=0; stop=0
+runs=5; only=""; out=""; build=1; fresh=0; tag=""; extra=""; live=""; remote=rexconnect-build-bench; clean=0; stop=0; liveRuns=5
 while [[ $# -gt 0 ]]; do
   case $1 in
     --runs) runs=$2; shift 2 ;;
@@ -43,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --tag) tag="$2-"; shift 2 ;;
     --args) extra=$2; shift 2 ;;
     --live) live=$2; shift 2 ;;
+    --live-runs) liveRuns=$2; shift 2 ;;
     --remote) remote=$2; shift 2 ;;
     --clean) clean=1; shift ;;
     --stop) stop=1; shift ;;
@@ -131,7 +132,7 @@ print(next((s["session_id"] for s in json.load(sys.stdin)["sessions"] if s["labe
   [[ -n $session ]] || { echo "no session labelled $live" >&2; exit 1; }
   rex send -s "$session" $'clear; seq 1 3000\n'
   sleep 2
-  for run in $(seq 1 5); do
+  for (( run = 1; run <= liveRuns; run++ )); do
     run_one "${tag}live__${run}" 45 -autoOpen "$live" -sizing mirror -perfIdle 10 -perfScroll 6 ${=extra}
   done
 fi

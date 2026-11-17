@@ -330,6 +330,8 @@ struct StickerPeelTimeline: Sendable {
 /// frame was due on screen.
 struct StickerPeelStats: Sendable {
     var targets: [CFTimeInterval] = []
+    /// How long before its target each frame's callback ran: what the frame had left.
+    var leads: [CFTimeInterval] = []
     var encode: [CFTimeInterval] = []
     var gpu: [CFTimeInterval] = []
     var late = 0
@@ -376,9 +378,19 @@ final class StickerPeelRenderer: NSObject, CAMetalDisplayLinkDelegate, @unchecke
     private var running = true
     private var encodeTimes: [CFTimeInterval] = []
     private var targets: [CFTimeInterval] = []
+    private var leads: [CFTimeInterval] = []
     private var firstDrawable: CAMetalDrawable?
     private let cancelled = Atomic(false)
     private let stats = Mutex(StickerPeelStats())
+
+    /// Seconds before the start from which the link draws (still) frames rather than none.
+    /// Benchmark builds take `-peelLeadIn <seconds>`.
+    static let leadIn: CFTimeInterval = {
+        #if DEBUG || BENCH
+        if let v = UserDefaults.standard.string(forKey: "peelLeadIn"), let d = Double(v) { return d }
+        #endif
+        return 0
+    }()
     private let onFinish: @Sendable (StickerPeelStats) -> Void
 
     private init(kit: StickerPeelKit, timeline: StickerPeelTimeline, scale: CGFloat, t0: CFTimeInterval, slow: Double,
@@ -467,12 +479,13 @@ final class StickerPeelRenderer: NSObject, CAMetalDisplayLinkDelegate, @unchecke
         msaa = nil
         depth = nil
         kit = nil
-        let encode = encodeTimes, targets = self.targets
+        let encode = encodeTimes, targets = self.targets, leads = self.leads
         // Let the last command buffers report their GPU time first.
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { [self] in
             var s = self.stats.withLock { $0 }
             s.encode = encode
             s.targets = targets
+            s.leads = leads
             self.onFinish(s)
         }
     }
@@ -481,8 +494,10 @@ final class StickerPeelRenderer: NSObject, CAMetalDisplayLinkDelegate, @unchecke
         let t = (update.targetPresentationTimestamp - t0) / slow
         let done = cancelled.load(ordering: .relaxed) || t >= StickerPeelTimeline.flightEnd
         // Until the transition starts, the first frame (drawn on the main thread) is still right.
-        if t < 0 && !done { return }
+        // Within `leadIn` of the start, frames of the still sticker are drawn anyway.
+        if t < 0 && !done && update.targetPresentationTimestamp < t0 - Self.leadIn { return }
         let begin = CACurrentMediaTime()
+        leads.append(update.targetPresentationTimestamp - begin)
         // The last frame is empty: the sticker is off screen by then.
         guard let cb = encode(t: done ? .infinity : t, into: update.drawable.texture) else { return finish() }
         let due = update.targetPresentationTimestamp
