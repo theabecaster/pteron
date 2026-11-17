@@ -754,6 +754,8 @@ enum Haptic {
 
     /// A button press.
     static func tap() { light.impactOccurred() }
+    /// Something the person set out to do worked: a pairing code read, a server added.
+    static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
     /// A value changed: pane, tab, font size, split detent.
     static func selection() { select.selectionChanged() }
     /// A gesture crossed its commit point. Played once, at the threshold.

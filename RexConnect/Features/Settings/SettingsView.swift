@@ -36,7 +36,7 @@ struct SettingsView: View {
                 } header: {
                     SettingsHeader("Servers", theme)
                 } footer: {
-                    SettingsFooter("A server is a Mac running Rex. Run `rex server tailscale enable` on it, then add the address it shows.", theme)
+                    SettingsFooter("A server is a computer running Rex. Run `rex server tailscale pair` on it, then scan the code it shows.", theme)
                 }
                 .settingsRows(theme)
 
@@ -110,6 +110,12 @@ struct SettingsView: View {
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
+        .onAppear {
+            if let page = model.settingsStart {
+                model.settingsStart = nil
+                path = page == .main ? [] : [page]
+            }
+        }
     }
 
     private func serverRow(_ s: ServerConnection, _ theme: TermTheme) -> some View {
@@ -194,7 +200,7 @@ private struct ServerDot: View {
     }
 }
 
-/// Add a server by its Tailscale address. The name is optional.
+/// Add a server: scan its pairing code, or type its address. The name is optional.
 struct AddServerView: View {
     let theme: TermTheme
     @Environment(AppModel.self) private var model
@@ -202,11 +208,30 @@ struct AddServerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var address = ""
     @State private var name = ""
+    @State private var showPairing = AddServerView.debugScan
     @FocusState private var addressFocused: Bool
+
+    /// `-simulateScan <payload>` with `-settings addServer` (testing): scan from this page.
+    private static var debugScan: Bool {
+        #if DEBUG
+        UserDefaults.standard.string(forKey: "simulateScan") != nil
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         let url = ServerConfig.url(from: address)
         SettingsList(theme: theme) {
+            Section {
+                Button { showPairing = true } label: {
+                    Label("Pair via QR Code", systemImage: "qrcode.viewfinder")
+                }
+            } footer: {
+                SettingsFooter("On your computer, run `rex server tailscale pair`, then scan the code it shows.", theme)
+            }
+            .settingsRows(theme)
+
             Section {
                 TextField("Address", text: $address, prompt: Text(verbatim: "studio.your-tailnet.ts.net"))
                     .textInputAutocapitalization(.never)
@@ -221,9 +246,9 @@ struct AddServerView: View {
                     .submitLabel(.done)
                     .onSubmit { if let url { add(url) } }
             } header: {
-                SettingsHeader("Address", theme)
+                SettingsHeader("Or Enter Its Address", theme)
             } footer: {
-                SettingsFooter("On the Mac, run `rex server tailscale enable` and copy the address it shows. This iPhone needs Tailscale, signed in to the same account.", theme)
+                SettingsFooter("This iPhone needs to be on the same private network as the computer.", theme)
             }
             .settingsRows(theme)
         }
@@ -235,7 +260,9 @@ struct AddServerView: View {
                     .disabled(url == nil)
             }
         }
-        .onAppear { addressFocused = true }
+        .fullScreenCover(isPresented: $showPairing) {
+            PairingSheet { addressFocused = true }.environment(model)
+        }
     }
 
     private func add(_ url: URL) {

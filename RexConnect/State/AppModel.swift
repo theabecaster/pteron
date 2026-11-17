@@ -72,6 +72,10 @@ final class AppModel {
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false
+    /// The "Pair via QR Code" scanner, opened from the screen shown when there are no servers.
+    var showPairing = false
+    /// The page Settings opens at next; Settings clears it.
+    var settingsStart: SettingsPage?
     @ObservationIgnored let prefs: Prefs
     @ObservationIgnored let notifier = AgentNotifier()
     /// Push registration with each server's Rex Connect Helper.
@@ -138,6 +142,34 @@ final class AppModel {
         }
         #endif
         for s in servers { s.start() }
+    }
+
+    func openSettings(at page: SettingsPage) {
+        settingsStart = page
+        showSettings = true
+    }
+
+    // MARK: Adding a server
+
+    func addServer(_ config: ServerConfig) {
+        prefs.servers.append(config)
+        rebuildServers()
+    }
+
+    /// Whether a Rex server answers at `url`, before it is saved: nil when it does. Sends no hello,
+    /// so the server sees no client and nothing here registers for pushes.
+    func probe(_ url: URL) async -> ConnectionProblem? {
+        #if DEBUG
+        if let kind = Self.simulatedProblem { return ConnectionProblem(kind: kind, detail: "simulated") }
+        #endif
+        guard let failure = await ServerProbe.check(address: url.absoluteString) else { return nil }
+        return ConnectionProblem.classify(failure, network: network?.snapshot ?? .unknown)
+    }
+
+    /// A saved server was scanned again: if it is down, try it now.
+    func kick(_ config: ServerConfig) {
+        guard let s = server(config.id), s.phase != .online else { return }
+        s.reconnect()
     }
 
     /// A new network path is when a down server can come back: retry those now.

@@ -26,7 +26,8 @@ APNs topic depend on it.
   split math), Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is
   the terminal engine: libghostty-vt and our Metal renderer), KeyBar, Keyboard
   (hardware keys and Rex's keymap), Agents, Settings, Notifications (in-app toasts, permission card),
-  Offline (the "signal lost" screen and its static backdrop).
+  Offline (the "signal lost" screen and its static backdrop), Pairing ("Pair via QR Code": the
+  scanner and the check before a server is added; logic in `State/Pairing.swift`).
 - `RexConnect/App`: entry point, `RootView` (sidebar + tab for the window's width and the fold, `Arrangement`
   and `SidebarWidth` in `State/Posture.swift`, `SidebarSplit` in Features/Sidebar), launch transition.
   Bars and the Duo's vertical bar: [docs/duo-layout.md](docs/duo-layout.md).
@@ -132,6 +133,10 @@ Each is a UserDefaults key for that run only.
 - `-simulateNetwork offline|offPrivate|onPrivate` (Debug builds): pretend the phone's network is in that
   state (no path, off the tailnet, on it), so real connection errors classify as they would there.
 - `-settings main|addServer|darkTheme|lightTheme` (Debug builds): open Settings at launch, at that page.
+- `-simulateScan <payload>` (Debug builds): open "Pair via QR Code" at launch and read this payload as
+  if the camera had (the simulator has no camera). `open` only opens the scanner. With `-settings
+  addServer` it scans from that page. `-simulateOffline <kind>` makes the check fail that way.
+  `-simulateCamera denied` shows the scanner with camera access refused.
 - `-pushToken <hex>` (debug builds): use this APNs token and skip the permission check, to test
   push registration in a simulator.
 
