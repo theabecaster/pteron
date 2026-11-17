@@ -102,6 +102,8 @@ final class AppModel {
     @ObservationIgnored let notifier = AgentNotifier()
     /// Push registration with each server's Rex DUO Helper.
     @ObservationIgnored let push: PushRegistrar
+    /// Installing Rex DUO Helper on a server from here.
+    @ObservationIgnored let helperSetup: HelperSetupCenter
     /// Latest request to show a tab; RootView observes it.
     var openRequest: OpenRequest?
 
@@ -112,8 +114,16 @@ final class AppModel {
     init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
         push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor))
+        helperSetup = HelperSetupCenter(push: push, prefs: prefs)
         network = connect ? NetworkWatch() : nil
         push.servers = { [weak self] in self?.servers ?? [] }
+        helperSetup.servers = { [weak self] in self?.servers ?? [] }
+        helperSetup.sheetIsUp = { [weak self] in self?.showSettings == true || self?.showPairing == true }
+        helperSetup.shownSession = { [weak self] server in
+            guard let self else { return nil }
+            if let sel = self.selection, sel.serverID == server.id { return sel.sessionID }
+            return server.sessions.first?.id
+        }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
         if connect { rebuildServers() }
         #if DEBUG
@@ -136,11 +146,15 @@ final class AppModel {
         let configs = prefs.servers
         #endif
         let old = Dictionary(uniqueKeysWithValues: servers.map { ($0.config.id, $0) })
+        // A server that is gone from the list: its helper's secret must stop working.
+        for id in old.keys where !configs.contains(where: { $0.id == id }) { push.serverRemoved(id) }
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
-            return ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, network: network,
-                                    deviceID: push.deviceID)
+            let s = ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, network: network,
+                                     deviceID: push.deviceID)
+            helperSetup.attach(s)
+            return s
         }
         #if DEBUG
         if let kind = Self.simulatedProblem {

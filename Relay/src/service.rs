@@ -4,7 +4,7 @@
 use crate::config::{default_state_dir, home};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// Prints a line, ignoring a closed pipe (`status | head`).
@@ -16,18 +16,22 @@ macro_rules! say {
 }
 
 pub const NAME: &str = "rex-duo-helper";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub const LABEL: &str = "dev.abrahamgonzalez.rexduo.helper";
 
 /// What the running helper last wrote to status.json, if it is alive.
 pub struct Running {
+    pub pid: u64,
     pub version: String,
     pub connected: bool,
     pub servers: Vec<String>,
     pub dry_run: bool,
-    pub push_enabled: bool,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // used to restart an updated Mac app
     pub exe_mtime: u64,
+    /// The newest version the helper knows of, when it is newer than the one running.
+    pub update: Option<String>,
+    /// Why the last update check or update failed.
+    pub update_error: Option<String>,
 }
 
 pub fn status_path() -> PathBuf {
@@ -41,16 +45,18 @@ pub fn running() -> Option<Running> {
         return None;
     }
     Some(Running {
+        pid,
         version: v["version"].as_str().unwrap_or("?").into(),
         connected: v["connected"].as_bool().unwrap_or(false),
         servers: v["servers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
         dry_run: v["dry_run"].as_bool().unwrap_or(false),
-        push_enabled: v["push_enabled"].as_bool().unwrap_or(false),
         exe_mtime: v["exe_mtime"].as_u64().unwrap_or(0),
+        update: v["latest_version"].as_str().filter(|_| v["update_available"].as_bool() == Some(true)).map(String::from),
+        update_error: v["last_error"].as_str().map(String::from),
     })
 }
 
-fn pid_alive(pid: u64) -> bool {
+pub fn pid_alive(pid: u64) -> bool {
     if Path::new("/proc/self").exists() {
         return Path::new(&format!("/proc/{pid}")).exists();
     }
@@ -67,12 +73,15 @@ pub fn mtime(p: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Runs a system tool (by name) or a program (by full path); true if it succeeded.
 fn quiet(cmd: &str, args: &[&str]) -> bool {
-    Command::new(cmd).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    let Some(mut command) = crate::tools::command(cmd) else { return false };
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
+/// What a system tool or a program printed, if it succeeded.
 fn output(cmd: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let o = crate::tools::command(cmd)?.args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
@@ -95,13 +104,7 @@ pub fn describe(r: &Option<Running>) -> String {
     match r {
         None => "Rex DUO Helper is not running.".into(),
         Some(r) => {
-            let mode = if r.dry_run {
-                " (dry run: pushes are logged, not sent)"
-            } else if !r.push_enabled {
-                " (pushes are off: this build has no APNs key)"
-            } else {
-                ""
-            };
+            let mode = if r.dry_run { " (dry run: pushes are logged, not sent)" } else { "" };
             if r.connected {
                 format!("Rex DUO Helper {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
             } else {
@@ -111,11 +114,24 @@ pub fn describe(r: &Option<Running>) -> String {
     }
 }
 
+/// What the running helper knows about updates, for `status`. Nothing when there is nothing to say.
+fn update_note(r: &Option<Running>) -> Option<String> {
+    let r = r.as_ref()?;
+    match (&r.update, &r.update_error) {
+        (Some(v), Some(e)) => Some(format!("Version {v} is available. {e}")),
+        (Some(v), None) => Some(format!("Version {v} is available. To install it now: {NAME} update")),
+        (None, Some(e)) => Some(format!("Updates: {e}")),
+        (None, None) => None,
+    }
+}
+
+/// Phones in devices.json that this helper can push to (an entry from before the push gateway
+/// has no secret and doesn't count).
 fn phones() -> usize {
     std::fs::read(default_state_dir().join("devices.json"))
         .ok()
         .and_then(|d| serde_json::from_slice::<Vec<Value>>(&d).ok())
-        .map_or(0, |v| v.len())
+        .map_or(0, |v| v.iter().filter(|d| d["push_secret"].is_string() && d["owner"].is_string()).count())
 }
 
 fn plural(n: usize) -> String {
@@ -173,14 +189,57 @@ fn systemctl(args: &[&str]) -> bool {
     quiet("systemctl", &a)
 }
 
+/// True if the systemd user service is set up.
+#[cfg(not(target_os = "macos"))]
+pub fn installed() -> bool {
+    unit_path().exists()
+}
+
+/// Restarts the background service, so it runs the binary that is on disk now.
+#[cfg(not(target_os = "macos"))]
+pub fn restart() -> bool {
+    systemctl(&["restart", NAME])
+}
+
 #[cfg(not(target_os = "macos"))]
 fn user() -> String {
     std::env::var("USER").ok().or_else(|| output("id", &["-un"])).unwrap_or_default()
 }
 
+/// The arguments that ask `loginctl` whether `user`'s services outlive their last session.
+#[cfg(any(not(target_os = "macos"), test))]
+fn linger_query(user: &str) -> [&str; 5] {
+    ["show-user", user, "-p", "Linger", "--value"]
+}
+
+/// What `loginctl` printed for that question: `yes` or `no`. Anything else is no answer.
+#[cfg(any(not(target_os = "macos"), test))]
+fn parse_linger(printed: &str) -> Option<bool> {
+    match printed.trim() {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn linger() -> Option<bool> {
-    output("loginctl", &["show-user", &user(), "-p", "Linger", "--value"]).map(|v| v == "yes")
+    output("loginctl", &linger_query(&user())).and_then(|v| parse_linger(&v))
+}
+
+/// Whether the helper keeps running after logout, for `helper_status`. None when `loginctl`
+/// is missing or doesn't say.
+#[cfg(not(target_os = "macos"))]
+pub async fn linger_state() -> Option<bool> {
+    let loginctl = crate::tools::program(Path::new("loginctl"))?;
+    let printed = crate::discovery::run(&loginctl, &linger_query(&user())).await?;
+    parse_linger(&String::from_utf8_lossy(&printed))
+}
+
+/// Lingering is a systemd setting; a Mac has no such question.
+#[cfg(target_os = "macos")]
+pub async fn linger_state() -> Option<bool> {
+    None
 }
 
 /// Stops and removes the service and binary of the helper's old name (legacy.rs).
@@ -202,8 +261,37 @@ pub fn stop_legacy() -> Vec<String> {
     notes
 }
 
+/// A program's path as one word of a unit file's `ExecStart=`: in double quotes, so spaces
+/// stay inside the word, with `\` and `"` escaped as systemd's quoting has them, and `%`
+/// and `$` doubled, because a single one starts a specifier or a variable. None for a path a unit file can't hold:
+/// one that is not text, or has a control character in it.
+#[cfg(any(not(target_os = "macos"), test))]
+fn unit_word(path: &Path) -> Option<String> {
+    let text = path.to_str().filter(|t| !t.chars().any(char::is_control))?;
+    Some(format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%").replace('$', "$$")))
+}
+
+/// The systemd user unit that runs the helper at `bin`.
+#[cfg(any(not(target_os = "macos"), test))]
+fn unit_text(bin: &Path) -> Option<String> {
+    Some(format!(
+        "[Unit]\n\
+         Description=Rex DUO Helper (push notifications from Rex to the Rex DUO iPhone app)\n\n\
+         [Service]\n\
+         ExecStart={} run\n\
+         Restart=on-failure\n\
+         RestartSec=5\n\
+         Nice=5\n\n\
+         [Install]\n\
+         WantedBy=default.target\n",
+        unit_word(bin)?
+    ))
+}
+
+/// `config_changed` is for the Mac, which restarts a running helper only when it has to; here
+/// the service is always restarted.
 #[cfg(not(target_os = "macos"))]
-pub fn install() -> i32 {
+pub fn install(_config_changed: bool) -> i32 {
     for note in crate::legacy::migrate() {
         say!("Moving from the old name: {note}");
     }
@@ -220,18 +308,10 @@ pub fn install() -> i32 {
         say!("  nohup {} run >/dev/null 2>&1 &", bin.display());
         return 0;
     }
-    let unit = format!(
-        "[Unit]\n\
-         Description=Rex DUO Helper (push notifications from Rex to the Rex DUO iPhone app)\n\n\
-         [Service]\n\
-         ExecStart={} run\n\
-         Restart=on-failure\n\
-         RestartSec=5\n\
-         Nice=5\n\n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        bin.display()
-    );
+    let Some(unit) = unit_text(&bin) else {
+        eprintln!("Could not install: a systemd unit can't name the path {}.", bin.display());
+        return 1;
+    };
     let path = unit_path();
     if let Err(e) = path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&path, unit)) {
         eprintln!("Could not write {}: {e}", path.display());
@@ -274,6 +354,9 @@ pub fn status() -> i32 {
         say!("Not installed as a service. Run: {NAME} install");
     }
     say!("{}.", plural(phones()));
+    if let Some(note) = update_note(&r) {
+        say!("{note}");
+    }
     if r.is_some() { 0 } else { 3 }
 }
 
@@ -298,7 +381,7 @@ fn plist_path() -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn domain() -> String {
+pub(crate) fn domain() -> String {
     format!("gui/{}", output("/usr/bin/id", &["-u"]).unwrap_or_else(|| "501".into()))
 }
 
@@ -308,8 +391,20 @@ fn loaded() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn loaded_label(label: &str) -> bool {
+pub(crate) fn loaded_label(label: &str) -> bool {
     quiet("/bin/launchctl", &["print", &format!("{}/{label}", domain())])
+}
+
+/// True if the LaunchAgent is set up.
+#[cfg(target_os = "macos")]
+pub fn installed() -> bool {
+    plist_path().exists()
+}
+
+/// Restarts the background job, so it runs the app that is on disk now.
+#[cfg(target_os = "macos")]
+pub fn restart() -> bool {
+    quiet("/bin/launchctl", &["kickstart", "-k", &format!("{}/{LABEL}", domain())])
 }
 
 /// Stops and removes the LaunchAgent and binary of the helper's old name (legacy.rs). The old
@@ -348,20 +443,16 @@ pub fn bundle() -> Option<PathBuf> {
     (macos.ends_with("Contents/MacOS") && app.extension().is_some_and(|e| e == "app")).then(|| app.to_path_buf())
 }
 
-#[cfg(target_os = "macos")]
+/// Text as the content of an XML element.
+#[cfg(any(target_os = "macos", test))]
 fn xml(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Writes the LaunchAgent and (re)starts the helper. Quiet; returns an error to show.
-#[cfg(target_os = "macos")]
-fn start_agent() -> Result<(), String> {
-    // From the app, run the binary inside it; otherwise install a copy to ~/.local/bin.
-    let program = match bundle() {
-        Some(_) => std::env::current_exe().map_err(|e| e.to_string())?,
-        None => install_binary()?,
-    };
-    let plist = format!(
+/// The LaunchAgent that runs the helper at `program`, now and at every login.
+#[cfg(any(target_os = "macos", test))]
+fn agent_plist(program: &Path) -> String {
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -377,7 +468,19 @@ fn start_agent() -> Result<(), String> {
 </plist>
 "#,
         xml(&program.display().to_string())
-    );
+    )
+}
+
+/// Writes the LaunchAgent and (re)starts the helper. Quiet; returns an error to show. A helper
+/// that already runs this version is left running unless `restart` says its config changed.
+#[cfg(target_os = "macos")]
+fn start_agent(restart: bool) -> Result<(), String> {
+    // From the app, run the binary inside it; otherwise install a copy to ~/.local/bin.
+    let program = match bundle() {
+        Some(_) => std::env::current_exe().map_err(|e| e.to_string())?,
+        None => install_binary()?,
+    };
+    let plist = agent_plist(&program);
     let path = plist_path();
     let changed = std::fs::read_to_string(&path).ok().as_deref() != Some(plist.as_str());
     if changed {
@@ -403,7 +506,7 @@ fn start_agent() -> Result<(), String> {
             None => true,
             Some(r) => r.version != crate::relay::VERSION || r.exe_mtime != mtime(&program),
         };
-        if stale {
+        if stale || restart {
             quiet("/bin/launchctl", &["kickstart", "-k", &target]);
         }
     }
@@ -417,11 +520,11 @@ fn stop_agent() {
 }
 
 #[cfg(target_os = "macos")]
-pub fn install() -> i32 {
+pub fn install(config_changed: bool) -> i32 {
     for note in crate::legacy::migrate() {
         say!("Moving from the old name: {note}");
     }
-    if let Err(e) = start_agent() {
+    if let Err(e) = start_agent(config_changed) {
         eprintln!("Could not start Rex DUO Helper: {e}");
         return 1;
     }
@@ -444,6 +547,9 @@ pub fn status() -> i32 {
         say!("Not set up to start at login. Open Rex DUO Helper.app, or run: {NAME} install");
     }
     say!("{}.", plural(phones()));
+    if let Some(note) = update_note(&r) {
+        say!("{note}");
+    }
     if r.is_some() { 0 } else { 3 }
 }
 
@@ -474,23 +580,57 @@ fn dialog(text: &str, buttons: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Opening Rex DUO Helper.app: start the background helper (and at every login), then
-/// say so in one small dialog. The dialog's process exits; only the helper keeps running.
-#[cfg(target_os = "macos")]
-pub fn open_app() -> i32 {
-    let in_place = bundle().is_some_and(|b| !b.to_string_lossy().contains("/AppTranslocation/"));
-    if !in_place {
-        dialog("Move Rex DUO Helper to your Applications folder, then open it again.", &["OK"]);
+/// How the app's own binary was started without a command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Opening {
+    /// Opened by the person, from Finder or the Dock: start the helper and say so in a dialog.
+    ByHand,
+    /// Opened by Rex DUO's setup (`open -g -a … --args phone-setup`) while the person is at
+    /// their phone: start the helper and ask for the notification permission. No dialog.
+    PhoneSetup,
+}
+
+/// What opening the app does to the Mac. The flow below decides which of these happen; the
+/// real ones are `MacApp`.
+#[cfg(any(target_os = "macos", test))]
+trait AppHost {
+    /// True when the app runs from where it was put, not from a translocated copy.
+    fn in_place(&self) -> bool;
+    /// Starts the background helper, now and at every login.
+    fn start(&mut self) -> Result<(), String>;
+    fn stop(&mut self);
+    /// Asks macOS whether the helper may show notifications, if that is still undecided.
+    fn authorize(&mut self);
+    /// Waits a moment for the helper to come up and returns what it reports.
+    fn started(&mut self) -> Option<Running>;
+    /// Shows a dialog; returns the button clicked.
+    fn dialog(&mut self, text: &str, buttons: &[&str]) -> String;
+}
+
+/// Opening Rex DUO Helper.app: start the background helper (and at every login). Opened by
+/// hand it then says so in one small dialog; opened by Rex DUO's setup it only asks for the
+/// notification permission, and shows nothing of its own whatever happens. The process
+/// exits; only the helper keeps running.
+#[cfg(any(target_os = "macos", test))]
+fn open_flow(opening: Opening, host: &mut dyn AppHost) -> i32 {
+    if opening == Opening::PhoneSetup {
+        if !host.in_place() || host.start().is_err() {
+            return 1;
+        }
+        host.authorize();
         return 0;
     }
-    crate::legacy::migrate();
-    if let Err(e) = start_agent() {
-        dialog(&format!("Rex DUO Helper couldn't start.\n\n{e}"), &["OK"]);
+    if !host.in_place() {
+        host.dialog("Move Rex DUO Helper to your Applications folder, then open it again.", &["OK"]);
+        return 0;
+    }
+    if let Err(e) = host.start() {
+        host.dialog(&format!("Rex DUO Helper couldn't start.\n\n{e}"), &["OK"]);
         return 1;
     }
     // The permission question for the "Rex DUO connected" notice, next to the welcome.
-    crate::notice::authorize();
-    let r = wait_for_start(Duration::from_secs(5));
+    host.authorize();
+    let r = host.started();
     let state = match &r {
         Some(r) if r.connected => "It's connected to Rex on this Mac",
         Some(_) => "It's waiting for Rex to start on this Mac",
@@ -500,9 +640,200 @@ pub fn open_app() -> i32 {
         "Rex DUO Helper is on.\n\n{state}, and it starts by itself when you log in.\n\n\
          On your iPhone, open Rex DUO and turn on notifications. You'll get a push when an agent needs you or finishes."
     );
-    if dialog(&text, &["Turn Off", "Done"]) == "Turn Off" {
-        stop_agent();
-        dialog("Rex DUO Helper is off. Open it again to turn it back on.", &["OK"]);
+    if host.dialog(&text, &["Turn Off", "Done"]) == "Turn Off" {
+        host.stop();
+        host.dialog("Rex DUO Helper is off. Open it again to turn it back on.", &["OK"]);
     }
     0
+}
+
+#[cfg(target_os = "macos")]
+struct MacApp;
+
+#[cfg(target_os = "macos")]
+impl AppHost for MacApp {
+    fn in_place(&self) -> bool {
+        bundle().is_some_and(|b| !b.to_string_lossy().contains("/AppTranslocation/"))
+    }
+    fn start(&mut self) -> Result<(), String> {
+        crate::legacy::migrate();
+        start_agent(false)
+    }
+    fn stop(&mut self) {
+        stop_agent();
+    }
+    fn authorize(&mut self) {
+        crate::notice::authorize();
+    }
+    fn started(&mut self) -> Option<Running> {
+        wait_for_start(Duration::from_secs(5))
+    }
+    fn dialog(&mut self, text: &str, buttons: &[&str]) -> String {
+        dialog(text, buttons)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn open_app(opening: Opening) -> i32 {
+    open_flow(opening, &mut MacApp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn running(update: Option<&str>, error: Option<&str>) -> Option<Running> {
+        Some(Running {
+            pid: 1,
+            version: "0.3.0".into(),
+            connected: true,
+            servers: vec!["https://rex.example.ts.net".into()],
+            dry_run: false,
+            exe_mtime: 0,
+            update: update.map(String::from),
+            update_error: error.map(String::from),
+        })
+    }
+
+    #[test]
+    fn status_sentences() {
+        assert_eq!(describe(&None), "Rex DUO Helper is not running.");
+        assert_eq!(describe(&running(None, None)), "Rex DUO Helper 0.3.0 is running and connected to Rex at https://rex.example.ts.net.");
+        let mut dry = running(None, None);
+        dry.as_mut().unwrap().dry_run = true;
+        dry.as_mut().unwrap().connected = false;
+        assert_eq!(describe(&dry), "Rex DUO Helper 0.3.0 is running and waiting for Rex to start (dry run: pushes are logged, not sent).");
+    }
+
+    #[test]
+    fn update_notes() {
+        assert_eq!(update_note(&None), None);
+        assert_eq!(update_note(&running(None, None)), None);
+        assert_eq!(update_note(&running(Some("0.3.1"), None)).unwrap(), "Version 0.3.1 is available. To install it now: rex-duo-helper update");
+        assert_eq!(update_note(&running(None, Some("Could not get the update manifest."))).unwrap(), "Updates: Could not get the update manifest.");
+        assert!(update_note(&running(Some("0.3.1"), Some("It did not start."))).unwrap().starts_with("Version 0.3.1 is available. It did"));
+    }
+
+    #[test]
+    fn lingering_is_asked_of_loginctl_and_read_as_yes_or_no() {
+        assert_eq!(linger_query("alex"), ["show-user", "alex", "-p", "Linger", "--value"]);
+        assert_eq!(parse_linger("yes\n"), Some(true));
+        assert_eq!(parse_linger("no"), Some(false));
+        for other in ["", "Linger=yes", "YES", "true", "yes no"] {
+            assert_eq!(parse_linger(other), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_unit_names_the_helper_as_one_quoted_word() {
+        let plain = unit_text(Path::new("/home/alex/.local/bin/rex-duo-helper")).unwrap();
+        assert!(plain.contains("\n[Service]\nExecStart=\"/home/alex/.local/bin/rex-duo-helper\" run\nRestart=on-failure\n"));
+        // A space, a quote, a percent sign, a dollar sign and a backslash in the home folder's name.
+        let odd = unit_text(Path::new(r#"/home/Alex "A" 100%\x $HOME ${a}/.local/bin/rex-duo-helper"#)).unwrap();
+        assert!(odd.contains(concat!("\nExecStart=", r#""/home/Alex \"A\" 100%%\\x $$HOME $${a}/.local/bin/rex-duo-helper" run"#, "\n")), "{odd}");
+        assert_eq!(unit_word(Path::new("/home/us$er/rex-duo-helper")).as_deref(), Some(r#""/home/us$$er/rex-duo-helper""#));
+        // Everything else in the unit is the same, line for line.
+        assert_eq!(odd.lines().count(), plain.lines().count());
+        assert_eq!(odd.lines().filter(|l| !l.starts_with("ExecStart=")).collect::<Vec<_>>(), plain.lines().filter(|l| !l.starts_with("ExecStart=")).collect::<Vec<_>>());
+        // A path that would end the line, and one that is not text, are not written at all.
+        assert_eq!(unit_text(Path::new("/home/a\nExecStartPre=/bin/x/rex-duo-helper")), None);
+        assert_eq!(unit_text(Path::new("/home/a\tb/rex-duo-helper")), None);
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(unit_text(Path::new(std::ffi::OsStr::from_bytes(b"/home/\xff/rex-duo-helper"))), None);
+    }
+
+    #[test]
+    fn the_launch_agent_names_the_helper_as_text() {
+        let plain = agent_plist(Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        assert!(plain.contains(
+            "<array><string>/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper</string><string>run</string><string>--log-file</string></array>"
+        ));
+        assert!(plain.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.helper</string>"));
+        // A home folder with markup in its name stays one string.
+        let odd = agent_plist(Path::new(r#"/Users/A&B <c> "d" 'e'/.local/bin/rex-duo-helper"#));
+        assert!(odd.contains(r#"<array><string>/Users/A&amp;B &lt;c&gt; "d" 'e'/.local/bin/rex-duo-helper</string><string>run</string>"#), "{odd}");
+        for tag in ["<string>", "</string>", "<key>", "<dict>", "<array>"] {
+            assert_eq!(odd.matches(tag).count(), plain.matches(tag).count(), "{tag}");
+        }
+        assert_eq!(odd.matches('&').count(), 3);
+    }
+
+    /// Records what opening the app did. A dialog shown during a phone setup fails the test
+    /// on the spot.
+    struct FakeApp {
+        in_place: bool,
+        start: Result<(), String>,
+        click: &'static str,
+        dialogs_allowed: bool,
+        did: Vec<String>,
+    }
+
+    impl FakeApp {
+        fn new(dialogs_allowed: bool) -> FakeApp {
+            FakeApp { in_place: true, start: Ok(()), click: "Done", dialogs_allowed, did: vec![] }
+        }
+    }
+
+    impl AppHost for FakeApp {
+        fn in_place(&self) -> bool {
+            self.in_place
+        }
+        fn start(&mut self) -> Result<(), String> {
+            self.did.push("start".into());
+            self.start.clone()
+        }
+        fn stop(&mut self) {
+            self.did.push("stop".into());
+        }
+        fn authorize(&mut self) {
+            self.did.push("authorize".into());
+        }
+        fn started(&mut self) -> Option<Running> {
+            self.did.push("started".into());
+            running(None, None)
+        }
+        fn dialog(&mut self, text: &str, _buttons: &[&str]) -> String {
+            assert!(self.dialogs_allowed, "a dialog was shown: {text}");
+            self.did.push(format!("dialog: {}", text.lines().next().unwrap_or("")));
+            self.click.into()
+        }
+    }
+
+    #[test]
+    fn a_phone_setup_starts_the_helper_and_asks_permission_without_a_dialog() {
+        let mut app = FakeApp::new(false);
+        assert_eq!(open_flow(Opening::PhoneSetup, &mut app), 0);
+        assert_eq!(app.did, ["start", "authorize"]);
+
+        // Nothing it runs into brings up a dialog either.
+        let mut failing = FakeApp::new(false);
+        failing.start = Err("launchctl bootstrap failed".into());
+        assert_eq!(open_flow(Opening::PhoneSetup, &mut failing), 1);
+        assert_eq!(failing.did, ["start"]);
+        let mut moved = FakeApp::new(false);
+        moved.in_place = false;
+        assert_eq!(open_flow(Opening::PhoneSetup, &mut moved), 1);
+        assert!(moved.did.is_empty());
+    }
+
+    #[test]
+    fn opening_the_app_by_hand_shows_its_dialogs() {
+        let mut app = FakeApp::new(true);
+        assert_eq!(open_flow(Opening::ByHand, &mut app), 0);
+        assert_eq!(app.did, ["start", "authorize", "started", "dialog: Rex DUO Helper is on."]);
+
+        let mut off = FakeApp::new(true);
+        off.click = "Turn Off";
+        assert_eq!(open_flow(Opening::ByHand, &mut off), 0);
+        assert_eq!(off.did[3..], ["dialog: Rex DUO Helper is on.", "stop", "dialog: Rex DUO Helper is off. Open it again to turn it back on."]);
+
+        let mut failing = FakeApp::new(true);
+        failing.start = Err("no".into());
+        assert_eq!(open_flow(Opening::ByHand, &mut failing), 1);
+        assert_eq!(failing.did, ["start", "dialog: Rex DUO Helper couldn't start."]);
+        let mut moved = FakeApp::new(true);
+        moved.in_place = false;
+        assert_eq!(open_flow(Opening::ByHand, &mut moved), 0);
+        assert_eq!(moved.did, ["dialog: Move Rex DUO Helper to your Applications folder, then open it again."]);
+    }
 }

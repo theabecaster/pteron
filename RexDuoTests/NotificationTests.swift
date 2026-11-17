@@ -158,14 +158,28 @@ struct PushSupportTests {
         #expect(APNsEnvironment.detect(profile: Data("garbage".utf8), isSimulator: false) == "production")
     }
 
-    @Test func findsTheLastLiveRelay() {
+    @Test func findsTheLastLiveRelayOnTheServersOwnMachine() {
+        let peer: JSONObject = ["kind": "peer", "uid": 501]
         let clients: [JSONObject] = [
-            ["client_id": "client:old", "info": ["name": "rex-push-relay"], "connection_state": "connected"],
-            ["client_id": "client:phone", "info": ["name": "Rex DUO"]],
-            ["client_id": "client:new", "info": ["name": "rex-push-relay"]],
-            ["client_id": "client:lost", "info": ["name": "rex-push-relay"], "connection_state": "lost"],
+            ["client_id": "client:old", "info": ["name": "rex-push-relay"], "principal": peer, "connection_state": "connected"],
+            ["client_id": "client:phone", "info": ["name": "Rex DUO"], "principal": ["kind": "tailscale"]],
+            ["client_id": "client:new", "info": ["name": "rex-push-relay"], "principal": peer],
+            ["client_id": "client:lost", "info": ["name": "rex-push-relay"], "principal": peer, "connection_state": "lost"],
         ]
         #expect(RelayLookup.relayID(in: clients) == "client:new")
         #expect(RelayLookup.relayID(in: [clients[1]]) == nil)
+        let windows: JSONObject = ["client_id": "client:win", "info": ["name": "rex-push-relay"], "principal": ["kind": "windows_peer", "sid": "S-1-5-21"]]
+        #expect(RelayLookup.relayID(in: [windows]) == "client:win")
+    }
+
+    @Test func aClientOfThatNameFromTheTailnetIsNotTheHelper() {
+        let peer: JSONObject = ["client_id": "client:real", "info": ["name": "rex-push-relay"], "principal": ["kind": "peer", "uid": 501]]
+        let remote: JSONObject = ["client_id": "client:fake", "info": ["name": "rex-push-relay"],
+                                  "principal": ["kind": "tailscale", "user_id": "1234"]]
+        let anonymous: JSONObject = ["client_id": "client:anon", "info": ["name": "rex-push-relay"], "principal": ["kind": "anonymous"]]
+        let unsaid: JSONObject = ["client_id": "client:bare", "info": ["name": "rex-push-relay"]]
+        // Connected last, so it would win on order alone.
+        #expect(RelayLookup.relayID(in: [peer, remote, anonymous, unsaid]) == "client:real")
+        #expect(RelayLookup.relayID(in: [remote, anonymous, unsaid]) == nil)
     }
 }

@@ -52,6 +52,8 @@ struct PairingSheet: View {
     @State private var picked = false
     /// The pause that shows the checkmark before the sheet leaves.
     @State private var leaving: Task<Void, Never>?
+    /// The computer just added has no helper: the page that offers to install it.
+    @State private var offer: ServerConfig?
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -119,10 +121,16 @@ struct PairingSheet: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(!scanning)
             }
-            card(pairing, theme)
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+            if let offer {
+                offerPage(offer, theme)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+            } else {
+                card(pairing, theme)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+            }
         }
         .animation(.smooth(duration: 0.3), value: pairing.step)
+        .animation(.smooth(duration: 0.3), value: offer)
         .animation(.smooth(duration: 0.3), value: access)
     }
 
@@ -179,6 +187,33 @@ struct PairingSheet: View {
                 if let detail = problem.detail { details("\(url.absoluteString)\n\(detail)", theme) }
             }
         }
+    }
+
+    /// After "added", for a computer of the person's own with no helper: offer to install it.
+    /// Install closes this sheet and opens the install sheet; Skip is remembered, so pairing
+    /// never asks about this computer again.
+    private func offerPage(_ config: ServerConfig, _ theme: TermTheme) -> some View {
+        GeometryReader { geo in
+            ScrollView {
+                HelperOfferCard(name: config.name, theme: theme) {
+                    model.helperSetup.request(config.id, kind: .install)
+                    leave(config)
+                } onSkip: {
+                    prefs.helperOfferSkipped.insert(config.id)
+                } onLeave: {
+                    leave(config)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 24)
+                .frame(maxWidth: .infinity, minHeight: geo.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    private func leave(_ config: ServerConfig) {
+        finish()
+        model.land(on: config)
     }
 
     /// One camera and one set of instructions in one stack, whichever way it runs, so a fold, a
@@ -305,12 +340,20 @@ struct PairingSheet: View {
                 model.addServer(config)
                 Haptic.success()
                 UIAccessibility.post(notification: .announcement, argument: "\(config.name) added")
+                // What the computer said about itself decides the offer, before the card goes.
+                var offers = false
+                if case .added(_, let identity) = pairing?.step {
+                    offers = HelperOffer.decide(identity) == .install && !prefs.helperOfferSkipped.contains(config.id)
+                }
                 leaving = Task {
                     // Long enough to see the button turn into its checkmark.
                     try? await Task.sleep(nanoseconds: 450_000_000)
                     guard !Task.isCancelled else { return }
-                    finish()
-                    model.land(on: config)
+                    if offers {
+                        offer = config
+                    } else {
+                        leave(config)
+                    }
                 }
             })
         pairing = p
@@ -357,6 +400,8 @@ private struct PairingCover: ViewModifier {
         content.fullScreenCover(isPresented: $isPresented, onDismiss: {
             // A picked computer the sheet never got to must not start the next scan.
             model.pairingStart = nil
+            // An install asked for on the offer page starts once this sheet is gone.
+            model.helperSetup.presentPending()
             guard wantsAddress else { return }
             wantsAddress = false
             enterAddress()

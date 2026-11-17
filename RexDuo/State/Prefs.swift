@@ -96,6 +96,11 @@ final class Prefs {
 
     /// The user answered the "Get notified" card (Turn On or Not now); it never shows again.
     var pushPromptDismissed: Bool { didSet { d.set(pushPromptDismissed, forKey: "pushPromptDismissed") } }
+    /// Servers whose "Get notifications from <Name>?" page was answered with Skip. Pairing never
+    /// asks again for them; Settings → Notifications still has Install.
+    var helperOfferSkipped: Set<UUID> {
+        didSet { d.set(helperOfferSkipped.map(\.uuidString).sorted(), forKey: "helperOfferSkipped") }
+    }
     /// The sidebar's width per posture, keyed by `SidebarWidth.key`.
     var sidebarWidths: [String: Double] { didSet { d.set(sidebarWidths, forKey: "sidebarWidths") } }
     /// Sidebar groups the user folded (`SidebarCollapse` keys). Everything else is open.
@@ -140,6 +145,7 @@ final class Prefs {
         keyBarLayout = KeyBarLayout(rawValue: d.string(forKey: "keyBarLayout") ?? "") ?? Self.defaultKeyBar
         pushEnabled = d.bool(forKey: "pushEnabled")
         pushPromptDismissed = d.bool(forKey: "pushPromptDismissed")
+        helperOfferSkipped = Set((d.stringArray(forKey: "helperOfferSkipped") ?? []).compactMap(UUID.init(uuidString:)))
         sidebarWidths = d.dictionary(forKey: "sidebarWidths") as? [String: Double] ?? [:]
         sidebarCollapsed = Set(d.stringArray(forKey: "sidebarCollapsed") ?? [])
         sidebarMode = d.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) ?? .sessions

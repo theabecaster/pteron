@@ -1,0 +1,11 @@
+# The keys helper releases are signed with: one line each, a label and the 32 raw bytes of an
+# ed25519 public key in base64. The helper checks every update against them, and install.sh
+# carries the same values. A release list signed by either key is accepted.
+#
+# primary   signs releases (Relay/release.sh).
+# recovery  kept apart from the primary, for when the primary is lost or stolen. It can sign a
+#           release list that hands helpers a new key (`next_key`).
+#
+# The private halves stay with whoever publishes releases and are never in this repository.
+primary  Yn851QvA2ZzvkX/TkpqQcsiIOqUd2wi0jAFRbh+0OP0=
+recovery p6Uwh2Qc232RxSymb4uFSkx/A/4Czn+/+QTz16RbLGE=

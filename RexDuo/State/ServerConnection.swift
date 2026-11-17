@@ -135,6 +135,9 @@ final class ServerConnection: Identifiable {
     var hostName: String?
     /// What the server was built for (`server.version`), such as darwin_arm64: the sidebar's OS glyph.
     var platform: String?
+    /// Who the server belongs to and which login it took this iPhone for (`server.status`,
+    /// `server.whoami`). Decides whether to offer installing the helper there.
+    var identity: ServerIdentity?
     var lastError: String?
     /// The user asked to try again and that attempt hasn't finished: the offline screen's feedback.
     var retrying = false
@@ -146,6 +149,22 @@ final class ServerConnection: Identifiable {
     var recovering = false
     /// The offline screen is up for this server.
     var showsOffline: Bool { phase.problem != nil || recovering }
+
+    /// What an install of the helper on this server listens for. Set by `HelperSetupCenter`.
+    @ObservationIgnored var setupSignals: ((SetupSignal) -> Void)?
+    /// Sessions this app opened to install the helper. They are the installer's, not the user's
+    /// work, so they are left out of `sessions` and `views`.
+    @ObservationIgnored var hiddenSessions: () -> Set<String> = { [] }
+
+    /// What reaches a helper install from the server.
+    enum SetupSignal {
+        /// A block event in any session, hidden ones included.
+        case block(session: String, block: String, name: String, payload: JSONObject)
+        /// The control connection dropped.
+        case disconnected
+        /// A sync finished: on first connect, on every reconnect and on return to the foreground.
+        case ready
+    }
 
     @ObservationIgnored fileprivate var metaBoxes: [String: BlockMetaBox] = [:]
     /// The phone's network, to classify failures and retry when it changes. Nil in tests.
@@ -252,6 +271,7 @@ final class ServerConnection: Identifiable {
             if phase == .idle { show(.connecting) }
         case .failed(let f):
             let p = ConnectionProblem.classify(f, network: network?.snapshot ?? .unknown)
+            setupSignals?(.disconnected)
             if phase == .online {
                 pendingProblem = p
                 waitOutDrop()
@@ -421,9 +441,10 @@ final class ServerConnection: Identifiable {
             if let st = r.obj("server_status"), let ts = st.obj("tailscale") {
                 hostName = ts.str("dns_name")
             }
+            let hidden = hiddenSessions()
             let list = (r.obj("attach_all")?.arr("sessions") ?? []).map {
                 SessionEntry(id: $0.str("session_id") ?? "", label: $0.str("label") ?? "")
-            }
+            }.filter { !hidden.contains($0.id) }
             var fresh: [String: SessionView] = [:]
             await withTaskGroup(of: SessionView?.self) { g in
                 for s in list { g.addTask { await self.fetchView(s.id) } }
@@ -444,9 +465,13 @@ final class ServerConnection: Identifiable {
             await loadMeta(blocks)
             await loadHosts()
             if platform == nil, let v = try? await control.call("server.version") { platform = v.str("platform") }
+            if identity == nil, let who = try? await control.call("server.whoami") {
+                identity = ServerIdentity(status: r.obj("server_status"), version: nil, whoami: who, sessions: nil, clients: nil)
+            }
             await keymap.load()
             lastError = nil
             push?.serverReady(self)
+            setupSignals?(.ready)
         } catch {
             lastError = error.localizedDescription
             // Connected but the server refused the sync: show the app with what it has rather than
@@ -467,14 +492,25 @@ final class ServerConnection: Identifiable {
         }
     }
 
+    /// Drops sessions that became hidden after they were listed: the server announces a new
+    /// session before the call that made it returns.
+    func dropHiddenSessions() {
+        let hidden = hiddenSessions()
+        guard sessions.contains(where: { hidden.contains($0.id) }) || views.keys.contains(where: hidden.contains) else { return }
+        sessions.removeAll { hidden.contains($0.id) }
+        for id in hidden { views[id] = nil }
+    }
+
     /// Attaches one new session (for `session_created`).
     func attach(_ sessionID: String) async {
+        guard !hiddenSessions().contains(sessionID) else { return }
         guard let v = await fetchView(sessionID) else { return }
         apply(view: v)
         await loadMeta(v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (sessionID, $0.id) })
     }
 
     private func apply(view: SessionView) {
+        guard !hiddenSessions().contains(view.sessionID) else { return }
         if let old = views[view.sessionID], old.revision > view.revision { return }
         views[view.sessionID] = view
         if let i = sessions.firstIndex(where: { $0.id == view.sessionID }) {
@@ -567,7 +603,7 @@ final class ServerConnection: Identifiable {
         let p = event.obj("payload") ?? [:]
         switch type {
         case "session_created":
-            if let s = p.obj("session"), let id = s.str("session_id") {
+            if let s = p.obj("session"), let id = s.str("session_id"), !hiddenSessions().contains(id) {
                 if !sessions.contains(where: { $0.id == id }) { sessions.append(SessionEntry(id: id, label: s.str("label") ?? "")) }
                 touchedSessions.insert(id)
                 Task { await attach(id) }
@@ -602,6 +638,11 @@ final class ServerConnection: Identifiable {
     private func handle(sessionID sid: String, event ev: JSONObject) {
         let type = ev.str("type") ?? ""
         let p = ev.obj("payload") ?? [:]
+        if type == "block_event", let bid = p.str("block_id") {
+            setupSignals?(.block(session: sid, block: bid, name: p.str("name") ?? "", payload: p.obj("payload") ?? [:]))
+        }
+        // The installer's session has no row, no badge and no toast.
+        guard !hiddenSessions().contains(sid) else { return }
         switch type {
         case "session_view_changed":
             let rev = p.int("revision") ?? Int.max

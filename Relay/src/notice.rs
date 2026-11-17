@@ -143,12 +143,26 @@ fn notifier() -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 pub fn authorize() {
     let Some(notifier) = notifier() else { return };
-    let _ = std::process::Command::new(notifier)
+    let Some(mut command) = crate::tools::command(notifier) else { return };
+    let _ = command
         .arg("authorize")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+/// What the notifier's `status` printed, when it is one of the three words it prints.
+pub fn parse_status(printed: &str) -> Option<&'static str> {
+    ["allowed", "denied", "undetermined"].into_iter().find(|word| printed.trim() == *word)
+}
+
+/// Whether Rex DUO Helper may show notifications on this Mac: `allowed`, `denied` or
+/// `undetermined`, as its notifier reports it. It never asks. None anywhere else, and when the
+/// notifier can't say (the helper isn't running from its app, or it took too long).
+pub async fn status() -> Option<&'static str> {
+    let printed = crate::discovery::run(&notifier()?, &["status"]).await?;
+    parse_status(&String::from_utf8_lossy(&printed))
 }
 
 /// Shows the notice without waiting for it. Nothing here fails the caller: a Mac where
@@ -163,7 +177,12 @@ pub fn post(body: &str, dry_run: bool) {
         debug!("no desktop notice: nothing here can show one");
         return;
     };
-    let child = tokio::process::Command::new(&program)
+    // `notify-send` is looked up in the system's folders, not on PATH.
+    let Some(mut command) = crate::tools::async_command(&program) else {
+        debug!("no desktop notice: {program} is not installed");
+        return;
+    };
+    let child = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -330,6 +349,22 @@ mod tests {
         assert_eq!(program, "notify-send");
         assert_eq!(args, ["--app-name", "Rex DUO", "--", "T", "B"]);
         assert!(command("windows", None, "T", "B").is_none());
+    }
+
+    #[test]
+    fn the_notifiers_status_is_one_of_three_words() {
+        assert_eq!(parse_status("allowed\n"), Some("allowed"));
+        assert_eq!(parse_status("denied"), Some("denied"));
+        assert_eq!(parse_status(" undetermined \n"), Some("undetermined"));
+        for other in ["", "yes", "Allowed", "allowed denied", "allowed\ndenied", "authorized"] {
+            assert_eq!(parse_status(other), None, "{other:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn outside_the_app_there_is_no_status() {
+        // The tests don't run from an app bundle, so there is no notifier to ask.
+        assert_eq!(status().await, None);
     }
 
     #[test]

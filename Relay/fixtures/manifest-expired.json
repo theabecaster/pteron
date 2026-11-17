@@ -1,0 +1,24 @@
+{
+  "version": "9.8.7",
+  "min_version": "9.8.0",
+  "released_at": "2026-01-01T00:00:00Z",
+  "expires_at": "2020-01-01T00:00:00Z",
+  "next_key": null,
+  "assets": {
+    "macos-universal": {
+      "url": "https://github.com/theabecaster/rexduo/releases/download/helper-v9.8.7/Rex-DUO-Helper.zip",
+      "sha256": "9c4eba7c90e3bece1798b72ee703bdbb41e93d442f89563688c04c1ff3a182d0",
+      "size": 19
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/theabecaster/rexduo/releases/download/helper-v9.8.7/rex-duo-helper-linux-x86_64",
+      "sha256": "f59754dad11b014e8b0eb058bd7402e83bd1b662026472e43e361b6b9b0c4e6b",
+      "size": 20
+    },
+    "linux-aarch64": {
+      "url": "https://github.com/theabecaster/rexduo/releases/download/helper-v9.8.7/rex-duo-helper-linux-aarch64",
+      "sha256": "62ae668c85a834c628b53f2588a14fefcfc7f80f5521b759a6d0bb7066c8e9e6",
+      "size": 38
+    }
+  }
+}

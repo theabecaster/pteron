@@ -52,6 +52,31 @@ targets:
           - $(SRCROOT)/Vendor/GhosttyVt.xcframework/Info.plist
         outputFiles:
           - $(DERIVED_FILE_DIR)/ghostty-checked
+    # The helper's installer, which "Install" in the app runs on the user's computer, ships in the
+    # app as setup.sh. Its one source is Relay/setup.sh; this copies it in on every build, so the
+    # repository holds no second copy. A Release build stops without it. A Debug build goes on
+    # (the unit tests then skip the check that compares the two).
+    postBuildScripts:
+      - name: Copy the helper installer
+        script: |
+          src="$SCRIPT_INPUT_FILE_0"
+          dst="$SCRIPT_OUTPUT_FILE_0"
+          if [ -f "$src" ]; then
+            /bin/cp -f "$src" "$dst"
+            /bin/chmod 0644 "$dst"
+          elif [ "$CONFIGURATION" = "Debug" ]; then
+            /bin/rm -f "$dst"
+            echo "note: Relay/setup.sh is missing, so this build can't install the helper"
+          else
+            echo "error: Relay/setup.sh is missing; the app can't ship without the helper installer"
+            exit 1
+          fi
+        shell: /bin/sh
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/Relay/setup.sh
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/setup.sh
     # Push from Rex DUO Helper. Development signing keeps "development" (sandbox tokens);
     # exporting for App Store Connect switches it to production. Blocked-agent pushes use the
     # time-sensitive interruption level, which needs its own entitlement.

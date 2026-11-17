@@ -12,11 +12,12 @@
 #
 # Needs Rust (rustup targets aarch64/x86_64-apple-darwin and -unknown-linux-musl), Xcode,
 # cargo-zigbuild and zig (ZIG, or zig on PATH) for Linux, the Developer ID Application
-# identity, the APNs key that build.rs embeds in every binary, and an App Store Connect API
-# key for notarytool. Every path and id below can be overridden from the environment.
+# identity, and an App Store Connect API key for notarytool. Every path and id below can be
+# overridden from the environment.
 #
-# The APNs key only ever sits in Cargo's target/ (gitignored) and in the binaries in dist/
-# (gitignored). Relay/.stage is deleted when the script exits.
+# The binaries hold no key: pushes go through the push gateway (src/gateway.rs). The only key
+# material compiled in is the public update key, Relay/update-key.pub. Relay/.stage is deleted
+# when the script exits.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,12 +28,6 @@ BUNDLE_ID="dev.abrahamgonzalez.rexduo.helper"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/Cargo.toml" | head -1)"
 BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$HERE" rev-list --count HEAD 2>/dev/null || echo 1)}"
 IDENTITY="${IDENTITY:-Developer ID Application: Abraham Gonzalez (R2PVQ496X7)}"
-
-# APNs key embedded by build.rs.
-export REX_APNS_KEY_ID="${APNS_KEY_ID:-5G2D4URHAC}"
-export REX_APNS_TEAM_ID="${APNS_TEAM_ID:-R2PVQ496X7}"
-export REX_APNS_TOPIC="${APNS_TOPIC:-dev.abrahamgonzalez.rexduo}"
-export REX_APNS_KEY="${APNS_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_$REX_APNS_KEY_ID.p8}"
 
 # notarytool auth. ASC_ISS (the issuer id) comes from the environment or $ASC_ENV.
 ASC_KEY_ID="${ASC_KEY_ID:-2M674J7J7N}"
@@ -56,7 +51,6 @@ for a in "$@"; do
 done
 
 die() { echo "error: $*" >&2; exit 1; }
-[[ -f "$REX_APNS_KEY" ]] || die "APNs key not found: $REX_APNS_KEY"
 # rustup's proxies, if cargo isn't already on PATH.
 command -v cargo >/dev/null || export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"
 if [[ $MAC == 1 && $NOTARIZE == 1 ]]; then
@@ -97,6 +91,8 @@ if [[ $MAC == 1 ]]; then
   CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS $REMAP" CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS $REMAP" \
     cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+  # The notices of the crates in the binary go with it.
+  python3 "$HERE/third-party-licenses.py" "$APP/Contents/Resources/THIRD_PARTY_LICENSES.txt"
   lipo -create -output "$APP/Contents/MacOS/$BIN" \
     "target/aarch64-apple-darwin/release/$BIN" "target/x86_64-apple-darwin/release/$BIN"
 

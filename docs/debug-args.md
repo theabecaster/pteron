@@ -51,7 +51,19 @@ builds.
   `-simulateIdentity 'os=linux,account=sam,owner=sam@x.com,viewer=me@x.com,sessions=api|web,count=5,helper=no'`
   gives a scanned code that identity card with no network. `-pairHost <https address>` opens the
   flow at that address, as a tap on a known computer does.
+- `-simulateHelperSetup <state>`: show the helper install sheet in that state, with no server and
+  nothing running. States: `offer`, `preparing`, `download`, `verify`, `install`, `connecting`,
+  `allow`, `password`, `password-wrong`, `password-computer`, `lost`, `connected`,
+  `connected-allow`, `denied`, `manual`, `changed`, `error-release`, `error-timeout` and
+  `error-<exit code>` (10 to 21, or any other number for "stopped"). `-simulateHelperSetupOS linux`
+  makes the computer a Linux one; `-simulateHelperSetupKind repair` titles the sheet "Repairing".
+  Use it with `-servers x`, which leaves the server list empty, so the app connects to nothing.
 - `-pushToken <hex>`: use this APNs token and skip the permission check (push registration in a
   simulator).
+- `-pushGateway <url>`: register with another push gateway (https, or http on this machine).
+- `-helperReleaseMirror http://127.0.0.1:<port>`: read the helper's release list from a copy of
+  the release folders served on this machine (the list is still checked against the built-in
+  keys). `-autoHelperSetup install|repair`: start that on the first server to connect. With
+  `-pushToken`, the install doesn't ask iOS for the notification permission.
 - `-launchPeel fold`, `-launchSlow <factor>`, `-launchHold <seconds>`: the launch transition
   (`LaunchTransition.swift`).

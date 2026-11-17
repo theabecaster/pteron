@@ -1,0 +1,63 @@
+name = "rexduo-push"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+preview_urls = false
+
+# Not secret. The APNs private key is the Workers Secret APNS_KEY_P8 (scripts/deploy.sh sets it).
+[vars]
+APNS_KEY_ID = "5G2D4URHAC"
+APNS_TEAM_ID = "R2PVQ496X7"
+APNS_TOPIC = "dev.abrahamgonzalez.rexduo"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rexduo-push"
+# PLACEHOLDER, not a real id. scripts/deploy.sh looks the id up and writes it into a private
+# copy of this file (wrangler.deploy.toml, gitignored). Local tests don't need a real one.
+database_id = "PLACEHOLDER_SET_BY_DEPLOY_SCRIPT"
+migrations_dir = "migrations"
+
+# The daily purge of idle devices and expired counters (src/purge.ts), at 03:17 UTC.
+[triggers]
+crons = ["17 3 * * *"]
+
+# Workers Rate Limiting bindings: the short windows, counted in memory at each Cloudflare
+# location, with no D1 write. The numbers repeat LIMITS in src/limits.ts (a test compares
+# them). namespace_id is any integer unique within the account, written as a string; these
+# are not secret. The Worker runs without the bindings too and then relies on the D1 caps.
+
+# Every request, per client address (IPv6 by /64).
+[[ratelimits]]
+name = "RL_ADDRESS"
+namespace_id = "4101"
+
+  [ratelimits.simple]
+  limit = 120
+  period = 60
+
+# Pushes, per secret.
+[[ratelimits]]
+name = "RL_SECRET"
+namespace_id = "4102"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# Every request, one key: a brake on floods.
+[[ratelimits]]
+name = "RL_GLOBAL"
+namespace_id = "4103"
+
+  [ratelimits.simple]
+  limit = 3000
+  period = 60
+
+# Keep the one line the Worker logs per request (route, status, Apple's reason), but not
+# Cloudflare's automatic record of each request, which would hold URLs with device ids.
+[observability]
+enabled = true
+
+[observability.logs]
+invocation_logs = false

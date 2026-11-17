@@ -41,9 +41,11 @@ struct RootView: View {
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)
-            .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 })) {
+            .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 }),
+                   onDismiss: { model.helperSetup.presentPending() }) {
                 SettingsView().environment(model)
             }
+            .helperSetupCover(model: model)
             .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
                 model.openSettings(at: .addServer)
             }
@@ -75,6 +77,8 @@ struct RootView: View {
                 if let host = UserDefaults.standard.string(forKey: "pairHost").flatMap(URL.init(string:)) {
                     model.startPairing(prefilled: host, guessed: true)
                 }
+                // `-simulateHelperSetup <state>` (testing): the helper install sheet in that state.
+                model.helperSetup.simulateFromLaunchArguments()
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
                 #endif

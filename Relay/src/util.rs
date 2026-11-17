@@ -71,10 +71,47 @@ pub fn now_iso() -> String {
     iso8601(now() as i64)
 }
 
+/// Seconds since 1970 for a time written exactly as `iso8601` writes it
+/// (`YYYY-MM-DDTHH:MM:SSZ`). Any other spelling is refused, so two such strings also compare
+/// as text, which is what install.sh does.
+pub fn parse_iso8601(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let shape = b.len() == 20
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b'T',
+            13 | 16 => *c == b':',
+            19 => *c == b'Z',
+            _ => c.is_ascii_digit(),
+        });
+    if !shape {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| s[r].parse::<i64>().ok();
+    let (y, m, d, h, min, sec) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) || h > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+    // Days since the epoch from a civil date (Howard Hinnant's algorithm, the inverse of the
+    // one in `iso8601`).
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2.rem_euclid(400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let secs = (era * 146_097 + doe - 719_468) * 86_400 + h * 3600 + min * 60 + sec;
+    // A day that doesn't exist (February 30) would come back as another date.
+    (iso8601(secs) == s).then_some(secs)
+}
+
+/// SHA-256 in lowercase hex.
+pub fn sha256_hex(data: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, data).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Base64url without padding, as JWTs use.
-pub fn base64url(data: &[u8]) -> String {
+fn encode64(data: &[u8], url: bool) -> String {
     let mut out = String::with_capacity(data.len() * 4 / 3 + 3);
     for chunk in data.chunks(3) {
         let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
@@ -82,13 +119,27 @@ pub fn base64url(data: &[u8]) -> String {
         for i in 0..=chunk.len() {
             let c = B64[((n >> (18 - 6 * i)) & 63) as usize];
             out.push(match c {
-                b'+' => '-',
-                b'/' => '_',
+                b'+' if url => '-',
+                b'/' if url => '_',
                 c => c as char,
             });
         }
+        if !url {
+            out.push_str(&"=".repeat(3 - chunk.len()));
+        }
     }
     out
+}
+
+/// Standard base64 with padding: how the helper's public key and signatures go to the app.
+pub fn base64(data: &[u8]) -> String {
+    encode64(data, false)
+}
+
+/// Base64url without padding. Only tests encode this way (they sign with a key made on the spot).
+#[cfg(test)]
+pub fn base64url(data: &[u8]) -> String {
+    encode64(data, true)
 }
 
 /// Decodes standard or url-safe base64, padded or not, skipping whitespace.
@@ -148,7 +199,31 @@ pub fn log_to_file(path: PathBuf) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What a test's own thread logged, so a test can read its lines without the other tests'
+/// (each test, and the tasks it spawns, runs on one thread).
+#[cfg(test)]
+pub mod testing {
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub(super) static CAPTURED: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    }
+
+    /// From now on this thread's log lines are kept instead of printed.
+    pub fn capture_log() {
+        CAPTURED.with(|c| *c.borrow_mut() = Some(vec![]));
+    }
+
+    pub fn captured_log() -> String {
+        CAPTURED.with(|c| c.borrow().clone().unwrap_or_default().join("\n"))
+    }
+}
+
 pub fn emit(line: &str) {
+    #[cfg(test)]
+    if testing::CAPTURED.with(|c| c.borrow_mut().as_mut().map(|lines| lines.push(line.to_string())).is_some()) {
+        return;
+    }
     // systemd's journal stamps lines itself.
     let stamped = if std::env::var_os("JOURNAL_STREAM").is_some() {
         format!("{line}\n")
@@ -193,6 +268,13 @@ mod tests {
         assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso8601(1_763_322_999), "2025-11-16T19:56:39Z");
         assert_eq!(iso8601(951_782_400), "2000-02-29T00:00:00Z");
+        for secs in [0, 1_763_322_999, 951_782_400, 1_826_539_200, 4_102_444_799] {
+            assert_eq!(parse_iso8601(&iso8601(secs)), Some(secs));
+        }
+        for bad in ["", "2026-11-17", "2026-11-17T12:00:00", "2026-11-17 12:00:00Z", "2026-11-17T12:00:00+00:00", "2026-02-30T00:00:00Z",
+            "2026-13-01T00:00:00Z", "2026-11-17T24:00:00Z", "2026-11-17T12:00:00.5Z", "2026-11-17t12:00:00z", " 2026-11-17T12:00:00Z"] {
+            assert_eq!(parse_iso8601(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
@@ -204,6 +286,8 @@ mod tests {
         }
         assert_eq!(base64url(b"foobar"), "Zm9vYmFy");
         assert_eq!(base64_decode("Zm9vYg==").unwrap(), b"foob");
+        assert_eq!((base64(b"foob").as_str(), base64(b"fooba").as_str(), base64(b"foobar").as_str()), ("Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"));
+        assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
     }
 
     #[test]

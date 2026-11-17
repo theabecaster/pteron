@@ -23,8 +23,8 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
 
 - The copy uses `rsync --delete`, so the script refuses any `remote-dir` that is not a single
   folder name starting with `rexduo-build` under macdesk's home.
-- Keys never go across: `.asc.env` and other `.env` files, `Relay/dist` and `Relay/.stage` (both
-  hold the APNs key), and any `*.p8`, `*.p12`, `*.pem`, `*.key`, `*.cer`, `*.mobileprovision` or
+- Keys never go across: `.asc.env` and other `.env` files, `Relay/dist`, `Relay/.stage` and
+  `Relay/target` (helper builds from before the push gateway embedded the APNs key), and any `*.p8`, `*.p12`, `*.pem`, `*.key`, `*.cer`, `*.mobileprovision` or
   `*.provisionprofile`.
 
 - libghostty-vt is built on this Mac by `scripts/build-ghostty.sh` and copied; macdesk never
@@ -86,13 +86,39 @@ the file is gitignored) and reads the key `~/.appstoreconnect/private_keys/AuthK
 ## Rex DUO Helper (Mac and Linux)
 
 ```sh
-Relay/package.sh --no-notarize   # Mac app signed with Developer ID, plus Linux binaries: a quick local check
-Relay/package.sh                 # also notarize, staple and verify
+Relay/release.sh --no-notarize   # build and sign everything into Relay/dist/release: a local check
+Relay/release.sh                 # the same, notarized
+Relay/release.sh --publish       # also publish to GitHub Releases (add --skip-build to reuse the build)
 ```
 
-Output in `Relay/dist`: `Rex DUO Helper.zip` (universal Rust binary in a bundle with an icon
-made from the iOS app icon, hardened runtime, no entitlements, notarized with the App Store Connect
-key) and static `rex-duo-helper-linux-x86_64` / `-aarch64` (cross-compiled with
-`cargo zigbuild`; set `ZIG` if zig isn't on PATH). `build.rs` embeds the APNs key
-`AuthKey_5G2D4URHAC.p8` in every binary: share them only with trusted people, never commit them,
-and revoke the key if a copy leaks. Details are in `Relay/README.md`.
+- `Relay/package.sh` builds: the universal Mac app (Developer ID, hardened runtime, notarized with
+  the App Store Connect key) and static Linux binaries for x86_64 and aarch64 (`cargo-zigbuild`).
+  No key or secret is compiled in.
+- `Relay/release.sh` then signs the Linux binaries and `manifest.json` with the release key
+  (`~/.config/rexduo/helper-update.key`, ed25519; public half in `Relay/update-key.pub`) and
+  checks every signature against the committed public key before anything goes up.
+- `--publish` creates the release `helper-v<version>` with the downloads, then updates the release
+  `helper-latest`, which holds only `manifest.json`, its signature and `install.sh` (a copy of `Relay/setup.sh`). Installed
+  helpers read the manifest from there and update themselves within 12 hours, so publishing is
+  the deploy. Raise `version` in `Relay/Cargo.toml` first; a published version is never replaced.
+- Two keys can sign a release: the release key and a recovery key
+  (`~/.config/rexduo-recovery/helper-recovery.key`; keep it offline, away from the release key).
+  Losing both means no installed helper accepts another update. To replace the release key, sign
+  a release with either key and `NEXT_KEY=<new public key>`: helpers that see it trust the new
+  key from then on (Relay/README.md, Updates).
+- The manifest expires after 180 days (`EXPIRES_DAYS`). `Relay/release.sh --resign --publish`
+  signs the current one again without building. An expired manifest stops updates and installs
+  from the app, so re-sign before then: the helper logs a line and a debug build of the app
+  shows one in Settings when fewer than 30 days are left.
+
+## Push gateway
+
+```sh
+Gateway/scripts/deploy.sh                    # database, migrations, the APNs key as a secret, the Worker
+Gateway/scripts/smoke.sh <worker url>        # proves the path to Apple with a token no device has
+```
+
+The gateway runs on Cloudflare Workers (Workers Paid plan) with a D1 database. Its address is compiled
+into the app (`PushGateway.defaultURL`), so it must not change. `deploy.sh` reads the APNs key from
+`~/.appstoreconnect/private_keys/` and sends it only to Cloudflare's secret store. Details and
+limits: `Gateway/README.md`.

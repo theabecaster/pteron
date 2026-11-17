@@ -36,9 +36,9 @@ xcodegen generate -q
 # Never copied: keys and the places that hold them. macdesk is a build box other machines log in
 # to; a key there is a key in one more place.
 #   .asc.env, .env*      App Store Connect and other credentials
-#   /Relay/dist          a helper build with the APNs key inside
-#   /Relay/.stage        the bundle Relay/package.sh assembles, APNs key included, while it runs
-#   /Relay/target       cargo's output: build.rs embeds the APNs key in every helper binary
+#   /Relay/dist, /Relay/.stage, /Relay/target
+#                        helper builds. Today's hold no key, but builds made before the push
+#                        gateway embedded the APNs key and may still lie there.
 #   *.p8 *.p12 *.pem *.key *.cer *.mobileprovision *.provisionprofile
 #                        keys, certificates and profiles, wherever they are dropped
 # Excluded paths are also left alone on macdesk (`--delete` doesn't touch them), so the staging

@@ -1,73 +1,160 @@
 //! Registered phones (devices.json) and "is Rex DUO open on this phone right now?".
 
+use crate::auth::is_device_id;
+use crate::debug;
 use crate::info;
+use crate::net::Url;
 use crate::notice::SeenDevices;
-use crate::util::{now_iso, Json};
+use crate::util::{now_iso, sha256_hex, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// One phone that asked for pushes. Field names and date format match the Swift helper's
-/// devices.json, so an existing file keeps working.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One phone that asked for pushes: where its push gateway is and the secret that lets this
+/// helper push to it, and to no other phone. The helper never sees an APNs token.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Device {
-    /// Short id the app also puts at the end of its Rex client label ("… #<id>").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
+    /// The app's install id (8 hex), which it also puts at the end of its Rex client label
+    /// ("… #<id>"). One registration per id.
+    pub device_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
-    /// sandbox | production
+    /// sandbox | production. Informational: the gateway knows which APNs host the phone is on.
     pub environment: String,
+    /// The gateway's origin (`https://host`), one the helper's allowlist holds.
+    pub gateway: String,
+    /// Who registered it, as the Rex server identified them (`auth::identity_of`). Only the
+    /// same identity may replace or remove this registration.
+    pub owner: String,
+    /// Sent as the bearer token of every push to this phone. Never logged.
+    pub push_secret: String,
     #[serde(default)]
     pub registered_at: String,
-    /// Tailscale device name the registration came from (fallback "app is open" match).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tailscale_node: Option<String>,
-    /// APNs device token, lowercase hex.
-    pub token: String,
     #[serde(default)]
     pub updated_at: String,
 }
 
+/// Leaves the secret out, so a `{:?}` in a log line or a failed assertion can't leak it.
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("device_id", &self.device_id)
+            .field("device_name", &self.device_name)
+            .field("environment", &self.environment)
+            .field("gateway", &self.gateway)
+            .field("owner", &self.owner)
+            .finish_non_exhaustive()
+    }
+}
+
+/// True for a stored gateway address the helper could send to at all. Whether it is still
+/// one the helper may push through is the allowlist's call (`DeviceStore::keep_gateways`).
+fn gateway_usable(s: &str) -> bool {
+    Url::parse(s).is_some_and(|u| u.secure || u.is_loopback())
+}
+
+/// What the helper keeps of a secret it must recognise again without holding on to it.
+pub fn secret_hash(secret: &str) -> String {
+    sha256_hex(secret.as_bytes())
+}
+
+/// How long after a first `401` a second one must come before the secret is given up.
+pub const STRIKE_GAP: f64 = 60.0;
+
+/// The gateway's `401` answers per secret (by hash), kept in memory. One `401` can be a
+/// passing fault at the gateway; a second one a minute or more later means the phone really
+/// took the secret back.
+#[derive(Debug, Default)]
+pub struct Strikes(HashMap<String, f64>);
+
+impl Strikes {
+    /// Notes a `401` for this secret at `now`. True when it is the second one at least
+    /// `STRIKE_GAP` after the first: drop the registration.
+    pub fn refused(&mut self, hash: &str, now: f64) -> bool {
+        match self.0.get(hash) {
+            Some(first) if now - first >= STRIKE_GAP => {
+                self.0.remove(hash);
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.0.insert(hash.to_string(), now);
+                false
+            }
+        }
+    }
+
+    /// The gateway took the secret again, or the registration is gone: start over.
+    pub fn clear(&mut self, hash: &str) {
+        self.0.remove(hash);
+    }
+}
+
 impl Device {
-    pub fn new(token: &str, environment: &str) -> Device {
+    pub fn new(device_id: &str, gateway: &str, push_secret: &str, environment: &str, owner: &str) -> Device {
         let now = now_iso();
         Device {
-            device_id: None,
+            device_id: device_id.into(),
             device_name: None,
             environment: environment.into(),
+            gateway: gateway.into(),
+            owner: owner.into(),
+            push_secret: push_secret.into(),
             registered_at: now.clone(),
-            tailscale_node: None,
-            token: token.into(),
             updated_at: now,
         }
     }
 
-    pub fn is_valid_token(t: &str) -> bool {
-        (32..=200).contains(&t.len()) && t.len().is_multiple_of(2) && t.bytes().all(|b| b.is_ascii_hexdigit())
+    /// The gateway hands out 43 base64url characters. Anything else that could sit in a header
+    /// and a JSON file is refused.
+    pub fn is_valid_secret(s: &str) -> bool {
+        (16..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     }
 
-    pub fn is_valid_device_id(s: &str) -> bool {
-        (4..=16).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric())
+    /// An entry of devices.json this helper can use. One written before the gateway (it has an
+    /// APNs token and no secret) is not, and neither is one that doesn't say who registered it.
+    fn usable(&self) -> bool {
+        is_device_id(&self.device_id) && Device::is_valid_secret(&self.push_secret) && gateway_usable(&self.gateway) && !self.owner.is_empty()
     }
 
+    /// The name for log lines.
     pub fn who(&self) -> String {
-        self.device_name.clone().unwrap_or_else(|| self.token.chars().take(8).collect())
+        self.device_name.clone().unwrap_or_else(|| format!("#{}", self.device_id))
     }
 }
 
-/// devices.json: the registered phones, keyed by token. Next to it, seen_devices.json: every
-/// device id that ever registered, which outlives an unregister.
+/// devices.json: the registered phones, one per device id. Next to it, seen_devices.json: every
+/// device id that ever registered, which outlives an unregister; and dropped_secrets.json: the
+/// hashes of secrets the gateway refused.
 pub struct DeviceStore {
     pub path: PathBuf,
     pub devices: Vec<Device>,
     seen: SeenDevices,
+    /// SHA-256 of secrets the gateway refused, oldest first. Never the secrets themselves.
+    dropped: Vec<String>,
     /// A dry run keeps the seen ids in memory only, so it doesn't use up a phone's notice.
     dry_run: bool,
+    /// What devices.json looked like when this process last read or wrote it, to notice when
+    /// `rex-duo-helper forget` changed it.
+    stamp: Option<Stamp>,
 }
 
-fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+/// Inode, size and modification time. Every write goes through a rename, so the inode alone
+/// changes with each one.
+type Stamp = (u64, u64, std::time::SystemTime);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.ino(), m.len(), m.modified().ok()?))
+}
+
+/// The most refused secrets remembered. Past it the oldest goes: by then the phone has long
+/// had a new one.
+pub const DROPPED_LIMIT: usize = 256;
+
+pub(crate) fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
     match std::fs::read(path) {
         Ok(data) => serde_json::from_slice(&data).unwrap_or_else(|e| {
             info!("could not read {}: {e}", path.display());
@@ -77,19 +164,20 @@ fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
     }
 }
 
-/// Writes through a temporary file, readable by this user only.
-fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
+/// Writes through a temporary file that only this user can read from the moment it exists.
+pub(crate) fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
     let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        }
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(&serde_json::to_vec_pretty(value)?)?;
+        f.sync_all()?;
         std::fs::rename(&tmp, path)
     };
     if let Err(e) = write() {
@@ -98,9 +186,21 @@ fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
 }
 
 const SEEN_FILE: &str = "seen_devices.json";
+const DROPPED_FILE: &str = "dropped_secrets.json";
+
+/// The usable entries of a devices.json, one per device id.
+fn usable_devices(entries: &[Value]) -> Vec<Device> {
+    let mut devices: Vec<Device> = vec![];
+    for d in entries.iter().filter_map(|e| serde_json::from_value::<Device>(e.clone()).ok()) {
+        if d.usable() && !is_registered(&devices, &d.device_id) {
+            devices.push(d);
+        }
+    }
+    devices
+}
 
 fn is_registered(devices: &[Device], id: &str) -> bool {
-    devices.iter().any(|d| d.device_id.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(id)))
+    devices.iter().any(|d| d.device_id == id)
 }
 
 impl DeviceStore {
@@ -108,28 +208,103 @@ impl DeviceStore {
         DeviceStore::load(path, false)
     }
 
-    /// `open` for `--dry-run`: never writes seen_devices.json.
+    /// `open` for `--dry-run`: never writes seen_devices.json, and leaves a devices.json from an
+    /// older helper as it is.
     pub fn open_dry_run(path: PathBuf) -> DeviceStore {
         DeviceStore::load(path, true)
     }
 
     fn load(path: PathBuf, dry_run: bool) -> DeviceStore {
-        let devices: Vec<Device> = read_json(&path);
-        // A phone registered before this file existed (an older helper) counts as seen.
+        let entries: Vec<Value> = read_json(&path);
+        // Entries from before the push gateway hold an APNs token and no secret. They can't be
+        // used any more, so they go; the phone registers again the next time its app connects.
+        let devices = usable_devices(&entries);
+        // A phone registered before seen_devices.json existed (an older helper) counts as seen,
+        // and so does one whose old entry was just dropped.
         let on_disk = SeenDevices::new(read_json::<Vec<String>>(&path.with_file_name(SEEN_FILE)));
         let mut seen = on_disk.clone();
-        for id in devices.iter().filter_map(|d| d.device_id.as_deref()) {
+        for id in entries.iter().filter_map(|e| e.str("device_id")) {
             seen.observe_keeping(id, |s| is_registered(&devices, s));
         }
-        let store = DeviceStore { path, devices, seen, dry_run };
+        let dropped: Vec<String> = read_json::<Vec<String>>(&path.with_file_name(DROPPED_FILE))
+            .into_iter()
+            .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .collect();
+        let mut store = DeviceStore { stamp: stamp(&path), path, devices, seen, dropped, dry_run };
         if store.seen != on_disk {
             store.save_seen();
+        }
+        if store.devices.len() != entries.len() && !dry_run {
+            debug!("dropped {} registration(s) this helper can't use", entries.len() - store.devices.len());
+            store.save();
         }
         store
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         write_json(&self.path, &self.devices);
+        self.stamp = stamp(&self.path);
+    }
+
+    /// Reads devices.json again if something else wrote it since this process last did:
+    /// `rex-duo-helper forget` removes a phone while the helper runs. Called before the
+    /// registrations are used.
+    pub fn sync(&mut self) {
+        let now = stamp(&self.path);
+        if now != self.stamp {
+            self.devices = usable_devices(&read_json::<Vec<Value>>(&self.path));
+            self.stamp = now;
+        }
+    }
+
+    /// Drops registrations whose gateway `allowed` no longer takes (it left config.json).
+    /// Returns how many went.
+    pub fn keep_gateways(&mut self, allowed: impl Fn(&str) -> bool) -> usize {
+        let before = self.devices.len();
+        self.devices.retain(|d| allowed(&d.gateway));
+        let gone = before - self.devices.len();
+        if gone > 0 && !self.dry_run {
+            self.save();
+        }
+        gone
+    }
+
+    /// The registration of a device id, if it has one.
+    pub fn get(&self, device_id: &str) -> Option<&Device> {
+        self.devices.iter().find(|d| d.device_id == device_id)
+    }
+
+    /// True when `identity` registered at least one phone here.
+    pub fn owns_any(&self, identity: &str) -> bool {
+        self.devices.iter().any(|d| d.owner == identity)
+    }
+
+    /// True for a secret the gateway refused. It can't be registered again.
+    pub fn is_dropped(&self, secret: &str) -> bool {
+        self.dropped.contains(&secret_hash(secret))
+    }
+
+    /// The gateway refused this secret for good: remembers its hash and removes the
+    /// registration that still holds it (not one the phone has replaced meanwhile). True when
+    /// a registration went.
+    pub fn drop_secret(&mut self, device_id: &str, secret: &str) -> bool {
+        let hash = secret_hash(secret);
+        if !self.dropped.contains(&hash) {
+            if self.dropped.len() >= DROPPED_LIMIT {
+                self.dropped.remove(0);
+            }
+            self.dropped.push(hash);
+            if !self.dry_run {
+                write_json(&self.path.with_file_name(DROPPED_FILE), &self.dropped);
+            }
+        }
+        let n = self.devices.len();
+        self.devices.retain(|d| !(d.device_id == device_id && d.push_secret == secret));
+        if self.devices.len() == n {
+            return false;
+        }
+        self.save();
+        true
     }
 
     /// An array of ids, oldest first.
@@ -139,42 +314,55 @@ impl DeviceStore {
         }
     }
 
-    /// True the first time this device id registers: not after a new token, an unregister or a
-    /// restart. A registration without an id is never new. A full seen set drops its oldest id
-    /// that isn't registered now.
-    pub fn first_sight(&mut self, device_id: Option<&str>) -> bool {
+    /// True the first time this device id registers: not after a new secret, an unregister or a
+    /// restart. A full seen set drops its oldest id that isn't registered now.
+    pub fn first_sight(&mut self, device_id: &str) -> bool {
         let devices = &self.devices;
-        let new = device_id.is_some_and(|id| self.seen.observe_keeping(id, |s| is_registered(devices, s)));
+        let new = self.seen.observe_keeping(device_id, |s| is_registered(devices, s));
         if new {
             self.save_seen();
         }
         new
     }
 
-    /// Adds or updates a device. A device id that moves to a new token replaces the old entry
-    /// (the app reinstalled or APNs rotated the token).
+    /// Adds a phone, or replaces the registration its device id already has (the phone rotated
+    /// its secret, or the app was installed again).
     pub fn register(&mut self, mut d: Device) -> Device {
-        d.token = d.token.to_lowercase();
-        if let Some(old) = self.devices.iter().find(|o| o.token == d.token) {
+        if let Some(old) = self.devices.iter().find(|o| o.device_id == d.device_id) {
             d.registered_at = old.registered_at.clone();
         }
-        self.devices
-            .retain(|o| o.token != d.token && !(d.device_id.is_some() && o.device_id == d.device_id));
+        self.devices.retain(|o| o.device_id != d.device_id);
         self.devices.push(d.clone());
         self.save();
         d
     }
 
-    pub fn remove(&mut self, token: &str) -> bool {
-        let token = token.to_lowercase();
+    pub fn remove(&mut self, device_id: &str) -> bool {
         let n = self.devices.len();
-        self.devices.retain(|d| d.token != token);
+        self.devices.retain(|d| d.device_id != device_id);
         if self.devices.len() == n {
             return false;
         }
         self.save();
         true
     }
+}
+
+/// `rex-duo-helper forget <device_id>`: removes a phone's registration from devices.json, for
+/// when the account that registered it can no longer unregister it itself. The running helper
+/// notices the file changed (`DeviceStore::sync`). True if the phone was registered.
+pub fn forget(path: &Path, device_id: &str) -> Result<bool, String> {
+    if !is_device_id(device_id) {
+        return Err("a device id is 8 lowercase hex digits, as `rex-duo-helper status` and the log show it".into());
+    }
+    let mut devices = usable_devices(&read_json::<Vec<Value>>(path));
+    let n = devices.len();
+    devices.retain(|d| d.device_id != device_id);
+    if devices.len() == n {
+        return Ok(false);
+    }
+    write_json(path, &devices);
+    Ok(true)
 }
 
 /// A connected client, as `client.list` reports it.
@@ -186,14 +374,12 @@ pub struct ClientSnapshot {
     pub name: Option<String>,
     pub label: Option<String>,
     pub connection_state: Option<String>,
-    pub tailscale_node: Option<String>,
 }
 
 impl ClientSnapshot {
     pub fn parse(c: &Value) -> Option<ClientSnapshot> {
         let id = c.str("client_id")?;
         let info = c.obj("info").cloned().unwrap_or(Value::Null);
-        let p = c.obj("principal").cloned().unwrap_or(Value::Null);
         let s = |v: &Value, k: &str| v.str(k).map(String::from);
         Some(ClientSnapshot {
             client_id: id.into(),
@@ -202,7 +388,6 @@ impl ClientSnapshot {
             name: s(&info, "name"),
             label: s(&info, "label"),
             connection_state: s(c, "connection_state"),
-            tailscale_node: if p.str("kind") == Some("tailscale") { p.text("node") } else { None },
         })
     }
 }
@@ -210,31 +395,19 @@ impl ClientSnapshot {
 /// The device id at the end of a label: "Alex's iPhone #a1b2c3d4" -> "a1b2c3d4".
 pub fn device_id_from_label(label: Option<&str>) -> Option<String> {
     let label = label?;
-    let id = label[label.rfind('#')? + 1..].trim();
-    Device::is_valid_device_id(id).then(|| id.to_lowercase())
+    let id = label[label.rfind('#')? + 1..].trim().to_lowercase();
+    is_device_id(&id).then_some(id)
 }
 
 /// True if an iOS app client from this device is connected and hasn't said it's in the
-/// background. A client matches by the "#<device_id>" at the end of its label. Only a
-/// registration that sent no device_id falls back to matching an unlabeled client by
-/// Tailscale device name, because several apps (e.g. simulators on one Mac) can share a node.
+/// background. A client matches by the "#<device_id>" at the end of its label.
 pub fn is_app_open(d: &Device, clients: &[ClientSnapshot], backgrounded: &HashSet<String>) -> bool {
     clients.iter().any(|c| {
-        if c.kind.as_deref() != Some("app")
-            || c.platform.as_deref() != Some("ios")
-            || c.connection_state.as_deref() == Some("lost")
-            || backgrounded.contains(&c.client_id)
-        {
-            return false;
-        }
-        let label_id = device_id_from_label(c.label.as_deref());
-        if let Some(want) = &d.device_id {
-            return label_id.as_deref() == Some(want.to_lowercase().as_str());
-        }
-        match (&label_id, &d.tailscale_node, &c.tailscale_node) {
-            (None, Some(node), Some(cn)) => node == cn,
-            _ => false,
-        }
+        c.kind.as_deref() == Some("app")
+            && c.platform.as_deref() == Some("ios")
+            && c.connection_state.as_deref() != Some("lost")
+            && !backgrounded.contains(&c.client_id)
+            && device_id_from_label(c.label.as_deref()).is_some_and(|id| id == d.device_id)
     })
 }
 
@@ -243,14 +416,30 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn dev() -> Device {
-        let mut d = Device::new(&"0".repeat(64), "sandbox");
-        d.device_id = Some("a1b2c3d4".into());
-        d.tailscale_node = Some("alexs-iphone".into());
-        d
+    const GATEWAY: &str = "https://push.example.workers.dev";
+
+    fn secret(c: char) -> String {
+        c.to_string().repeat(43)
     }
 
-    fn app(id: &str, label: &str, state: &str, node: Option<&str>, platform: &str) -> ClientSnapshot {
+    const OWNER: &str = "tailscale:12345";
+
+    fn phone(id: &str, c: char) -> Device {
+        Device::new(id, GATEWAY, &secret(c), "sandbox", OWNER)
+    }
+
+    fn dev() -> Device {
+        phone("a1b2c3d4", 's')
+    }
+
+    /// An entry as the helper wrote it before the gateway: a token, no secret.
+    fn legacy(id: &str) -> Value {
+        json!({"device_id": id, "device_name": "iPhone", "environment": "sandbox",
+            "registered_at": "2026-11-16T19:56:39Z", "tailscale_node": "iphone194",
+            "token": "4514dd00000000000000000000000000", "updated_at": "2026-11-16T22:40:18Z"})
+    }
+
+    fn app(id: &str, label: &str, state: &str, platform: &str) -> ClientSnapshot {
         ClientSnapshot {
             client_id: id.into(),
             kind: Some("app".into()),
@@ -258,7 +447,6 @@ mod tests {
             name: Some("Rex DUO".into()),
             label: Some(label.into()),
             connection_state: Some(state.into()),
-            tailscale_node: node.map(Into::into),
         }
     }
 
@@ -275,28 +463,18 @@ mod tests {
 
     #[test]
     fn matches_by_label_device_id() {
-        assert!(is_app_open(&dev(), &[app("c1", "iPhone #a1b2c3d4", "connected", None, "ios")], &none()));
-        assert!(!is_app_open(&dev(), &[app("c1", "iPhone #ffff0000", "connected", Some("alexs-iphone"), "ios")], &none()));
+        assert!(is_app_open(&dev(), &[app("c1", "iPhone #a1b2c3d4", "connected", "ios")], &none()));
+        assert!(is_app_open(&dev(), &[app("c1", "iPhone #A1B2C3D4", "connected", "ios")], &none()));
+        assert!(!is_app_open(&dev(), &[app("c1", "iPhone #ffff0000", "connected", "ios")], &none()));
+        assert!(!is_app_open(&dev(), &[app("c1", "iPhone", "connected", "ios")], &none()));
     }
 
     #[test]
     fn ignores_lost_backgrounded_and_non_ios() {
-        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "lost", None, "ios")], &none()));
+        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "lost", "ios")], &none()));
         let bg: HashSet<String> = ["c1".to_string()].into();
-        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "connected", None, "ios")], &bg));
-        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "connected", None, "macos")], &none()));
-    }
-
-    #[test]
-    fn tailscale_node_fallback_only_without_device_id() {
-        // Registered with a device id: an unlabeled client on the same node is someone else.
-        let c = |label: &str, node: &str| vec![app("c1", label, "connected", Some(node), "ios")];
-        assert!(!is_app_open(&dev(), &c("iPhone", "alexs-iphone"), &none()));
-        let mut old = dev();
-        old.device_id = None;
-        assert!(is_app_open(&old, &c("iPhone", "alexs-iphone"), &none()));
-        assert!(!is_app_open(&old, &c("iPhone", "other"), &none()));
-        assert!(!is_app_open(&old, &c("iPhone #a1b2c3d4", "alexs-iphone"), &none()));
+        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "connected", "ios")], &bg));
+        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "connected", "macos")], &none()));
     }
 
     #[test]
@@ -305,25 +483,8 @@ mod tests {
             "info": {"kind": "app", "platform": "ios", "label": "iPhone #abcd1234"},
             "principal": {"kind": "tailscale", "node": "alexs-iphone"}}))
         .unwrap();
-        assert_eq!(c.tailscale_node.as_deref(), Some("alexs-iphone"));
         assert_eq!(c.label.as_deref(), Some("iPhone #abcd1234"));
-    }
-
-    #[test]
-    fn device_store_round_trip() {
-        let path = std::env::temp_dir().join(format!("devices-{}-{}.json", std::process::id(), crate::util::now()));
-        let mut s = DeviceStore::open(path.clone());
-        let mut a = Device::new(&"AB".repeat(32), "sandbox");
-        a.device_id = Some("a1b2".into());
-        s.register(a);
-        // Same device id, new token: replaces the old entry.
-        let mut b = Device::new(&"cd".repeat(32), "production");
-        b.device_id = Some("a1b2".into());
-        s.register(b);
-        assert_eq!(DeviceStore::open(path.clone()).devices.iter().map(|d| d.token.clone()).collect::<Vec<_>>(), vec!["cd".repeat(32)]);
-        assert!(s.remove(&"CD".repeat(32)));
-        assert!(DeviceStore::open(path.clone()).devices.is_empty());
-        let _ = std::fs::remove_file(path);
+        assert_eq!(c.connection_state.as_deref(), Some("connected"));
     }
 
     fn temp_store(tag: &str) -> PathBuf {
@@ -332,38 +493,108 @@ mod tests {
         dir.join("devices.json")
     }
 
-    fn phone(id: &str, token: &str) -> Device {
-        let mut d = Device::new(&token.repeat(32), "sandbox");
-        d.device_id = Some(id.into());
-        d
+    fn on_disk(path: &Path) -> Vec<Value> {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn device_store_round_trip() {
+        let path = temp_store("round");
+        let mut s = DeviceStore::open(path.clone());
+        let first = s.register(phone("a1b2c3d4", 'a'));
+        // Same device id, new secret: replaces the old entry and keeps when it first registered.
+        let mut again = phone("a1b2c3d4", 'b');
+        again.registered_at = "later".into();
+        s.register(again);
+        s.register(phone("ffff0000", 'c'));
+        let loaded = DeviceStore::open(path.clone()).devices;
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].push_secret, secret('b'));
+        assert_eq!(loaded[0].registered_at, first.registered_at);
+        assert!(!s.remove("00000000"));
+        assert!(!s.remove("A1B2C3D4"), "ids are lowercase");
+        assert!(s.remove("a1b2c3d4"));
+        assert_eq!(DeviceStore::open(path.clone()).devices, vec![s.devices[0].clone()]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_file_has_the_new_shape_and_only_its_owner_reads_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_store("shape");
+        let mut d = dev();
+        d.device_name = Some("Alex's iPhone".into());
+        DeviceStore::open(path.clone()).register(d);
+        let file = on_disk(&path);
+        let keys: Vec<&str> = file[0].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["device_id", "device_name", "environment", "gateway", "owner", "push_secret", "registered_at", "updated_at"]);
+        assert_eq!(file[0]["owner"], OWNER);
+        assert_eq!(file[0]["gateway"], GATEWAY);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(!path.with_extension("json.tmp").exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn legacy_entries_are_dropped_on_load() {
+        let path = temp_store("legacy");
+        let mut bad_gateway = serde_json::to_value(phone("0000aaaa", 'x')).unwrap();
+        bad_gateway["gateway"] = json!("http://push.example.com");
+        let good = dev();
+        // Written before registrations had an owner: nobody could be allowed to replace it.
+        let mut no_owner = serde_json::to_value(phone("0000bbbb", 'y')).unwrap();
+        no_owner.as_object_mut().unwrap().remove("owner");
+        let mut bad_id = serde_json::to_value(phone("0000cccc", 'z')).unwrap();
+        bad_id["device_id"] = json!("NOT-HEX1");
+        let file = json!([legacy("ffa348c7"), serde_json::to_value(&good).unwrap(), bad_gateway, no_owner, bad_id, "junk"]);
+        std::fs::write(&path, file.to_string()).unwrap();
+        let mut s = DeviceStore::open(path.clone());
+        assert_eq!(s.devices, vec![good]);
+        // The file is rewritten without them, and stays readable.
+        let rewritten = on_disk(&path);
+        assert_eq!(rewritten.len(), 1);
+        assert!(rewritten[0].get("token").is_none());
+        // A phone that was registered with the old helper is not new to this computer.
+        assert!(!s.first_sight("ffa348c7"));
+        assert!(!DeviceStore::open(path.clone()).first_sight("ffa348c7"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_dry_run_leaves_an_old_file_alone() {
+        let path = temp_store("legacydry");
+        let file = json!([legacy("ffa348c7")]).to_string();
+        std::fs::write(&path, &file).unwrap();
+        assert!(DeviceStore::open_dry_run(path.clone()).devices.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), file);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
     fn first_sight_once_per_device_id() {
         let path = temp_store("once");
         let mut s = DeviceStore::open(path.clone());
-        assert!(s.first_sight(Some("a1b2c3d4")));
-        s.register(phone("a1b2c3d4", "ab"));
-        // Again, and with a new token.
-        assert!(!s.first_sight(Some("a1b2c3d4")));
-        s.register(phone("a1b2c3d4", "cd"));
-        assert!(!s.first_sight(Some("a1b2c3d4")));
-        assert!(s.first_sight(Some("ffff0000")));
-        assert!(!s.first_sight(None));
+        assert!(s.first_sight("a1b2c3d4"));
+        s.register(phone("a1b2c3d4", 'a'));
+        // Again, and with a new secret.
+        assert!(!s.first_sight("a1b2c3d4"));
+        s.register(phone("a1b2c3d4", 'c'));
+        assert!(!s.first_sight("a1b2c3d4"));
+        assert!(s.first_sight("ffff0000"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
     fn ids_in_an_existing_devices_file_are_seen() {
         let path = temp_store("upgrade");
-        std::fs::write(&path, serde_json::to_vec(&vec![phone("A1B2C3D4", "ab"), phone("ffff0000", "cd")]).unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&vec![phone("a1b2c3d4", 'a'), phone("ffff0000", 'c')]).unwrap()).unwrap();
         let mut s = DeviceStore::open(path.clone());
-        assert!(!s.first_sight(Some("a1b2c3d4")));
-        assert!(!s.first_sight(Some("ffff0000")));
+        assert!(!s.first_sight("a1b2c3d4"));
+        assert!(!s.first_sight("ffff0000"));
         // Still seen once the phone is gone from devices.json, in this run and the next.
-        assert!(s.remove(&"ab".repeat(32)));
-        assert!(!s.first_sight(Some("a1b2c3d4")));
-        assert!(!DeviceStore::open(path.clone()).first_sight(Some("a1b2c3d4")));
+        assert!(s.remove("a1b2c3d4"));
+        assert!(!s.first_sight("a1b2c3d4"));
+        assert!(!DeviceStore::open(path.clone()).first_sight("a1b2c3d4"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -371,10 +602,10 @@ mod tests {
     fn unregister_then_register_is_not_new() {
         let path = temp_store("unregister");
         let mut s = DeviceStore::open(path.clone());
-        assert!(s.first_sight(Some("a1b2c3d4")));
-        s.register(phone("a1b2c3d4", "ab"));
-        assert!(s.remove(&"ab".repeat(32)));
-        assert!(!s.first_sight(Some("a1b2c3d4")));
+        assert!(s.first_sight("a1b2c3d4"));
+        s.register(phone("a1b2c3d4", 'a'));
+        assert!(s.remove("a1b2c3d4"));
+        assert!(!s.first_sight("a1b2c3d4"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -382,28 +613,28 @@ mod tests {
     fn seen_devices_survive_a_reload() {
         let path = temp_store("reload");
         let mut s = DeviceStore::open(path.clone());
-        assert!(s.first_sight(Some("a1b2c3d4")));
+        assert!(s.first_sight("a1b2c3d4"));
         // Never registered and nothing in devices.json: only seen_devices.json remembers it.
         let mut again = DeviceStore::open(path.clone());
         assert!(again.devices.is_empty());
-        assert!(!again.first_sight(Some("a1b2c3d4")));
-        assert!(again.first_sight(Some("ffff0000")));
+        assert!(!again.first_sight("a1b2c3d4"));
+        assert!(again.first_sight("ffff0000"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
     fn a_dry_run_does_not_use_up_first_sight() {
         let path = temp_store("dry");
-        std::fs::write(&path, serde_json::to_vec(&vec![phone("0000aaaa", "ef")]).unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&vec![phone("0000aaaa", 'e')]).unwrap()).unwrap();
         let mut dry = DeviceStore::open_dry_run(path.clone());
-        assert!(dry.first_sight(Some("a1b2c3d4")));
-        dry.register(phone("a1b2c3d4", "ab"));
+        assert!(dry.first_sight("a1b2c3d4"));
+        dry.register(phone("a1b2c3d4", 'a'));
         // Once per device in the run, and nothing on disk.
-        assert!(!dry.first_sight(Some("a1b2c3d4")));
-        assert!(!dry.first_sight(Some("0000aaaa")));
+        assert!(!dry.first_sight("a1b2c3d4"));
+        assert!(!dry.first_sight("0000aaaa"));
         assert!(!path.with_file_name(SEEN_FILE).exists());
-        assert!(dry.remove(&"ab".repeat(32)));
-        assert!(DeviceStore::open(path.clone()).first_sight(Some("a1b2c3d4")));
+        assert!(dry.remove("a1b2c3d4"));
+        assert!(DeviceStore::open(path.clone()).first_sight("a1b2c3d4"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -416,11 +647,11 @@ mod tests {
         let path = temp_store("order");
         let mut s = DeviceStore::open(path.clone());
         for id in ["ffff0000", "A1B2C3D4", "0000aaaa", "not an id"] {
-            s.first_sight(Some(id));
+            s.first_sight(id);
         }
         assert_eq!(seen_file(&path), ["ffff0000", "a1b2c3d4", "0000aaaa"]);
         let mut again = DeviceStore::open(path.clone());
-        assert!(again.first_sight(Some("77770000")));
+        assert!(again.first_sight("77770000"));
         assert_eq!(seen_file(&path), ["ffff0000", "a1b2c3d4", "0000aaaa", "77770000"]);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -433,16 +664,16 @@ mod tests {
         std::fs::write(path.with_file_name(SEEN_FILE), serde_json::to_vec(&ids).unwrap()).unwrap();
         let mut s = DeviceStore::open(path.clone());
         // The oldest id is a registered phone: the next oldest goes instead.
-        s.register(phone(&ids[0], "ab"));
-        assert!(s.first_sight(Some("ffff0000")));
+        s.register(phone(&ids[0], 'a'));
+        assert!(s.first_sight("ffff0000"));
         let on_disk = seen_file(&path);
         assert_eq!(on_disk.len(), SEEN_LIMIT);
         assert_eq!(on_disk[..2], [ids[0].clone(), ids[2].clone()]);
         assert_eq!(on_disk[SEEN_LIMIT - 1], "ffff0000");
         // In the next run too: the registered phone is not new, the dropped id is.
         let mut again = DeviceStore::open(path.clone());
-        assert!(!again.first_sight(Some(&ids[0])));
-        assert!(again.first_sight(Some(&ids[1])));
+        assert!(!again.first_sight(&ids[0]));
+        assert!(again.first_sight(&ids[1]));
         assert_eq!(seen_file(&path).len(), SEEN_LIMIT);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -450,30 +681,145 @@ mod tests {
     #[test]
     fn unreadable_seen_file_falls_back_to_devices() {
         let path = temp_store("corrupt");
-        std::fs::write(&path, serde_json::to_vec(&vec![phone("a1b2c3d4", "ab")]).unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&vec![phone("a1b2c3d4", 'a')]).unwrap()).unwrap();
         std::fs::write(path.with_file_name(SEEN_FILE), "not json").unwrap();
         let mut s = DeviceStore::open(path.clone());
-        assert!(!s.first_sight(Some("a1b2c3d4")));
-        assert!(s.first_sight(Some("ffff0000")));
+        assert!(!s.first_sight("a1b2c3d4"));
+        assert!(s.first_sight("ffff0000"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
-    fn reads_swift_helper_file() {
-        let swift = r#"[{"device_id":"ffa348c7","device_name":"iPhone","environment":"sandbox",
-            "registered_at":"2026-11-16T19:56:39Z","tailscale_node":"iphone194",
-            "token":"4514dd00000000000000000000000000","updated_at":"2026-11-16T22:40:18Z"}]"#;
-        let d: Vec<Device> = serde_json::from_str(swift).unwrap();
-        assert_eq!(d[0].device_id.as_deref(), Some("ffa348c7"));
-        assert_eq!(d[0].registered_at, "2026-11-16T19:56:39Z");
+    fn a_stored_gateway_must_be_an_address_the_helper_can_send_to() {
+        for good in ["https://push.example.workers.dev", "http://127.0.0.1:8787", "http://localhost:8787"] {
+            assert!(gateway_usable(good), "{good}");
+        }
+        for bad in ["", "push.example.com", "http://push.example.com", "http://127.0.0.1.example.com", "ftp://127.0.0.1", "https://user:pw@push.example.com", "file:///etc/passwd"] {
+            assert!(!gateway_usable(bad), "{bad}");
+        }
     }
 
     #[test]
-    fn token_and_id_validation() {
-        assert!(Device::is_valid_token(&"ab".repeat(32)));
-        assert!(!Device::is_valid_token(&"zz".repeat(32)));
-        assert!(!Device::is_valid_token("abc"));
-        assert!(Device::is_valid_device_id("a1b2c3d4"));
-        assert!(!Device::is_valid_device_id("a1-b2"));
+    fn a_gateway_that_left_the_allowlist_takes_its_registrations_with_it() {
+        let path = temp_store("allow");
+        let mut s = DeviceStore::open(path.clone());
+        s.register(phone("a1b2c3d4", 'a'));
+        s.register(Device::new("ffff0000", "https://old.example.com", &secret('b'), "sandbox", OWNER));
+        assert_eq!(s.keep_gateways(|g| g == GATEWAY), 1);
+        assert_eq!(s.keep_gateways(|g| g == GATEWAY), 0);
+        let left: Vec<String> = DeviceStore::open(path.clone()).devices.into_iter().map(|d| d.device_id).collect();
+        assert_eq!(left, ["a1b2c3d4"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_second_401_counts_only_a_minute_after_the_first() {
+        let mut s = Strikes::default();
+        let (a, b) = (secret_hash(&secret('a')), secret_hash(&secret('b')));
+        assert!(!s.refused(&a, 1000.0), "the first is a warning");
+        assert!(!s.refused(&a, 1001.0), "a burst is still the first");
+        assert!(!s.refused(&a, 1059.9));
+        // Another secret has its own count.
+        assert!(!s.refused(&b, 1060.0));
+        assert!(s.refused(&a, 1060.0), "a minute later: gone");
+        // After that, or after a push the gateway took, the count starts over.
+        assert!(!s.refused(&a, 2000.0));
+        s.clear(&a);
+        assert!(!s.refused(&a, 2100.0));
+        assert!(s.refused(&b, 1120.0));
+    }
+
+    #[test]
+    fn a_refused_secret_is_remembered_by_hash_only() {
+        let path = temp_store("dropped");
+        let mut s = DeviceStore::open(path.clone());
+        s.register(phone("a1b2c3d4", 'a'));
+        s.register(phone("ffff0000", 'b'));
+        assert!(!s.is_dropped(&secret('a')));
+        assert!(s.drop_secret("a1b2c3d4", &secret('a')));
+        assert!(s.is_dropped(&secret('a')) && !s.is_dropped(&secret('b')));
+        assert!(s.get("a1b2c3d4").is_none() && s.get("ffff0000").is_some());
+        // The phone registered a new secret meanwhile: the old one is remembered, the new
+        // registration stays.
+        assert!(!s.drop_secret("ffff0000", &secret('z')));
+        assert!(s.is_dropped(&secret('z')) && s.get("ffff0000").is_some());
+
+        // On disk: hashes, never a secret, readable by the owner only. It survives a restart.
+        use std::os::unix::fs::PermissionsExt;
+        let file = path.with_file_name(DROPPED_FILE);
+        let text = std::fs::read_to_string(&file).unwrap();
+        let hashes: Vec<String> = serde_json::from_str(&text).unwrap();
+        assert_eq!(hashes, [secret_hash(&secret('a')), secret_hash(&secret('z'))]);
+        assert!(!text.contains(&secret('a')[..12]));
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        let again = DeviceStore::open(path.clone());
+        assert!(again.is_dropped(&secret('a')) && again.is_dropped(&secret('z')) && !again.is_dropped(&secret('b')));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_dropped_list_is_bounded() {
+        let path = temp_store("droppedcap");
+        let mut s = DeviceStore::open(path.clone());
+        let nth = |n: usize| format!("{n:043}");
+        for n in 0..DROPPED_LIMIT + 3 {
+            s.drop_secret("a1b2c3d4", &nth(n));
+        }
+        let hashes: Vec<String> = serde_json::from_slice(&std::fs::read(path.with_file_name(DROPPED_FILE)).unwrap()).unwrap();
+        assert_eq!(hashes.len(), DROPPED_LIMIT);
+        // The oldest three went; the newest is last.
+        assert!(!s.is_dropped(&nth(2)) && s.is_dropped(&nth(3)));
+        assert_eq!(hashes[DROPPED_LIMIT - 1], secret_hash(&nth(DROPPED_LIMIT + 2)));
+        // Anything in the file that is not a hash is ignored when it is read.
+        std::fs::write(path.with_file_name(DROPPED_FILE), json!([secret('q'), hashes[0], 7]).to_string()).unwrap();
+        assert!(!DeviceStore::open(path.clone()).is_dropped(&nth(3)), "a file with a wrong entry type is not trusted");
+        std::fs::write(path.with_file_name(DROPPED_FILE), json!([secret('q'), hashes[0]]).to_string()).unwrap();
+        let again = DeviceStore::open(path.clone());
+        assert!(again.is_dropped(&nth(3)) && again.dropped.len() == 1);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_phone_forgotten_from_the_command_line_is_gone_from_the_running_helper() {
+        let path = temp_store("forget");
+        let mut running = DeviceStore::open(path.clone());
+        running.register(phone("a1b2c3d4", 'a'));
+        running.register(phone("ffff0000", 'b'));
+        // `rex-duo-helper forget` is another process with its own view of the file.
+        assert_eq!(forget(&path, "a1b2c3d4"), Ok(true));
+        assert_eq!(forget(&path, "a1b2c3d4"), Ok(false));
+        assert!(forget(&path, "A1B2C3D4").is_err() && forget(&path, "nope").is_err());
+        assert_eq!(running.devices.len(), 2, "not yet read again");
+        running.sync();
+        assert!(running.get("a1b2c3d4").is_none() && running.get("ffff0000").is_some());
+        // The helper's next write keeps it gone.
+        running.register(phone("0000aaaa", 'c'));
+        let left: Vec<String> = DeviceStore::open(path.clone()).devices.into_iter().map(|d| d.device_id).collect();
+        assert_eq!(left, ["ffff0000", "0000aaaa"]);
+        // Nothing changed on disk: nothing is read again.
+        running.devices.clear();
+        running.sync();
+        assert!(running.devices.is_empty());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn secret_and_id_validation() {
+        assert!(Device::is_valid_secret(&secret('a')));
+        assert!(Device::is_valid_secret("abcDEF012-_abcDEF012-_"));
+        assert!(!Device::is_valid_secret("short"));
+        assert!(!Device::is_valid_secret(&format!("{} x", secret('a'))));
+        assert!(!Device::is_valid_secret(&format!("{}\r\nX: y", secret('a'))));
+        assert!(!Device::is_valid_secret(&"a".repeat(129)));
+        assert!(is_device_id("a1b2c3d4"));
+        for bad in ["a1-b2", "A1B2C3D4", "a1b2c3d", "a1b2c3d4e", "a1b2c3dg", ""] {
+            assert!(!is_device_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn debug_output_leaves_the_secret_out() {
+        let text = format!("{:?}", dev());
+        assert!(text.contains("a1b2c3d4") && !text.contains(&secret('s')), "{text}");
     }
 }

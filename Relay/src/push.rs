@@ -41,7 +41,7 @@ impl PushMessage {
         }
     }
 
-    /// The JSON body sent to APNs.
+    /// The JSON body APNs gets: the gateway passes it on as it is.
     pub fn payload(&self) -> Value {
         let mut alert = json!({"title": self.title, "body": self.body});
         if let Some(s) = &self.subtitle {
@@ -61,10 +61,6 @@ impl PushMessage {
             p["window_id"] = json!(w);
         }
         p
-    }
-
-    pub fn payload_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.payload()).unwrap_or_default()
     }
 
     pub fn compose(i: &PushIntent, c: &BlockContext) -> PushMessage {
@@ -250,7 +246,7 @@ mod tests {
         i.text = Some("x".repeat(5000));
         let m = PushMessage::compose(&i, &BlockContext::default());
         assert_eq!(m.body.chars().count(), 1000);
-        assert!(m.payload_bytes().len() < 4096);
+        assert!(serde_json::to_vec(&m.payload()).unwrap().len() < 4096);
     }
 
     #[test]

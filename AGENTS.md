@@ -4,11 +4,13 @@ iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's c
 terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt and
 its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built
 for the iPhone Duo and works on any iPhone. `Relay/` holds Rex DUO Helper, a Rust program for
-macOS and Linux that sends push notifications for Rex events.
+macOS and Linux that sends push notifications for Rex events, and `Gateway/` the Cloudflare Worker
+that passes them to Apple.
 
 Stack: Swift 6 language mode, SwiftUI + UIKit, iOS 18, Xcode 27.2, XcodeGen, libghostty-vt (a
 static xcframework built locally), Swift Testing and XCTest. No other app dependencies. The helper
-is Rust (tokio, rustls, h2; `Relay/Cargo.lock` pins them). Bundle id `dev.abrahamgonzalez.rexduo`
+is Rust (tokio, rustls; `Relay/Cargo.lock` pins them) and the gateway is TypeScript on Cloudflare
+Workers with D1. Bundle id `dev.abrahamgonzalez.rexduo`
 stays fixed: App Store Connect and the APNs topic depend on it.
 
 ## Product principles
@@ -44,6 +46,10 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   transition.
 - `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts.
 - `RexDuoTests`: app tests, run in the simulator. Helper tests live in `Relay/src`.
+- `Gateway/`: the push gateway. It holds the APNs key and the phones' APNs tokens; a helper holds
+  only a per-phone secret (`Gateway/README.md`). `Relay/release.sh` publishes helper releases and
+  `Relay/setup.sh` is the installer: the app runs it in a tab on the computer to install the
+  helper from the phone, and it is published as `install.sh` for a manual install (docs/helper.md).
 - `scripts/`: the Ghostty build and checks, the benchmark (`bench/`), release through a build Mac.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane. Code keeps Rex's names
   (`WindowInfo`, `blockID`) to match the server's `/llms.txt`; user-facing text says tab and pane.
@@ -62,7 +68,8 @@ xcrun simctl list devices available       # pick a simulator id
 xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<sim-id> \
   -derivedDataPath build/dd build         # `test` instead of `build` runs RexDuoTests (~1 min)
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS, ~15 s
-cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payloads, JWT, devices
+cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payloads, gateway client, updates
+(cd Gateway && npm ci && npx vitest run)          # gateway: API, limits, the APNs call (mocked)
 ```
 
 - Every app build runs `scripts/check-ghostty.sh` first. A missing or stale framework stops the build
@@ -113,10 +120,13 @@ shell.
 - The helper runs on the developer's machines next to other agents' sessions. Test it with a
   foreground `--dry-run` after stopping the service (Relay/README.md, "Verify by hand"). Never
   restart Rex.
-- `.asc.env` and `~/.appstoreconnect/private_keys/` hold App Store Connect and APNs keys. Don't
-  print, copy or commit them. `build.rs` embeds the APNs key in every helper binary, so
-  `Relay/target`, `Relay/dist` and `Relay/.stage` hold it; all are gitignored and never sent to
-  the build Mac.
+- `.asc.env` and `~/.appstoreconnect/private_keys/` hold App Store Connect and APNs keys, and
+  `~/.config/rexduo/helper-update.key` signs helper releases. Don't print, copy or commit them.
+  This repository is public: no key, token or secret goes into a commit. The APNs key lives only
+  in the gateway's Workers Secret; helper binaries hold no key.
+- `Gateway/scripts/deploy.sh` changes the live gateway every helper depends on, and
+  `Relay/release.sh --publish` ships a version every installed helper then installs by itself.
+  Run them only when asked.
 
 ## Conventions
 
@@ -157,4 +167,5 @@ Read the one for the area you touch:
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.
 - [docs/sidebar.md](docs/sidebar.md): the sidebar's levels, folding, Agents mode, not-added hosts.
 - [docs/notifications.md](docs/notifications.md): toasts, permission, push through the helper.
-- [docs/release.md](docs/release.md): device installs, TestFlight via a build Mac, helper packaging.
+- [docs/release.md](docs/release.md): device installs, TestFlight via a build Mac, helper releases.
+- [docs/helper.md](docs/helper.md): installing the helper, how it updates and what it checks.

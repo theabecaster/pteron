@@ -5,6 +5,7 @@
 //
 //   rex-duo-notify authorize              ask for permission if it hasn't been decided yet
 //   rex-duo-notify post -- <title> <body>  post one notification
+//   rex-duo-notify status                  print allowed, denied or undetermined; never asks
 //
 // Exit status: 0 done, 1 not allowed or failed, 2 bad usage or not inside an app bundle.
 
@@ -26,6 +27,15 @@ enum Notify {
         switch arguments.first {
         case "authorize":
             exit(await allowed(center) ? 0 : 1)
+        case "status":
+            // Only reads the setting. The helper reports it to the phone (helper_status).
+            switch await status(center) {
+            case .authorized, .provisional: print("allowed")
+            case .denied: print("denied")
+            case .notDetermined: print("undetermined")
+            default: exit(1)
+            }
+            exit(0)
         case "post":
             let texts = Array(arguments.dropFirst().drop { $0 != "--" }.dropFirst())
             guard texts.count == 2 else { exit(2) }
@@ -43,12 +53,16 @@ enum Notify {
         }
     }
 
-    /// True when notifications are allowed, asking first if the person hasn't decided.
-    static func allowed(_ center: UNUserNotificationCenter) async -> Bool {
-        let status: UNAuthorizationStatus = await withCheckedContinuation { done in
+    /// What the person has decided about notifications from Rex DUO Helper, without asking.
+    static func status(_ center: UNUserNotificationCenter) async -> UNAuthorizationStatus {
+        await withCheckedContinuation { done in
             center.getNotificationSettings { done.resume(returning: $0.authorizationStatus) }
         }
-        switch status {
+    }
+
+    /// True when notifications are allowed, asking first if the person hasn't decided.
+    static func allowed(_ center: UNUserNotificationCenter) async -> Bool {
+        switch await status(center) {
         case .authorized, .provisional:
             return true
         case .notDetermined:

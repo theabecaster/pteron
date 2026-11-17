@@ -18,6 +18,19 @@ server's built-in Tailscale HTTPS address.
 - **Rex DUO Helper** (`Relay/`): a small Mac app or Linux service that sends push
   notifications while the app is closed.
 
+## Install Rex DUO Helper
+
+On each computer with a Rex server. It needs no account and updates itself.
+
+- **Mac:** download `Rex-DUO-Helper.zip` from [Releases](https://github.com/theabecaster/rexduo/releases),
+  drag Rex DUO Helper to Applications and open it once.
+- **Linux:** `curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh`
+
+The Linux installer prints the fingerprint of the key it checks the download with:
+`7b705fff0a944df37850e01668fc078f23c24aae7ab75075892ac84613cbd792`.
+
+Then turn on Settings → Notifications in the app. More in [docs/helper.md](docs/helper.md).
+
 ## Connect a server
 
 On each machine: `rex server tailscale enable` and sign in. In the app, add
@@ -43,7 +56,8 @@ in the app under Settings → About → Acknowledgements.
 
 - [AGENTS.md](AGENTS.md): product principles, commands, debug launch arguments, safety rules, conventions.
 - [docs/](docs/): architecture, Rex protocol, terminal engine, layout, notifications, release.
-- [Relay/README.md](Relay/README.md): the helper app.
+- [docs/helper.md](docs/helper.md): installing and updating the helper.
+- [Relay/README.md](Relay/README.md): the helper's internals. [Gateway/README.md](Gateway/README.md): the push gateway.
 
 ## Licence
 

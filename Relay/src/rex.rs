@@ -93,7 +93,7 @@ pub async fn open(ep: &Endpoint, me: &Identity, reconnect_token: Option<&str>) -
         Endpoint::Url { secure, host, port, .. } => {
             let authority = if (*secure && *port == 443) || (!*secure && *port == 80) { host.clone() } else { format!("{host}:{port}") };
             if *secure {
-                let tls = crate::apns::tls_connect(host, *port, b"http/1.1").await?;
+                let tls = crate::net::tls_connect(host, *port, b"http/1.1").await?;
                 (Box::new(tls), format!("wss://{authority}/api/control"))
             } else {
                 let tcp = tokio::net::TcpStream::connect((host.as_str(), *port)).await.map_err(|e| e.to_string())?;

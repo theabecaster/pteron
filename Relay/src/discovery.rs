@@ -57,6 +57,21 @@ impl Endpoint {
         }
     }
 
+    /// True when both name one server: the same socket file (through any links), or the same
+    /// scheme, host and port.
+    pub fn same(&self, other: &Endpoint) -> bool {
+        match (self, other) {
+            (Endpoint::Unix(a), Endpoint::Unix(b)) => {
+                let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+                real(a) == real(b)
+            }
+            (Endpoint::Url { secure: s1, host: h1, port: p1, .. }, Endpoint::Url { secure: s2, host: h2, port: p2, .. }) => {
+                s1 == s2 && p1 == p2 && h1.eq_ignore_ascii_case(h2)
+            }
+            _ => false,
+        }
+    }
+
     /// Short name for log lines.
     pub fn short(&self) -> String {
         match self {
@@ -172,7 +187,7 @@ async fn from_cli() -> Option<Endpoint> {
 
 /// Runs a command; its stdout, or None if it failed or took over 5 s.
 pub async fn run(path: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let child = tokio::process::Command::new(path)
+    let child = crate::tools::async_command(path)?
         .args(args)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -195,10 +210,10 @@ mod tests {
             Some(Endpoint::Unix("/Users/me/Library/Application Support/rex/server.sock".into()))
         );
         assert_eq!(Endpoint::parse("unix:///run/user/1000/rex/server.sock").unwrap().to_string(), "unix:/run/user/1000/rex/server.sock");
-        match Endpoint::parse("https://devbox-rex.tail1234.ts.net/").unwrap() {
+        match Endpoint::parse("https://rex-box.example.ts.net/").unwrap() {
             Endpoint::Url { secure, host, port, .. } => {
                 assert!(secure);
-                assert_eq!(host, "devbox-rex.tail1234.ts.net");
+                assert_eq!(host, "rex-box.example.ts.net");
                 assert_eq!(port, 443);
             }
             e => panic!("{e:?}"),
@@ -210,5 +225,18 @@ mod tests {
         assert_eq!(Endpoint::parse("login-server:///run/x.sock"), None);
         assert_eq!(Endpoint::parse("unix://"), None);
         assert_eq!(Endpoint::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn two_spellings_of_one_server_are_the_same() {
+        let p = |s: &str| Endpoint::parse(s).unwrap();
+        assert!(p("https://Rex-Box.example.ts.net/").same(&p("https://rex-box.example.ts.net:443")));
+        assert!(p("wss://rex-box.example.ts.net").same(&p("https://rex-box.example.ts.net")));
+        assert!(!p("https://rex-box.example.ts.net").same(&p("http://rex-box.example.ts.net")));
+        assert!(!p("https://rex-box.example.ts.net").same(&p("https://rex-box.example.ts.net:8443")));
+        assert!(!p("https://rex-box.example.ts.net").same(&p("https://other.example.ts.net")));
+        assert!(p("unix:///run/user/1000/rex/server.sock").same(&p("unix:///run/user/1000/rex/server%2Esock")));
+        assert!(!p("unix:///run/user/1000/rex/server.sock").same(&p("unix:///run/user/1001/rex/server.sock")));
+        assert!(!p("unix:///run/user/1000/rex/server.sock").same(&p("https://rex-box.example.ts.net")));
     }
 }

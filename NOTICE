@@ -13,5 +13,6 @@ Third-party code keeps its own licence:
 - libghostty-vt (Ghostty), MIT. Built from source into the app; its notice ships in the app
   under Settings, Acknowledgements (RexDuo/Resources/Acknowledgements.txt).
 - The helper's Rust crates (Relay/Cargo.lock): MIT, Apache-2.0, ISC, BSD, CDLA-Permissive-2.0
-  and Unicode-3.0. Each crate's licence is in its own source.
+  and Unicode-3.0. Their notices ship with every helper release as THIRD_PARTY_LICENSES.txt
+  (also inside the Mac app), written by Relay/third-party-licenses.py.
 - Rex is a separate product by Super Logical and is not part of this repository.

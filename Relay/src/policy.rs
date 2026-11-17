@@ -24,10 +24,18 @@ pub struct StatusReport {
     pub msg: Option<String>,
 }
 
+/// The `app` of the status record `setup.sh` writes.
+pub const SETUP_APP: &str = "rexduo-setup";
+
 impl StatusReport {
     /// Parses `{id, record: {state, kind, app, effective_app, title, msg}}`.
     pub fn from_event(e: &Value) -> Option<Self> {
         let rec = e.obj("record")?;
+        // The helper's own installer reports its steps as a program status, for Rex's sidebar
+        // and the phone's install sheet. It is not an agent: nothing to notify about.
+        if rec.str("app") == Some(SETUP_APP) || rec.str("effective_app") == Some(SETUP_APP) {
+            return None;
+        }
         Some(StatusReport {
             record_id: e.str("id").or_else(|| rec.str("id")).unwrap_or("").to_string(),
             state: rec.text("state")?,
@@ -327,6 +335,16 @@ mod tests {
     fn status(state: &str, msg: Option<&str>) -> RelayEvent {
         status_on(state, msg, "", "block:b1")
     }
+    #[test]
+    fn the_installers_own_status_is_not_an_agents() {
+        let done = json!({"id": "rexduo-setup", "record": {"state": "done", "app": "rexduo-setup", "msg": "Installed."}});
+        assert!(StatusReport::from_event(&done).is_none());
+        let asking = json!({"id": "rexduo-setup", "record": {"state": "blocked", "kind": "auth", "app": "rexduo-setup"}});
+        assert!(StatusReport::from_event(&asking).is_none());
+        let agent = json!({"id": "r", "record": {"state": "done", "app": "claude"}});
+        assert!(StatusReport::from_event(&agent).is_some());
+    }
+
     fn intent(d: Decision) -> Option<PushIntent> {
         match d {
             Decision::Push(i) => Some(i),

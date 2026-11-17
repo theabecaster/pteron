@@ -4,23 +4,19 @@ use crate::discovery::Endpoint;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_TEAM_ID: &str = env!("REX_APNS_TEAM_ID");
-pub const DEFAULT_TOPIC: &str = env!("REX_APNS_TOPIC");
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct ApnsConfig {
-    pub key_path: Option<String>,
-    pub key_id: Option<String>,
-    pub team_id: Option<String>,
-    pub topic: Option<String>,
-}
+/// The entry of `servers` that keeps discovery on beside the servers the list names.
+pub const DISCOVER: &str = "discover";
 
 /// Every field is optional; the normal install has no config file.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Config {
     pub servers: Option<Vec<String>>,
     pub label: Option<String>,
-    pub apns: Option<ApnsConfig>,
+    /// Push gateways phones may register besides the built-in one: `https://…` origins, or
+    /// `http://127.0.0.1:<port>` for a gateway under test on this machine.
+    pub gateways: Option<Vec<String>>,
+    /// `false` turns the update timer off; `rex-duo-helper update` and the app still update.
+    pub auto_update: Option<bool>,
     pub debounce_seconds: Option<f64>,
     pub rate_limit_burst: Option<f64>,
     pub rate_limit_per_minute: Option<f64>,
@@ -34,18 +30,25 @@ impl Config {
         }
     }
 
-    /// Fixed servers from the config, or None to discover the local one.
-    pub fn endpoints(&self) -> Option<Vec<Endpoint>> {
-        let s = self.servers.as_ref().filter(|s| !s.is_empty())?;
-        Some(s.iter().filter_map(|s| Endpoint::parse(s)).collect())
-    }
-
-    pub fn team_id(&self) -> String {
-        self.apns.as_ref().and_then(|a| a.team_id.clone()).unwrap_or_else(|| DEFAULT_TEAM_ID.into())
-    }
-
-    pub fn topic(&self) -> String {
-        self.apns.as_ref().and_then(|a| a.topic.clone()).unwrap_or_else(|| DEFAULT_TOPIC.into())
+    /// The servers to watch, each one once. None stands for the server discovery finds: the
+    /// whole list when the config names no server, and wherever the list has the word
+    /// `discover`.
+    pub fn watch(&self) -> Vec<Option<Endpoint>> {
+        let Some(servers) = self.servers.as_ref().filter(|s| !s.is_empty()) else { return vec![None] };
+        let mut watch: Vec<Option<Endpoint>> = vec![];
+        for entry in servers {
+            let next = if entry.trim() == DISCOVER { Some(None) } else { Endpoint::parse(entry).map(Some) };
+            let Some(next) = next else { continue };
+            let listed = watch.iter().any(|w| match (w, &next) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same(b),
+                _ => false,
+            });
+            if !listed {
+                watch.push(next);
+            }
+        }
+        watch
     }
 }
 
@@ -61,7 +64,7 @@ pub fn expand(p: &str) -> PathBuf {
     }
 }
 
-/// Where config.json, devices.json and status.json live.
+/// Where config.json, devices.json, identity.key and status.json live.
 /// macOS: `~/Library/Application Support/Rex DUO Helper`.
 /// Linux: `$XDG_STATE_HOME/rex-duo-helper`, else `~/.local/state/rex-duo-helper`.
 pub fn default_state_dir() -> PathBuf {
@@ -87,5 +90,36 @@ pub fn default_log_file() -> PathBuf {
         home().join("Library/Logs/Rex DUO Helper.log")
     } else {
         default_state_dir().join("helper.log")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_optional_keys_and_ignores_old_ones() {
+        let c: Config =
+            serde_json::from_str(r#"{"auto_update": false, "debounce_seconds": 5, "gateways": ["https://push.example.com"], "apns": {"key_id": "OLD"}}"#).unwrap();
+        assert_eq!(c.auto_update, Some(false));
+        assert_eq!(c.gateways.as_deref(), Some(&["https://push.example.com".to_string()][..]));
+        assert_eq!(c.debounce_seconds, Some(5.0));
+        assert_eq!(serde_json::from_str::<Config>("{}").unwrap().auto_update, None);
+    }
+
+    #[test]
+    fn servers_replace_discovery_unless_the_list_says_discover() {
+        let watch = |json: &str| serde_json::from_str::<Config>(json).unwrap().watch();
+        let a = Endpoint::parse("https://rex-a.example.ts.net");
+        let b = Endpoint::parse("unix:///run/user/1000/rex-b/server.sock");
+        assert_eq!(watch("{}"), [None]);
+        assert_eq!(watch(r#"{"servers": []}"#), [None]);
+        assert_eq!(watch(r#"{"servers": ["https://rex-a.example.ts.net"]}"#), std::slice::from_ref(&a));
+        assert_eq!(watch(r#"{"servers": ["discover", "unix:///run/user/1000/rex-b/server.sock"]}"#), [None, b.clone()]);
+        // Each server once, and an entry that is no address is skipped.
+        assert_eq!(
+            watch(r#"{"servers": ["https://rex-a.example.ts.net", "discover", "nonsense", "https://REX-A.example.ts.net:443", "discover", "unix:///run/user/1000/rex-b/server.sock"]}"#),
+            [a, None, b]
+        );
     }
 }

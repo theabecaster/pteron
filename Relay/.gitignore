@@ -1,4 +1,4 @@
-# Cargo output. Builds embed the APNs key (build.rs), so never commit them.
+# Cargo output. (Builds made before the push gateway embedded the APNs key: never commit one.)
 /target/
 # package.sh output and staging.
 /dist/

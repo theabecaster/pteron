@@ -79,13 +79,75 @@ enum APNsEnvironment {
 /// Finds Rex DUO Helper among a server's clients.
 enum RelayLookup {
     static let clientName = "rex-push-relay"
+    /// How Rex says a client connected on the server's own machine (its socket, or the Windows
+    /// equivalent). Rex asserts this; a client can't claim it.
+    static let localKinds: Set<String> = ["peer", "windows_peer"]
 
-    /// The last client named `rex-push-relay` that isn't `lost` (clients come in connection order).
-    /// A relay that just restarted can linger as `lost` for a minute next to the new one.
+    /// The last client named `rex-push-relay` that isn't `lost` and runs on the server's own
+    /// machine (clients come in connection order). A relay that just restarted can linger as
+    /// `lost` for a minute next to the new one. Anyone on the tailnet can connect under that name,
+    /// so a client that came in another way is never taken for the helper.
     static func relayID(in clients: [JSONObject]) -> String? {
         clients.last { c in
             c.obj("info")?.str("name") == clientName && c.str("connection_state") != "lost"
+                && localKinds.contains(c.obj("principal")?.str("kind") ?? "")
         }?.str("client_id")
+    }
+}
+
+/// What a helper says about itself (`helper_status`): its version and whether it can and should
+/// update.
+struct HelperVersion: Equatable, Sendable {
+    var version: String
+    var latest: String?
+    var updateAvailable: Bool
+    /// False when the helper can't replace itself: a development build, a test run, an odd install.
+    var canUpdate: Bool
+    var updating: Bool
+    var lastError: String?
+    /// The running version is below the oldest one the release list still allows.
+    var updateRequired: Bool
+    /// Whether the helper holds a working registration for this phone. Nil from a helper that
+    /// doesn't say.
+    var registered: Bool?
+    /// Mac: whether the helper may show its own notices on the computer: `allowed`, `denied` or
+    /// `undetermined`. Nil elsewhere, and from a helper that doesn't say.
+    var notices: String?
+    /// Linux: whether the helper keeps running after logout. Nil elsewhere.
+    var linger: Bool?
+    /// When the release list the helper last accepted expires.
+    var manifestExpiresAt: Date?
+
+    init?(_ result: JSONObject) {
+        guard let version = result.str("version"), !version.isEmpty else { return nil }
+        self.version = version
+        latest = result.str("latest_version")
+        updateAvailable = result.bool("update_available") ?? false
+        canUpdate = result.bool("can_update") ?? false
+        updating = result.bool("updating") ?? false
+        lastError = result.str("last_error")
+        updateRequired = result.bool("update_required") ?? false
+        registered = result.bool("registered")
+        notices = result.str("notices")
+        linger = result.bool("linger")
+        manifestExpiresAt = result.str("manifest_expires_at").flatMap(HelperRelease.timestamp)
+    }
+
+    /// The one line Settings shows under the helper's name.
+    var summary: String {
+        if updating { return "Updating to \(latest ?? "the latest version")…" }
+        if updateRequired { return "Version \(version) needs an update to keep working." }
+        if updateAvailable, let latest { return "Version \(version). Version \(latest) is available." }
+        // No check has come back yet: say only what is known.
+        return latest == nil ? "Version \(version)." : "Version \(version), up to date."
+    }
+
+    /// Settings offers "Update" only when pressing it would do something.
+    var offersUpdate: Bool { (updateAvailable || updateRequired) && canUpdate && !updating }
+
+    /// A helper from before the gateway refuses a registration that has no APNs token with this.
+    static func isLegacyRefusal(_ message: String) -> Bool {
+        message.hasPrefix("token must be")
     }
 }
 
