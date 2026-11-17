@@ -43,10 +43,15 @@ struct PairingSheet: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pairing: PairingModel?
     @State private var access = CameraAccess.asking
     @State private var torch = false
     @State private var showDetails = false
+    /// Opened for a computer picked from a list: there is no camera to go back to.
+    @State private var picked = false
+    /// The pause that shows the checkmark before the sheet leaves.
+    @State private var leaving: Task<Void, Never>?
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -58,10 +63,13 @@ struct PairingSheet: View {
                 }
             }
             .background(theme.bg.ignoresSafeArea())
-            .navigationTitle("Pair via QR Code")
+            .navigationTitle(picked ? "Add Computer" : "Pair via QR Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                // Once the server is added there is nothing left to cancel.
+                if pairing?.isFinished != true {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                }
                 if pairing?.step == .scanning, access == .granted, CameraAccess.hasTorch {
                     ToolbarItem(placement: .primaryAction) {
                         Button { torch.toggle() } label: {
@@ -75,7 +83,10 @@ struct PairingSheet: View {
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
         .task { await begin() }
-        .onDisappear { pairing?.cancel() }
+        .onDisappear {
+            pairing?.cancel()
+            leaving?.cancel()
+        }
         .onChange(of: pairing?.step) { _, _ in
             torch = false
             showDetails = false
@@ -94,15 +105,34 @@ struct PairingSheet: View {
 
     // MARK: Steps
 
+    /// The camera stays where it is for the whole run. Once a code is read its picture freezes
+    /// under a dim, and the card for that step sits on top.
     @ViewBuilder
     private func content(_ pairing: PairingModel, _ theme: TermTheme, _ layout: PairingLayout) -> some View {
+        let scanning = pairing.step == .scanning
+        ZStack {
+            if access == .granted {
+                scanner(pairing, theme, layout, frozen: !scanning)
+                    .disabled(!scanning)
+                    .accessibilityHidden(!scanning)
+                theme.bg.opacity(scanning ? 0 : 0.78)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(!scanning)
+            }
+            card(pairing, theme)
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+        }
+        .animation(.smooth(duration: 0.3), value: pairing.step)
+        .animation(.smooth(duration: 0.3), value: access)
+    }
+
+    @ViewBuilder
+    private func card(_ pairing: PairingModel, _ theme: TermTheme) -> some View {
         switch pairing.step {
         case .scanning:
             switch access {
-            case .asking:
-                Color.clear
-            case .granted:
-                scanner(pairing, theme, layout)
+            case .asking, .granted:
+                EmptyView()
             case .denied:
                 PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera is off",
                             message: "Rex DUO needs the camera to scan a pairing code. Allow it in Settings.") {
@@ -126,12 +156,14 @@ struct PairingSheet: View {
         case .checking(let url):
             PairingCard(theme: theme, glyph: .spinner, title: "Looking for that computer",
                         message: url.host() ?? url.absoluteString, monospacedMessage: true) {
-                SecondaryButton(title: "Cancel", theme: theme) { pairing.rescan() }
+                SecondaryButton(title: "Cancel", theme: theme) { back(pairing) }
             }
-        case .found(let url):
-            FoundCard(pairing: pairing, theme: theme, url: url) { dismiss() }
+        case .found(let url, let identity):
+            IdentityCard(pairing: pairing, theme: theme, url: url, copy: .of(identity), added: false) { back(pairing) }
+        case .added(let url, let identity):
+            IdentityCard(pairing: pairing, theme: theme, url: url, copy: .of(identity), added: true) {}
         case .done:
-            Color.clear
+            EmptyView()
         case .problem(let url, let problem):
             PairingCard(theme: theme, glyph: .glitch(problem.symbol), title: problem.title, message: problem.message) {
                 if problem.actions.contains(.tryAgain) {
@@ -151,7 +183,7 @@ struct PairingSheet: View {
 
     /// One camera and one set of instructions in one stack, whichever way it runs, so a fold, a
     /// rotation or a resize moves the camera instead of rebuilding it and restarting its session.
-    private func scanner(_ pairing: PairingModel, _ theme: TermTheme, _ layout: PairingLayout) -> some View {
+    private func scanner(_ pairing: PairingModel, _ theme: TermTheme, _ layout: PairingLayout, frozen: Bool) -> some View {
         let stack: AnyLayout
         var width: CGFloat?, height: CGFloat?
         var paged = true
@@ -165,7 +197,7 @@ struct PairingSheet: View {
             paged = camera != nil
         }
         return stack {
-            camera(pairing, theme)
+            camera(pairing, theme, frozen: frozen)
                 .frame(width: width, height: height)
             instructions(theme)
                 .padding(.top, paged ? 0 : 8)
@@ -174,10 +206,11 @@ struct PairingSheet: View {
         }
     }
 
-    private func camera(_ pairing: PairingModel, _ theme: TermTheme) -> some View {
+    private func camera(_ pairing: PairingModel, _ theme: TermTheme, frozen: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-        return QRCameraView(torch: $torch) { code in
-            if pairing.scanned(code) { Haptic.success() }
+        return QRCameraView(torch: $torch, frozen: frozen) { code in
+            // A light tap for "read". The success haptic waits for the server to be added.
+            if pairing.scanned(code) { Haptic.tap() }
         } onFailure: {
             access = .unavailable
         }
@@ -248,6 +281,11 @@ struct PairingSheet: View {
 
     // MARK: Wiring
 
+    /// Not this computer: back to the camera, or out when there was none.
+    private func back(_ pairing: PairingModel) {
+        if picked { dismiss() } else { pairing.rescan() }
+    }
+
     private func enterAddress() {
         onEnterAddress()
         dismiss()
@@ -257,7 +295,7 @@ struct PairingSheet: View {
         guard pairing == nil else { return }
         let p = PairingModel(
             servers: { [prefs] in prefs.servers },
-            probe: { [model] url in await model.probe(url) },
+            probe: { [model] url in await model.check(url) },
             onExisting: { [model] saved in
                 finish()
                 Notice.shared.show("\(saved.name) is already added.", style: .neutral)
@@ -266,16 +304,30 @@ struct PairingSheet: View {
             onAdd: { [model] config in
                 model.addServer(config)
                 Haptic.success()
-                finish()
+                UIAccessibility.post(notification: .announcement, argument: "\(config.name) added")
+                leaving = Task {
+                    // Long enough to see the button turn into its checkmark.
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    guard !Task.isCancelled else { return }
+                    finish()
+                    model.land(on: config)
+                }
             })
         pairing = p
+        if let start = model.pairingStart {
+            // No camera, so no permission question: the card stands on the plain background.
+            model.pairingStart = nil
+            picked = true
+            p.start(start.candidate, name: start.name)
+            return
+        }
         access = await CameraAccess.resolve()
         #if DEBUG
         // `-simulateScan <payload>` (testing): the camera reads this once the scanner is up.
         // `-simulateScan open` only opens the scanner.
         if let payload = UserDefaults.standard.string(forKey: "simulateScan"), payload != "open" {
             try? await Task.sleep(nanoseconds: 800_000_000)
-            if p.scanned(payload) { Haptic.success() }
+            if p.scanned(payload) { Haptic.tap() }
         }
         #endif
     }
@@ -303,6 +355,8 @@ private struct PairingCover: ViewModifier {
 
     func body(content: Content) -> some View {
         content.fullScreenCover(isPresented: $isPresented, onDismiss: {
+            // A picked computer the sheet never got to must not start the next scan.
+            model.pairingStart = nil
             guard wantsAddress else { return }
             wantsAddress = false
             enterAddress()
@@ -314,7 +368,7 @@ private struct PairingCover: ViewModifier {
 
 /// The offline screen's card: a glyph, a title, a message and the buttons under it, centred. Every
 /// step but the camera.
-private struct PairingCard<Actions: View>: View {
+private struct PairingCard<Actions: View, Header: View>: View {
     enum Glyph {
         case symbol(String)
         /// The offline screen's glyph, for a computer that can't be reached.
@@ -324,10 +378,12 @@ private struct PairingCard<Actions: View>: View {
 
     let theme: TermTheme
     let glyph: Glyph
-    let title: String
+    /// Nil when `header` stands in for it.
+    let title: String?
     let message: String
     var monospacedMessage = false
     @ViewBuilder var actions: Actions
+    @ViewBuilder var header: Header
 
     var body: some View {
         GeometryReader { geo in
@@ -358,12 +414,16 @@ private struct PairingCard<Actions: View>: View {
             .frame(width: 56, height: 44)
             .padding(.bottom, 14)
             .accessibilityHidden(true)
-            Text(title)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(theme.fg)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 6)
+            if let title {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(theme.fg)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 6)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            header
             Text(message)
                 .font(monospacedMessage ? .system(.footnote, design: .monospaced) : .subheadline)
                 .foregroundStyle(theme.chrome.secondary)
@@ -385,32 +445,123 @@ private struct PairingCard<Actions: View>: View {
     }
 }
 
-/// The server answered: its address, a name to change, Add.
-private struct FoundCard: View {
+extension PairingCard where Header == EmptyView {
+    init(theme: TermTheme, glyph: Glyph, title: String, message: String, monospacedMessage: Bool = false,
+         @ViewBuilder actions: () -> Actions) {
+        self.init(theme: theme, glyph: glyph, title: title, message: message, monospacedMessage: monospacedMessage,
+                  actions: actions, header: { EmptyView() })
+    }
+}
+
+/// Who the computer is, before it is added: its name (tap to change it), its address, its account,
+/// system and sessions, then Add & Open. Two lines show only when they matter: the computer is
+/// someone else's, or it has no helper for notifications.
+private struct IdentityCard: View {
     @Bindable var pairing: PairingModel
     let theme: TermTheme
     let url: URL
-    let cancel: () -> Void
+    let copy: IdentityCopy
+    /// Added: the button shows its checkmark and nothing responds any more.
+    let added: Bool
+    let decline: () -> Void
 
     var body: some View {
-        PairingCard(theme: theme, glyph: .symbol("checkmark.circle"), title: "Computer found",
+        PairingCard(theme: theme, glyph: .symbol(copy.symbol), title: nil,
                     message: url.host() ?? url.absoluteString, monospacedMessage: true) {
+            VStack(spacing: 10) {
+                if let summary = copy.summary {
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(theme.chrome.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !copy.sessions.isEmpty { sessions }
+                if let owner = copy.owner {
+                    Label(owner, systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.footnote)
+                        .foregroundStyle(theme.fg)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
+                }
+            }
+            .padding(.bottom, 12)
+            AddButton(done: added, theme: theme) { pairing.add() }
+            SecondaryButton(title: "Not This One", theme: theme, action: decline)
+                .opacity(added ? 0 : 1)
+                .accessibilityHidden(added)
+            if let helper = copy.helper {
+                Text(helper)
+                    .font(.caption)
+                    .foregroundStyle(theme.chrome.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 6)
+            }
+        } header: {
             TextField("Name", text: $pairing.name, prompt: Text(ServerConfig.name(for: url)).foregroundStyle(theme.chrome.tertiary))
-                .font(.subheadline)
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(theme.fg)
+                .multilineTextAlignment(.center)
                 .autocorrectionDisabled()
                 .submitLabel(.done)
-                .onSubmit { pairing.add() }
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 12)
-                .frame(width: 200, height: 44)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(theme.fg.opacity(theme.isDark ? 0.06 : 0.05)))
-                .padding(.bottom, 10)
+                .padding(.bottom, 6)
                 .accessibilityLabel("Name")
-            PrimaryButton(title: "Add", busy: false, theme: theme) { pairing.add() }
-            SecondaryButton(title: "Cancel", theme: theme, action: cancel)
+                .accessibilityHint("Edit to rename this computer")
         }
+        .disabled(added)
+    }
+
+    /// The first few session names as chips, then how many more.
+    private var sessions: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(copy.sessions.enumerated()), id: \.offset) { _, name in chip(name) }
+            if copy.more > 0 { chip("+\(copy.more)") }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Sessions: " + (copy.sessions + (copy.more > 0 ? ["and \(copy.more) more"] : [])).joined(separator: ", "))
+    }
+
+    private func chip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(theme.chrome.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().fill(theme.fg.opacity(theme.isDark ? 0.06 : 0.05)))
+    }
+}
+
+/// The capsule button for Add & Open: once added, its label turns into a checkmark in place.
+private struct AddButton: View {
+    let done: Bool
+    let theme: TermTheme
+    let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button { if !done { action() } } label: {
+            ZStack {
+                Text("Add & Open").opacity(done ? 0 : 1)
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.bold))
+                    .opacity(done ? 1 : 0)
+                    .scaleEffect(done || reduceMotion ? 1 : 0.5)
+            }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(theme.bg)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 18).padding(.vertical, 8)
+            // At least the offline screen's button; taller and wider for large text.
+            .frame(minWidth: 200, minHeight: 46)
+            .background(Capsule().fill(done ? theme.chrome.done : theme.accent))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .spring(duration: 0.3, bounce: 0.35), value: done)
+        .accessibilityLabel(done ? "Added" : "Add and Open")
     }
 }
 

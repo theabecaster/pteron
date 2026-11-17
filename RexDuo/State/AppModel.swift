@@ -76,6 +76,26 @@ final class AppModel {
     var showSettings = false
     /// The "Pair via QR Code" scanner, opened from the screen shown when there are no servers.
     var showPairing = false
+    @ObservationIgnored private var landing: Task<Void, Never>?
+    /// A computer picked from the sidebar's known hosts: the scanner opens straight at its check.
+    var pairingStart: PairingStart?
+
+    struct PairingStart: Equatable {
+        var candidate: PairingCode.Candidate
+        var name: String
+    }
+
+    /// Opens the pairing flow at an address, as if its code had been scanned: the check, the
+    /// identity card, Add & Open. `name` is the card's starting name (the host's label); without one
+    /// it comes from the address. Does nothing for an address that isn't an https server address.
+    /// `guessed`: the address was worked out (`PairingCode.candidate`), so a failed check says to
+    /// pair with a code and never offers to add it.
+    func startPairing(prefilled address: URL, name: String? = nil, guessed: Bool = false) {
+        guard let url = PairingCode.address(from: address.absoluteString) else { return }
+        pairingStart = PairingStart(candidate: PairingCode.Candidate(url: url, guessed: guessed),
+                                    name: name ?? ServerConfig.name(for: url))
+        showPairing = true
+    }
     /// The page Settings opens at next; Settings clears it.
     var settingsStart: SettingsPage?
     @ObservationIgnored let prefs: Prefs
@@ -143,33 +163,85 @@ final class AppModel {
 
     // MARK: Adding a server
 
-    /// Saves a server, unless one at the same address is already saved.
-    func addServer(_ config: ServerConfig) {
-        if let url = ServerConfig.url(from: config.url), PairingCode.existing(url, in: prefs.servers) != nil { return }
+    /// Saves a server, unless one at the same address is already saved. True when it was saved.
+    @discardableResult
+    func addServer(_ config: ServerConfig) -> Bool {
+        if let url = ServerConfig.url(from: config.url), PairingCode.existing(url, in: prefs.servers) != nil { return false }
         prefs.servers.append(config)
         rebuildServers()
+        return true
     }
 
-    /// Whether a Rex server answers at `url`, before it is saved: nil when it does. Sends no hello,
-    /// so the server sees no client and nothing here registers for pushes.
-    func probe(_ url: URL) async -> ConnectionProblem? {
+    /// Checks a scanned address before it is saved. First a plain request that only that address
+    /// can answer (`ServerProbe`), then one short control connection that reads who the computer is
+    /// (`ServerPreview`). That connection attaches to nothing and carries no device id in its label,
+    /// so the server drops it on close and the helper doesn't take it for this iPhone being open.
+    func check(_ url: URL) async -> PairingCheck {
         #if DEBUG
-        if let kind = Self.simulatedProblem { return ConnectionProblem(kind: kind, detail: "simulated") }
+        if let kind = Self.simulatedProblem { return .problem(ConnectionProblem(kind: kind, detail: "simulated")) }
+        if let fake = Self.simulatedIdentity { return .reachable(fake) }
         #endif
-        guard let failure = await ServerProbe.check(address: url.absoluteString) else { return nil }
-        return ConnectionProblem.classify(failure, network: network?.snapshot ?? .unknown)
+        if let failure = await ServerProbe.check(address: url.absoluteString) {
+            return .problem(ConnectionProblem.classify(failure, network: network?.snapshot ?? .unknown))
+        }
+        let client = ClientInfo(
+            name: "Rex DUO",
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
+            label: PushIdentity.previewLabel(deviceName: UIDevice.current.name))
+        return .reachable(await ServerPreview.fetch(address: url.absoluteString, client: client))
     }
 
-    /// A saved server was scanned again: show its active tab, or try it now if it is down.
-    func show(_ config: ServerConfig) {
-        guard let s = server(config.id) else { return }
-        guard s.phase == .online else { s.reconnect(); return }
+    #if DEBUG
+    /// `-simulateIdentity 'os=linux,account=sam,owner=sam@x.com,viewer=me@x.com,sessions=api|web,count=5,helper=no'`
+    /// (testing): a scanned code gets this identity card, with no network.
+    static var simulatedIdentity: ServerIdentity? {
+        guard let raw = UserDefaults.standard.string(forKey: "simulateIdentity") else { return nil }
+        var f: [String: String] = [:]
+        for part in raw.split(separator: ",") {
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            if kv.count == 2 { f[kv[0]] = kv[1] }
+        }
+        let sessions = f["sessions"]?.split(separator: "|").map(String.init) ?? []
+        return ServerIdentity(platform: ServerIdentity.Platform(rawValue: f["os"] ?? "") ?? .other, account: f["account"],
+                              owner: f["owner"], viewer: f["viewer"], sessionCount: f["count"].flatMap(Int.init) ?? sessions.count,
+                              sessions: sessions, hasHelper: f["helper"] != "no")
+    }
+    #endif
+
+    /// A server was just added: land on its active tab once it has connected and its sessions
+    /// are in. One landing at a time; a new one replaces it.
+    func land(on config: ServerConfig) {
+        landing?.cancel()
+        landing = Task { [weak self] in await self?.openWhenReady(config) }
+    }
+
+    /// Waits for `config`'s server to be online with a tab to show, then shows it. Ends without
+    /// showing anything after `timeout`, when its task is cancelled, or as soon as the person has
+    /// opened something themselves. True when it showed the tab.
+    @discardableResult
+    func openWhenReady(_ config: ServerConfig, timeout: Double = 15, poll: Double = 0.2) async -> Bool {
+        let before = selection
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end, selection == before, !Task.isCancelled {
+            if let s = server(config.id), s.phase == .online, show(config) { return true }
+            try? await Task.sleep(nanoseconds: UInt64(poll * 1_000_000_000))
+        }
+        return false
+    }
+
+    /// Shows a server's active tab: a saved server that was scanned again, or one just added. A
+    /// server that is down is tried now instead. True when a tab was shown.
+    @discardableResult
+    func show(_ config: ServerConfig) -> Bool {
+        guard let s = server(config.id) else { return false }
+        guard s.phase == .online else { s.reconnect(); return false }
         for e in s.sessions {
             if let w = s.views[e.id]?.activeWindow {
                 openRequest = OpenRequest(selection: Selection(serverID: s.id, sessionID: e.id, windowID: w.id))
-                return
+                return true
             }
         }
+        return false
     }
 
     /// A new network path is when a down server can come back: retry those now.

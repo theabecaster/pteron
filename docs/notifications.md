@@ -71,6 +71,12 @@ The helper opens no ports; everything goes through Rex.
    that show their own notifications.
 5. It unregisters with `unregister_push {token}` when notifications are turned off.
 
+The first `register_push` from a `device_id` the helper has never seen posts one desktop
+notification on the computer, "Rex DUO connected" with the phone's name (`Relay/src/notice.rs`;
+on a Mac from the app's own `rex-duo-notify`, so it shows as Rex DUO Helper and needs the
+permission macOS asks for when the app is first opened; `notify-send` on Linux when it is installed). Seen ids are kept in
+`seen_devices.json`, so it is once per phone, not per connect or per helper start.
+
 Pushes carry `server` (the Tailscale URL as entered in the app), `session_id`, `window_id` and
 `block_id`, so a tap can open the pane. The APNs topic is the bundle id,
 `dev.abrahamgonzalez.rexduo`.

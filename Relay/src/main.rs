@@ -6,6 +6,7 @@ mod config;
 mod devices;
 mod discovery;
 mod legacy;
+mod notice;
 mod policy;
 mod push;
 mod relay;
@@ -199,7 +200,8 @@ async fn run(o: RunOptions) -> i32 {
     } else {
         load_jwt(&cfg).map(|j| Sender::Apns(Box::new(Apns::new(j, cfg.topic()))))
     };
-    let store = devices::DeviceStore::open(o.state_dir.join("devices.json"));
+    let devices_path = o.state_dir.join("devices.json");
+    let store = if o.dry_run { devices::DeviceStore::open_dry_run(devices_path) } else { devices::DeviceStore::open(devices_path) };
     let relay = relay::Relay::new(
         cfg.endpoints(),
         store,

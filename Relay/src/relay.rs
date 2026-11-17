@@ -5,6 +5,7 @@
 use crate::apns::{describe, SendResult, Sender};
 use crate::devices::{is_app_open, ClientSnapshot, Device, DeviceStore};
 use crate::discovery::{self, Endpoint};
+use crate::notice;
 use crate::policy::{BlockRef, Decision, PushIntent, PushPolicy, RateLimiter, RelayEvent, StatusReport};
 use crate::push::{BlockContext, PushMessage};
 use crate::rex::{self, Conn, Identity};
@@ -105,6 +106,7 @@ pub struct Relay {
     policy: Mutex<PushPolicy>,
     limiter: Mutex<RateLimiter>,
     store: Mutex<DeviceStore>,
+    notices: Mutex<notice::NoticeLimiter>,
     sender: Option<Sender>,
     dry_run: bool,
     identity: Identity,
@@ -132,6 +134,7 @@ impl Relay {
             policy: Mutex::new(PushPolicy::new(o.debounce)),
             limiter: Mutex::new(RateLimiter::new(o.burst, o.per_minute)),
             store: Mutex::new(store),
+            notices: Mutex::new(notice::NoticeLimiter::default()),
             sender,
             dry_run: o.dry_run,
             identity,
@@ -537,16 +540,26 @@ impl Relay {
                     d.device_name = args.text("device_name");
                     d.device_id = dev_id;
                     d.tailscale_node = if pr.str("kind") == Some("tailscale") { pr.text("node") } else { None };
-                    let (d, count) = {
+                    let (d, count, new) = {
                         let mut store = self.store.lock().unwrap();
+                        let new = store.first_sight(d.device_id.as_deref());
                         let d = store.register(d);
-                        (d, store.devices.len())
+                        (d, store.devices.len(), new)
                     };
                     info!(
                         "registered {} [{env}] token {}... from {who}",
                         d.device_name.as_deref().unwrap_or("device"),
                         &token[..8]
                     );
+                    if new && self.notices.lock().unwrap().allow(Instant::now()) {
+                        notice::post(&notice::body(d.device_name.as_deref()), self.dry_run);
+                    } else if new {
+                        info!(
+                            "holding back the desktop notice: more than {} new devices in {} s",
+                            notice::NOTICE_LIMIT,
+                            notice::NOTICE_WINDOW.as_secs()
+                        );
+                    }
                     reply["result"] = json!({
                         "registered": true, "devices": count,
                         "push_enabled": self.push_enabled(), "relay_version": VERSION,

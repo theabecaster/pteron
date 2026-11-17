@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import RexKit
 
 /// A scanned pairing code. Rex's code (`rex server tailscale pair`) holds only the server's https
 /// address, no credential, so reading one is parsing a URL.
@@ -52,6 +53,30 @@ enum PairingCode {
         guard let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
         let port = url.port ?? (url.scheme?.lowercased() == "http" ? 80 : 443)
         return "\(host):\(port)"
+    }
+
+    /// Where a computer on a server's host list can be reached, when that can be told.
+    struct Candidate: Equatable {
+        var url: URL
+        /// Worked out from the listing server's own address, not stated by the host list. It may
+        /// not exist, so a failed check says to pair with a code instead of offering to add it.
+        var guessed: Bool
+    }
+
+    /// The address of a host a server lists (`hosts.list`). An endpoint that is an https address
+    /// or a private-network name is taken as is. Otherwise, when the listing server's own address
+    /// has Rex's form, `<computer>-rex.<network>`, the host is assumed to follow it under its
+    /// label. Nil when neither applies: an ssh-only host listed by a server at some other address.
+    static func candidate(label: String, endpoints: [String], listedBy server: URL) -> Candidate? {
+        for endpoint in endpoints {
+            if let url = address(from: endpoint) { return Candidate(url: url, guessed: false) }
+            if !endpoint.contains("://"), !endpoint.contains("/"), let url = address(from: "https://" + endpoint), tailnet(of: url) != nil {
+                return Candidate(url: url, guessed: false)
+            }
+        }
+        guard let network = tailnet(of: server), server.host()?.split(separator: ".").first?.hasSuffix("-rex") == true,
+              let url = address(from: "https://\(label.lowercased())-rex.\(network)") else { return nil }
+        return Candidate(url: url, guessed: true)
     }
 
     /// The tailnet a host belongs to (`tail1234.ts.net` for `studio.tail1234.ts.net`), or nil when
@@ -117,6 +142,72 @@ struct PairingProblem: Equatable {
     }
 }
 
+/// What checking a scanned address found.
+enum PairingCheck: Equatable {
+    /// Rex answered. The identity is nil when it answered but wouldn't say who it is.
+    case reachable(ServerIdentity?)
+    case problem(ConnectionProblem)
+}
+
+/// What the identity card says about a computer, under its name and address.
+struct IdentityCopy: Equatable {
+    /// How many session names the card shows before "+n".
+    static let maxSessions = 3
+
+    var symbol: String
+    /// "abe · Mac · 3 sessions". Nil when the computer said nothing about itself.
+    var summary: String?
+    /// The first few session names.
+    var sessions: [String]
+    /// Sessions beyond the ones named.
+    var more: Int
+    /// Only when the computer's owner isn't the login this iPhone connects as.
+    var owner: String?
+    /// Only when no helper is running on the computer.
+    var helper: String?
+
+    /// Only what the computer said. A count or a helper it didn't report is left out, never
+    /// shown as "none".
+    static func of(_ id: ServerIdentity?) -> IdentityCopy {
+        guard let id else { return IdentityCopy(symbol: "desktopcomputer", sessions: [], more: 0) }
+        var parts: [String] = []
+        if let account = id.account { parts.append(account) }
+        switch id.platform {
+        case .mac: parts.append("Mac")
+        case .linux: parts.append("Linux")
+        case .other, nil: break
+        }
+        switch id.sessionCount {
+        case nil: break
+        case 0: parts.append("No sessions yet")
+        case 1: parts.append("1 session")
+        case let n?: parts.append("\(n) sessions")
+        }
+        let shown = Array(id.sessions.prefix(maxSessions))
+        return IdentityCopy(
+            symbol: id.platform == .mac ? "laptopcomputer" : id.platform == .linux ? "server.rack" : "desktopcomputer",
+            summary: parts.isEmpty ? nil : parts.joined(separator: " · "),
+            sessions: shown,
+            more: shown.isEmpty ? 0 : max(0, (id.sessionCount ?? 0) - shown.count),
+            owner: id.belongsToSomeoneElse ? id.owner.map { "This computer belongs to \($0)." } : nil,
+            helper: id.hasHelper == false ? "Notifications need Rex DUO Helper on this computer." : nil)
+    }
+}
+
+extension PairingProblem {
+    /// An address that was only worked out didn't answer: it may not exist, so it is not offered
+    /// for adding. A refusal or no network at all keeps its own message.
+    static func guessed(_ problem: ConnectionProblem, foreignTailnet: Bool) -> PairingProblem {
+        switch problem.kind {
+        case .noInternet, .notAllowed:
+            return of(problem, foreignTailnet: foreignTailnet)
+        default:
+            return PairingProblem(symbol: "qrcode.viewfinder", title: "Can't find that computer",
+                                  message: "Pair it with a QR code from that computer.", actions: [])
+        }
+    }
+}
+
 /// One run of "Pair via QR Code": a scanned code is parsed, matched against the saved servers,
 /// checked for an answer, then named and added. It reaches the app only through the closures it
 /// is given, so tests run it without a camera or a network.
@@ -126,11 +217,21 @@ final class PairingModel {
     enum Step: Equatable {
         case scanning
         case checking(URL)
-        /// The server answered: confirm its name and add it.
-        case found(URL)
+        /// The server answered: its identity card, with a name to confirm.
+        case found(URL, ServerIdentity?)
         case problem(URL, PairingProblem)
-        /// A server was added or found saved. Nothing more happens in this run.
+        /// The server was added; its card stays up while the sheet leaves. Ends the run.
+        case added(URL, ServerIdentity?)
+        /// The server was already saved. Ends the run.
         case done
+    }
+
+    /// Nothing more happens in this run.
+    var isFinished: Bool {
+        switch step {
+        case .added, .done: return true
+        default: return false
+        }
     }
 
     static let notACode = "That's not a Rex pairing code."
@@ -144,13 +245,14 @@ final class PairingModel {
     var name = ""
 
     @ObservationIgnored private let servers: () -> [ServerConfig]
-    /// Nil when the server answered.
-    @ObservationIgnored private let probe: (URL) async -> ConnectionProblem?
+    @ObservationIgnored private let probe: (URL) async -> PairingCheck
     @ObservationIgnored private let onExisting: (ServerConfig) -> Void
     @ObservationIgnored private let onAdd: (ServerConfig) -> Void
     /// Counts checks, so an answer to one the person has left is dropped.
     @ObservationIgnored private var attempt = 0
     @ObservationIgnored private var check: Task<Void, Never>?
+    /// The address being checked was worked out, not read from a code or a host list.
+    @ObservationIgnored private var guessed = false
     /// The code the camera last reported and when. The camera reports a code on every frame it is
     /// in view, so a code is handled once per stay in view: cancelling a check with the code still
     /// in front of the camera doesn't start the check again.
@@ -158,7 +260,7 @@ final class PairingModel {
     @ObservationIgnored private var lastSeen = Date.distantPast
     @ObservationIgnored private var rejectionWatch: Task<Void, Never>?
 
-    init(servers: @escaping () -> [ServerConfig], probe: @escaping (URL) async -> ConnectionProblem?,
+    init(servers: @escaping () -> [ServerConfig], probe: @escaping (URL) async -> PairingCheck,
          onExisting: @escaping (ServerConfig) -> Void, onAdd: @escaping (ServerConfig) -> Void) {
         self.servers = servers
         self.probe = probe
@@ -181,15 +283,28 @@ final class PairingModel {
             return false
         }
         clearRejection()
+        take(url, guessed: false)
+        return true
+    }
+
+    /// A computer picked from a server's host list: the same run as a scanned code, from its
+    /// address. `name` is what the list calls it.
+    func start(_ candidate: PairingCode.Candidate, name: String) {
+        guard step == .scanning else { return }
+        take(candidate.url, guessed: candidate.guessed)
+        if case .checking = step { self.name = name }
+    }
+
+    private func take(_ url: URL, guessed: Bool) {
         // A server that is already saved keeps the name its owner gave it.
         if let saved = PairingCode.existing(url, in: servers()) {
             step = .done
             onExisting(saved)
-            return true
+            return
         }
+        self.guessed = guessed
         name = ServerConfig.name(for: url)
         check(url)
-        return true
     }
 
     /// Drops the "not a pairing code" message once that code has left the view. True when it did.
@@ -209,17 +324,17 @@ final class PairingModel {
     /// problem that offers it.
     func addAnyway() {
         guard case .problem(let url, let problem) = step, problem.actions.contains(.addAnyway) else { return }
-        add(url)
+        add(url, nil)
     }
 
     func add() {
-        guard case .found(let url) = step else { return }
-        add(url)
+        guard case .found(let url, let identity) = step else { return }
+        add(url, identity)
     }
 
     /// Back to the camera, dropping any check still running.
     func rescan() {
-        guard step != .done else { return }
+        guard !isFinished else { return }
         stopCheck()
         clearRejection()
         step = .scanning
@@ -236,13 +351,15 @@ final class PairingModel {
         let mine = attempt
         step = .checking(url)
         check = Task { [weak self, probe] in
-            let problem = await probe(url)
+            let result = await probe(url)
             guard let self, mine == self.attempt, !Task.isCancelled else { return }
-            if let problem {
+            switch result {
+            case .problem(let problem):
                 let foreign = PairingCode.isForeignTailnet(url, servers: self.servers())
-                self.step = .problem(url, .of(problem, foreignTailnet: foreign))
-            } else {
-                self.step = .found(url)
+                self.step = .problem(url, self.guessed ? .guessed(problem, foreignTailnet: foreign)
+                                                        : .of(problem, foreignTailnet: foreign))
+            case .reachable(let identity):
+                self.step = .found(url, identity)
             }
         }
     }
@@ -253,9 +370,15 @@ final class PairingModel {
         check = nil
     }
 
-    private func add(_ url: URL) {
+    private func add(_ url: URL, _ identity: ServerIdentity?) {
         stopCheck()
-        step = .done
+        // Saved in the meantime (another window, a second device syncing): open it, add nothing.
+        if let saved = PairingCode.existing(url, in: servers()) {
+            step = .done
+            onExisting(saved)
+            return
+        }
+        step = .added(url, identity)
         let typed = name.trimmingCharacters(in: .whitespaces)
         onAdd(ServerConfig(name: typed.isEmpty ? ServerConfig.name(for: url) : typed, url: url.absoluteString))
     }

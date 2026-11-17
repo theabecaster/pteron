@@ -488,6 +488,8 @@ pub fn open_app() -> i32 {
         dialog(&format!("Rex DUO Helper couldn't start.\n\n{e}"), &["OK"]);
         return 1;
     }
+    // The permission question for the "Rex DUO connected" notice, next to the welcome.
+    crate::notice::authorize();
     let r = wait_for_start(Duration::from_secs(5));
     let state = match &r {
         Some(r) if r.connected => "It's connected to Rex on this Mac",

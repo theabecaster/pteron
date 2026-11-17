@@ -49,6 +49,8 @@ enum CameraAccess: Equatable {
 /// model decides what is new), follows the torch both ways, and says when the camera can't run.
 struct QRCameraView: UIViewRepresentable {
     @Binding var torch: Bool
+    /// Hold the last picture still: a code was read and is being looked at.
+    var frozen = false
     var onCode: (String) -> Void
     var onFailure: () -> Void
 
@@ -59,6 +61,7 @@ struct QRCameraView: UIViewRepresentable {
         view.onFailure = onFailure
         view.onTorch = { [binding = $torch] on in if binding.wrappedValue != on { binding.wrappedValue = on } }
         view.setTorch(torch)
+        view.setFrozen(frozen)
     }
 
     static func dismantleUIView(_ view: QRCameraUIView, coordinator: ()) { view.stop() }
@@ -123,6 +126,7 @@ final class QRCameraUIView: UIView {
     private var notifications: [NSObjectProtocol] = []
     private var stopped = false
     private var wantsTorch = false
+    private var frozen = false
 
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     private var preview: AVCaptureVideoPreviewLayer {
@@ -179,6 +183,7 @@ final class QRCameraUIView: UIView {
         })
         box.start()
         setTorch(wantsTorch)
+        preview.connection?.isEnabled = !frozen
     }
 
     private func runtimeError(recoverable: Bool) {
@@ -199,6 +204,13 @@ final class QRCameraUIView: UIView {
         notifications.forEach(NotificationCenter.default.removeObserver)
         notifications = []
         box.stop()
+    }
+
+    /// The session keeps running; only the picture stops, on its last frame.
+    func setFrozen(_ on: Bool) {
+        guard on != frozen else { return }
+        frozen = on
+        preview.connection?.isEnabled = !on
     }
 
     func setTorch(_ on: Bool) {
