@@ -66,14 +66,17 @@ vertex StickerOut sticker_vertex(uint vid [[vertex_id]], constant Uniforms &u [[
 }
 
 fragment float4 sticker_fragment(StickerOut in [[stage_in]], bool front [[front_facing]],
-                                 texture2d<float> art [[texture(0)]],
+                                 texture2d<float> art [[texture(0)]], texture2d<float> backing [[texture(1)]],
                                  sampler smooth [[sampler(0)]], sampler exact [[sampler(1)]],
                                  constant Uniforms &u [[buffer(0)]]) {
     // Still stuck: the launch screen's own texels, untouched, so the first frame matches it exactly.
     if (in.s <= 0.0) { return art.sample(exact, in.uv); }
     // Full detail only: smaller mips would bleed color past the outline where the fold squeezes the mesh.
     float4 c = art.sample(smooth, in.uv, level(0.0));
-    if (c.a <= 0.002) { discard_fragment(); }         // no depth from the clear parts of the sheet
+    // The paper side is cut to the art's outline with the seams inside it closed: where the art's
+    // shapes meet, its alpha dips, and paper cut with that would show a hairline of what is behind.
+    float cover = front ? c.a : backing.sample(smooth, in.uv, level(0.0)).r;
+    if (cover <= 0.002) { discard_fragment(); }       // no depth from the clear parts of the sheet
     float3 n = normalize(in.n);
     if (!front) { n = -n; }
     float3 L = normalize(float3(-0.35, -0.55, 0.75)); // top left, in front
@@ -90,7 +93,7 @@ fragment float4 sticker_fragment(StickerOut in [[stage_in]], bool front [[front_
     float fold = mix(0.72, 1.0, smoothstep(0.0, 1.5 * R, in.s - 0.5 * M_PI_F * R));
     float gloss = 0.2 * max(pow(max(dot(n, H), 0.0), 24.0) - pow(H.z, 24.0), 0.0);
     float3 paper = float3(0.925, 0.910, 0.885);
-    return float4((paper * lit * fold + gloss) * c.a, c.a);
+    return float4((paper * lit * fold + gloss) * cover, cover);
 }
 
 struct ShadowOut {
