@@ -103,6 +103,30 @@ Rules that keep the UI and the frame from waiting:
 - The glyph worker takes the atlas lock only to store a finished bitmap, so a frame never waits
   for CoreText.
 
+Rules that were once broken, and must stay kept (the input mirror's lock is taken under
+`termLock` or alone):
+
+- Only the render thread moves the viewport, inside the frame's update. Input (`scrollToBottomForInput`)
+  and an edge drag leave a request with the scroll state; they never scroll on the feed queue or under
+  the terminal lock on the main thread.
+- `scrollPage` on an alternate screen uses the input mirror, not the terminal lock.
+- Nothing takes `termLock` per frame without telling the feed queue.
+
+Accepted, with the bound:
+
+- **Main-thread waits.** Selection calls, mouse reports, the wheel's mode read and the cursor
+  position during composition take `termLock` on the main thread. The feed queue lets a waiter in
+  between slices, so the wait is one slice of 64 KB of output, plus one row build if the feed queue
+  is itself waiting for the renderer at the start of a synchronized update. Typing, pasting and
+  scrolling take no terminal lock.
+- **Stale input modes.** A key is encoded with the modes of the last parsed slice. Output still in
+  the queue (including a snapshot being restored after a reconnect) hasn't changed them yet. The
+  window is the feed queue's backlog.
+- **Stale scroll routing.** Whether one-finger drags go to the program follows the last drawn
+  frame, at most 33 ms behind, and is not updated during a synchronized-output hold (1 s at most).
+- **Hit-testing against the last frame.** A touch is mapped with the scroll position of the last
+  drawn frame, and the terminal may have scrolled since (one frame of output at most).
+
 ## From bytes to a frame
 
 1. `TerminalHost.streamFeed` calls `feed(buffer:)`. `GhosttyCore.feed` copies the bytes under
@@ -214,6 +238,11 @@ server changed it. `ghostty_terminal_resize` reflows.
   static each) and `macos-arm64_x86_64` (27 MB). In the shipped app the library is 1.48 MB of
   the binary.
 - Swift module name: `GhosttyVt`. Umbrella header: `ghostty/vt.h`.
+- **Re-pin:** change `GHOSTTY_COMMIT` in `scripts/ghostty.version` (and the Zig version and hash
+  if Ghostty's `minimum_zig_version` moved) and run `scripts/build-ghostty.sh`. Then check
+  `RexConnect/Resources/Acknowledgements.txt` against the `"use": "linked"` entries in
+  `Vendor/ghostty/deps/libghostty-vt-third-party.json`: the app must ship every linked licence.
+  Re-check docs/ghostty-api-notes.md against the headers, and run the benchmark.
 
 ### Patches
 
@@ -299,8 +328,6 @@ enough), and the next build stops with that instruction when it cannot read one.
     give `close` and `realpath` through `__DARWIN_ALIAS_C` and `__DARWIN_EXTSN`.
 - **Release builds for the simulator** need `ONLY_ACTIVE_ARCH=YES`: they otherwise also link
   x86_64, which the simulator slice doesn't have.
-- **Worktree-isolated agents** must give git absolute paths inside the worktree, and can't run
-  compound shell commands that use git. They can symlink another checkout's `Vendor`.
 
 ## Measurements
 
