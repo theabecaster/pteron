@@ -52,7 +52,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
     }
     var onFocus: (() -> Void)?
-    var onTitle: ((String) -> Void)?
     /// Horizontal swipe: +1 = next pane, -1 = previous pane.
     var onSwipe: ((Int) -> Void)?
     /// App-level commands (keyboard shortcuts, two-finger tap); the window screen performs them.

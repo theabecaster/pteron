@@ -39,12 +39,6 @@ struct RootView: View {
             .background(WaitingWatcher())
             .background(VerticalBarObserver { e in if barEdge != e { barEdge = e } })
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
-            .background(HingeObserver { h in
-                // Layout never reads the hinge. Only a status change matters, so an angle change alone
-                // invalidates nothing.
-                let new = AppModel.hingeOverride ?? h
-                if model.hinge?.status != new?.status { model.hinge = new }
-            })
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)
             .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 })) {
@@ -58,7 +52,6 @@ struct RootView: View {
             }
             .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
             .onAppear {
-                if let h = AppModel.hingeOverride { model.hinge = h }
                 // Nothing to list yet: the tab area, which says how to add a server, shows.
                 if model.servers.isEmpty { sidebar.open = false }
                 #if DEBUG
@@ -418,36 +411,6 @@ struct NoticeBanner: View {
         }
         .animation(.snappy(duration: 0.25), value: notice.message)
     }
-}
-
-// MARK: - Hinge
-
-/// Reads the hinge with `UIHingeInteraction` (iOS 27.1+). Reports nil when there's no hinge info.
-struct HingeObserver: UIViewRepresentable {
-    let onChange: (HingeInfo?) -> Void
-
-    func makeUIView(context: Context) -> UIView {
-        let v = UIView()
-        v.isUserInteractionEnabled = false
-        if #available(iOS 27.1, *) {
-            let report = onChange
-            let interaction = UIHingeInteraction { _, update in
-                guard let h = update.hinge else { report(nil); return }
-                let status: HingeInfo.Status
-                switch h.status {
-                case .closed: status = .closed
-                case .partiallyOpen: status = .partial
-                case .fullyOpen: status = .full
-                default: status = .unknown
-                }
-                report(HingeInfo(status: status, angle: Double(h.angle)))
-            }
-            v.addInteraction(interaction)
-        }
-        return v
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
 // MARK: - Vertical bar

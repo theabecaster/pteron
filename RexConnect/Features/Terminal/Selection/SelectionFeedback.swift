@@ -8,7 +8,7 @@ protocol SelectionFeedback: AnyObject {
     func play(_ haptic: SelectionHaptic)
 }
 
-/// System haptics for selection, behind the Haptics setting like `Haptic`.
+/// System haptics for selection. iOS mutes them when System Haptics is off.
 ///
 /// | Event | Generator |
 /// | --- | --- |
@@ -24,16 +24,10 @@ final class SystemSelectionFeedback: SelectionFeedback {
     private let grab = UIImpactFeedbackGenerator(style: .light)
     private let tick = UISelectionFeedbackGenerator()
     private let copy = UINotificationFeedbackGenerator()
-    private let enabled: () -> Bool
-
-    init(enabled: @escaping () -> Bool = { true }) {
-        self.enabled = enabled
-    }
 
     /// The prepared state lasts a few seconds and ends when a generator fires, so the session
     /// asks again at each step of a gesture (touch down, selection start, each tick, a grab).
     func prepare() {
-        guard enabled() else { return }
         start.prepare()
         grab.prepare()
         tick.prepare()
@@ -41,7 +35,6 @@ final class SystemSelectionFeedback: SelectionFeedback {
     }
 
     func play(_ haptic: SelectionHaptic) {
-        guard enabled() else { return }
         switch haptic {
         case .start: start.impactOccurred()
         case .grab: grab.impactOccurred()
