@@ -84,7 +84,9 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
 - Releases (device installs, TestFlight, the helper's packaging): [docs/release.md](docs/release.md).
 - CI (`.github/workflows/ci.yml`): job `build` runs RexKit and app tests on macdesk, a self-hosted
   runner on the latest Xcode; job `helper` runs `cargo test` on GitHub's Linux runners. `build` is
-  required for merging into main. Fork pull requests only run after the owner approves them.
+  required for merging into main for outside contributors; their fork pull requests only run after
+  the owner approves them. The owner and their agents may merge straight to main (admin bypass)
+  after building and testing locally; don't wait on CI.
 
 ## Debug launch arguments
 
