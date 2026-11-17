@@ -350,7 +350,7 @@ struct OfflineScreen: View {
 
 /// The filled capsule button. Busy swaps the title for a spinner and `busyTitle` in the same frame,
 /// so nothing around it moves.
-private struct PrimaryButton: View {
+struct PrimaryButton: View {
     let title: String
     var busyTitle: String = ""
     let busy: Bool

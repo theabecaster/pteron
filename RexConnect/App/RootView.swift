@@ -44,12 +44,21 @@ struct RootView: View {
             .sheet(isPresented: Binding(get: { model.showSettings }, set: { model.showSettings = $0 })) {
                 SettingsView().environment(model)
             }
+            .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
+                model.openSettings(at: .addServer)
+            }
             .onChange(of: model.servers.map { $0.views.count }) { _, _ in
                 model.autoSelect()
             }
             .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
             .onAppear {
+                // Nothing to list yet: the tab area, which says how to add a server, shows.
+                if model.servers.isEmpty { sidebar.open = false }
                 #if DEBUG
+                // `-simulateScan <payload>` (testing): open the scanner at launch.
+                if UserDefaults.standard.string(forKey: "simulateScan") != nil, SettingsPage.debugLaunch == nil {
+                    model.showPairing = true
+                }
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
                 #endif
@@ -165,7 +174,7 @@ struct RootView: View {
 
     /// The fold, from the reserved regions (iOS 27.1+). Inactive regions count: a flat device still
     /// has a crease, and the sidebar's edge snaps to it.
-    private static func division(_ geo: GeometryProxy) -> Division? {
+    static func division(_ geo: GeometryProxy) -> Division? {
         if #available(iOS 27.1, *) {
             guard let r = geo.reservedRegions(kind: .division, options: .includeInactive).first else { return nil }
             return Division(frame: r.frame, isActive: r.isActive)
@@ -330,14 +339,16 @@ struct EmptyState: View {
             Image(systemName: "terminal")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(theme.chrome.tertiary)
-            Text(statusText)
+            Text(LocalizedStringKey(statusText))
                 .font(.subheadline)
                 .foregroundStyle(theme.chrome.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 30)
             if model.servers.isEmpty {
-                Button("Add a Server") { model.showSettings = true }
-                    .frame(minHeight: 44)
+                PrimaryButton(title: "Pair via QR Code", busy: false, theme: theme) { model.showPairing = true }
+                Button("Enter Address") { model.openSettings(at: .addServer) }
+                    .font(.subheadline.weight(.medium))
+                    .frame(minWidth: 200, minHeight: 44)
             } else if !sidebarVisible {
                 Button("Show Sidebar") { sidebarVisible = true }
                     .frame(minHeight: 44)
@@ -349,7 +360,7 @@ struct EmptyState: View {
 
     private var statusText: String {
         if model.servers.isEmpty {
-            return "Add your Rex server's Tailscale address, https://<name>.<tailnet>.ts.net, in Settings."
+            return "On your computer, run `rex server tailscale pair`, then scan the code it shows."
         }
         if model.servers.contains(where: { $0.phase == .online }) { return "Pick a tab in the sidebar." }
         return "Connecting to Rex…"
@@ -388,7 +399,7 @@ struct NoticeBanner: View {
                     .foregroundStyle(theme.fg)
                     .padding(.horizontal, 14).padding(.vertical, 9)
                     .background(Capsule().fill(theme.chrome.sidebar))
-                    .overlay(Capsule().stroke(theme.chrome.error.opacity(0.5), lineWidth: 1))
+                    .overlay(Capsule().stroke(notice.style == .error ? theme.chrome.error.opacity(0.5) : theme.chrome.divider, lineWidth: 1))
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
                     .padding(.horizontal, 24)
                     .padding(.top, 6)

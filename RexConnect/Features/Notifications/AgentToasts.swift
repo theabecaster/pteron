@@ -156,9 +156,18 @@ private struct ToastCard: View {
                             .lineLimit(2)
                     }
                     if !toast.others.isEmpty {
-                        Text(toast.others.count == 1 ? "1 more agent is waiting" : "\(toast.others.count) more agents are waiting")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(theme.chrome.blocked)
+                        let n = toast.others.count
+                        // One line: the short form where the sentence doesn't fit; VoiceOver reads the sentence.
+                        ViewThatFits(in: .horizontal) {
+                            Text(n == 1 ? "1 more agent is waiting" : "\(n) more agents are waiting")
+                            Text("\(n) more waiting")
+                        }
+                        .font(.caption2.weight(.medium))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .foregroundStyle(theme.chrome.blocked)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(n == 1 ? "1 more agent is waiting" : "\(n) more agents are waiting")
                     }
                 }
                 Spacer(minLength: 0)

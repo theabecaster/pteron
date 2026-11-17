@@ -48,11 +48,14 @@ struct ServerConfig: Codable, Identifiable, Hashable {
     }
 
     /// A name for a server added without one: the address's first label, so
-    /// `studio.tail1234.ts.net` is "studio". An IP address stays whole.
+    /// `studio.tail1234.ts.net` is "studio". Rex names its tailnet address `<computer>-rex`, so
+    /// that ending goes too. An IP address stays whole.
     static func name(for url: URL) -> String {
         guard let host = url.host(), !host.isEmpty else { return "Rex" }
         if host.contains(":") || host.allSatisfy({ $0.isNumber || $0 == "." }) { return host }
-        return host.split(separator: ".").first.map(String.init) ?? host
+        let label = host.split(separator: ".").first.map(String.init) ?? host
+        let suffix = "-rex"
+        return label.count > suffix.count && label.lowercased().hasSuffix(suffix) ? String(label.dropLast(suffix.count)) : label
     }
 }
 
