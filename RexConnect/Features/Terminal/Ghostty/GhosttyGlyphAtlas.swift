@@ -31,7 +31,8 @@ struct GhosttyGlyph {
     static let mask: UInt8 = 1
     static let color: UInt8 = 2
     /// Being drawn on the atlas's glyph worker. Nothing to show yet: leave it out and build the
-    /// row again once `GhosttyGlyphAtlas.arrivals` has moved.
+    /// row again once `GhosttyGlyphAtlas.arrivals` has moved. A pending glyph has no place in a
+    /// page; inside the atlas its `u` and `v` hold the frame stamp of the last lookup instead.
     static let pending: UInt8 = 0xfe
     static let unknown: UInt8 = 0xff
 
@@ -61,8 +62,10 @@ final class GhosttyAtlasPage {
     private(set) var dirtyMaxX = 0
     private(set) var dirtyMinY = Int.max
     private(set) var dirtyMaxY = 0
-    /// Bumped when the bitmap is reallocated: the texture must be recreated.
-    private(set) var sizeGeneration = 0
+    /// Bumped when the texture that mirrors this page must be replaced by a new one: the bitmap
+    /// was reallocated, or it was wiped. A wipe puts new glyphs where old ones were, and frames
+    /// already handed to the GPU may still read the old ones from the old texture.
+    private(set) var textureGeneration = 0
 
     init(width: Int, height: Int, maxHeight: Int, bytesPerPixel: Int) {
         self.width = width
@@ -107,7 +110,7 @@ final class GhosttyAtlasPage {
         pixels = fresh
         height = newHeight
         // The renderer makes a new texture and fills it with the rows in use (`markUsedDirty`).
-        sizeGeneration += 1
+        textureGeneration += 1
     }
 
     /// Copies `h` rows of `w` pixels from `src` (with `srcBytesPerRow`) to (x, y).
@@ -137,14 +140,15 @@ final class GhosttyAtlasPage {
         dirtyMaxY = usedHeight
     }
 
-    /// Forgets every glyph. Nothing is marked dirty: a glyph's box is uploaded when it is
-    /// written, and pixels outside the boxes handed out are never read.
+    /// Forgets every glyph. Nothing is marked dirty: the renderer starts a new texture
+    /// (`textureGeneration`) and uploads the rows in use by then.
     func reset() {
         pixels.update(repeating: 0, count: width * height * bytesPerPixel)
         shelfX = 1
         shelfY = 1
         shelfHeight = 0
         clearDirty()
+        textureGeneration += 1
     }
 }
 
@@ -330,6 +334,63 @@ final class GhosttyGlyphRasterizer {
     }
 }
 
+/// Work for the glyph worker: the newest request comes out first, and when it is full the
+/// oldest one falls out. Both in constant time. Storage grows with use, up to `limit`.
+struct GhosttyRequestStack<T> {
+    let limit: Int
+    private var slots: [T?]
+    /// Where the next push goes. The oldest element is `count` slots before it.
+    private var head = 0
+    private(set) var count = 0
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+        slots = Array(repeating: nil, count: min(self.limit, 64))
+    }
+
+    var isEmpty: Bool { count == 0 }
+
+    /// Returns the oldest element if it had to make room.
+    @discardableResult
+    mutating func push(_ value: T) -> T? {
+        var evicted: T?
+        if count == slots.count {
+            if slots.count < limit {
+                grow()
+            } else {
+                // Full: `head` is also where the oldest element sits.
+                evicted = slots[head]
+                count -= 1
+            }
+        }
+        slots[head] = value
+        head = head + 1 == slots.count ? 0 : head + 1
+        count += 1
+        return evicted
+    }
+
+    mutating func pop() -> T? {
+        guard count > 0 else { return nil }
+        head = head == 0 ? slots.count - 1 : head - 1
+        let value = slots[head]
+        slots[head] = nil
+        count -= 1
+        return value
+    }
+
+    private mutating func grow() {
+        var bigger = [T?](repeating: nil, count: min(limit, slots.count * 2))
+        // Oldest first, from slot 0.
+        var from = head >= count ? head - count : head - count + slots.count
+        for i in 0..<count {
+            bigger[i] = slots[from]
+            from = from + 1 == slots.count ? 0 : from + 1
+        }
+        slots = bigger
+        head = count
+    }
+}
+
 /// The thread that draws slow glyphs, for every atlas. It is made once and then parks: asking a
 /// dispatch queue instead meant a new thread for nearly every batch, and making one stalled the
 /// frame that asked for 0.5 to 2 ms (measured). Parked, it wakes for nothing.
@@ -436,9 +497,26 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
 
     /// Glyph worker thread only.
     private let helperRasterizer: GhosttyGlyphRasterizer
-    /// Guarded by the lock.
-    private var requests: [Request] = []
+    /// Requests the worker holds at most. More than any screen has cells for; a burst that
+    /// asks for more loses its oldest requests (`request`).
+    static let requestLimit = 16_384
+    /// Guarded by the lock. The newest request is drawn first: after a burst (a large file of
+    /// CJK text going by) what is on screen now comes before what scrolled away.
+    private var requests = GhosttyRequestStack<Request>(limit: GhosttyGlyphAtlas.requestLimit)
     private var helperBusy = false
+    /// Counts frame builds that defer glyphs (`beginFrame`). A pending glyph carries the stamp
+    /// of the last build that looked it up, a row the stamp of the build that made it.
+    private(set) var frameStamp: UInt32 = 0
+    /// For each frame builder with rows that wait for glyphs: the stamp of the oldest such
+    /// row. A request last looked up before every one of these is for rows that are gone.
+    private var needs: [ObjectIdentifier: UInt32] = [:]
+    /// Every pane must look again once the lock is released: the pages were wiped, a request
+    /// that may still be waited for was dropped, or a glyph arrived without the worker.
+    private var redrawOnUnlock = false
+    /// Requests the worker drew, and requests left undrawn because no frame waited for them
+    /// any more or the stack was full (for tests and tuning).
+    private(set) var helperDrawn = 0
+    private(set) var helperDropped = 0
     /// CoreText's fallback fonts are loaded once per process.
     private static let primed = Atomic<Bool>(false)
 
@@ -525,8 +603,45 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
     func unlock() {
         let start = !requests.isEmpty && !helperBusy
         if start { helperBusy = true }
+        let redraw = redrawOnUnlock
+        redrawOnUnlock = false
         guardLock.unlock()
         if start { GhosttyGlyphWorker.shared.run { self.drain() } }
+        // A wipe hits every pane that shares the atlas, also one that is idle and would never
+        // look: its frame on screen is fine, but its rows point at slots that hold other glyphs
+        // now, and its next frame must not be built from them. The other reasons are in
+        // `request` and `arrivedInFrame`.
+        if redraw { GhosttyRenderThread.shared.glyphsReady() }
+    }
+
+    // MARK: Frame stamps (with the lock held)
+
+    /// A frame build that defers glyphs begins. Lookups from now on stamp what they wait for.
+    func beginFrame() { frameStamp &+= 1 }
+
+    /// `client` (a frame builder) has rows that wait for glyphs, the oldest built at stamp
+    /// `oldest`; nil: it waits for nothing. Tell before releasing the lock a build was made
+    /// under, or the worker may take a request of that build for one nobody waits for.
+    func setNeed(_ client: ObjectIdentifier, oldest: UInt32?) {
+        if let oldest { needs[client] = oldest } else if !needs.isEmpty { needs[client] = nil }
+    }
+
+    /// True if `a` was stamped before `b`. The counter may wrap.
+    @inline(__always)
+    static func stamp(_ a: UInt32, isBefore b: UInt32) -> Bool { Int32(bitPattern: a &- b) < 0 }
+
+    @inline(__always)
+    private static func pendingGlyph(_ stamp: UInt32) -> GhosttyGlyph {
+        GhosttyGlyph(u: UInt16(truncatingIfNeeded: stamp), v: UInt16(truncatingIfNeeded: stamp >> 16), kind: GhosttyGlyph.pending)
+    }
+
+    /// True if some frame builder may still have a row that waits for this pending glyph. A row
+    /// stamps its glyphs when it is built, so a glyph last looked up before the oldest waiting
+    /// row of every builder is in none of them.
+    private func isAwaited(_ g: GhosttyGlyph) -> Bool {
+        let stamp = UInt32(g.u) | UInt32(g.v) << 16
+        for oldest in needs.values where !Self.stamp(stamp, isBefore: oldest) { return true }
+        return false
     }
 
     // MARK: Lookup (with the lock held)
@@ -550,18 +665,29 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
     func glyph(_ cp: UInt32, style: Int, cells: Int) -> GhosttyGlyph {
         let sprite = GhosttySprites.isSprite(cp) || cp >= GhosttySprites.curlyUnderline
         let key = UInt64(cp) | UInt64(sprite ? 0 : style) << 24 | UInt64(cells) << 28
-        if let g = glyphs[key], g.kind != GhosttyGlyph.pending || defersSlowGlyphs { return g }
+        if let at = glyphs.index(forKey: key) {
+            let g = glyphs.values[at]
+            if g.kind != GhosttyGlyph.pending { return g }
+            if defersSlowGlyphs {
+                // Still waited for, by the frame being built now.
+                glyphs.values[at] = Self.pendingGlyph(frameStamp)
+                return g
+            }
+            // Drawn here and now, for a frame that doesn't defer. Frames that wait for it
+            // must hear of it: the worker will find nothing left to do.
+            arrivedInFrame()
+        }
         let g: GhosttyGlyph
         if sprite {
             g = rasterizeSprite(cp, cells: cells)
         } else if defersSlowGlyphs, Unicode.Scalar(cp) != nil, !covers(cp, style: style) {
             // Not in MesloLGS NF: CoreText has to find a fallback font. Not inside a frame.
-            g = GhosttyGlyph(kind: GhosttyGlyph.pending)
+            g = Self.pendingGlyph(frameStamp)
             request(.codepoint(key: key, cp: cp, style: style, cells: cells))
         } else if let own = rasterizer.ownGlyph(cp, style: style) {
             g = store(rasterizer.draw(own, style: style, cells: cells, fit: Self.isPrivateUse(cp)))
         } else if defersSlowGlyphs, Unicode.Scalar(cp) != nil {
-            g = GhosttyGlyph(kind: GhosttyGlyph.pending)
+            g = Self.pendingGlyph(frameStamp)
             request(.codepoint(key: key, cp: cp, style: style, cells: cells))
         } else {
             g = store(drawNow(cp, style: style, cells: cells))
@@ -573,16 +699,30 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
     /// A grapheme cluster: base codepoint plus combining marks, joiners, variation selectors.
     func glyph(cluster: UnsafeBufferPointer<UInt32>, style: Int, cells: Int) -> GhosttyGlyph {
         let key = ClusterKey(codepoints: Array(cluster), style: UInt8(style), cells: UInt8(cells))
-        if let g = clusters[key], g.kind != GhosttyGlyph.pending || defersSlowGlyphs { return g }
+        if let at = clusters.index(forKey: key) {
+            let g = clusters.values[at]
+            if g.kind != GhosttyGlyph.pending { return g }
+            if defersSlowGlyphs {
+                clusters.values[at] = Self.pendingGlyph(frameStamp)
+                return g
+            }
+            arrivedInFrame()
+        }
         let g: GhosttyGlyph
         if defersSlowGlyphs {
-            g = GhosttyGlyph(kind: GhosttyGlyph.pending)
+            g = Self.pendingGlyph(frameStamp)
             request(.cluster(key))
         } else {
             g = store(rasterizer.draw(text: Self.text(key.codepoints), style: style, cells: cells))
         }
         clusters[key] = g
         return g
+    }
+
+    /// A glyph that frames wait for is being drawn by a lookup instead of the worker.
+    private func arrivedInFrame() {
+        arrivals += 1
+        redrawOnUnlock = true
     }
 
     /// False if the face surely has no glyph for `cp`. A set lookup: asking CoreText for the
@@ -660,10 +800,19 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
         clusters.removeAll(keepingCapacity: true)
         ascii.update(repeating: GhosttyGlyph(kind: GhosttyGlyph.unknown), count: 4 * 128)
         generation += 1
+        redrawOnUnlock = true
     }
 
-    /// Test hook: behaves as if the pages had filled up.
+    /// Test hook: behaves as if the pages had filled up. With the lock held if anything else
+    /// uses the atlas.
     func wipeForTesting() { wipe() }
+
+    /// Test hook: parks the glyph worker (every atlas's) until the returned closure is called.
+    static func parkHelperForTesting() -> @Sendable () -> Void {
+        let gate = DispatchSemaphore(value: 0)
+        GhosttyGlyphWorker.shared.run { gate.wait() }
+        return { gate.signal() }
+    }
 
     /// The mask coverage at a glyph's pixel (x, y). For tests.
     func maskCoverage(_ g: GhosttyGlyph, x: Int, y: Int) -> UInt8 {
@@ -678,19 +827,45 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
     /// first draws what it needs itself.
     func warm() {
         lock()
-        for style in 0..<4 {
-            for cp in UInt32(0x21)...UInt32(0x7e) { requests.append(.ascii(cp: cp, style: style)) }
-        }
+        // Pushed last to first, because the newest request is drawn first: the order drawn is
+        // the faces in turn, each from "!" on (`drain` treats a face's first glyph specially),
+        // then the fallback fonts.
         if !Self.primed.exchange(true, ordering: .relaxed) {
             // A symbol, a CJK character and an emoji: the fonts a terminal falls back to most.
-            for text in ["\u{25cf}", "\u{65e5}", "\u{1f600}"] { requests.append(.prime(text)) }
+            for text in ["\u{1f600}", "\u{65e5}", "\u{25cf}"] { requests.push(.prime(text)) }
+        }
+        for style in (0..<4).reversed() {
+            for cp in (UInt32(0x21)...UInt32(0x7e)).reversed() { requests.push(.ascii(cp: cp, style: style)) }
         }
         unlock()
     }
 
     /// With the lock held. The worker starts when the lock is released.
     private func request(_ r: Request) {
-        requests.append(r)
+        guard let evicted = requests.push(r) else { return }
+        // Full: the oldest request goes undrawn. Forget that it was asked for, so a later
+        // lookup asks again; and if a row may still wait for it, have the panes build their
+        // waiting rows again, which asks again now (and so puts it first).
+        helperDropped += 1
+        var awaited = false
+        switch evicted {
+        case .codepoint(let key, _, _, _):
+            if let g = glyphs[key], g.kind == GhosttyGlyph.pending {
+                awaited = isAwaited(g)
+                glyphs[key] = nil
+            }
+        case .cluster(let key):
+            if let g = clusters[key], g.kind == GhosttyGlyph.pending {
+                awaited = isAwaited(g)
+                clusters[key] = nil
+            }
+        case .ascii, .prime:
+            break
+        }
+        if awaited {
+            arrivals += 1
+            redrawOnUnlock = true
+        }
     }
 
     /// Blocks until the glyph worker has drawn everything asked of it so far. For tests.
@@ -706,14 +881,14 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
         var announced = CACurrentMediaTime()
         while true {
             lock()
-            guard !requests.isEmpty else {
+            guard let r = requests.pop() else {
                 helperBusy = false
                 unlock()
                 break
             }
-            let r = requests.removeFirst()
             var wanted = true
-            if case .ascii(let cp, let style) = r {
+            switch r {
+            case .ascii(let cp, let style):
                 wanted = ascii[style * 128 + Int(cp)].kind == GhosttyGlyph.unknown
                 // The first glyph of each face is drawn the way a frame draws: with the frame's
                 // rasterizer, under the lock. The first draw of a face into a bitmap context
@@ -727,6 +902,27 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
                     clusters.reserveCapacity(64)
                     wanted = false
                 }
+            case .codepoint(let key, _, _, _):
+                // Drawn meanwhile by a frame that doesn't defer, forgotten by a wipe, or asked
+                // for by rows that are gone (output that scrolled away): nothing to draw. A
+                // glyph nobody waits for is forgotten, so a later lookup asks again.
+                let g = glyphs[key]
+                wanted = g?.kind == GhosttyGlyph.pending
+                if wanted, let g, !isAwaited(g) {
+                    glyphs[key] = nil
+                    wanted = false
+                }
+                if !wanted { helperDropped += 1 }
+            case .cluster(let key):
+                let g = clusters[key]
+                wanted = g?.kind == GhosttyGlyph.pending
+                if wanted, let g, !isAwaited(g) {
+                    clusters[key] = nil
+                    wanted = false
+                }
+                if !wanted { helperDropped += 1 }
+            case .prime:
+                break
             }
             unlock()
             guard wanted else { continue }
@@ -741,7 +937,7 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
             }
 
             lock()
-            let before = generation
+            helperDrawn += 1
             switch r {
             case .ascii(let cp, let style):
                 // A frame may have drawn it meanwhile.
@@ -750,18 +946,23 @@ final class GhosttyGlyphAtlas: @unchecked Sendable {
                     ascii[style * 128 + Int(cp)] = g
                 }
             case .codepoint(let key, _, _, _):
-                glyphs[key] = store(bitmap)
-                arrivals += 1
-                unannounced = true
+                // Only where it is still waited for: not over a glyph a frame drew meanwhile,
+                // and not into pages that were wiped since.
+                if glyphs[key]?.kind == GhosttyGlyph.pending {
+                    glyphs[key] = store(bitmap)
+                    arrivals += 1
+                    unannounced = true
+                }
             case .cluster(let key):
-                clusters[key] = store(bitmap)
-                arrivals += 1
-                unannounced = true
+                if clusters[key]?.kind == GhosttyGlyph.pending {
+                    clusters[key] = store(bitmap)
+                    arrivals += 1
+                    unannounced = true
+                }
             case .prime:
                 break
             }
-            // Storing wiped full pages: every pane's rows point at stale slots.
-            if generation != before { unannounced = true }
+            // If storing wiped full pages, `unlock` tells the panes.
             unlock()
 
             // Tell the panes now and then, so glyphs show while a long batch is still drawing.

@@ -97,10 +97,8 @@ final class GhosttyDemoView: UIView {
         let bytes = [UInt8](data)
         let terminal = terminal
         let core = terminal.core
-        let restoring = terminal.restoreSnapshot(bytes, consumed: { used in
-            // On the feed queue: these bytes are parsed right after the restore.
-            core.feed(GhosttyDemo.stripRexMessages(bytes[used...]))
-        }, failed: {
+        // The capture goes on after the snapshot: that part is parsed right after the restore.
+        let restoring = terminal.restoreSnapshot(bytes, trailing: { GhosttyDemo.stripRexMessages($0) }, failed: {
             terminal.feed(text: "ghosttyDemo: snapshot did not decode\r\n")
         })
         if !restoring { core.feed(GhosttyDemo.stripRexMessages(bytes[...])) }

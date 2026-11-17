@@ -113,6 +113,9 @@ final class GhosttyRow {
     var unverifiable = false
     /// Some glyphs were not in the atlas yet and were left out (`GhosttyGlyphAtlas.defersSlowGlyphs`).
     var awaitsGlyphs = false
+    /// The atlas's frame stamp when the row was built: glyphs it waits for were asked for, or
+    /// asked for again, at this stamp.
+    var builtStamp: UInt32 = 0
 
     deinit { source?.deallocate() }
 
@@ -345,6 +348,7 @@ final class GhosttyRowBuilder {
     func build(_ row: GhosttyRow, y: Int, iterator: GhosttyRenderStateRowIterator, cells: GhosttyRenderStateRowCells) {
         row.removeAll()
         row.y = y
+        row.builtStamp = atlas.frameStamp
         let rowIndex = UInt16(clamping: y)
         var view = GhosttyCellsView()
         guard ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW, &view) == GHOSTTY_SUCCESS,
@@ -671,7 +675,23 @@ final class GhosttyFrameBuilder {
 
     var atlas: GhosttyGlyphAtlas {
         get { builder.atlas }
-        set { builder.atlas = newValue }
+        set {
+            if newValue !== builder.atlas { forgetNeed() }
+            builder.atlas = newValue
+        }
+    }
+
+    deinit { forgetNeed() }
+
+    /// The rows are going away (or will all be rebuilt from another atlas): the atlas has
+    /// nobody to draw their missing glyphs for.
+    private func forgetNeed() {
+        guard rowsAwaitingGlyphs > 0 else { return }
+        let atlas = builder.atlas
+        atlas.lock()
+        atlas.setNeed(ObjectIdentifier(self), oldest: nil)
+        atlas.unlock()
+        rowsAwaitingGlyphs = 0
     }
 
     var background: UInt32 { builder.background }
@@ -696,6 +716,7 @@ final class GhosttyFrameBuilder {
         atlas.lock()
         defer { atlas.unlock() }
         atlas.defersSlowGlyphs = defersSlowGlyphs
+        if defersSlowGlyphs { atlas.beginFrame() }
 
         var full = needsFull
         needsFull = false
@@ -743,11 +764,22 @@ final class GhosttyFrameBuilder {
             // Dirty rows that all turned out to be what is on screen make no new frame.
             changed = everything || rowsBuilt > 0
             if changed { rowsVersion &+= 1 }
+            let waited = rowsAwaitingGlyphs > 0
             rowsAwaitingGlyphs = 0
+            var oldest: UInt32 = 0
             var i = 0
             while i < rows.count {
-                if rows[i].awaitsGlyphs { rowsAwaitingGlyphs += 1 }
+                if rows[i].awaitsGlyphs {
+                    let built = rows[i].builtStamp
+                    if rowsAwaitingGlyphs == 0 || GhosttyGlyphAtlas.stamp(built, isBefore: oldest) { oldest = built }
+                    rowsAwaitingGlyphs += 1
+                }
                 i += 1
+            }
+            // Under the same lock as the build: the atlas draws what these rows wait for and
+            // may leave out what only rows before them asked for.
+            if waited || rowsAwaitingGlyphs > 0 {
+                atlas.setNeed(ObjectIdentifier(self), oldest: rowsAwaitingGlyphs > 0 ? oldest : nil)
             }
         }
 

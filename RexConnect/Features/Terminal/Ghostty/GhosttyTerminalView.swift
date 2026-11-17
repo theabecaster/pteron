@@ -109,6 +109,10 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
         layer.isOpaque = true
         layer.contentsScale = displayScale
         layer.maximumDrawableCount = 3
+        // `nextDrawable` runs on the render thread every pane shares. With the timeout it comes
+        // back with nil after a second when no drawable is free; without it, it never would.
+        // The renderer then leaves the pane alone for a while (`GhosttyRenderer.drawableRetryAt`).
+        layer.allowsNextDrawableTimeout = true
         addSubview(metalView)
 
         let renderer = renderer
@@ -130,16 +134,20 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// The one teardown: the host keeps a pane's view while the pane may come back on screen
+    /// (`TerminalHostPool`) and lets go of it when the pane is closed.
+    ///
+    /// What can outlive the view, and for how long:
+    /// - The render thread holds the renderer (and through it the core) until its `remove`
+    ///   block has run. A pass that is drawing this pane right now finishes its frame; after
+    ///   `retire` no other pass asks the layer for a drawable.
+    /// - Blocks on the feed queue hold the core until they have run: bytes still to parse and a
+    ///   restore under way finish, then the core frees its terminal there.
+    /// - The compression steps and the hold timer hold the core weakly and stop by themselves.
+    /// Nothing holds the view: the core's handlers capture the renderer or the scroller weakly.
     deinit {
+        renderer.retire()
         if registered { GhosttyRenderThread.shared.remove(renderer) }
-    }
-
-    /// Stops drawing for good and lets the render thread go. Also happens on deinit.
-    func shutdown() {
-        guard registered else { return }
-        registered = false
-        renderer.setVisible(false)
-        GhosttyRenderThread.shared.remove(renderer)
     }
 
     // MARK: Output
@@ -158,26 +166,41 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
     }
 
     func restoreSnapshot(_ bytes: [UInt8], failed: @escaping @MainActor () -> Void) -> Bool {
-        restoreSnapshot(bytes, consumed: nil, failed: failed)
+        restoreSnapshot(bytes, trailing: nil, failed: failed)
     }
 
-    /// Like `restoreSnapshot(_:failed:)`. `consumed` runs on the feed queue, before anything fed
-    /// later is parsed, with the number of bytes the snapshot took. Bytes after that belong to
-    /// the stream and are the caller's to feed.
-    func restoreSnapshot(_ bytes: [UInt8], consumed: (@Sendable (Int) -> Void)?, failed: @escaping @MainActor () -> Void) -> Bool {
+    /// Like `restoreSnapshot(_:failed:)`, for bytes that go on after the snapshot (a capture of
+    /// a stream): once the snapshot is restored, `trailing` gets the bytes behind it and what it
+    /// returns is parsed before anything fed later (`GhosttyCore.restore`).
+    func restoreSnapshot(_ bytes: [UInt8], trailing: (@Sendable (ArraySlice<UInt8>) -> [UInt8])?,
+                         failed: @escaping @MainActor () -> Void) -> Bool {
         guard GhosttyCore.isSnapshot(bytes) else { return false }
         restoreEpoch = gridEpoch
-        core.restore(snapshot: bytes) { [weak self, core] used in
-            if let used {
+        core.restore(snapshot: bytes, trailing: trailing) { [weak self, core] used in
+            if used != nil {
                 PerfProbe.active?.ghosttyRestored(core)  // PERF: the restored terminal is in place
-                consumed?(used)
-                // The restored terminal has the snapshot's grid.
-                DispatchQueue.main.async { [weak self] in self?.adoptCoreGrid() }
+                DispatchQueue.main.async { [weak self] in self?.terminalRestored() }
             } else {
                 DispatchQueue.main.async { failed() }
             }
         }
         return true
+    }
+
+    /// A snapshot replaced the terminal.
+    private func terminalRestored() {
+        // The selection went with the old terminal: forget it here too, so the host's next
+        // question (`hasActiveSelection`, `selectionRects`) is answered "none" without a lock.
+        // A drag still under way stays a drag, with nothing to extend. Not if the user has
+        // already selected on the new terminal.
+        if !core.hasSelection {
+            selectionState.active = false
+            selectionState.fromGesture = false
+            selectionState.moved = false
+            selectionState.autoscrollRequest = nil
+        }
+        // The restored terminal has the snapshot's grid.
+        adoptCoreGrid()
     }
 
     /// Takes over the grid a snapshot restore gave the terminal, unless a later `setGrid` is
@@ -256,7 +279,12 @@ final class GhosttyTerminalView: UIView, TerminalEngineView {
 
     private func updateDrawable() {
         let w = Int((bounds.width * displayScale).rounded()), h = Int((bounds.height * displayScale).rounded())
-        guard w > 0, h > 0 else { return }
+        guard w > 0, h > 0 else {
+            // A layer with no area shows no drawable, so none would come back to its pool: the
+            // renderer must not ask for one (it draws nothing at size zero).
+            renderer.setDrawableSize(width: 0, height: 0)
+            return
+        }
         let size = CGSize(width: w, height: h)
         if metalView.metalLayer.drawableSize != size { metalView.metalLayer.drawableSize = size }
         renderer.setDrawableSize(width: w, height: h)

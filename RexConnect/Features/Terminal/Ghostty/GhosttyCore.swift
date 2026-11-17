@@ -35,6 +35,12 @@ struct GhosttyThemeColors: Equatable {
                0x636e7b, 0xff938a, 0x6bc46d, 0xdaaa3f, 0x6cb6ff, 0xdcbdfb, 0x56d4dd, 0xcdd9e5])
 }
 
+/// A tracked grid reference and the screen (primary or alternate) it was made on.
+struct GhosttyTrackedRef {
+    var ref: GhosttyTrackedGridRef
+    var screen: UInt32
+}
+
 extension GhosttyColorRgb {
     @inline(__always) init(hex v: UInt32) {
         self.init(r: UInt8((v >> 16) & 0xff), g: UInt8((v >> 8) & 0xff), b: UInt8(v & 0xff))
@@ -53,6 +59,18 @@ extension GhosttyColorRgb {
 ///
 /// No write-pty callback is ever installed: the Rex server's terminal answers queries.
 ///
+/// What is bound to one terminal, and so replaced or released when a snapshot restore swaps the
+/// terminal (`restore`), all under `termLock` and before the old terminal is freed:
+/// - the render state, its row iterator and cells handle (also under `stateLock`);
+/// - tracked grid references (`trackedRefs`): the fixed end of a selection drag;
+/// - the selection, which is the terminal's own and goes with it;
+/// - the hold state (`held`), and the hold, clipboard and reset callbacks with their userdata
+///   pointer (`configure`);
+/// - the prompt click mode (`promptWatch`) and the mirrored input modes (`input`), read again
+///   from the new terminal.
+/// Formatters, untracked grid references and the snapshot decoder never outlive the critical
+/// section or the call that made them. The key and mouse encoders copy modes and borrow nothing.
+///
 /// `@unchecked Sendable`: every mutable property is guarded by `termLock`, `stateLock`, `opLock`
 /// or `handlerLock`, or is only touched on `queue`, as noted on each.
 final class GhosttyCore: @unchecked Sendable {
@@ -63,6 +81,13 @@ final class GhosttyCore: @unchecked Sendable {
     static let sliceSize = 64 * 1024
     /// How long a program may hold the screen (synchronized output) before we show it anyway.
     static let renderHoldTimeout: CFTimeInterval = 1.0
+    /// Unparsed bytes above which `isBackedUp` turns true, and below which it turns false again.
+    static let backlogHighWater = 4 * 1024 * 1024
+    static let backlogLowWater = 1024 * 1024
+    /// Unparsed bytes the core refuses to hold: a feed that would pass it drops the backlog
+    /// (`droppedBytes`). Far above the high-water mark, so a source that pauses on `isBackedUp`
+    /// never gets here.
+    static let backlogLimit = 64 * 1024 * 1024
 
     /// Terminals alive in the process. Tests use it to check teardown.
     static let liveTerminals = Atomic<Int>(0)
@@ -73,6 +98,10 @@ final class GhosttyCore: @unchecked Sendable {
     let stateLock = GhosttyLock()
     /// Guarded by `termLock`.
     var terminal: GhosttyTerminal?
+    /// Tracked grid references made on `terminal`, by the object that asked for one (a
+    /// `GhosttySelectionAnchor`). The core owns them, so a restore can free them with the
+    /// terminal they borrow. Guarded by `termLock`.
+    var trackedRefs: [ObjectIdentifier: GhosttyTrackedRef] = [:]
     /// Guarded by `stateLock`.
     var renderState: GhosttyRenderState?
     var rowIterator: GhosttyRenderStateRowIterator?
@@ -118,6 +147,8 @@ final class GhosttyCore: @unchecked Sendable {
     private let handlerLock = GhosttyLock()
     /// Guarded by `handlerLock`.
     private var dirtyHandler: (@Sendable () -> Void)?
+    private var backpressureHandler: (@Sendable () -> Void)?
+    private var outputDroppedHandler: (@Sendable () -> Void)?
 
     let queue = DispatchQueue(label: "rex.ghostty.feed", qos: .userInitiated)
     /// Threads waiting for `termLock` that the feed queue lets in between slices: the renderer
@@ -141,6 +172,15 @@ final class GhosttyCore: @unchecked Sendable {
     private var tail: [UInt8] = []
     private var draining = false
 
+    // Backlog accounting. Any thread.
+    /// Bytes fed and not parsed yet: queued, or in the batch the feed queue is writing.
+    private let backlog = Atomic<Int>(0)
+    private let backedUp = Atomic<Bool>(false)
+    /// Bumped (under `opLock`) when the backlog is dropped, so the feed queue leaves out the
+    /// rest of the bytes it already took.
+    private let dropEpoch = Atomic<Int>(0)
+    private let dropped = Atomic<Int>(0)
+
     /// Total bytes parsed. Written on `queue`; read it after `sync()`.
     private(set) var bytesParsed = 0
 
@@ -162,7 +202,9 @@ final class GhosttyCore: @unchecked Sendable {
     }
 
     deinit {
-        // Nothing else can reach us here: queued work and the renderer hold strong references.
+        // Nothing else can reach us here: queued work, the renderer and selection anchors hold
+        // strong references.
+        releaseTrackedRefs()
         freeRenderState()
         if let t = terminal {
             ghostty_terminal_free(t)
@@ -231,14 +273,38 @@ final class GhosttyCore: @unchecked Sendable {
     // MARK: Ordered work
 
     /// Copies `bytes` and parses them on the feed queue.
+    ///
+    /// The copy has no bound of its own, so a source that can outrun the parser should stop
+    /// reading while `isBackedUp` is true. One that doesn't, and gets `backlogLimit` bytes
+    /// ahead, loses output (`droppedBytes`).
     func feed(_ bytes: UnsafeRawBufferPointer) {
         guard !bytes.isEmpty else { return }
         opLock.lock()
+        var lost = 0
+        if backlog.load(ordering: .relaxed) + bytes.count > Self.backlogLimit {
+            // The safety valve. Everything not parsed yet goes: what is on its way now is what
+            // the screen should end on. Queued operations (resizes, restores) stay, in order.
+            lost = tail.count
+            tail.removeAll()
+            ops.removeAll {
+                guard case .bytes(let b) = $0 else { return false }
+                lost += b.count
+                return true
+            }
+            dropEpoch.add(1, ordering: .relaxed)
+            // The cut can fall inside an escape sequence. CAN ends it, so the bytes that follow
+            // are not read as its parameters.
+            tail.append(0x18)
+            backlog.add(1 - lost, ordering: .relaxed)
+        }
         tail.append(contentsOf: bytes.bindMemory(to: UInt8.self))
+        backlog.add(bytes.count, ordering: .relaxed)
         let start = !draining
         draining = true
         opLock.unlock()
         if start { queue.async { self.drain() } }
+        if lost > 0 { noteDropped(lost) }
+        settleBackpressure()
     }
 
     func feed(_ bytes: [UInt8]) {
@@ -274,21 +340,29 @@ final class GhosttyCore: @unchecked Sendable {
             }
             let batch = ops
             ops = []
+            let epoch = dropEpoch.load(ordering: .relaxed)
             opLock.unlock()
             for op in batch {
                 switch op {
-                case .bytes(let b): write(b)
+                case .bytes(let b): write(b, epoch: epoch)
                 case .run(let work): work()
                 }
             }
         }
     }
 
-    private func write(_ bytes: [UInt8]) {
+    /// Parses `bytes`, which `backlog` already counts. `epoch` is the `dropEpoch` they were
+    /// taken at: once it has moved they belong to a dropped backlog and the rest is left out.
+    private func write(_ bytes: [UInt8], epoch: Int) {
         bytes.withUnsafeBufferPointer { buf in
             guard let base = buf.baseAddress else { return }
             var off = 0
             while off < buf.count {
+                if dropEpoch.load(ordering: .relaxed) != epoch {
+                    backlog.subtract(buf.count - off, ordering: .relaxed)
+                    noteDropped(buf.count - off)
+                    break
+                }
                 let n = min(Self.sliceSize, buf.count - off)
                 // os_unfair_lock isn't fair: without this a long burst could starve the renderer
                 // and make the main thread wait many slices for a short read.
@@ -306,9 +380,84 @@ final class GhosttyCore: @unchecked Sendable {
                 termLock.unlock()
                 off += n
                 bytesParsed += n
+                backlog.subtract(n, ordering: .relaxed)
+                settleBackpressure()
                 onDirty?()
             }
         }
+        settleBackpressure()
+    }
+
+    // MARK: Backpressure
+
+    /// True from the moment more than `backlogHighWater` bytes wait to be parsed until fewer
+    /// than `backlogLowWater` do. A source that can wait (a socket) should stop reading while
+    /// it is true. Any thread; one atomic load.
+    var isBackedUp: Bool { backedUp.load(ordering: .relaxed) }
+
+    /// Bytes fed and not parsed yet. Any thread; one atomic load.
+    var backlogBytes: Int { max(0, backlog.load(ordering: .relaxed)) }
+
+    /// Runs after `isBackedUp` changed, on the thread that changed it (a `feed` caller or the
+    /// feed queue), so keep it short and hop. It carries no value on purpose: two changes can
+    /// be reported out of order, so read `isBackedUp` when you act. What is read after the last
+    /// call is the final value.
+    var onBackpressureChange: (@Sendable () -> Void)? {
+        get {
+            handlerLock.lock()
+            defer { handlerLock.unlock() }
+            return backpressureHandler
+        }
+        set {
+            handlerLock.lock()
+            backpressureHandler = newValue
+            handlerLock.unlock()
+        }
+    }
+
+    /// Bytes thrown away unparsed because the backlog passed `backlogLimit`. Any thread.
+    ///
+    /// Policy: the whole unparsed backlog is dropped, the bytes that arrive next are kept, and a
+    /// CAN byte goes in between. The terminal itself is untouched, so the user sees output skip
+    /// ahead: lines missing from the scrollback, and a screen that can be wrong where the lost
+    /// bytes would have drawn. Only a fresh snapshot makes it right again, so the stream should
+    /// resync when `onOutputDropped` runs.
+    var droppedBytes: Int { dropped.load(ordering: .relaxed) }
+
+    /// Runs after `droppedBytes` grew, on a `feed` caller's thread or on the feed queue.
+    var onOutputDropped: (@Sendable () -> Void)? {
+        get {
+            handlerLock.lock()
+            defer { handlerLock.unlock() }
+            return outputDroppedHandler
+        }
+        set {
+            handlerLock.lock()
+            outputDroppedHandler = newValue
+            handlerLock.unlock()
+        }
+    }
+
+    private func noteDropped(_ count: Int) {
+        dropped.add(count, ordering: .relaxed)
+        onOutputDropped?()
+    }
+
+    /// Brings `backedUp` in line with `backlog`. Two atomic loads when nothing changes.
+    ///
+    /// Both sides call it after they moved `backlog`, and it loops until the flag fits the count
+    /// it read last. So a thread that set the flag from a stale count puts it right itself: the
+    /// flag can't stay true with nothing left to parse.
+    private func settleBackpressure() {
+        var flipped = false
+        while true {
+            let waiting = backlog.load(ordering: .sequentiallyConsistent)
+            let up = backedUp.load(ordering: .sequentiallyConsistent)
+            let wanted = up ? waiting >= Self.backlogLowWater : waiting > Self.backlogHighWater
+            if wanted == up { break }
+            if backedUp.compareExchange(expected: up, desired: wanted, ordering: .sequentiallyConsistent).exchanged { flipped = true }
+        }
+        if flipped { onBackpressureChange?() }
     }
 
     // MARK: Scrollback compression
@@ -404,16 +553,38 @@ final class GhosttyCore: @unchecked Sendable {
         bytes.count >= 10 && bytes.starts(with: Array("GHOSTSNP".utf8))
     }
 
+    /// The terminal as a `GHOSTSNP` snapshot, the format `restore` reads. Nil while the parser
+    /// is inside an escape sequence or a UTF-8 character (the encoder wants it at rest; call
+    /// after `sync()`). For tests and tools: the app itself only receives snapshots.
+    func encodeSnapshot() -> [UInt8]? {
+        withTerminal { t -> [UInt8]? in
+            var bytes: UnsafeMutablePointer<UInt8>?
+            var count = 0
+            guard ghostty_snapshot_encode_alloc(t, nil, &bytes, &count) == GHOSTTY_SUCCESS, let bytes else { return nil }
+            defer { ghostty_free(nil, bytes, count) }
+            return Array(UnsafeBufferPointer(start: bytes, count: count))
+        } ?? nil
+    }
+
     /// Replaces the terminal with the one a `GHOSTSNP` snapshot describes.
     ///
     /// The decoder builds a new terminal (upstream: "You get back a terminal that you own"), so
-    /// this swaps it in and frees the old one. History is compressed as it is restored. The
-    /// restored terminal keeps the snapshot's grid; read it with `gridSize`.
+    /// this swaps it in and frees the old one together with everything that borrowed it (the
+    /// list is on the class). The selection goes with the old terminal: the user sees it clear,
+    /// and a drag under way selects nothing more (`extendSelection` answers `.noAnchor`).
+    /// History is compressed as it is restored. The restored terminal keeps the snapshot's grid;
+    /// read it with `gridSize`.
     ///
-    /// `completion` runs on the feed queue with the number of bytes the snapshot used (bytes after
-    /// that are not part of it and are left to the caller), or nil if decoding failed. On failure
-    /// the old terminal stays.
-    func restore(snapshot: [UInt8], completion: @escaping @Sendable (Int?) -> Void) {
+    /// `trailing`: `snapshot` may hold more than the snapshot (a capture of a stream). After a
+    /// successful restore the bytes behind it are passed to `trailing`, and what it returns is
+    /// parsed at once, before anything fed or queued after this call.
+    ///
+    /// `completion` runs on the feed queue after that, with the number of bytes the snapshot
+    /// used, or nil if decoding failed. On failure the old terminal stays and nothing of
+    /// `snapshot` is parsed. Bytes fed from inside `completion` are queued like any other feed:
+    /// behind work that was queued before it ran.
+    func restore(snapshot: [UInt8], trailing: (@Sendable (ArraySlice<UInt8>) -> [UInt8])? = nil,
+                 completion: @escaping @Sendable (Int?) -> Void) {
         enqueue { [self] in
             var restored: GhosttyTerminal?
             var consumed = 0
@@ -439,6 +610,9 @@ final class GhosttyCore: @unchecked Sendable {
             Self.liveTerminals.add(1, ordering: .relaxed)
 
             termLock.lock()
+            // First, what borrows the old terminal. The main thread reads a drag's anchor under
+            // this lock, so it finds the anchor whole or gone, never half freed.
+            releaseTrackedRefs()
             stateLock.lock()
             let old = terminal
             terminal = restored
@@ -455,23 +629,47 @@ final class GhosttyCore: @unchecked Sendable {
             // alternate screen, and the server's `resize` message follows the snapshot anyway.
             cols = max(1, Int(c))
             rows = max(1, Int(r))
-            // Same grid, our cell pixel size (for pixel-based mouse and size reports).
+            // The snapshot carries mode 2026 (the program was inside a synchronized update), but
+            // the decoder made the terminal before our callback existed, so no "hold began" call
+            // arrives. Read the mode first: the resize below always turns it off.
+            var synchronized = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2026, false), value: false)
+            let wasHeld = ghostty_terminal_get(restored, GHOSTTY_TERMINAL_DATA_MODE, &synchronized) == GHOSTTY_SUCCESS
+                && synchronized.value
+            // Same grid, our cell pixel size (for pixel-based mouse and size reports). The API
+            // has no option for the pixel size alone.
             ghostty_terminal_resize(restored, c, r, cellWidthPx, cellHeightPx)
-            // The snapshot carries mode 2026, but the decoder made the terminal before our
-            // callback existed, so no "hold began" call arrives. Seed the hold from the mode.
-            var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2026, false), value: false)
-            if ghostty_terminal_get(restored, GHOSTTY_TERMINAL_DATA_MODE, &mode) == GHOSTTY_SUCCESS, mode.value {
+            if wasHeld {
+                // Put the mode back, so the program's own reset ends the hold, and begin the hold
+                // ourselves: a mode set by hand calls no callback. The frame held is the
+                // snapshot's, which is all there is. The time limit runs from now.
+                synchronized.value = true
+                ghostty_terminal_set(restored, GHOSTTY_TERMINAL_OPT_MODE, &synchronized)
                 renderHoldChanged(true)
             }
             input.sync(from: restored)
-            termLock.unlock()
+            // Still under the lock: nobody can be reading a reference into the old terminal
+            // while it is torn down.
             if let old {
                 ghostty_terminal_free(old)
                 Self.liveTerminals.subtract(1, ordering: .relaxed)
             }
+            termLock.unlock()
             onDirty?()
+            if let trailing, consumed < snapshot.count {
+                let rest = trailing(snapshot[consumed...])
+                backlog.add(rest.count, ordering: .relaxed)
+                // Counted like bytes that were fed. (A drop while they are written cuts them
+                // short too: they are unparsed backlog like any other.)
+                write(rest, epoch: dropEpoch.load(ordering: .relaxed))
+            }
             completion(consumed)
         }
+    }
+
+    /// Frees every tracked grid reference. Call with `termLock` held.
+    func releaseTrackedRefs() {
+        for held in trackedRefs.values { ghostty_tracked_grid_ref_free(held.ref) }
+        trackedRefs.removeAll()
     }
 
     // MARK: Render holds (synchronized output)

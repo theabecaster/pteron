@@ -270,6 +270,157 @@ final class GhosttyPerfTests: XCTestCase {
         XCTAssertEqual(frame.rows[2].glyphs.count, 2)
     }
 
+    // MARK: The glyph worker's queue
+
+    func testRequestStackGivesTheNewestFirstAndDropsTheOldestWhenFull() {
+        var stack = GhosttyRequestStack<Int>(limit: 100)
+        XCTAssertNil(stack.pop())
+        for i in 0..<100 { XCTAssertNil(stack.push(i), "room for \(i)") }
+        XCTAssertEqual(stack.push(100), 0, "full: the oldest falls out")
+        XCTAssertEqual(stack.push(101), 1)
+        XCTAssertEqual(stack.count, 100)
+        for expected in stride(from: 101, through: 2, by: -1) { XCTAssertEqual(stack.pop(), expected) }
+        XCTAssertNil(stack.pop())
+        XCTAssertTrue(stack.isEmpty)
+
+        // Against a plain array, through growth and wrap-around.
+        var small = GhosttyRequestStack<Int>(limit: 150)
+        var model: [Int] = []
+        var seed: UInt32 = 12345
+        for value in 0..<20_000 {
+            seed = seed &* 1_664_525 &+ 1_013_904_223
+            if seed >> 28 < 9 {
+                let evicted = small.push(value)
+                model.append(value)
+                XCTAssertEqual(evicted, model.count > 150 ? model.removeFirst() : nil)
+            } else {
+                XCTAssertEqual(small.pop(), model.popLast())
+            }
+            XCTAssertEqual(small.count, model.count)
+        }
+        while let last = model.popLast() { XCTAssertEqual(small.pop(), last) }
+        XCTAssertNil(small.pop())
+    }
+
+    /// A screen of CJK text per frame, each frame other text, as when a large file goes by. The
+    /// worker draws nothing meanwhile (parked), so every request is still waiting at the end.
+    private func scrollCJK(_ core: GhosttyCore, _ frame: GhosttyFrameBuilder, frames: Int, perRow: Int) {
+        var cp: UInt32 = 0x4e00
+        for _ in 0..<frames {
+            var text = String.UnicodeScalarView()
+            for _ in 0..<frame.rowCount {
+                text.append(contentsOf: "\r\n".unicodeScalars)
+                for _ in 0..<perRow {
+                    text.append(Unicode.Scalar(cp)!)
+                    cp += 1
+                }
+            }
+            feed(core, String(text))
+            _ = frame.update(core: core)
+        }
+    }
+
+    func testAfterABurstTheWorkerDrawsWhatIsOnScreenAndNotWhatScrolledAway() {
+        let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
+        let resume = GhosttyGlyphAtlas.parkHelperForTesting()
+        let (core, frame) = make("", cols: 20, rows: 4, atlas: atlas)
+        frame.defersSlowGlyphs = true
+        scrollCJK(core, frame, frames: 30, perRow: 8)
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 4)
+        XCTAssertEqual(frame.rows.map(\.glyphs.count), [0, 0, 0, 0])
+        resume()
+        atlas.waitForHelper()
+        atlas.lock()
+        XCTAssertEqual(atlas.helperDrawn, 32, "the last frame's glyphs and no others")
+        XCTAssertEqual(atlas.helperDropped, 29 * 32, "what scrolled away is not drawn")
+        XCTAssertEqual(atlas.rasterCount, 32)
+        atlas.unlock()
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 0)
+        XCTAssertEqual(frame.rows.map(\.glyphs.count), [8, 8, 8, 8])
+        assertMatchesAFreshBuild(frame, core)
+
+        // A glyph that was left out is asked for again when it is wanted again.
+        feed(core, "\u{1b}[2J\u{1b}[H\u{4e00}\u{4e01}")
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 1)
+        atlas.waitForHelper()
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(frame.rows[0].glyphs.count, 2)
+        atlas.lock()
+        XCTAssertEqual(atlas.helperDrawn, 34)
+        atlas.unlock()
+    }
+
+    /// A row that still waits keeps its glyphs wanted, however many frames go by in which only
+    /// other rows change. (The worker can only tell "asked for before every row that waits now",
+    /// so what those other rows asked for meanwhile is drawn too.)
+    func testRowsThatStillWaitKeepTheirRequests() {
+        let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
+        let resume = GhosttyGlyphAtlas.parkHelperForTesting()
+        let core = GhosttyCore(cols: 20, rows: 4)
+        feed(core, "\u{4e00}\u{4e01}\r\n\u{4e02}")
+        let frame = GhosttyFrameBuilder(atlas: atlas)
+        frame.defersSlowGlyphs = true
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 2)
+        for i in 0..<40 {
+            feed(core, "\u{1b}[4;1H\u{1b}[2K\(i) \(Unicode.Scalar(UInt32(0x5000 + i))!)")
+            XCTAssertTrue(frame.update(core: core))
+        }
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 3)
+        resume()
+        atlas.waitForHelper()
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 0)
+        XCTAssertEqual(frame.rows[0].glyphs.count, 2, "asked for 40 frames ago and still wanted")
+        XCTAssertEqual(frame.rows[1].glyphs.count, 1)
+        atlas.lock()
+        XCTAssertEqual(atlas.helperDrawn, 43)
+        XCTAssertEqual(atlas.helperDropped, 0)
+        atlas.unlock()
+        assertMatchesAFreshBuild(frame, core)
+    }
+
+    /// More glyphs wanted at once than the worker holds requests for: the oldest fall out, the
+    /// panes ask again, and in the end every cell has its glyph.
+    func testMoreRequestsThanTheWorkerHoldsStillAllArrive() {
+        // Small glyphs, so 20,000 of them fit the page without a wipe.
+        let atlas = GhosttyGlyphAtlas(pointSize: 6, scale: 1)
+        let resume = GhosttyGlyphAtlas.parkHelperForTesting()
+        let cols = 400, rows = 100
+        XCTAssertGreaterThan(cols / 2 * rows, GhosttyGlyphAtlas.requestLimit)
+        let core = GhosttyCore(cols: cols, rows: rows)
+        var text = String.UnicodeScalarView()
+        var cp: UInt32 = 0x4e00
+        for row in 0..<rows {
+            if row > 0 { text.append(contentsOf: "\r\n".unicodeScalars) }
+            for _ in 0..<(cols / 2) {
+                text.append(Unicode.Scalar(cp)!)
+                cp += 1
+            }
+        }
+        feed(core, String(text))
+        let frame = GhosttyFrameBuilder(atlas: atlas)
+        frame.defersSlowGlyphs = true
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, rows)
+        atlas.lock()
+        XCTAssertEqual(atlas.helperDropped, cols / 2 * rows - GhosttyGlyphAtlas.requestLimit, "the stack is bounded")
+        atlas.unlock()
+        resume()
+        var rounds = 0
+        while frame.rowsAwaitingGlyphs > 0 && rounds < 20 {
+            atlas.waitForHelper()
+            _ = frame.update(core: core)
+            rounds += 1
+        }
+        XCTAssertEqual(frame.rowsAwaitingGlyphs, 0)
+        XCTAssertLessThanOrEqual(rounds, 3)
+        XCTAssertEqual(atlas.generation, 0, "no wipe: this is about the queue")
+        XCTAssertEqual(frame.rows.reduce(0) { $0 + $1.glyphs.count }, cols / 2 * rows)
+    }
+
     func testWarmingDrawsAsciiOffTheFrame() {
         let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
         atlas.warm()
@@ -427,7 +578,6 @@ final class GhosttyPerfTests: XCTestCase {
         XCTAssertLessThanOrEqual(renderer.framesDrawn - before, Int(elapsed * fps) + 4)
         XCTAssertEqual(view.core.rowText(view.core.cursorPosition.y), "burst 199")
 
-        view.shutdown()
         view.removeFromSuperview()
         window.isHidden = true
         let gone = Date().addingTimeInterval(3)
