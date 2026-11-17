@@ -85,3 +85,13 @@ final class FileRulesTests: XCTestCase {
         XCTAssertFalse(C.offersPasteImage(hasImage: true, canSend: false))
     }
 }
+
+/// Drops: only files from another app, and only where the server takes them.
+final class DropRuleTests: XCTestCase {
+    func testOnlyAnotherAppsFilesAreTaken() {
+        XCTAssertTrue(DropRule.accepts(fromThisApp: false, canSend: true, hasFiles: true))
+        XCTAssertFalse(DropRule.accepts(fromThisApp: true, canSend: true, hasFiles: true), "a selection drag stays a selection")
+        XCTAssertFalse(DropRule.accepts(fromThisApp: false, canSend: false, hasFiles: true))
+        XCTAssertFalse(DropRule.accepts(fromThisApp: false, canSend: true, hasFiles: false))
+    }
+}

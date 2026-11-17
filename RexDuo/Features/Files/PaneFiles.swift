@@ -17,6 +17,7 @@ final class PaneFiles {
 
     private let sender: FileSender
     private let picker = AttachPicker()
+    private var drop: PaneDrop?
     private var probing = false
 
     init(server: ServerConnection, sessionID: String, blockID: String) {
@@ -117,37 +118,48 @@ final class PaneFiles {
 
     /// Sends what the clipboard holds as files: copied files, or else an image.
     func pasteFiles() {
-        let providers = UIPasteboard.general.itemProviders
+        send(providers: UIPasteboard.general.itemProviders, unnamed: "Pasted Image", empty: "Nothing on the clipboard to send.")
+    }
+
+    func pasteImage() { pasteFiles() }
+
+    /// Sends the items of a paste or a drop as one batch, prepared as picked photos are.
+    func send(providers: [NSItemProvider], unnamed: String, empty: String) {
         let original = sendOriginals
         let prepare = picker.prepare
         Task { @MainActor in
             var files: [StagedFile] = []
             for p in providers {
-                if let f = await Self.loadPasted(p) { files.append(await Task.detached { prepare(f, original) }.value) }
+                if let f = await Self.load(p, unnamed: unnamed) { files.append(await Task.detached { prepare(f, original) }.value) }
             }
-            if files.isEmpty { Notice.shared.show("Nothing on the clipboard to send.") } else { self.send(files) }
+            if files.isEmpty { Notice.shared.show(empty) } else { self.send(files) }
         }
     }
 
-    func pasteImage() { pasteFiles() }
-
-    /// A pasted item as a staged file: a copied file keeps its name; an image gets a readable one.
-    private static func loadPasted(_ p: NSItemProvider) async -> StagedFile? {
-        let isFile = p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
-        let type: UTType? = isFile ? p.registeredContentTypes.first { !$0.conforms(to: .url) }
-            ?? p.registeredContentTypes.first { $0.conforms(to: .image) }
-            : p.registeredContentTypes.first { $0.conforms(to: .image) }
+    /// An item as a staged file: a file keeps its name; an image without one gets a readable one
+    /// ("Pasted Image 2026-11-17 17.31.png").
+    static func load(_ p: NSItemProvider, unnamed: String) async -> StagedFile? {
+        let types = p.registeredContentTypes
+        let type = types.first { $0.conforms(to: .image) && !$0.conforms(to: .url) }
+            ?? types.first { $0.conforms(to: .data) && !$0.conforms(to: .url) && !$0.conforms(to: .text) }
+            ?? types.first { $0.conforms(to: .content) && !$0.conforms(to: .url) }
         guard let type else { return nil }
         let suggested = p.suggestedName
         return await withCheckedContinuation { (c: CheckedContinuation<StagedFile?, Never>) in
             _ = p.loadFileRepresentation(for: type, openInPlace: false) { url, _, _ in
                 guard let url else { return c.resume(returning: nil) }
                 let ext = url.pathExtension.isEmpty ? (type.preferredFilenameExtension ?? "bin") : url.pathExtension
-                let name = isFile ? (suggested.map { $0.hasSuffix("." + ext) ? $0 : $0 + "." + ext } ?? url.lastPathComponent)
-                    : UploadName.stamped("Pasted Image", at: Date(), ext: ext)
+                let name = suggested.map { $0.lowercased().hasSuffix("." + ext.lowercased()) ? $0 : $0 + "." + ext }
+                    ?? UploadName.stamped(unnamed, at: Date(), ext: ext)
                 c.resume(returning: try? FileStaging.stage(copying: url, as: name))
             }
         }
+    }
+
+    /// Lets files from other apps be dropped on `view`, the pane.
+    func installDrop(on view: UIView) {
+        guard drop == nil else { return }
+        drop = PaneDrop(files: self, view: view)
     }
 
     // MARK: Send

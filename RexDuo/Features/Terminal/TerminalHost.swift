@@ -63,6 +63,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var files: PaneFiles? {
         didSet {
             files?.view = self
+            files?.installDrop(on: self)
             files?.onSupportChanged = { [weak self] in self?.refreshFiles() }
             keyBar.attachMenu = { [weak self] in self?.files?.menu() ?? UIMenu() }
             refreshFiles()
