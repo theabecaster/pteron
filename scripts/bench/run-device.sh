@@ -77,7 +77,7 @@ if (( build )); then
   echo "Building Release (BENCH) on macdesk in ~/$remote …" >&2
   (cd "$root" && scripts/sync-macdesk.sh "$remote")
   # The same build as scripts/install-duo.sh, plus BENCH (`-replay`, `-perfLog`).
-  ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -configuration Release -destination id=$device -derivedDataPath build/dd -clonedSourcePackagesDirPath build/spm -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
+  ssh macdesk "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexConnect.xcodeproj -scheme RexConnect -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
 $devicectl device install app --device $device ~/$remote/build/dd/Build/Products/Release-iphoneos/RexConnect.app | grep -E 'App installed'"
 fi
 
