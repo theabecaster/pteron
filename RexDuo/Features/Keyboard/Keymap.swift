@@ -134,6 +134,7 @@ enum AppAction {
         case "client.font.reset": return .command(.fontReset)
         case "client.sidebar.toggle": return .command(.toggleSidebar)
         case "client.sidebar.activity.toggle": return .command(.toggleAgents)
+        case "client.agents.jump_to_waiting": return .command(.jumpToWaiting)
         case "client.settings": return .command(.settings)
         case "pane.send_key":
             guard let k = a.str("key"), let c = KeyChord(spelling: k) else { return nil }
@@ -169,6 +170,7 @@ enum KeyActions {
         Info(name: "client.settings", title: "Settings…", category: "App", repeats: false),
         Info(name: "client.sidebar.toggle", title: "Toggle Sidebar", category: "View", repeats: false),
         Info(name: "client.sidebar.activity.toggle", title: "Toggle Agents", category: "View", repeats: false),
+        Info(name: "client.agents.jump_to_waiting", title: "Jump to Waiting Agent", category: "View", repeats: false),
         Info(name: "session.new", title: "New Session", category: "Session", repeats: false),
         Info(name: "session.switch", title: "Change Session…", category: "Session", repeats: false),
         Info(name: "client.tab.new", title: "New Tab", category: "Tab", repeats: false),
@@ -290,6 +292,8 @@ enum KeyDefaults {
         bind(["cmd+[Digit0]"], "client.font.reset")
         bind(["cmd+/"], "client.sidebar.toggle")
         bind(["cmd+."], "client.sidebar.activity.toggle")
+        // Rex DUO's own: the oldest agent waiting for you (the waiting pill's tap).
+        bind(["alt+cmd+."], "client.agents.jump_to_waiting")
         // Rex DUO's own (Safari's Show All Tabs).
         bind(["shift+cmd+\\"], "client.tab.overview")
         return b
