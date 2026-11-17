@@ -4,18 +4,48 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# One native build at a time on macdesk.
+concurrency:
+  group: rexduo-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    # Checks what runs without the Xcode beta and the Ghostty framework: RexKit and the helper.
-    runs-on: macos-15
+    # macdesk (self-hosted, latest Xcode). Pull requests from forks only run after the owner
+    # approves them (repo setting: approval required for all external contributors).
+    runs-on: [self-hosted, macOS, ARM64, macdesk, rexduo]
+    timeout-minutes: 60
+    env:
+      # Kept between runs so Ghostty and the app's build products are not rebuilt every time.
+      VENDOR_CACHE: ${{ github.workspace }}/../../rexduo-vendor
+      DERIVED: ${{ github.workspace }}/../../rexduo-dd
     steps:
       - uses: actions/checkout@v4
+      - name: Ghostty framework
+        run: |
+          mkdir -p "$VENDOR_CACHE"
+          ln -sfn "$VENDOR_CACHE" Vendor
+          scripts/build-ghostty.sh
       - name: RexKit tests
         run: swift test --package-path Packages/RexKit
+      - name: App tests
+        run: |
+          /opt/homebrew/bin/xcodegen generate --quiet
+          SIM=$(xcrun simctl create "ci-rexduo-$GITHUB_RUN_ID" "iPhone 17")
+          trap 'xcrun simctl delete "$SIM" >/dev/null 2>&1' EXIT
+          xcodebuild test -project RexDuo.xcodeproj -scheme RexDuo -destination "id=$SIM" \
+            -derivedDataPath "$DERIVED" -quiet
+
+  helper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
       - name: Helper tests
         working-directory: Relay
         run: cargo test --locked

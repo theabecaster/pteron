@@ -82,6 +82,9 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
   `scripts/bench/run.sh <sim-id>` (about 5 minutes, no server). It fails when a number passes its
   budget (docs/ghostty-engine.md, Measurements).
 - Releases (device installs, TestFlight, the helper's packaging): [docs/release.md](docs/release.md).
+- CI (`.github/workflows/ci.yml`): job `build` runs RexKit and app tests on macdesk, a self-hosted
+  runner on the latest Xcode; job `helper` runs `cargo test` on GitHub's Linux runners. `build` is
+  required for merging into main. Fork pull requests only run after the owner approves them.
 
 ## Debug launch arguments
 
