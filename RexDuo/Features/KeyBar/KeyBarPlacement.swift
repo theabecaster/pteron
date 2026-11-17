@@ -4,7 +4,7 @@ import UIKit
 enum KeyBarPlacement {
     /// The hide key's place.
     enum HideKey: Equatable {
-        /// At the bar's trailing end, after a divider: no vertical bar beside the keyboard.
+        /// At the bar's trailing end, after the keys' capsule: no vertical bar beside the keyboard.
         case inBar
         /// In the column the system's vertical bar leaves beside the keyboard, so the keys get the
         /// bar's full width. `column` is the touch target, the whole inset; `midX` is the key's center,

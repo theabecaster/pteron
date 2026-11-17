@@ -54,6 +54,12 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   the bar's items (the whole column takes the tap), and the keys scroll across the full width
   (`KeyBarPlacement`). Elsewhere the hide key stays at the bar's end. With a vertical crease, the key
   that would sit on it moves 12 pt past it, with the bar scrolled to its start.
+- **Key bar look.** The iOS 26 keyboard is a glass panel with rounded top corners, so the bar has no
+  background of its own. The keys sit bare in a glass capsule tinted with the keyboard's color, 6 pt
+  from the sides like the keyboard's keys, with 4 pt of air above and below. At the bar's end the
+  hide key is a matching glass circle; in the vertical bar's column it is plain glass, like that
+  bar's items. A pressed key or an active ctrl/alt shows a pill. With a hardware keyboard the bar
+  still shows on its own at the bottom, for esc, ctrl and the arrows; its hide key puts it away.
 - **Keyboard room.** The root ignores SwiftUI's keyboard safe area and pads its bottom by
   `KeyboardInset`, computed from the keyboard's last reported frame and the root's frame on every
   keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment
@@ -61,7 +67,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.
   The panes stay inside the safe area, so no terminal text sits under system UI.
 - **Short windows** (landscape iPhone): the title bar is 34 pt with no subtitle, and the key bar is
-  40 pt.
+  42 pt.
 - **Offline screen** (`OfflineLayout`). It fills the tab, so an inline sidebar stays beside it. Where
   the crease crosses it with room on both sides, it is two pages: the glyph large on the left (or top)
   page, the card on the other, each centered in its page and 12 pt clear of the crease. With room for

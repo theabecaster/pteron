@@ -8,6 +8,9 @@ import UIKit
 /// - The "arrows" key is a trackpad: press and drag to send arrow keys.
 /// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key moves into
 ///   its column and the keys get the bar's width. Keys stay off a vertical crease (`KeyBarPlacement`).
+/// - Since iOS 26 the keyboard is a glass panel with rounded top corners. The bar draws no
+///   background of its own: the keys sit in a glass capsule and the hide key in a glass circle,
+///   floating above the keyboard and inset as far as its keys, as the system's own bars float.
 @MainActor
 final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     weak var terminal: GhosttyTerminalView? {
@@ -22,31 +25,35 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     enum ModState { case off, once, locked }
 
-    static let barHeight: CGFloat = 50
+    /// The keys' capsule with 4 pt of air above and below it, so it floats clear of the keyboard.
+    static let barHeight: CGFloat = 54
     static let keyHeight: CGFloat = 42
     /// Under a short window (landscape iPhone) the bar is thinner, to leave rows for the panes.
-    static let compactBarHeight: CGFloat = 40
+    static let compactBarHeight: CGFloat = 42
     static let compactKeyHeight: CGFloat = 34
     /// The hide key's glass circle in the vertical bar's column, near the size of the bar's own items.
     static let stripKeySize: CGFloat = 48
     static let compactStripKeySize: CGFloat = 38
+    /// The capsule's margin around the keys, so a pressed key's pill sits concentric in it.
+    static let ring: CGFloat = 2
+    /// The capsule's and the hide key's distance from the bar's sides: in line with the keyboard's
+    /// own keys, inside its rounded corners.
+    static let sideInset: CGFloat = 6
+    /// The space between the capsule and the hide key's circle.
+    static let hideGap: CGFloat = 8
 
     private var barHeightConstraint: NSLayoutConstraint?
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
+    private var keyHeight: CGFloat { compact ? Self.compactKeyHeight : Self.keyHeight }
 
+    private let capsule = UIVisualEffectView()
     private let scroll = KeyScroll()
     private let stack = UIStackView()
-    private let hideKey = KeyCap(key: "hide", kind: .action)
-    private let stripHideKey = StripKey()
+    private let hideKey = GlassHideKey()
     private var placement = KeyBarPlacement.HideKey.inBar
-    private var inBarConstraints: [NSLayoutConstraint] = []
-    private var stripConstraints: [NSLayoutConstraint] = []
     private var stackLeading: NSLayoutConstraint?
     private var creaseGap: (index: Int, extra: CGFloat)?
     private static let spacing: CGFloat = 6
-    private let divider = UIView()
-    private let topLine = UIView()
-    private var hairlines: [NSLayoutConstraint] = []
     private var caps: [KeyCap] = []
     private var theme: TermTheme = ThemeStore.fallback
     private var ctrl: ModState = .off { didSet { syncModifiers() } }
@@ -61,55 +68,38 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 400, height: Self.barHeight), inputViewStyle: .default)
         allowsSelfSizing = true
+        backgroundColor = .clear
+        GlassHideKey.makeGlass(capsule)
         scroll.showsHorizontalScrollIndicator = false
         scroll.alwaysBounceHorizontal = true
         scroll.delaysContentTouches = false
         scroll.canCancelContentTouches = true
+        // Keys scrolled to an end slip under the capsule's round ends.
+        scroll.clipsToBounds = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = Self.spacing
         stack.translatesAutoresizingMaskIntoConstraints = false
-        hideKey.translatesAutoresizingMaskIntoConstraints = false
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        topLine.translatesAutoresizingMaskIntoConstraints = false
+        hideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
         hideKey.onFire = { [weak self] in self?.fire("hide") }
-        stripHideKey.isHidden = true
-        stripHideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
-        stripHideKey.onFire = { [weak self] in self?.fire("hide") }
-        addSubview(scroll)
-        addSubview(divider)
+        addSubview(capsule)
         addSubview(hideKey)
-        addSubview(stripHideKey)
-        addSubview(topLine)
+        capsule.contentView.addSubview(scroll)
         scroll.addSubview(stack)
-        // One-pixel lines; the scale is known once the bar is on screen (see didMoveToWindow).
-        hairlines = [topLine.heightAnchor.constraint(equalToConstant: 0.5), divider.widthAnchor.constraint(equalToConstant: 0.5)]
         let barHeight = heightAnchor.constraint(equalToConstant: Self.barHeight)
         barHeightConstraint = barHeight
-        let leading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: Self.spacing)
+        let leading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: Self.ring)
         stackLeading = leading
-        inBarConstraints = [
-            hideKey.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -6),
-            divider.trailingAnchor.constraint(equalTo: hideKey.leadingAnchor, constant: -5),
-            scroll.trailingAnchor.constraint(equalTo: divider.leadingAnchor, constant: -1),
-        ]
-        stripConstraints = [scroll.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor)]
-        NSLayoutConstraint.activate(hairlines + inBarConstraints + [
+        let content = capsule.contentView
+        NSLayoutConstraint.activate([
             barHeight,
-            topLine.topAnchor.constraint(equalTo: topAnchor),
-            topLine.leadingAnchor.constraint(equalTo: leadingAnchor),
-            topLine.trailingAnchor.constraint(equalTo: trailingAnchor),
-
-            hideKey.centerYAnchor.constraint(equalTo: centerYAnchor),
-            divider.centerYAnchor.constraint(equalTo: centerYAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 26),
-
-            scroll.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
-            scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             leading,
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -Self.spacing),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -Self.ring),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
@@ -121,46 +111,59 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     /// Thinner bar and keys under a short window.
     private func applySize() {
-        let c = compact
-        barHeightConstraint?.constant = c ? Self.compactBarHeight : Self.barHeight
-        for cap in caps + [hideKey] { cap.heightConstraint?.constant = c ? Self.compactKeyHeight : Self.keyHeight }
-        stripHideKey.diameter = c ? Self.compactStripKeySize : Self.stripKeySize
+        barHeightConstraint?.constant = compact ? Self.compactBarHeight : Self.barHeight
+        for cap in caps { cap.heightConstraint?.constant = keyHeight }
         invalidateIntrinsicContentSize()
+        setNeedsLayout()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        let scale = traitCollection.displayScale
-        if scale > 0 { hairlines.forEach { $0.constant = 1 / scale } }
-    }
-
     override func layoutSubviews() {
-        placeHideKey()
+        placement = KeyBarPlacement.hideKey(barEdge: barEdge, rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft,
+                                            width: bounds.width, height: bounds.height,
+                                            leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right)
+        layoutGlass()
         super.layoutSubviews()
-        if case .strip(let column, let midX) = placement {
-            stripHideKey.frame = column
-            stripHideKey.keyMidX = midX - column.minX
-        }
         keepKeysOffCrease()
     }
 
-    /// In the vertical bar's column when there is one beside the keyboard, else at the bar's end.
-    private func placeHideKey() {
-        let p = KeyBarPlacement.hideKey(barEdge: barEdge, rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft,
-                                        width: bounds.width, height: bounds.height,
-                                        leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right)
-        guard p != placement else { return }
-        let strip = p != .inBar
-        if strip != (placement != .inBar) {
-            NSLayoutConstraint.deactivate(strip ? inBarConstraints : stripConstraints)
-            NSLayoutConstraint.activate(strip ? stripConstraints : inBarConstraints)
-            hideKey.isHidden = strip
-            divider.isHidden = strip
-            stripHideKey.isHidden = !strip
+    /// Places the capsule and the hide key: in the vertical bar's column when there is one beside
+    /// the keyboard, else at the bar's end. Both are centered in the bar, above any bottom safe area
+    /// it is given.
+    private func layoutGlass() {
+        let h = keyHeight + 2 * Self.ring
+        let rowHeight = max(bounds.height - safeAreaInsets.bottom, h)
+        var lo = safeAreaInsets.left + Self.sideInset
+        var hi = bounds.width - safeAreaInsets.right - Self.sideInset
+        switch placement {
+        case .strip(let column, let midX):
+            // Tinted like the vertical bar's items beside it.
+            hideKey.tintColor = theme.uiCursor
+            hideKey.keyboardTinted = false
+            hideKey.diameter = compact ? Self.compactStripKeySize : Self.stripKeySize
+            hideKey.frame = column
+            hideKey.keyMidX = midX - column.minX
+        case .inBar:
+            // The circle sits at the bar's end; all of the bar past half the gap takes its tap.
+            hideKey.tintColor = theme.uiFG
+            hideKey.keyboardTinted = true
+            hideKey.diameter = h
+            if effectiveUserInterfaceLayoutDirection == .rightToLeft {
+                let edge = lo + h + Self.hideGap / 2
+                hideKey.frame = CGRect(x: 0, y: 0, width: edge, height: rowHeight)
+                hideKey.keyMidX = lo + h / 2
+                lo += h + Self.hideGap
+            } else {
+                let edge = hi - h - Self.hideGap / 2
+                hideKey.frame = CGRect(x: edge, y: 0, width: bounds.width - edge, height: rowHeight)
+                hideKey.keyMidX = hi - h / 2 - edge
+                hi -= h + Self.hideGap
+            }
         }
-        placement = p
+        capsule.frame = CGRect(x: lo, y: ((rowHeight - h) / 2).rounded(), width: max(hi - lo, h), height: h)
+        GlassHideKey.round(capsule, radius: h / 2)
+        scroll.layer.cornerRadius = h / 2
     }
 
     /// Adds space before the key that would sit on a vertical crease with the bar at its start, so
@@ -170,18 +173,18 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         if let crease, effectiveUserInterfaceLayoutDirection == .leftToRight,
            let tw = terminal?.window, let screen = tw.windowScene?.screen, window != nil {
             let r = convert(tw.convert(crease, to: screen.coordinateSpace), from: screen.coordinateSpace)
-            let x = scroll.frame.minX
+            let x = capsule.frame.minX
             let widths = caps.map { $0.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width }
-            gap = KeyBarPlacement.creaseGap(widths: widths, start: Self.spacing, spacing: Self.spacing,
+            gap = KeyBarPlacement.creaseGap(widths: widths, start: Self.ring, spacing: Self.spacing,
                                             crease: (r.minX - x)...(r.maxX - x))
         }
         guard gap?.index != creaseGap?.index || gap?.extra != creaseGap?.extra else { return }
         creaseGap = gap
         for cap in caps { stack.setCustomSpacing(UIStackView.spacingUseDefault, after: cap) }
-        stackLeading?.constant = Self.spacing
+        stackLeading?.constant = Self.ring
         guard let gap else { return }
         if gap.index == 0 {
-            stackLeading?.constant = Self.spacing + gap.extra
+            stackLeading?.constant = Self.ring + gap.extra
         } else {
             stack.setCustomSpacing(Self.spacing + gap.extra, after: caps[gap.index - 1])
         }
@@ -195,13 +198,14 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     }
 
     private func rebuild() {
-        backgroundColor = theme.uiBG.mixed(with: theme.isDark ? .black : .white, by: theme.isDark ? 0.18 : 0.04)
-        topLine.backgroundColor = theme.uiFG.withAlphaComponent(0.12)
-        divider.backgroundColor = theme.uiFG.withAlphaComponent(0.16)
+        // The glass follows the theme, as the keyboard does (`GhosttyTerminalView.keyboardAppearance`).
+        let style: UIUserInterfaceStyle = theme.isDark ? .dark : .light
+        capsule.overrideUserInterfaceStyle = style
+        hideKey.overrideUserInterfaceStyle = style
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         caps = []
         creaseGap = nil
-        stackLeading?.constant = Self.spacing
+        stackLeading?.constant = Self.ring
         setNeedsLayout()
         for key in Prefs.shared.keyBar {
             let cap = KeyCap(key: key, kind: Self.kind(of: key))
@@ -214,9 +218,6 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             stack.addArrangedSubview(cap)
             caps.append(cap)
         }
-        hideKey.theme = theme
-        stripHideKey.tintColor = theme.uiCursor
-        hideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
         refreshModifiers()
         applySize()
     }
@@ -441,30 +442,53 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     ]
 }
 
-/// The hide key in the vertical bar's column: a glass circle with a tinted symbol, like the bar's own
-/// items. The whole column beside the key bar is its touch target.
+/// The hide key: a glass circle with a tinted symbol, at the bar's end or in the vertical bar's
+/// column in line with that bar's items. Its whole frame, larger than the circle, is its touch target.
 @MainActor
-private final class StripKey: UIControl {
+private final class GlassHideKey: UIControl {
     var onTouchDown: (() -> Void)?
     var onFire: (() -> Void)?
     var diameter: CGFloat = KeyBar.stripKeySize { didSet { if diameter != oldValue { setNeedsLayout() } } }
-    /// The circle's center, from the control's left edge: in line with the vertical bar's items.
+    /// The circle's center, from the control's left edge.
     var keyMidX: CGFloat = 0 { didSet { if keyMidX != oldValue { setNeedsLayout() } } }
+
+    /// Tinted like the keyboard at the bar's end; plain like the vertical bar's items in its column.
+    var keyboardTinted = true { didSet { if keyboardTinted != oldValue { Self.makeGlass(glass, keyboardTinted: keyboardTinted) } } }
 
     private let glass = UIVisualEffectView()
     private let icon = UIImageView()
 
+    /// The keyboard's own color under its glass (iOS 27.2 simulator, sampled over plain white and
+    /// over a dark terminal). Glass tinted with it reads as the same material as the keyboard.
+    static let keyboardTint = UIColor { t in
+        t.userInterfaceStyle == .dark
+            ? UIColor(red: 0.13, green: 0.137, blue: 0.15, alpha: 1)
+            : UIColor(red: 0.89, green: 0.894, blue: 0.914, alpha: 1)
+    }
+
+    /// Liquid Glass, as the keyboard and the system's bars use. Before iOS 26 the keyboard is
+    /// opaque and square, and a material stands in.
+    static func makeGlass(_ view: UIVisualEffectView, keyboardTinted: Bool = true) {
+        if #available(iOS 26.0, *) {
+            let glass = UIGlassEffect()
+            if keyboardTinted { glass.tintColor = keyboardTint }
+            view.effect = glass
+            view.cornerConfiguration = .capsule()
+        } else {
+            view.effect = UIBlurEffect(style: .systemChromeMaterial)
+            view.clipsToBounds = true
+        }
+    }
+
+    /// Rounds the fallback material; the glass is a capsule on its own.
+    static func round(_ view: UIVisualEffectView, radius: CGFloat) {
+        if view.clipsToBounds { view.layer.cornerRadius = radius }
+    }
+
     init() {
         super.init(frame: .zero)
         glass.isUserInteractionEnabled = false
-        // Vertical bars only exist on iOS 27.1 and later; the material is a fallback that never shows.
-        if #available(iOS 26.0, *) {
-            glass.effect = UIGlassEffect()
-            glass.cornerConfiguration = .capsule()
-        } else {
-            glass.effect = UIBlurEffect(style: .systemMaterial)
-            glass.clipsToBounds = true
-        }
+        Self.makeGlass(glass)
         icon.image = UIImage(systemName: KeyBar.symbols["hide"] ?? "keyboard.chevron.compact.down",
                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
         icon.contentMode = .center
@@ -483,7 +507,7 @@ private final class StripKey: UIControl {
         super.layoutSubviews()
         glass.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
         glass.center = CGPoint(x: keyMidX, y: bounds.midY)
-        if glass.clipsToBounds { glass.layer.cornerRadius = diameter / 2 }
+        Self.round(glass, radius: diameter / 2)
         icon.frame = glass.contentView.bounds
     }
 
@@ -554,11 +578,6 @@ final class KeyCap: UIControl {
         self.kind = kind
         super.init(frame: .zero)
         face.isUserInteractionEnabled = false
-        face.layer.cornerRadius = 8
-        face.layer.cornerCurve = .continuous
-        face.layer.shadowOffset = CGSize(width: 0, height: 1)
-        face.layer.shadowRadius = 0
-        face.layer.shadowOpacity = 0.35
         face.translatesAutoresizingMaskIntoConstraints = false
         label.textAlignment = .center
         label.adjustsFontForContentSizeCategory = false
@@ -618,11 +637,17 @@ final class KeyCap: UIControl {
         restyle()
     }
 
-    private var baseFill: UIColor { theme.uiFG.withAlphaComponent(theme.isDark ? 0.13 : 0.09) }
+    /// A pill, concentric with the bar's glass capsule.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        face.layer.cornerRadius = bounds.height / 2
+    }
 
+    /// Keys sit bare on the bar's glass, as items do on a system toolbar; only a pressed key or an
+    /// active modifier shows a pill.
     private func restyle() {
         let fg: UIColor
-        var fill = baseFill
+        var fill: UIColor = .clear
         var border: UIColor = .clear
         if kind == .modifier {
             switch modState {
@@ -647,7 +672,6 @@ final class KeyCap: UIControl {
         face.backgroundColor = fill
         face.layer.borderColor = border.cgColor
         face.layer.borderWidth = border == .clear ? 0 : 1.5
-        face.layer.shadowColor = UIColor.black.withAlphaComponent(theme.isDark ? 0.6 : 0.25).cgColor
         label.textColor = fg
         icon.tintColor = fg
         lockBar.backgroundColor = fg
@@ -756,16 +780,6 @@ final class KeyCap: UIControl {
     // VoiceOver: swipe up/down on the trackpad key.
     override func accessibilityIncrement() { onDrag?(0, -1) }
     override func accessibilityDecrement() { onDrag?(0, 1) }
-}
-
-private extension UIColor {
-    func mixed(with other: UIColor, by t: CGFloat) -> UIColor {
-        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
-        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
-        getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
-        other.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-        return UIColor(red: r1 + (r2 - r1) * t, green: g1 + (g2 - g1) * t, blue: b1 + (b2 - b1) * t, alpha: 1)
-    }
 }
 
 extension Notification.Name {
