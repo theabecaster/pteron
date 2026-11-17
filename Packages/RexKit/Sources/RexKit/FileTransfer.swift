@@ -117,11 +117,16 @@ public final class FileUploader {
         case brokeRule
         /// The connection was lost, or the server didn't answer.
         case lost(String)
+        /// Larger than the server takes (`too_large`).
+        case tooLarge
 
         /// Worth sending the batch again from the start.
         public var isRetryable: Bool { if case .lost = self { return true } else { return false } }
     }
 
+    /// The largest file a terminal takes, from a probe of the server (its `too_large` error says
+    /// 104857600). The server's answer decides; this lets a batch be refused before any of it goes.
+    public nonisolated static let maxFileSize: Int64 = 104_857_600
     /// How often a lost batch is sent again from the start.
     public static let retryLimit = 2
     /// How long the server has to close after the end of a file.
@@ -287,6 +292,7 @@ public final class FileUploader {
     static func failure(beginning error: Error) -> Failure {
         guard let e = error as? RexError else { return .lost(error.localizedDescription) }
         if e.code == "method_not_found" { return .unsupported }
+        if e.code == "too_large" { return .tooLarge }
         if e.code == "client" { return .lost(e.message) }
         return .refused(e.message)
     }

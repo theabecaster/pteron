@@ -191,6 +191,8 @@ final class FileTransferTests: XCTestCase {
         let e = RexError(code: "conflict", message: "batch was aborted", status: 409)
         XCTAssertEqual(FileUploader.failure(beginning: e), .refused("batch was aborted"))
         XCTAssertEqual(FileUploader.failure(beginning: RexError.unsent("not connected")), .lost("not connected"))
+        let big = RexError(code: "too_large", message: "too large: the file is 150000000 bytes, more than the 104857600 a terminal accepts", status: 413)
+        XCTAssertEqual(FileUploader.failure(beginning: big), .tooLarge)
     }
 
     func testSupportIsProbedWithoutReservingAnything() async {

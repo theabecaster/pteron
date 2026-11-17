@@ -20,13 +20,13 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
     var keys: [String] {
         switch self {
         case .agents:
-            return ["esc", "shift-tab", "tab", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl", "paste"]
+            return ["esc", "shift-tab", "tab", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl", "paste", "attach"]
         case .shell:
             return ["esc", "tab", "ctrl", "alt", "arrows", "up", "down", "left", "right", "ctrl-r", "ctrl-c",
-                    "|", "~", "/", "-", "paste"]
+                    "|", "~", "/", "-", "paste", "attach"]
         case .vim:
             return ["esc", ":", "ctrl", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
-                    "$", "~", "paste"]
+                    "$", "~", "paste", "attach"]
         }
     }
 }
@@ -112,6 +112,9 @@ final class Prefs {
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
     }
+    /// "Send Original" in the attach menu: photos go as they are, location included, instead of
+    /// converted, downscaled and stripped. Not saved: each run starts with the private choice.
+    @ObservationIgnored var sendOriginalPhotos = false
     /// The system's Light or Dark Mode, which `RexDuoApp` reads each time the app becomes active.
     /// Views can't read it from the environment: the root forces the app's scheme to the theme's own.
     var systemScheme: ColorScheme

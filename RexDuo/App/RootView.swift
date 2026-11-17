@@ -416,7 +416,8 @@ struct TabOfflineOverlay: View {
     }
 }
 
-/// A small capsule for `Notice` messages. Tap to dismiss; it also fades by itself.
+/// A small capsule for `Notice` messages. Tap to dismiss; it also fades by itself. A notice with a
+/// button (Retry, Cancel) shows it after the text, and a running job's notice a thin progress line.
 struct NoticeBanner: View {
     let theme: TermTheme
     private var notice: Notice { Notice.shared }
@@ -424,23 +425,46 @@ struct NoticeBanner: View {
     var body: some View {
         ZStack {
             if let m = notice.message {
-                Text(m)
-                    .font(.footnote)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(theme.fg)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(Capsule().fill(theme.chrome.sidebar))
-                    .overlay(Capsule().stroke(notice.style == .error ? theme.chrome.error.opacity(0.5) : theme.chrome.divider, lineWidth: 1))
-                    .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 6)
-                    .frame(minHeight: 44)
-                    .onTapGesture { notice.dismiss() }
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .accessibilityAddTraits(.isStaticText)
+                HStack(spacing: 12) {
+                    Text(m)
+                        .font(.footnote.monospacedDigit())
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(theme.fg)
+                        .accessibilityAddTraits(.isStaticText)
+                    if let title = notice.actionTitle {
+                        Button(title) { notice.runAction() }
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(theme.accent)
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(Capsule().fill(theme.chrome.sidebar))
+                .overlay(alignment: .bottomLeading) {
+                    if let p = notice.progress {
+                        GeometryReader { g in
+                            Capsule().fill(theme.accent)
+                                .frame(width: max(4, (g.size.width - 32) * p), height: 2)
+                                .padding(.leading, 16)
+                        }
+                        .frame(height: 2)
+                        .padding(.bottom, 3)
+                        .accessibilityHidden(true)
+                    }
+                }
+                .overlay(Capsule().stroke(notice.style == .error ? theme.chrome.error.opacity(0.5) : theme.chrome.divider, lineWidth: 1))
+                .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+                .padding(.horizontal, 24)
+                .padding(.top, 6)
+                .frame(minHeight: 44)
+                // A running job's notice goes only with its Cancel.
+                .onTapGesture { if notice.progress == nil { notice.dismiss() } }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .accessibilityElement(children: .contain)
             }
         }
-        .animation(.snappy(duration: 0.25), value: notice.message)
+        // Not on every change of a progress notice's text.
+        .animation(.snappy(duration: 0.25), value: notice.message == nil)
+        .animation(.snappy(duration: 0.25), value: notice.actionTitle)
     }
 }
 

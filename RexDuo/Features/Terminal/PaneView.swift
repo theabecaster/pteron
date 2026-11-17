@@ -61,6 +61,7 @@ struct PaneHostView: UIViewRepresentable {
         stream.onActionFailed = { Notice.shared.show($0) }
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
+        host.files = PaneFiles(server: server, sessionID: sessionID, blockID: blockID)
         apply(host)
         let c = Container(host, key: key, pool: pool)
         if let pool {
@@ -88,6 +89,8 @@ struct PaneHostView: UIViewRepresentable {
         host.isActive = active
         host.onFocus = onFocus
         host.onSwipe = onSwipe
+        // After a reconnect the server is asked again whether it takes files.
+        if server.phase == .online { host.refreshFiles() }
         let crease = division.flatMap { $0.isVertical ? $0.frame.offsetBy(dx: rootOrigin.x, dy: rootOrigin.y) : nil }
         host.setKeyBarSurroundings(barEdge: barEdge.map { $0 == .leading ? .leading : .trailing }, crease: crease)
     }

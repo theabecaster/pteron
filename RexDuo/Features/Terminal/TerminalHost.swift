@@ -58,6 +58,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var onCommand: ((RexCommand) -> Void)?
     /// The server's keymap; hardware keys bound in it run their action instead of reaching the terminal.
     var keymap: KeymapStore?
+    /// Sending files to this pane: the attach key, Paste of an image, drops. Nil where the pane
+    /// has no server (a replay).
+    var files: PaneFiles? {
+        didSet {
+            files?.view = self
+            files?.onSupportChanged = { [weak self] in self?.refreshFiles() }
+            keyBar.attachMenu = { [weak self] in self?.files?.menu() ?? UIMenu() }
+            refreshFiles()
+        }
+    }
 
     /// The size the server confirmed for this pane in fit mode.
     private var claimedSize: (Int, Int)?
@@ -146,9 +156,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
         term.engineDelegate = self
         keyBar.terminal = term
-        keyBar.onPaste = { [weak self] in
-            if let s = UIPasteboard.general.string { self?.paste(s) }
-        }
+        keyBar.onPaste = { [weak self] in self?.pasteFromClipboard() }
         keyBar.onHideKeyboard = { [weak self] in self?.hideKeyboard() }
         term.inputAccessoryView = keyBar
 
@@ -486,11 +494,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 self.clearSelection()
             })
         }
-        if UIPasteboard.general.hasStrings {
+        if UIPasteboard.general.hasStrings || [.files, .image].contains(files?.pasteChoice) {
             items.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
                 guard let self else { return }
                 self.clearSelection()
-                if let s = UIPasteboard.general.string { self.paste(s) }
+                self.pasteFromClipboard()
             })
         }
         // SELECTION UI: Select All, with handles to pull it back in from.
@@ -664,7 +672,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .copy:
             if term.hasActiveSelection, let s = term.selectedText, !s.isEmpty { UIPasteboard.general.string = s }
         case .paste:
-            if let s = UIPasteboard.general.string { paste(s) }
+            pasteFromClipboard()
         case .selectAll:
             selectionUI.selectAll(showsMenu: false)  // SELECTION UI: with handles
         case .pageUp:
@@ -1145,6 +1153,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
             #if DEBUG
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
+            if isActive { FilesTest.run(on: self) }  // `-filesTest` (testing, FilesTest.swift)
             // `-typeTest <text>` (Debug builds, testing): types into the live shell.
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true
@@ -1230,4 +1239,25 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func sendKey(_ bytes: [UInt8]) { stream.send(bytes) }
+
+    /// Paste key, ⌘V and the menu's Paste: text pastes as before; a clipboard with only an image or
+    /// copied files sends them to the pane's computer, which types their paths (`ClipboardChoice`).
+    func pasteFromClipboard() {
+        switch files?.pasteChoice ?? (UIPasteboard.general.hasStrings ? .text : .nothing) {
+        case .text: if let s = UIPasteboard.general.string { paste(s) }
+        case .files, .image: files?.pasteFiles()
+        case .nothing: break
+        }
+    }
+
+    #if DEBUG
+    /// `-filesTest menu`: opens the attach key's menu as a tap does.
+    func openAttachMenu() { keyBar.openAttachMenu() }
+    #endif
+
+    /// Shows the attach key once the server is known to take files.
+    func refreshFiles() {
+        files?.checkSupport()
+        keyBar.attachAvailable = files?.supported == true
+    }
 }

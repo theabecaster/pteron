@@ -18,6 +18,10 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     }
     var onPaste: (() -> Void)?
     var onHideKeyboard: (() -> Void)?
+    /// The attach key's menu, built each time it opens.
+    var attachMenu: (() -> UIMenu)?
+    /// The attach key shows only where the pane's server takes files.
+    var attachAvailable = false { didSet { if attachAvailable != oldValue { rebuild() } } }
     /// The edge of the system's vertical bar, nil where bars are horizontal.
     var barEdge: NSDirectionalRectEdge? { didSet { if barEdge != oldValue { setNeedsLayout() } } }
     /// A vertical crease, in the terminal's window coordinates. Nil without one.
@@ -207,7 +211,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         creaseGap = nil
         stackLeading?.constant = Self.ring
         setNeedsLayout()
-        for key in Prefs.shared.keyBar {
+        for key in Prefs.shared.keyBar where key != "attach" || attachAvailable {
             let cap = KeyCap(key: key, kind: Self.kind(of: key))
             cap.theme = theme
             cap.onTouchDown = { [weak self] in self?.touchDown(key) }
@@ -215,6 +219,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             cap.onRepeat = { [weak self] in self?.sendRaw(key) }
             cap.onRepeatEnd = { [weak self] in self?.usedModifiers() }
             cap.onDrag = { [weak self] dx, dy in self?.trackpad(dx: dx, dy: dy) }
+            if key == "attach" { addMenu(to: cap) }
             stack.addArrangedSubview(cap)
             caps.append(cap)
         }
@@ -222,12 +227,47 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         applySize()
     }
 
+    private weak var attachButton: UIButton?
+
+    #if DEBUG
+    /// `-filesTest menu`: opens the attach menu as a tap does.
+    func openAttachMenu() { attachButton?.performPrimaryAction() }
+    #endif
+
+    /// The attach key opens its menu on a tap: a button over the key, which keeps the key's look.
+    private func addMenu(to cap: KeyCap) {
+        let button = UIButton(type: .custom)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.showsMenuAsPrimaryAction = true
+        button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
+            done(self?.attachMenu?().children ?? [])
+        }])
+        button.addAction(UIAction { [weak self, weak cap] _ in
+            cap?.isHighlighted = true
+            self?.touchDown("attach")
+        }, for: .touchDown)
+        for event: UIControl.Event in [.touchUpInside, .touchUpOutside, .touchCancel, .menuActionTriggered] {
+            button.addAction(UIAction { [weak cap] _ in cap?.isHighlighted = false }, for: event)
+        }
+        attachButton = button
+        cap.isAccessibilityElement = false
+        button.accessibilityLabel = Self.names["attach"]
+        button.accessibilityHint = "Sends a photo or a file to this pane's computer"
+        cap.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: cap.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: cap.trailingAnchor),
+            button.topAnchor.constraint(equalTo: cap.topAnchor),
+            button.bottomAnchor.constraint(equalTo: cap.bottomAnchor),
+        ])
+    }
+
     static func kind(of key: String) -> KeyCap.Kind {
         switch key {
         case "ctrl", "alt": return .modifier
         case "arrows": return .trackpad
         case "up", "down", "left", "right", "pgup", "pgdn": return .repeating
-        case "paste", "hide": return .action
+        case "paste", "hide", "attach": return .action
         default: return .normal
         }
     }
@@ -415,7 +455,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         case "f10": return csi("21~")
         case "f11": return csi("23~")
         case "f12": return csi("24~")
-        case "arrows", "ctrl", "alt", "paste", "hide": return nil
+        case "arrows", "ctrl", "alt", "paste", "hide", "attach": return nil
         default:
             // "ctrl-x" sends that control character; anything else is literal text.
             if key.hasPrefix("ctrl-"), key.count == 6, let b = key.utf8.last, let c = control(b) { return [c] }
@@ -425,7 +465,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     static let symbols: [String: String] = [
         "left": "arrow.left", "right": "arrow.right", "up": "arrow.up", "down": "arrow.down",
-        "paste": "doc.on.clipboard", "hide": "keyboard.chevron.compact.down", "enter": "return",
+        "paste": "doc.on.clipboard", "attach": "paperclip", "hide": "keyboard.chevron.compact.down", "enter": "return",
         "tab": "arrow.right.to.line", "shift-tab": "arrow.left.to.line",
         "arrows": "arrow.up.and.down.and.arrow.left.and.right",
     ]
@@ -436,7 +476,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     ]
     /// Spoken names for VoiceOver and the editor.
     static let names: [String: String] = [
-        "left": "Left", "right": "Right", "up": "Up", "down": "Down", "paste": "Paste", "hide": "Hide Keyboard",
+        "left": "Left", "right": "Right", "up": "Up", "down": "Down", "paste": "Paste", "attach": "Attach File", "hide": "Hide Keyboard",
         "enter": "Return", "tab": "Tab", "shift-tab": "Shift-Tab", "arrows": "Arrow Trackpad", "esc": "Escape",
         "ctrl": "Control", "alt": "Alt",
     ]

@@ -9,6 +9,8 @@ struct Selection: Hashable, Codable {
 }
 
 /// A short, unobtrusive notice (e.g. an action the server refused). One at a time; fades on its own.
+/// A notice can carry one button (Retry), and a running job's notice shows its progress with
+/// Cancel and stays until the job replaces it.
 @MainActor
 @Observable
 final class Notice {
@@ -16,22 +18,61 @@ final class Notice {
     /// An error (an action the server refused) or plain news.
     enum Style { case error, neutral }
 
+    struct Action {
+        var title: String
+        var run: @MainActor () -> Void
+    }
+
     private(set) var message: String?
     private(set) var style = Style.error
+    /// 0...1 while a job runs; nil for a plain notice.
+    private(set) var progress: Double?
+    /// The notice's button: its title is observed, the action is not.
+    private(set) var actionTitle: String?
+    @ObservationIgnored private var action: Action?
     @ObservationIgnored private var hide: Task<Void, Never>?
 
-    func show(_ text: String, style: Style = .error) {
+    func show(_ text: String, style: Style = .error, action: Action? = nil) {
         self.style = style
         message = text
+        progress = nil
+        self.action = action
+        actionTitle = action?.title
         hide?.cancel()
+        // Long enough to reach a button.
+        let wait: UInt64 = action == nil ? 3_500_000_000 : 6_000_000_000
         hide = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            try? await Task.sleep(nanoseconds: wait)
             guard !Task.isCancelled else { return }
-            self?.message = nil
+            self?.dismiss()
         }
     }
 
-    func dismiss() { hide?.cancel(); message = nil }
+    /// A running job: `text` with its progress and a Cancel button. It stays until the next `show`
+    /// or `dismiss`.
+    func showProgress(_ text: String, fraction: Double, cancel: @escaping @MainActor () -> Void) {
+        hide?.cancel()
+        style = .neutral
+        message = text
+        progress = fraction
+        action = Action(title: "Cancel", run: cancel)
+        actionTitle = "Cancel"
+    }
+
+    func dismiss() {
+        hide?.cancel()
+        message = nil
+        progress = nil
+        action = nil
+        actionTitle = nil
+    }
+
+    /// Puts the notice away and runs its button's action.
+    func runAction() {
+        let a = action
+        dismiss()
+        a?.run()
+    }
 }
 
 /// App-wide actions triggered by keyboard shortcuts, gestures and menus.

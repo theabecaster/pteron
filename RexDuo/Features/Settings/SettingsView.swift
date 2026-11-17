@@ -167,7 +167,7 @@ struct SettingsView: View {
     }
 
     static func keyLabel(_ k: String) -> String {
-        let names = ["left": "←", "right": "→", "up": "↑", "down": "↓", "paste": "Paste", "enter": "⏎",
+        let names = ["left": "←", "right": "→", "up": "↑", "down": "↓", "paste": "Paste", "attach": "Attach", "enter": "⏎",
                      "tab": "⇥", "shift-tab": "⇤", "arrows": "✥"]
         return names[k] ?? KeyBar.titles[k] ?? k
     }

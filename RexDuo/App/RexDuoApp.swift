@@ -16,6 +16,8 @@ struct RexDuoApp: App {
         #if DEBUG || BENCH
         PerfProbe.cleanUpIfAsked()
         #endif
+        // Copies of files a crash or a kill left on their way to or from a pane.
+        FileStaging.clearAll()
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
         // An offline replay or demo has no server either.

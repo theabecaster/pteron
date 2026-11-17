@@ -118,6 +118,9 @@ final class ServerConnection: Identifiable {
     /// Counts successful connections, so per-connection work (push registration) can tell a new
     /// connection from a resync.
     @ObservationIgnored private(set) var connectionSerial = 0
+    /// Whether this server takes files (`upload_begin`, `download_begin`), asked once per
+    /// connection by the first pane that needs it (`PaneFiles.checkSupport`).
+    @ObservationIgnored var fileSupport: (serial: Int, supported: Bool)?
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle

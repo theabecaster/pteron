@@ -25,7 +25,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Rex DUO uses the camera to scan the pairing code your computer shows. Nothing is recorded.</string>
+	<string>Rex DUO uses the camera to scan the pairing code your computer shows, and to take a photo you send to a pane. Nothing else is recorded.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIAppFonts</key>
