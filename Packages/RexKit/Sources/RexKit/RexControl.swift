@@ -155,6 +155,13 @@ public final class RexControl {
         generation += 1
         let gen = generation
         state = .connecting
+        #if DEBUG
+        if unreachableForTesting != nil {
+            let f = ConnectionFailure(URLError(.cannotConnectToHost))
+            handleDrop(gen: gen, failure: f)
+            throw f
+        }
+        #endif
         let url = wsBase.appendingPathComponent("api/control")
         let t = session.webSocketTask(with: url, protocols: ["rex.control.v1"])
         t.maximumMessageSize = 8 * 1024 * 1024
@@ -306,6 +313,9 @@ public final class RexControl {
     /// `wakeTimeout`, or a failed ping, counts as a drop, and the next attempt starts at once
     /// instead of after the backoff. Not connected: tries now, as `kick()` does.
     public func wake() {
+        #if DEBUG
+        if unreachableForTesting == false { unreachableForTesting = nil }
+        #endif
         guard wantConnected else { return }
         guard state == .connected, let t = task else { kick(); return }
         let gen = generation
@@ -326,6 +336,20 @@ public final class RexControl {
             self.handleDrop(gen: gen, failure: .timedOut())
         }
     }
+
+    #if DEBUG
+    /// Testing: attempts fail as an unreachable host's do until `wake()` (false), or always (true).
+    private var unreachableForTesting: Bool?
+
+    /// Testing (`-wakeTest`): loses the connection as iOS does a suspended app's sockets, and
+    /// attempts fail until the app is back, as a suspended app makes none. With `unreachable`,
+    /// they keep failing after it.
+    public func dropForTesting(unreachable: Bool) {
+        unreachableForTesting = unreachable
+        guard task != nil else { return }
+        handleDrop(gen: generation, failure: ConnectionFailure(URLError(.networkConnectionLost)))
+    }
+    #endif
 
     /// Calls `body` each time the connection becomes connected, the first time and after every
     /// reconnect, until it returns false. This connection is the only thing that retries; what

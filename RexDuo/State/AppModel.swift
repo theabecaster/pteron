@@ -351,8 +351,21 @@ final class AppModel {
 
     /// Back in the foreground: reconnect where needed and resync every server with its real state.
     func foregroundResumed() {
-        for s in servers { s.resume() }
+        let fromBackground = inBackground
+        inBackground = false
+        for s in servers { s.resume(fromBackground: fromBackground) }
         push.becameActive()
+    }
+
+    /// Set from the background until the app is active again, so a return from Control Center or
+    /// the app switcher's peek isn't taken for a wake.
+    @ObservationIgnored private var inBackground = false
+
+    /// The app went to the background: a connection that drops from now on is waking up when the
+    /// app returns, not a problem (`ForegroundWake`).
+    func enteredBackground() {
+        inBackground = true
+        for s in servers { s.enteredBackground() }
     }
 
     // MARK: Opening a pane from a push or toast

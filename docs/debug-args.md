@@ -13,6 +13,10 @@ builds.
   `badAddress`, `unknown`. `-simulateRetrying YES` holds Try Again in "Trying…".
 - `-simulateNetwork offline|offPrivate|onPrivate`: pretend the phone has no path, is off the
   tailnet, or on it, so real errors classify as they would there.
+- `-wakeTest drop|unreachable`: as the app goes to the background, drop the control connection, as
+  iOS does a suspended app's sockets on a device (a simulator keeps them). `drop` reconnects on
+  the return, inside the wake's grace: no offline screen. `unreachable` fails every attempt from
+  then on, so the offline screen shows when the grace runs out (`ForegroundWake`).
 - `-simulateDuo <posture>[,<posture>…]`: lay the root out at that window size with its size classes,
   rough insets and a fake fold (red dashed line). Postures: `unfolded`, `book`, `unfoldedPortrait`,
   `tabletop`, `folded`, `foldedLandscape`, `halfWindow`, `iPhone`, `iPhoneLandscape`,

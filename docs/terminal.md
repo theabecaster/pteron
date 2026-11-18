@@ -86,7 +86,13 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   there. The next WELCOME resets that. These later starts ask for one ticket each.
 - `stop()`, `restart()` and a newer start end whatever was waiting.
 - `resync()` (a fresh stream, for its snapshot) does nothing while a start is under way or owed.
-- Back from more than 30 s in the background, the host calls `restart()`.
+- A fresh start whose ticket is refused with `conflict` right after a reconnect (the app's resync
+  hasn't attached the session again yet) is tried again after 250 ms, up to 8 times, before the
+  backoff.
+- Back from the background, the host calls `wake()`: the stream pings its data socket. A socket
+  that fails, or doesn't answer within 2.5 s (half open after a suspension), is dropped without a
+  status 1000 close and the stream goes on with a RESUME, as after any drop. One that answers is
+  live. Transient chips ("Reconnecting…") wait out the wake's grace (`ForegroundWake.grace`).
 
 ## Fit and mirror
 

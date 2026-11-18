@@ -83,6 +83,7 @@ struct TabTitleBar: View {
                 .fixedSize()
                 .layoutPriority(1)
                 if current {
+                    WakingSlot(server: server)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(theme.chrome.tertiary)
@@ -230,5 +231,16 @@ struct TabMenu: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// The waking mark beside the title, in its own view so only it re-renders when `waking` flips.
+private struct WakingSlot: View {
+    let server: ServerConnection
+
+    var body: some View {
+        if server.waking {
+            WakingMark().transition(.opacity)
+        }
     }
 }

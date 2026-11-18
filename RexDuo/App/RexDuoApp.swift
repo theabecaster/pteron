@@ -77,7 +77,9 @@ struct RexDuoApp: App {
             case .active:
                 readSystemScheme()
                 model.foregroundResumed()
-            case .background: model.push.enteredBackground()
+            case .background:
+                model.enteredBackground()
+                model.push.enteredBackground()
             default: break
             }
         }

@@ -42,6 +42,17 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 - Offline holds still: retries never show as "connecting", only a real connection leaves `.offline`,
   and `ProblemGate` changes the message only for a decisive kind or the same new kind twice.
   `recovering` keeps the screen up, saying the signal is back, until the sessions have reloaded.
+- Waking up isn't a problem (`State/ForegroundWake.swift`). iOS suspends the app and its sockets
+  die, so a return to the foreground usually finds the connection down for a moment. A drop
+  while in the background, or within 5 s after the return, is held: `phase` stays `.online`, the
+  tab keeps its last frame with no dim, input queues as usual, and `ServerConnection.waking` puts
+  a small Rexie beside the tab's title, breathing, if it lasts over a second (`WakingMark`, Core
+  Animation, still with Reduce Motion; the sidebar's dot turns grey and still). On the return
+  `RexControl.wake()` pings the connection: a failed ping, no pong in 2.5 s, or a drop in those
+  seconds reconnects at once, not after the backoff. A reconnect inside the grace shows nothing
+  more. No network, a decisive kind or a server that refused ends the hold at once, and a hold
+  that runs out shows the offline screen as before. A server already offline when the app left
+  keeps its screen.
 - `Features/Offline`: `OfflineScreen` takes over the tab area only when no server is up (one down
   server among several is a line in the sidebar). Over a tab whose server dropped, it dims the stale
   tab and blocks touches. `SignalStatic` is Core Animation only (one noise texture, discrete

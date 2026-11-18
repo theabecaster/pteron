@@ -89,6 +89,9 @@ struct KnownHost: Identifiable, Equatable {
 /// - Offline holds still. `RexControl` retries in the background, but a retry never shows as
 ///   "connecting" once the server is offline; only a real connection leaves `.offline`. The problem
 ///   shown changes only through `ProblemGate`, so alternating errors don't swap the message.
+/// - Waking up isn't a problem. A drop around a trip to the background is held for a few seconds
+///   after the return (`ForegroundWake`) while the connection is made again: `phase` stays
+///   `.online`, `waking` is set, and the offline screen shows only if the hold runs out.
 @MainActor
 @Observable
 final class ServerConnection: Identifiable {
@@ -152,6 +155,9 @@ final class ServerConnection: Identifiable {
     var recovering = false
     /// The offline screen is up for this server.
     var showsOffline: Bool { phase.problem != nil || recovering }
+    /// The connection dropped around a trip to the background and is being made again, while
+    /// `phase` stays `.online` (`ForegroundWake`). The title bar's Rexie breathes meanwhile.
+    var waking = false
 
     /// What an install of the helper on this server listens for. Set by `HelperSetupCenter`.
     @ObservationIgnored var setupSignals: ((SetupSignal) -> Void)?
@@ -176,6 +182,10 @@ final class ServerConnection: Identifiable {
     /// A drop from online waits out `phaseGrace` before it shows.
     @ObservationIgnored private var graceTask: Task<Void, Never>?
     @ObservationIgnored private var pendingProblem: ConnectionProblem?
+    /// Holds drops around a trip to the background.
+    @ObservationIgnored private var wake = ForegroundWake()
+    /// Ends the hold when its grace has passed.
+    @ObservationIgnored private var wakeTask: Task<Void, Never>?
     @ObservationIgnored private var retryStarted = Date.distantPast
     @ObservationIgnored private var retryEnd: Task<Void, Never>?
     #if DEBUG
@@ -273,9 +283,16 @@ final class ServerConnection: Identifiable {
             // Only the first attempt shows. A retry while offline keeps the offline screen as it is.
             if phase == .idle { show(.connecting) }
         case .failed(let f):
-            let p = ConnectionProblem.classify(f, network: network?.snapshot ?? .unknown)
+            let snap = network?.snapshot ?? .unknown
+            let p = ConnectionProblem.classify(f, network: snap)
             setupSignals?(.disconnected)
-            if phase == .online {
+            if phase == .online,
+               wake.failure(p.kind, answered: Self.answered(f), network: snap, now: Self.now()) == .hold {
+                // Waking up: the tab stays as it was. The problem shows only if the hold runs out.
+                pendingProblem = p
+                // In the background nobody sees it; the mark's delay starts at the return (`beginWake`).
+                if wake.state != .background, !waking { waking = true }
+            } else if phase == .online {
                 pendingProblem = p
                 waitOutDrop()
             } else if graceTask == nil {
@@ -295,7 +312,11 @@ final class ServerConnection: Identifiable {
             graceTask = nil
             pendingProblem = nil
             gate.reset()
+            wake.connected()
+            wakeTask?.cancel()
+            wakeTask = nil
         }
+        if waking { waking = false }
         if p != .online { synced = false }
         if p.problem != nil, !recovering { recovering = true }
         if p == .idle, recovering { recovering = false }
@@ -310,9 +331,55 @@ final class ServerConnection: Identifiable {
             try? await Task.sleep(nanoseconds: UInt64(Self.phaseGrace * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             self.graceTask = nil
-            guard self.control.state != .connected, let p = self.pendingProblem else { return }
+            guard self.control.state != .connected, !self.wake.holds, let p = self.pendingProblem else { return }
             self.show(.offline(self.gate.observe(p)))
         }
+    }
+
+    /// The server answered and turned the connection away (an HTTP status, or a refused port):
+    /// waiting won't change that.
+    private static func answered(_ f: ConnectionFailure) -> Bool {
+        f.httpStatus != nil || f.posixCode == Int(ECONNREFUSED)
+    }
+
+    private static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// The app went to the background: a drop from here on is held until the return.
+    func enteredBackground() {
+        wake.enteredBackground(online: phase == .online && control.state == .connected)
+        #if DEBUG
+        // `-wakeTest drop|unreachable` (testing): lose the connection as the app goes, as iOS does.
+        if let t = UserDefaults.standard.string(forKey: "wakeTest") {
+            control.dropForTesting(unreachable: t == "unreachable")
+        }
+        #endif
+    }
+
+    /// The app is back: hold drops for `ForegroundWake.grace` while the connections are checked.
+    private func beginWake() {
+        guard wake.enteredForeground(now: Self.now()), let until = wake.deadline else { return }
+        // A drop held while in the background shows now if it was a clear one.
+        if let p = pendingProblem, ForegroundWake.isClear(p.kind, answered: false, network: network?.snapshot ?? .unknown) {
+            endWake()
+            return
+        }
+        if control.state != .connected, !waking { waking = true }
+        wakeTask?.cancel()
+        wakeTask = Task { [weak self] in
+            let left = until - Self.now()
+            if left > 0 { try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000)) }
+            guard !Task.isCancelled, let self else { return }
+            self.wakeTask = nil
+            if self.wake.expire(now: Self.now()) { self.endWake() }
+        }
+    }
+
+    /// The hold is over: a drop that is still unresolved shows as any other does.
+    private func endWake() {
+        wakeTask?.cancel()
+        wakeTask = nil
+        guard control.state != .connected, let p = pendingProblem else { return }
+        show(.offline(gate.observe(p)))
     }
 
     func start() {
@@ -347,13 +414,34 @@ final class ServerConnection: Identifiable {
     }
 
     /// Back in the foreground: reconnect if needed (which resyncs), or resync the live connection.
-    func resume() {
-        start()
-        if control.state == .connected { scheduleResync(after: 0) }
+    /// From the background, the connection is also pinged (`RexControl.wake`): it may have died
+    /// while the app was suspended, and a dead one is made again at once. Drops meanwhile are
+    /// held (`beginWake`).
+    func resume(fromBackground: Bool = false) {
+        guard fromBackground, started else {
+            start()
+            if control.state == .connected { scheduleResync(after: 0) }
+            return
+        }
+        #if DEBUG
+        if simulated != nil { return }
+        #endif
+        beginWake()
+        let wasConnected = control.state == .connected
+        control.wake()
+        // A connection that answers is resynced; one that drops resyncs when it is back.
+        if wasConnected { scheduleResync(after: 0) }
     }
 
     /// The phone's network changed: whatever failed may work now, so try at once.
     func networkChanged() {
+        if let snap = network?.snapshot, wake.networkChanged(snap) {
+            // No network: waking up can't finish, so say so now.
+            if let p = pendingProblem {
+                pendingProblem = ConnectionProblem(kind: .noInternet, detail: p.detail)
+            }
+            endWake()
+        }
         gate.networkChanged()
         guard started, control.state != .connected else { return }
         control.kick()

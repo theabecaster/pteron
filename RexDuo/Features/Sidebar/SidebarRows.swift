@@ -48,7 +48,9 @@ enum MachineGlyph {
     }
 }
 
-/// Connected: a green dot. Connecting or trying again: a spinner. Offline: a crossed antenna.
+/// Connected: a green dot. Waking up (back from the background, reconnecting): the same dot, grey
+/// and still; the title bar's Rexie is the one that moves. Connecting or trying again: a spinner.
+/// Offline: a crossed antenna.
 struct ConnectionDot: View {
     let server: ServerConnection
     let theme: TermTheme
@@ -56,7 +58,7 @@ struct ConnectionDot: View {
     var body: some View {
         switch server.phase {
         case .online:
-            Circle().fill(theme.chrome.done).frame(width: 7, height: 7)
+            Circle().fill(server.waking ? theme.chrome.tertiary : theme.chrome.done).frame(width: 7, height: 7)
                 .accessibilityHidden(true)
         case .connecting, .idle:
             ProgressView().controlSize(.mini)

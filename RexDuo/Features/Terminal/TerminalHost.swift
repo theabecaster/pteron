@@ -138,9 +138,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Asks before a paste that could run a command. Nil: an alert. Tests put their own here.
     var confirmPaste: ((String, @escaping @MainActor (Bool) -> Void) -> Void)?
 
-    /// Background longer than this re-reads the screen on return.
-    static let staleAfterBackground: CFTimeInterval = 30
     private var backgroundedAt: CFTimeInterval?
+    /// Transient chips wait until this time: in the background (infinity), and for the wake's grace
+    /// after it, while the connection is made again (`ForegroundWake`). The title bar says so then.
+    private var quietUntil: CFTimeInterval = 0
+    /// The transient chip that is up or waiting to show, so a return can wait for it again.
+    private var transientStatus: String?
     /// Transient states (connecting, reconnecting) show only if they last this long.
     static let statusDelay: TimeInterval = 1.0
     private var statusWork: DispatchWorkItem?
@@ -861,6 +864,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Hand fitted panes back to the Mac while the app is in the background.
     @objc private func didBackground() {
         backgroundedAt = CACurrentMediaTime()
+        quietUntil = .infinity
         stopKeyRepeats()
         // Also when nothing is claimed yet: a claim on its way must not resize the pane now.
         claimedSize = nil
@@ -868,10 +872,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     @objc private func willForeground() {
-        // After a long suspension the socket is likely dead and the server may have dropped the
-        // stream; read the real screen again rather than show a stale one.
-        if let t = backgroundedAt, CACurrentMediaTime() - t > Self.staleAfterBackground, started, window != nil {
-            stream.restart()
+        // The socket may have died while the app was suspended. The stream checks it and, if it
+        // has, resumes where it stopped (no new snapshot), so the screen on show stays until then.
+        if backgroundedAt != nil, started, window != nil {
+            quietUntil = CACurrentMediaTime() + ForegroundWake.grace
+            stream.wake()
+        } else {
+            quietUntil = 0
+        }
+        // A "Reconnecting…" from while the app was away waits out the grace like a new one.
+        if let s = transientStatus {
+            statusWork?.cancel()
+            statusWork = nil
+            statusLabel.isHidden = true
+            scheduleTransient(s, after: Self.statusDelay)
         }
         backgroundedAt = nil
         guard window != nil, sizing == .fit, !lostOwnership else { return }
@@ -1206,11 +1220,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func showStatus(_ s: String, after delay: TimeInterval = 0) {
         statusWork?.cancel()
         statusWork = nil
+        transientStatus = delay > 0 ? s : nil
         guard delay > 0 else { applyStatus(s); return }
         guard statusLabel.isHidden else { applyStatus(s); return }  // already showing: just update
+        scheduleTransient(s, after: delay)
+    }
+
+    /// Shows a transient chip after `delay`, or after the quiet time if that is longer. In the
+    /// background nothing is scheduled; `willForeground` does it.
+    private func scheduleTransient(_ s: String, after delay: TimeInterval) {
+        let wait = max(delay, quietUntil - CACurrentMediaTime())
+        guard wait.isFinite else { return }
         let w = DispatchWorkItem { [weak self] in self?.applyStatus(s) }
         statusWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: w)
     }
 
     private func applyStatus(_ s: String) {
@@ -1227,6 +1250,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func hideStatus() {
         statusWork?.cancel()
         statusWork = nil
+        transientStatus = nil
         statusLabel.isHidden = true
     }
 
