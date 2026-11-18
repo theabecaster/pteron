@@ -44,6 +44,55 @@ struct PrefsTests {
         #expect(again.servers.map(\.url) == ["https://mac.tail.ts.net"])
     }
 
+    /// Each way to change the text size stores a value the next launch (a fresh `Prefs` on the same
+    /// defaults) reads back: the Settings stepper writes the property through its binding, the font
+    /// shortcuts and the pinch store `Prefs.fontSize` of the size they reached.
+    @Test func textSizeFromEveryPathSurvivesARelaunch() {
+        let (p, d) = fresh()
+        // Settings: the stepper's binding, one step up.
+        p.fontSize += 1
+        #expect(Prefs(defaults: d).fontSize == 12)
+        // ⌘+ twice, then ⌘-.
+        p.fontSize = Prefs.fontSize(p.fontSize + 1)
+        p.fontSize = Prefs.fontSize(p.fontSize + 1)
+        p.fontSize = Prefs.fontSize(p.fontSize - 1)
+        #expect(Prefs(defaults: d).fontSize == 13)
+        // A pinch from 13 pt by 1.3 lands on a half point.
+        p.fontSize = Prefs.fontSize(13 * 1.3)
+        #expect(Prefs(defaults: d).fontSize == 17)
+        p.fontSize = Prefs.fontSize(17 * 0.97)
+        #expect(Prefs(defaults: d).fontSize == 16.5)
+        // ⌘0.
+        p.fontSize = Prefs.fontSize(Prefs.defaultFontSize)
+        #expect(Prefs(defaults: d).fontSize == Prefs.defaultFontSize)
+    }
+
+    /// The pinch, the shortcuts and the stepper share one range and one step, so no path can
+    /// store a size another path or a relaunch would change.
+    @Test func textSizeStaysInRangeToTheHalfPoint() {
+        #expect(Prefs.fontSize(25) == Prefs.fontSizes.upperBound)
+        #expect(Prefs.fontSize(3) == Prefs.fontSizes.lowerBound)
+        #expect(Prefs.fontSize(11.26) == 11.5)
+        #expect(Prefs.fontSize(11.24) == 11)
+        #expect(TerminalHost.fontRange.lowerBound == CGFloat(Prefs.fontSizes.lowerBound))
+        #expect(TerminalHost.fontRange.upperBound == CGFloat(Prefs.fontSizes.upperBound))
+        for s in stride(from: 7.0, through: 20.0, by: 0.5) { #expect(Prefs.fontSize(s) == s) }
+    }
+
+    @Test func themesSurviveARelaunch() {
+        let (p, d) = fresh()
+        let dark = ThemeStore.all.first { $0.isDark && $0.id != Prefs.defaultDarkTheme }?.id ?? "x-dark"
+        let light = ThemeStore.all.first { !$0.isDark && $0.id != Prefs.defaultLightTheme }?.id ?? "x-light"
+        p.darkThemeID = dark
+        p.lightThemeID = light
+        let again = Prefs(defaults: d)
+        #expect(again.darkThemeID == dark)
+        #expect(again.lightThemeID == light)
+        // Another setting changing later must not write the themes back.
+        p.fontSize = 15
+        #expect(Prefs(defaults: d).darkThemeID == dark)
+    }
+
     @Test func themeFollowsTheSystemNotTheViewsScheme() {
         let (p, _) = fresh()
         p.darkThemeID = "github-dark-dimmed"

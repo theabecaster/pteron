@@ -128,6 +128,11 @@ final class Prefs {
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0
     static let fontSizes = 7.0...20.0
+
+    /// A text size as the pinch and the font shortcuts store it: in `fontSizes`, to the half point.
+    static func fontSize(_ s: Double) -> Double {
+        min(max((s * 2).rounded() / 2, fontSizes.lowerBound), fontSizes.upperBound)
+    }
     static let defaultKeyBar = KeyBarLayout.agents
     // Also decided for the user, where they're used: a tab shows its splits whenever every pane stays
     // legible (`WindowScreen.splitsFit`); agent status always shows in the sidebar; haptics follow

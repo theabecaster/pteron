@@ -262,13 +262,13 @@ struct RootView: View {
         case .settings: model.showSettings = true
         case .fontBigger: setFont(prefs.fontSize + 1)
         case .fontSmaller: setFont(prefs.fontSize - 1)
-        case .fontReset: setFont(11)
+        case .fontReset: setFont(Prefs.defaultFontSize)
         default: break
         }
     }
 
     private func setFont(_ size: Double) {
-        let v = min(max((size * 2).rounded() / 2, 7), 20)
+        let v = Prefs.fontSize(size)
         guard v != prefs.fontSize else { Haptic.bump(); return }
         Haptic.selection()
         prefs.fontSize = v

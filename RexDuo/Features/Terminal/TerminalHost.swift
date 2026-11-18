@@ -576,7 +576,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .ended:
             zoomer.transform = .identity
             zoomer.frame = bounds
-            let s = (clampFont(pinchBase * g.scale) * 2).rounded() / 2
+            let s = CGFloat(Prefs.fontSize(Double(pinchBase * g.scale)))
             if abs(s - fontSize) > 0.01 {
                 setFontSize(s)
                 Prefs.shared.fontSize = Double(s)
