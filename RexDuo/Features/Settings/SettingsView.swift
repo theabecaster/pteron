@@ -15,6 +15,24 @@ enum SettingsPage: String, Hashable {
     }
 }
 
+/// Places in the main Settings list that `-settingsScroll` can bring to the top.
+enum SettingsAnchor {
+    static let notifications = "notifications"
+    static func computer(_ index: Int) -> String { "notifications.\(index)" }
+    static let end = "end"
+
+    /// `-settingsScroll notifications|notifications.<n>|end` (Debug builds): open the main page
+    /// scrolled to the Notifications section, to its n-th computer (from 0), or to the end of
+    /// the page, which is where a short Notifications section sits.
+    static var debugLaunch: String? {
+        #if DEBUG
+        UserDefaults.standard.string(forKey: "settingsScroll")
+        #else
+        nil
+        #endif
+    }
+}
+
 /// Settings: only what a user would want to change. `Prefs` decides the rest.
 /// Styled like the sidebar, from the theme's chrome; the controls are the standard ones.
 struct SettingsView: View {
@@ -27,6 +45,7 @@ struct SettingsView: View {
         @Bindable var p = prefs
         let theme = prefs.theme
         NavigationStack(path: $path) {
+            ScrollViewReader { scroller in
             SettingsList(theme: theme) {
                 Section {
                     ForEach(model.servers) { s in serverRow(s, theme) }
@@ -88,10 +107,21 @@ struct SettingsView: View {
                 Section {
                     LabeledContent("Version", value: Self.version)
                     NavigationLink(value: SettingsPage.acknowledgements) { Text("Acknowledgements") }
+                        .id(SettingsAnchor.end)
                 } header: {
                     SettingsHeader("About", theme)
                 }
                 .settingsRows(theme)
+            }
+            .task {
+                guard let anchor = SettingsAnchor.debugLaunch else { return }
+                // The list lays itself out first, and the sheet arrives. A row the list has not
+                // made yet can't be scrolled to, so the scroll is asked for a few times.
+                for _ in 0..<6 {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    scroller.scrollTo(anchor, anchor: anchor == SettingsAnchor.end ? .bottom : .top)
+                }
+            }
             }
             .navigationDestination(for: SettingsPage.self) { page in
                 switch page {
@@ -104,6 +134,7 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .settingsBar(theme)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
@@ -390,6 +421,17 @@ struct SettingsFooter: View {
 }
 
 extension View {
+    /// Keeps a Settings list from scrolling under the navigation bar. A list that touches the
+    /// top of the safe area extends under the bar, and its rows and section headers then show
+    /// through the clear bar, blurred, behind the title. One point of padding ends the list at
+    /// the bar's lower edge; the page's colour fills the bar behind it, as it did before. An
+    /// opaque bar (`toolbarBackground`) is not used: the bar then vanishes while a sheet is up
+    /// over the page.
+    func settingsBar(_ theme: TermTheme) -> some View {
+        padding(.top, 1)
+            .background(theme.chrome.sidebar.ignoresSafeArea())
+    }
+
     /// Row cards tinted from the theme, like the sidebar's agents row, with theme dividers.
     func settingsRows(_ theme: TermTheme) -> some View {
         listRowBackground(theme.fg.opacity(theme.isDark ? 0.06 : 0.05))

@@ -61,8 +61,8 @@ describe("routing", () => {
     ["PATCH", "/v1/devices/abc", "GET, PUT, DELETE"],
     ["GET", "/v1/devices/abc/secrets", "POST"],
     ["DELETE", "/v1/devices/abc/secrets", "POST"],
-    ["GET", "/v1/devices/abc/secrets/def", "DELETE"],
-    ["POST", "/v1/devices/abc/secrets/def", "DELETE"],
+    ["GET", "/v1/devices/abc/secrets/def", "PUT, DELETE"],
+    ["POST", "/v1/devices/abc/secrets/def", "PUT, DELETE"],
     ["OPTIONS", "/v1/push", "POST"],
   ])("answers 405 for %s %s", async (method, path, allow) => {
     const response = await gw.request(method, path);

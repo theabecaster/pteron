@@ -79,8 +79,7 @@ Sessions are what people look for, so their names are full contrast and semibold
   order is waiting (oldest first), error, working, done, idle. Machine headers here don't fold:
   a waiting agent is never hidden.
 - Tapping an agent, or Return on a focused row, opens its tab with its pane shown. Swipe gives
-  Interrupt, Enter (when waiting) and Jump, as the old sheet did. The notification prompt card
-  shows at the top when offered.
+  Interrupt, Enter (when waiting) and Jump, as the old sheet did.
 - It replaces the Agents sheet. `cmd+.` (`client.sidebar.activity.toggle`) toggles the mode, as
   on the Mac: it shows the sidebar in Agents mode, or returns to Sessions when Agents is already
   showing. Jump to Waiting has its own action, `client.agents.jump_to_waiting` (`alt+cmd+.` by

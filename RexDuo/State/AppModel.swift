@@ -154,10 +154,24 @@ final class AppModel {
     /// `connect: false` builds no servers (unit tests and the test host).
     init(prefs: Prefs, connect: Bool = true) {
         self.prefs = prefs
-        push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor))
-        helperSetup = HelperSetupCenter(push: push, prefs: prefs)
+        // One fetcher for the release list: the installs use it, and so does the one check that
+        // tells every computer's row which Beacon version is the latest.
+        let fetcher = HelperReleaseFetcher.standard()
+        push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor),
+                             release: ReleaseCheck(fetcher: fetcher))
+        helperSetup = HelperSetupCenter(push: push, prefs: prefs, fetcher: fetcher)
         network = connect ? NetworkWatch() : nil
         push.servers = { [weak self] in self?.servers ?? [] }
+        push.setup = helperSetup
+        // An install's sheet takes the screen once Settings has closed.
+        push.presentSetup = { [weak self] id, kind in
+            self?.helperSetup.request(id, kind: kind)
+            self?.showSettings = false
+        }
+        push.showSetup = { [weak self] id, details in
+            self?.helperSetup.show(id, details: details)
+            self?.showSettings = false
+        }
         helperSetup.servers = { [weak self] in self?.servers ?? [] }
         helperSetup.sheetIsUp = { [weak self] in self?.showSettings == true || self?.showPairing == true }
         helperSetup.shownSession = { [weak self] server in
@@ -302,6 +316,7 @@ final class AppModel {
     /// A new network path is when a down server can come back: retry those now.
     private func networkChanged() {
         for s in servers { s.networkChanged() }
+        push.networkChanged()
     }
 
     #if DEBUG

@@ -21,40 +21,214 @@ mutes the haptic. Desktop notifications (OSC 9 / 777) show nothing in the app.
   agent stops waiting). The same pane toasts at most once per 30 s.
 - It fades after 6 s and can be swiped up. A tap opens the pane (`AppModel.openPane`).
 
-`NotificationDelegate` (in `App/AppDelegate.swift`) shows no banners while the app is in front.
+`NotificationDelegate` (in `App/AppDelegate.swift`) shows no banners while the app is in front,
+except the one "Send Test Notification" asks for (thread id `rexduo-test`, `PushTest`).
 
-## Permission
+## The screen: Settings → Notifications
 
-The app never asks at launch. `NotificationPromptCard` ("Get notified when an agent needs you",
-Turn On / Not now) shows once: in the toast slot about 2.5 s after a server is connected and has
-agents, and at the top of the Agents view. Turn On asks iOS (first time only) and registers; Not
-now or a swipe hides it for good (`Prefs.pushPromptDismissed`). Settings → Notifications always
-has the toggle:
+One master switch, "Notifications", in a group of its own with its line and the section's
+footer. Under it, while the switch is on, the group "Computers": one cell per computer, with
+its name as the cell's title, a switch, and directly under the name one status line. This section is the only place
+that shows a computer's Beacon: its version, its state, its one button and its menu. In the
+app's words the program on the computer is "Rex DUO Beacon" where a screen first names it and
+"Beacon" after that, which is also the name it has on the computer (the Mac's prompts, Login
+Items, `Rex DUO Beacon.app`). The code, the actions and this document's prose call it the
+helper, and its command-line program keeps the file name `rex-duo-helper`, which the app shows
+only inside the command to run. A test reads every sentence of the feature for the name
+(`noSentenceCallsTheProgramAnAddOnOrAHelper`).
 
-- Denied in iOS: the toggle is disabled, with a line and an "Open Settings" button.
-- Provisional: a line that notifications arrive quietly, with "Open Settings". Provisional and
-  ephemeral both count as allowed, so the app registers.
-- On, but a connected server has no helper: a row per server with **Install** (below). A
-  computer that belongs to someone else says to ask its owner instead. It clears by itself when
-  the helper connects (`client_joined`).
-- A helper in `--dry-run`: "running in test mode". A helper from before the gateway, or one
-  without `helper_identity`: "too old for this version of Rex DUO".
-- A helper whose key differs from the pinned one: "Rex DUO Helper on <name> changed. Only trust it
-  if you reinstalled the helper there." with a "Trust" button. Until then it gets nothing.
-- A helper that failed in another way, or kept refusing after a repair: one line saying so, with
-  **Repair**. The "changed" line also has **Reinstall**, and a helper that needs an update it
-  can't do itself has **Repair** on its row. All three run the install below.
-- Each connected helper has a row with its version, and an Update button when a newer release is
-  out (`helper_status`, `update_helper`). A version below the release list's minimum reads
-  "needs an update to keep working".
+`State/NotificationStatus.swift` is the whole mapping: plain facts in (`MasterFacts`,
+`ComputerFacts`), a row out (`MasterStatus`, `ComputerStatus`: `switchOn`, `switchEnabled`,
+`line` with its text, tint and spinner, `fix`, `menu`). Every word on the screen is in that
+file. `PushRegistrar` gathers the facts (`master`, `computers`, `status(for:)`) from what
+`PushReconciler` found (below, "Signing the phone up") and performs
+the actions (`setMaster`, `setComputer`, `fix`, `sendTest`, `details`, `showSetupDetails`,
+`removeConfirm`, `removeHelper`, `cancel`, `reinstall`). `Features/Settings/NotificationSettings.swift`
+only lays the rows out and holds what is up over them: a confirm, the details sheet, the manual
+steps.
 
-## While the app is closed: Rex DUO Helper
+Rules:
 
-Rex has no push support, so `Relay/` builds **Rex DUO Helper**, one Rust program
+1. The switch is the user's choice; the line under it is what is true. A switch never moves by
+   itself, with two exceptions: the master switch shows off while iOS has notifications turned
+   off, and a computer with no helper shows off until an install starts.
+2. A computer where all is well shows Beacon's version and nothing after it. A problem is
+   one short line in the warning tint (`chrome.blocked`, the colour of an agent that needs the
+   person) and at most one button, the fix. Something the app is doing by itself is a spinner
+   and a plain line. Information is a line in the secondary tint.
+3. Everything else is in the row's menu, opened with a long press or the `…` button, which
+   shows only when the menu has items. Items that cannot work in a state are left out.
+4. The app never asks at launch. The master switch asks iOS the first time it is turned on.
+5. A computer's cell with no line is as tall as any single-line cell of Settings: the name and
+   the switch. One with a line is taller by that line; a line too long for the window wraps to
+   a second line. The name and the switch sit at the same place in the cell either way.
+6. A switch pauses and resumes. It never deletes anything: not the phone's registration, not a
+   computer's secret, not a helper's key.
+
+### Master switch
+
+| State | Switch | Line | Button |
+|---|---|---|---|
+| Off (the user's choice) | off | none | none |
+| iOS not asked yet | off | none | none; turning it on shows the iOS prompt |
+| On, iOS allows | on | none | none |
+| On, iOS delivers quietly (provisional, or banners and sounds both off) | on | "Notifications arrive quietly" (secondary) | Open Settings |
+| iOS turned off | off; a tap opens iOS Settings and the switch stays off | "Turned off in iOS Settings" | Open Settings |
+| iOS gave this phone no notification address | on | "Can't reach Apple's notification service" with a spinner | none; the app asks again every 30 s |
+
+The computers' group shows only while the switch is on. Footer, under the switch's own group:
+"Get notified when an agent finishes or needs you. Each computer needs Rex DUO Beacon to send
+notifications." The
+permission is read at start and every time the app becomes active, so coming back from iOS
+Settings with notifications allowed turns everything on again with no tap. The master choice
+(`Prefs.pushEnabled`) and each computer's choice (`Prefs.notificationsOff`; a server that is not
+in it is on) are kept while iOS has notifications off and while the master switch is off. So
+are the phone's registration, each computer's secret and each helper's pinned key (below,
+"Signing the phone up").
+
+### A computer's row
+
+| State | Switch | Status line | Fix | Menu |
+|---|---|---|---|---|
+| Healthy: Beacon is the latest version or newer, or the app has no release list to compare it with | on | "Version <version>" (secondary) | none | Send Test Notification, Show Details, Reinstall Beacon, Remove Beacon… |
+| Beacon is older than the latest version | on | "Update available" (secondary) | Update | as healthy |
+| On and reachable, and Beacon has not taken this phone on this connection yet or has not said its version | on | spinner + "Connecting…" | none | Show Details, Reinstall Beacon, Remove Beacon… |
+| Off by the user | off | none | none | Show Details, Remove Beacon… |
+| Offline | as chosen | "Offline" (secondary) | none | none |
+| Turned off while it could not be reached, until its Beacon has heard | off | "Turns off when it's back" (secondary) | none | none |
+| Beacon not installed | off | none | none | none |
+| Not installed, and the computer's Rex can't run the installer (or the computer is someone else's) | on | "Install Beacon by hand" | How | Show Details |
+| Setting up | on | spinner + "Downloading…", "Checking…", "Installing…", "Starting…", "Connecting…" | none | Show Details, Cancel Install |
+| Setting up, waiting for the person | on | "Waiting for you" | Continue | Show Details, Cancel Install |
+| Setup failed | on | "Couldn't download Beacon", "The download didn't pass its check", "No room for Beacon", "Didn't let Beacon install" or "Beacon didn't start" | Retry | Show Details, Remove Beacon… |
+| Beacon too old: below the oldest version the release list allows (`min_version`), or too old to take the registration and say its version | on | "Beacon needs an update" | Update | Reinstall Beacon, Remove Beacon… |
+| Updating itself, after Update or by itself | on | spinner + "Updating…" | none | Reinstall Beacon, Remove Beacon… |
+| Beacon installed but not running | on | "Beacon isn't running" | Repair | Reinstall Beacon, Remove Beacon… |
+| Repairing the connection to the notification service | on | spinner + "Reconnecting…" | none | Reinstall Beacon, Remove Beacon… |
+| Repair did not work | on | "Couldn't reconnect" | Retry | Reinstall Beacon, Remove Beacon… |
+| Beacon changed | on | "Beacon has changed" | Trust… (a confirm) | Reinstall Beacon, Remove Beacon… |
+| The notification service holds as many computers for this phone as it takes (`409 too_many_secrets`) | on | "Too many computers for this phone" | Retry; the app does not try again by itself | Reinstall Beacon, Remove Beacon… |
+| Mac needs a click | on | spinner + "Click Allow for Rex DUO Beacon" | none | Show Details, Cancel Install |
+| The notification service asked the phone to wait | on | "Too many tries. Try again in N minutes." under an hour, "…in an hour." or "…in N hours." from an hour on, "…tomorrow." when the wait ends at or after the next midnight in UTC, "…later." when the service gave no time (`RateLimit.text`, from `Retry-After`) | none; the app tries again by itself when the wait is over | Remove Beacon… |
+| A test was sent, for 3 s | on | "Test notification sent" (secondary), or why it was not | none | as healthy |
+| Removing | off, disabled | spinner + "Removing…" | none | none |
+| Remove failed | as chosen | "Couldn't remove Beacon" | Retry | Show Details |
+
+When two things are true the first of these decides the row: Removing, Turns off when the
+computer is back, Offline, Remove failed, off, Beacon changed, an install, Updating, Beacon too
+old, Beacon isn't running, Too many computers, Reconnecting or Couldn't reconnect, Too many
+tries, Connecting, the result of a test, Update available, the version.
+
+No status line holds the computer's name: the row's title is the name, right above the line.
+The name is in the confirms, in the title of Show Details and in the install sheet, where no
+title stands beside the words.
+
+A row that is on always has a line. A healthy row's line is its Beacon's version, which the
+app takes from the answer to `register_push` (`helper_version`) or from `helper_status`
+(`version`), whichever arrives first; every Beacon gives the second, and the app asks for it up
+to three times after a registration. Until a version is there, and before Beacon has taken
+this phone on this connection, the row reads "Connecting…" with a spinner and its menu has no
+Send Test Notification.
+
+**Which version is the latest.** The app decides, from the signed release list it reads
+itself, and every computer's row is compared against that one result, so two computers never
+disagree. `ReleaseCheck` (`State/ReleaseCheck.swift`) reads the list with
+`HelperReleaseFetcher` and keeps the latest version and `min_version` with the time of the
+read. `PushRegistrar` asks for it at launch, on each return to the front, when notifications
+are turned on and when a Beacon takes the phone; a result stands for an hour, so all of
+these and all computers share one read. A read that fails leaves the last good result in place
+and is tried again on the next of these no sooner than five minutes later. Nothing is read
+while notifications are off or no computer is listed. A Beacon supplies only its own version
+(`LatestRelease.standing` compares it; `ComputerFacts.judged` turns that into the row's facts):
+equal or newer is healthy, older is "Update available", below `min_version` is "Beacon needs an
+update". With no result yet (the first read failed, or a version that is not three numbers) the
+row shows the version and claims nothing. What a Beacon thinks of its own version
+(`update_available`, `update_required`, `latest_version`, `last_error`, `failing_since` in its
+status) is not read.
+
+When a computer's Beacon restarts, as after any update or reinstall, it is a new client on the
+server. `client_joined` and `client_left` reach `PushRegistrar.helperClientChanged`, the
+reconciler hands the new client the stored secret, and that registration asks Beacon's
+status once, so the row shows the version that runs now without a tap. A status held from the
+Beacon before is dropped when the registration names another version. On the return to the
+front the app also reads each computer's client list, in case the events were missed while it
+was away: another Beacon client than the one known is taken the same way, and the one known
+is asked for its status.
+
+"Reconnecting…" shows while a computer that is on and was signed up before has not confirmed
+on this connection that it holds the phone's secret and is not paused, while the app puts
+right a helper that lost the phone or holds it paused, and while a try failed and the next one
+is on its way;
+"Couldn't reconnect" once the app's own tries are used up, with Retry to start them again.
+
+- **Switch on:** resumes this phone on that computer (`set_push_paused` false), after signing
+  it up there if it never was. With no helper there (`Prefs.helperSeen` tells "never had one"
+  from "not running") it starts the install, with the install sheet.
+- **Switch off:** the computer's helper is told to hold this phone's notifications back
+  (`set_push_paused` true). While the computer can't be reached the choice waits on the phone
+  (`Prefs.helpersToTell`), the row reads "Turns off when it's back", and the helper is
+  told on the server's next connection. Nothing at the gateway changes and no secret is taken
+  back. An install under way is stopped.
+- **Master off:** the same for every computer that is on, and the app goes off Apple's remote
+  notifications (`unregisterForRemoteNotifications`), so nothing arrives. **Master on:** the app
+  goes back on them, and each computer that is on resumes at once, with the permission as
+  last read and the address the phone already has; nothing waits for iOS. If iOS gives another
+  address than before, that is one request to the gateway; otherwise none. Whatever order the
+  switches are moved in and however fast, each helper ends at the last choice: a switch moved
+  during a run asks for one more run, which reads the choice as it is then.
+- **Update:** one tap, and `HelperUpdate.route` decides how. A Beacon that says it can replace
+  itself (`can_update`) is asked to (`update_helper`, which has its own checks and its own pause
+  between two updates); the row reads "Updating…" until Beacon reports the latest version
+  (`HelperUpdate.reached`), looked at every 3 s and on the restarted Beacon's registration.
+  The installer replaces Beacon instead, as a repair, with the install sheet: for one that
+  reported nothing about itself (too old to register), one that can't replace itself, one that
+  refused or answered that nothing started, and one that has not reached the new version 90 s
+  after it was asked (`HelperUpdate.limit`). The installer needs nothing from Beacon that
+  is there: the one it installs shows the install's proof and registers. After either the row
+  shows the new version.
+- **Send Test Notification:** the helper's `send_test`. "Test notification sent" shows in the
+  row for 3 s. Its errors read "Wait a few seconds" (`test_too_soon`), "Too many tries. Try
+  again later." (`limit_reached`; the helper does not pass the wait on), "Couldn't reach the
+  notification service" (`no_connection`), "Beacon needs an update" (a helper without the
+  action), "Couldn't send the test notification" (anything else). Three answers the app puts
+  right by itself: `not_registered` (the helper gets the stored secret again), `paused` (it
+  resumes) and `phone_gone` (the phone and its secrets go to the gateway again). `TestOutcome`
+  is the mapping.
+- **Show Details:** a small read-only sheet titled with the computer's name: "Beacon version",
+  "System" (`os`), "Last notification" (`last_push_at`: "2 minutes ago", "Never" for null, no
+  row when the field is absent), from `helper_status` (`HelperDetails`), and "Update check",
+  which is the app's own read of the release list: "OK", or "Couldn't check" when its last
+  read failed. When no helper answers it reads "Rex DUO Beacon on <name>
+  isn't answering." For a computer whose install is under way or failed, Show Details brings
+  back the install's sheet instead, at the installer's output (`showSetupDetails`).
+- **How:** beside "Install Beacon by hand". A small sheet, "Install by Hand", with where to
+  download Rex DUO Beacon and the step for a Mac ("drag Rex DUO Beacon to Applications and open
+  it once") and for Linux ("run rex-duo-helper install"; `NotificationCopy.manualSteps`).
+- **Trust…:** a confirm, "Trust Beacon on <name>?", "Did you reinstall or remove Beacon on
+  <name>? If you did, trust it. If you didn't, don't: something else is answering for it."
+  Trust, Cancel. The confirm is shown for the key the helper offers at that moment
+  (`PushRegistrar.offeredKey`), and Trust pins exactly that key (`trust(_:key:)`). If the
+  helper offers another key by the time Trust is tapped, nothing is pinned, the row stays at
+  "Beacon has changed", and its button shows the confirm again, for the key offered then.
+- **Remove Beacon…:** a destructive confirm, "Remove Rex DUO Beacon from <name>?", "<name>
+  will stop sending notifications to this phone", plus "and to N other phones", where N is
+  `helper_status.other_phones` (the phones on that computer that others registered) or, from
+  a helper that does not give it, `helper_status.devices - 1`; "and to any other phone that
+  uses Beacon" when the helper gives neither. Remove, Cancel. Then, in this order (`HelperRemoval`): the phone's secret for
+  that helper is deleted at the gateway and the helper hears `unregister_push`; the installer
+  script runs in its remove mode in a tab of its own (`SetupArgs.removeCommand`: `/bin/sh -c
+  <setup.sh> rexduo-setup 3 -`, created as an install's tab is, and closed when the script
+  ends well; `HelperSetupCenter.remove`); on exit code 0 the phone forgets the helper's key, the secret's
+  entry and `helperSeen`, and the computer's switch goes off. Any other exit leaves the phone
+  unregistered and the row at "Couldn't remove Beacon" with Retry.
+
+## While the app is closed: Rex DUO Beacon
+
+Rex has no push support, so `Relay/` builds **Rex DUO Beacon**, one Rust program
 (`rex-duo-helper`) for macOS and Linux that connects to the local Rex as a client named
 `rex-push-relay`, watches every session and sends pushes to registered phones through the push
 gateway (below). Each machine
-with a Rex server runs its own. On a Mac it ships as `Rex DUO Helper.app` (bundle id
+with a Rex server runs its own. On a Mac it ships as `Rex DUO Beacon.app` (bundle id
 `dev.abrahamgonzalez.rexduo.helper`; open once, it runs as a LaunchAgent); on Linux
 `rex-duo-helper install` sets up a systemd user service. It is event driven: no polling
 while connected. It updates itself from this repository's GitHub releases (docs/helper.md).
@@ -73,18 +247,21 @@ code.
 
 ## Installing the helper from the app
 
-The app can install Rex DUO Helper on the user's own Mac or Linux computer. `State/HelperRelease.swift`,
+The app can install Rex DUO Beacon on the user's own Mac or Linux computer. `State/HelperRelease.swift`,
 `HelperSetup.swift` and `HelperSetupRunner.swift` hold it; `Features/HelperSetup` is the sheet.
 
 **When it is offered** (`HelperOffer`): the server's platform is `darwin_*` or `linux_*`, no
 helper is connected on the server's own machine, the server's owner and this iPhone's login are
 not two different known logins, and no install for it is running. After pairing it is a page
 after "added" ("Get notifications from <Name>?", Install / Skip; Skip is remembered in
-`Prefs.helperOfferSkipped`). In Settings → Notifications it is the Install, Repair and Reinstall
-rows.
+`Prefs.helperOfferSkipped`). In Settings → Notifications a computer's switch, its Retry, Update
+and Repair buttons and "Reinstall Beacon" in its menu start it.
 
-**What runs.** Install first asks iOS for the notification permission; if iOS says no, nothing
-runs on the computer. Then:
+**What runs.** An install turns the master switch and that computer's switch on and asks iOS
+for the notification permission if it never has (`PushRegistrar.prepareForSetup`). Whatever iOS
+answers, the helper is installed: while the install runs the computer registers all the same,
+and with notifications off in iOS the sheet's last screen adds "Turn on notifications in iOS
+Settings to be notified." Then:
 
 1. The phone fetches the release list (`manifest.json` and `.sig` on the `helper-latest`
    release) and each Linux build's `.sig`, at most 64 KiB each, on a session that keeps no
@@ -99,7 +276,7 @@ runs on the computer. Then:
 3. It checks the server can run a command as a terminal's program: `server.version` reports
    `api_revision` 13 or later and the shell flavor's `options_schema` in `block_creator.list` has
    `command` and `shell`. Otherwise the sheet says how to install by hand.
-4. It creates a session "Rex DUO Helper setup" whose one block runs
+4. It creates a session "Rex DUO Beacon setup" whose one block runs
    `/bin/sh -c <setup.sh> rexduo-setup <12 arguments>` with `shell: "none"` (`SetupBlock`). The
    script is `Relay/setup.sh`, copied into the app at build time. The arguments (`SetupArgs`) are
    the mode `2`, the version, the floor, each build's hash and size, the trusted keys joined by
@@ -115,7 +292,7 @@ off, reports the step `code`, and reads one line from its terminal; the app then
 and a Return with `terminal.write`. It writes only while `input_mode` says echo is off and
 `process` shows the block's own program in front (`foreground` is `child`, or a shell of the same
 path that `child` started; `SetupCode.allows`). If that doesn't hold, or the write fails, the app
-closes the tab and the sheet reads "Rex DUO can't get the helper right now". The installer hands
+closes the tab and the sheet reads "Rex DUO can't get Beacon right now". The installer hands
 the code to the helper it installs.
 
 **Progress.** The installer reports one OSC 7501 record (`id` and `app` `rexduo-setup`; `title`
@@ -132,8 +309,8 @@ a `setup_challenge`, answered with `setup_proof` (HMAC-SHA256 keyed by the setup
 without a proof is asked again after 2 s, three requests in all (`SetupProof.requests`; the helper
 answers three per code). With a valid proof the helper's key becomes the pin, also in place of a
 key pinned before, so a reinstall needs no "Trust"; then the secret is minted and `register_push`
-sent. A wrong proof, or none in three replies, ends the run as "Rex DUO Helper on <name>
-changed": nothing is pinned, no secret is handed over, and the helper waits for "Trust" in
+sent. A wrong proof, or none in three replies, ends the run as "Rex DUO Beacon on <name> has
+changed": nothing is pinned, no secret is handed over, and the helper waits for "Trust…" in
 Settings. From the moment the code is written until the sheet closes, no other registration with
 that server's helper goes out (`HelperAdmission`); pinning a key on first use happens only
 outside an install. No helper within 60 s of the exit reads "installed but didn't start", with
@@ -146,47 +323,193 @@ running after logout. The password is written to the terminal once, only while `
 echo is off and `process.foreground.path` is `pkttyagent` or `loginctl` in `/usr/bin` or `/bin`
 (`PasswordGuard`); otherwise the card says to type it on the computer. It is never stored.
 
-**Ending.** Done destroys the setup session. After a failure it stays for "Show details" (the
-app's terminal view in mirror mode, taking no touches) until Close or Try Again. Stop closes the
-block, then the session. A dropped connection leaves the installer running; after the reconnect
-the app reads `program_status` and `process` and goes on. After each sync the app destroys a
-setup session it recorded more than an hour ago.
+**Without the sheet.** "Hide" in the sheet (`HelperSetupCenter.hide`) closes it and lets the
+install go on; the computer's row shows where it stands, "Continue" or "Show Details" (`show`)
+brings the sheet back, and "Cancel Install" stops it. How an install ended stays for the row
+until the next one (`HelperSetupCenter.failures`); one that failed with its sheet closed keeps
+its tab until then, so "Show Details" still has the installer's output.
 
-A helper reports when its release list expires (`manifest_expires_at`). Within 30 days of that
-date the app logs it, and Debug builds show one line in Settings → Notifications.
+**Ending.** The setup session is the app's own, and the app closes it and nothing else
+(`SetupSessionCloser`). Every tab the app makes goes into a list in UserDefaults
+(`SetupSessions`) with the ids the server gave, and leaves the list when the server has closed
+it. A tab is closed by those ids and only while it is in the list; a session that merely has
+the installer's name is never touched.
 
-Tests: `RexDuoTests/HelperReleaseTests.swift`, `HelperSetupTests.swift`. `-simulateHelperSetup`
-(docs/debug-args.md) shows each state of the sheet with no server.
+Before anything closes, the app reads the session from the server (`session.view`) and closes
+only what is still its own (`SetupTabClose.decide`). This holds for every close: a script that
+ended well, Done, Close, Try Again, Stop, "Cancel Install", and a tab left over on a connection.
+
+| What the session holds now | What is closed | The entry |
+|---|---|---|
+| One window with one block, the tab's, in a session the app made for it | the session (`session.destroy`) | leaves the list |
+| The tab's block alone in its window, and other windows (or a session of the person's) | that window (`session.close_window`) | leaves the list |
+| The tab's block beside other blocks in its window | that block (`block.close`) | leaves the list |
+| No block with the tab's id, no such session, or an answer that is no view of it | nothing | leaves the list |
+| No answer (the connection is gone) | nothing | stays for the next connection |
+
+- The script exits with 0 (an install, a repair or a removal): the tab closes at once, whether
+  or not the sheet is open. The run goes on to the helper's proof without it.
+- The script fails: the tab stays, because "Show details" shows its terminal (the app's
+  terminal view in mirror mode, taking no touches). It closes on Close or Try Again in the
+  sheet (Try Again closes the old tab before its run opens a new one), on Stop or the row's
+  "Cancel Install", and when the sheet goes away after the installer's output was on screen.
+- After each sync with a server the app closes every tab in its list for that server that no
+  run in this app session uses (`SetupSessionCloser.connected`). That covers a failed run's
+  tab when the app was killed before the person was done with it, and a close the server did
+  not take because the connection dropped. A tab is in use while the server's install runs,
+  while its failed run keeps the tab for "Show Details", and while a removal runs. A tab the
+  server closed, or no longer has, leaves the list; one it did not close stays for the next
+  connection.
+
+A dropped connection leaves the installer running; after the reconnect the app reads
+`program_status` and `process` and goes on.
+
+A helper reports when its release list expires (`manifest_expires_at`);
+`HelperRelease.renewalNotice` turns a date within 30 days into a line for whoever publishes
+releases. No screen shows it.
+
+Tests: `RexDuoTests/HelperReleaseTests.swift`, `HelperSetupTests.swift`,
+`NotificationStatusTests.swift`, `PushReconcilerTests.swift`. `-simulateHelperSetup` and `-simulateNotifications`
+(docs/debug-args.md) show each state of the sheet and of the Notifications screen with no server.
 
 ## The push gateway
 
 A helper holds no Apple key and never sees a phone's APNs token, so it can be a public download.
 `Gateway/` is a Cloudflare Worker that holds both:
 
-1. The phone sends its APNs token and environment to the gateway (`POST /v1/devices`) and gets a
-   device id and an owner key. The gateway keeps only a hash of the key.
-2. For each server the phone mints one secret (`POST /v1/devices/{id}/secrets`, labelled with the
-   server's name) and hands that server's helper the gateway's address and the secret
-   (`register_push`). The registration, and per server the secret, its id and the helper's pinned
-   key, stay in one Keychain item (`KeychainRegistrationStore`).
+1. The phone chooses an owner key (32 random bytes) and the device id that belongs to it (the
+   first 22 characters of base64url(SHA-256("rexduo-device-v1\n" + owner key))), and sends its
+   APNs token and environment under them (`PUT /v1/devices/{id}`). The gateway keeps only a
+   hash of the key.
+2. For each server the phone chooses a secret and the id it is stored under, sends them
+   (`PUT /v1/devices/{id}/secrets/{secret_id}`, labelled with the server's name) and hands that
+   server's helper the gateway's address and the secret (`register_push`).
 3. For each notification the helper posts the payload to the gateway with its secret. The gateway
    adds the APNs topic and the provider token and passes it to Apple, sandbox or production as
    the phone registered. A secret can reach one phone and nothing else.
-4. A rotated APNs token is a `PUT` with the owner key; the secrets, and so every helper, are
-   unaffected. Removing a server from the app deletes its secret
-   (`DELETE /v1/devices/{id}/secrets/{secret_id}`). Turning notifications off deletes the
-   registration (`DELETE`), which stops every helper's secret at once, also on computers that
-   are off. If the gateway can't be reached, or the Keychain won't delete the item, the delete is
-   retried on each launch and return to front, and nothing of the old registration is reused.
-5. Every Keychain call is checked. A registration or secret that couldn't be saved is taken back
-   at the gateway and never handed to a helper; Settings says the setup couldn't be saved.
+4. A rotated APNs token is the same `PUT` with the owner key; the secrets, and so every helper,
+   are unaffected.
+
+Both requests can be sent again and give the same answer: the gateway makes nothing new and
+writes nothing when it already holds what the request carries.
 
 Owner-key routes answer `401 unauthorized` for an unknown phone and for a wrong key alike. Only
-that JSON body counts as "the gateway forgot this phone"; a 401 from anything in between is
-treated as the gateway being unreachable.
+that JSON body counts as "the gateway no longer has this phone"; a 401 from anything in between
+is treated as the gateway being unreachable.
 
-The API, limits and deploy steps are in `Gateway/README.md`; `GatewayLink` (`State/PushGateway.swift`)
-is the phone's side, tested in `RexDuoTests/PushGatewayTests.swift`.
+The API, limits and deploy steps are in `Gateway/README.md`; `PushGateway`
+(`State/PushGateway.swift`) is the phone's side, tested in `RexDuoTests/PushGatewayTests.swift`.
+
+## Signing the phone up
+
+`PushReconciler` (`State/PushReconciler.swift`) owns it. `PushRegistrar` tells it what the
+person wants for each computer (`PushIntent`: paused, waiting for iOS, or on with the phone's
+address) and renders what it found. In normal use the gateway is contacted once per install of
+the app, for the device, and once per computer, for its secret. A switch never contacts it.
+
+**What is stored where.**
+
+| What | Where |
+|---|---|
+| The master choice, each computer's choice (`notificationsOff`), where a helper was seen (`helperSeen`), which helpers still have to hear of a pause (`helpersToTell`) | UserDefaults (`Prefs`) |
+| The phone's last APNs token | UserDefaults |
+| The owner key and device id; the token and environment the gateway confirmed; per computer the secret id, the secret and the helper's pinned key; what the gateway has not confirmed yet (`unconfirmed`, on the device and on each secret); secrets taken back and not yet deleted (`retired`) | one Keychain item (`KeychainRegistrationStore`, `GatewayRegistration`) |
+
+Every Keychain item of the feature is written through `KeychainItem`:
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and never synchronizable, so it stays on
+this phone and is in no backup another phone can restore. The owner key and the device id are
+made once and reused from then on, also after the app is deleted and installed again, since the
+Keychain item stays.
+
+**Written before it is sent.** The owner key and device id, and each secret with its id, are
+written to the Keychain, marked `unconfirmed`, before the request that carries them. A request
+whose answer was lost, and an app that was closed before the answer, send the same request
+again, and the gateway makes one device and one secret.
+
+**One run** for a computer compares what is wanted with what is true and does the first
+missing step:
+
+1. The master switch or the computer's switch is off: the helper is paused, if it has not
+   confirmed that yet. Nothing else.
+2. On, and iOS has not allowed notifications or has given no address: nothing.
+3. The gateway holds the device with the current token; otherwise one `PUT`. Every computer
+   that asks at the same moment shares that one request.
+4. The helper there proves its key (`helper_identity`) and is admitted (`HelperAdmission`). The
+   computer has a secret the gateway confirmed; otherwise one `PUT`.
+5. The helper holds that secret and is not paused; otherwise `register_push` (sealed after an
+   install), or `set_push_paused` false for a helper that took the secret on this connection.
+6. Nothing is missing: no request to the gateway and no write to the Keychain.
+
+**When it runs.** At launch, on the return to the front, when a server's connection comes up,
+on a network change (`NetworkWatch`), on a switch, at the end of an install, for a new APNs
+token, and when a helper joins or leaves a server. Runs for one computer never overlap; a
+trigger during a run asks for one more after it.
+
+**When a step fails** the run is made again by itself: after 2 s, then twice as long each
+time, at most 5 minutes, each wait up to half as long again so phones don't retry in step
+(`PushBackoff`). `Retry-After` on a 429 or a 503 is obeyed, and wins when it is longer: no
+request goes to the gateway before that time, whatever asks for one. One computer gets 6
+tries per stay of the app in front; after them its row reads "Couldn't reconnect" with Retry,
+which starts them again, as does the app's next return to the front.
+
+**What mends itself.**
+
+- A helper that says it holds nothing for this phone (it was installed again with the same
+  files, or lost them; `registered: false` in `helper_status` or `push_presence`): it gets the
+  stored secret again, if it proves the pinned key. No request to the gateway. A helper that
+  says so more than twice on one connection is left alone until Retry.
+- A helper that says it holds the phone paused while the computer is on (`paused: true` in
+  `helper_status`, or the `paused` answer to a test): it resumes.
+- A helper that proves another key: the row reads "Beacon has changed" and nothing is
+  sent. "Trust…" pins the key its confirm was shown for, deletes the old secret at the gateway
+  and stores one new one. It does nothing when the helper offers another key by then.
+- A helper that says the gateway no longer takes its secret (`secret_dropped`, or `phone_gone`
+  from a test): the phone's address was dead. The device and each computer's secret are marked
+  unconfirmed and go to the gateway again once each, under the same owner key and ids. The
+  computer whose helper saw the refusal gets a new secret under its id, because a helper never
+  takes a secret again that it saw refused.
+- The gateway's own 401 for the device: the same, and the same `PUT` makes the device again.
+- An empty Keychain: a new owner key and device.
+
+**A secret the gateway refuses.** `409 conflict` to a secret's `PUT` means the gateway holds
+that value in another row. The phone makes a fresh value under the same secret id, writes it
+before it is sent, and sends once more. A second `409 conflict` ends the run: no automatic
+try follows, and the row reads "Couldn't reconnect" with Retry. `409 too_many_secrets` (the
+device holds as many secrets as it may) ends the run at once: the row reads "Too many
+computers for this phone" with Retry, and the app does not try again by itself, on a trigger
+or on its return to the front (`PushReconciler.full`).
+
+**Entries for computers the app does not list** (`PushOrphans`). The Keychain item stays when
+the app is deleted; the list of computers does not, and a computer that is added again has a
+new id. At launch, once the computers are loaded (`PushReconciler.computersLoaded`), every
+stored entry (secret id, secret, pinned key) whose computer id is not in the list is set
+aside.
+
+- A computer with no entry whose helper proves the key pinned in one of them takes that entry
+  over as it is, outside an install: its secret is the one that helper holds, so nothing is
+  sent to the gateway.
+- The rest are retired: their entries leave the store and their secrets are deleted at the
+  gateway through `retired`, so a delete the gateway did not confirm is sent again later. This
+  happens at the end of the first run after which every listed computer's helper has been
+  looked at on a connection (it proved its key, is too old to, or there is none), or 60 s
+  after a computer is listed (`PushOrphans.wait`), whichever is first.
+- While no computer is listed, the entries stay as they are.
+- Entries of listed computers are never set aside.
+
+**A switch off or on** is `set_push_paused` and nothing else. A helper without the action
+answers `not_supported`: it then hears `unregister_push` for off and `register_push` with the
+same stored secret for on.
+
+**A secret is deleted** (`DELETE /v1/devices/{id}/secrets/{secret_id}`) only by "Remove
+Beacon…", by "Trust…" of a changed Beacon, when the server is removed from the app, and for a
+stored entry of a computer the app does not list (above). A
+delete the gateway did not confirm is kept (`retired`) and sent again on a later launch or
+return to the front. The device itself is never deleted by the app.
+
+**A phone that registered with an earlier version** keeps the device and the secrets it has:
+its stored registration is used as it is, and the `PUT` routes serve only a computer that has
+no secret yet. If the gateway no longer has that device, the phone chooses an owner key and
+device as a new install does, keeping each helper's pinned key.
 
 ## Contract between app and helper
 
@@ -203,32 +526,48 @@ The helper opens no ports; everything goes through Rex.
    signature, that `client_id` is the client it called and that the fourth line is its own
    `RexControl.clientID`, so a third client can't relay the challenge to the real helper.
 4. It pins the key the first time it meets a server's helper. The same key later: go on. Another
-   key: hand over nothing and show the "changed" line; "Trust" deletes the old helper's secret,
-   pins the key that was offered and registers with a new secret. A helper that doesn't know
+   key: hand over nothing and show the "changed" line; "Trust…" deletes the old helper's secret,
+   pins the key its confirm was shown for and registers with a new secret. A helper that doesn't know
    `helper_identity` counts as too old. During an install from the app the first-use pin does
    not apply: the helper is pinned only after it showed the run's setup proof ("Installing the
    helper from the app").
 5. It registers with `register_push`, args `gateway` (its address), `push_secret` (that server's),
    `environment` (`sandbox` for debug builds, `production` for TestFlight), `device_name`,
-   `device_id`. The reply carries `helper_version`.
+   `device_id`, and `paused` false. The reply carries `helper_version`.
    During an install from the app, after the setup proof, it adds `setup_seal`: base64 of
    HMAC-SHA256 keyed by the setup code over `rexduo-setup-register-v1`, the `push_secret` and
    the `device_id`, joined by `\n` (`SetupSeal`). No other registration carries it.
 6. It reports `push_presence {active}` on background and foreground, so the helper skips phones
    that show their own notifications.
-7. It unregisters with `unregister_push {device_id}` when notifications are turned off.
-8. `helper_status` reports the helper's version, the newest release, whether it can update and
-   `update_required`; `update_helper` starts an update and replies before the helper restarts.
-9. A helper whose secret stopped working says so: `registered: false` in the `push_presence` and
-   `helper_status` results, or the `secret_dropped` error from `register_push`. The app then asks
-   the gateway (`GET /v1/devices/{id}`). Phone gone: it registers again, keeping the pins, and
-   every server gets a new secret as it syncs. Phone still there: that server's secret is
-   replaced. Then it registers with the helper again. One such repair per server per connection;
-   a helper that still refuses gets a line in Settings and is left alone until the next connection.
+7. It pauses and resumes with `set_push_paused {paused}` when the master switch or the
+   computer's switch is turned off or on. The helper keeps the registration and sends a paused
+   phone nothing; `helper_status` reports `paused`, and `send_test` answers the error `paused`.
+   `unregister_push {device_id}` is sent before the helper is removed, and to a helper without
+   `set_push_paused` in place of a pause.
+8. `helper_status` reports the helper's `version`, whether it can replace itself (`can_update`)
+   and whether it is doing so (`updating`); `update_helper` starts an update and replies before
+   the helper restarts, with `started` false when its own check finds nothing newer. The status
+   also carries the helper's own view of the releases (`latest_version`, `update_available`,
+   `update_required`, `last_error`, `failing_since`), which the app does not read: see "Which
+   version is the latest".
+9. A helper that holds nothing for this phone says so: `registered: false` in the
+   `push_presence` and `helper_status` results. One that has seen the gateway refuse its secret
+   answers `register_push` with the `secret_dropped` error. What the app does for each is in
+   "Signing the phone up", "What mends itself".
+10. `send_test` (no arguments) has the helper send one notification to the requester's own
+    phone; `helper_status` also reports `os`, `devices`, `other_phones` (how many of the
+    phones on that computer were registered by others than the asking phone's Rex user) and
+    `last_push_at`. A helper without them answers `not_supported` and leaves the fields out,
+    and the app says so or shows less.
+
+**What the checks separate.** The helper's per-phone checks (who may pause, resume, test,
+re-register or unregister a phone, and whose phones `other_phones` counts) tell users apart by
+their Rex identity. Phones signed in to Rex as the same user are that user's own devices: on a
+computer, each can pause, test and re-register the others.
 
 The first `register_push` from a `device_id` the helper has never seen posts one desktop
 notification on the computer, "Rex DUO connected" with the phone's name (`Relay/src/notice.rs`;
-on a Mac from the app's own `rex-duo-notify`, so it shows as Rex DUO Helper and needs the
+on a Mac from the app's own `rex-duo-notify`, so it shows as Rex DUO Beacon and needs the
 permission macOS asks for when the app is first opened; `notify-send` on Linux when it is installed). Seen ids are kept in
 `seen_devices.json`, so it is once per phone, not per connect or per helper start.
 
@@ -238,27 +577,29 @@ Pushes carry `server` (the Tailscale URL as entered in the app), `session_id`, `
 
 ## The app's side
 
-`PushRegistrar` (`State/`, owned by `AppModel`) implements the contract. Its pure parts are in
-`PushSupport.swift` (tested in `RexDuoTests/NotificationTests.swift`) and `HelperTrust.swift`
-(`HelperIdentity`, `HelperFailure`, `SecretRepair`, `SecretLabel`; `RexDuoTests/HelperTrustTests.swift`).
+`PushRegistrar` (`State/`, owned by `AppModel`) and its `PushReconciler` implement the
+contract. Their pure parts are in `PushSupport.swift` (tested in
+`RexDuoTests/NotificationTests.swift`) and `HelperTrust.swift` (`HelperIdentity`,
+`HelperFailure`, `SecretLabel`; `RexDuoTests/HelperTrustTests.swift`).
 
 - Device id: the first 8 hex digits of `identifierForVendor`. `PushIdentity.clientLabel` builds
   `"<device name> #<id>"`, shortening the name to fit Rex's 64 bytes.
 - Environment: read from the build's `embedded.mobileprovision` (`aps-environment`), so a Release
   build installed with a development profile still says `sandbox`. No profile (TestFlight, App
   Store) means `production`; the simulator is always `sandbox`.
-- Registration runs after each server's bootstrap. It is keyed on `ServerConnection.connectionSerial`,
-  so a resync on the same connection costs nothing, and every new connection registers again.
-  A new APNs token (rotation) goes to the gateway only; helpers keep their secrets. Each
-  server's helper is verified and registered separately, with its own secret. While push is off and was never registered, nothing is called.
+- Sign-up runs after each server's bootstrap and on the other triggers above. What a
+  connection learned of its helper belongs to that connection (`ServerConnection.connectionSerial`),
+  so a resync on the same connection costs nothing, and a new connection has the helper prove
+  its key and take the secret again. While the master switch is off and nothing waits to be
+  told, nothing is called.
 - Presence: `push_presence` false on background (inside a background task) and true on
   foreground and after each registration, since a resumed connection keeps its client id.
-- Turning push off deletes the gateway registration and sends `unregister_push` now, or on the
-  server's next connect if it is offline (`pushToken.servers` in UserDefaults remembers where the
-  phone is registered). Nothing is unregistered before iOS has reported the permission.
+- iOS turning notifications off changes nothing on the phone, at the gateway or on a helper:
+  the choices and the sign-up stay, and iOS shows nothing meanwhile.
 - An install from before the gateway needs nothing from the user: on its next connect it
-  registers with the gateway and gives an updated helper a secret. A helper that is still the
-  old version refuses, and Settings says to install the new one.
+  signs up with the gateway and gives an updated helper a secret. A helper that is still the
+  old version refuses, and its row reads "Beacon needs an update"; Update replaces it through
+  the installer.
 - `project.yml` gives the app `aps-environment` (development; export for App Store Connect switches
   it to production) and `com.apple.developer.usernotifications.time-sensitive`.
 
@@ -274,6 +615,8 @@ payload's `thread-id`.
 
 ### Testing
 
+- The loop: `RexDuoTests/PushReconcilerTests.swift` counts the requests at stand-ins for the
+  gateway and the helpers, with time moved by hand (`PushStandIns.swift`).
 - Simulator registration: stop the installed helper (see `Relay/README.md`, "Verify by hand"), run
   `cargo run --manifest-path Relay/Cargo.toml -- run --dry-run --verbose` and launch the app with
   push on. Simulators on Apple silicon get sandbox

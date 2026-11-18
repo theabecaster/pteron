@@ -116,7 +116,7 @@ def notices(meta, path):
     ids = linked()
     crates = sorted((p for p in third_party(meta) if p["id"] in ids), key=lambda p: (p["name"], p["version"]))
     out = [
-        "Rex DUO Helper is licensed under the GNU Affero General Public License, version 3 only.",
+        "Rex DUO Beacon is licensed under the GNU Affero General Public License, version 3 only.",
         "It is built with the %d open-source crates below. Each keeps its own licence." % len(crates),
         "",
     ]

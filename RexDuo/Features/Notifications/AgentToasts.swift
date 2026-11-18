@@ -1,14 +1,13 @@
 import SwiftUI
 
 extension View {
-    /// In-app agent toasts and the one-time "Get notified" card. Apply once, at the app root, inside
-    /// the `AppModel` and `Prefs` environment.
+    /// In-app agent toasts. Apply once, at the app root, inside the `AppModel` and `Prefs`
+    /// environment.
     func agentToasts() -> some View { modifier(AgentToasts()) }
 }
 
 /// Shows a small toast when an agent the user isn't looking at starts waiting (rules in
-/// `ToastPolicy`). Tapping it opens the pane; it fades on its own and can be swiped up. The same
-/// slot offers notifications once, after the first agents show up.
+/// `ToastPolicy`). Tapping it opens the pane; it fades on its own and can be swiped up.
 private struct AgentToasts: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
@@ -20,7 +19,6 @@ private struct AgentToasts: ViewModifier {
     /// Alerts held while a sheet or alert covers the screen.
     @State private var held: [AgentAlert] = []
     @State private var hideTask: Task<Void, Never>?
-    @State private var showPrompt = false
 
     func body(content: Content) -> some View {
         let theme = prefs.theme(for: scheme)
@@ -31,22 +29,12 @@ private struct AgentToasts: ViewModifier {
                         ToastCard(toast: toast, theme: theme, onOpen: { open(toast) }, onDismiss: { dismiss() })
                             .id(toast.id)
                             .transition(.move(edge: .top).combined(with: .opacity))
-                    } else if showPrompt && model.push.offersPrompt {
-                        SwipeAway(onDismiss: { model.push.declinePrompt() }) {
-                            NotificationPromptCard(theme: theme)
-                                .padding(14)
-                                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(theme.chrome.sidebar))
-                                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.chrome.divider, lineWidth: 1))
-                                .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
-                        }
-                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
                 .frame(maxWidth: 520)
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
                 .animation(.snappy(duration: 0.25), value: toast?.id)
-                .animation(.snappy(duration: 0.25), value: showPrompt && model.push.offersPrompt)
             }
             .onChange(of: model.notifier.latest?.id) { _, _ in
                 if let a = model.notifier.latest { consider(a) }
@@ -57,20 +45,6 @@ private struct AgentToasts: ViewModifier {
                 ScreenInspector.dismissModals()
             }
             .task(id: held.map(\.id)) { await offerHeld() }
-            .task(id: promptReady) {
-                guard promptReady else { showPrompt = false; return }
-                // Let the first screen settle before offering.
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                guard !Task.isCancelled, !ScreenInspector.modalPresented() else { return }
-                showPrompt = true
-            }
-    }
-
-    /// Connected, agents exist, and notifications were never offered. Checks the cheap parts first,
-    /// so once the user has answered, this reads nothing else.
-    private var promptReady: Bool {
-        model.push.offersPrompt && phase == .active
-            && model.servers.contains { $0.phase == .online && !$0.agentKeys.isEmpty }
     }
 
     private func consider(_ a: AgentAlert) {

@@ -1,4 +1,4 @@
-import { utf8 } from "./encoding";
+import { isKey, utf8 } from "./encoding";
 
 export type Environment = "sandbox" | "production";
 /** The one APNs push type the gateway sends. */
@@ -68,6 +68,30 @@ export function parseLabel(body: unknown): Parsed<string> {
     return invalid(`label must be 1 to ${MAX_LABEL_CHARACTERS} printable characters.`);
   }
   return { ok: true, value: label };
+}
+
+export interface ChosenSecret {
+  label: string;
+  pushSecret: string;
+}
+
+/** A secret id a phone chooses: 16 url-safe characters, the length of the ids the gateway makes. */
+export function isSecretId(text: string): boolean {
+  return /^[A-Za-z0-9_-]{16}$/.test(text);
+}
+
+/**
+ * Checks the body that stores a secret the phone chose: the label as for a minted secret,
+ * and `push_secret`, 32 bytes as base64url.
+ */
+export function parseChosenSecret(body: unknown): Parsed<ChosenSecret> {
+  const label = parseLabel(body);
+  if (!label.ok) return label;
+  const { push_secret: pushSecret } = body as Record<string, unknown>;
+  if (typeof pushSecret !== "string" || !isKey(pushSecret)) {
+    return invalid("push_secret must be 32 bytes as base64url, 43 characters.");
+  }
+  return { ok: true, value: { label: label.value, pushSecret } };
 }
 
 /** What a payload field may hold: a string of at most this many characters, or one of these words. */

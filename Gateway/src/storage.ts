@@ -45,6 +45,15 @@ export interface OwnedDevice extends ManageCounts {
   unhashedToken: string | null;
   /** Other devices that hold the token the caller asked about. */
   othersWithToken: number;
+  apnsToken: string;
+  /** Apple said this token will never work again. */
+  dead: boolean;
+  /** How many secrets the device holds. */
+  secretsHeld: number;
+  /** The hash the device holds under the secret id the caller asked about, or null. */
+  heldSecretHash: string | null;
+  /** True when the secret hash the caller asked about is in a row other than that one. */
+  secretTaken: boolean;
 }
 
 /** What a push needs to know about the device its secret belongs to. */
@@ -58,7 +67,9 @@ export interface PushTarget extends PushCounts {
 
 /**
  * Adds a device. False when its token already has the most devices it may: the count is
- * part of the insert, so two registrations at once can't both take the last place.
+ * part of the insert, so two registrations at once can't both take the last place. False
+ * also when the id is there already, which is the same request arriving twice at once for
+ * an id the phone chose.
  */
 export async function insertDevice(db: D1Database, d: NewDevice, now: number): Promise<boolean> {
   const result = await db
@@ -66,7 +77,8 @@ export async function insertDevice(db: D1Database, d: NewDevice, now: number): P
       `INSERT INTO devices
          (device_id, owner_hash, apns_token, token_hash, environment, created_at, updated_at, push_day, manage_day)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?7
-       WHERE (SELECT COUNT(*) FROM devices WHERE token_hash = ?4) < ?8`,
+       WHERE (SELECT COUNT(*) FROM devices WHERE token_hash = ?4) < ?8
+       ON CONFLICT (device_id) DO NOTHING`,
     )
     .bind(d.deviceId, d.ownerHash, d.apnsToken, d.tokenHash, d.environment, now, utcDay(now), MAX_DEVICES_PER_TOKEN)
     .run();
@@ -75,9 +87,11 @@ export async function insertDevice(db: D1Database, d: NewDevice, now: number): P
 
 /**
  * The device with this id and owner key, or null. This is the owner-key check. The same read
- * brings the counts the management caps need, so a write at a cap is refused without a
- * write. `newTokenHash` is the token a token change asks for: the read then also counts
- * the other devices that hold it.
+ * brings the counts the management caps need and the number of secrets the device holds, so
+ * a write at a cap, and a secret for a device that holds the most it may, is refused without
+ * a write. `newTokenHash` is the token a token change asks for: the read then also counts
+ * the other devices that hold it. `secret` is the secret a `PUT` wants stored: the read then
+ * also brings what the device holds under that id and whether the hash is in another row.
  */
 export async function findOwned(
   db: D1Database,
@@ -86,17 +100,27 @@ export async function findOwned(
   client: Client,
   now: number,
   newTokenHash: string | null = null,
+  secret: Pick<NewSecret, "secretId" | "secretHash"> | null = null,
 ): Promise<OwnedDevice | null> {
+  // Named in the statement only when asked for, as are their two values.
+  const secretColumns =
+    secret === null
+      ? "NULL AS held, 0 AS taken"
+      : `(SELECT secret_hash FROM secrets WHERE device_id = ?1 AND secret_id = ?9) AS held,
+              EXISTS (SELECT 1 FROM secrets
+                      WHERE secret_hash = ?10 AND NOT (device_id = ?1 AND secret_id = ?9)) AS taken`;
   const counter = (place: number): string => `(SELECT count FROM counters WHERE key = ?${place} AND expires_at > ?3)`;
   const row = await db
     .prepare(
-      `SELECT environment, manage_day, manage_count,
+      `SELECT environment, manage_day, manage_count, apns_token, dead,
               CASE WHEN token_hash IS NULL THEN apns_token END AS unhashed_token,
               ${counter(4)} AS from_address,
               ${counter(5)} AS from_wide,
               ${counter(6)} AS today,
               ${counter(7)} AS deleted,
-              (SELECT COUNT(*) FROM devices o WHERE o.token_hash = ?8 AND o.device_id <> ?1) AS others
+              (SELECT COUNT(*) FROM devices o WHERE o.token_hash = ?8 AND o.device_id <> ?1) AS others,
+              (SELECT COUNT(*) FROM secrets WHERE device_id = ?1) AS secrets_held,
+              ${secretColumns}
        FROM devices WHERE device_id = ?1 AND owner_hash = ?2`,
     )
     .bind(
@@ -109,6 +133,7 @@ export async function findOwned(
       counterKey.manage(),
       counterKey.deletes(),
       newTokenHash,
+      ...(secret === null ? [] : [secret.secretId, secret.secretHash]),
     )
     .first<{
       environment: Environment;
@@ -120,6 +145,11 @@ export async function findOwned(
       today: number | null;
       deleted: number | null;
       others: number;
+      secrets_held: number;
+      apns_token: string;
+      dead: number;
+      held: string | null;
+      taken: number;
     }>();
   if (!row) return null;
   return {
@@ -132,6 +162,11 @@ export async function findOwned(
     deletedToday: row.deleted ?? 0,
     unhashedToken: row.unhashed_token,
     othersWithToken: row.others,
+    apnsToken: row.apns_token,
+    dead: row.dead !== 0,
+    secretsHeld: row.secrets_held,
+    heldSecretHash: row.held,
+    secretTaken: row.taken !== 0,
   };
 }
 
@@ -188,8 +223,11 @@ export async function listSecrets(db: D1Database, deviceId: string): Promise<Sec
 }
 
 /**
- * Adds a secret to a device the caller owns. False when the device already holds the most it
- * may: the count is part of the insert, so two requests at once can't both take the last place.
+ * Adds a secret to a device the caller owns. The caller has already refused, from its read,
+ * a device that holds the most it may. The count is part of the insert as well, so two
+ * requests at once can't both take the last place: false is the one that came second. False
+ * also when the secret's hash or its id is there already, which only values a phone chose
+ * can be.
  */
 export async function insertSecret(
   db: D1Database,
@@ -203,9 +241,26 @@ export async function insertSecret(
       `INSERT INTO secrets (secret_hash, device_id, secret_id, label, created_at)
        SELECT ?3, device_id, ?4, ?5, ?6 FROM devices
        WHERE device_id = ?1 AND owner_hash = ?2
-         AND (SELECT COUNT(*) FROM secrets WHERE device_id = ?1) < ?7`,
+         AND (SELECT COUNT(*) FROM secrets WHERE device_id = ?1) < ?7
+       ON CONFLICT DO NOTHING`,
     )
     .bind(deviceId, ownerHash, s.secretHash, s.secretId, s.label, now, MAX_SECRETS_PER_DEVICE)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Puts another secret in the place of the one a device holds under `secretId`: the row
+ * keeps its device and its id and takes the new hash, label and time. False when the device
+ * holds no such secret, or when the hash is in another row, which then stays as it is.
+ */
+export async function replaceSecret(db: D1Database, deviceId: string, s: NewSecret, now: number): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE OR IGNORE secrets SET secret_hash = ?3, label = ?4, created_at = ?5
+       WHERE device_id = ?1 AND secret_id = ?2`,
+    )
+    .bind(deviceId, s.secretId, s.secretHash, s.label, now)
     .run();
   return result.meta.changes > 0;
 }

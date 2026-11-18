@@ -5,13 +5,14 @@
  */
 import { addressKeys } from "./address";
 import { type ApnsConfig, sendPush, tokenIsDead } from "./apns";
-import { randomToken, sha256Hex } from "./encoding";
+import { CHOSEN_DEVICE_ID_LENGTH, deviceIdFor, isKey, randomToken, sha256Hex } from "./encoding";
 import type { Deps, Env } from "./env";
 import { type Reply, bearer, fail, ok, rateLimited, readJson, toResponse, unauthorized } from "./http";
 import {
   type Client,
   LIMITS,
   MAX_DEVICES_PER_TOKEN,
+  MAX_SECRETS_PER_DEVICE,
   type ManageKind,
   type Verdict,
   allowedBy,
@@ -22,7 +23,7 @@ import {
 } from "./limits";
 import { purge } from "./purge";
 import * as storage from "./storage";
-import { parseLabel, parsePush, parseRegistration } from "./validate";
+import { type Registration, isSecretId, parseChosenSecret, parseLabel, parsePush, parseRegistration } from "./validate";
 
 export const VERSION = "2.0.0";
 
@@ -71,7 +72,11 @@ function match(pathname: string): Match | null {
   const deviceId = device[1] ?? "";
   const secretId = device[3] ?? "";
   if (secretId) {
-    return { route: { name: "/v1/devices/:id/secrets/:secret", methods: { DELETE: deleteSecret } }, deviceId, secretId };
+    return {
+      route: { name: "/v1/devices/:id/secrets/:secret", methods: { PUT: putSecret, DELETE: deleteSecret } },
+      deviceId,
+      secretId,
+    };
   }
   if (device[2]) {
     return { route: { name: "/v1/devices/:id/secrets", methods: { POST: mintSecret } }, deviceId, secretId };
@@ -181,6 +186,11 @@ async function register({ request, env, deps, client }: Call): Promise<Reply> {
 /*
  * The owner-key routes. An unknown device id and a wrong owner key get the same 401 on every
  * one of them, so nothing tells a caller whether an id exists.
+ *
+ * A phone can also choose its owner key, and with it its device id, which is derived from
+ * the key (src/encoding.ts, `deviceIdFor`). `PUT` on such an id checks the pair before
+ * anything else: an id that is not its key's is `400`, decided from the request alone, so
+ * that answer is the same whether a device has the id or not.
  */
 
 async function showDevice({ request, env, deps, deviceId, client }: Call): Promise<Reply> {
@@ -192,10 +202,10 @@ async function showDevice({ request, env, deps, deviceId, client }: Call): Promi
 }
 
 /**
- * The owner-key check and the daily caps on management writes, for the four routes that
- * change a device: minting a secret and a token change (`change`), deleting a secret
- * (`delete`) and deleting the device (`deviceGoes`). Null means go ahead; a reply is the
- * refusal.
+ * The owner-key check and the daily caps on management writes, for the routes that change
+ * a device: a secret minted, stored or replaced and a token change (`change`), deleting a
+ * secret (`delete`) and deleting the device (`deviceGoes`). Null means go ahead; a reply is
+ * the refusal.
  *
  * The write is counted only for a caller who proved the owner key and only after the
  * request is known to be well formed. It is counted against the device, the client address
@@ -205,16 +215,35 @@ async function showDevice({ request, env, deps, deviceId, client }: Call): Promi
  *
  * `newTokenHash` is the token a token change asks for. One that already has the most
  * devices it may is refused here, before anything is counted.
+ *
+ * A request that is refused writes nothing and counts nothing: every refusal on these
+ * routes (`400`, `401`, `409`, `429`) is decided from the request or from the one read,
+ * before the count. The counting and the change are separate statements, and each repeats
+ * its own check so that two requests at once can't both take a last place (of a counter, of
+ * a token's devices, of a device's secrets, of a push secret's hash). Only the request that
+ * comes second in such a race is refused after its read, and what it counted by then stays.
  */
 async function countChange(
-  { env, deviceId, client }: Call,
+  call: Call,
   ownerHash: string,
   now: number,
   kind: ManageKind,
   newTokenHash: string | null = null,
 ): Promise<Reply | null> {
+  const { env, deviceId, client } = call;
   const device = await storage.findOwned(env.DB, deviceId, ownerHash, client, now, newTokenHash);
   if (!device) return unauthorized();
+  return countOwned(call, device, now, kind, newTokenHash);
+}
+
+/** The caps of `countChange`, for a caller that already read its device with `findOwned`. */
+async function countOwned(
+  { env, deviceId, client }: Call,
+  device: storage.OwnedDevice,
+  now: number,
+  kind: ManageKind,
+  newTokenHash: string | null = null,
+): Promise<Reply | null> {
   if (device.othersWithToken >= MAX_DEVICES_PER_TOKEN) return tooManyDevices();
   // A row from before `token_hash` gets its hash with this write. A token change stores
   // the new token's hash itself.
@@ -224,26 +253,84 @@ async function countChange(
 }
 
 async function updateDevice(call: Call): Promise<Reply> {
-  const { request, env, deps, deviceId } = call;
+  const { request, deps, deviceId } = call;
   const ownerKey = bearer(request);
   if (!ownerKey) return unauthorized();
+  // An id of the length a phone chooses is the phone's own: the key must be 32 bytes and
+  // the id the one derived from it. Both are checked here, before the body and before D1.
+  const chosen = deviceId.length === CHOSEN_DEVICE_ID_LENGTH;
+  if (chosen) {
+    if (!isKey(ownerKey)) return unauthorized();
+    if (deviceId !== (await deviceIdFor(ownerKey))) {
+      return fail(400, "invalid_request", "device_id is not the id of this owner key.");
+    }
+  }
   const body = await readJson(request, MAX_BODY_BYTES);
   if (!body.ok) return body.reply;
   const parsed = parseRegistration(body.value);
   if (!parsed.ok) return fail(400, "invalid_request", parsed.message);
 
-  const { apnsToken, environment } = parsed.value;
   const ownerHash = await sha256Hex(ownerKey);
-  const tokenHash = await sha256Hex(apnsToken);
+  const tokenHash = await sha256Hex(parsed.value.apnsToken);
   const now = deps.now();
+  if (chosen) return putDevice(call, ownerHash, parsed.value, tokenHash, now);
   const refused = await countChange(call, ownerHash, now, "change", tokenHash);
-  if (refused) return refused;
+  return refused ?? changeToken(call, ownerHash, parsed.value, tokenHash, now);
+}
 
+/** The write of a token change, once it is counted. */
+async function changeToken(
+  { env, deviceId }: Call,
+  ownerHash: string,
+  { apnsToken, environment }: Registration,
+  tokenHash: string,
+  now: number,
+): Promise<Reply> {
   const updated = await storage.updateToken(env.DB, deviceId, ownerHash, apnsToken, tokenHash, environment, now);
   if (updated) return ok(200, {});
   // Between the check and the write the device went, which is the same answer as never
   // there, or another device took the token's last place.
   return (await storage.isOwned(env.DB, deviceId, ownerHash)) ? tooManyDevices() : unauthorized();
+}
+
+/**
+ * `PUT` for a device id the phone chose: the request says what the device is, and sending
+ * it again changes nothing. One read decides which of three things it is.
+ *
+ *   No such device: it is made. This is a registration, counted and capped as one.
+ *   The device holds this token and environment: nothing to do. No write, no count.
+ *   Anything else: a token change, counted and capped as one. A device marked dead is in
+ *   this case also with the token it holds, because a token change is what makes a device
+ *   live again, and a phone that sends its token says the token is in use.
+ */
+async function putDevice(
+  call: Call,
+  ownerHash: string,
+  registration: Registration,
+  tokenHash: string,
+  now: number,
+): Promise<Reply> {
+  const { env, deviceId, client } = call;
+  const { apnsToken, environment } = registration;
+  const read = (): Promise<storage.OwnedDevice | null> =>
+    storage.findOwned(env.DB, deviceId, ownerHash, client, now, tokenHash);
+
+  let device = await read();
+  if (!device) {
+    const verdict = await hitRegistration(env.DB, client, tokenHash, now);
+    if (!verdict.allowed) {
+      return "full" in verdict ? tooManyDevices() : tooMany(verdict, "Too many registrations. Try again later.");
+    }
+    const added = await storage.insertDevice(env.DB, { deviceId, ownerHash, apnsToken, tokenHash, environment }, now);
+    if (added) return ok(201, { device_id: deviceId });
+    // Nothing was added: the same request, sent twice at once, made the device first, and
+    // this one goes on as a repeat; or another registration took the token's last place.
+    device = await read();
+    if (!device) return tooManyDevices();
+  }
+  if (!device.dead && device.apnsToken === apnsToken && device.environment === environment) return ok(200, {});
+  const refused = await countOwned(call, device, now, "change", tokenHash);
+  return refused ?? changeToken(call, ownerHash, registration, tokenHash, now);
 }
 
 async function unregister(call: Call): Promise<Reply> {
@@ -258,7 +345,7 @@ async function unregister(call: Call): Promise<Reply> {
 }
 
 async function mintSecret(call: Call): Promise<Reply> {
-  const { request, env, deps, deviceId } = call;
+  const { request, env, deps, deviceId, client } = call;
   const ownerKey = bearer(request);
   if (!ownerKey) return unauthorized();
   const body = await readJson(request, MAX_BODY_BYTES);
@@ -268,7 +355,12 @@ async function mintSecret(call: Call): Promise<Reply> {
 
   const ownerHash = await sha256Hex(ownerKey);
   const now = deps.now();
-  const refused = await countChange(call, ownerHash, now, "change");
+  const device = await storage.findOwned(env.DB, deviceId, ownerHash, client, now);
+  if (!device) return unauthorized();
+  // A device that holds the most secrets it may is answered from the read: nothing is
+  // written and nothing is counted.
+  if (device.secretsHeld >= MAX_SECRETS_PER_DEVICE) return tooManySecrets();
+  const refused = await countOwned(call, device, now, "change");
   if (refused) return refused;
 
   const secretId = randomToken(12);
@@ -280,9 +372,81 @@ async function mintSecret(call: Call): Promise<Reply> {
     { secretId, secretHash: await sha256Hex(pushSecret), label: parsed.value },
     now,
   );
-  if (!added) return fail(409, "too_many_secrets", "This device already has the most secrets it may hold.");
+  // Nothing was added: a request at the same time took the device's last place between
+  // the read and the insert. This request is counted, and its count stays.
+  if (!added) return tooManySecrets();
   // The only time the secret exists outside the phone and its helper: we keep its hash.
   return ok(201, { secret_id: secretId, push_secret: pushSecret });
+}
+
+function tooManySecrets(): Reply {
+  return fail(409, "too_many_secrets", "This device already has the most secrets it may hold.");
+}
+
+/** One answer for a push secret that is in another row. It says nothing about that row. */
+function secretInUse(): Reply {
+  return fail(409, "conflict", "This push secret is already in use.");
+}
+
+/**
+ * `PUT` for a secret the phone chose, under an id it chose: the request says what the
+ * secret is, and sending it again changes nothing. One read decides which of five things
+ * it is, for a caller who proved the owner key.
+ *
+ *   The push secret is in another row, of this device or of any other: `409 conflict`.
+ *   A secret names exactly one row, and a row never changes its device.
+ *   The device holds this secret under this id: nothing to do. No write, no count.
+ *   The device holds another secret under this id: that one is replaced, a management write.
+ *   The device holds nothing under this id and has room: the secret is added, a management
+ *   write.
+ *   The device holds nothing under this id and holds the most secrets it may:
+ *   `409 too_many_secrets`. No write, no count.
+ */
+async function putSecret(call: Call): Promise<Reply> {
+  const { request, env, deps, deviceId, secretId, client } = call;
+  const ownerKey = bearer(request);
+  if (!ownerKey || !isKey(ownerKey)) return unauthorized();
+  if (!isSecretId(secretId)) return fail(400, "invalid_request", "secret_id must be 16 url-safe characters.");
+  const body = await readJson(request, MAX_BODY_BYTES);
+  if (!body.ok) return body.reply;
+  const parsed = parseChosenSecret(body.value);
+  if (!parsed.ok) return fail(400, "invalid_request", parsed.message);
+  const { label, pushSecret } = parsed.value;
+  // A push secret goes to a helper, and the owner key never leaves the phone.
+  if (pushSecret === ownerKey) return fail(400, "invalid_request", "push_secret must not be the owner key.");
+
+  const ownerHash = await sha256Hex(ownerKey);
+  const secret: storage.NewSecret = { secretId, secretHash: await sha256Hex(pushSecret), label };
+  const now = deps.now();
+  const read = (): Promise<storage.OwnedDevice | null> =>
+    storage.findOwned(env.DB, deviceId, ownerHash, client, now, null, secret);
+  /** The answer when there is nothing to write, or null. */
+  const settled = (device: storage.OwnedDevice): Reply | null => {
+    if (device.secretTaken) return secretInUse();
+    if (device.heldSecretHash === secret.secretHash) return ok(200, { secret_id: secretId });
+    // A full device takes no new id. An id it holds is one of its secrets, and is replaced.
+    return device.heldSecretHash === null && device.secretsHeld >= MAX_SECRETS_PER_DEVICE ? tooManySecrets() : null;
+  };
+
+  const device = await read();
+  if (!device) return unauthorized();
+  const answer = settled(device);
+  if (answer) return answer;
+  const refused = await countOwned(call, device, now, "change");
+  if (refused) return refused;
+
+  const adding = device.heldSecretHash === null;
+  const written = adding
+    ? await storage.insertSecret(env.DB, deviceId, ownerHash, secret, now)
+    : await storage.replaceSecret(env.DB, deviceId, secret, now);
+  if (written) return ok(adding ? 201 : 200, { secret_id: secretId });
+
+  // Nothing was written: a request at the same time took the device's last place, stored
+  // this secret or took its hash, between the read and the write. What is there now is the
+  // answer. This request is counted, and its count stays.
+  const after = await read();
+  if (!after) return unauthorized();
+  return settled(after) ?? (adding && after.heldSecretHash === null ? tooManySecrets() : secretInUse());
 }
 
 async function deleteSecret(call: Call): Promise<Reply> {

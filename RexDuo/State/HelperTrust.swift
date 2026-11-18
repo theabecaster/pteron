@@ -106,41 +106,7 @@ struct HelperFailure: Error, Equatable {
         let said = message.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = said.isEmpty ? "the request failed" : said
         let end = text.last.map { ".!?".contains($0) } == true ? "" : "."
-        return "Rex DUO Helper on \(name): \(text)\(end)"
-    }
-}
-
-/// What to do when a helper says its secret for this phone no longer works. The gateway deletes a
-/// phone when Apple reports its token dead, and a helper drops a secret the gateway refused; either
-/// way pushes would stop without a word unless the phone sets things up again.
-enum SecretRepair {
-    enum Refusal: Equatable { case repair, giveUp }
-
-    /// One repair per server per connection. A helper that still refuses after it is not asked
-    /// again, so two sides that disagree can't keep each other busy.
-    static func onRefusal(repaired: Bool) -> Refusal { repaired ? .giveUp : .repair }
-
-    enum Step: Equatable {
-        /// The gateway no longer knows this phone: register again, then new secrets for every server.
-        case registerDevice
-        /// The phone is still registered: replace this server's secret. Also when the gateway still
-        /// lists the old one, since the helper has stopped accepting it.
-        case mintSecret
-        /// The gateway couldn't say. Nothing is changed; a later refusal asks again.
-        case wait(GatewayError)
-    }
-
-    /// `lookup` is the answer to `GET /v1/devices/{id}`: the secrets left, or why it failed.
-    static func step(lookup: Result<[String], GatewayError>) -> Step {
-        switch lookup {
-        case .success: .mintSecret
-        case .failure(.unknownRegistration): .registerDevice
-        case .failure(let e): .wait(e)
-        }
-    }
-
-    static func gaveUp(helper name: String) -> String {
-        "Rex DUO Helper on \(name) keeps refusing this iPhone. Turn notifications off and on again."
+        return "Rex DUO Beacon on \(name): \(text)\(end)"
     }
 }
 

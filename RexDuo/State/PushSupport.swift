@@ -95,21 +95,23 @@ enum RelayLookup {
     }
 }
 
-/// What a helper says about itself (`helper_status`): its version and whether it can and should
-/// update.
+/// What a helper says about itself (`helper_status`), as far as the app takes its word: which
+/// version it is, how it can be updated, and how it holds this phone. Whether a newer version is
+/// out is not the helper's to say: the app reads the release list itself (`ReleaseCheck`), so the
+/// helper's `update_available`, `update_required`, `latest_version`, `last_error` and
+/// `failing_since` are not read.
 struct HelperVersion: Equatable, Sendable {
     var version: String
-    var latest: String?
-    var updateAvailable: Bool
     /// False when the helper can't replace itself: a development build, a test run, an odd install.
     var canUpdate: Bool
+    /// The helper is replacing itself with a newer version now.
     var updating: Bool
-    var lastError: String?
-    /// The running version is below the oldest one the release list still allows.
-    var updateRequired: Bool
     /// Whether the helper holds a working registration for this phone. Nil from a helper that
     /// doesn't say.
     var registered: Bool?
+    /// Whether the helper holds this phone's notifications back (`set_push_paused`). Nil from a
+    /// helper that doesn't say.
+    var paused: Bool?
     /// Mac: whether the helper may show its own notices on the computer: `allowed`, `denied` or
     /// `undetermined`. Nil elsewhere, and from a helper that doesn't say.
     var notices: String?
@@ -121,34 +123,27 @@ struct HelperVersion: Equatable, Sendable {
     init?(_ result: JSONObject) {
         guard let version = result.str("version"), !version.isEmpty else { return nil }
         self.version = version
-        latest = result.str("latest_version")
-        updateAvailable = result.bool("update_available") ?? false
         canUpdate = result.bool("can_update") ?? false
         updating = result.bool("updating") ?? false
-        lastError = result.str("last_error")
-        updateRequired = result.bool("update_required") ?? false
         registered = result.bool("registered")
+        paused = result.bool("paused")
         notices = result.str("notices")
         linger = result.bool("linger")
         manifestExpiresAt = result.str("manifest_expires_at").flatMap(HelperRelease.timestamp)
     }
 
-    /// The one line Settings shows under the helper's name.
-    var summary: String {
-        if updating { return "Updating to \(latest ?? "the latest version")…" }
-        if updateRequired { return "Version \(version) needs an update to keep working." }
-        if updateAvailable, let latest { return "Version \(version). Version \(latest) is available." }
-        // No check has come back yet: say only what is known.
-        return latest == nil ? "Version \(version)." : "Version \(version), up to date."
-    }
-
-    /// Settings offers "Update" only when pressing it would do something.
-    var offersUpdate: Bool { (updateAvailable || updateRequired) && canUpdate && !updating }
-
     /// A helper from before the gateway refuses a registration that has no APNs token with this.
     static func isLegacyRefusal(_ message: String) -> Bool {
         message.hasPrefix("token must be")
     }
+}
+
+/// The notification "Send Test Notification" asks a helper for. Its thread id tells it from the
+/// others, so the app can show it as a banner while it is in front.
+enum PushTest {
+    static let thread = "rexduo-test"
+
+    static func isTest(threadID: String) -> Bool { threadID == thread }
 }
 
 /// Where a push points: a pane on one of the user's servers. Parsed from the payload the helper

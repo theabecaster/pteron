@@ -126,6 +126,14 @@ struct HelperReleaseTests {
         let other = HelperRelease.binaryMessage(version: m.version, platform: .linuxArm64, sha256: linux.sha256)
         #expect(!HelperRelease.verify(keys: [key], message: other, signatureFile: signature))
 
+        // A list that also names the Mac app as Rex DUO Beacon: the app takes that entry for the
+        // Mac, and a list without it gives the earlier one.
+        let earlier = try #require(m.assets[.mac])
+        let both = try accept("manifest-beacon.json", "manifest-beacon.json.sig").get()
+        #expect(both.assets.count == 3)
+        #expect(both.assets[.mac]?.sha256 == "b38897a7da6e9596060b93420bbb0876b2a65d54d790e9e6aecfcd39faf824d0")
+        #expect(both.assets[.mac] != earlier && both.assets[.linuxX64] == m.assets[.linuxX64])
+
         #expect(accept("manifest-expired.json", "manifest-expired.json.sig") == .failure(.expired))
         #expect(accept("manifest-older.json", "manifest-older.json.sig", seen: ReleaseVersion("9.8.7")) == .failure(.tooOld))
         #expect(accept("manifest.json", "manifest-untrusted.json.sig") == .failure(.untrusted))
@@ -402,6 +410,8 @@ struct HelperReleaseTests {
         let store = InMemoryReleaseStore()
         let release = try await fetcher(web, store: store).verified().get()
         #expect(release.version == ReleaseVersion("0.4.0"))
+        // The oldest version the list allows comes along: the rows are judged by it too.
+        #expect(release.minVersion == ReleaseVersion("0.3.0") && LatestRelease(release).minVersion == release.minVersion)
         #expect(release.assets[.linuxArm64] == ReleaseAsset(sha256: hashes[.linuxArm64]!, size: 1002))
         #expect(release.keys == [signer.publicKey.rawRepresentation.base64EncodedString()])
         #expect(store.value.highWater == "0.4.0")
@@ -482,7 +492,7 @@ struct HelperReleaseTests {
         #expect(HelperRelease.renewalNotice(expiresAt: expiry, now: now) == nil)
         #expect(HelperRelease.renewalDue(expiresAt: expiry, now: now.addingTimeInterval(11 * 86_400)) == expiry)
         let line = HelperRelease.renewalNotice(expiresAt: expiry, now: now.addingTimeInterval(20 * 86_400))
-        #expect(line?.hasPrefix("Rex DUO Helper updates need renewing by ") == true)
+        #expect(line?.hasPrefix("Rex DUO Beacon updates need renewing by ") == true)
     }
 
     @Test func aHelperReportsWhenItsListExpires() {

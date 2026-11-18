@@ -19,12 +19,15 @@ final class HelperSetupRun: Identifiable {
     struct Environment {
         var push: PushRegistrar
         var fetcher: HelperReleaseFetcher
-        var sessions: SetupSessions
+        /// Closes the tabs this app made, and keeps the list of them.
+        var tabs: SetupSessionCloser
         var theme: @MainActor () -> TermTheme
         /// The installer's text, from the app bundle. Nil when the bundle has none.
         var script: @MainActor () -> String?
         /// The session on this server the app last showed, for a server at its session limit.
         var shownSession: @MainActor (ServerConnection) -> String?
+        /// The run reached an end: connected, failed or stopped.
+        var finished: @MainActor (HelperSetupRun) -> Void = { _ in }
     }
 
     nonisolated let id = UUID()
@@ -55,6 +58,8 @@ final class HelperSetupRun: Identifiable {
     @ObservationIgnored private var exitRead: Task<Void, Never>?
     @ObservationIgnored private var connectingSince: Date?
     @ObservationIgnored private var cleaned = false
+    /// The installer's output was on screen. A failed run's tab closes with the sheet then.
+    @ObservationIgnored private var detailsShown = false
 
     /// How long the helper has to connect and register once the installer finished.
     static let connectTimeout: TimeInterval = 60
@@ -86,6 +91,12 @@ final class HelperSetupRun: Identifiable {
 
     var blockID: String? { entry?.blockID }
 
+    /// The sentence under "Connected". While iOS has notifications turned off for the app it
+    /// also says where to turn them on.
+    var connectedMessage: String {
+        SetupState.connectedMessage(name: name, notificationsAllowed: env?.push.permission != .denied)
+    }
+
     // MARK: Running
 
     func begin() {
@@ -96,8 +107,10 @@ final class HelperSetupRun: Identifiable {
     private func run() async {
         guard let server, let env else { return }
         let control = server.control
-        // iOS first: with notifications off for the app, nothing runs on the computer.
-        guard await env.push.enableForSetup() else { return send(.fail(.notificationsOff)) }
+        // An install is the person asking for notifications from this computer: the master
+        // switch and this computer go on, and iOS asks if it never did. Whatever iOS answers,
+        // the helper is installed.
+        await env.push.prepareForSetup(server.id)
         guard await waitOnline(server) else { return send(.fail(.interrupted)) }
 
         let version: JSONObject, creators: JSONObject
@@ -124,34 +137,20 @@ final class HelperSetupRun: Identifiable {
         // installer asks (`answerCodeRequest`).
         code = SetupCode.make()
 
-        // A tab left by an earlier run on this server is this app's own: close it first.
-        await HelperSetupCenter.closeTab(env.sessions.entry(server.id), on: server)
-        env.sessions.forget(server.id)
+        // A tab an earlier run on this server left in the app's list is this app's own: close it first.
+        for old in env.tabs.tabs(on: server.id) { await env.tabs.handle(.retry, old, on: server.id) }
 
-        let command = args.command(script: script)
-        let theme = env.theme()
-        var made: SetupSessions.Entry?
-        do {
-            let r = try await control.call("session.create", SetupBlock.session(command: command, theme: theme))
-            if let session = r.str("session_id"), let block = (r.arr("initial_windows").first?["block_ids"] as? [String])?.first {
-                made = SetupSessions.Entry(sessionID: session, blockID: block, windowID: nil, createdAt: Date())
-            }
-        } catch let e as RexError where e.code == "conflict" {
-            // The server is at its session limit: a tab in the session the app last showed.
-            if let host = env.shownSession(server),
-               let r = try? await control.call("session.new_window", SetupBlock.window(in: host, command: command, theme: theme)),
-               let window = r.str("window_id"), let block = (r["block_ids"] as? [Any])?.compactMap({ $0 as? String }).first {
-                made = SetupSessions.Entry(sessionID: host, blockID: block, windowID: window, createdAt: Date())
-            }
-        } catch {}
-        guard let made else { return send(.fail(.interrupted)) }
+        guard let made = await HelperSetupCenter.openTab(args.command(script: script), on: server, theme: env.theme(),
+                                                         shownSession: env.shownSession(server)) else {
+            return send(.fail(.interrupted))
+        }
         entry = made
-        env.sessions.record(made, for: server.id)
+        env.tabs.made(made, on: server.id)
         server.dropHiddenSessions()
         tab = (made.sessionID, made.blockID)
         if state.isFinished {
             // Cancelled while the tab was being made.
-            await cleanUp(closeBlockFirst: true)
+            await cleanUp(stopped: true)
             return
         }
         _ = try? await control.call("session.attach", ["session_id": made.sessionID])
@@ -186,7 +185,9 @@ final class HelperSetupRun: Identifiable {
                 // The exit code is what counts. If the event for it doesn't come, it is read.
                 if record.state == "done" || record.state == "error" { readExitSoon() }
             case "child_exited":
-                send(.exited(code: payload.int("exit_code") ?? -1))
+                let code = payload.int("exit_code") ?? -1
+                send(.exited(code: code))
+                tabEnded(.exited(code: code))
             default:
                 break
             }
@@ -236,8 +237,28 @@ final class HelperSetupRun: Identifiable {
 
     private func refuseCode() async {
         send(.codeRefused)
-        await cleanUp(closeBlockFirst: true)
+        await cleanUp(stopped: true)
         tab = nil
+    }
+
+    /// Something happened that may close the run's tab (`SetupSessionCloser.closes`): its
+    /// script ended well, or the person is done with a run that failed. The tab then closes at
+    /// once, whether or not the sheet is open, and the sheet offers no details any more.
+    private func tabEnded(_ reason: SetupSessionCloser.Reason) {
+        guard let server, let env, let entry, tab != nil, SetupSessionCloser.closes(reason) else { return }
+        tab = nil
+        state.handle(.tabClosed)
+        Task { await env.tabs.handle(reason, entry, on: server.id) }
+    }
+
+    /// The sheet shows the installer's output.
+    func showedDetails() { detailsShown = true }
+
+    /// The sheet went away without Done, Close or Stop. A run that failed keeps its tab for
+    /// "Show Details" in the computer's row, unless its details were already shown.
+    func sheetDismissed() {
+        guard state.error != nil else { return }
+        tabEnded(.dismissed(detailsShown: detailsShown))
     }
 
     private func readExitSoon() {
@@ -261,6 +282,7 @@ final class HelperSetupRun: Identifiable {
             let record = SetupRecord.find(in: status.arr("records"))
             let exitCode = process.obj("last_exit")?.int("exit_code")
             send(.caughtUp(record: record, exitCode: exitCode, gone: false))
+            if let exitCode { tabEnded(.exited(code: exitCode)) }
             // A request for the code that came while nobody listened, if the installer still waits.
             if let record, exitCode == nil { answerCodeRequest(record) }
         } catch let e as RexError where e.code.contains("not_found") {
@@ -322,6 +344,7 @@ final class HelperSetupRun: Identifiable {
         let before = state.phase
         state.handle(event)
         guard state.phase != before, let server else { return }
+        if state.isFinished { env?.finished(self) }
         // Step changes and the outcome, by server id. Never a name, an address or a value.
         switch state.phase {
         case .failed(let error):
@@ -377,16 +400,16 @@ final class HelperSetupRun: Identifiable {
     /// so the computer keeps what it had or has the new helper whole.
     func cancel() async {
         send(.cancel)
-        await cleanUp(closeBlockFirst: true)
+        await cleanUp(stopped: true)
     }
 
     /// Done, Close, or before another try: the tab on the computer closes and the run lets go of
     /// everything it held.
     func finish() async {
-        await cleanUp(closeBlockFirst: false)
+        await cleanUp(stopped: false)
     }
 
-    private func cleanUp(closeBlockFirst: Bool) async {
+    private func cleanUp(stopped: Bool) async {
         guard !cleaned else { return }
         cleaned = true
         work?.cancel()
@@ -395,11 +418,11 @@ final class HelperSetupRun: Identifiable {
         guard let server, let env else { return }
         env.push.setupEnded(server.id)
         code = nil
-        guard let entry, server.control.state == .connected else { return }
-        if closeBlockFirst {
-            _ = try? await server.control.call("block.close", ["session_id": entry.sessionID, "block_id": entry.blockID])
-        }
-        if await HelperSetupCenter.closeTab(entry, on: server) { env.sessions.forget(server.id) }
+        guard let entry, tab != nil else { return }
+        tab = nil
+        state.handle(.tabClosed)
+        // A close the server can't take now is tried again on its next connection.
+        await env.tabs.handle(stopped ? .cancel : .done, entry, on: server.id)
     }
 }
 
@@ -409,7 +432,21 @@ final class HelperSetupRun: Identifiable {
 @Observable
 final class HelperSetupCenter {
     /// The run whose sheet is up.
-    var active: HelperSetupRun?
+    var active: HelperSetupRun? {
+        didSet {
+            // The sheet went away by something other than its own buttons, which put the run
+            // away themselves before this.
+            if let old = oldValue, old !== active, parked[old.server?.id ?? UUID()] !== old { old.sheetDismissed() }
+        }
+    }
+    /// Runs that go on with their sheet closed, by server. A row in Settings shows where each
+    /// stands, and `show` brings its sheet back.
+    private(set) var parked: [UUID: HelperSetupRun] = [:]
+    /// How the last install on a server ended, when it failed, for that computer's row once the
+    /// sheet is closed. Kept while the app runs; the next install or a turned-off switch clears it.
+    private(set) var failures: [UUID: SetupError] = [:]
+    /// The install that waits for Settings or pairing to close before its sheet opens.
+    private(set) var pending: (server: UUID, kind: SetupState.Kind)?
     #if DEBUG
     /// `-simulateHelperSetup offer`: the offer page for a computer of this name.
     var simulatedOffer: String?
@@ -419,7 +456,16 @@ final class HelperSetupCenter {
     @ObservationIgnored private let prefs: Prefs
     @ObservationIgnored private let sessions: SetupSessions
     @ObservationIgnored private let fetcher: HelperReleaseFetcher
-    @ObservationIgnored private var pending: (server: UUID, kind: SetupState.Kind)?
+    /// Closes the tabs the installs made. Made on first use, since it calls back into `servers`.
+    @ObservationIgnored private lazy var tabs = SetupSessionCloser(sessions: sessions, server: SetupTabServer(
+        read: { [weak self] id, session in
+            guard let server = self?.servers().first(where: { $0.id == id }) else { return .noAnswer }
+            return await HelperSetupCenter.readTab(session, on: server)
+        },
+        close: { [weak self] id, what, entry in
+            guard let server = self?.servers().first(where: { $0.id == id }), server.control.state == .connected else { return false }
+            return await HelperSetupCenter.closeTab(what, entry, on: server)
+        }))
     /// The servers, the session on one the app shows, and whether another sheet is up. AppModel
     /// sets them.
     @ObservationIgnored var servers: () -> [ServerConnection] = { [] }
@@ -430,39 +476,35 @@ final class HelperSetupCenter {
         self.push = push
         self.prefs = prefs
         sessions = SetupSessions(defaults: defaults)
-        var chosen = fetcher
         #if DEBUG
-        // `-helperReleaseMirror <http://127.0.0.1:port>` (debug builds): read the release list from
-        // a copy of the release folders on this machine. The list is still checked against the
-        // built-in keys; the installer on the computer still downloads from the real address.
-        if chosen == nil, let mirror = defaults.string(forKey: "helperReleaseMirror"),
-           let root = URL(string: mirror), root.host == "127.0.0.1" || root.host == "localhost" {
-            chosen = HelperReleaseFetcher(transport: { url in
-                let path = url.absoluteString.replacingOccurrences(of: HelperRelease.base, with: "")
-                let (data, response) = try await URLSession.shared.data(from: root.appendingPathComponent(path))
-                guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= HelperRelease.maxDocument else {
-                    throw ReleaseFault.unreachable
-                }
-                return data
-            }, store: KeychainReleaseStore())
-        }
         // `-autoHelperSetup install|repair` (debug builds): start that on the first server to connect.
         autoStart = defaults.string(forKey: "autoHelperSetup").flatMap { $0 == "repair" ? .repair : ($0 == "install" ? .install : nil) }
         #endif
-        self.fetcher = chosen ?? HelperReleaseFetcher(store: KeychainReleaseStore())
+        self.fetcher = fetcher ?? .standard(defaults: defaults)
     }
 
     #if DEBUG
     @ObservationIgnored private var autoStart: SetupState.Kind?
     #endif
+    /// The block of the removal script's tab on each server where one runs.
+    @ObservationIgnored private var removing: [UUID: String] = [:]
+    /// The server whose unseen install is about to get its sheet back.
+    @ObservationIgnored private var showing: UUID?
+    /// The server whose install's sheet opens at the installer's output the next time it shows.
+    @ObservationIgnored private var detailsWanted: UUID?
 
     /// Wires a server to its installs: their events, and which sessions are the installer's.
     func attach(_ server: ServerConnection) {
         server.hiddenSessions = { [sessions, id = server.id] in sessions.hidden(id) }
         server.setupSignals = { [weak self, weak server] signal in
             guard let self, let server else { return }
-            if let run = self.active, run.server === server { run.receive(signal) }
-            if case .ready = signal { Task { await self.sweep(server) } }
+            self.run(for: server.id)?.receive(signal)
+            // Tabs the app left on this computer are closed: a failed install's when the app was
+            // killed with it open, and one whose close the server did not take.
+            if case .ready = signal {
+                let inUse = self.blocksInUse(on: server.id)
+                Task { await self.tabs.connected(server.id, inUse: inUse) }
+            }
             #if DEBUG
             if case .ready = signal, let kind = self.autoStart {
                 self.autoStart = nil
@@ -472,10 +514,83 @@ final class HelperSetupCenter {
         }
     }
 
-    /// An install for this server is on screen and not over.
+    /// The blocks of the tabs on a server that this app session still works with: its install's,
+    /// while it runs or while its failed run keeps the tab for "Show Details", and a running
+    /// removal's.
+    private func blocksInUse(on id: UUID) -> Set<String> {
+        var blocks: Set<String> = []
+        if let block = run(for: id)?.blockID { blocks.insert(block) }
+        if let block = removing[id] { blocks.insert(block) }
+        return blocks
+    }
+
+    /// The server's install: the one whose sheet is up, or one that goes on without its sheet.
+    func run(for id: UUID) -> HelperSetupRun? {
+        if let run = active, run.server?.id == id { return run }
+        return parked[id]
+    }
+
+    /// An install for this server is under way, or about to open its sheet.
     func isRunning(_ id: UUID) -> Bool {
-        guard let run = active, run.server?.id == id else { return false }
+        if pending?.server == id { return true }
+        guard let run = run(for: id) else { return false }
         return !run.state.isFinished
+    }
+
+    /// Closes the sheet and lets the install go on. Its row in Settings follows it from here.
+    func hide(_ run: HelperSetupRun) {
+        guard active === run, let id = run.server?.id else { return }
+        active = nil
+        if run.state.isFinished { ended(run) } else { parked[id] = run }
+    }
+
+    /// Brings back the sheet of an install that goes on without it, or that failed while its
+    /// sheet was closed. While Settings or pairing is up it waits for that sheet to close, as a
+    /// new install does. `details` opens the sheet at the installer's output.
+    func show(_ id: UUID, details: Bool = false) {
+        guard parked[id] != nil else { return }
+        showing = id
+        detailsWanted = details ? id : nil
+        if !sheetIsUp() { present() }
+    }
+
+    /// True once, for the sheet of a run that `show` asked to open at the installer's output.
+    func takeDetailsRequest(for run: HelperSetupRun) -> Bool {
+        guard let id = detailsWanted, run.server?.id == id else { return false }
+        detailsWanted = nil
+        return true
+    }
+
+    /// The person will install the helper on this computer by hand: its row says so.
+    func noteManual(_ id: UUID) {
+        guard !isRunning(id) else { return }
+        failures[id] = .manual
+    }
+
+    /// Stops the server's install, wherever it stands, and forgets how an earlier one ended.
+    func cancel(_ id: UUID) {
+        if pending?.server == id { pending = nil }
+        failures[id] = nil
+        guard let run = run(for: id) else { return }
+        if active === run { active = nil }
+        parked[id] = nil
+        Task { await run.cancel() }
+    }
+
+    /// A run reached its end. One whose sheet is closed is put away here, since nobody will tap
+    /// Done or Close for it; how it ended stays for the row. A failed one keeps its tab, so
+    /// "Show Details" in the row can bring its sheet and the installer's output back; the next
+    /// install, Close in that sheet, or the computer's switch going off puts it away.
+    private func ended(_ run: HelperSetupRun) {
+        guard let id = run.server?.id else { return }
+        failures[id] = run.state.error
+        guard active !== run else { return }
+        if run.state.error != nil, run.tab != nil {
+            parked[id] = run
+            return
+        }
+        parked[id] = nil
+        Task { await run.finish() }
     }
 
     /// Whether to offer installing the helper on a connected server.
@@ -497,7 +612,7 @@ final class HelperSetupCenter {
     /// Called when Settings or pairing has closed. Pairing opened from Settings closes both at
     /// once, so the install sheet waits a moment for the last of them to be off screen.
     func presentPending() {
-        guard pending != nil else { return }
+        guard pending != nil || showing != nil else { return }
         Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if !sheetIsUp() { present() }
@@ -505,9 +620,17 @@ final class HelperSetupCenter {
     }
 
     private func present() {
+        if let id = showing {
+            showing = nil
+            if active == nil, let run = parked.removeValue(forKey: id) { active = run }
+            return
+        }
         guard let (id, kind) = pending, active == nil else { return }
         pending = nil
         guard let server = servers().first(where: { $0.id == id }) else { return }
+        // One install per computer: the new one takes the place of one that went on unseen.
+        if let old = parked.removeValue(forKey: id) { Task { await old.cancel() } }
+        failures[id] = nil
         let run = HelperSetupRun(server: server, kind: kind, env: environment)
         active = run
         run.begin()
@@ -518,6 +641,7 @@ final class HelperSetupCenter {
         guard let server = run.server, active === run else { return }
         Task {
             await run.finish()
+            failures[server.id] = nil
             let next = HelperSetupRun(server: server, kind: kind, env: environment)
             active = next
             next.begin()
@@ -527,31 +651,126 @@ final class HelperSetupCenter {
     /// The sheet closed: Done, Close, or Stop.
     func close(_ run: HelperSetupRun, cancelled: Bool) {
         if active === run { active = nil }
+        if cancelled, let id = run.server?.id { failures[id] = nil }
         Task { cancelled ? await run.cancel() : await run.finish() }
     }
 
     private var environment: HelperSetupRun.Environment {
-        HelperSetupRun.Environment(push: push, fetcher: fetcher, sessions: sessions, theme: { [prefs] in prefs.theme },
-                                   script: { SetupScript.bundled() }, shownSession: { [weak self] in self?.shownSession($0) })
+        HelperSetupRun.Environment(push: push, fetcher: fetcher, tabs: tabs, theme: { [prefs] in prefs.theme },
+                                   script: { SetupScript.bundled() }, shownSession: { [weak self] in self?.shownSession($0) },
+                                   finished: { [weak self] in self?.ended($0) })
     }
 
-    /// Closes a tab this app recorded opening and that is left over: more than an hour old and
-    /// not the run on screen. A tab the app didn't record is never touched.
-    func sweep(_ server: ServerConnection) async {
-        guard let entry = sessions.stale(server.id, activeBlock: active?.server === server ? active?.blockID : nil) else { return }
-        if await Self.closeTab(entry, on: server) { sessions.forget(server.id) }
+    // MARK: Removing the helper
+
+    /// How long the remove script gets. It waits up to 30 s by itself for a helper update that
+    /// is under way.
+    static let removeTimeout: TimeInterval = 90
+
+    /// Runs the installer script in its remove mode on a server, in a tab of its own, as an
+    /// install runs it, and closes the tab. The script's exit code; nil when it could not run
+    /// there or did not finish in time.
+    func remove(on server: ServerConnection) async -> Int? {
+        let control = server.control
+        guard control.state == .connected, !isRunning(server.id),
+              let version = try? await control.call("server.version"),
+              let creators = try? await control.call("block_creator.list"),
+              SetupBlock.supported(version: version, creators: creators),
+              let script = SetupScript.bundled() else { return nil }
+        // A tab an earlier run on this server left in the app's list is this app's own: close it first.
+        for old in tabs.tabs(on: server.id) { await tabs.handle(.retry, old, on: server.id) }
+        guard let entry = await Self.openTab(SetupArgs.removeCommand(script: script), on: server, theme: prefs.theme,
+                                             shownSession: shownSession(server)) else { return nil }
+        tabs.made(entry, on: server.id)
+        // A reconnect while the script runs leaves its tab alone.
+        removing[server.id] = entry.blockID
+        defer { removing[server.id] = nil }
+        server.dropHiddenSessions()
+        let code = await Self.exitCode(of: entry, on: server, within: Self.removeTimeout)
+        // A script that ended well closes its tab at once. One that failed keeps it until the
+        // next try on this computer.
+        if let code { await tabs.handle(.exited(code: code), entry, on: server.id) }
+        return code
     }
 
-    /// Closes a recorded tab: its session when the app made one for it, else only its window.
-    /// True when the server did it or no longer has it.
-    @discardableResult
-    static func closeTab(_ entry: SetupSessions.Entry?, on server: ServerConnection) async -> Bool {
-        guard let entry else { return true }
+    /// Follows a script's tab until its program exits: its progress records go to the log, and
+    /// its exit code is the answer. Nil when the tab is gone or the time is up.
+    private static func exitCode(of entry: SetupSessions.Entry, on server: ServerConnection, within limit: TimeInterval) async -> Int? {
+        let control = server.control
+        let end = Date().addingTimeInterval(limit)
+        var step = ""
+        while Date() < end, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            // A dropped connection leaves the script running; it is read again after the reconnect.
+            guard control.state == .connected else { continue }
+            do {
+                let status = try await control.blockCall("com.superlogical.terminal.program_status", session: entry.sessionID, block: entry.blockID)
+                if let token = SetupRecord.find(in: status.arr("records"))?.token, token != step {
+                    step = token
+                    // The step by server id. Never a name, an address or a value.
+                    log.notice("remove \(server.id.uuidString, privacy: .public): \(token, privacy: .public)")
+                }
+                let process = try await control.blockCall("com.superlogical.terminal.process", session: entry.sessionID, block: entry.blockID)
+                if let code = process.obj("last_exit")?.int("exit_code") { return code }
+            } catch let e as RexError where e.code.contains("not_found") {
+                return nil
+            } catch {
+                // No answer this time: the next round asks again.
+            }
+        }
+        return nil
+    }
+
+    private static let log = Logger(subsystem: "dev.abrahamgonzalez.rexduo", category: "helper-setup")
+
+    /// Opens the tab a script runs in: a session of its own, or, on a server at its session
+    /// limit, a tab in the session the app last showed. Nil when the server made neither.
+    static func openTab(_ command: [String], on server: ServerConnection, theme: TermTheme, shownSession: String?) async -> SetupSessions.Entry? {
+        let control = server.control
         do {
-            if let window = entry.windowID {
-                _ = try await server.control.call("session.close_window", ["session_id": entry.sessionID, "window_id": window])
-            } else {
+            let r = try await control.call("session.create", SetupBlock.session(command: command, theme: theme))
+            if let session = r.str("session_id"), let block = (r.arr("initial_windows").first?["block_ids"] as? [String])?.first {
+                return SetupSessions.Entry(sessionID: session, blockID: block, windowID: nil, createdAt: Date())
+            }
+        } catch let e as RexError where e.code == "conflict" {
+            if let host = shownSession,
+               let r = try? await control.call("session.new_window", SetupBlock.window(in: host, command: command, theme: theme)),
+               let window = r.str("window_id"), let block = (r["block_ids"] as? [Any])?.compactMap({ $0 as? String }).first {
+                return SetupSessions.Entry(sessionID: host, blockID: block, windowID: window, createdAt: Date())
+            }
+        } catch {}
+        return nil
+    }
+
+    /// What the server says a session holds now (`session.view`), before anything of a recorded
+    /// tab is closed.
+    static func readTab(_ session: String, on server: ServerConnection) async -> SetupTabServer.Read {
+        guard server.control.state == .connected else { return .noAnswer }
+        do {
+            let r = try await server.control.call("session.view", ["session_id": session])
+            let view = SessionView(r.obj("view") ?? r)
+            return view.sessionID == session ? .view(view) : .unreadable
+        } catch let e as RexError where e.code != "client" {
+            // The server's own answer: it has no such session, or will not show it.
+            return .unreadable
+        } catch {
+            return .noAnswer
+        }
+    }
+
+    /// Closes what `SetupTabClose` decided on for a recorded tab. True when the server did it or
+    /// no longer has it.
+    static func closeTab(_ what: SetupTabClose, _ entry: SetupSessions.Entry, on server: ServerConnection) async -> Bool {
+        do {
+            switch what {
+            case .session:
                 _ = try await server.control.call("session.destroy", ["session_id": entry.sessionID])
+            case .window(let window):
+                _ = try await server.control.call("session.close_window", ["session_id": entry.sessionID, "window_id": window])
+            case .block:
+                _ = try await server.control.call("block.close", ["session_id": entry.sessionID, "block_id": entry.blockID])
+            case .nothing:
+                break
             }
             return true
         } catch let e as RexError {

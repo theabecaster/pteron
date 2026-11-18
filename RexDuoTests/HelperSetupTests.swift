@@ -45,7 +45,7 @@ struct HelperSetupTests {
     }
 
     private func release(keys: [String] = [HelperKeys.primary, HelperKeys.recovery]) -> VerifiedRelease {
-        VerifiedRelease(version: ReleaseVersion("0.4.0")!, assets: [
+        VerifiedRelease(version: ReleaseVersion("0.4.0")!, minVersion: ReleaseVersion("0.3.0")!, assets: [
             .mac: ReleaseAsset(sha256: Self.hash, size: 10), .linuxX64: ReleaseAsset(sha256: Self.hash, size: 11),
             .linuxArm64: ReleaseAsset(sha256: Self.hash, size: 12),
         ], expiresAt: .distantFuture, keys: keys)
@@ -321,9 +321,9 @@ struct HelperSetupTests {
         let command = args.command(script: "script")
         let theme = ThemeStore.fallback
         let payload = SetupBlock.session(command: command, theme: theme)
-        #expect(payload.str("label") == "Rex DUO Helper setup")
+        #expect(payload.str("label") == "Rex DUO Beacon setup")
         let window = try #require(payload.arr("initial_windows").first)
-        #expect(window.str("window_label") == "Rex DUO Helper setup")
+        #expect(window.str("window_label") == "Rex DUO Beacon setup")
         let block = try #require(window.obj("layout")?.obj("block"))
         #expect(block.str("flavor") == "com.superlogical.terminal.shell")
         #expect(block.str("label") == "rexduo-setup")
@@ -530,11 +530,11 @@ struct HelperSetupTests {
         #expect(s.phase == .running && s.hasTab)
         s.handle(record("download", progress: 30))
         #expect(s.step == .downloading && s.progress == 30)
-        #expect(s.detail(.downloading, name: "studio") == "Rex DUO Helper 0.4.0")
+        #expect(s.detail(.downloading, name: "studio") == "Rex DUO Beacon 0.4.0")
         s.handle(record("verify"))
         #expect(s.step == .verifying && s.progress == nil)
         #expect(s.mark(.downloading) == .done && s.mark(.verifying) == .current && s.mark(.installing) == .pending)
-        #expect(s.detail(.verifying, name: "studio") == "Checking it's the real Rex DUO Helper…")
+        #expect(s.detail(.verifying, name: "studio") == "Checking the download is the real Rex DUO Beacon…")
         // A token the app doesn't know changes nothing, and steps never go back.
         s.handle(record("defragment"))
         s.handle(record("download"))
@@ -550,7 +550,7 @@ struct HelperSetupTests {
         code.handle(record("verify"))
         code.handle(record("code"))
         #expect(code.step == .installing && code.human == nil)
-        #expect(code.detail(.installing, name: "studio") == "Putting it in place on studio…")
+        #expect(code.detail(.installing, name: "studio") == "Installing Beacon on studio…")
         // Asked for before the download, it leaves the rows where they are.
         var first = state()
         first.handle(record("code"))
@@ -639,7 +639,7 @@ struct HelperSetupTests {
         failed.handle(.helperRegistered)
         failed.handle(.exited(code: 14))
         #expect(failed.phase == .failed(.verify))
-        #expect(SetupState.connectedMessage(name: "studio") == "studio will notify this iPhone when an agent needs you.")
+        #expect(SetupState.connectedMessage(name: "studio") == "studio will notify this iPhone when an agent finishes or needs you.")
     }
 
     /// The proof is asked for once the installer's `start` step is over, and not before.
@@ -684,7 +684,7 @@ struct HelperSetupTests {
         s.handle(.helperRegistered)
         #expect(s.phase == .failed(.identityChanged))
         #expect(SetupError.identityChanged.message(name: "studio")
-            == "Rex DUO Helper on studio changed. Only trust it if you reinstalled the helper there.")
+            == "Rex DUO Beacon on studio has changed. Only trust Beacon if you reinstalled it on studio.")
         #expect(SetupError.identityChanged.actions(hasTab: true) == [.showDetails, .close])
 
         // Also after an answer without one, and while the installer still runs.
@@ -743,7 +743,7 @@ struct HelperSetupTests {
         #expect(s.hasTab)
         s.handle(.codeRefused)
         #expect(s.phase == .failed(.release) && !s.hasTab)
-        #expect(s.error?.message(name: "studio") == "Rex DUO can't get the helper right now. Try again later.")
+        #expect(s.error?.message(name: "studio") == "Rex DUO can't get Beacon right now. Try again later.")
         #expect(s.error?.actions(hasTab: s.hasTab) == [.tryAgain, .close])
         s.handle(.exited(code: 0))
         s.handle(.proof(.valid))
@@ -752,18 +752,18 @@ struct HelperSetupTests {
 
     @Test func exitCodesMapToTheirSentences() {
         let table: [(Int, SetupError, String)] = [
-            (10, .release, "Rex DUO can't get the helper right now. Try again later."),
-            (11, .unsupportedComputer, "Rex DUO Helper isn't available for this computer yet."),
-            (12, .noDownloader, "studio needs curl to download the helper. Install curl there, then try again."),
-            (13, .network, "studio couldn't download the helper. Check its internet connection and try again."),
+            (10, .release, "Rex DUO can't get Beacon right now. Try again later."),
+            (11, .unsupportedComputer, "Rex DUO Beacon isn't available for this computer yet."),
+            (12, .noDownloader, "studio needs curl to download Rex DUO Beacon. Install curl on studio, then try again."),
+            (13, .network, "studio couldn't download Rex DUO Beacon. Check the internet connection on studio, then try again."),
             (14, .verify, "The download didn't pass its security check, so nothing was installed. Try again later."),
-            (15, .write, "studio couldn't save the helper. Check it has free space, then try again."),
+            (15, .write, "studio couldn't save Rex DUO Beacon. Free up space on studio, then try again."),
             (16, .busy, "Another install is already running on studio."),
-            (17, .notStarted, "The helper is installed but didn't start."),
+            (17, .notStarted, "Rex DUO Beacon is installed but didn't start."),
             (18, .noGUI, "Log in on studio, then try again."),
-            (19, .noSystemd, "studio doesn't start background services the usual way. Show details says how to start the helper."),
-            (20, .appManagement, "Your Mac didn't let Rex replace the old helper. Drag Rex DUO Helper from Applications to the Trash, then try again."),
-            (21, .oldMacOS, "Rex DUO Helper needs macOS 14 or later."),
+            (19, .noSystemd, "studio doesn't start background services the usual way. Show details says how to start Rex DUO Beacon."),
+            (20, .appManagement, "studio didn't let Rex replace the old Rex DUO Beacon. On studio, drag Rex DUO Beacon from Applications to the Trash, then try again."),
+            (21, .oldMacOS, "Rex DUO Beacon needs macOS 14 or later."),
             (-1, .interrupted, "The install stopped before it finished."),
             (1, .interrupted, "The install stopped before it finished."),
             (137, .interrupted, "The install stopped before it finished."),
@@ -779,7 +779,7 @@ struct HelperSetupTests {
         }
         #expect(SetupError(exitCode: 0) == nil)
         #expect(SetupError.connectionLost(name: "studio")
-            == "Lost the connection to studio. The install keeps going there, and Rex DUO picks it up when it reconnects.")
+            == "Lost the connection to studio. The install keeps going on studio, and Rex DUO catches up when it reconnects.")
         #expect(SetupError.notificationsOff.message(name: "studio") == "Notifications are off for Rex DUO.")
     }
 
@@ -951,14 +951,14 @@ struct HelperSetupTests {
     @Test func theOfferSaysWhatThePlanSays() {
         #expect(HelperOfferCard.title("studio") == "Get notifications from studio?")
         #expect(HelperOfferCard.message("studio")
-            == "Rex DUO Helper runs on studio and tells this iPhone when an agent needs you, even while Rex DUO is closed.")
-        #expect(HelperOfferCard.footnote("studio") == "Rex DUO opens a tab on studio to install it. Nothing runs as an administrator.")
+            == "Rex DUO Beacon runs on studio and notifies this iPhone when an agent finishes or needs you, even while Rex DUO is closed.")
+        #expect(HelperOfferCard.footnote("studio") == "Rex DUO opens a tab on studio to install Beacon. Nothing runs as an administrator.")
         #expect(HelperOfferCard.skippedLine("studio")
-            == "You won't get notifications from studio while Rex DUO is closed. You can install the helper anytime in Settings → Notifications.")
+            == "You won't get notifications from studio while Rex DUO is closed. You can install Rex DUO Beacon anytime in Settings → Notifications.")
         #expect(HelperOfferCard.skipHold == 3)
         #expect(PasswordCard.title == "Keep notifications coming after you log out?")
         #expect(PasswordCard.message(name: "studio", account: "sam")
-            == "studio stops the helper when you log out unless you allow it to keep running. That needs the password for sam on studio.")
+            == "studio stops Rex DUO Beacon when you log out, unless you allow Beacon to keep running. Allowing that takes the password for sam on studio.")
         #expect(PasswordCard.wrongLine == "That password didn't work. Try again, or choose Not now.")
         #expect(PasswordCard.aside("studio") == "Your password goes straight to studio and isn't saved on this iPhone.")
     }
@@ -987,33 +987,373 @@ struct HelperSetupTests {
         #expect(SetupLayout.decide(size: CGSize(width: 669, height: 951), division: flat) == .sideBySide(steps: 335))
     }
 
-    @Test func onlyTabsTheAppRecordedAreEverClosed() {
+    private func sessions() -> (SetupSessions, UserDefaults, String) {
         let suite = "helper-setup-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
+        return (SetupSessions(defaults: defaults), defaults, suite)
+    }
+
+    @Test func onlyTabsTheAppRecordedAreEverClosed() {
+        let (sessions, defaults, suite) = sessions()
         defer { defaults.removePersistentDomain(forName: suite) }
-        let sessions = SetupSessions(defaults: defaults)
         let server = UUID(), other = UUID()
         let made = Date(timeIntervalSince1970: 1_800_000_000)
-        #expect(sessions.entry(server) == nil)
-        #expect(sessions.stale(server, activeBlock: nil, now: made.addingTimeInterval(7200)) == nil)
+        #expect(sessions.entries(server).isEmpty)
+        #expect(sessions.leftOver(server, inUse: []).isEmpty)
         #expect(sessions.hidden(server).isEmpty)
 
         let own = SetupSessions.Entry(sessionID: "session:setup", blockID: "block:1", windowID: nil, createdAt: made)
         sessions.record(own, for: server)
-        #expect(SetupSessions(defaults: defaults).entry(server) == own)
+        sessions.record(own, for: server)
+        #expect(SetupSessions(defaults: defaults).entries(server) == [own])
         #expect(sessions.hidden(server) == ["session:setup"])
         #expect(sessions.hidden(other).isEmpty)
-        // Not yet an hour old, then older, then the run on screen.
-        #expect(sessions.stale(server, activeBlock: nil, now: made.addingTimeInterval(3599)) == nil)
-        #expect(sessions.stale(server, activeBlock: nil, now: made.addingTimeInterval(3601)) == own)
-        #expect(sessions.stale(server, activeBlock: "block:1", now: made.addingTimeInterval(3601)) == nil)
-        #expect(sessions.stale(other, activeBlock: nil, now: made.addingTimeInterval(3601)) == nil)
+        // Left over unless a run in this app session uses it, and only on its own computer.
+        #expect(sessions.leftOver(server, inUse: []) == [own])
+        #expect(sessions.leftOver(server, inUse: ["block:9"]) == [own])
+        #expect(sessions.leftOver(server, inUse: ["block:1"]).isEmpty)
+        #expect(sessions.leftOver(other, inUse: []).isEmpty)
+
+        // The list keeps every tab that is still open: a second run's tab does not replace the first.
+        let second = SetupSessions.Entry(sessionID: "session:setup2", blockID: "block:3", windowID: nil, createdAt: made)
+        sessions.record(second, for: server)
+        #expect(sessions.entries(server) == [own, second] && sessions.hidden(server) == ["session:setup", "session:setup2"])
 
         // A tab in one of the user's sessions: that session stays in the sidebar.
         let borrowed = SetupSessions.Entry(sessionID: "session:work", blockID: "block:2", windowID: "window:9", createdAt: made)
         sessions.record(borrowed, for: other)
         #expect(sessions.hidden(other).isEmpty)
-        sessions.forget(server)
-        #expect(sessions.entry(server) == nil && sessions.entry(other) == borrowed)
+        sessions.forget(own, for: server)
+        sessions.forget(second, for: server)
+        #expect(sessions.entries(server).isEmpty && sessions.entries(other) == [borrowed])
+        sessions.forget(borrowed, for: other)
+        #expect(defaults.data(forKey: "helperSetup.sessions") == nil)
+    }
+
+    @Test func aTabRecordedBeforeThereWasAListIsStillTheApps() throws {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = UUID()
+        let own = SetupSessions.Entry(sessionID: "session:setup", blockID: "block:1", windowID: nil,
+                                      createdAt: Date(timeIntervalSince1970: 1_800_000_000))
+        defaults.set(try JSONEncoder().encode([server.uuidString: own]), forKey: "helperSetup.sessions")
+        #expect(sessions.entries(server) == [own] && sessions.contains(own, for: server))
+    }
+
+    // MARK: The setup session closes when it is done
+
+    /// The control API's side of closing a tab: what each session holds, what was read, what
+    /// was asked to close, and whether the server answers.
+    @MainActor
+    final class Server {
+        /// What a session holds: its windows in order, each with its blocks.
+        var sessions: [String: [(window: String, blocks: [String])]] = [:]
+        /// Every session the closer read before a close, in order.
+        var read: [String] = []
+        /// The tabs something was asked to close of, in order.
+        var asked: [SetupSessions.Entry] = []
+        /// What the server closed, in order.
+        var did: [SetupTabClose] = []
+        /// The tabs the server closed.
+        var closed: [SetupSessions.Entry] = []
+        /// The server answers at all. Off: the connection is gone.
+        var answers = true
+        /// The server answers a read with something that is no view of the session.
+        var garbles = false
+
+        /// The session as the app's tab left it: one window with the tab's block, and for a tab
+        /// in one of the person's sessions, the person's own window before it.
+        func hold(_ tab: SetupSessions.Entry) {
+            let own = (window: tab.windowID ?? "window:1", blocks: [tab.blockID])
+            sessions[tab.sessionID] = tab.windowID == nil ? [own] : [(window: "window:mine", blocks: ["block:mine"]), own]
+        }
+
+        func view(_ session: String) -> SessionView? {
+            guard let windows = sessions[session] else { return nil }
+            return SessionView(["session_id": session, "windows": windows.map { w in
+                ["window_id": w.window, "layers": [["layer_id": "layer", "blocks": w.blocks.map { ["block_id": $0] }] as JSONObject]] as JSONObject
+            }])
+        }
+    }
+
+    private func closer(_ sessions: SetupSessions, _ server: Server) -> SetupSessionCloser {
+        // Each of the stock tabs is on the server as the app made it, unless the test set it up.
+        for tab in Self.tabs where server.sessions[tab.sessionID] == nil { server.hold(tab) }
+        return SetupSessionCloser(sessions: sessions, server: SetupTabServer(
+            read: { _, session in
+                guard server.answers else { return .noAnswer }
+                server.read.append(session)
+                if server.garbles { return .unreadable }
+                return server.view(session).map { .view($0) } ?? .unreadable
+            },
+            close: { _, what, entry in
+                server.asked.append(entry)
+                guard server.answers else { return false }
+                server.did.append(what)
+                server.closed.append(entry)
+                switch what {
+                case .session: server.sessions[entry.sessionID] = nil
+                case .window(let id): server.sessions[entry.sessionID]?.removeAll { $0.window == id }
+                case .block:
+                    if let i = server.sessions[entry.sessionID]?.firstIndex(where: { $0.blocks.contains(entry.blockID) }) {
+                        server.sessions[entry.sessionID]?[i].blocks.removeAll { $0 == entry.blockID }
+                    }
+                case .nothing: break
+                }
+                return true
+            }))
+    }
+
+    /// The tab an install or a removal makes: a session of its own, or, on a server at its
+    /// session limit, a window in one of the person's sessions.
+    private static let tabs = [
+        SetupSessions.Entry(sessionID: "session:install", blockID: "block:1", windowID: nil, createdAt: Date(timeIntervalSince1970: 1_800_000_000)),
+        SetupSessions.Entry(sessionID: "session:remove", blockID: "block:2", windowID: nil, createdAt: Date(timeIntervalSince1970: 1_800_000_000)),
+        SetupSessions.Entry(sessionID: "session:work", blockID: "block:3", windowID: "window:9", createdAt: Date(timeIntervalSince1970: 1_800_000_000)),
+    ]
+
+    @Test func aScriptThatEndedWellClosesItsTabAtOnceAndOnlyOnce() async {
+        // The same for an install's tab, a removal's, and a tab in one of the person's sessions.
+        for tab in Self.tabs {
+            let (sessions, defaults, suite) = sessions()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let server = Server(), id = UUID()
+            let closer = closer(sessions, server)
+            closer.made(tab, on: id)
+            #expect(await closer.handle(.exited(code: 0), tab, on: id))
+            #expect(server.closed == [tab] && sessions.entries(id).isEmpty)
+            // Done in the sheet, the sheet going away, the next connection: nothing is left to close.
+            await closer.handle(.done, tab, on: id)
+            await closer.handle(.dismissed(detailsShown: true), tab, on: id)
+            await closer.handle(.cancel, tab, on: id)
+            await closer.connected(id, inUse: [])
+            #expect(server.asked == [tab])
+        }
+    }
+
+    @Test func aScriptThatFailedKeepsItsTabUntilThePersonIsDoneWithIt() async {
+        for last in [SetupSessionCloser.Reason.done, .retry, .cancel, .dismissed(detailsShown: true)] {
+            let (sessions, defaults, suite) = sessions()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let server = Server(), id = UUID(), tab = Self.tabs[0]
+            let closer = closer(sessions, server)
+            closer.made(tab, on: id)
+            // Any exit code but 0, and the sheet closing before its details were looked at.
+            for code in [1, 10, 15, 16, 21, -1] { #expect(await closer.handle(.exited(code: code), tab, on: id) == false) }
+            #expect(await closer.handle(.dismissed(detailsShown: false), tab, on: id) == false)
+            // The run still holds the tab for "Show details": a reconnect leaves it alone.
+            await closer.connected(id, inUse: [tab.blockID])
+            #expect(server.asked.isEmpty && sessions.entries(id) == [tab])
+
+            #expect(await closer.handle(last, tab, on: id))
+            await closer.handle(.done, tab, on: id)
+            #expect(server.asked == [tab] && sessions.entries(id).isEmpty)
+        }
+        #expect(SetupSessionCloser.closes(.exited(code: 0)) && !SetupSessionCloser.closes(.exited(code: 15)))
+        #expect(!SetupSessionCloser.closes(.dismissed(detailsShown: false)))
+    }
+
+    @Test func aSessionOfTheSameNameWithAnotherIDIsNeverClosed() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = Server(), id = UUID(), tab = Self.tabs[0]
+        let closer = closer(sessions, server)
+        closer.made(tab, on: id)
+        // Another "Rex DUO Beacon setup" session on the computer: the app has no record of making it.
+        let stranger = SetupSessions.Entry(sessionID: "session:other", blockID: "block:9", windowID: nil, createdAt: tab.createdAt)
+        for reason in [SetupSessionCloser.Reason.exited(code: 0), .done, .retry, .cancel, .dismissed(detailsShown: true)] {
+            #expect(await closer.handle(reason, stranger, on: id) == false)
+        }
+        // Nor the app's own tab on another computer.
+        #expect(await closer.handle(.done, tab, on: UUID()) == false)
+        #expect(server.asked.isEmpty && sessions.entries(id) == [tab])
+        // On a connection the app's own tab closes, and the stranger is still not asked for:
+        // the list holds ids, and nothing is ever looked up by name.
+        await closer.connected(id, inUse: [])
+        await closer.connected(UUID(), inUse: [])
+        #expect(server.asked == [tab] && !server.asked.contains(where: stranger.isSame) && sessions.entries(id).isEmpty)
+        #expect(SetupBlock.label == "Rex DUO Beacon setup")
+    }
+
+    @Test func aTabLeftFromAnEarlierRunOfTheAppClosesOnTheNextConnection() async {
+        // The app was killed while a failed install's tab was open: only the stored list knows of it.
+        for tab in Self.tabs {
+            let (sessions, defaults, suite) = sessions()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let server = Server(), id = UUID(), elsewhere = UUID()
+            sessions.record(tab, for: id)
+            sessions.record(Self.tabs[1], for: elsewhere)
+            // The app starts again: a new closer over the same stored list.
+            let closer = closer(SetupSessions(defaults: defaults), server)
+            await closer.connected(id, inUse: [])
+            #expect(server.asked == [tab] && server.closed == [tab] && sessions.entries(id).isEmpty)
+            // Closed once: the next connections find nothing. Another computer's tab waits for its own.
+            await closer.connected(id, inUse: [])
+            await closer.connected(id, inUse: [])
+            #expect(server.asked == [tab] && sessions.entries(elsewhere) == [Self.tabs[1]])
+        }
+    }
+
+    @Test func aStoredTabTheComputerNoLongerHasLeavesTheListWithoutAnError() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = Server(), id = UUID(), tab = Self.tabs[0]
+        sessions.record(tab, for: id)
+        let closer = closer(sessions, server)
+        // The computer restarted, or somebody closed the session there.
+        server.sessions[tab.sessionID] = nil
+        await closer.connected(id, inUse: [])
+        #expect(server.read == [tab.sessionID] && server.asked.isEmpty && sessions.entries(id).isEmpty)
+        await closer.connected(id, inUse: [])
+        #expect(server.read == [tab.sessionID])
+    }
+
+    // MARK: A tab is read before it is closed
+
+    @Test func aSessionThatHoldsOnlyTheAppsBlockIsDestroyed() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = Server(), id = UUID(), tab = Self.tabs[0]
+        let closer = closer(sessions, server)
+        closer.made(tab, on: id)
+        #expect(await closer.handle(.done, tab, on: id))
+        #expect(server.read == [tab.sessionID] && server.did == [.session] && server.sessions[tab.sessionID] == nil)
+        #expect(sessions.entries(id).isEmpty)
+    }
+
+    @Test func aSessionIDThatNoLongerHoldsTheAppsBlockIsLeftAlone() async {
+        // The same for every way a tab closes: the script ending well, Done, Retry, Cancel, the
+        // sheet going away, and a tab left over on a connection.
+        let reasons: [SetupSessionCloser.Reason?] = [.exited(code: 0), .done, .retry, .cancel, .dismissed(detailsShown: true), nil]
+        for reason in reasons {
+            for tab in Self.tabs {
+                let (sessions, defaults, suite) = sessions()
+                defer { defaults.removePersistentDomain(forName: suite) }
+                let server = Server(), id = UUID()
+                let closer = closer(sessions, server)
+                closer.made(tab, on: id)
+                // The id now names a session with other blocks in it, and the tab's block is not one.
+                server.sessions[tab.sessionID] = [(window: tab.windowID ?? "window:1", blocks: ["block:theirs"]), (window: "window:2", blocks: ["block:other"])]
+                if let reason { await closer.handle(reason, tab, on: id) } else { await closer.connected(id, inUse: []) }
+                #expect(server.read == [tab.sessionID] && server.asked.isEmpty && server.did.isEmpty)
+                #expect(server.sessions[tab.sessionID]?.count == 2 && sessions.entries(id).isEmpty)
+            }
+        }
+    }
+
+    @Test func aSessionThatHoldsMoreLosesOnlyTheAppsBlock() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let id = UUID(), tab = Self.tabs[0]
+
+        // Another block beside the app's, in the same window: only the app's block closes.
+        var server = Server()
+        var closer = closer(sessions, server)
+        closer.made(tab, on: id)
+        server.sessions[tab.sessionID] = [(window: "window:1", blocks: [tab.blockID, "block:other"])]
+        #expect(await closer.handle(.cancel, tab, on: id))
+        #expect(server.did == [.block] && server.sessions[tab.sessionID]?.first?.blocks == ["block:other"] && sessions.entries(id).isEmpty)
+
+        // Another window beside the app's: the app's window closes, and the session stays.
+        server = Server()
+        closer = self.closer(sessions, server)
+        closer.made(tab, on: id)
+        server.sessions[tab.sessionID] = [(window: "window:1", blocks: [tab.blockID]), (window: "window:2", blocks: ["block:other"])]
+        #expect(await closer.handle(.done, tab, on: id))
+        #expect(server.did == [.window("window:1")] && server.sessions[tab.sessionID]?.map(\.window) == ["window:2"])
+
+        // A tab in one of the person's sessions: its window, or its block when the window holds more.
+        let borrowed = Self.tabs[2]
+        server = Server()
+        closer = self.closer(sessions, server)
+        closer.made(borrowed, on: id)
+        await closer.connected(id, inUse: [])
+        #expect(server.did == [.window("window:9")] && server.sessions[borrowed.sessionID]?.map(\.window) == ["window:mine"])
+        server = Server()
+        closer = self.closer(sessions, server)
+        closer.made(borrowed, on: id)
+        server.sessions[borrowed.sessionID] = [(window: "window:9", blocks: ["block:mine", borrowed.blockID])]
+        await closer.connected(id, inUse: [])
+        #expect(server.did == [.block] && server.sessions[borrowed.sessionID]?.first?.blocks == ["block:mine"])
+        // Left alone in its session, such a tab still closes as a window: the session is the person's.
+        #expect(SetupTabClose.decide(borrowed, view: Server().view("none")) == .nothing)
+        let alone = Server()
+        alone.sessions[borrowed.sessionID] = [(window: "window:9", blocks: [borrowed.blockID])]
+        #expect(SetupTabClose.decide(borrowed, view: alone.view(borrowed.sessionID)) == .window("window:9"))
+    }
+
+    @Test func aReadThatFailsClosesNothing() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = Server(), id = UUID(), tab = Self.tabs[0]
+        let closer = closer(sessions, server)
+        closer.made(tab, on: id)
+        // No answer: nothing is closed, and the tab waits in the list for the next connection.
+        server.answers = false
+        #expect(await closer.handle(.done, tab, on: id) == false)
+        #expect(server.asked.isEmpty && sessions.entries(id) == [tab])
+        // An answer that is no view of the session: nothing is closed, and the entry is dropped.
+        server.answers = true
+        server.garbles = true
+        #expect(await closer.handle(.done, tab, on: id))
+        #expect(server.asked.isEmpty && server.sessions[tab.sessionID] != nil && sessions.entries(id).isEmpty)
+        // A view of another session than the one asked for is no answer either.
+        #expect(SetupTabClose.decide(tab, view: SessionView(["session_id": "session:other", "windows": []])) == .nothing)
+        #expect(SetupTabClose.decide(tab, view: nil) == .nothing)
+    }
+
+    @Test func aRunInProgressKeepsItsTabThroughAReconnect() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = Server(), id = UUID(), old = Self.tabs[0], running = Self.tabs[1]
+        // One tab left from an earlier run of the app, and one this app session's install runs in.
+        sessions.record(old, for: id)
+        let closer = closer(sessions, server)
+        closer.made(running, on: id)
+        await closer.connected(id, inUse: [running.blockID])
+        await closer.connected(id, inUse: [running.blockID])
+        #expect(server.asked == [old] && sessions.entries(id) == [running])
+        // The run is over without having closed its tab: the next connection closes it.
+        await closer.connected(id, inUse: [])
+        #expect(server.asked == [old, running] && sessions.entries(id).isEmpty)
+    }
+
+    @Test func aCloseTheServerDidNotTakeIsTriedAgainOnTheNextConnection() async {
+        let (sessions, defaults, suite) = sessions()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = Server(), id = UUID(), tab = Self.tabs[0]
+        let closer = closer(sessions, server)
+        closer.made(tab, on: id)
+        // The connection dropped as the script ended.
+        server.answers = false
+        #expect(await closer.handle(.exited(code: 0), tab, on: id) == false)
+        #expect(server.closed.isEmpty && sessions.entries(id) == [tab])
+
+        // Connected again, and still no answer: it stays in the app's list.
+        await closer.connected(id, inUse: [])
+        #expect(server.closed.isEmpty && sessions.entries(id) == [tab])
+
+        // The next connection takes it, and then nothing is left to ask for.
+        server.answers = true
+        await closer.connected(id, inUse: [])
+        await closer.connected(id, inUse: [])
+        #expect(server.asked == [tab] && server.closed == [tab] && sessions.entries(id).isEmpty)
+    }
+
+    @Test func theSheetOffersNoDetailsOnceTheTabIsClosed() {
+        var state = SetupState(kind: .install, computer: .mac)
+        state.handle(.started)
+        #expect(state.hasTab)
+        state.handle(.exited(code: 0))
+        state.handle(.tabClosed)
+        // The run goes on to the helper's proof without its tab.
+        #expect(!state.hasTab && state.phase == .connecting)
+        // A failed run's tab closes after the fact too.
+        var failed = SetupState(kind: .install, computer: .mac)
+        failed.handle(.started)
+        failed.handle(.exited(code: 15))
+        #expect(failed.hasTab && failed.error != nil)
+        failed.handle(.tabClosed)
+        #expect(!failed.hasTab && failed.error != nil)
     }
 }

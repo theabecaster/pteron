@@ -436,7 +436,7 @@ struct PairingTests {
 
     @Test func theHelperLineShowsOnlyWithoutAHelper() {
         #expect(IdentityCopy.of(ServerIdentity(hasHelper: true)).helper == nil)
-        #expect(IdentityCopy.of(ServerIdentity(hasHelper: false)).helper == "Notifications need Rex DUO Helper on this computer.")
+        #expect(IdentityCopy.of(ServerIdentity(hasHelper: false)).helper == "Notifications need Rex DUO Beacon on this computer.")
     }
 
     @Test func aComputerThatSaidNothingGetsABareCard() {

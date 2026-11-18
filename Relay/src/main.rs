@@ -1,4 +1,4 @@
-//! Rex DUO Helper: sends Rex DUO push notifications for the Rex server on this
+//! Rex DUO Beacon: sends Rex DUO push notifications for the Rex server on this
 //! machine. One binary for macOS and Linux; see Relay/README.md.
 
 mod auth;
@@ -6,13 +6,18 @@ mod config;
 mod devices;
 mod discovery;
 mod gateway;
+mod host;
 mod identity;
+#[cfg(any(target_os = "macos", test))]
+mod label;
 mod legacy;
 mod net;
 mod notice;
 mod policy;
 mod push;
 mod relay;
+#[cfg(any(target_os = "macos", test))]
+mod rename;
 mod rex;
 mod service;
 mod setup;
@@ -70,7 +75,7 @@ fn main() {
     }
     #[cfg(not(target_os = "macos"))]
     if opening(&args, false).is_some() {
-        eprintln!("phone-setup is how Rex DUO Helper.app is opened on a Mac");
+        eprintln!("phone-setup is how Rex DUO Beacon.app is opened on a Mac");
         std::process::exit(2);
     }
 
@@ -108,6 +113,9 @@ fn main() {
         "forget" => forget(rest),
         // What the helper runs itself after it swapped in a new version (src/update.rs).
         "finish-update" => update::finish_command(rest),
+        // What the helper runs itself to give its Mac app its name (src/rename.rs).
+        #[cfg(target_os = "macos")]
+        "finish-move" => rename::finish_command(rest),
         "run" => match parse_run(rest) {
             Ok(o) => runtime().block_on(run(o)),
             Err(e) => {
@@ -284,12 +292,18 @@ async fn run(o: RunOptions) -> i32 {
         info!("could not create {}: {e}", o.state_dir.display());
         return 1;
     }
+    // A Mac's helper under the earlier label of its background job gives way to one under
+    // the new label (src/label.rs).
+    #[cfg(target_os = "macos")]
+    if rename::before_start(&o.state_dir, o.dry_run) {
+        return 0;
+    }
     // One helper per user: a second would show up as a second relay in Rex.
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(o.state_dir.join("helper.lock"));
     let _lock = match lock {
         Ok(f) if f.try_lock().is_ok() => f,
         _ => {
-            info!("Rex DUO Helper is already running for this user (see: rex-duo-helper status). Stop it first.");
+            info!("Rex DUO Beacon is already running for this user (see: rex-duo-helper status). Stop it first.");
             return 1;
         }
     };
@@ -306,6 +320,8 @@ async fn run(o: RunOptions) -> i32 {
             None
         }
     };
+    #[cfg(target_os = "macos")]
+    rename::at_start(&o.state_dir, o.dry_run);
     let sender = if o.dry_run { gateway::Sender::DryRun } else { gateway::Sender::Gateway };
     let updater = update::Updater::new(o.dry_run, cfg.auto_update.unwrap_or(true), &o.state_dir);
     let devices_path = o.state_dir.join("devices.json");
@@ -329,6 +345,7 @@ async fn run(o: RunOptions) -> i32 {
             gateways,
             key,
             state_dir: o.state_dir.clone(),
+            os: host::os(),
         },
     );
     relay.start();

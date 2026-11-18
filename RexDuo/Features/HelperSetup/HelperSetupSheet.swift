@@ -4,7 +4,8 @@ import UIKit
 /// "Installing on <Name>": the steps of an install of Rex DUO Helper, the cards for what a person
 /// has to do meanwhile, and how it ended. Full screen, in the pairing sheet's look. Where the
 /// window is wide or the fold splits it (`SetupLayout`), the installer's output sits beside the
-/// steps; elsewhere "Show details" pushes it.
+/// steps; elsewhere "Show details" pushes it. "Hide" closes the sheet and lets the install go
+/// on; the computer's row in Settings → Notifications follows it and brings the sheet back.
 struct HelperSetupSheet: View {
     let run: HelperSetupRun
 
@@ -30,6 +31,8 @@ struct HelperSetupSheet: View {
                                 .frame(width: steps)
                             SetupDetailsTerminal(run: run, theme: theme)
                                 .padding(12)
+                                // A failed run whose output was on screen closes its tab with the sheet.
+                                .onAppear { run.showedDetails() }
                         }
                     case .single:
                         stepsPage(state, theme, details: true)
@@ -39,6 +42,7 @@ struct HelperSetupSheet: View {
                 .navigationDestination(isPresented: Binding(get: { showDetails && layout == .single }, set: { showDetails = $0 })) {
                     SetupDetailsTerminal(run: run, theme: theme)
                         .padding(12)
+                        .onAppear { run.showedDetails() }
                         .background(theme.bg.ignoresSafeArea())
                         .navigationTitle("Details")
                         .navigationBarTitleDisplayMode(.inline)
@@ -47,6 +51,13 @@ struct HelperSetupSheet: View {
             .background(theme.bg.ignoresSafeArea())
             .navigationTitle(state.title(name: run.name))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if run.server != nil, !state.isFinished {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Hide") { model.helperSetup.hide(run) }
+                    }
+                }
+            }
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
@@ -55,8 +66,10 @@ struct HelperSetupSheet: View {
             Button("Stop", role: .destructive) { model.helperSetup.close(run, cancelled: true) }
             Button("Keep Going", role: .cancel) {}
         } message: {
-            Text("\(run.name) keeps whatever it had before.")
+            Text("\(run.name) keeps the Rex DUO Beacon it had before, if any.")
         }
+        // "Show Details" in the computer's row opens the sheet at the installer's output.
+        .onAppear { if model.helperSetup.takeDetailsRequest(for: run) { showDetails = true } }
         .onChange(of: state.phase) { _, phase in
             if phase == .connected { Haptic.success() }
             // VoiceOver moves to what the sheet shows now.
@@ -151,7 +164,7 @@ struct HelperSetupSheet: View {
                 .foregroundStyle(theme.fg)
                 .padding(.bottom, 6)
                 .accessibilityAddTraits(.isHeader)
-            Text(SetupState.connectedMessage(name: run.name))
+            Text(run.connectedMessage)
                 .font(.subheadline)
                 .foregroundStyle(theme.chrome.secondary)
                 .multilineTextAlignment(.center)

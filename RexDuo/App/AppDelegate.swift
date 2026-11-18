@@ -53,8 +53,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 /// While the app is in front it shows no system notifications (agents that need the user get a
-/// toast instead); a tapped push opens its pane. It holds only a Sendable closure, so iOS may call
-/// it on any queue.
+/// toast instead), except the one "Send Test Notification" asks for, which is there to be seen; a
+/// tapped push opens its pane. It holds only a Sendable closure, so iOS may call it on any queue.
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, Sendable {
     private let onOpen: @Sendable (PushRoute) -> Void
 
@@ -64,7 +64,8 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, Se
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([])
+        let test = PushTest.isTest(threadID: notification.request.content.threadIdentifier)
+        completionHandler(test ? [.banner, .list, .sound] : [])
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,

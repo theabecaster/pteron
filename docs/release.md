@@ -23,7 +23,7 @@ Ghostty framework (`scripts/check-ghostty.sh`), runs `xcodegen generate` and rsy
 - The copy uses `rsync --delete`, so the script refuses any `remote-dir` that is not a single
   folder name starting with `rexduo-build` under the build Mac's home.
 - Keys never go across: `.asc.env` and other `.env` files, `Relay/dist`, `Relay/.stage` and
-  `Relay/target` (helper builds from before the push gateway embedded the APNs key), and any `*.p8`, `*.p12`, `*.pem`, `*.key`, `*.cer`, `*.mobileprovision` or
+  `Relay/target` (Beacon builds from before the push gateway embedded the APNs key), and any `*.p8`, `*.p12`, `*.pem`, `*.key`, `*.cer`, `*.mobileprovision` or
   `*.provisionprofile`.
 
 - libghostty-vt is built on the developer's Mac by `scripts/build-ghostty.sh` and copied; the
@@ -83,7 +83,7 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;
 the file is gitignored) and reads the key from `~/.appstoreconnect/private_keys/` (`ASC_KEY_ID` picks it).
 
-## Rex DUO Helper (Mac and Linux)
+## Rex DUO Beacon (Mac and Linux)
 
 ```sh
 Relay/release.sh --no-notarize   # build and sign everything into Relay/dist/release: a local check
@@ -97,18 +97,33 @@ Relay/release.sh --publish       # also publish to GitHub Releases (add --skip-b
 - `Relay/release.sh` then signs the Linux binaries and `manifest.json` with the release key
   (`~/.config/rexduo/helper-update.key`, ed25519; public half in `Relay/update-key.pub`) and
   checks every signature against the committed public key before anything goes up.
+- The Mac app goes out in two zips made from the one notarized bundle: `Rex-DUO-Beacon.zip`
+  holds it as `Rex DUO Beacon.app` (the manifest's `macos-universal-beacon` entry) and
+  `Rex-DUO-Helper.zip` as `Rex DUO Helper.app`, the app's earlier name (the `macos-universal`
+  entry, which the updater of version 0.3.0 reads). `release.sh` checks that both hold the same
+  app and that the manifest names both (Relay/README.md, Updates).
+- The Mac's background job is the LaunchAgent `dev.abrahamgonzalez.rexduo.beacon`. A Mac that
+  version 0.3.0 updates gets the new version in `Rex DUO Helper.app`, restarted under the
+  earlier label, `dev.abrahamgonzalez.rexduo.helper`. That Beacon then moves the app to its name
+  and the job to its label in one sequence with one restart: the bundle is renamed, Launch
+  Services is told, the new label's file is written, the earlier job is booted out and the new
+  one loaded, and the earlier file is deleted once Beacon reports in under the new label
+  (docs/helper.md, Mac). In System Settings → Login Items an entry named Rex DUO Beacon
+  appears, and the earlier entries go about 70 seconds later. The bundle identifier, the code
+  signature's identifier, the update job's label (`dev.abrahamgonzalez.rexduo.helper.update`),
+  the state folder and the log keep their names, so a release needs no other change for this.
 - `--publish` creates the release `helper-v<version>` with the downloads, then updates the release
   `helper-latest`, which holds only `manifest.json`, its signature and `install.sh` (a copy of `Relay/setup.sh`). Installed
-  helpers read the manifest from there and update themselves within 12 hours, so publishing is
+  Beacons read the manifest from there and update themselves within 12 hours, so publishing is
   the deploy. Raise `version` in `Relay/Cargo.toml` first; a published version is never replaced.
 - Two keys can sign a release: the release key and a recovery key
   (`~/.config/rexduo-recovery/helper-recovery.key`; keep it offline, away from the release key).
-  Losing both means no installed helper accepts another update. To replace the release key, sign
-  a release with either key and `NEXT_KEY=<new public key>`: helpers that see it trust the new
+  Losing both means no installed Beacon accepts another update. To replace the release key, sign
+  a release with either key and `NEXT_KEY=<new public key>`: Beacons that see it trust the new
   key from then on (Relay/README.md, Updates).
 - The manifest expires after 180 days (`EXPIRES_DAYS`). `Relay/release.sh --resign --publish`
   signs the current one again without building. An expired manifest stops updates and installs
-  from the app, so re-sign before then: the helper logs a line and a debug build of the app
+  from the app, so re-sign before then: Beacon logs a line and a debug build of the app
   shows one in Settings when fewer than 30 days are left.
 
 ## Push gateway

@@ -86,7 +86,8 @@ final class Prefs {
             NotificationCenter.default.post(name: .keyBarChanged, object: nil)
         }
     }
-    /// Push notifications through Rex DUO Helper. Off until the user turns them on.
+    /// The master switch: push notifications through Rex DUO Helper. Off until the user turns
+    /// them on, and kept as chosen while iOS has notifications turned off.
     var pushEnabled: Bool { didSet { d.set(pushEnabled, forKey: "pushEnabled") } }
     var servers: [ServerConfig] {
         didSet { if let data = try? JSONEncoder().encode(servers) { d.set(data, forKey: "servers") } }
@@ -94,12 +95,26 @@ final class Prefs {
 
     // MARK: Remembered state
 
-    /// The user answered the "Get notified" card (Turn On or Not now); it never shows again.
-    var pushPromptDismissed: Bool { didSet { d.set(pushPromptDismissed, forKey: "pushPromptDismissed") } }
     /// Servers whose "Get notifications from <Name>?" page was answered with Skip. Pairing never
     /// asks again for them; Settings → Notifications still has Install.
     var helperOfferSkipped: Set<UUID> {
         didSet { d.set(helperOfferSkipped.map(\.uuidString).sorted(), forKey: "helperOfferSkipped") }
+    }
+    /// Servers whose notifications the user turned off. A server that is not here is on, so a
+    /// newly added one starts on. Kept while the master switch is off and while iOS has
+    /// notifications turned off, so each computer comes back as it was.
+    var notificationsOff: Set<UUID> {
+        didSet { d.set(notificationsOff.map(\.uuidString).sorted(), forKey: "notificationsOff") }
+    }
+    /// Servers where this phone registered with a helper at least once. It tells a computer
+    /// whose helper is not running from one that never had a helper. Remove Beacon clears it.
+    var helperSeen: Set<UUID> {
+        didSet { d.set(helperSeen.map(\.uuidString).sorted(), forKey: "helperSeen") }
+    }
+    /// Servers that were turned off and whose helper has not confirmed yet that it holds this
+    /// phone's notifications back. Each is told now, or the next time it is connected.
+    var helpersToTell: Set<UUID> {
+        didSet { d.set(helpersToTell.map(\.uuidString).sorted(), forKey: "helpersToTell") }
     }
     /// The sidebar's width per posture, keyed by `SidebarWidth.key`.
     var sidebarWidths: [String: Double] { didSet { d.set(sidebarWidths, forKey: "sidebarWidths") } }
@@ -152,8 +167,11 @@ final class Prefs {
         fontSize = d.object(forKey: "fontSize") as? Double ?? Self.defaultFontSize
         keyBarLayout = KeyBarLayout(rawValue: d.string(forKey: "keyBarLayout") ?? "") ?? Self.defaultKeyBar
         pushEnabled = d.bool(forKey: "pushEnabled")
-        pushPromptDismissed = d.bool(forKey: "pushPromptDismissed")
         helperOfferSkipped = Set((d.stringArray(forKey: "helperOfferSkipped") ?? []).compactMap(UUID.init(uuidString:)))
+        func ids(_ key: String) -> Set<UUID> { Set((d.stringArray(forKey: key) ?? []).compactMap(UUID.init(uuidString:))) }
+        notificationsOff = ids("notificationsOff")
+        helperSeen = ids("helperSeen")
+        helpersToTell = ids("helpersToTell")
         sidebarWidths = d.dictionary(forKey: "sidebarWidths") as? [String: Double] ?? [:]
         sidebarCollapsed = Set(d.stringArray(forKey: "sidebarCollapsed") ?? [])
         sidebarMode = d.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) ?? .sessions

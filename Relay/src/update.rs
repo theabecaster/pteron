@@ -50,12 +50,21 @@ const LOCK_MAX_AGE: Duration = Duration::from_secs(30 * 60);
 /// `<label> <base64 of 32 bytes>` line each. The private halves never enter the repository.
 const UPDATE_KEY_FILE: &str = include_str!("../update-key.pub");
 
-const APP_NAME: &str = "Rex DUO Helper.app";
-const PREVIOUS_APP: &str = "Rex DUO Helper.previous.app";
-const BUNDLE_ID: &str = "dev.abrahamgonzalez.rexduo.helper";
+/// The Mac app's folder, and the name an installed app waits under while its replacement starts.
+pub const APP_NAME: &str = "Rex DUO Beacon.app";
+const PREVIOUS_APP: &str = "Rex DUO Beacon.previous.app";
+/// The same two under the app's earlier name, Rex DUO Helper. An app installed under them is
+/// the installed app; it moves to the names above (src/rename.rs).
+pub const OLD_APP_NAME: &str = "Rex DUO Helper.app";
+pub const OLD_PREVIOUS_APP: &str = "Rex DUO Helper.previous.app";
+pub(crate) const BUNDLE_ID: &str = "dev.abrahamgonzalez.rexduo.helper";
 const TEAM_ID: &str = "R2PVQ496X7";
 const LOCK_FILE: &str = "update.lock";
 const RESULT_FILE: &str = "update_result.json";
+/// How the last check from the command line ended, in the state folder, for the service.
+const CHECK_FILE: &str = "update_check.json";
+/// update_check.json is a few short fields. A larger file is not one.
+const MAX_CHECK_FILE: u64 = 1024;
 /// Keys received by handover, in the state folder.
 const TRUSTED_KEYS_FILE: &str = "trusted_keys.json";
 /// The highest manifest version accepted so far, in the state folder.
@@ -139,17 +148,17 @@ impl Problem {
     pub fn sentence(self) -> &'static str {
         match self {
             Problem::NotSetUp => "Updates are not set up in this build.",
-            Problem::CannotUpdate => "This copy of Rex DUO Helper can't update itself.",
+            Problem::CannotUpdate => "This copy of Rex DUO Beacon can't update itself.",
             Problem::Unreachable => "The release list could not be downloaded.",
             Problem::Rejected => "The release list was not accepted.",
             Problem::Expired => "The release list is out of date.",
-            Problem::Replayed => "The release list is older than one this helper has already seen.",
+            Problem::Replayed => "The release list is older than one Rex DUO Beacon has already seen.",
             Problem::NoBuild => "The newest version has no build for this computer.",
             Problem::Download => "The update could not be downloaded.",
             Problem::Checks => "The downloaded update did not pass its checks.",
             Problem::Install => "The update could not be installed.",
             Problem::RolledBack => "The new version did not start, so the previous version was put back.",
-            Problem::NotRestarted => "The helper could not restart into the new version, so the previous version was kept.",
+            Problem::NotRestarted => "Rex DUO Beacon could not restart into the new version, so the previous version was kept.",
             Problem::Busy => "Another update is running.",
         }
     }
@@ -248,10 +257,17 @@ impl Manifest {
     }
 }
 
+/// The manifest's entry for a Mac: a zip that holds the app as `Rex DUO Helper.app`, the
+/// folder the updater of version 0.3.0 looks for.
+pub const MAC_KEY: &str = "macos-universal";
+/// The entry for the same app in a zip that holds it as `Rex DUO Beacon.app`. A Mac takes this
+/// one when the list has it, and the one above when it does not.
+pub const MAC_BEACON_KEY: &str = "macos-universal-beacon";
+
 /// The manifest's name for the file this computer runs (`std::env::consts::{OS, ARCH}`).
 pub fn platform_key(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
-        ("macos", _) => Some("macos-universal"),
+        ("macos", _) => Some(MAC_KEY),
         ("linux", "x86_64") => Some("linux-x86_64"),
         ("linux", "aarch64") => Some("linux-aarch64"),
         _ => None,
@@ -269,7 +285,8 @@ pub fn plan(m: &Manifest, current: &str, platform: Option<&str>) -> Result<Plan,
     if !is_newer(&m.version, current)? {
         return Ok(Plan::UpToDate);
     }
-    let asset = platform.and_then(|p| m.assets.get(p)).ok_or_else(|| format!("Version {} has no build for this computer.", m.version))?;
+    let preferred = platform.filter(|p| *p == MAC_KEY).and_then(|_| m.assets.get(MAC_BEACON_KEY));
+    let asset = preferred.or_else(|| platform.and_then(|p| m.assets.get(p))).ok_or_else(|| format!("Version {} has no build for this computer.", m.version))?;
     Ok(Plan::Update { version: m.version.clone(), asset: asset.clone() })
 }
 
@@ -471,7 +488,7 @@ impl<W: std::io::Write> Checked<W> {
 /// The thing an update replaces.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Place {
-    /// `…/Rex DUO Helper.app`
+    /// `…/Rex DUO Beacon.app`
     MacApp(PathBuf),
     /// `~/.local/bin/rex-duo-helper`
     LinuxBinary(PathBuf),
@@ -490,10 +507,10 @@ impl Place {
                     .parent()
                     .filter(|macos| macos.ends_with("Contents/MacOS"))
                     .and_then(|macos| macos.parent()?.parent())
-                    .filter(|app| app.file_name().is_some_and(|n| n == APP_NAME))
-                    .ok_or("Rex DUO Helper is not running from its app.")?;
+                    .filter(|app| app.file_name().is_some_and(|n| n == APP_NAME || n == OLD_APP_NAME))
+                    .ok_or("Rex DUO Beacon is not running from its app.")?;
                 if app.to_string_lossy().contains("/AppTranslocation/") {
-                    return Err("Move Rex DUO Helper to the Applications folder and open it again.".into());
+                    return Err("Move Rex DUO Beacon to the Applications folder and open it again.".into());
                 }
                 Ok(Place::MacApp(app.to_path_buf()))
             }
@@ -520,6 +537,27 @@ impl Place {
 
     fn dir(&self) -> &Path {
         self.path().parent().unwrap_or(Path::new("/"))
+    }
+
+    /// Where a new version goes. A Mac app always goes under `APP_NAME`, beside the installed
+    /// one, whichever of the two names that one has.
+    pub fn target(&self) -> PathBuf {
+        match self {
+            Place::MacApp(_) => self.dir().join(APP_NAME),
+            Place::LinuxBinary(p) => p.clone(),
+        }
+    }
+
+    /// The program the background service runs: the one in the new version's place while
+    /// something is there, else the installed one.
+    fn program(&self) -> PathBuf {
+        match self {
+            Place::MacApp(p) => {
+                let target = self.target();
+                if target.exists() { target } else { p.clone() }.join("Contents/MacOS").join(service::NAME)
+            }
+            Place::LinuxBinary(p) => p.clone(),
+        }
     }
 
     /// Where the version before the update stays until the new one is confirmed.
@@ -572,10 +610,10 @@ pub fn blocker(e: &Env) -> Option<String> {
         Err(why) => return Some(why.clone()),
     };
     if !e.service {
-        return Some("Rex DUO Helper is not installed as a background service.".into());
+        return Some("Rex DUO Beacon is not installed as a background service.".into());
     }
     if !e.writable {
-        return Some(format!("Rex DUO Helper can't write to {}.", place.dir().display()));
+        return Some(format!("Rex DUO Beacon can't write to {}.", place.dir().display()));
     }
     None
 }
@@ -620,21 +658,31 @@ impl UpdateLock {
         Err("Another update is running.".into())
     }
 
+    /// True while a live process holds the lock: an update, or a move of the Mac app or of
+    /// its LaunchAgent's label.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn busy(dir: &Path, alive: impl Fn(u64) -> bool) -> bool {
+        let path = dir.join(LOCK_FILE);
+        let pid = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u64>().ok());
+        let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| SystemTime::now().duration_since(t).ok());
+        pid.is_some_and(|pid| age.is_none_or(|a| a < LOCK_MAX_AGE) && alive(pid))
+    }
+
     /// Takes over the lock of the process that started this one (`finish-update`).
-    fn adopt(dir: &Path) -> UpdateLock {
+    pub(crate) fn adopt(dir: &Path) -> UpdateLock {
         let path = dir.join(LOCK_FILE);
         let _ = std::fs::write(&path, std::process::id().to_string());
         UpdateLock { path, held: true }
     }
 
     /// Leaves the lock in place for the process that carries on.
-    fn hand_over(mut self) {
+    pub(crate) fn hand_over(mut self) {
         self.held = false;
     }
 
     /// Removes a lock this process handed over that nobody adopted (it still names this
     /// process), so the next update is not held up by one that never got going. True if so.
-    fn take_back(dir: &Path) -> bool {
+    pub(crate) fn take_back(dir: &Path) -> bool {
         let path = dir.join(LOCK_FILE);
         let mine = std::fs::read_to_string(&path).is_ok_and(|s| s.trim() == std::process::id().to_string());
         mine && std::fs::remove_file(&path).is_ok()
@@ -741,7 +789,7 @@ const MAX_SIGNATURE: usize = 2048;
 
 // MARK: Checking what was downloaded (macOS)
 
-fn os(s: impl Into<OsString>) -> OsString {
+pub(crate) fn os(s: impl Into<OsString>) -> OsString {
     s.into()
 }
 
@@ -773,7 +821,7 @@ fn gatekeeper_ok(success: bool, output: &str) -> bool {
 }
 
 /// True when both `codesign` checks pass: the app is intact, and it is ours.
-fn mac_signature_ok(app: &Path) -> Result<bool, String> {
+pub(crate) fn mac_signature_ok(app: &Path) -> Result<bool, String> {
     for (program, args) in mac_checks(app) {
         if !tool(program, &args)?.0 {
             return Ok(false);
@@ -784,7 +832,7 @@ fn mac_signature_ok(app: &Path) -> Result<bool, String> {
 
 /// Runs a system tool (a full path, or a name `tools` looks up) and returns whether it
 /// succeeded and what it printed.
-fn tool(program: &str, args: &[OsString]) -> Result<(bool, String), String> {
+pub(crate) fn tool(program: &str, args: &[OsString]) -> Result<(bool, String), String> {
     let mut command = crate::tools::command(program).ok_or_else(|| format!("{program} is not on this system"))?;
     let o = command.args(args).stdin(Stdio::null()).output().map_err(|e| format!("{program}: {e}"))?;
     Ok((o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
@@ -796,10 +844,12 @@ fn unpack_and_check_mac(zip: &Path, into: &Path, version: &str) -> Result<PathBu
     if !ok {
         return Err("The download could not be unzipped.".into());
     }
-    let app = into.join(APP_NAME);
     let is_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    // The zip of `MAC_BEACON_KEY` holds the app under its name, the zip of `MAC_KEY` under
+    // the earlier one. The app is the same, and `swap_mac` gives it its name.
+    let app = [APP_NAME, OLD_APP_NAME].map(|name| into.join(name)).into_iter().find(|app| is_dir(app)).unwrap_or_else(|| into.join(APP_NAME));
     if !is_dir(&app) || !std::fs::symlink_metadata(app.join("Contents/MacOS").join(service::NAME)).is_ok_and(|m| m.is_file()) {
-        return Err("The download does not hold Rex DUO Helper.".into());
+        return Err("The download does not hold Rex DUO Beacon.".into());
     }
     if !mac_signature_ok(&app)? {
         return Err("The downloaded app's code signature was not accepted.".into());
@@ -834,22 +884,26 @@ fn swap_linux(new: &Path, place: &Place) -> Result<(), String> {
     std::fs::rename(new, installed).map_err(|e| format!("could not install the new version: {e}"))
 }
 
-/// Puts a checked app in place of the installed one, which moves to `Rex DUO Helper.previous.app`
-/// beside it until the new one is confirmed. Both moves are renames on one volume.
+/// Puts a checked app in as `Rex DUO Beacon.app`. The installed one, under either name, moves
+/// to `Rex DUO Beacon.previous.app` beside it until the new one is confirmed. Both moves are
+/// renames on one volume. A copy set aside under either name by an earlier update goes first.
 fn swap_mac(new_app: &Path, place: &Place) -> Result<(), String> {
-    let (installed, previous) = (place.path(), place.previous());
-    if previous.exists() {
-        std::fs::remove_dir_all(&previous).map_err(|e| format!("could not remove {}: {e}", previous.display()))?;
+    let (installed, previous, target) = (place.path(), place.previous(), place.target());
+    for old in [previous.clone(), place.dir().join(OLD_PREVIOUS_APP)] {
+        if old.exists() {
+            std::fs::remove_dir_all(&old).map_err(|e| format!("could not remove {}: {e}", old.display()))?;
+        }
     }
     std::fs::rename(installed, &previous).map_err(|e| format!("could not move the current app aside: {e}"))?;
-    if let Err(e) = std::fs::rename(new_app, installed) {
+    if let Err(e) = std::fs::rename(new_app, &target) {
         let _ = std::fs::rename(&previous, installed);
         return Err(format!("could not install the new app: {e}"));
     }
     Ok(())
 }
 
-/// Puts the previous version back where the new one is.
+/// Puts the previous version back where it was, under the name it had, and takes the new one
+/// away.
 fn roll_back(place: &Place) -> Result<(), String> {
     let (installed, previous) = (place.path(), place.previous());
     if !previous.exists() {
@@ -858,11 +912,12 @@ fn roll_back(place: &Place) -> Result<(), String> {
     match place {
         Place::LinuxBinary(_) => std::fs::rename(&previous, installed).map_err(|e| e.to_string()),
         Place::MacApp(_) => {
-            let failed = place.dir().join(format!(".Rex DUO Helper.failed-{}.app", std::process::id()));
+            let failed = place.dir().join(format!(".Rex DUO Beacon.failed-{}.app", std::process::id()));
             let _ = std::fs::remove_dir_all(&failed);
-            std::fs::rename(installed, &failed).map_err(|e| e.to_string())?;
+            let target = place.target();
+            std::fs::rename(&target, &failed).map_err(|e| e.to_string())?;
             if let Err(e) = std::fs::rename(&previous, installed) {
-                let _ = std::fs::rename(&failed, installed);
+                let _ = std::fs::rename(&failed, &target);
                 return Err(e.to_string());
             }
             let _ = std::fs::remove_dir_all(&failed);
@@ -875,11 +930,12 @@ fn roll_back(place: &Place) -> Result<(), String> {
 /// may be running from that copy: it keeps running after the copy's name is gone.
 fn remove_previous(place: &Place) -> std::io::Result<()> {
     let previous = place.previous();
-    let removed = match place {
-        Place::LinuxBinary(_) => std::fs::remove_file(&previous),
-        Place::MacApp(_) => std::fs::remove_dir_all(&previous),
-    };
-    removed.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+    let gone = |removed: std::io::Result<()>| removed.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) });
+    match place {
+        Place::LinuxBinary(_) => gone(std::fs::remove_file(&previous)),
+        // Under either name.
+        Place::MacApp(_) => gone(std::fs::remove_dir_all(&previous)).and(gone(std::fs::remove_dir_all(place.dir().join(OLD_PREVIOUS_APP)))),
+    }
 }
 
 /// A file or folder that is removed when this goes out of scope.
@@ -1002,7 +1058,8 @@ fn real_finish(place: &Place, version: &str, old_pid: Option<u64>) -> Result<(),
         place,
         version,
         &Effects {
-            restart: &service::restart,
+            // After a swap the program is the new version's; after a roll back, the old one's.
+            restart: &|| service::restart_into(&place.program()),
             old_gone: &|| old_pid.is_none_or(|pid| !service::pid_alive(pid)),
             running_version: &|| service::running().map(|r| r.version),
             exit_wait: EXIT_TIMEOUT,
@@ -1117,8 +1174,13 @@ fn finisher_clear(domain: &str) -> (&'static str, Vec<OsString>) {
 /// tells launchd to start the program again whenever it fails, and a finisher that rolled back
 /// must not run twice.
 fn spawn_finisher(place: &Place, version: &str, state_dir: &Path) -> Result<(), String> {
-    let program = place.previous_binary();
-    let args = finisher_args(version, place, state_dir, std::process::id());
+    spawn_job(&place.previous_binary(), &finisher_args(version, place, state_dir, std::process::id()), state_dir)
+}
+
+/// Starts `program` with `args` as the job described above. One such job runs at a time: the
+/// process that starts it holds update.lock.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))] // the job's file is for launchd
+pub(crate) fn spawn_job(program: &Path, args: &[OsString], state_dir: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let (domain, plist) = {
         let (domain, plist) = (service::domain(), state_dir.join(FINISHER_PLIST));
@@ -1133,12 +1195,12 @@ fn spawn_finisher(place: &Place, version: &str, state_dir: &Path) -> Result<(), 
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
-        std::fs::write(&plist, finisher_plist(&program, &args)).map_err(|e| format!("could not write {}: {e}", plist.display()))?;
+        std::fs::write(&plist, finisher_plist(program, args)).map_err(|e| format!("could not write {}: {e}", plist.display()))?;
         (domain, plist)
     };
     #[cfg(not(target_os = "macos"))]
     let (domain, plist) = (String::new(), PathBuf::new());
-    let (starter, starter_args) = finisher_start(std::env::consts::OS, &program, &args, &domain, &plist);
+    let (starter, starter_args) = finisher_start(std::env::consts::OS, program, args, &domain, &plist);
     match tool(starter, &starter_args) {
         Ok((true, _)) => Ok(()),
         Ok((false, said)) => Err(format!("could not start the restart step ({starter} failed: {})", said.trim().chars().take(200).collect::<String>())),
@@ -1146,21 +1208,25 @@ fn spawn_finisher(place: &Place, version: &str, state_dir: &Path) -> Result<(), 
     }
 }
 
+/// Removes the job's file once the job runs. launchd has read it; the job itself stays loaded
+/// until the next one unloads it or the user logs out, and is not started again.
+pub(crate) fn forget_job(state_dir: &Path) {
+    let _ = std::fs::remove_file(state_dir.join(FINISHER_PLIST));
+}
+
 /// `rex-duo-helper finish-update --version V --place PATH [--state-dir DIR] [--old-pid PID]`:
 /// what the old program runs after a swap. Not for people.
 pub fn finish_command(args: &[String]) -> i32 {
     let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let (Some(version), Some(path)) = (value("--version").filter(|v| Version::parse(v).is_some()), value("--place")) else {
-        eprintln!("finish-update is run by Rex DUO Helper itself");
+        eprintln!("finish-update is run by Rex DUO Beacon itself");
         return 2;
     };
     let state_dir = value("--state-dir").map(PathBuf::from).unwrap_or_else(default_state_dir);
     let old_pid = value("--old-pid").and_then(|p| p.parse::<u64>().ok());
     if cfg!(target_os = "macos") {
         let _ = crate::util::log_to_file(crate::config::default_log_file());
-        // launchd has read it. The job itself stays loaded until the next update unloads it
-        // or the user logs out; it is not started again.
-        let _ = std::fs::remove_file(state_dir.join(FINISHER_PLIST));
+        forget_job(&state_dir);
     }
     let place = Place::at(std::env::consts::OS, PathBuf::from(path));
     // Released when this function returns, whether the update held or was rolled back.
@@ -1169,10 +1235,151 @@ pub fn finish_command(args: &[String]) -> i32 {
     let result = real_finish(&place, &version, old_pid);
     record_result(&state_dir, &version, &result);
     match &result {
-        Ok(()) => info!("update: Rex DUO Helper {version} is running"),
+        Ok(()) => info!("update: Rex DUO Beacon {version} is running"),
         Err(e) => info!("update: {e}"),
     }
     i32::from(result.is_err())
+}
+
+// MARK: When the next check is due
+
+/// How a check ended, as the schedule sees it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ended {
+    /// The release list arrived and was accepted.
+    #[default]
+    Passed,
+    /// The list or its signature could not be downloaded: no connection, a timeout, a 404, a
+    /// 5xx. This can pass by itself, so it is tried again soon.
+    Unreachable,
+    /// The list arrived and did not pass its checks (signature, expiry, rollback). Only a
+    /// newly published list changes that, so the normal schedule finds it.
+    Refused,
+}
+
+impl Ended {
+    /// What a check that ended with `error` counts as. A list that was accepted counts as
+    /// passed even when it has no build for this computer.
+    pub fn of(error: Option<Problem>) -> Ended {
+        match error {
+            Some(Problem::Unreachable) => Ended::Unreachable,
+            Some(Problem::Rejected | Problem::Expired | Problem::Replayed) => Ended::Refused,
+            _ => Ended::Passed,
+        }
+    }
+}
+
+/// The seconds from one check to the next: `base`, plus up to `spread` more picked at random,
+/// so helpers don't all ask at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wait {
+    pub base: u64,
+    pub spread: u64,
+}
+
+impl Wait {
+    fn pick(self) -> u64 {
+        self.base + random_below(self.spread)
+    }
+}
+
+/// 12 hours, give or take half an hour.
+pub const NORMAL_WAIT: Wait = Wait { base: 12 * 3600 - 1800, spread: 3600 };
+/// After the first, second and third check in a row that could not reach the list: about 15
+/// minutes, 1 hour and 3 hours.
+pub const RETRY_WAITS: [Wait; 3] = [Wait { base: 15 * 60, spread: 2 * 60 }, Wait { base: 3600, spread: 5 * 60 }, Wait { base: 3 * 3600, spread: 15 * 60 }];
+
+/// How long to wait after a check that ended as `ended`, the `failures`th in a row that could
+/// not reach the list. From the fourth on, and after any other ending, the normal schedule.
+pub fn next_wait(ended: Ended, failures: u32) -> Wait {
+    match (ended, failures) {
+        (Ended::Unreachable, n @ 1..=3) => RETRY_WAITS[n as usize - 1],
+        _ => NORMAL_WAIT,
+    }
+}
+
+/// The seconds left at `now` until a check is due `wait` seconds after the last one, which
+/// ran at `checked` (None: no check ran yet). Never more than `wait`, whatever the clock says.
+fn time_left(checked: Option<i64>, wait: u64, now: i64) -> u64 {
+    let wait_s = i64::try_from(wait).unwrap_or(i64::MAX);
+    checked.map_or(wait, |at| at.saturating_add(wait_s).saturating_sub(now).clamp(0, wait_s) as u64)
+}
+
+// MARK: A check from the command line
+//
+// `rex-duo-helper update` and `update --check` run in a process of their own, beside the
+// service. When their check has ended they write how it ended to update_check.json in the
+// state folder: one small file, readable by this user only, written whole to a temporary file
+// and renamed into place, so a reader sees the previous result or the new one, never a part.
+// The service reads the file when it answers `helper_status` and before each scheduled check,
+// and takes the result when it is newer than its own last check: the status then says what
+// the command found, and the schedule counts from that check. A file is the whole mechanism.
+// The service listens on nothing for it, the command needs no running service, and the file
+// holds only what `helper_status` shows to any client anyway.
+
+/// What update_check.json holds.
+#[derive(Clone, Debug, PartialEq)]
+struct Reported {
+    /// When the check ended, in seconds since 1970.
+    at: i64,
+    latest_version: Option<String>,
+    min_version: Option<String>,
+    manifest_expires_at: Option<i64>,
+    /// Why the check failed, or None.
+    error: Option<Problem>,
+}
+
+/// The problems a check can end with, which are the ones update_check.json may name.
+const CHECK_PROBLEMS: [Problem; 5] = [Problem::Unreachable, Problem::Rejected, Problem::Expired, Problem::Replayed, Problem::NoBuild];
+
+impl Reported {
+    fn json(&self) -> Value {
+        json!({
+            "checked_at": iso8601(self.at),
+            "latest_version": self.latest_version,
+            "min_version": self.min_version,
+            "manifest_expires_at": self.manifest_expires_at.map(iso8601),
+            "error": self.error.map(Problem::sentence),
+        })
+    }
+
+    /// Reads the file's contents. Every field has to be what `json` writes: a time as
+    /// `iso8601` spells it, a version, one of the sentences of `CHECK_PROBLEMS`, or null.
+    fn parse(data: &[u8]) -> Option<Reported> {
+        let v: Value = serde_json::from_slice(data).ok()?;
+        // Some(None) for null or absent, Some(Some(text)) for a string, None for anything else.
+        let text = |key: &str| match v.get(key) {
+            None | Some(Value::Null) => Some(None),
+            Some(x) => x.as_str().map(Some),
+        };
+        let version = |key: &str| match text(key)? {
+            None => Some(None),
+            Some(s) => Version::parse(s).map(|_| Some(s.to_string())),
+        };
+        let at = parse_iso8601(v.str("checked_at")?)?;
+        let manifest_expires_at = match text("manifest_expires_at")? {
+            None => None,
+            Some(s) => Some(parse_iso8601(s)?),
+        };
+        let error = match text("error")? {
+            None => None,
+            Some(s) => Some(CHECK_PROBLEMS.into_iter().find(|p| p.sentence() == s)?),
+        };
+        let r = Reported { at, latest_version: version("latest_version")?, min_version: version("min_version")?, manifest_expires_at, error };
+        // A check that passed names the version it found.
+        (Ended::of(error) != Ended::Passed || r.latest_version.is_some()).then_some(r)
+    }
+}
+
+/// The result in update_check.json, or None when there is no such file or it is not one this
+/// program wrote: not a regular file, larger than `MAX_CHECK_FILE`, or with a field off.
+fn read_check_file(state_dir: &Path) -> Option<Reported> {
+    let path = state_dir.join(CHECK_FILE);
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_CHECK_FILE {
+        return None;
+    }
+    Reported::parse(&std::fs::read(&path).ok()?)
 }
 
 // MARK: The updater
@@ -1190,6 +1397,60 @@ struct State {
     /// A version that was installed, did not start and was rolled back. The timer leaves it
     /// alone; asking for an update tries it again.
     failed_version: Option<String>,
+    /// When the first of the current run of failed checks ended, in seconds since 1970. None
+    /// when the last check passed or none ran.
+    failing_since: Option<i64>,
+    /// How the last check ended.
+    ended: Ended,
+    /// How many checks in a row could not reach the list, the last one included.
+    failures: u32,
+}
+
+impl State {
+    /// When the last check ended, in seconds since 1970.
+    fn last_check(&self) -> Option<i64> {
+        self.checked_at.as_deref().and_then(parse_iso8601)
+    }
+
+    /// Notes a check that ended at `at` with `error`, or with none.
+    fn checked(&mut self, at: i64, error: Option<Problem>) {
+        self.checked_at = Some(iso8601(at));
+        self.last_error = error.or(self.failed_version.as_ref().map(|_| Problem::RolledBack));
+        self.ended = Ended::of(error);
+        match self.ended {
+            Ended::Passed => (self.failing_since, self.failures) = (None, 0),
+            Ended::Unreachable => {
+                self.failing_since.get_or_insert(at);
+                self.failures = self.failures.saturating_add(1);
+            }
+            Ended::Refused => {
+                self.failing_since.get_or_insert(at);
+                self.failures = 0;
+            }
+        }
+    }
+
+    /// Takes over a check the command line ran. What it learned replaces what this helper
+    /// knew, and the schedule starts again from it: the next check is a normal wait away.
+    fn take(&mut self, r: Reported) {
+        if r.latest_version.is_some() {
+            (self.latest_version, self.min_version, self.manifest_expires_at) = (r.latest_version, r.min_version, r.manifest_expires_at);
+        }
+        self.checked(r.at, r.error);
+        self.failures = 0;
+    }
+
+    /// What `checked` and the fields beside it say, as update_check.json holds it. None
+    /// before any check.
+    fn report(&self) -> Option<Reported> {
+        Some(Reported {
+            at: self.last_check()?,
+            latest_version: self.latest_version.clone(),
+            min_version: self.min_version.clone(),
+            manifest_expires_at: self.manifest_expires_at,
+            error: self.last_error.filter(|p| CHECK_PROBLEMS.contains(p)),
+        })
+    }
 }
 
 /// How an install ends for the process that runs it.
@@ -1234,7 +1495,7 @@ impl Updater {
         let install = crate::config::home().join(".local/bin").join(service::NAME);
         let place = std::env::current_exe()
             .and_then(|p| p.canonicalize())
-            .map_err(|e| format!("Rex DUO Helper can't tell where it runs from ({e})."))
+            .map_err(|e| format!("Rex DUO Beacon can't tell where it runs from ({e})."))
             .and_then(|exe| Place::detect(std::env::consts::OS, &exe, &install.canonicalize().unwrap_or(install)));
         let mut env = Env { dry_run, debug_build: cfg!(debug_assertions), keys: update_keys(UPDATE_KEY_FILE), place, service: true, writable: true };
         // The service and the folder are only looked at when nothing else rules an update out.
@@ -1305,7 +1566,32 @@ impl Updater {
             "updating": s.updating,
             "can_update": self.blocker.is_none(),
             "last_error": s.last_error.map(Problem::sentence),
+            "failing_since": s.failing_since,
         })
+    }
+
+    /// Takes the result of a check the command line ran, when update_check.json holds one
+    /// that is newer than this helper's own last check and not from the future. True if so.
+    pub fn take_command_result(&self) -> bool {
+        self.take_command_result_at(now() as i64)
+    }
+
+    fn take_command_result_at(&self, now: i64) -> bool {
+        let Some(r) = read_check_file(&self.state_dir) else { return false };
+        let own = self.state.lock().unwrap().last_check();
+        if r.at > now || own.is_some_and(|own| r.at <= own) {
+            return false;
+        }
+        self.change(|s| s.take(r));
+        true
+    }
+
+    /// Writes this process's last check to update_check.json, for the running service. The
+    /// command line calls it once its check has ended.
+    fn report_check(&self) {
+        if let Some(r) = self.state.lock().unwrap().report() {
+            write_json(&self.state_dir.join(CHECK_FILE), &r.json());
+        }
     }
 
     /// The signed manifest, believed only after `accept_manifest` said so.
@@ -1329,17 +1615,13 @@ impl Updater {
                     s.manifest_expires_at = Some(m.expires_at);
                     s.latest_version = Some(m.version.clone());
                     s.min_version = Some(m.min_version.clone());
-                    s.checked_at = Some(now_iso());
-                    s.last_error = plan.as_ref().err().map(|f| f.problem).or(s.failed_version.as_ref().map(|_| Problem::RolledBack));
+                    s.checked(now() as i64, plan.as_ref().err().map(|f| f.problem));
                 });
                 plan
             }
             Err(e) => {
                 info!("update: {e}");
-                self.change(|s| {
-                    s.checked_at = Some(now_iso());
-                    s.last_error = Some(e.problem);
-                });
+                self.change(|s| s.checked(now() as i64, Some(e.problem)));
                 Err(e)
             }
         }
@@ -1363,7 +1645,7 @@ impl Updater {
             return Err(why);
         }
         let builtin = self.keys.clone().map_err(|why| Fault::new(Problem::NotSetUp, why))?;
-        let Some(place) = self.place.clone() else { return Err(Fault::new(Problem::CannotUpdate, "Rex DUO Helper can't tell where it is installed.")) };
+        let Some(place) = self.place.clone() else { return Err(Fault::new(Problem::CannotUpdate, "Rex DUO Beacon can't tell where it is installed.")) };
         {
             let mut s = self.state.lock().unwrap();
             if s.updating {
@@ -1372,14 +1654,14 @@ impl Updater {
             s.updating = true;
         }
         self.change(|_| {});
-        info!("update: installing Rex DUO Helper {version}");
+        info!("update: installing Rex DUO Beacon {version}");
         let mut result = self.install_locked(&place, builtin, version, asset, restart).await;
         if result.is_ok() && restart == Restart::Detached {
             // The old program restarts this service within seconds. Still here much later: it
             // didn't. If it never even took over the lock, it never ran, and the new version
             // sits where the service would start it unwatched. Put the old one back.
             tokio::time::sleep(Duration::from_secs(90)).await;
-            let mut detail = format!("Version {version} was swapped in, but the helper was not restarted into it.");
+            let mut detail = format!("Version {version} was swapped in, but Rex DUO Beacon was not restarted into it.");
             if UpdateLock::take_back(&self.state_dir) {
                 match roll_back(&place) {
                     Ok(()) => detail += " The previous version was put back.",
@@ -1429,8 +1711,9 @@ impl Updater {
     }
 
     /// Checks at start plus up to 10 minutes, then about every 12 hours, and installs what it
-    /// finds. Does nothing when `auto_update` is off, in a dry run, in a debug build, or
-    /// without an update key.
+    /// finds. After a check that could not reach the list the next ones come sooner
+    /// (`next_wait`). Does nothing when `auto_update` is off, in a dry run, in a debug build,
+    /// or without an update key.
     pub async fn run_timer(self: Arc<Self>) {
         if !self.auto {
             return;
@@ -1438,9 +1721,23 @@ impl Updater {
         tokio::time::sleep(Duration::from_secs(random_below(600))).await;
         loop {
             self.check_and_install().await;
-            // 12 hours, give or take half an hour, so helpers don't all ask at once.
-            tokio::time::sleep(Duration::from_secs(12 * 3600 - 1800 + random_below(3600))).await;
+            // The wait counts from the last check, whoever ran it. One that the app asked for
+            // or the command line ran during the wait starts a new wait from its own time.
+            loop {
+                let (checked, wait) = self.schedule();
+                tokio::time::sleep(Duration::from_secs(time_left(checked, wait.pick(), now() as i64))).await;
+                self.take_command_result();
+                if self.schedule().0 == checked {
+                    break;
+                }
+            }
         }
+    }
+
+    /// When the last check ended, and the wait that follows it.
+    fn schedule(&self) -> (Option<i64>, Wait) {
+        let s = self.state.lock().unwrap();
+        (s.last_check(), next_wait(s.ended, s.failures))
     }
 
     async fn check_and_install(&self) {
@@ -1456,8 +1753,11 @@ impl Updater {
 /// `rex-duo-helper update [--check]`.
 pub async fn cli(check_only: bool) -> i32 {
     let updater = Updater::new(false, false, &default_state_dir());
-    println!("Rex DUO Helper {VERSION}");
-    let (version, asset) = match updater.check().await {
+    println!("Rex DUO Beacon {VERSION}");
+    let checked = updater.check().await;
+    // The running service takes the result from here (see "A check from the command line").
+    updater.report_check();
+    let (version, asset) = match checked {
         Err(e) => {
             eprintln!("{e}");
             return 1;
@@ -1479,7 +1779,7 @@ pub async fn cli(check_only: bool) -> i32 {
     println!("Downloading and checking version {version}...");
     match updater.install(&version, &asset, Restart::Inline).await {
         Ok(()) => {
-            println!("Rex DUO Helper {version} is running. The previous version was removed.");
+            println!("Rex DUO Beacon {version} is running. The previous version was removed.");
             0
         }
         Err(e) => {
@@ -1922,7 +2222,7 @@ mod tests {
             dry_run: false,
             debug_build: false,
             keys: Ok(vec![public]),
-            place: Ok(Place::MacApp("/Applications/Rex DUO Helper.app".into())),
+            place: Ok(Place::MacApp("/Applications/Rex DUO Beacon.app".into())),
             service: true,
             writable: true,
         };
@@ -1932,28 +2232,28 @@ mod tests {
         assert!(blocker(&Env { keys: Err("update-key.pub is not 32 bytes of base64".into()), ..env() }).unwrap().contains("not set up"));
         assert_eq!(blocker(&Env { place: Err("This copy runs from a cargo target folder.".into()), ..env() }).unwrap(), "This copy runs from a cargo target folder.");
         assert!(blocker(&Env { service: false, ..env() }).unwrap().contains("background service"));
-        assert_eq!(blocker(&Env { writable: false, ..env() }).unwrap(), "Rex DUO Helper can't write to /Applications.");
+        assert_eq!(blocker(&Env { writable: false, ..env() }).unwrap(), "Rex DUO Beacon can't write to /Applications.");
     }
 
     #[test]
     fn where_the_helper_is_installed() {
         let install = Path::new("/home/u/.local/bin/rex-duo-helper");
         let mac = |p: &str| Place::detect("macos", Path::new(p), install);
-        assert_eq!(mac("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"), Ok(Place::MacApp("/Applications/Rex DUO Helper.app".into())));
+        assert_eq!(mac("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Ok(Place::MacApp("/Applications/Rex DUO Beacon.app".into())));
         assert!(mac("/Users/u/.local/bin/rex-duo-helper").is_err());
         assert!(mac("/Applications/Other.app/Contents/MacOS/rex-duo-helper").is_err());
-        assert!(mac("/Applications/Rex DUO Helper.previous.app/Contents/MacOS/rex-duo-helper").is_err());
-        assert!(mac("/private/var/folders/x/AppTranslocation/ABC/d/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper").unwrap_err().contains("Applications"));
+        assert!(mac("/Applications/Rex DUO Beacon.previous.app/Contents/MacOS/rex-duo-helper").is_err());
+        assert!(mac("/private/var/folders/x/AppTranslocation/ABC/d/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper").unwrap_err().contains("Applications"));
         assert!(mac("/Users/u/rexduo/Relay/target/release/rex-duo-helper").unwrap_err().contains("cargo target"));
-        assert!(mac("/Users/u/target/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper").unwrap_err().contains("cargo target"));
+        assert!(mac("/Users/u/target/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper").unwrap_err().contains("cargo target"));
         assert_eq!(Place::detect("linux", install, install), Ok(Place::LinuxBinary(install.into())));
         assert!(Place::detect("linux", Path::new("/tmp/rex-duo-helper-linux-x86_64"), install).is_err());
         assert!(Place::detect("linux", Path::new("/home/u/src/target/release/rex-duo-helper"), install).is_err());
         assert!(Place::detect("freebsd", install, install).is_err());
 
-        let app = Place::MacApp("/Applications/Rex DUO Helper.app".into());
-        assert_eq!(app.previous(), Path::new("/Applications/Rex DUO Helper.previous.app"));
-        assert_eq!(app.previous_binary(), Path::new("/Applications/Rex DUO Helper.previous.app/Contents/MacOS/rex-duo-helper"));
+        let app = Place::MacApp("/Applications/Rex DUO Beacon.app".into());
+        assert_eq!(app.previous(), Path::new("/Applications/Rex DUO Beacon.previous.app"));
+        assert_eq!(app.previous_binary(), Path::new("/Applications/Rex DUO Beacon.previous.app/Contents/MacOS/rex-duo-helper"));
         let bin = Place::LinuxBinary(install.into());
         assert_eq!(bin.previous(), Path::new("/home/u/.local/bin/rex-duo-helper.previous"));
         assert_eq!(bin.previous_binary(), bin.previous());
@@ -1998,11 +2298,13 @@ mod tests {
         assert!(UpdateLock::acquire(&dir, nobody).unwrap_err().contains("Another update"));
         drop(lock);
         assert!(!dir.join(LOCK_FILE).exists());
+        assert!(!UpdateLock::busy(&dir, everybody));
 
         // Held by another live process: busy, and the lock is left alone.
         std::fs::write(dir.join(LOCK_FILE), "4242").unwrap();
         assert_eq!(UpdateLock::acquire(&dir, everybody).unwrap_err(), "Another update is running (pid 4242).");
         assert_eq!(std::fs::read_to_string(dir.join(LOCK_FILE)).unwrap(), "4242");
+        assert!(UpdateLock::busy(&dir, everybody) && !UpdateLock::busy(&dir, nobody));
         // Its process is gone: stale, taken over.
         let taken = UpdateLock::acquire(&dir, nobody).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join(LOCK_FILE)).unwrap(), std::process::id().to_string());
@@ -2402,12 +2704,12 @@ mod tests {
 
     #[test]
     fn the_finisher_runs_outside_the_service() {
-        let place = Place::MacApp("/Applications/Rex DUO Helper.app".into());
-        let state = Path::new("/Users/u/Library/Application Support/Rex DUO Helper");
+        let place = Place::MacApp("/Applications/Rex DUO Beacon.app".into());
+        let state = Path::new("/Users/u/Library/Application Support/Rex DUO Beacon");
         let args = finisher_args("0.3.1", &place, state, 4242);
         assert_eq!(
             args,
-            ["finish-update", "--version", "0.3.1", "--place", "/Applications/Rex DUO Helper.app", "--state-dir", "/Users/u/Library/Application Support/Rex DUO Helper", "--old-pid", "4242"].map(os)
+            ["finish-update", "--version", "0.3.1", "--place", "/Applications/Rex DUO Beacon.app", "--state-dir", "/Users/u/Library/Application Support/Rex DUO Beacon", "--old-pid", "4242"].map(os)
         );
         let program = place.previous_binary();
 
@@ -2432,8 +2734,8 @@ mod tests {
         let plist = finisher_plist(&program, &args);
         assert!(plist.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.helper.update</string>"));
         assert!(plist.contains(
-            "<array><string>/Applications/Rex DUO Helper.previous.app/Contents/MacOS/rex-duo-helper</string><string>finish-update</string>\
-             <string>--version</string><string>0.3.1</string><string>--place</string><string>/Applications/Rex DUO Helper.app</string>"
+            "<array><string>/Applications/Rex DUO Beacon.previous.app/Contents/MacOS/rex-duo-helper</string><string>finish-update</string>\
+             <string>--version</string><string>0.3.1</string><string>--place</string><string>/Applications/Rex DUO Beacon.app</string>"
         ));
         assert!(plist.contains("<string>--old-pid</string><string>4242</string></array>"));
         assert!(plist.contains("<key>RunAtLoad</key><true/>"));
@@ -2460,7 +2762,7 @@ mod tests {
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
 <key>CFBundleExecutable</key><string>{}</string>
-<key>CFBundleName</key><string>Rex DUO Helper</string>
+<key>CFBundleName</key><string>Rex DUO Beacon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>9.9.9</string>
 <key>CFBundleVersion</key><string>1</string>
@@ -2513,6 +2815,146 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// An app installed under the earlier name is the installed app. An update puts the new
+    /// version beside it under the app's name, and a roll back puts the old one back under the
+    /// name it had.
+    #[test]
+    fn an_update_of_an_app_under_the_earlier_name_ends_under_the_new_name() {
+        let install = Path::new("/home/u/.local/bin/rex-duo-helper");
+        let old = Place::detect("macos", Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"), install).unwrap();
+        assert_eq!(old, Place::MacApp("/Applications/Rex DUO Helper.app".into()));
+        assert_eq!(old.target(), Path::new("/Applications/Rex DUO Beacon.app"));
+        assert_eq!(old.previous(), Path::new("/Applications/Rex DUO Beacon.previous.app"));
+        let named = Place::MacApp("/Applications/Rex DUO Beacon.app".into());
+        assert_eq!(named.target(), named.path());
+        assert_eq!(Place::LinuxBinary(install.into()).target(), install);
+
+        let dir = temp("swapold");
+        let place = Place::MacApp(dir.join(OLD_APP_NAME));
+        let apps = || {
+            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".app")).collect();
+            names.sort();
+            names
+        };
+        let stage = |version: &str, folder: &str| {
+            let new = dir.join(".rex-duo-helper-update-1/unpacked").join(folder);
+            fake_app(&new, version);
+            swap_mac(&new, &place).unwrap();
+        };
+        let programs = std::cell::RefCell::new(vec![]);
+        let restart = || {
+            programs.borrow_mut().push(place.program());
+            true
+        };
+        let (new_runs, old_runs) = (|| Some("0.3.2".to_string()), || Some("0.3.1".to_string()));
+        let fx = |running_version| Effects { restart: &restart, old_gone: &|| true, running_version, exit_wait: Duration::from_millis(20), wait: Duration::from_millis(40), poll: Duration::from_millis(5) };
+
+        // The new version does not start: the old app is back under the earlier name, alone,
+        // and the service was started from the new place and then from the old one. A copy
+        // set aside under either name by an earlier update is gone.
+        fake_app(place.path(), "0.3.1");
+        fake_app(&dir.join(OLD_PREVIOUS_APP), "0.3.0");
+        fake_app(&place.previous(), "0.2.0");
+        stage("0.3.2", OLD_APP_NAME);
+        assert_eq!(apps(), [APP_NAME, PREVIOUS_APP]);
+        assert_eq!((marker(&place.target()).as_str(), marker(&place.previous()).as_str()), ("0.3.2", "0.3.1"));
+        assert!(finish(&place, "0.3.2", &fx(&old_runs)).is_err());
+        assert_eq!(apps(), [OLD_APP_NAME]);
+        assert_eq!(marker(place.path()), "0.3.1");
+        assert_eq!(*programs.borrow(), [place.target().join("Contents/MacOS/rex-duo-helper"), place.path().join("Contents/MacOS/rex-duo-helper")]);
+
+        // It starts: one app, under the new name, whichever folder name the zip gave it.
+        for folder in [OLD_APP_NAME, APP_NAME] {
+            fake_app(place.path(), "0.3.1");
+            fake_app(&dir.join(OLD_PREVIOUS_APP), "0.3.0");
+            let _ = std::fs::remove_dir_all(place.target());
+            stage("0.3.2", folder);
+            assert_eq!(finish(&place, "0.3.2", &fx(&new_runs)), Ok(()), "{folder}");
+            assert_eq!(apps(), [APP_NAME], "{folder}");
+            assert_eq!(marker(&place.target()), "0.3.2");
+        }
+
+        // An app already under the new name beside it is not written over.
+        fake_app(place.path(), "0.3.1");
+        let new = dir.join(".rex-duo-helper-update-1/unpacked").join(APP_NAME);
+        fake_app(&new, "0.3.3");
+        assert!(swap_mac(&new, &place).is_err());
+        assert_eq!((marker(place.path()).as_str(), marker(&place.target()).as_str()), ("0.3.1", "0.3.2"));
+        assert_eq!(apps(), [APP_NAME, OLD_APP_NAME]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A release list names the Mac app twice: under `macos-universal` in a zip that holds
+    /// `Rex DUO Helper.app`, and under `macos-universal-beacon` in one that holds
+    /// `Rex DUO Beacon.app`.
+    #[test]
+    fn a_mac_takes_the_beacon_entry_and_falls_back_to_the_first_one() {
+        let base = format!("{RELEASE_PREFIX}helper-v0.3.1");
+        let mut list: Value = serde_json::from_str(&manifest_json("0.3.1")).unwrap();
+        list["assets"]["macos-universal"]["url"] = json!(format!("{base}/Rex-DUO-Helper.zip"));
+        let mac = platform_key("macos", "aarch64");
+        assert_eq!(mac, Some(MAC_KEY));
+        let url = |list: &Value, platform: Option<&str>| match plan(&Manifest::parse(list.to_string().as_bytes()).unwrap(), "0.3.0", platform) {
+            Ok(Plan::Update { asset, .. }) => asset.url,
+            other => panic!("{other:?}"),
+        };
+
+        // A list without the entry, as version 0.3.0 was published: the one entry is taken.
+        assert_eq!(url(&list, mac), format!("{base}/Rex-DUO-Helper.zip"));
+
+        // With it: a Mac takes it, and Linux is as before.
+        list["assets"][MAC_BEACON_KEY] = json!({"url": format!("{base}/Rex-DUO-Beacon.zip"), "sha256": "12".repeat(32), "size": 124});
+        assert_eq!(url(&list, mac), format!("{base}/Rex-DUO-Beacon.zip"));
+        assert_eq!(url(&list, Some("linux-x86_64")), format!("{base}/rex-duo-helper-linux-x86_64"));
+        let m = Manifest::parse(list.to_string().as_bytes()).unwrap();
+        assert_eq!(m.assets.len(), 4);
+        // The entry an updater of version 0.3.0 reads is still there, and every entry has
+        // the three fields in the form that updater requires of each entry it finds.
+        assert_eq!(m.assets[MAC_KEY].url, format!("{base}/Rex-DUO-Helper.zip"));
+        for (name, asset) in &m.assets {
+            assert!(release_url_ok(&asset.url) && asset.sha256.len() == 64 && (1..=MAX_ASSET).contains(&asset.size), "{name}");
+        }
+        // A list with the new entry alone has a build for a Mac too.
+        list["assets"].as_object_mut().unwrap().remove(MAC_KEY);
+        assert_eq!(url(&list, mac), format!("{base}/Rex-DUO-Beacon.zip"));
+        // No Mac entry at all: no build.
+        list["assets"].as_object_mut().unwrap().remove(MAC_BEACON_KEY);
+        assert!(plan(&Manifest::parse(list.to_string().as_bytes()).unwrap(), "0.3.0", mac).is_err());
+    }
+
+    /// What a person reads names the program Rex DUO Beacon. The earlier name stays in the
+    /// sources only where it names a thing that keeps it: the app folder an old install has,
+    /// the state folder, the log.
+    #[test]
+    fn no_sentence_names_the_program_by_its_earlier_name() {
+        let needle = concat!("Rex DUO ", "Helper");
+        let kept = [".app", ".previous.app", ".log", ".old.log"].map(|end| format!("{needle}{end}"));
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                // Comments may name the earlier app. Only what is in quotes can reach a person.
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                for (i, _) in code.match_indices(needle) {
+                    let rest = &code[i..];
+                    let in_quotes = code[..i].matches('"').count() % 2 == 1;
+                    let a_name = kept.iter().any(|k| rest.starts_with(k.as_str()))
+                        || code[..i].ends_with("Application Support/")
+                        || code[..i].ends_with("state_dir(\"")
+                        || code[..i].ends_with("Library/Logs/");
+                    assert!(!in_quotes || a_name, "{}:{}: {line}", path.display(), n + 1);
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 0, "the earlier names are still read somewhere");
+    }
+
     /// The release lists in `Relay/fixtures`, which the release tooling writes
     /// (`tests-setup/make-fixtures.sh`) and the app's tests read too: one format, three readers.
     #[test]
@@ -2540,6 +2982,19 @@ mod tests {
         assert_eq!(older.unwrap_err().problem, Problem::Replayed);
         let untrusted = accept_manifest(&read("manifest.json"), &read("manifest-untrusted.json.sig"), &[key], None, now);
         assert_eq!(untrusted.unwrap_err().problem, Problem::Rejected);
+
+        // manifest.json is a list as version 0.3.0 was published, with one entry for a Mac.
+        // manifest-beacon.json is the same release with the second one.
+        let mac = platform_key("macos", "aarch64");
+        let taken = |m: &Manifest| match plan(m, "0.3.0", mac) {
+            Ok(Plan::Update { asset, .. }) => asset.url,
+            other => panic!("{other:?}"),
+        };
+        assert!(taken(&m).ends_with("/helper-v9.8.7/Rex-DUO-Helper.zip"));
+        let both = accept_manifest(&read("manifest-beacon.json"), &read("manifest-beacon.json.sig"), &[key], None, now).unwrap();
+        assert_eq!((both.version.as_str(), both.assets.len()), ("9.8.7", 4));
+        assert_eq!(both.assets[MAC_KEY], m.assets[MAC_KEY]);
+        assert!(taken(&both).ends_with("/helper-v9.8.7/Rex-DUO-Beacon.zip"));
     }
 
     /// The helper against what `release.sh` really writes. `Relay/test-install.sh` runs this
@@ -2572,7 +3027,19 @@ mod tests {
             assert!(verify_signatures(&keys, binary_message("0.0.1", platform, &asset.sha256).as_bytes(), &sig).is_err());
             assert!(verify_signatures(&keys, &file, &sig).is_err());
         }
-        assert!(m.assets.contains_key("macos-universal"));
+        // The Mac app twice: the entry the updater of version 0.3.0 reads, and the one a Mac
+        // takes now. Each names its zip, and the zips are two files.
+        let mac = platform_key("macos", "aarch64");
+        let (first, second) = (&m.assets[MAC_KEY], &m.assets[MAC_BEACON_KEY]);
+        assert!(first.url.ends_with(&format!("/helper-v{}/Rex-DUO-Helper.zip", m.version)), "{}", first.url);
+        assert!(second.url.ends_with(&format!("/helper-v{}/Rex-DUO-Beacon.zip", m.version)), "{}", second.url);
+        assert_ne!(first.sha256, second.sha256);
+        for asset in [first, second] {
+            let file = read(asset.url.rsplit('/').next().unwrap());
+            assert_eq!((file.len() as u64, sha256(&file)), (asset.size, asset.sha256.clone()), "{}", asset.url);
+        }
+        assert_eq!(m.assets.len(), 4);
+        assert_eq!(plan(&m, "0.0.1", mac), Ok(Plan::Update { version: m.version.clone(), asset: second.clone() }));
     }
 
     #[test]
@@ -2591,7 +3058,7 @@ mod tests {
 
     #[test]
     fn mac_checks_are_argument_lists_with_absolute_tools() {
-        let app = Path::new("/Applications/.rex-duo-helper-update-1/unpacked/Rex DUO Helper.app");
+        let app = Path::new("/Applications/.rex-duo-helper-update-1/unpacked/Rex DUO Beacon.app");
         let checks = mac_checks(app);
         assert_eq!(checks[0].0, "/usr/bin/codesign");
         assert_eq!(checks[0].1, [os("--verify"), os("--deep"), os("--strict"), os(app)]);
@@ -2612,7 +3079,7 @@ mod tests {
 
     #[test]
     fn gatekeeper_must_say_notarized() {
-        let accepted = "/Applications/Rex DUO Helper.app: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: A (R2PVQ496X7)\n";
+        let accepted = "/Applications/Rex DUO Beacon.app: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: A (R2PVQ496X7)\n";
         assert!(gatekeeper_ok(true, accepted));
         assert!(!gatekeeper_ok(false, accepted));
         assert!(!gatekeeper_ok(true, "x.app: accepted\nsource=Developer ID\n"));
@@ -2645,6 +3112,315 @@ mod tests {
     }
 
     #[test]
+    fn the_wait_after_a_check() {
+        use Ended::{Passed, Refused, Unreachable};
+        // The list could not be reached: about 15 minutes, 1 hour, 3 hours, then as usual.
+        assert_eq!(next_wait(Unreachable, 1), Wait { base: 900, spread: 120 });
+        assert_eq!(next_wait(Unreachable, 2), Wait { base: 3600, spread: 300 });
+        assert_eq!(next_wait(Unreachable, 3), Wait { base: 10_800, spread: 900 });
+        for later in [4, 5, 100, u32::MAX] {
+            assert_eq!(next_wait(Unreachable, later), NORMAL_WAIT, "{later}");
+        }
+        assert_eq!(NORMAL_WAIT, Wait { base: 12 * 3600 - 1800, spread: 3600 });
+        // A check that passed, and one whose list was refused, keep the normal schedule
+        // however many came before.
+        for failures in 0..6 {
+            assert_eq!(next_wait(Passed, failures), NORMAL_WAIT);
+            assert_eq!(next_wait(Refused, failures), NORMAL_WAIT);
+        }
+        // Each wait is its base plus less than its spread.
+        for wait in RETRY_WAITS.into_iter().chain([NORMAL_WAIT]) {
+            for _ in 0..50 {
+                assert!((wait.base..wait.base + wait.spread).contains(&wait.pick()));
+            }
+        }
+
+        // What each problem counts as.
+        assert_eq!(Ended::of(None), Passed);
+        assert_eq!(Ended::of(Some(Problem::NoBuild)), Passed);
+        assert_eq!(Ended::of(Some(Problem::Unreachable)), Unreachable);
+        for p in [Problem::Rejected, Problem::Expired, Problem::Replayed] {
+            assert_eq!(Ended::of(Some(p)), Refused);
+        }
+
+        // The same through the state a run of checks leaves.
+        let mut s = State::default();
+        let mut after = |error: Option<Problem>| {
+            s.checked(RELEASED, error);
+            next_wait(s.ended, s.failures)
+        };
+        assert_eq!(after(Some(Problem::Unreachable)), RETRY_WAITS[0]);
+        assert_eq!(after(Some(Problem::Unreachable)), RETRY_WAITS[1]);
+        assert_eq!(after(Some(Problem::Unreachable)), RETRY_WAITS[2]);
+        assert_eq!(after(Some(Problem::Unreachable)), NORMAL_WAIT);
+        assert_eq!(after(Some(Problem::Unreachable)), NORMAL_WAIT);
+        // A check that passes starts the count again.
+        assert_eq!(after(None), NORMAL_WAIT);
+        assert_eq!(after(Some(Problem::Unreachable)), RETRY_WAITS[0]);
+        assert_eq!(after(Some(Problem::Unreachable)), RETRY_WAITS[1]);
+        // A list that failed verification is on the normal schedule, and so is the count.
+        for refused in [Problem::Rejected, Problem::Expired, Problem::Replayed] {
+            assert_eq!(after(Some(refused)), NORMAL_WAIT);
+        }
+        assert_eq!(after(Some(Problem::Unreachable)), RETRY_WAITS[0]);
+    }
+
+    #[test]
+    fn the_wait_counts_from_the_last_check() {
+        assert_eq!(time_left(None, 900, RELEASED), 900);
+        assert_eq!(time_left(Some(RELEASED), 900, RELEASED), 900);
+        assert_eq!(time_left(Some(RELEASED), 900, RELEASED + 300), 600);
+        assert_eq!(time_left(Some(RELEASED), 900, RELEASED + 900), 0);
+        assert_eq!(time_left(Some(RELEASED), 900, RELEASED + 5000), 0);
+        // A clock that went back never makes the wait longer than it is.
+        assert_eq!(time_left(Some(RELEASED), 900, RELEASED - 5000), 900);
+        assert_eq!(time_left(Some(i64::MAX), u64::MAX, i64::MIN), i64::MAX as u64);
+    }
+
+    fn test_updater(dir: &Path) -> Arc<Updater> {
+        let (_, public) = keypair();
+        let env = Env { dry_run: false, debug_build: false, keys: Ok(vec![public]), place: Err("test".into()), service: true, writable: true };
+        Updater::with_env(env, false, dir)
+    }
+
+    #[test]
+    fn failing_since_is_when_the_run_of_failed_checks_began() {
+        let dir = temp("failing");
+        let u = test_updater(&dir);
+        assert_eq!(u.status()["failing_since"], Value::Null);
+        // Set by the first failed check, and left alone by the ones after it, of either kind.
+        u.change(|s| s.checked(RELEASED, Some(Problem::Unreachable)));
+        assert_eq!(u.status()["failing_since"], RELEASED);
+        u.change(|s| s.checked(RELEASED + 900, Some(Problem::Unreachable)));
+        u.change(|s| s.checked(RELEASED + 4500, Some(Problem::Expired)));
+        let s = u.status();
+        assert_eq!(s["failing_since"], RELEASED);
+        assert_eq!(s["checked_at"], iso8601(RELEASED + 4500));
+        assert_eq!(s["last_error"], "The release list is out of date.");
+        // A check that passes clears it and the error.
+        u.change(|s| s.checked(RELEASED + 9000, None));
+        let s = u.status();
+        assert_eq!((&s["failing_since"], &s["last_error"]), (&Value::Null, &Value::Null));
+        assert_eq!(s["checked_at"], iso8601(RELEASED + 9000));
+        // The next run has its own beginning.
+        u.change(|s| s.checked(RELEASED + 9500, Some(Problem::Rejected)));
+        assert_eq!(u.status()["failing_since"], RELEASED + 9500);
+        // A list that was accepted is a check that passed, with or without a build in it.
+        u.change(|s| s.checked(RELEASED + 9600, Some(Problem::NoBuild)));
+        let s = u.status();
+        assert_eq!(s["failing_since"], Value::Null);
+        assert_eq!(s["last_error"], "The newest version has no build for this computer.");
+        // A version that was rolled back stays the error after a check that passed.
+        u.change(|s| {
+            s.failed_version = Some("999.0.0".into());
+            s.checked(RELEASED + 9700, None);
+        });
+        assert_eq!(u.status()["last_error"], Problem::RolledBack.sentence());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_service_takes_a_newer_check_from_the_command_line() {
+        let dir = temp("taken");
+        let t = now() as i64 - 10_000;
+        let service = test_updater(&dir);
+        let changes = Arc::new(Mutex::new(0));
+        let counter = changes.clone();
+        service.set_on_change(move || *counter.lock().unwrap() += 1);
+        // No file: nothing to take.
+        assert!(!service.take_command_result());
+        // The service has failed three times to reach the list.
+        for n in 0..3 {
+            service.change(|s| s.checked(t + n * 100, Some(Problem::Unreachable)));
+        }
+        assert_eq!(service.schedule(), (Some(t + 200), RETRY_WAITS[2]));
+        *changes.lock().unwrap() = 0;
+
+        // The command, a process of its own with its own state, checks and passes.
+        let command = test_updater(&dir);
+        command.report_check();
+        assert!(!dir.join(CHECK_FILE).exists(), "nothing is reported before a check");
+        command.change(|s| {
+            s.latest_version = Some("999.0.0".into());
+            s.min_version = Some("0.3.0".into());
+            s.manifest_expires_at = Some(EXPIRES);
+            s.checked(t + 500, None);
+        });
+        command.report_check();
+        let file: Value = serde_json::from_slice(&std::fs::read(dir.join(CHECK_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            file,
+            json!({"checked_at": iso8601(t + 500), "latest_version": "999.0.0", "min_version": "0.3.0", "manifest_expires_at": iso8601(EXPIRES), "error": null})
+        );
+
+        // The service shows that result, tells its listener, and is back on the normal schedule.
+        assert!(service.take_command_result());
+        assert_eq!(*changes.lock().unwrap(), 1);
+        let s = service.status();
+        assert_eq!((&s["last_error"], &s["failing_since"]), (&Value::Null, &Value::Null));
+        assert_eq!(s["checked_at"], iso8601(t + 500));
+        assert_eq!((s["latest_version"].as_str(), s["update_available"].as_bool()), (Some("999.0.0"), Some(true)));
+        assert_eq!((s["min_version"].as_str(), s["manifest_expires_at"].as_str()), (Some("0.3.0"), Some(iso8601(EXPIRES).as_str())));
+        assert_eq!(service.schedule(), (Some(t + 500), NORMAL_WAIT));
+        // The same file is taken once.
+        assert!(!service.take_command_result());
+        assert_eq!(*changes.lock().unwrap(), 1);
+
+        // A command whose check failed: the error and the time are taken, what was known of
+        // the newest version stays, and the schedule is the normal one from that check.
+        command.change(|s| s.checked(t + 600, Some(Problem::Unreachable)));
+        command.report_check();
+        assert!(service.take_command_result());
+        let s = service.status();
+        assert_eq!(s["last_error"], "The release list could not be downloaded.");
+        assert_eq!((s["checked_at"].as_str(), s["failing_since"].as_i64()), (Some(iso8601(t + 600).as_str()), Some(t + 600)));
+        assert_eq!(s["latest_version"], "999.0.0");
+        assert_eq!(service.schedule(), (Some(t + 600), NORMAL_WAIT));
+        // The service's own next failure is then the first of its run.
+        service.change(|s| s.checked(t + 700, Some(Problem::Unreachable)));
+        assert_eq!(service.schedule(), (Some(t + 700), RETRY_WAITS[0]));
+        assert_eq!(service.status()["failing_since"], t + 600);
+
+        // Before any check of its own, a service takes what the command found.
+        let fresh = test_updater(&dir);
+        assert!(fresh.take_command_result());
+        assert_eq!(fresh.status()["checked_at"], iso8601(t + 600));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_older_malformed_or_oversized_command_result_is_ignored() {
+        let dir = temp("ignored");
+        let t = now() as i64 - 10_000;
+        let service = test_updater(&dir);
+        service.change(|s| {
+            s.latest_version = Some("0.3.1".into());
+            s.checked(t, Some(Problem::Expired));
+        });
+        let before = service.status();
+        let changes = Arc::new(Mutex::new(0));
+        let counter = changes.clone();
+        service.set_on_change(move || *counter.lock().unwrap() += 1);
+        let path = dir.join(CHECK_FILE);
+        let good = |at: i64| json!({"checked_at": iso8601(at), "latest_version": "999.0.0", "min_version": "0.3.0", "manifest_expires_at": iso8601(EXPIRES), "error": null});
+        let offered = |v: &Value| {
+            std::fs::write(&path, v.to_string()).unwrap();
+            service.take_command_result()
+        };
+
+        // Older than the service's own check, and of the same second.
+        assert!(!offered(&good(t - 1)));
+        assert!(!offered(&good(t)));
+        // From the future.
+        assert!(!offered(&good(now() as i64 + 3600)));
+        assert!(!service.take_command_result_at(t));
+        // A field off.
+        let broken = |edit: &dyn Fn(&mut Value)| {
+            let mut v = good(t + 1);
+            edit(&mut v);
+            v
+        };
+        for (why, v) in [
+            ("no time", broken(&|v| v["checked_at"] = Value::Null)),
+            ("a time as a number", broken(&|v| v["checked_at"] = json!(t + 1))),
+            ("a time spelled another way", broken(&|v| v["checked_at"] = json!("2026-11-17 12:00:00"))),
+            ("not a version", broken(&|v| v["latest_version"] = json!("latest"))),
+            ("a version as a number", broken(&|v| v["latest_version"] = json!(1))),
+            ("not a minimum version", broken(&|v| v["min_version"] = json!("0.3"))),
+            ("not an expiry", broken(&|v| v["manifest_expires_at"] = json!("never"))),
+            ("an unknown error", broken(&|v| v["error"] = json!("Something else went wrong."))),
+            ("an error that no check ends with", broken(&|v| v["error"] = json!(Problem::Install.sentence()))),
+            ("an error as a number", broken(&|v| v["error"] = json!(7))),
+            ("passed without a version", broken(&|v| v["latest_version"] = Value::Null)),
+            ("a list", json!([good(t + 1)])),
+        ] {
+            assert!(!offered(&v), "{why}");
+        }
+        for junk in ["", "not json", "{", "null"] {
+            std::fs::write(&path, junk).unwrap();
+            assert!(!service.take_command_result(), "{junk:?}");
+        }
+        // Larger than the file ever is, though what it says is in order.
+        let padded = format!("{}{}", good(t + 1), " ".repeat(MAX_CHECK_FILE as usize));
+        std::fs::write(&path, &padded).unwrap();
+        assert!(!service.take_command_result());
+        // Not a regular file.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(dir.join("elsewhere.json"), good(t + 1).to_string()).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere.json"), &path).unwrap();
+        assert!(!service.take_command_result());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(!service.take_command_result());
+        std::fs::remove_dir(&path).unwrap();
+
+        // Through all of it the service kept its own result and told nobody of a change.
+        assert_eq!(service.status(), before);
+        assert_eq!(*changes.lock().unwrap(), 0);
+        // The same result, in order and one second newer, is taken.
+        assert!(offered(&good(t + 1)));
+        assert_eq!(service.status()["latest_version"], "999.0.0");
+        // A failed check names no version, and each sentence a check can end with is read back.
+        for p in CHECK_PROBLEMS {
+            let r = Reported { at: t, latest_version: None, min_version: None, manifest_expires_at: None, error: Some(p) };
+            let parsed = Reported::parse(r.json().to_string().as_bytes());
+            assert_eq!(parsed, (p != Problem::NoBuild).then_some(r), "{p:?}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_command_result_is_private_and_written_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("checkfile");
+        let command = test_updater(&dir);
+        let path = dir.join(CHECK_FILE);
+        let tmp = dir.join(format!("{CHECK_FILE}.tmp"));
+        let names = || {
+            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            names.sort();
+            names
+        };
+        let t = now() as i64 - 100;
+        command.change(|s| s.checked(t, Some(Problem::Rejected)));
+        command.report_check();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(names(), [CHECK_FILE], "the temporary file was renamed into place");
+        let first = std::fs::read(&path).unwrap();
+        assert!((first.len() as u64) < MAX_CHECK_FILE);
+        assert_eq!(Reported::parse(&first).unwrap().error, Some(Problem::Rejected));
+        // It holds the five fields the status shows, and nothing else.
+        let v: Value = serde_json::from_slice(&first).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["checked_at", "error", "latest_version", "manifest_expires_at", "min_version"]);
+
+        // The next result replaces the file by a rename: the name then belongs to another
+        // file, and the one a reader had open is unchanged. A temporary file left by a
+        // process that died, readable by others, is not reused.
+        use std::os::unix::fs::MetadataExt;
+        let open = std::fs::File::open(&path).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        std::fs::write(&tmp, "left behind").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        command.change(|s| {
+            s.latest_version = Some("999.0.0".into());
+            s.checked(t + 50, None);
+        });
+        command.report_check();
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(names(), [CHECK_FILE]);
+        let mut still = Vec::new();
+        std::io::Read::read_to_end(&mut &open, &mut still).unwrap();
+        assert_eq!(still, first);
+        assert_eq!(Reported::parse(&std::fs::read(&path).unwrap()).unwrap().at, t + 50);
+        // The longest result there is fits the limit a reader sets.
+        let longest = Reported { at: t, latest_version: Some("999999999.999999999.999999999".into()), min_version: Some("999999999.999999999.999999999".into()), manifest_expires_at: Some(EXPIRES), error: Some(Problem::Replayed) };
+        assert!((serde_json::to_vec_pretty(&longest.json()).unwrap().len() as u64) < MAX_CHECK_FILE / 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn status_and_the_memory_of_a_failed_update() {
         let (_, public) = keypair();
         let dir = temp("status");
@@ -2660,7 +3436,7 @@ mod tests {
         assert_eq!(
             u.status(),
             json!({"version": VERSION, "latest_version": null, "min_version": null, "update_available": false, "update_required": false,
-                "checked_at": null, "manifest_expires_at": null, "updating": false, "can_update": true, "last_error": null})
+                "checked_at": null, "manifest_expires_at": null, "updating": false, "can_update": true, "last_error": null, "failing_since": null})
         );
         assert!(u.auto);
         assert!(!Updater::with_env(env(), false, &dir).auto, "auto_update: false turns the timer off");
@@ -2693,7 +3469,7 @@ mod tests {
 
         // A version that was rolled back is remembered by the helper that starts next. The
         // details stay in update_result.json and the log.
-        record_result(&dir, "999.0.0", &Err("Version 999.0.0 did not start: /Applications/Rex DUO Helper.app is damaged.".into()));
+        record_result(&dir, "999.0.0", &Err("Version 999.0.0 did not start: /Applications/Rex DUO Beacon.app is damaged.".into()));
         let next = Updater::with_env(env(), true, &dir);
         assert_eq!(next.state.lock().unwrap().failed_version.as_deref(), Some("999.0.0"));
         assert_eq!(next.status()["last_error"], "The new version did not start, so the previous version was put back.");

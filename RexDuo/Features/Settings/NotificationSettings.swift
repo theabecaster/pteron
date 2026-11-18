@@ -1,205 +1,321 @@
 import SwiftUI
-import UIKit
 
-/// Settings → Notifications: one toggle for push, and a quiet line when something stands in the way
-/// (iOS permission, the Rex DUO Helper on each computer). In-app banners for waiting agents are always on.
+/// Settings → Notifications: the master switch in a group of its own, with its line and the
+/// section's footer, and, while it is on, the computers in a group under it, one cell each.
+/// What each shows and what each control does come from `PushRegistrar` (`master`, `computers`,
+/// and its actions); the words are in `State/NotificationStatus.swift`. This file only lays them
+/// out and holds what is on screen over them: a confirm, the details of a helper, the manual
+/// steps. The matrix of states is in docs/notifications.md. In-app banners for waiting agents
+/// are always on and have no setting.
 struct NotificationSettingsSection: View {
     @Environment(AppModel.self) private var model
-    @Environment(Prefs.self) private var prefs
-    @Environment(\.openURL) private var openURL
     let theme: TermTheme
+
+    @State private var confirm: Pending?
+    @State private var sheet: Shown?
+    /// Counts the taps on the master switch that the model did not take, so the switch is drawn
+    /// again as the model has it.
+    @State private var refused = 0
+
+    /// A confirm that is up, and what its button does.
+    private struct Pending: Identifiable {
+        let id = UUID()
+        var copy: NotificationCopy.Confirm
+        var destructive: Bool
+        var action: () -> Void
+    }
+
+    /// A sheet that is up.
+    private enum Shown: Identifiable {
+        /// What a computer's helper says about itself; no rows when none answers.
+        case details(name: String, rows: [HelperDetails.Row])
+        case how
+
+        var id: String {
+            switch self {
+            case .details(let name, _): "details " + name
+            case .how: "how"
+            }
+        }
+    }
 
     var body: some View {
         let push = model.push
-        let denied = push.authorization == .denied
+        let master = push.master
+        let computers = master.showsComputers ? push.computers : []
         Section {
-            Toggle("Allow Notifications", isOn: Binding(
-                get: { prefs.pushEnabled && !denied },
-                set: { $0 ? push.enable() : push.disable() }))
-                .disabled(denied)
-            if denied {
-                note("Notifications are off for Rex DUO in iOS Settings.", button: "Open Settings")
-            } else if prefs.pushEnabled && push.authorization == .provisional {
-                note("Notifications arrive quietly in Notification Center. Allow banners in iOS Settings to see them right away.",
-                     button: "Open Settings")
-            }
-            ForEach(push.missingHelpers) { server in missingHelper(server) }
-            if push.wantsPush, model.servers.contains(where: { push.helpers[$0.id] == .running(pushEnabled: false) }) {
-                quiet("Rex DUO Helper is in test mode and won't send notifications.")
-            }
-            let outdated = push.wantsPush ? model.servers.filter { push.helpers[$0.id] == .outdated } : []
-            if !outdated.isEmpty {
-                quiet("Rex DUO Helper on \(outdated.map(\.config.name).joined(separator: ", ")) is too old for this version of Rex DUO. Install the latest helper there.")
-            }
-            if push.wantsPush {
-                ForEach(model.servers) { server in
-                    switch push.helpers[server.id] {
-                    case .identityChanged: changedHelper(server)
-                    case .failed(let why): failedHelper(server, why)
-                    default: EmptyView()
-                    }
-                }
-            }
-            if push.wantsPush, let problem = push.gatewayProblem {
-                quiet(Self.text(for: problem))
-            }
-            if push.wantsPush {
-                ForEach(model.servers.filter { push.versions[$0.id] != nil }) { server in
-                    if let version = push.versions[server.id] { helperRow(server, version) }
-                }
-            }
-            #if DEBUG
-            // For whoever publishes helper releases, not for users: only debug builds show it.
-            if let line = renewalLine { quiet(line) }
-            #endif
+            masterRow(master)
         } header: {
-            SettingsHeader("Notifications", theme)
+            SettingsHeader(MasterStatus.title, theme)
         } footer: {
-            SettingsFooter("Rex DUO Helper on each computer sends them while this app is closed: when an agent needs you, finishes, or a terminal asks for attention.", theme)
+            SettingsFooter(MasterStatus.footer, theme)
         }
         .settingsRows(theme)
-    }
 
-    private func quiet(_ text: String) -> some View {
-        Text(text)
-            .font(.footnote)
-            .foregroundStyle(theme.chrome.secondary)
-    }
-
-    /// Why this phone has no registration to hand to a helper.
-    static func text(for problem: GatewayError) -> String {
-        switch problem {
-        case .rateLimited: "Too many tries to set up notifications. Rex DUO will try again later."
-        case .unavailable: "Couldn't reach the Rex DUO notification service. Rex DUO will try again."
-        case .storeFailed: "Rex DUO couldn't save its notification setup on this iPhone. It will try again."
-        default: "The Rex DUO notification service refused this phone. Update Rex DUO and try again."
-        }
-    }
-
-    /// The helper on this computer isn't the one the phone first met there. It gets nothing until
-    /// the user says it is theirs.
-    private func changedHelper(_ server: ServerConnection) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(Self.changedText(server.config.name))
-                .font(.footnote)
-                .foregroundStyle(theme.chrome.secondary)
-            HStack(spacing: 20) {
-                Button("Trust") { model.push.trustHelper(server) }
-                Button("Reinstall") { install(server, .reinstall) }
+        if !computers.isEmpty {
+            Section {
+                ForEach(Array(computers.enumerated()), id: \.element.id) { index, row in
+                    ComputerNotificationRow(row: row, theme: theme,
+                                            setOn: { push.setComputer(row.id, on: $0) },
+                                            fix: { perform($0, row) },
+                                            choose: { choose($0, row) })
+                        .id(SettingsAnchor.computer(index))
+                }
+            } header: {
+                SettingsHeader(MasterStatus.computersHeader, theme)
             }
-            .font(.footnote.weight(.semibold))
-            .buttonStyle(.borderless)
-            .tint(theme.accent)
-            .frame(minHeight: 32)
+            .settingsRows(theme)
         }
     }
 
-    /// A helper that is there but not working: what it said, and Repair, which runs the install
-    /// again over it.
-    private func failedHelper(_ server: ServerConnection, _ why: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            quiet(why)
-            if model.helperSetup.offer(for: server, repairing: true) == .install {
-                Button("Repair") { install(server, .repair) }
-                    .font(.footnote.weight(.semibold))
-                    .buttonStyle(.borderless)
-                    .tint(theme.accent)
-                    .frame(minHeight: 32)
+    /// The master switch, with its line under it. The confirms and sheets hang off this row
+    /// because it is always there; a computer's row comes and goes.
+    private func masterRow(_ master: MasterStatus) -> some View {
+        let push = model.push
+        return VStack(alignment: .leading, spacing: 0) {
+            Toggle(MasterStatus.title, isOn: Binding(get: { master.switchOn }, set: { on in
+                push.setMaster(on: on)
+                // While iOS has notifications turned off the tap opens iOS Settings and the
+                // choice stays. The switch itself has already moved under the finger, and
+                // nothing in the model changed to move it back, so it is made again.
+                if master.tapOpensSettings { refused += 1 }
+            }))
+            .id(refused)
+            .disabled(!master.switchEnabled)
+            if let line = master.line {
+                NotificationStatusLine(line: line, fix: master.fix, theme: theme) { _ in push.openSettings() }
             }
         }
-    }
-
-    /// Notifications are on but a connected server has no helper: Install, when the computer is
-    /// the person's own and one the helper runs on.
-    private func missingHelper(_ server: ServerConnection) -> some View {
-        let name = server.config.name
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Rex DUO Helper isn't running on \(name)")
-                    .foregroundStyle(theme.fg)
-                Text(Self.missingText(model.helperSetup.offer(for: server), name: name, installing: model.helperSetup.isRunning(server.id)))
-                    .font(.footnote)
-                    .foregroundStyle(theme.chrome.secondary)
-            }
-            Spacer(minLength: 0)
-            if model.helperSetup.offer(for: server) == .install {
-                Button("Install") { install(server, .install) }
-                    .font(.body.weight(.semibold))
-                    .buttonStyle(.borderless)
-                    .tint(theme.accent)
+        .id(SettingsAnchor.notifications)
+        .alert(confirm?.copy.title ?? "", isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
+               presenting: confirm) { pending in
+            Button(pending.copy.confirm, role: pending.destructive ? .destructive : nil) { pending.action() }
+            Button(pending.copy.cancel, role: .cancel) {}
+        } message: { pending in
+            Text(pending.copy.message)
+        }
+        .sheet(item: $sheet) { shown in
+            switch shown {
+            case .details(let name, let rows): HelperDetailsSheet(name: name, rows: rows, theme: theme)
+            case .how: ManualStepsSheet(theme: theme)
             }
         }
-        .padding(.vertical, 2)
+        #if DEBUG
+        .task { await presentSimulated() }
+        #endif
     }
 
-    static func missingText(_ offer: HelperOffer, name: String, installing: Bool) -> String {
-        if installing { return "Installing it now." }
-        switch offer {
-        case .install: return "It sends notifications while Rex DUO is closed."
-        case .askOwner: return "Ask the owner of \(name) to install Rex DUO Helper."
-        case .none: return "Rex DUO Helper isn't available for this computer yet."
+    private func perform(_ fix: NotificationFix, _ row: ComputerRow) {
+        switch fix {
+        case .how:
+            sheet = .how
+        case .trust:
+            // The confirm is for the key offered now, and its button trusts that key and no other.
+            let key = model.push.offeredKey(for: row.id)
+            confirm = Pending(copy: NotificationCopy.trustConfirm(name: row.name), destructive: false) {
+                if let key { model.push.trust(row.id, key: key) }
+            }
+        default:
+            model.push.fix(fix, for: row.id)
         }
     }
 
-    /// The install sheet takes the screen once Settings has closed.
-    private func install(_ server: ServerConnection, _ kind: SetupState.Kind) {
-        model.helperSetup.request(server.id, kind: kind)
-        model.showSettings = false
+    private func choose(_ item: NotificationMenuItem, _ row: ComputerRow) {
+        let push = model.push
+        switch item {
+        case .sendTest: push.sendTest(for: row.id)
+        case .reinstall: push.reinstall(row.id)
+        case .cancel: push.cancel(for: row.id)
+        case .showDetails:
+            // An install's details are its own sheet, with the installer's output.
+            guard !push.showSetupDetails(for: row.id) else { return }
+            Task { sheet = .details(name: row.name, rows: await push.details(for: row.id)?.rows() ?? []) }
+        case .remove:
+            Task {
+                let copy = await push.removeConfirm(for: row.id)
+                confirm = Pending(copy: copy, destructive: true) { push.removeHelper(from: row.id) }
+            }
+        }
     }
 
     #if DEBUG
-    /// The earliest date a helper's release list needs renewing by, when that is within 30 days.
-    private var renewalLine: String? {
-        let dates = model.servers.compactMap { model.push.versions[$0.id]?.manifestExpiresAt }
-        return dates.min().flatMap { HelperRelease.renewalNotice(expiresAt: $0, now: Date()) }
+    /// `-simulateNotifications confirm-remove|confirm-trust|details|how`: the screen opens with
+    /// that confirm or sheet up over its first computer, as the menu or the button would put it.
+    private func presentSimulated() async {
+        let push = model.push
+        guard let shown = push.simulatedPresentation, let row = push.computers.first else { return }
+        // The Settings sheet finishes arriving first; a second presentation during it is dropped.
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        switch shown {
+        case .confirmRemove: choose(.remove, row)
+        case .confirmTrust: perform(.trust, row)
+        case .details: choose(.showDetails, row)
+        case .how: perform(.how, row)
+        }
     }
     #endif
+}
 
-    static func changedText(_ name: String) -> String {
-        "Rex DUO Helper on \(name) changed. Only trust it if you reinstalled the helper there."
+extension NotificationTint {
+    /// The design system's colour for a status line: the "needs you" colour of a waiting agent
+    /// for a problem, the secondary text colour for information, and the row's own text colour
+    /// for something the app is doing by itself.
+    func color(in theme: TermTheme) -> Color {
+        switch self {
+        case .warning: theme.chrome.blocked
+        case .secondary: theme.chrome.secondary
+        case .none: theme.fg
+        }
     }
+}
 
-    /// One computer's helper: its version, and "Update" when a newer one is out.
-    private func helperRow(_ server: ServerConnection, _ version: HelperVersion) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.servers.count > 1 ? "Rex DUO Helper on \(server.config.name)" : "Rex DUO Helper")
-                    .foregroundStyle(theme.fg)
-                Text(version.lastError ?? version.summary)
-                    .font(.footnote)
-                    .foregroundStyle(theme.chrome.secondary)
+/// One computer's cell: its name as the cell's title, the `…` button for its menu when it has
+/// one, and its switch; directly under the name the one status line, with its one button, when
+/// the computer has one. A cell with no line is as tall as any single-line cell of Settings. The
+/// name and the switch are one line of fixed height at the top of the cell, at the same distance
+/// from its top edge with a line under them or without, so neither moves when the line comes
+/// and goes.
+private struct ComputerNotificationRow: View {
+    let row: ComputerRow
+    let theme: TermTheme
+    let setOn: (Bool) -> Void
+    let fix: (NotificationFix) -> Void
+    let choose: (NotificationMenuItem) -> Void
+
+    var body: some View {
+        let status = row.status
+        VStack(alignment: .leading, spacing: 0) {
+            // The switch with the name as its label, as the master switch above it, so both
+            // have the same height and the same place for the switch.
+            Toggle(isOn: Binding(get: { status.switchOn }, set: { setOn($0) })) {
+                HStack(spacing: 2) {
+                    Text(row.name)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if !status.menu.isEmpty {
+                        Menu { items(status.menu) } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(theme.chrome.secondary)
+                                .frame(width: 40, height: 40)
+                                .contentShape(Rectangle())
+                        }
+                        .menuOrder(.fixed)
+                        // A full-height touch target that leaves the row as tall as one without a menu.
+                        .padding(.vertical, -12)
+                        .accessibilityLabel("More for \(row.name)")
+                    }
+                }
             }
-            Spacer(minLength: 0)
-            if version.updating {
-                ProgressView()
-            } else if version.offersUpdate {
-                Button("Update") { model.push.updateHelper(server) }
-                    .font(.body.weight(.semibold))
-                    .buttonStyle(.borderless)
-                    .tint(theme.accent)
-            } else if version.updateRequired, !version.canUpdate {
-                // It can't replace itself: the install does it.
-                Button("Repair") { install(server, .repair) }
-                    .font(.body.weight(.semibold))
-                    .buttonStyle(.borderless)
-                    .tint(theme.accent)
+            .disabled(!status.switchEnabled)
+            if let line = status.line {
+                NotificationStatusLine(line: line, fix: status.fix, theme: theme, action: fix)
             }
         }
-        .task(id: server.id) { model.push.refreshVersion(server) }
+        .contextMenu { items(status.menu) }
     }
 
-    private func note(_ text: String, button: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(text)
+    /// The model's items, in its order. The long press and the `…` button open the same menu.
+    private func items(_ menu: [NotificationMenuItem]) -> some View {
+        ForEach(Array(menu.enumerated()), id: \.offset) { _, item in
+            Button(item.title, role: item.isDestructive ? .destructive : nil) { choose(item) }
+        }
+    }
+}
+
+/// The line under a switch: a spinner while the app is working on it, the words in the line's
+/// tint, and the one button, in the look of the section's inline buttons (semibold footnote in
+/// the accent colour, no border). Long words wrap to a second line and no further; the button
+/// keeps its size.
+private struct NotificationStatusLine: View {
+    let line: NotificationLine
+    let fix: NotificationFix?
+    let theme: TermTheme
+    let action: (NotificationFix) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if line.spinner { ProgressView().controlSize(.mini) }
+            Text(line.text)
                 .font(.footnote)
-                .foregroundStyle(theme.chrome.secondary)
-            Button(button) {
-                if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                .foregroundStyle(line.tint.color(in: theme))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            // Without a button the words still end where the switch above them begins.
+            Spacer(minLength: fix == nil ? 64 : 8)
+            if let fix {
+                Button(fix.title) { action(fix) }
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(theme.accent)
+                    .fixedSize()
+                    // The touch target of the section's inline buttons, without its height: the
+                    // line stays directly under the name whether or not it has a button.
+                    .frame(minHeight: 32)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, -8)
             }
-            .font(.footnote.weight(.semibold))
-            .buttonStyle(.borderless)
-            .tint(theme.accent)
-            .frame(minHeight: 32)
         }
+        .padding(.top, 5)
+    }
+}
+
+/// "Show Details": what a computer's helper says about itself. Read-only.
+private struct HelperDetailsSheet: View {
+    let name: String
+    let rows: [HelperDetails.Row]
+    let theme: TermTheme
+
+    var body: some View {
+        SmallSettingsSheet(title: name, theme: theme) {
+            if rows.isEmpty {
+                Text(NotificationCopy.noDetails(name: name))
+                    .foregroundStyle(theme.chrome.secondary)
+            } else {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    LabeledContent(row.label, value: row.value)
+                }
+            }
+        }
+    }
+}
+
+/// "How": installing the helper on the computer by hand.
+private struct ManualStepsSheet: View {
+    let theme: TermTheme
+
+    var body: some View {
+        SmallSettingsSheet(title: NotificationCopy.manualTitle, theme: theme) {
+            ForEach(NotificationCopy.manualSteps, id: \.self) { step in
+                Text(step).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// A short list in the look of Settings, as a sheet that takes the lower half of the screen.
+private struct SmallSettingsSheet<Rows: View>: View {
+    let title: String
+    let theme: TermTheme
+    @ViewBuilder var rows: Rows
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            SettingsList(theme: theme) {
+                Section { rows }
+                    .settingsRows(theme)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // The sheet opens from a list row and would take the row's text colour.
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.foregroundStyle(theme.accent) }
+            }
+        }
+        .tint(theme.accent)
+        .preferredColorScheme(theme.isDark ? .dark : .light)
+        .presentationDetents([.medium])
     }
 }

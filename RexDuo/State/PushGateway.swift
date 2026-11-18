@@ -1,41 +1,56 @@
+import CryptoKit
 import Foundation
 import Security
 
 /// What the phone keeps for one server's helper: the key that helper proved it holds the first
-/// time (its pin), and the secret minted for it. A secret is only ever given to the helper whose
+/// time (its pin), and the secret made for it. A secret is only ever given to the helper whose
 /// key is pinned here.
 struct ServerPush: Codable, Equatable {
     /// The helper's public key, base64 of the 32 raw bytes.
     var helperKey: String
-    /// The gateway's id for the secret, needed to delete it. Nil until one is minted.
+    /// The id the gateway stores the secret under, chosen by the phone. Nil until one is made.
     var secretID: String?
     /// What that helper needs to push to this phone. Handed to it through Rex.
     var pushSecret: String?
+    /// The secret is written here before it is sent, and the gateway has not confirmed storing
+    /// it yet. The same id and value are sent again until it has.
+    var unconfirmed: Bool?
 }
 
 /// This phone's registration with the push gateway: the service that holds the APNs key and this
 /// phone's APNs token, so no helper has to. Each computer's helper gets its own secret, which lets
 /// it notify this one phone and nothing else. The API is in Gateway/README.md.
+///
+/// The phone chooses the owner key, the device id and every secret, and writes them here before
+/// the request that uses them, so a request that is sent again is the same request.
 struct GatewayRegistration: Codable, Equatable {
     /// The gateway's base URL this registration belongs to.
     var gateway: String
     /// The gateway's id for this phone (not the 8-hex id in the Rex client label).
     var device: String
-    /// Proves this phone owns the registration: needed to change or delete it. Never leaves the
-    /// phone except in calls to the gateway.
+    /// Proves this phone owns the registration: needed to change it. Never leaves the phone
+    /// except in calls to the gateway.
     var ownerKey: String
-    /// The APNs token and environment the gateway has for it.
+    /// The APNs token and environment the gateway has confirmed holding. Empty before the first
+    /// confirmation.
     var token: String
     var environment: String
-    /// Notifications were turned off but the gateway couldn't be told yet. No secret may be
-    /// handed out again; the delete is retried.
-    var revoked: Bool?
+    /// The device is written here and the gateway has not confirmed making it yet (or it has to
+    /// be made again). The same id and key are sent until it has.
+    var unconfirmed: Bool?
     /// One entry per server, keyed by the server config's id.
     var servers: [String: ServerPush] = [:]
+    /// Ids of secrets that were taken back from their helpers and that the gateway has not
+    /// confirmed deleting yet. They are never handed out again; the delete is retried.
+    var retired: [String]?
+    /// Read from an item an earlier version of the app saved: its registration was being deleted
+    /// (`revoked`) or had been (`ended`). `PushRecord.adopt` says what each means now.
+    var revoked: Bool?
+    var ended: Bool?
 }
 
 extension GatewayRegistration {
-    // Written out so an item saved before there were per-server secrets still reads.
+    // Written out so an item saved by an earlier version of the app still reads.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         gateway = try c.decode(String.self, forKey: .gateway)
@@ -43,28 +58,170 @@ extension GatewayRegistration {
         ownerKey = try c.decode(String.self, forKey: .ownerKey)
         token = try c.decode(String.self, forKey: .token)
         environment = try c.decode(String.self, forKey: .environment)
+        unconfirmed = try c.decodeIfPresent(Bool.self, forKey: .unconfirmed)
         revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked)
         servers = try c.decodeIfPresent([String: ServerPush].self, forKey: .servers) ?? [:]
+        retired = try c.decodeIfPresent([String].self, forKey: .retired)
+        ended = try c.decodeIfPresent(Bool.self, forKey: .ended)
+    }
+
+    /// The gateway holds this device with this token and environment.
+    func holds(token: String, environment: String) -> Bool {
+        unconfirmed != true && self.token == token && self.environment == environment
+    }
+
+    /// The device id is one the phone chose, so the gateway makes the device again from the
+    /// same request. A device from the registration route of earlier versions has another
+    /// length; it is used as it is for as long as the gateway knows it.
+    var isPhoneChosen: Bool { device.count == PushKeys.deviceIDLength }
+}
+
+/// The values the phone chooses for the gateway, in the forms the gateway accepts.
+enum PushKeys {
+    static let deviceIDLength = 22
+    static let secretIDLength = 16
+    static let devicePrefix = "rexduo-device-v1\n"
+
+    /// base64url without padding.
+    static func text(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// 32 random bytes: 43 characters. The form of an owner key and of a push secret.
+    static func key(_ random: PushRandom) -> String { text(random.bytes(32)) }
+
+    /// 12 random bytes: 16 characters. The id a secret is stored under.
+    static func secretID(_ random: PushRandom) -> String { text(random.bytes(12)) }
+
+    /// The device id that belongs to an owner key: the first 22 characters of
+    /// base64url(SHA-256("rexduo-device-v1\n" + owner key)). The gateway checks the two fit.
+    static func deviceID(ownerKey: String) -> String {
+        String(text(Data(SHA256.hash(data: Data((devicePrefix + ownerKey).utf8)))).prefix(deviceIDLength))
+    }
+}
+
+/// Where the phone's random values come from; replaced in tests.
+struct PushRandom: Sendable {
+    /// `count` random bytes, for keys and ids.
+    var bytes: @Sendable (Int) -> Data
+    /// A number from 0 up to 1, for the spread of retry delays.
+    var fraction: @Sendable () -> Double
+
+    /// The system's cryptographic generator.
+    static let system = PushRandom(
+        bytes: { count in
+            var generator = SystemRandomNumberGenerator()
+            return Data((0..<count).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
+        },
+        fraction: { Double.random(in: 0..<1) })
+}
+
+/// What the stored item means to this version of the app.
+enum PushRecord {
+    /// The record to work from, or nil when the phone has to choose a new owner key and device:
+    /// nothing is stored, the stored item is another gateway's, or its registration was deleted
+    /// by an earlier version of the app. One that version had marked for deletion and never
+    /// deleted is used as it is: nothing is deleted when notifications are turned off.
+    static func adopt(_ stored: GatewayRegistration?, gateway: String) -> GatewayRegistration? {
+        guard var r = stored, r.gateway == gateway, r.ended != true, !r.ownerKey.isEmpty else { return nil }
+        r.revoked = nil
+        return r
+    }
+
+    /// A new record with a new owner key and its device id, not confirmed yet. Each helper's
+    /// pinned key goes over from `old`; who a helper is does not change with the registration.
+    static func fresh(gateway: String, keeping old: GatewayRegistration?, random: PushRandom) -> GatewayRegistration {
+        let owner = PushKeys.key(random)
+        var r = GatewayRegistration(gateway: gateway, device: PushKeys.deviceID(ownerKey: owner), ownerKey: owner, token: "",
+                                    environment: "", unconfirmed: true)
+        r.servers = (old?.servers ?? [:]).mapValues { ServerPush(helperKey: $0.helperKey) }
+        return r
+    }
+}
+
+/// Entries the store holds for computers the app does not list. The Keychain item stays on the
+/// phone when the app is deleted, and the list of computers does not; a computer that is added
+/// again gets a new id. Such an entry is set aside at launch, taken over by the computer whose
+/// helper proves the key pinned in it (`match`, `adopt`), and retired otherwise (`retire`).
+enum PushOrphans {
+    /// How long after the app has a computer listed the entries wait for one to take them over.
+    static let wait: TimeInterval = 60
+
+    /// The store keys of the entries no listed computer owns.
+    static func setAside(_ record: GatewayRegistration?, listed: [UUID]) -> Set<String> {
+        guard let record else { return [] }
+        return Set(record.servers.keys).subtracting(listed.map(\.uuidString))
+    }
+
+    /// The orphan to take over for a helper that proved `helperKey`: one whose pinned key is that
+    /// key, one with a secret before one without, then by its key in the store.
+    static func match(_ helperKey: String, among orphans: Set<String>, in record: GatewayRegistration) -> String? {
+        orphans.filter { record.servers[$0]?.helperKey == helperKey }
+            .min { a, b in
+                let (hasA, hasB) = (record.servers[a]?.pushSecret != nil, record.servers[b]?.pushSecret != nil)
+                return hasA != hasB ? hasA : a < b
+            }
+    }
+
+    /// The orphan's entry becomes the computer's, as it is: its pin, its secret and whether the
+    /// gateway confirmed it. Nothing changes for a computer that has an entry.
+    static func adopt(_ orphan: String, for computer: UUID, in record: inout GatewayRegistration) {
+        let key = computer.uuidString
+        guard record.servers[key] == nil, let entry = record.servers[orphan] else { return }
+        record.servers[orphan] = nil
+        record.servers[key] = entry
+    }
+
+    /// The orphans leave the record. Each one's secret id joins `retired`, the list of secrets
+    /// to delete at the gateway, where it stays until the gateway has confirmed the delete.
+    static func retire(_ orphans: Set<String>, in record: inout GatewayRegistration) {
+        for key in orphans.sorted() {
+            guard let entry = record.servers.removeValue(forKey: key) else { continue }
+            if let secret = entry.secretID { record.retired = (record.retired ?? []) + [secret] }
+        }
     }
 }
 
 enum GatewayError: Error, Equatable {
-    /// The gateway's own 401: it no longer knows this phone, or the owner key is wrong. It answers
-    /// the same for both. Register again.
+    /// The gateway's own 401 or 410: it no longer knows this phone, or the phone's address is
+    /// dead. It answers the same for an unknown phone and a wrong key.
     case unknownRegistration
-    case rateLimited
+    /// 429, with the gateway's `Retry-After` in seconds when it gave one.
+    case rateLimited(retryAfter: TimeInterval?)
+    /// 409 `conflict` to a secret: the gateway holds that push secret in another row. The phone
+    /// makes a fresh one.
+    case secretConflict
+    /// 409 `too_many_secrets`: the device holds as many secrets as it may.
+    case tooManySecrets
     /// Another refusal, by HTTP status.
     case rejected(Int)
-    /// No answer, or a 5xx: try again later.
-    case unavailable
+    /// No answer, or a 5xx (with its `Retry-After` when it gave one): try again later.
+    case unavailable(retryAfter: TimeInterval?)
     case malformedReply
     case badAddress
-    /// The Keychain refused to read, save or delete the registration. Nothing is handed to a helper.
+    /// The Keychain refused to read or save the registration. Nothing is sent or handed to a helper.
     case storeFailed
+
+    /// How long the gateway asked the phone to wait.
+    var retryAfter: TimeInterval? {
+        switch self {
+        case .rateLimited(let wait), .unavailable(let wait): wait
+        default: nil
+        }
+    }
+
+    var isRateLimit: Bool {
+        if case .rateLimited = self { return true }
+        return false
+    }
 }
 
 /// The calls the phone makes to the gateway. Requests and replies are built and read by pure
-/// functions; `transport` is the network, replaced in tests.
+/// functions; `transport` is the network, replaced in tests. Every call is a `PUT` or a `DELETE`
+/// that can be sent again and gives the same answer.
 struct PushGateway: Sendable {
     /// The Rex DUO gateway. Debug builds can point elsewhere with `-pushGateway <url>`.
     static let defaultURL = "https://rexduo-push.keptday.workers.dev"
@@ -118,107 +275,83 @@ struct PushGateway: Sendable {
     }
 
     /// What a reply's status means, for every call. 2xx is fine.
-    static func check(_ status: Int, body: Data = Data()) throws {
+    static func check(_ status: Int, body: Data = Data(), retryAfter: TimeInterval? = nil) throws {
         switch status {
         case 200...299: return
         // Only the gateway's own 401 means the registration is gone. One from something in
-        // between (a proxy, a captive portal) must not make the phone throw its registration away.
-        case 401: throw isOwnRefusal(body) ? GatewayError.unknownRegistration : GatewayError.unavailable
-        case 429: throw GatewayError.rateLimited
-        case 500...599: throw GatewayError.unavailable
+        // between (a proxy, a captive portal) must not make the phone set itself up again.
+        case 401: throw isOwnRefusal(body) ? GatewayError.unknownRegistration : GatewayError.unavailable(retryAfter: nil)
+        case 409:
+            switch refusal(body) {
+            case "conflict": throw GatewayError.secretConflict
+            case "too_many_secrets": throw GatewayError.tooManySecrets
+            default: throw GatewayError.rejected(status)
+            }
+        case 410: throw GatewayError.unknownRegistration
+        case 429: throw GatewayError.rateLimited(retryAfter: retryAfter)
+        case 500...599: throw GatewayError.unavailable(retryAfter: retryAfter)
         default: throw GatewayError.rejected(status)
         }
     }
 
     /// The gateway's 401 body is JSON with `"error": "unauthorized"`.
-    static func isOwnRefusal(_ body: Data) -> Bool {
-        object(body)?["error"] as? String == "unauthorized"
+    static func isOwnRefusal(_ body: Data) -> Bool { refusal(body) == "unauthorized" }
+
+    /// The `error` of a refusal's JSON body, the gateway's word for why.
+    static func refusal(_ body: Data) -> String? {
+        ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["error"] as? String
     }
 
-    private static func object(_ data: Data) -> [String: Any]? {
-        (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
+    /// The longest wait a `Retry-After` may ask for. A daily limit asks for up to a day.
+    static let longestWait: TimeInterval = 48 * 3600
 
-    /// The two values a new registration comes back with.
-    static func registered(_ data: Data) throws -> (device: String, ownerKey: String) {
-        guard let o = object(data), let device = o["device_id"] as? String, let owner = o["owner_key"] as? String,
-              !device.isEmpty, !owner.isEmpty else {
-            throw GatewayError.malformedReply
-        }
-        return (device, owner)
-    }
-
-    /// A new secret and the id it is deleted by.
-    static func minted(_ data: Data) throws -> (secretID: String, pushSecret: String) {
-        guard let o = object(data), let id = o["secret_id"] as? String, let secret = o["push_secret"] as? String,
-              !id.isEmpty, !secret.isEmpty else {
-            throw GatewayError.malformedReply
-        }
-        return (id, secret)
-    }
-
-    /// The ids of the secrets the gateway still holds for this phone.
-    static func secretIDs(_ data: Data) throws -> [String] {
-        guard let o = object(data), let list = o["secrets"] as? [Any] else { throw GatewayError.malformedReply }
-        return list.compactMap { ($0 as? [String: Any])?["secret_id"] as? String }
+    /// `Retry-After` as whole seconds. The gateway sends nothing else; a date, a negative
+    /// number or a wait of more than two days is no answer.
+    static func retryAfter(_ header: String?) -> TimeInterval? {
+        guard let text = header?.trimmingCharacters(in: .whitespaces), !text.isEmpty, text.allSatisfy(\.isASCII),
+              text.allSatisfy(\.isNumber), let seconds = TimeInterval(text), seconds <= longestWait else { return nil }
+        return seconds
     }
 
     // MARK: Calls
 
-    private func send(_ request: URLRequest) async throws -> Data {
+    private func send(_ request: URLRequest) async throws {
         let data: Data, http: HTTPURLResponse
         do {
             (data, http) = try await transport(request)
         } catch let e as GatewayError {
             throw e
         } catch {
-            throw GatewayError.unavailable
+            throw GatewayError.unavailable(retryAfter: nil)
         }
-        try Self.check(http.statusCode, body: data)
-        return data
+        try Self.check(http.statusCode, body: data, retryAfter: Self.retryAfter(http.value(forHTTPHeaderField: "Retry-After")))
     }
 
-    func register(token: String, environment: String) async throws -> GatewayRegistration {
-        let data = try await send(Self.request("POST", base, path: "v1/devices",
-                                               body: ["apns_token": token, "environment": environment]))
-        let r = try Self.registered(data)
-        return GatewayRegistration(gateway: base.absoluteString, device: r.device, ownerKey: r.ownerKey,
-                                   token: token, environment: environment)
+    /// Makes the device, or gives it this token and environment. For a device id the phone
+    /// chose, the gateway makes the device when it has none under the id, and writes nothing
+    /// when it already holds these values. The helpers' secrets stay.
+    func putDevice(_ registration: GatewayRegistration, token: String, environment: String) async throws {
+        try await send(Self.request("PUT", base, path: "v1/devices/" + registration.device, bearer: registration.ownerKey,
+                                    body: ["apns_token": token, "environment": environment]))
     }
 
-    /// The APNs token (or the build's environment) changed. The helpers' secrets stay.
-    func update(_ registration: GatewayRegistration, token: String, environment: String) async throws {
-        _ = try await send(Self.request("PUT", base, path: "v1/devices/" + registration.device, bearer: registration.ownerKey,
-                                        body: ["apns_token": token, "environment": environment]))
-    }
-
-    /// Every secret handed out for this phone stops working.
-    func delete(_ registration: GatewayRegistration) async throws {
-        _ = try await send(Self.request("DELETE", base, path: "v1/devices/" + registration.device, bearer: registration.ownerKey))
-    }
-
-    /// The secrets the gateway still holds for this phone. `unknownRegistration` when the phone
-    /// itself is gone.
-    func secrets(_ registration: GatewayRegistration) async throws -> [String] {
-        try Self.secretIDs(try await send(Self.request("GET", base, path: "v1/devices/" + registration.device,
-                                                       bearer: registration.ownerKey)))
-    }
-
-    /// A new secret for one helper. `label` is what the gateway lists it under.
-    func mint(_ registration: GatewayRegistration, label: String) async throws -> (secretID: String, pushSecret: String) {
-        try Self.minted(try await send(Self.request("POST", base, path: "v1/devices/" + registration.device + "/secrets",
-                                                    bearer: registration.ownerKey, body: ["label": label])))
+    /// Stores one helper's secret under an id, both chosen by the phone. `label` is what the
+    /// gateway lists it under. The gateway writes nothing when it already holds this secret
+    /// under the id.
+    func putSecret(_ registration: GatewayRegistration, secretID: String, pushSecret: String, label: String) async throws {
+        try await send(Self.request("PUT", base, path: "v1/devices/" + registration.device + "/secrets/" + secretID,
+                                    bearer: registration.ownerKey, body: ["label": label, "push_secret": pushSecret]))
     }
 
     /// One helper's secret stops working. Fine when it is already gone.
     func deleteSecret(_ registration: GatewayRegistration, secretID: String) async throws {
-        _ = try await send(Self.request("DELETE", base, path: "v1/devices/" + registration.device + "/secrets/" + secretID,
-                                        bearer: registration.ownerKey))
+        try await send(Self.request("DELETE", base, path: "v1/devices/" + registration.device + "/secrets/" + secretID,
+                                    bearer: registration.ownerKey))
     }
 }
 
 /// Where the registration is kept. The Keychain on a device; memory in tests. Every call throws
-/// when the store didn't do what was asked, so a secret is never handed out unless it was saved.
+/// when the store didn't do what was asked, so nothing is sent or handed out unless it was saved.
 protocol RegistrationStore: AnyObject {
     func load() throws -> GatewayRegistration?
     func save(_ registration: GatewayRegistration) throws
@@ -238,284 +371,94 @@ struct KeychainError: Error, Equatable {
     var status: OSStatus
 }
 
-/// One Keychain item, on this device only and readable once the phone has been unlocked after a
-/// restart, so a token rotation delivered in the background can still be registered.
-final class KeychainRegistrationStore: RegistrationStore {
-    private let service: String
-    private let account = "gateway-registration"
+/// The four Keychain calls, replaced in tests to read the dictionaries they are given.
+struct KeychainCalls: Sendable {
+    var copy: @Sendable ([String: Any]) -> (OSStatus, Data?)
+    var add: @Sendable ([String: Any]) -> OSStatus
+    var update: @Sendable ([String: Any], [String: Any]) -> OSStatus
+    var delete: @Sendable ([String: Any]) -> OSStatus
 
-    init(service: String = "dev.abrahamgonzalez.rexduo.push") {
-        self.service = service
+    static let system = KeychainCalls(
+        copy: { query in
+            var out: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &out)
+            return (status, out as? Data)
+        },
+        add: { SecItemAdd($0 as CFDictionary, nil) },
+        update: { SecItemUpdate($0 as CFDictionary, $1 as CFDictionary) },
+        delete: { SecItemDelete($0 as CFDictionary) })
+}
+
+/// One Keychain item of the notifications feature. It stays on this device: it is readable once
+/// the phone has been unlocked after a restart (so a token rotation delivered in the background
+/// can still be sent on), it is in no backup that another phone can restore, and it never goes
+/// to iCloud Keychain. Every item the feature writes goes through here, so each has the same
+/// protection.
+struct KeychainItem {
+    let service: String
+    let account: String
+    var keychain = KeychainCalls.system
+
+    /// What every write says about where the item may go.
+    static var protection: [String: Any] {
+        [kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, kSecAttrSynchronizable as String: false]
     }
 
     private var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
+         kSecAttrSynchronizable as String: false]
     }
 
-    /// Nil when there is no item. Throws when the Keychain can't be read (before the first unlock,
-    /// say): "nothing stored" and "can't tell" must not look alike, or the phone would register again.
-    func load() throws -> GatewayRegistration? {
+    /// Nil when there is no item. Throws when the Keychain can't be read (before the first
+    /// unlock, say): "nothing stored" and "can't tell" must not look alike.
+    func read() throws -> Data? {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        let (status, data) = keychain.copy(q)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = out as? Data else { throw KeychainError(status: status) }
-        // An item that no longer decodes counts as none: the next registration replaces it.
-        return try? JSONDecoder().decode(GatewayRegistration.self, from: data)
+        guard status == errSecSuccess, let data else { throw KeychainError(status: status) }
+        return data
     }
 
-    func save(_ registration: GatewayRegistration) throws {
-        let data = try JSONEncoder().encode(registration)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+    func write(_ data: Data) throws {
+        var changes = Self.protection
+        changes[kSecAttrSynchronizable as String] = nil
+        changes[kSecValueData as String] = data
+        var status = keychain.update(query, changes)
         if status == errSecItemNotFound {
-            var add = query
+            var add = query.merging(Self.protection) { _, new in new }
             add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            status = SecItemAdd(add as CFDictionary, nil)
+            status = keychain.add(add)
         }
         guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
 
-    func clear() throws {
-        let status = SecItemDelete(query as CFDictionary)
+    func remove() throws {
+        let status = keychain.delete(query)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
     }
 }
 
-/// Keeps the phone's gateway registration in line with its APNs token: registers the first time,
-/// tells the gateway when the token rotates, and deletes the registration when notifications are
-/// turned off. It also keeps each server's helper pin and secret, which live in the same stored
-/// item. One registration call at a time; callers that arrive meanwhile get the same answer.
-@MainActor
-final class GatewayLink {
-    enum Step: Equatable { case use, update, register }
+/// The registration in its Keychain item: the owner key and device id, each computer's secret
+/// and its helper's pinned key, and what the gateway has not confirmed yet.
+final class KeychainRegistrationStore: RegistrationStore {
+    private let item: KeychainItem
 
-    private let gateway: PushGateway?
-    private let store: RegistrationStore
-    private var running: Task<Result<GatewayRegistration, GatewayError>, Never>?
-
-    init(gateway: PushGateway?, store: RegistrationStore) {
-        self.gateway = gateway
-        self.store = store
+    init(service: String = "dev.abrahamgonzalez.rexduo.push", keychain: KeychainCalls = .system) {
+        item = KeychainItem(service: service, account: "gateway-registration", keychain: keychain)
     }
 
-    /// What it takes to have a registration for this token: nothing, a token update, or a new
-    /// registration (none yet, another gateway, or one that was revoked).
-    static func step(stored: GatewayRegistration?, gateway: String, token: String, environment: String) -> Step {
-        guard let stored, stored.gateway == gateway, stored.revoked != true else { return .register }
-        return stored.token == token && stored.environment == environment ? .use : .update
+    func load() throws -> GatewayRegistration? {
+        // An item that no longer decodes counts as none: the next registration replaces it.
+        try item.read().flatMap { try? JSONDecoder().decode(GatewayRegistration.self, from: $0) }
     }
 
-    /// The registration for this token, making or updating it first if needed.
-    func registration(token: String, environment: String) async -> Result<GatewayRegistration, GatewayError> {
-        await shared { await self.resolve(token: token, environment: environment, replacing: nil) }
+    func save(_ registration: GatewayRegistration) throws {
+        try item.write(try JSONEncoder().encode(registration))
     }
 
-    /// The gateway no longer knows device `device`: register again, keeping each server's helper
-    /// pin but none of the secrets, which died with the old registration. When another server's
-    /// repair already replaced it, this returns the new one without registering twice.
-    func registerAfresh(replacing device: String, token: String, environment: String) async -> Result<GatewayRegistration, GatewayError> {
-        if let running { _ = await running.value }
-        return await shared { await self.resolve(token: token, environment: environment, replacing: device) }
+    func clear() throws {
+        try item.remove()
     }
-
-    private func shared(_ work: @escaping @MainActor () async -> Result<GatewayRegistration, GatewayError>) async -> Result<GatewayRegistration, GatewayError> {
-        if let running { return await running.value }
-        let task = Task { await work() }
-        running = task
-        let result = await task.value
-        running = nil
-        return result
-    }
-
-    private func resolve(token: String, environment: String, replacing: String?) async -> Result<GatewayRegistration, GatewayError> {
-        guard let gateway else { return .failure(.badAddress) }
-        let address = gateway.base.absoluteString
-        let stored: GatewayRegistration?
-        do { stored = try store.load() } catch { return .failure(.storeFailed) }
-        // Helper pins outlive a registration the gateway dropped: who the helper is hasn't changed.
-        var pins: [String: ServerPush] = [:]
-        do {
-            if let stored, stored.device == replacing, stored.gateway == address, stored.revoked != true {
-                pins = Self.pins(stored)
-            } else {
-                switch Self.step(stored: stored, gateway: address, token: token, environment: environment) {
-                case .use:
-                    if let stored { return .success(stored) }
-                case .update:
-                    if let stored {
-                        do {
-                            try await gateway.update(stored, token: token, environment: environment)
-                            return .success(try change(stored.device) {
-                                $0.token = token
-                                $0.environment = environment
-                            })
-                        } catch GatewayError.unknownRegistration {
-                            // The gateway dropped it (Apple said the old token was dead): start over.
-                            pins = Self.pins(stored)
-                        }
-                    }
-                case .register:
-                    // A revoked one the gateway never heard about: delete it first, best effort.
-                    if let stored, stored.revoked == true, stored.gateway == address {
-                        try? await gateway.delete(stored)
-                    }
-                }
-            }
-            var fresh = try await gateway.register(token: token, environment: environment)
-            fresh.servers = pins
-            do {
-                try store.save(fresh)
-            } catch {
-                // Unsaved, it could never be updated or deleted later: take it back now.
-                try? await gateway.delete(fresh)
-                return .failure(.storeFailed)
-            }
-            return .success(fresh)
-        } catch let e as GatewayError {
-            return .failure(e)
-        } catch {
-            return .failure(.unavailable)
-        }
-    }
-
-    private static func pins(_ registration: GatewayRegistration) -> [String: ServerPush] {
-        registration.servers.mapValues { ServerPush(helperKey: $0.helperKey) }
-    }
-
-    /// Reads, changes and saves the registration with no suspension in between, so two servers
-    /// that sync at the same time can't overwrite each other's entry. Fails when the stored
-    /// registration is no longer the one for `device`.
-    @discardableResult
-    private func change(_ device: String, _ edit: (inout GatewayRegistration) -> Void) throws -> GatewayRegistration {
-        let loaded: GatewayRegistration?
-        do { loaded = try store.load() } catch { throw GatewayError.storeFailed }
-        guard var r = loaded, r.device == device else { throw GatewayError.unknownRegistration }
-        edit(&r)
-        do { try store.save(r) } catch { throw GatewayError.storeFailed }
-        return r
-    }
-
-    /// The live registration: stored, for this gateway, and not waiting to be deleted.
-    private var current: GatewayRegistration? {
-        guard let gateway, let r = try? store.load(), r.gateway == gateway.base.absoluteString, r.revoked != true else { return nil }
-        return r
-    }
-
-    // MARK: Per-server helpers
-
-    /// The pin and secret kept for one server's helper.
-    func server(_ id: String) -> ServerPush? { current?.servers[id] }
-
-    /// Remembers the key a server's helper proved the first time. False when it couldn't be saved.
-    func pin(_ id: String, helperKey: String) -> Bool {
-        guard let r = current else { return false }
-        return (try? change(r.device) { if $0.servers[id] == nil { $0.servers[id] = ServerPush(helperKey: helperKey) } }) != nil
-    }
-
-    /// A new secret for a pinned server's helper. It is returned only once it is saved.
-    func mint(_ id: String, label: String) async -> Result<String, GatewayError> {
-        guard let gateway else { return .failure(.badAddress) }
-        guard let r = current else { return .failure(.unknownRegistration) }
-        guard r.servers[id] != nil else { return .failure(.unavailable) }
-        do {
-            let made = try await gateway.mint(r, label: label)
-            do {
-                let saved = try change(r.device) {
-                    $0.servers[id]?.secretID = made.secretID
-                    $0.servers[id]?.pushSecret = made.pushSecret
-                }
-                // The entry went away meanwhile (the server was removed): nothing holds the secret.
-                guard saved.servers[id]?.secretID == made.secretID else { throw GatewayError.unavailable }
-            } catch {
-                try? await gateway.deleteSecret(r, secretID: made.secretID)
-                throw error
-            }
-            return .success(made.pushSecret)
-        } catch let e as GatewayError {
-            return .failure(e)
-        } catch {
-            return .failure(.unavailable)
-        }
-    }
-
-    /// One server's secret stops working, at the gateway if it can be reached, and is never handed
-    /// out again. `keepPin: false` also forgets the helper's key (the server was removed).
-    func forget(_ id: String, keepPin: Bool = true) async {
-        guard let gateway, let r = current, let entry = r.servers[id] else { return }
-        _ = try? change(r.device) { $0.servers[id] = keepPin ? ServerPush(helperKey: entry.helperKey) : nil }
-        if let secret = entry.secretID { try? await gateway.deleteSecret(r, secretID: secret) }
-    }
-
-    /// The user trusts a server's helper although its key changed: the secret the old helper held
-    /// is deleted and `helperKey` becomes the pin. False when it couldn't be saved.
-    func trust(_ id: String, helperKey: String) async -> Bool {
-        guard let r = current else { return false }
-        await forget(id)
-        return (try? change(r.device) { $0.servers[id] = ServerPush(helperKey: helperKey) }) != nil
-    }
-
-    /// A helper says it has no working secret for this phone. Asks the gateway what is left and
-    /// puts the stored registration in a state from which the server can register again: a new
-    /// registration when the phone is gone, or that server's secret dropped so a new one is minted.
-    /// Nil when that is done; the error when the gateway couldn't say, and nothing was changed.
-    func repair(_ id: String, token: String, environment: String) async -> GatewayError? {
-        guard let gateway else { return .badAddress }
-        guard let r = current else { return nil }
-        let lookup: Result<[String], GatewayError>
-        do {
-            lookup = .success(try await gateway.secrets(r))
-        } catch {
-            lookup = .failure(error as? GatewayError ?? .unavailable)
-        }
-        switch SecretRepair.step(lookup: lookup) {
-        case .registerDevice:
-            if case .failure(let e) = await registerAfresh(replacing: r.device, token: token, environment: environment) { return e }
-            return nil
-        case .mintSecret:
-            await forget(id)
-            return nil
-        case .wait(let e):
-            return e
-        }
-    }
-
-    // MARK: Turning off
-
-    /// Notifications were turned off: every helper's secret for this phone must stop working, also
-    /// on computers that are off right now. If the gateway can't be reached, or the Keychain won't
-    /// let go of the registration, it is kept, marked revoked, and this is called again later.
-    /// True when nothing is left to do.
-    @discardableResult
-    func revoke() async -> Bool {
-        if let running { _ = await running.value }
-        guard var stored = try? store.load() else {
-            // Nothing stored, or the Keychain can't say: only the first means done.
-            return (try? store.load() == nil) ?? false
-        }
-        if let gateway, stored.gateway == gateway.base.absoluteString {
-            do {
-                try await gateway.delete(stored)
-            } catch GatewayError.unknownRegistration {
-                // Already gone.
-            } catch {
-                stored.revoked = true
-                try? store.save(stored)
-                return false
-            }
-        }
-        do {
-            try store.clear()
-        } catch {
-            stored.revoked = true
-            try? store.save(stored)
-            return false
-        }
-        return true
-    }
-
-    /// Something is still registered, or waiting to be deleted, or the Keychain can't say.
-    var hasRegistration: Bool { (try? store.load() == nil) != true }
 }

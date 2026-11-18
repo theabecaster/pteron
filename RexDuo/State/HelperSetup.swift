@@ -31,6 +31,8 @@ struct SetupArgs: Equatable {
     }
 
     static let mode = "2"
+    /// The script's remove mode: it stops the helper and deletes it, and takes nothing else.
+    static let removeMode = "3"
     static let count = 12
     static let shell = "/bin/sh"
     static let name = "rexduo-setup"
@@ -66,6 +68,13 @@ struct SetupArgs: Equatable {
     /// argument, the name it runs under, then the 12 values.
     func command(script: String) -> [String] {
         [Self.shell, "-c", script, Self.name] + values
+    }
+
+    /// The whole command that removes the helper: the same shell, script and name, then the
+    /// remove mode and the reserved `-`. Nothing of the server's, the release's or the phone's is
+    /// in it.
+    static func removeCommand(script: String) -> [String] {
+        [shell, "-c", script, name, removeMode, reserved]
     }
 
     // The patterns, on bytes, so only the plain ASCII characters count.
@@ -151,7 +160,7 @@ enum SetupCode {
 /// The block the installer runs in: a terminal that starts the command directly, with no shell of
 /// the user's around it, and stays open after the command exits so its output can still be read.
 enum SetupBlock {
-    static let label = "Rex DUO Helper setup"
+    static let label = "Rex DUO Beacon setup"
     static let flavor = "com.superlogical.terminal.shell"
     /// The oldest control API whose terminal takes a program to run directly (`command` with
     /// `shell: "none"`). The options themselves are checked too, in `supported`.
@@ -473,22 +482,22 @@ enum SetupError: Equatable {
 
     func message(name: String) -> String {
         switch self {
-        case .network: "\(name) couldn't download the helper. Check its internet connection and try again."
-        case .noDownloader: "\(name) needs curl to download the helper. Install curl there, then try again."
+        case .network: "\(name) couldn't download Rex DUO Beacon. Check the internet connection on \(name), then try again."
+        case .noDownloader: "\(name) needs curl to download Rex DUO Beacon. Install curl on \(name), then try again."
         case .verify: "The download didn't pass its security check, so nothing was installed. Try again later."
-        case .release: "Rex DUO can't get the helper right now. Try again later."
-        case .unsupportedComputer: "Rex DUO Helper isn't available for this computer yet."
-        case .oldMacOS: "Rex DUO Helper needs macOS 14 or later."
-        case .write: "\(name) couldn't save the helper. Check it has free space, then try again."
+        case .release: "Rex DUO can't get Beacon right now. Try again later."
+        case .unsupportedComputer: "Rex DUO Beacon isn't available for this computer yet."
+        case .oldMacOS: "Rex DUO Beacon needs macOS 14 or later."
+        case .write: "\(name) couldn't save Rex DUO Beacon. Free up space on \(name), then try again."
         case .busy: "Another install is already running on \(name)."
-        case .notStarted: "The helper is installed but didn't start."
+        case .notStarted: "Rex DUO Beacon is installed but didn't start."
         case .noGUI: "Log in on \(name), then try again."
-        case .noSystemd: "\(name) doesn't start background services the usual way. Show details says how to start the helper."
-        case .appManagement: "Your Mac didn't let Rex replace the old helper. Drag Rex DUO Helper from Applications to the Trash, then try again."
+        case .noSystemd: "\(name) doesn't start background services the usual way. Show details says how to start Rex DUO Beacon."
+        case .appManagement: "\(name) didn't let Rex replace the old Rex DUO Beacon. On \(name), drag Rex DUO Beacon from Applications to the Trash, then try again."
         case .interrupted: "The install stopped before it finished."
         case .notificationsOff: "Notifications are off for Rex DUO."
-        case .identityChanged: "Rex DUO Helper on \(name) changed. Only trust it if you reinstalled the helper there."
-        case .manual: "Rex on \(name) is too old to install the helper from here. Update Rex there, or install it by hand.\nMac: drag Rex DUO Helper to Applications and open it once.\nLinux: run rex-duo-helper install."
+        case .identityChanged: "Rex DUO Beacon on \(name) has changed. Only trust Beacon if you reinstalled it on \(name)."
+        case .manual: "Rex on \(name) is too old to install Rex DUO Beacon from here. Update Rex on \(name), or install Beacon by hand.\nMac: drag Rex DUO Beacon to Applications and open it once.\nLinux: run rex-duo-helper install."
         }
     }
 
@@ -505,7 +514,7 @@ enum SetupError: Equatable {
     }
 
     static func connectionLost(name: String) -> String {
-        "Lost the connection to \(name). The install keeps going there, and Rex DUO picks it up when it reconnects."
+        "Lost the connection to \(name). The install keeps going on \(name), and Rex DUO catches up when it reconnects."
     }
 }
 
@@ -529,7 +538,7 @@ struct SetupState: Equatable {
         var title: String {
             switch self {
             case .downloading: "Downloading"
-            case .verifying: "Verifying"
+            case .verifying: "Checking"
             case .installing: "Installing"
             case .connected: "Connected"
             }
@@ -590,6 +599,8 @@ struct SetupState: Equatable {
         case caughtUp(record: SetupRecord?, exitCode: Int?, gone: Bool)
         case fail(SetupError)
         case cancel
+        /// The tab on the computer is closed: there are no details to show any more.
+        case tabClosed
     }
 
     let kind: Kind
@@ -641,6 +652,9 @@ struct SetupState: Equatable {
         exitedCleanly || ["notify", "linger", "done"].contains(token)
     }
 
+    /// The installer is starting the helper it put in place.
+    var isStarting: Bool { token == "start" }
+
     /// Time to ask the helper for the setup proof: it is running, hasn't shown the proof, and
     /// this run has requests left.
     var wantsProof: Bool {
@@ -656,6 +670,10 @@ struct SetupState: Equatable {
     }
 
     mutating func handle(_ event: Event) {
+        if event == .tabClosed {
+            hasTab = false
+            return
+        }
         if phase == .connected {
             // Connected is final. Only the "click Allow" card beside it still changes.
             switch event {
@@ -728,6 +746,8 @@ struct SetupState: Equatable {
             phase = .failed(error)
         case .cancel:
             phase = .cancelled
+        case .tabClosed:
+            break
         }
     }
 
@@ -815,23 +835,26 @@ struct SetupState: Equatable {
     /// The one secondary line, under the row in progress.
     func detail(_ row: Step, name: String) -> String? {
         let mark = mark(row)
-        if row == .downloading, let version, mark != .pending, phase != .preparing { return "Rex DUO Helper \(version)" }
+        if row == .downloading, let version, mark != .pending, phase != .preparing { return "Rex DUO Beacon \(version)" }
         guard mark == .current else { return nil }
         switch row {
         case .downloading: return phase == .preparing ? "Getting ready…" : nil
-        case .verifying: return "Checking it's the real Rex DUO Helper…"
+        case .verifying: return "Checking the download is the real Rex DUO Beacon…"
         case .installing:
             switch token {
-            case "start": return "Starting the helper…"
+            case "start": return "Starting Beacon…"
             case "linger": return "Waiting for the password…"
-            default: return "Putting it in place on \(name)…"
+            default: return "Installing Beacon on \(name)…"
             }
-        case .connected: return "Waiting for the helper on \(name)…"
+        case .connected: return "Waiting for Beacon on \(name)…"
         }
     }
 
-    static func connectedMessage(name: String) -> String {
-        "\(name) will notify this iPhone when an agent needs you."
+    /// `notificationsAllowed` is false while iOS has notifications turned off for the app: the
+    /// helper is installed all the same, and the screen says what is left to do.
+    static func connectedMessage(name: String, notificationsAllowed: Bool = true) -> String {
+        let done = "\(name) will notify this iPhone when an agent finishes or needs you."
+        return notificationsAllowed ? done : done + " " + NotificationCopy.turnOnInSettings
     }
 }
 
@@ -854,8 +877,10 @@ enum SetupLayout: Equatable {
 
 // MARK: - The tabs this app opened
 
-/// The setup tabs this app created, per server, so it only ever closes its own. Kept in
-/// UserDefaults: a tab outlives the app when an install is interrupted.
+/// The setup tabs this app created and has not seen closed, per server, so it only ever closes
+/// its own. Kept in UserDefaults: a tab outlives the app when the app is killed while an
+/// install runs, or while a failed one still shows its output. A tab leaves the list when the
+/// server has closed it or no longer has it.
 struct SetupSessions {
     struct Entry: Codable, Equatable {
         var sessionID: String
@@ -863,36 +888,197 @@ struct SetupSessions {
         /// Set when the tab is a window in one of the user's sessions (the server was at its
         /// session limit). Then only that window is closed, never the session.
         var windowID: String?
+        /// When the tab was made. Nothing is decided by it.
         var createdAt: Date
+
+        /// The same tab: a session, or a window in one, by the ids the server gave.
+        func isSame(_ other: Entry) -> Bool {
+            sessionID == other.sessionID && blockID == other.blockID && windowID == other.windowID
+        }
     }
 
-    /// A tab older than this is left over from a run that never cleaned up.
-    static let staleAfter: TimeInterval = 3600
     private static let key = "helperSetup.sessions"
 
     let defaults: UserDefaults
 
-    private var all: [String: Entry] {
-        get { defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:] }
-        nonmutating set { defaults.set(try? JSONEncoder().encode(newValue), forKey: Self.key) }
+    private var all: [String: [Entry]] {
+        get {
+            guard let data = defaults.data(forKey: Self.key) else { return [:] }
+            if let lists = try? JSONDecoder().decode([String: [Entry]].self, from: data) { return lists }
+            // One tab per server, as it was kept before there was a list.
+            return ((try? JSONDecoder().decode([String: Entry].self, from: data)) ?? [:]).mapValues { [$0] }
+        }
+        nonmutating set {
+            let kept = newValue.filter { !$0.value.isEmpty }
+            if kept.isEmpty {
+                defaults.removeObject(forKey: Self.key)
+            } else {
+                defaults.set(try? JSONEncoder().encode(kept), forKey: Self.key)
+            }
+        }
     }
 
-    func entry(_ server: UUID) -> Entry? { all[server.uuidString] }
+    /// The server's tabs of this app's making, oldest first.
+    func entries(_ server: UUID) -> [Entry] { all[server.uuidString] ?? [] }
 
-    func record(_ entry: Entry, for server: UUID) { all[server.uuidString] = entry }
+    func contains(_ entry: Entry, for server: UUID) -> Bool { entries(server).contains { $0.isSame(entry) } }
 
-    func forget(_ server: UUID) { all[server.uuidString] = nil }
+    func record(_ entry: Entry, for server: UUID) {
+        guard !contains(entry, for: server) else { return }
+        all[server.uuidString] = entries(server) + [entry]
+    }
+
+    func forget(_ entry: Entry, for server: UUID) {
+        all[server.uuidString] = entries(server).filter { !$0.isSame(entry) }
+    }
 
     /// The sessions of this app's own making, which the sidebar leaves out.
     func hidden(_ server: UUID) -> Set<String> {
-        guard let e = entry(server), e.windowID == nil else { return [] }
-        return [e.sessionID]
+        Set(entries(server).filter { $0.windowID == nil }.map(\.sessionID))
     }
 
-    /// The server's recorded tab when it is left over: older than an hour and not the run in
-    /// progress.
-    func stale(_ server: UUID, activeBlock: String?, now: Date = Date()) -> Entry? {
-        guard let e = entry(server), e.blockID != activeBlock, now.timeIntervalSince(e.createdAt) > Self.staleAfter else { return nil }
-        return e
+    /// The server's recorded tabs that nothing in this run of the app uses: all but the ones
+    /// whose block is in `inUse`. They are left over from a run that ended, here or in an
+    /// earlier life of the app.
+    func leftOver(_ server: UUID, inUse: Set<String>) -> [Entry] {
+        entries(server).filter { !inUse.contains($0.blockID) }
+    }
+}
+
+/// What the app asks a server to close of a tab it made, decided from what the server says the
+/// tab's session holds now. The ids in the app's list say which tab was the app's when it was
+/// made; the server's answer says what is there today, and only what is still the app's closes.
+enum SetupTabClose: Equatable {
+    /// The session holds the app's block and nothing else: the whole session goes.
+    case session
+    /// The session holds more, and this window holds only the app's block: the window goes.
+    case window(String)
+    /// The app's block shares its window with other blocks: only the block goes.
+    case block
+    /// The session no longer holds the app's block: nothing is closed.
+    case nothing
+
+    /// `view` is the server's `session.view` of the entry's session, nil when the server has no
+    /// such session or its answer was not a view of it. A session is destroyed only when the app
+    /// made it for the tab and it holds one window with one block, the app's. A tab that is a
+    /// window in one of the person's sessions never takes the session with it.
+    static func decide(_ entry: SetupSessions.Entry, view: SessionView?) -> SetupTabClose {
+        guard let view, view.sessionID == entry.sessionID,
+              let window = view.windowContaining(block: entry.blockID) else { return .nothing }
+        let alone = window.allBlocks.count == 1
+        if entry.windowID == nil, alone, view.windows.count == 1 { return .session }
+        return alone ? .window(window.id) : .block
+    }
+}
+
+/// A server, as closing a setup tab needs it: one read of a session and one close. The app's
+/// servers in the app (`HelperSetupCenter`); a stand-in in tests.
+@MainActor
+struct SetupTabServer {
+    enum Read {
+        /// The server's view of the session.
+        case view(SessionView)
+        /// The server answered that it has no such session, or with something that is no view.
+        case unreadable
+        /// No answer: the server can't be reached now.
+        case noAnswer
+    }
+
+    /// `session.view` for a session on a server.
+    var read: @MainActor (UUID, String) async -> Read
+    /// Closes what `SetupTabClose` decided on. True when the server did it or no longer has it.
+    var close: @MainActor (UUID, SetupTabClose, SetupSessions.Entry) async -> Bool
+}
+
+/// Closes the tabs this app made for the installer, and nothing else: a tab is closed by the
+/// ids the server gave when it was made, only while it is in the app's list of them
+/// (`SetupSessions`), and only after the server said its session still holds the tab's block
+/// (`SetupTabClose`). A session that merely has the installer's name is never touched.
+///
+/// A tab whose script ended well is closed at once, with the sheet open or not. One whose
+/// script failed stays, because "Show details" shows its terminal, until the person is done
+/// with it. On every connection to a server the app closes each tab in its list for that
+/// server that no run in this app session uses: the tab of a failed run when the app was killed
+/// before the person was done with it, and a close the server did not take.
+@MainActor
+final class SetupSessionCloser {
+    /// Why a tab might close now.
+    enum Reason: Equatable {
+        /// Its script ended with this exit code.
+        case exited(code: Int)
+        /// Done or Close in the sheet.
+        case done
+        /// Retry: the old tab closes before the new run opens its own.
+        case retry
+        /// Cancel in the computer's row, or Stop in the sheet.
+        case cancel
+        /// The sheet went away. `detailsShown`: the installer's output had been on screen.
+        case dismissed(detailsShown: Bool)
+    }
+
+    /// Whether the tab closes for this reason.
+    static func closes(_ reason: Reason) -> Bool {
+        switch reason {
+        case .exited(let code): code == 0
+        case .done, .retry, .cancel: true
+        case .dismissed(let detailsShown): detailsShown
+        }
+    }
+
+    private let sessions: SetupSessions
+    private let server: SetupTabServer
+    /// Tabs whose close is under way, so each is asked for once.
+    private var closing: [SetupSessions.Entry] = []
+
+    init(sessions: SetupSessions, server: SetupTabServer) {
+        self.sessions = sessions
+        self.server = server
+    }
+
+    /// The app made this tab on the server.
+    func made(_ entry: SetupSessions.Entry, on server: UUID) {
+        sessions.record(entry, for: server)
+    }
+
+    /// The server's tabs of this app's making.
+    func tabs(on server: UUID) -> [SetupSessions.Entry] { sessions.entries(server) }
+
+    /// Closes the tab when `reason` is one that closes it. True when the tab is off the app's
+    /// list: the server closed it, or no longer holds it.
+    @discardableResult
+    func handle(_ reason: Reason, _ entry: SetupSessions.Entry, on server: UUID) async -> Bool {
+        guard Self.closes(reason) else { return false }
+        return await shut(entry, on: server)
+    }
+
+    /// The server is connected: every tab in the app's list for it is closed, except the ones
+    /// in use. `inUse` holds the blocks of the tabs this app session still works with: the
+    /// install on this server that is running or whose failed run still offers its details, and
+    /// a removal that is running. A tab the server did not close stays in the list for the next
+    /// connection.
+    func connected(_ server: UUID, inUse: Set<String>) async {
+        for entry in sessions.leftOver(server, inUse: inUse) { await shut(entry, on: server) }
+    }
+
+    @discardableResult
+    private func shut(_ entry: SetupSessions.Entry, on id: UUID) async -> Bool {
+        // Only a tab in the list is this app's to close, and each is asked for once at a time.
+        guard sessions.contains(entry, for: id), !closing.contains(where: entry.isSame) else { return false }
+        closing.append(entry)
+        defer { closing.removeAll(where: entry.isSame) }
+        let view: SessionView?
+        switch await server.read(id, entry.sessionID) {
+        case .view(let v): view = v
+        case .unreadable: view = nil
+        // The tab stays in the list for the next connection.
+        case .noAnswer: return false
+        }
+        let what = SetupTabClose.decide(entry, view: view)
+        // The session no longer holds the tab: the entry leaves the list and nothing is closed.
+        if what != .nothing {
+            guard await server.close(id, what, entry) else { return false }
+        }
+        sessions.forget(entry, for: id)
+        return true
     }
 }

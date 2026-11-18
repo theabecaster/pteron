@@ -29,6 +29,11 @@ pub struct Device {
     pub owner: String,
     /// Sent as the bearer token of every push to this phone. Never logged.
     pub push_secret: String,
+    /// True while the phone's user has notifications from this computer switched off
+    /// (`set_push_paused`). A paused phone is sent nothing; the rest of its registration
+    /// stays, so switching back on needs nothing new from the gateway.
+    #[serde(default)]
+    pub paused: bool,
     #[serde(default)]
     pub registered_at: String,
     #[serde(default)]
@@ -44,6 +49,7 @@ impl std::fmt::Debug for Device {
             .field("environment", &self.environment)
             .field("gateway", &self.gateway)
             .field("owner", &self.owner)
+            .field("paused", &self.paused)
             .finish_non_exhaustive()
     }
 }
@@ -101,6 +107,7 @@ impl Device {
             gateway: gateway.into(),
             owner: owner.into(),
             push_secret: push_secret.into(),
+            paused: false,
             registered_at: now.clone(),
             updated_at: now,
         }
@@ -166,6 +173,11 @@ pub(crate) fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -
 
 /// Writes through a temporary file that only this user can read from the moment it exists.
 pub(crate) fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
+    let _ = try_write_json(path, value);
+}
+
+/// `write_json` for a caller that acts on a failure. The failure is logged here either way.
+fn try_write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
     let write = || -> std::io::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -180,9 +192,11 @@ pub(crate) fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
         f.sync_all()?;
         std::fs::rename(&tmp, path)
     };
-    if let Err(e) = write() {
-        info!("could not write {}: {e}", path.display());
-    }
+    write().map_err(|e| {
+        let why = format!("could not write {}: {e}", path.display());
+        info!("{why}");
+        why
+    })
 }
 
 const SEEN_FILE: &str = "seen_devices.json";
@@ -236,14 +250,20 @@ impl DeviceStore {
         }
         if store.devices.len() != entries.len() && !dry_run {
             debug!("dropped {} registration(s) this helper can't use", entries.len() - store.devices.len());
-            store.save();
+            let _ = store.save();
         }
         store
     }
 
-    fn save(&mut self) {
-        write_json(&self.path, &self.devices);
+    /// Writes devices.json. When that fails, the registrations in memory go back to the ones
+    /// in the file, so what the helper does now and what it does after a restart are the same.
+    fn save(&mut self) -> Result<(), String> {
+        let written = try_write_json(&self.path, &self.devices);
+        if written.is_err() {
+            self.devices = usable_devices(&read_json::<Vec<Value>>(&self.path));
+        }
         self.stamp = stamp(&self.path);
+        written
     }
 
     /// Reads devices.json again if something else wrote it since this process last did:
@@ -262,11 +282,11 @@ impl DeviceStore {
     pub fn keep_gateways(&mut self, allowed: impl Fn(&str) -> bool) -> usize {
         let before = self.devices.len();
         self.devices.retain(|d| allowed(&d.gateway));
-        let gone = before - self.devices.len();
-        if gone > 0 && !self.dry_run {
-            self.save();
+        if self.devices.len() < before && !self.dry_run {
+            // A file that could not be written keeps them, and so does the helper.
+            let _ = self.save();
         }
-        gone
+        before - self.devices.len()
     }
 
     /// The registration of a device id, if it has one.
@@ -286,7 +306,8 @@ impl DeviceStore {
 
     /// The gateway refused this secret for good: remembers its hash and removes the
     /// registration that still holds it (not one the phone has replaced meanwhile). True when
-    /// a registration went.
+    /// a registration went. One that could not be taken out of the file stays; its secret is
+    /// remembered as refused all the same.
     pub fn drop_secret(&mut self, device_id: &str, secret: &str) -> bool {
         let hash = secret_hash(secret);
         if !self.dropped.contains(&hash) {
@@ -300,11 +321,7 @@ impl DeviceStore {
         }
         let n = self.devices.len();
         self.devices.retain(|d| !(d.device_id == device_id && d.push_secret == secret));
-        if self.devices.len() == n {
-            return false;
-        }
-        self.save();
-        true
+        self.devices.len() < n && self.save().is_ok()
     }
 
     /// An array of ids, oldest first.
@@ -326,25 +343,41 @@ impl DeviceStore {
     }
 
     /// Adds a phone, or replaces the registration its device id already has (the phone rotated
-    /// its secret, or the app was installed again).
-    pub fn register(&mut self, mut d: Device) -> Device {
+    /// its secret, or the app was installed again). An error when the file could not be
+    /// written: the registrations are then as they were.
+    pub fn register(&mut self, mut d: Device) -> Result<Device, String> {
         if let Some(old) = self.devices.iter().find(|o| o.device_id == d.device_id) {
             d.registered_at = old.registered_at.clone();
         }
         self.devices.retain(|o| o.device_id != d.device_id);
         self.devices.push(d.clone());
-        self.save();
-        d
+        self.save()?;
+        Ok(d)
     }
 
-    pub fn remove(&mut self, device_id: &str) -> bool {
+    /// Pauses or resumes a registered phone and writes the file when the value changed. False
+    /// when the device id has no registration. An error when the file could not be written:
+    /// the phone then has the value it had.
+    pub fn set_paused(&mut self, device_id: &str, paused: bool) -> Result<bool, String> {
+        let Some(d) = self.devices.iter_mut().find(|d| d.device_id == device_id) else { return Ok(false) };
+        if d.paused != paused {
+            d.paused = paused;
+            d.updated_at = now_iso();
+            self.save()?;
+        }
+        Ok(true)
+    }
+
+    /// Removes a phone's registration. False when it has none. An error when the file could
+    /// not be written: the phone is then still registered.
+    pub fn remove(&mut self, device_id: &str) -> Result<bool, String> {
         let n = self.devices.len();
         self.devices.retain(|d| d.device_id != device_id);
         if self.devices.len() == n {
-            return false;
+            return Ok(false);
         }
-        self.save();
-        true
+        self.save()?;
+        Ok(true)
     }
 }
 
@@ -501,19 +534,19 @@ mod tests {
     fn device_store_round_trip() {
         let path = temp_store("round");
         let mut s = DeviceStore::open(path.clone());
-        let first = s.register(phone("a1b2c3d4", 'a'));
+        let first = s.register(phone("a1b2c3d4", 'a')).unwrap();
         // Same device id, new secret: replaces the old entry and keeps when it first registered.
         let mut again = phone("a1b2c3d4", 'b');
         again.registered_at = "later".into();
-        s.register(again);
-        s.register(phone("ffff0000", 'c'));
+        s.register(again).unwrap();
+        s.register(phone("ffff0000", 'c')).unwrap();
         let loaded = DeviceStore::open(path.clone()).devices;
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].push_secret, secret('b'));
         assert_eq!(loaded[0].registered_at, first.registered_at);
-        assert!(!s.remove("00000000"));
-        assert!(!s.remove("A1B2C3D4"), "ids are lowercase");
-        assert!(s.remove("a1b2c3d4"));
+        assert!(!s.remove("00000000").unwrap());
+        assert!(!s.remove("A1B2C3D4").unwrap(), "ids are lowercase");
+        assert!(s.remove("a1b2c3d4").unwrap());
         assert_eq!(DeviceStore::open(path.clone()).devices, vec![s.devices[0].clone()]);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -524,15 +557,61 @@ mod tests {
         let path = temp_store("shape");
         let mut d = dev();
         d.device_name = Some("Alex's iPhone".into());
-        DeviceStore::open(path.clone()).register(d);
+        DeviceStore::open(path.clone()).register(d).unwrap();
         let file = on_disk(&path);
         let keys: Vec<&str> = file[0].as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["device_id", "device_name", "environment", "gateway", "owner", "push_secret", "registered_at", "updated_at"]);
+        assert_eq!(keys, ["device_id", "device_name", "environment", "gateway", "owner", "paused", "push_secret", "registered_at", "updated_at"]);
+        assert_eq!(file[0]["paused"], false);
         assert_eq!(file[0]["owner"], OWNER);
         assert_eq!(file[0]["gateway"], GATEWAY);
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert!(!path.with_extension("json.tmp").exists());
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_pause_is_stored_with_the_phone_and_survives_a_reload() {
+        let path = temp_store("paused");
+        let mut s = DeviceStore::open(path.clone());
+        s.register(phone("a1b2c3d4", 'a')).unwrap();
+        s.register(phone("ffff0000", 'b')).unwrap();
+        assert!(s.set_paused("a1b2c3d4", true).unwrap());
+        assert!(!s.set_paused("00000000", true).unwrap(), "no such phone");
+        assert_eq!(on_disk(&path)[0]["paused"], true);
+        assert!(!path.with_extension("json.tmp").exists());
+        // The next start reads it back, with the secret and everything else as it was.
+        let mut again = DeviceStore::open(path.clone());
+        let paused: Vec<bool> = again.devices.iter().map(|d| d.paused).collect();
+        assert_eq!(paused, [true, false]);
+        assert_eq!(again.devices, s.devices);
+        assert_eq!(again.get("a1b2c3d4").unwrap().push_secret, secret('a'));
+        // Setting the value it already has writes nothing.
+        let before = stamp(&path);
+        assert!(again.set_paused("a1b2c3d4", true).unwrap());
+        assert_eq!(stamp(&path), before);
+        assert!(again.set_paused("a1b2c3d4", false).unwrap());
+        assert!(DeviceStore::open(path.clone()).devices.iter().all(|d| !d.paused));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_file_without_the_paused_field_reads_as_not_paused() {
+        let path = temp_store("nopause");
+        let mut entry = serde_json::to_value(dev()).unwrap();
+        entry.as_object_mut().unwrap().remove("paused");
+        std::fs::write(&path, json!([entry]).to_string()).unwrap();
+        let s = DeviceStore::open(path.clone());
+        assert_eq!(s.devices, vec![dev_at(&entry)]);
+        assert!(!s.devices[0].paused);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// `dev()` with the times of a stored entry.
+    fn dev_at(entry: &Value) -> Device {
+        let mut d = dev();
+        d.registered_at = entry["registered_at"].as_str().unwrap().into();
+        d.updated_at = entry["updated_at"].as_str().unwrap().into();
+        d
     }
 
     #[test]
@@ -575,10 +654,10 @@ mod tests {
         let path = temp_store("once");
         let mut s = DeviceStore::open(path.clone());
         assert!(s.first_sight("a1b2c3d4"));
-        s.register(phone("a1b2c3d4", 'a'));
+        s.register(phone("a1b2c3d4", 'a')).unwrap();
         // Again, and with a new secret.
         assert!(!s.first_sight("a1b2c3d4"));
-        s.register(phone("a1b2c3d4", 'c'));
+        s.register(phone("a1b2c3d4", 'c')).unwrap();
         assert!(!s.first_sight("a1b2c3d4"));
         assert!(s.first_sight("ffff0000"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -592,7 +671,7 @@ mod tests {
         assert!(!s.first_sight("a1b2c3d4"));
         assert!(!s.first_sight("ffff0000"));
         // Still seen once the phone is gone from devices.json, in this run and the next.
-        assert!(s.remove("a1b2c3d4"));
+        assert!(s.remove("a1b2c3d4").unwrap());
         assert!(!s.first_sight("a1b2c3d4"));
         assert!(!DeviceStore::open(path.clone()).first_sight("a1b2c3d4"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -603,8 +682,8 @@ mod tests {
         let path = temp_store("unregister");
         let mut s = DeviceStore::open(path.clone());
         assert!(s.first_sight("a1b2c3d4"));
-        s.register(phone("a1b2c3d4", 'a'));
-        assert!(s.remove("a1b2c3d4"));
+        s.register(phone("a1b2c3d4", 'a')).unwrap();
+        assert!(s.remove("a1b2c3d4").unwrap());
         assert!(!s.first_sight("a1b2c3d4"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -628,12 +707,12 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&vec![phone("0000aaaa", 'e')]).unwrap()).unwrap();
         let mut dry = DeviceStore::open_dry_run(path.clone());
         assert!(dry.first_sight("a1b2c3d4"));
-        dry.register(phone("a1b2c3d4", 'a'));
+        dry.register(phone("a1b2c3d4", 'a')).unwrap();
         // Once per device in the run, and nothing on disk.
         assert!(!dry.first_sight("a1b2c3d4"));
         assert!(!dry.first_sight("0000aaaa"));
         assert!(!path.with_file_name(SEEN_FILE).exists());
-        assert!(dry.remove("a1b2c3d4"));
+        assert!(dry.remove("a1b2c3d4").unwrap());
         assert!(DeviceStore::open(path.clone()).first_sight("a1b2c3d4"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -664,7 +743,7 @@ mod tests {
         std::fs::write(path.with_file_name(SEEN_FILE), serde_json::to_vec(&ids).unwrap()).unwrap();
         let mut s = DeviceStore::open(path.clone());
         // The oldest id is a registered phone: the next oldest goes instead.
-        s.register(phone(&ids[0], 'a'));
+        s.register(phone(&ids[0], 'a')).unwrap();
         assert!(s.first_sight("ffff0000"));
         let on_disk = seen_file(&path);
         assert_eq!(on_disk.len(), SEEN_LIMIT);
@@ -703,8 +782,8 @@ mod tests {
     fn a_gateway_that_left_the_allowlist_takes_its_registrations_with_it() {
         let path = temp_store("allow");
         let mut s = DeviceStore::open(path.clone());
-        s.register(phone("a1b2c3d4", 'a'));
-        s.register(Device::new("ffff0000", "https://old.example.com", &secret('b'), "sandbox", OWNER));
+        s.register(phone("a1b2c3d4", 'a')).unwrap();
+        s.register(Device::new("ffff0000", "https://old.example.com", &secret('b'), "sandbox", OWNER)).unwrap();
         assert_eq!(s.keep_gateways(|g| g == GATEWAY), 1);
         assert_eq!(s.keep_gateways(|g| g == GATEWAY), 0);
         let left: Vec<String> = DeviceStore::open(path.clone()).devices.into_iter().map(|d| d.device_id).collect();
@@ -733,8 +812,8 @@ mod tests {
     fn a_refused_secret_is_remembered_by_hash_only() {
         let path = temp_store("dropped");
         let mut s = DeviceStore::open(path.clone());
-        s.register(phone("a1b2c3d4", 'a'));
-        s.register(phone("ffff0000", 'b'));
+        s.register(phone("a1b2c3d4", 'a')).unwrap();
+        s.register(phone("ffff0000", 'b')).unwrap();
         assert!(!s.is_dropped(&secret('a')));
         assert!(s.drop_secret("a1b2c3d4", &secret('a')));
         assert!(s.is_dropped(&secret('a')) && !s.is_dropped(&secret('b')));
@@ -783,8 +862,8 @@ mod tests {
     fn a_phone_forgotten_from_the_command_line_is_gone_from_the_running_helper() {
         let path = temp_store("forget");
         let mut running = DeviceStore::open(path.clone());
-        running.register(phone("a1b2c3d4", 'a'));
-        running.register(phone("ffff0000", 'b'));
+        running.register(phone("a1b2c3d4", 'a')).unwrap();
+        running.register(phone("ffff0000", 'b')).unwrap();
         // `rex-duo-helper forget` is another process with its own view of the file.
         assert_eq!(forget(&path, "a1b2c3d4"), Ok(true));
         assert_eq!(forget(&path, "a1b2c3d4"), Ok(false));
@@ -793,7 +872,7 @@ mod tests {
         running.sync();
         assert!(running.get("a1b2c3d4").is_none() && running.get("ffff0000").is_some());
         // The helper's next write keeps it gone.
-        running.register(phone("0000aaaa", 'c'));
+        running.register(phone("0000aaaa", 'c')).unwrap();
         let left: Vec<String> = DeviceStore::open(path.clone()).devices.into_iter().map(|d| d.device_id).collect();
         assert_eq!(left, ["ffff0000", "0000aaaa"]);
         // Nothing changed on disk: nothing is read again.
@@ -820,6 +899,6 @@ mod tests {
     #[test]
     fn debug_output_leaves_the_secret_out() {
         let text = format!("{:?}", dev());
-        assert!(text.contains("a1b2c3d4") && !text.contains(&secret('s')), "{text}");
+        assert!(text.contains("a1b2c3d4") && text.contains("paused: false") && !text.contains(&secret('s')), "{text}");
     }
 }

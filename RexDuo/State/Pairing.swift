@@ -190,7 +190,7 @@ struct IdentityCopy: Equatable {
             sessions: shown,
             more: shown.isEmpty ? 0 : max(0, (id.sessionCount ?? 0) - shown.count),
             owner: id.belongsToSomeoneElse ? id.owner.map { "This computer belongs to \($0)." } : nil,
-            helper: id.hasHelper == false ? "Notifications need Rex DUO Helper on this computer." : nil)
+            helper: id.hasHelper == false ? "Notifications need Rex DUO Beacon on this computer." : nil)
     }
 }
 

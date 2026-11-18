@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds Rex DUO Helper for macOS and Linux into Relay/dist:
+# Builds Rex DUO Beacon for macOS and Linux into Relay/dist:
 #
-#   Rex DUO Helper.zip                 the Mac app: the Rust binary in a signed, notarized bundle,
+#   Rex DUO Beacon.zip                 the Mac app: the Rust binary in a signed, notarized bundle,
 #                                      with rex-duo-notify (Packaging/notify.swift) beside it
 #   rex-duo-helper-linux-x86_64        static Linux binaries (musl)
 #   rex-duo-helper-linux-aarch64
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="Rex DUO Helper"
+APP_NAME="Rex DUO Beacon"
 BIN=rex-duo-helper
 NOTIFIER=rex-duo-notify
 BUNDLE_ID="dev.abrahamgonzalez.rexduo.helper"

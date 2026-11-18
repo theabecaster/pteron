@@ -24,13 +24,6 @@ struct AgentsList: View {
         .filter { !$0.keys.isEmpty }
         let selection = model.selection
         return List {
-            if model.push.offersPrompt {
-                NotificationPromptCard(theme: theme)
-                    .padding(.vertical, 6)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
             ForEach(Array(groups.enumerated()), id: \.element.server.id) { i, g in
                 MachineHeader(server: g.server, windows: [], sessionCount: g.server.sessions.count, collapsed: false, foldable: false, theme: theme) {}
                     .padding(.top, i == 0 ? 4 : machineGap)

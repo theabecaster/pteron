@@ -56,11 +56,36 @@ impl PushMessage {
         if self.sound {
             aps["sound"] = json!("default");
         }
-        let mut p = json!({"aps": aps, "server": self.server, "session_id": self.session_id, "block_id": self.block_id});
+        let mut p = json!({"aps": aps, "server": self.server});
+        // A test notification is about no session and no pane.
+        for (key, id) in [("session_id", &self.session_id), ("block_id", &self.block_id)] {
+            if !id.is_empty() {
+                p[key] = json!(id);
+            }
+        }
         if let Some(w) = &self.window_id {
             p["window_id"] = json!(w);
         }
         p
+    }
+
+    /// The notification `send_test` sends: it says which computer it came from and opens
+    /// nothing. `server` is the Rex server's address as every push carries it.
+    pub fn test(server: &str) -> PushMessage {
+        PushMessage {
+            category: PushCategory::Notice,
+            title: "Rex DUO".into(),
+            subtitle: None,
+            body: clip(&format!("Test notification from {}", computer_name(server)), 1000),
+            interruption_level: "active",
+            sound: true,
+            thread_id: TEST_THREAD.into(),
+            collapse_id: None,
+            server: server.into(),
+            session_id: String::new(),
+            window_id: None,
+            block_id: String::new(),
+        }
     }
 
     pub fn compose(i: &PushIntent, c: &BlockContext) -> PushMessage {
@@ -111,6 +136,25 @@ impl PushMessage {
         m.title = clip(&m.title, 120);
         m.body = clip(&m.body, 1000);
         m
+    }
+}
+
+/// The thread id of a test notification. The app shows a notification of this thread even
+/// while it is open.
+pub const TEST_THREAD: &str = "rexduo-test";
+
+/// This computer as a test notification names it: the first part of the host in the Rex
+/// server's address, which is the name people know it by ("https://studio.example.ts.net"
+/// reads "studio"). An address without such a host reads "this computer".
+pub fn computer_name(server: &str) -> &str {
+    let Some((scheme, rest)) = server.split_once("://") else {
+        return "this computer";
+    };
+    let name = rest.split(['/', ':', '.']).next().unwrap_or("");
+    if name.is_empty() || !scheme.starts_with("http") {
+        "this computer"
+    } else {
+        name
     }
 }
 
@@ -247,6 +291,33 @@ mod tests {
         let m = PushMessage::compose(&i, &BlockContext::default());
         assert_eq!(m.body.chars().count(), 1000);
         assert!(serde_json::to_vec(&m.payload()).unwrap().len() < 4096);
+    }
+
+    #[test]
+    fn a_test_notification_names_the_computer_and_no_session() {
+        let m = PushMessage::test("https://rex.example.ts.net");
+        assert_eq!(
+            m.payload(),
+            json!({
+                "aps": {
+                    "alert": {"title": "Rex DUO", "body": "Test notification from rex"},
+                    "sound": "default",
+                    "category": "NOTICE",
+                    "thread-id": "rexduo-test",
+                    "interruption-level": "active",
+                },
+                "server": "https://rex.example.ts.net",
+            })
+        );
+        assert_eq!((m.priority(), m.collapse_id), (10, None));
+        assert_eq!(computer_name("https://studio.example.ts.net/"), "studio");
+        assert_eq!(computer_name("https://studio:8443/x"), "studio");
+        assert_eq!(computer_name("unix:/run/user/1000/rex/server.sock"), "this computer");
+        assert_eq!(computer_name("studio"), "this computer");
+        for none in ["", "https://", "/"] {
+            assert_eq!(computer_name(none), "this computer", "{none:?}");
+        }
+        assert_eq!(PushMessage::test("").payload()["aps"]["alert"]["body"], "Test notification from this computer");
     }
 
     #[test]

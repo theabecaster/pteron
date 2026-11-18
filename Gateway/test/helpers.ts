@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
 import { dropProviderToken } from "../src/apns";
+import { randomToken } from "../src/encoding";
 import type { Env } from "../src/env";
 import { handleRequest } from "../src/index";
 
@@ -140,6 +141,30 @@ export interface Secret {
   push_secret: string;
 }
 
+/** 32 random bytes as base64url: an owner key or a push secret as a phone makes one. */
+export function chosenKey(): string {
+  return randomToken(32);
+}
+
+/** A secret id as a phone makes one: 16 url-safe characters. */
+export function chosenSecretId(): string {
+  return randomToken(12);
+}
+
+/** The device id of an owner key, worked out here on its own, as the phone does. */
+export async function deviceIdOf(ownerKey: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`rexduo-device-v1\n${ownerKey}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const base64 = btoa(String.fromCharCode(...digest));
+  return base64.replaceAll("+", "-").replaceAll("/", "_").slice(0, 22);
+}
+
+/** An owner key a phone chose and the device id that belongs to it. Nothing is sent. */
+export async function chosenDevice(): Promise<Device> {
+  const ownerKey = chosenKey();
+  return { device_id: await deviceIdOf(ownerKey), owner_key: ownerKey };
+}
+
 /** A phone that registered and minted one secret for a helper. */
 export type Registered = Device & Secret;
 
@@ -210,6 +235,24 @@ export class Gateway {
     });
     if (response.status !== 201) throw new Error(`minting a secret answered ${response.status}`);
     return response.json();
+  }
+
+  /** `PUT /v1/devices/{id}`: the device as its phone says it is. */
+  putDevice(device: Device, token = SANDBOX_TOKEN, environment = "sandbox", ip?: string): Promise<Response> {
+    return this.request("PUT", `/v1/devices/${device.device_id}`, {
+      auth: device.owner_key,
+      body: { apns_token: token, environment },
+      ...(ip === undefined ? {} : { ip }),
+    });
+  }
+
+  /** `PUT /v1/devices/{id}/secrets/{secret_id}`: one secret as its phone says it is. */
+  putSecret(device: Device, secret: Secret, label = "studio", ip?: string): Promise<Response> {
+    return this.request("PUT", `/v1/devices/${device.device_id}/secrets/${secret.secret_id}`, {
+      auth: device.owner_key,
+      body: { label, push_secret: secret.push_secret },
+      ...(ip === undefined ? {} : { ip }),
+    });
   }
 
   /** Registers a phone and mints one secret, the state every push starts from. */

@@ -1,4 +1,4 @@
-// rex-duo-notify: posts a desktop notification as Rex DUO Helper. It sits next to the helper in
+// rex-duo-notify: posts a desktop notification as Rex DUO Beacon. It sits next to the helper in
 // the app bundle (Contents/MacOS), so macOS attributes what it posts to the app: its name, its
 // icon, its row in System Settings > Notifications. The helper decides when and what to post
 // (Relay/src/notice.rs); this only talks to the system.
@@ -53,7 +53,7 @@ enum Notify {
         }
     }
 
-    /// What the person has decided about notifications from Rex DUO Helper, without asking.
+    /// What the person has decided about notifications from Rex DUO Beacon, without asking.
     static func status(_ center: UNUserNotificationCenter) async -> UNAuthorizationStatus {
         await withCheckedContinuation { done in
             center.getNotificationSettings { done.resume(returning: $0.authorizationStatus) }

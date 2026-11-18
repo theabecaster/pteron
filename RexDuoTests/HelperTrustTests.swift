@@ -122,11 +122,9 @@ struct HelperTrustTests {
 
     @MainActor @Test func aFailureReadsAsOneSentence() {
         #expect(HelperFailure(code: "not_your_device", message: "Another account registered this iPhone.").sentence(helper: "Studio")
-                == "Rex DUO Helper on Studio: Another account registered this iPhone.")
-        #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "Rex DUO Helper on Studio: timed out.")
-        #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "Rex DUO Helper on Studio: the request failed.")
-        #expect(NotificationSettingsSection.changedText("Studio")
-                == "Rex DUO Helper on Studio changed. Only trust it if you reinstalled the helper there.")
+                == "Rex DUO Beacon on Studio: Another account registered this iPhone.")
+        #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "Rex DUO Beacon on Studio: timed out.")
+        #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "Rex DUO Beacon on Studio: the request failed.")
     }
 
     // MARK: Labels

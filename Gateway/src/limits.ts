@@ -16,7 +16,10 @@
  *   management write fills the hash in. Management writes (a secret minted or deleted, a
  *   token change, the device deleted) are counted on the device's row and for the client
  *   address they come from. Registrations are counted for the client address, per hour and
- *   per day. An IPv6 client is counted under its /64 and under its /48, and a request needs
+ *   per day. The two `PUT` routes a phone can send again are counted by what a request
+ *   does: a `PUT` that makes a device is a registration, one that changes a token is a
+ *   token change, one that stores or replaces a secret is a secret minted, and one that
+ *   finds the device or the secret as it says is not counted and writes nothing. An IPv6 client is counted under its /64 and under its /48, and a request needs
  *   room under both; an IPv4 client has the one key (src/address.ts).
  *
  *   Global budgets, one each for pushes, registrations, deletes (a secret or a device
@@ -52,12 +55,23 @@
  *                     `dead` when Apple said so) and the `sends` counter                =  2
  *   registration      four address counters (hour and day, /64 and /48), the
  *                     `registrations` counter, the device and its `token_hash` entry    =  7
+ *                     (`POST /v1/devices`, or a `PUT /v1/devices/{id}` that makes the
+ *                     device)
  *   management write  four counts (the device's row, two address counters, the
  *                     `manage` counter), then the change itself:
  *                       mint a secret    4 + the secret and its index entry             =  6
+ *                       (`POST …/secrets`, or a `PUT …/secrets/{id}` that stores one)
+ *                       replace a secret 4 + the secret, which takes its new hash, and
+ *                                        its index entry (`PUT …/secrets/{id}`)         =  6
  *                       token change     4 + the device and its `token_hash` entry      =  6
- *                       a mint, once, for a row older than `token_hash`: the entry
- *                       of the hash that the count fills in                             =  7
+ *                       (`PUT /v1/devices/{id}` with another token or environment)
+ *                       a mint or a replacement, once, for a row older than
+ *                       `token_hash`: the entry of the hash that the count fills in     =  7
+ *   a `PUT` again     the device holds that token and environment, or the secret is
+ *                     stored under that id: one read                                    =  0
+ *   a refusal         a cap that is spent, a secret for a device that holds
+ *                     MAX_SECRETS_PER_DEVICE, a token that has MAX_DEVICES_PER_TOKEN
+ *                     devices, a push secret that is in use: one read                   =  0
  *   delete            a secret: two counts (the device's row and the `deletes` counter) +
  *                     the secret and its index entry                                    =  4
  *                     the device: the `deletes` counter (its row is not counted, it
@@ -74,8 +88,12 @@
  *   daily purge                         4,900
  *                              total   92,700 of 100,000
  *
- * A refused request writes nothing: each cap is checked against what the request already
- * read, so traffic past a cap costs D1 reads only.
+ * A refused request writes nothing and counts nothing: each cap, and each limit on how many
+ * rows there may be (devices a token, secrets a device), is checked against what the
+ * request already read, so traffic past any of them costs D1 reads only. The statements
+ * that count and that write repeat their checks, for requests that race each other to a
+ * last place: the one that comes second is refused after its read, with what it counted
+ * until then (src/index.ts, `countChange`).
  */
 
 export interface Limit {
@@ -293,7 +311,7 @@ async function countAll(
 ): Promise<Verdict> {
   const results = await db.batch<Record<string, number>>(checks.map(([statement]) => statement));
   // The caller checked every cap against what it read, so only a request that raced
-  // another to the last place gets a refusal here.
+  // another to the last place gets a refusal here. Its other counters have counted it.
   for (const [index, [, limit]] of checks.entries()) {
     if (results[index]?.results.length !== 1) return refusal(limit, now);
   }

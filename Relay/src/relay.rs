@@ -1,7 +1,7 @@
 //! The relay: watches the Rex server (found automatically, or the ones in the config), turns
 //! agent and notification events into pushes, and serves the client actions the iOS app calls:
-//! `helper_identity`, `register_push`, `unregister_push`, `push_presence`, `helper_status`,
-//! `update_helper`.
+//! `helper_identity`, `register_push`, `unregister_push`, `push_presence`, `set_push_paused`,
+//! `helper_status`, `update_helper`, `send_test`.
 //!
 //! Any client of the Rex server can call these actions, so each one first asks who the server
 //! says the caller is (`auth::Requester`) and what that identity may do.
@@ -30,12 +30,15 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What a phone that still registers with an APNs token is told.
-pub const NEEDS_NEWER_APP: &str = "This Rex DUO Helper needs a newer Rex DUO app.";
+pub const NEEDS_NEWER_APP: &str = "This Rex DUO Beacon needs a newer Rex DUO app.";
 
 /// The least time between two updates asked for through `update_helper`, whoever asks. Each
 /// one makes the helper download from GitHub, so a client must not be able to make it do that
 /// in a loop. The helper's own timer does not count.
 pub const UPDATE_COOLDOWN: Duration = Duration::from_secs(600);
+
+/// The least time between two test notifications to one phone (`send_test`).
+pub const TEST_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The seconds until `update_helper` may be used again, or None when it may be used now.
 fn cooldown_left(last: Option<Instant>, now: Instant) -> Option<u64> {
@@ -43,8 +46,16 @@ fn cooldown_left(last: Option<Instant>, now: Instant) -> Option<u64> {
     (since < UPDATE_COOLDOWN).then(|| (UPDATE_COOLDOWN - since).as_secs().max(1))
 }
 
+/// The actions the helper answers. Only one of these names is repeated in a log line.
+const KNOWN_ACTIONS: [&str; 8] = ["register_push", "unregister_push", "push_presence", "set_push_paused", "helper_identity", "helper_status", "update_helper", "send_test"];
+
 fn error(code: &str, message: &str) -> Value {
     json!({"code": code, "message": message})
+}
+
+/// The answer to a request whose change could not be written to devices.json. Nothing changed.
+fn not_saved() -> Value {
+    error("not_saved", "Rex DUO Beacon couldn't save that. Try again.")
 }
 
 /// Actions the relay offers to other Rex clients (declared with `client.keymap`).
@@ -65,6 +76,7 @@ pub fn actions() -> Value {
                     "environment": {"type": "string", "enum": ["sandbox", "production"]},
                     "device_name": {"type": "string"},
                     "device_id": {"type": "string", "description": "Short id the app also puts in its client label as \"#<id>\"."},
+                    "paused": {"type": "boolean", "description": "Pause (true) or resume (false) notifications to this phone with this registration. Left out, a registration with the secret the helper already holds keeps its value and any other starts resumed."},
                     "setup_seal": {"type": "string", "description": "From the Rex DUO setup that installed this helper: base64 of 32 bytes, made from its setup code for this registration."},
                     "token": {"type": "string", "description": "No longer used."}
                 }
@@ -72,7 +84,7 @@ pub fn actions() -> Value {
         },
         {
             "name": "helper_identity", "kind": "client", "category": "Rex DUO",
-            "title": "Rex DUO Helper Identity",
+            "title": "Rex DUO Beacon Identity",
             "description": "Prove which helper this is: its public key, and a signature over the caller's challenge.",
             "args": {"type": "object", "properties": {
                 "challenge": {"type": "string", "description": "32 random bytes, base64url."},
@@ -96,15 +108,27 @@ pub fn actions() -> Value {
             "args": {"type": "object", "properties": {"active": {"type": "boolean"}}, "required": ["active"]}
         },
         {
+            "name": "set_push_paused", "kind": "client", "category": "Rex DUO",
+            "title": "Pause or Resume Notifications",
+            "description": "Pause or resume notifications from this computer to the calling iPhone. Its registration stays as it is.",
+            "args": {"type": "object", "properties": {"paused": {"type": "boolean"}}, "required": ["paused"]}
+        },
+        {
             "name": "helper_status", "kind": "client", "category": "Rex DUO",
-            "title": "Rex DUO Helper Status",
+            "title": "Rex DUO Beacon Status",
             "description": "The helper's version, whether a newer one is available, and what this computer still asks of its user.",
             "args": {"type": "object", "properties": {}}
         },
         {
             "name": "update_helper", "kind": "client", "category": "Rex DUO",
-            "title": "Update Rex DUO Helper",
+            "title": "Update Rex DUO Beacon",
             "description": "Look for a newer helper now and install it.",
+            "args": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "send_test", "kind": "client", "category": "Rex DUO",
+            "title": "Send a Test Notification",
+            "description": "Send one notification to the calling iPhone, to show that notifications from this computer arrive.",
             "args": {"type": "object", "properties": {}}
         }
     ])
@@ -162,6 +186,8 @@ pub struct Options {
     pub key: Option<HelperKey>,
     /// The state folder, where `install` leaves a setup code.
     pub state_dir: PathBuf,
+    /// This computer's system as `helper_status` names it (`host::os`), read once at start.
+    pub os: String,
 }
 
 /// How long an answer about this computer (notification permission, lingering) is reused.
@@ -208,6 +234,12 @@ pub struct Relay {
     /// When `update_helper` last made the helper look for an update.
     asked_update: Mutex<Option<Instant>>,
     facts: Mutex<FactsCache>,
+    /// Per device id: who owned the registration, and the unix time, when the gateway last
+    /// accepted a notification for that phone. Since this helper started; not stored.
+    last_push: Mutex<HashMap<String, (String, i64)>>,
+    /// Per device id, when `send_test` last sent to that phone, kept for `TEST_INTERVAL`.
+    tests: Mutex<HashMap<String, Instant>>,
+    os: String,
     state_dir: PathBuf,
     dry_run: bool,
     identity: Identity,
@@ -244,6 +276,9 @@ impl Relay {
             strikes: Mutex::new(Strikes::default()),
             asked_update: Mutex::new(None),
             facts: Mutex::new(FactsCache::default()),
+            last_push: Mutex::new(HashMap::new()),
+            tests: Mutex::new(HashMap::new()),
+            os: o.os,
             state_dir: o.state_dir,
             dry_run: o.dry_run,
             identity,
@@ -264,7 +299,7 @@ impl Relay {
     pub fn start(self: &Arc<Self>) {
         let n = self.store().devices.len();
         let mode = if self.dry_run { "dry run, no pushes are sent" } else { "pushes go through the gateway" };
-        info!("Rex DUO Helper {VERSION} starting; {n} registered device(s); {mode}");
+        info!("Rex DUO Beacon {VERSION} starting; {n} registered device(s); {mode}");
         // status.json follows what the updater learns. Weak, so the two don't keep each other alive.
         let relay = Arc::downgrade(self);
         self.updater.set_on_change(move || {
@@ -304,14 +339,21 @@ impl Relay {
         let ready: Vec<String> =
             self.servers.iter().filter_map(|s| { let st = s.st.lock().unwrap(); st.ready.then(|| st.name.clone()) }).collect();
         // The updater's fields (`version`, `latest_version`, `update_available`, `checked_at`,
-        // `updating`, `can_update`, `last_error`), then the relay's own.
+        // `updating`, `can_update`, `last_error`, `failing_since`), then the relay's own.
         let mut v = self.updater.status();
         v["pid"] = json!(std::process::id());
         v["helper_version"] = json!(VERSION);
         v["connected"] = json!(!ready.is_empty());
         v["servers"] = json!(ready);
         v["dry_run"] = json!(self.dry_run);
-        v["exe_mtime"] = json!(std::env::current_exe().map(|p| crate::service::mtime(&p)).unwrap_or(0));
+        let exe = std::env::current_exe().ok();
+        v["exe"] = json!(exe.as_ref().map(|p| p.to_string_lossy()));
+        v["exe_mtime"] = json!(exe.map(|p| crate::service::mtime(&p)).unwrap_or(0));
+        // The launchd job this helper runs as (src/label.rs).
+        #[cfg(target_os = "macos")]
+        {
+            v["label"] = json!(crate::service::own_label());
+        }
         v["updated_at"] = json!(now_iso());
         let tmp = self.status_path.with_extension("json.tmp");
         if std::fs::write(&tmp, v.to_string()).is_ok() {
@@ -587,6 +629,11 @@ impl Relay {
 
     async fn dispatch(self: Arc<Self>, intent: PushIntent) {
         let Some(s) = self.servers.iter().find(|s| s.st.lock().unwrap().name == intent.block.server).cloned() else { return };
+        // With every registered phone paused there is nobody to compose a notification for.
+        if self.all_paused() {
+            debug!("no push: notifications are paused on every registered phone");
+            return;
+        }
         let ctx = context(&s, &intent.block).await;
         let msg = PushMessage::compose(&intent, &ctx);
         // The words of a push stay out of the log; a dry run shows them, that is what it is for.
@@ -606,14 +653,24 @@ impl Relay {
         self.deliver(&msg, devices, &clients, &background, now()).await;
     }
 
-    /// One request per phone that should get this push, at time `t`. Any failure loses this
-    /// push for that phone; it is not retried. A phone the gateway has dropped (`410`), or
+    /// True when phones are registered and each of them is paused.
+    fn all_paused(&self) -> bool {
+        let store = self.store();
+        !store.devices.is_empty() && store.devices.iter().all(|d| d.paused)
+    }
+
+    /// One request per phone that should get this push, at time `t`. A paused phone gets
+    /// none. Any failure loses this push for that phone; it is not retried. A phone the gateway has dropped (`410`), or
     /// whose secret the gateway refused twice a minute apart (`401`), is unregistered and its
     /// secret remembered as refused. The phone learns of it from `registered: false` in its
     /// next `push_presence` or `helper_status`, and registers again.
     async fn deliver(&self, msg: &PushMessage, devices: Vec<Device>, clients: &[ClientSnapshot], background: &HashSet<String>, t: f64) {
         for d in devices {
             let who = d.who();
+            if d.paused {
+                debug!("skip {who}: paused");
+                continue;
+            }
             if is_app_open(&d, clients, background) {
                 info!("skip {who}: Rex DUO is open");
                 continue;
@@ -622,29 +679,42 @@ impl Relay {
                 info!("skip {who}: rate limited");
                 continue;
             }
-            let hash = secret_hash(&d.push_secret);
-            match self.sender.send(msg, &d).await {
-                SendResult::Sent(id) => {
-                    self.strikes.lock().unwrap().clear(&hash);
-                    if !self.dry_run {
-                        info!("sent to {who}{}", id.map(|i| format!(" (apns-id {i})")).unwrap_or_default());
-                    }
+            let result = self.sender.send(msg, &d).await;
+            self.settle(&d, &result, t);
+        }
+    }
+
+    /// What the gateway's answer to one notification, at time `t`, means for the phone it
+    /// was for: an accepted one is remembered for `last_push_at`, and a phone the gateway
+    /// has dropped, or whose secret it refused a second time, is unregistered.
+    fn settle(&self, d: &Device, result: &SendResult, t: f64) {
+        let who = d.who();
+        let hash = secret_hash(&d.push_secret);
+        match result {
+            SendResult::Sent(id) => {
+                self.strikes.lock().unwrap().clear(&hash);
+                // A dry run's sender asks no gateway, so there is nothing to remember.
+                if matches!(self.sender, Sender::Gateway) {
+                    self.last_push.lock().unwrap().insert(d.device_id.clone(), (d.owner.clone(), t as i64));
                 }
-                SendResult::Gone(why) => {
-                    info!("the gateway no longer has {who} ({why}); unregistering it until the phone registers again");
-                    self.strikes.lock().unwrap().clear(&hash);
-                    self.store().drop_secret(&d.device_id, &d.push_secret);
+                if !self.dry_run {
+                    info!("sent to {who}{}", id.as_ref().map(|i| format!(" (apns-id {i})")).unwrap_or_default());
                 }
-                SendResult::Unauthorized => {
-                    if self.strikes.lock().unwrap().refused(&hash, t) {
-                        info!("the gateway refused {who}'s secret again; unregistering it until the phone registers again");
-                        self.store().drop_secret(&d.device_id, &d.push_secret);
-                    } else {
-                        info!("the gateway refused {who}'s secret; this push is dropped, the registration stays unless it happens again in a minute or more");
-                    }
-                }
-                SendResult::Failed(why) => info!("push to {who} dropped: {why}"),
             }
+            SendResult::Gone(why) => {
+                info!("the gateway no longer has {who} ({why}); unregistering it until the phone registers again");
+                self.strikes.lock().unwrap().clear(&hash);
+                self.store().drop_secret(&d.device_id, &d.push_secret);
+            }
+            SendResult::Unauthorized => {
+                if self.strikes.lock().unwrap().refused(&hash, t) {
+                    info!("the gateway refused {who}'s secret again; unregistering it until the phone registers again");
+                    self.store().drop_secret(&d.device_id, &d.push_secret);
+                } else {
+                    info!("the gateway refused {who}'s secret; this push is dropped, the registration stays unless it happens again in a minute or more");
+                }
+            }
+            SendResult::Limited(why) | SendResult::Failed(why) => info!("push to {who} dropped: {why}"),
         }
     }
 
@@ -694,9 +764,9 @@ impl Relay {
         // for someone who may be anyone.
         let Some(identity) = requester.identity.as_deref() else {
             // The action's name is the caller's text: only a name the helper knows is repeated.
-            let known = ["register_push", "unregister_push", "push_presence", "helper_identity", "helper_status", "update_helper"].contains(&action);
+            let known = KNOWN_ACTIONS.contains(&action);
             info!("refused {} from {who}: the Rex server did not identify it", if known { action } else { "an unknown action" });
-            return (Err(error("refused", "Rex DUO Helper only answers clients the Rex server has identified.")), None);
+            return (Err(error("refused", "Rex DUO Beacon only answers clients the Rex server has identified.")), None);
         };
         let mut after = None;
         let outcome = match action {
@@ -708,7 +778,7 @@ impl Relay {
                     info!("the Rex DUO setup that installed this helper is complete, for {who}");
                 }
             }),
-            "unregister_push" => Ok(self.unregister(args, requester, identity)),
+            "unregister_push" => self.unregister(args, requester, identity),
             "push_presence" => {
                 let background = args.bool("active") == Some(false);
                 if !requester.client_id.is_empty() {
@@ -722,20 +792,34 @@ impl Relay {
                 }
                 Ok(json!({"registered": self.registered(requester, identity)}))
             }
+            "set_push_paused" => self.set_paused(args, requester, identity),
             "helper_identity" => self.identify(s, args, requester, identity),
             "helper_status" => {
+                // A check the command line ran since the last look is part of the answer.
+                self.updater.take_command_result();
                 let mut status = self.updater.status();
-                status["registered"] = json!(self.registered(requester, identity));
+                let own = self.own_device(requester, identity);
+                status["registered"] = json!(own.is_some());
+                status["paused"] = json!(own.is_some_and(|d| d.paused));
                 let facts = self.host_facts().await;
                 status["notices"] = json!(facts.notices);
                 status["linger"] = json!(facts.linger);
+                status["os"] = json!(self.os);
+                let (all, others) = {
+                    let store = self.store();
+                    (store.devices.len(), store.devices.iter().filter(|d| d.owner != identity).count())
+                };
+                status["devices"] = json!(all);
+                status["other_phones"] = json!(others);
+                status["last_push_at"] = json!(self.last_push_at(requester, identity));
                 Ok(status)
             }
+            "send_test" => self.send_test(s, requester, identity).await,
             "update_helper" => self.begin_update(&who, identity).await.map(|(result, start)| {
                 after = start;
                 result
             }),
-            _ => Err(error("not_supported", "Rex DUO Helper has no such action.")),
+            _ => Err(error("not_supported", "Rex DUO Beacon has no such action.")),
         };
         (outcome, after)
     }
@@ -744,7 +828,88 @@ impl Relay {
     /// registration here that the requester's identity made. False tells the app to register
     /// again: this helper never had its secret, or the gateway refused it.
     fn registered(&self, requester: &Requester, identity: &str) -> bool {
-        requester.device_id().is_some_and(|id| self.store().get(id).is_some_and(|d| d.owner == identity))
+        self.own_device(requester, identity).is_some()
+    }
+
+    /// The requester's phone, when the requester's identity registered it here.
+    fn own_device(&self, requester: &Requester, identity: &str) -> Option<Device> {
+        let id = requester.device_id()?;
+        self.store().get(id).filter(|d| d.owner == identity).cloned()
+    }
+
+    /// `set_push_paused`: pauses or resumes the requester's own phone, for the identity that
+    /// registered it, as `push_presence` tells them apart. The registration and its secret
+    /// stay; while it is paused the helper sends that phone nothing.
+    fn set_paused(&self, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
+        let who = requester.who();
+        let Some(paused) = args.bool("paused") else { return Err(error("bad_request", "paused must be true or false")) };
+        let known = requester.device_id().map_or(Ok(false), |id| {
+            let mut store = self.store();
+            if store.get(id).is_some_and(|d| d.owner == identity) { store.set_paused(id, paused) } else { Ok(false) }
+        });
+        let Ok(known) = known else {
+            info!("no pause or resume for {who}: it could not be saved");
+            return Err(not_saved());
+        };
+        if !known {
+            info!("no pause or resume for {who}: no phone of theirs is registered here under that id");
+            return Err(error("not_registered", "This phone is not set up for notifications from this computer."));
+        }
+        info!("notifications {} by {who}", if paused { "paused" } else { "resumed" });
+        Ok(json!({"paused": paused, "registered": true}))
+    }
+
+    /// When the gateway last accepted a notification from this helper for the requester's
+    /// phone, in unix seconds. None before the first one since the helper started, and for
+    /// a phone that was someone else's then.
+    fn last_push_at(&self, requester: &Requester, identity: &str) -> Option<i64> {
+        let last = self.last_push.lock().unwrap();
+        last.get(requester.device_id()?).filter(|(owner, _)| owner == identity).map(|(_, at)| *at)
+    }
+
+    /// Takes the phone's one test of these ten seconds, or says to wait.
+    fn take_test_slot(&self, device_id: &str, now: Instant) -> Result<(), Value> {
+        let mut tests = self.tests.lock().unwrap();
+        tests.retain(|_, at| now.saturating_duration_since(*at) < TEST_INTERVAL);
+        if tests.contains_key(device_id) {
+            return Err(error("test_too_soon", "A test notification was sent a moment ago. Try again in a few seconds."));
+        }
+        tests.insert(device_id.to_string(), now);
+        Ok(())
+    }
+
+    /// `send_test`: one notification to the requester's own phone, through the gateway, now.
+    /// Only for the identity that registered that phone, as `push_presence` tells them
+    /// apart. Whether Rex DUO is open on the phone plays no part, and neither does the
+    /// allowance of agent pushes: a test has its own, one per phone every `TEST_INTERVAL`,
+    /// which an attempt uses up whatever comes of it. A paused phone gets no test: the
+    /// answer is `paused`, and neither the gateway nor the phone's test allowance is touched.
+    async fn send_test(&self, s: &Server, requester: &Requester, identity: &str) -> Result<Value, Value> {
+        let who = requester.who();
+        let Some(d) = self.own_device(requester, identity) else {
+            info!("no test notification for {who}: no phone of theirs is registered here under that id");
+            return Err(error("not_registered", "This phone is not set up for notifications from this computer."));
+        };
+        if d.paused {
+            info!("no test notification for {who}: notifications are paused on that phone");
+            return Err(error("paused", "Notifications from this computer are paused on this phone."));
+        }
+        self.take_test_slot(&d.device_id, Instant::now())?;
+        let server = s.st.lock().unwrap().name.clone();
+        let msg = PushMessage::test(&server);
+        info!("test notification asked for by {who}");
+        let result = self.sender.send(&msg, &d).await;
+        self.settle(&d, &result, now());
+        match result {
+            SendResult::Sent(_) => Ok(json!({"sent": true})),
+            // The gateway does not know this phone, or not by what this helper holds for it.
+            // Either way the phone has to set notifications up again.
+            SendResult::Gone(_) | SendResult::Unauthorized => {
+                Err(error("phone_gone", "This phone's notification address is no longer valid. Set up notifications on it again."))
+            }
+            SendResult::Limited(_) => Err(error("limit_reached", "The notification service has sent as many notifications as it allows for now. Try again later.")),
+            SendResult::Failed(_) => Err(error("no_connection", "The notification service could not be reached.")),
+        }
     }
 
     /// The notification permission and lingering, read now or within the last `FACTS_TTL`.
@@ -765,9 +930,9 @@ impl Relay {
     /// read from the state folder on each call, so a helper that was running before `install`
     /// stored it answers too.
     fn identify(&self, s: &Server, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
-        let Some(key) = &self.key else { return Err(error("internal", "This Rex DUO Helper has no identity key.")) };
+        let Some(key) = &self.key else { return Err(error("internal", "This Rex DUO Beacon has no identity key.")) };
         let Some(own) = s.st.lock().unwrap().client_id.clone() else {
-            return Err(error("internal", "This Rex DUO Helper does not know its own client id on this server."));
+            return Err(error("internal", "This Rex DUO Beacon does not know its own client id on this server."));
         };
         let setup_challenge = match args.get("setup_challenge") {
             None | Some(Value::Null) => None,
@@ -785,7 +950,9 @@ impl Relay {
     }
 
     /// `register_push`: stores the phone's gateway and secret under its device id, for the
-    /// identity that asked. A `setup_seal` among the args plays no part here: `act` reads it
+    /// identity that asked. A phone registering the secret the helper already holds for it
+    /// stays paused or not as it was; a new secret starts it resumed; `paused` among the args
+    /// sets the value either way. A `setup_seal` among the args plays no part here: `act` reads it
     /// once the registration is made.
     fn register(&self, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
         let who = requester.who();
@@ -801,7 +968,7 @@ impl Relay {
         // already knows, not one the caller picked.
         let Some(gateway) = args.str("gateway").and_then(|g| self.gateways.accept(g)) else {
             info!("refused a registration from {who}: its gateway is not one this helper pushes through");
-            return bad("gateway is not one this helper pushes through (the built-in one, or one listed in its config.json)");
+            return bad("gateway is not one this Rex DUO Beacon pushes through (the built-in one, or one listed in its config.json)");
         };
         if !Device::is_valid_secret(secret) {
             return bad("push_secret must be the secret the gateway gave this phone");
@@ -818,6 +985,11 @@ impl Relay {
         if requester.device_id() != Some(dev_id) {
             return bad("device_id must be the id at the end of this client's label");
         }
+        let paused = match args.get("paused") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(p)) => Some(*p),
+            Some(_) => return bad("paused must be true or false"),
+        };
         let mut d = Device::new(dev_id, &gateway, secret, env, identity);
         d.device_name = args.text("device_name");
         let (d, count, new) = {
@@ -835,11 +1007,15 @@ impl Relay {
                     "That phone is registered to someone else on this computer. To clear it, run there: rex-duo-helper forget <device id>",
                 ));
             }
+            d.paused = paused.unwrap_or_else(|| store.get(dev_id).is_some_and(|old| old.paused && old.push_secret == secret));
             let new = store.first_sight(dev_id);
-            let d = store.register(d);
+            let Ok(d) = store.register(d) else {
+                info!("no registration for {who}: it could not be saved");
+                return Err(not_saved());
+            };
             (d, store.devices.len(), new)
         };
-        info!("registered {} [{env}] #{} from {who}", d.device_name.as_deref().unwrap_or("device"), d.device_id);
+        info!("registered {} [{env}] #{} from {who}{}", d.device_name.as_deref().unwrap_or("device"), d.device_id, if d.paused { ", paused" } else { "" });
         if new && self.notices.lock().unwrap().allow(Instant::now()) {
             notice::post(&notice::body(d.device_name.as_deref()), self.dry_run);
         } else if new {
@@ -854,17 +1030,22 @@ impl Relay {
 
     /// `unregister_push`: by device id, and only for the identity that registered it. An old
     /// app's `token` alone removes nothing.
-    fn unregister(&self, args: &Value, requester: &Requester, identity: &str) -> Value {
-        let removed = args.str("device_id").is_some_and(|id| {
+    fn unregister(&self, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
+        let removed = args.str("device_id").map_or(Ok(false), |id| {
             let mut store = self.store();
-            let secret = store.get(id).filter(|d| d.owner == identity).map(|d| d.push_secret.clone());
-            secret.is_some_and(|secret| {
+            let Some(secret) = store.get(id).filter(|d| d.owner == identity).map(|d| d.push_secret.clone()) else { return Ok(false) };
+            let removed = store.remove(id);
+            if removed.is_ok() {
                 self.strikes.lock().unwrap().clear(&secret_hash(&secret));
-                store.remove(id)
-            })
+            }
+            removed
         });
+        let Ok(removed) = removed else {
+            info!("unregister from {}: it could not be saved, so the phone is still registered", requester.who());
+            return Err(not_saved());
+        };
         info!("unregister from {}: {}", requester.who(), if removed { "removed" } else { "nothing of theirs to remove" });
-        json!({"removed": removed})
+        Ok(json!({"removed": removed}))
     }
 
     /// Takes the one `update_helper` slot of this ten minutes, or says how long is left.
@@ -883,7 +1064,7 @@ impl Relay {
     async fn begin_update(&self, who: &str, identity: &str) -> Result<(Value, Option<(String, Asset)>), Value> {
         if !self.store().owns_any(identity) {
             info!("refused an update asked for by {who}: no phone of theirs is registered here");
-            return Err(error("refused", "Only someone with a phone registered on this helper can update it."));
+            return Err(error("refused", "Only someone with a phone registered on this Rex DUO Beacon can update it."));
         }
         info!("update asked for by {who}");
         if let Some(version) = self.updater.updating() {
@@ -985,9 +1166,22 @@ mod tests {
     fn actions_declare_the_contract() {
         let a = actions();
         let names: Vec<&str> = a.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["register_push", "helper_identity", "unregister_push", "push_presence", "helper_status", "update_helper"]);
+        assert_eq!(names, ["register_push", "helper_identity", "unregister_push", "push_presence", "set_push_paused", "helper_status", "update_helper", "send_test"]);
+        assert_eq!(a[4], json!({"name": "set_push_paused", "kind": "client", "category": "Rex DUO", "title": "Pause or Resume Notifications",
+            "description": "Pause or resume notifications from this computer to the calling iPhone. Its registration stays as it is.",
+            "args": {"type": "object", "properties": {"paused": {"type": "boolean"}}, "required": ["paused"]}}));
+        assert_eq!(a[7], json!({"name": "send_test", "kind": "client", "category": "Rex DUO", "title": "Send a Test Notification",
+            "description": "Send one notification to the calling iPhone, to show that notifications from this computer arrive.",
+            "args": {"type": "object", "properties": {}}}));
+        // Every declared action is one the helper answers, and the other way round.
+        let mut known = KNOWN_ACTIONS.to_vec();
+        known.sort_unstable();
+        let mut declared = names.clone();
+        declared.sort_unstable();
+        assert_eq!(known, declared);
         let args: Vec<&str> = a[0]["args"]["properties"].as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(args, ["device_id", "device_name", "environment", "gateway", "push_secret", "setup_seal", "token"]);
+        assert_eq!(args, ["device_id", "device_name", "environment", "gateway", "paused", "push_secret", "setup_seal", "token"]);
+        assert_eq!(a[0]["args"]["properties"]["paused"]["type"], "boolean");
         let args: Vec<&str> = a[1]["args"]["properties"].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(args, ["challenge", "device_id", "setup_challenge"]);
         // Nothing required: a call from an old app must reach the helper to get its answer.
@@ -1007,6 +1201,8 @@ mod tests {
     /// Two people on the tailnet, and what the server says about them.
     const ALEX: &str = "tailscale:12345";
     const SAM: &str = "tailscale:777";
+    /// The system the tests' helper says it runs on.
+    const OS: &str = "macOS 15.5";
 
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("relay-{tag}-{}-{}", std::process::id(), now()));
@@ -1018,10 +1214,15 @@ mod tests {
     /// logs the desktop notice instead of posting it. `sender` says whether pushes go out
     /// (to a server in the test) or are logged.
     fn relay_with(dir: &std::path::Path, dry_run: bool, sender: Sender, gateways: &[&str]) -> Arc<Relay> {
+        relay_watching(vec![], dir, dry_run, sender, gateways)
+    }
+
+    /// `relay_with`, and one connection (never opened) per entry of `watch`.
+    fn relay_watching(watch: Vec<Option<Endpoint>>, dir: &std::path::Path, dry_run: bool, sender: Sender, gateways: &[&str]) -> Arc<Relay> {
         let env = Env { dry_run, debug_build: true, keys: Ok(vec![[7u8; 32]]), place: Err("test".into()), service: false, writable: false };
         let config: Vec<String> = gateways.iter().map(|g| g.to_string()).collect();
         Relay::new(
-            vec![],
+            watch,
             DeviceStore::open(dir.join("devices.json")),
             sender,
             Updater::with_env(env, false, dir),
@@ -1035,6 +1236,7 @@ mod tests {
                 gateways: Gateways::new(&config).0,
                 key: Some(HelperKey::load_or_create(&dir.join("identity.key")).unwrap()),
                 state_dir: dir.to_path_buf(),
+                os: OS.into(),
             },
         )
     }
@@ -1173,7 +1375,7 @@ mod tests {
         let r = relay(&dir, true);
         let old = json!({"token": "ab".repeat(32), "environment": "sandbox", "device_name": "iPhone", "device_id": "a1b2c3d4"});
         let e = register(&r, &old, ALEX).unwrap_err();
-        assert_eq!(e["message"], "This Rex DUO Helper needs a newer Rex DUO app.");
+        assert_eq!(e["message"], "This Rex DUO Beacon needs a newer Rex DUO app.");
         assert!(devices(&r).is_empty());
         // A token beside a secret is ignored: that is a new app.
         let mut both = register_args();
@@ -1194,17 +1396,21 @@ mod tests {
             ("register_push", register_args()),
             ("unregister_push", json!({"device_id": "a1b2c3d4"})),
             ("push_presence", json!({"active": false})),
+            ("set_push_paused", json!({"paused": true})),
             ("helper_identity", json!({"challenge": challenge, "device_id": "a1b2c3d4"})),
             ("helper_status", json!({})),
             ("update_helper", json!({})),
+            ("send_test", json!({})),
             ("anything_else", json!({})),
         ] {
             let (outcome, after) = r.act(&s, action, &args, &nobody).await;
             assert_eq!(outcome.unwrap_err()["code"], "refused", "{action}");
             assert!(after.is_none());
         }
-        // Nothing changed: the phone is still registered and was not marked as in the background.
+        // Nothing changed: the phone is still registered, not paused, and was not marked as in
+        // the background.
         assert_eq!(devices(&r).len(), 1);
+        assert!(!devices(&r)[0].paused);
         assert!(s.st.lock().unwrap().backgrounded.is_empty());
         // The same refusal for a requester parsed from what an unidentified connection looks like.
         let parsed = Requester::parse(&json!({"client_id": "client:5", "info": {"label": "Alex's iPhone #a1b2c3d4"},
@@ -1241,10 +1447,10 @@ mod tests {
         // An old app's token alone removes nothing, and neither does an id nobody registered.
         let alex = app("a1b2c3d4", Some(ALEX));
         for args in [json!({"token": "ab".repeat(32)}), json!({}), json!({"device_id": "ffff0000"}), json!({"device_id": "A1B2C3D4"})] {
-            assert_eq!(r.unregister(&args, &alex, ALEX), json!({"removed": false}), "{args}");
+            assert_eq!(r.unregister(&args, &alex, ALEX), Ok(json!({"removed": false})), "{args}");
         }
         let other_client = Requester { client_id: "client:mac".into(), label: "rex".into(), identity: Some(ALEX.into()) };
-        assert_eq!(r.unregister(&json!({"device_id": "a1b2c3d4", "token": "ab".repeat(32)}), &other_client, ALEX), json!({"removed": true}));
+        assert_eq!(r.unregister(&json!({"device_id": "a1b2c3d4", "token": "ab".repeat(32)}), &other_client, ALEX), Ok(json!({"removed": true})));
         assert!(devices(&r).is_empty());
 
         // Once it is gone the id is free again, for whoever registers first.
@@ -1278,8 +1484,8 @@ mod tests {
         let keys: Vec<&str> = status.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             keys,
-            ["can_update", "checked_at", "last_error", "latest_version", "linger", "manifest_expires_at", "min_version", "notices", "registered", "update_available",
-                "update_required", "updating", "version"]
+            ["can_update", "checked_at", "devices", "failing_since", "last_error", "last_push_at", "latest_version", "linger", "manifest_expires_at", "min_version", "notices", "os",
+                "other_phones", "paused", "registered", "update_available", "update_required", "updating", "version"]
         );
         assert_eq!((status["registered"].as_bool(), status["version"].as_str()), (Some(true), Some(VERSION)));
 
@@ -1338,7 +1544,7 @@ mod tests {
         // The owner may. This helper can't update (a dry run), and says so in a fixed
         // sentence: the reason with its paths is for the log.
         let (outcome, after) = r.act(&s, "update_helper", &json!({}), &alex).await;
-        assert_eq!(outcome.unwrap_err(), json!({"code": "update_failed", "message": "This copy of Rex DUO Helper can't update itself."}));
+        assert_eq!(outcome.unwrap_err(), json!({"code": "update_failed", "message": "This copy of Rex DUO Beacon can't update itself."}));
         assert!(after.is_none());
         // Refusals use up no slot.
         assert!(r.asked_update.lock().unwrap().is_none());
@@ -1371,7 +1577,7 @@ mod tests {
         let keys: Vec<&str> = s.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             keys,
-            ["can_update", "checked_at", "last_error", "latest_version", "manifest_expires_at", "min_version", "update_available", "update_required", "updating", "version"]
+            ["can_update", "checked_at", "failing_since", "last_error", "latest_version", "manifest_expires_at", "min_version", "update_available", "update_required", "updating", "version"]
         );
         assert_eq!((s["version"].as_str(), s["can_update"].as_bool(), s["updating"].as_bool()), (Some(VERSION), Some(false), Some(false)));
         // status.json carries the same fields and the relay's own.
@@ -1535,7 +1741,7 @@ mod tests {
             DeviceStore::open_dry_run(dir.join("devices.json")),
             Sender::DryRun,
             Updater::with_env(env, false, &dir),
-            Options { dry_run: true, label: None, debounce: 30.0, burst: 10.0, per_minute: 10.0, status_path: dir.join("status.json"), gateways: Gateways::default(), key: None, state_dir: dir.clone() },
+            Options { dry_run: true, label: None, debounce: 30.0, burst: 10.0, per_minute: 10.0, status_path: dir.join("status.json"), gateways: Gateways::default(), key: None, state_dir: dir.clone(), os: OS.into() },
         );
         assert_eq!(r.servers.len(), 2);
         assert!(r.servers[0].fixed.is_none() && r.servers[1].fixed.as_ref() == Some(&named));
@@ -1574,7 +1780,7 @@ mod tests {
         let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
         let ids = ["00000200", "00000401", "00000410", "00000429", "00000500"];
         for id in ids {
-            r.store.lock().unwrap().register(phone(id, &base));
+            r.store.lock().unwrap().register(phone(id, &base)).unwrap();
         }
         r.deliver(&message("A very private message"), devices(&r), &[], &HashSet::new(), 1000.0).await;
 
@@ -1620,7 +1826,7 @@ mod tests {
         ])
         .await;
         let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
-        r.store.lock().unwrap().register(phone("a1b2c3d4", &base));
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
         let secret = format!("{SECRET}a1b2c3d4");
         let push = |t: f64| {
             let r = r.clone();
@@ -1687,7 +1893,7 @@ mod tests {
         let dir = temp("skip");
         let (base, seen) = serve(vec![canned(200, "{}")]).await;
         let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
-        r.store.lock().unwrap().register(phone("a1b2c3d4", &base));
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
         let open = ClientSnapshot {
             client_id: "client:1".into(),
             kind: Some("app".into()),
@@ -1711,7 +1917,7 @@ mod tests {
         let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
         let old = phone("a1b2c3d4", &base);
         // The store already holds the phone's new secret when the old one is refused.
-        r.store.lock().unwrap().register(Device::new("a1b2c3d4", &base, NEW_SECRET, "sandbox", ALEX));
+        r.store.lock().unwrap().register(Device::new("a1b2c3d4", &base, NEW_SECRET, "sandbox", ALEX)).unwrap();
         r.deliver(&message("Hello"), vec![old.clone()], &[], &HashSet::new(), 1000.0).await;
         assert_eq!(devices(&r).len(), 1);
         assert_eq!(devices(&r)[0].push_secret, NEW_SECRET);
@@ -1767,6 +1973,8 @@ mod tests {
             ask(r.act(&s, "helper_identity", &json!({"challenge": first, "device_id": first}), who).await.0);
             ask(r.act(&s, "helper_status", &json!({}), who).await.0);
             ask(r.act(&s, "push_presence", &json!({"active": false}), who).await.0);
+            ask(r.act(&s, "set_push_paused", &json!({"paused": true}), who).await.0);
+            ask(r.act(&s, "set_push_paused", &json!({"paused": false}), who).await.0);
             ask(r.act(&s, "update_helper", &json!({}), who).await.0);
             ask(r.act(&s, first, &json!({}), who).await.0);
         }
@@ -1814,6 +2022,797 @@ mod tests {
                     assert!(!text.contains(piece), "{piece:?} of a secret is in: {text}");
                 }
             }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A server the helper watches under this name, which is what a push carries as `server`.
+    fn named_server(name: &str) -> Server {
+        let s = server();
+        s.st.lock().unwrap().name = name.into();
+        s
+    }
+
+    async fn status(r: &Relay, who: &Requester) -> Value {
+        r.act(&server(), "helper_status", &json!({}), who).await.0.unwrap()
+    }
+
+    async fn send_test(r: &Relay, s: &Server, who: &Requester) -> Result<Value, Value> {
+        let (outcome, after) = r.act(s, "send_test", &json!({}), who).await;
+        assert!(after.is_none());
+        outcome
+    }
+
+    #[tokio::test]
+    async fn helper_status_names_the_system_and_counts_the_phones() {
+        let dir = temp("status-fields");
+        let r = relay(&dir, true);
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let first = status(&r, &alex).await;
+        assert_eq!((&first["os"], &first["devices"], &first["last_push_at"]), (&json!(OS), &json!(0), &Value::Null));
+        register(&r, &register_args(), ALEX).unwrap();
+        assert_eq!(status(&r, &alex).await["devices"], 1);
+        // Every phone on this helper counts, whoever registered it and whoever asks.
+        let mut sams = register_args();
+        sams["device_id"] = json!("ffff0000");
+        sams["push_secret"] = json!(NEW_SECRET);
+        register(&r, &sams, SAM).unwrap();
+        for who in [&alex, &app("ffff0000", Some(SAM)), &app("00000000", Some("tailscale:1"))] {
+            let answer = status(&r, who).await;
+            assert_eq!((&answer["os"], &answer["devices"]), (&json!(OS), &json!(2)), "{who:?}");
+        }
+        // The same phone again is still one, and a phone that left is gone from the count.
+        register(&r, &register_args(), ALEX).unwrap();
+        assert_eq!(status(&r, &alex).await["devices"], 2);
+        assert_eq!(r.unregister(&json!({"device_id": "ffff0000"}), &app("ffff0000", Some(SAM)), SAM), Ok(json!({"removed": true})));
+        assert_eq!(status(&r, &alex).await["devices"], 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn last_push_at_is_the_callers_phones_last_accepted_notification() {
+        let dir = temp("last-push");
+        let (base, seen) = serve(vec![canned(200, "{}"), canned(500, "boom"), canned(200, "{}")]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        for id in ["a1b2c3d4", "ffff0000"] {
+            r.store.lock().unwrap().register(phone(id, &base)).unwrap();
+        }
+        let (alex, other, sam) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(ALEX)), app("a1b2c3d4", Some(SAM)));
+        let no_phone = Requester { client_id: "client:mac".into(), label: "rex".into(), identity: Some(ALEX.into()) };
+        for who in [&alex, &other, &sam, &no_phone] {
+            assert_eq!(status(&r, who).await["last_push_at"], Value::Null, "{who:?}");
+        }
+        let one = |id: &str| vec![r.store.lock().unwrap().get(id).unwrap().clone()];
+        r.deliver(&message("Hello"), one("a1b2c3d4"), &[], &HashSet::new(), 1234.9).await;
+        assert_eq!(status(&r, &alex).await["last_push_at"], 1234);
+        // Only for that phone, and only for the identity it is registered to.
+        for who in [&other, &sam, &no_phone] {
+            assert_eq!(status(&r, who).await["last_push_at"], Value::Null, "{who:?}");
+        }
+        // A notification the gateway did not accept changes nothing; the next accepted one does.
+        r.deliver(&message("Hello"), one("a1b2c3d4"), &[], &HashSet::new(), 2000.0).await;
+        assert_eq!(status(&r, &alex).await["last_push_at"], 1234);
+        r.deliver(&message("Hello"), one("a1b2c3d4"), &[], &HashSet::new(), 3000.0).await;
+        assert_eq!(status(&r, &alex).await["last_push_at"], 3000);
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        // It is kept in memory only: a helper that starts again knows of none.
+        r.write_status();
+        assert!(!std::fs::read_to_string(dir.join("status.json")).unwrap().contains("last_push_at"));
+        drop(r);
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        assert_eq!(status(&r, &alex).await["last_push_at"], Value::Null);
+        // A dry run asks no gateway, so it has nothing to report either.
+        let dry_dir = temp("last-push-dry");
+        let dry = relay(&dry_dir, true);
+        register(&dry, &register_args(), ALEX).unwrap();
+        dry.deliver(&message("Hello"), devices(&dry), &[], &HashSet::new(), 1000.0).await;
+        assert_eq!(send_test(&dry, &server(), &alex).await, Ok(json!({"sent": true})));
+        assert_eq!(status(&dry, &alex).await["last_push_at"], Value::Null);
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(dry_dir).unwrap();
+    }
+
+    /// What a payload field may hold by the gateway's rules (`Gateway/src/validate.ts`): a
+    /// string of at most this many characters, or one of these words.
+    enum Rule {
+        Max(usize),
+        OneOf(&'static [&'static str]),
+    }
+
+    const PAYLOAD_FIELDS: [(&str, Rule); 4] = [("server", Rule::Max(512)), ("session_id", Rule::Max(256)), ("window_id", Rule::Max(256)), ("block_id", Rule::Max(256))];
+    const APS_FIELDS: [(&str, Rule); 4] = [
+        ("sound", Rule::OneOf(&["default"])),
+        ("thread-id", Rule::Max(256)),
+        ("category", Rule::OneOf(&["AGENT_BLOCKED", "AGENT_DONE", "NOTICE"])),
+        ("interruption-level", Rule::OneOf(&["passive", "active", "time-sensitive"])),
+    ];
+    const ALERT_FIELDS: [(&str, Rule); 3] = [("title", Rule::Max(120)), ("subtitle", Rule::Max(256)), ("body", Rule::Max(1000))];
+
+    /// `fieldsProblem` of validate.ts: every key but `nested` is a listed one and holds a
+    /// string its rule allows.
+    fn fields_problem(object: &Value, rules: &[(&str, Rule)], nested: Option<&str>) -> Option<String> {
+        for (key, value) in object.as_object()? {
+            if Some(key.as_str()) == nested {
+                continue;
+            }
+            let Some((_, rule)) = rules.iter().find(|(name, _)| name == key) else { return Some(format!("{key} is not a field the gateway passes on")) };
+            let Some(text) = value.as_str() else { return Some(format!("{key} is not a string")) };
+            let allowed = match rule {
+                Rule::Max(most) => text.chars().count() <= *most,
+                Rule::OneOf(words) => words.contains(&text),
+            };
+            if !allowed {
+                return Some(format!("{key} holds a value the gateway refuses"));
+            }
+        }
+        None
+    }
+
+    /// `parsePush` of validate.ts for the body of one `POST /v1/push`, at the gateway's time
+    /// `now`: what the gateway would refuse it for, or None.
+    fn gateway_problem(body: &Value, now: i64) -> Option<String> {
+        let payload = body.get("payload").filter(|p| p.is_object())?;
+        if payload.to_string().len() > 4096 {
+            return Some("payload is larger than 4096 bytes".into());
+        }
+        let (aps, alert) = (&payload["aps"], &payload["aps"]["alert"]);
+        if !aps.is_object() || !alert.is_object() || !alert["title"].is_string() || !alert["body"].is_string() {
+            return Some("payload.aps.alert needs a title and a body".into());
+        }
+        let fields = fields_problem(payload, &PAYLOAD_FIELDS, Some("aps")).or_else(|| fields_problem(aps, &APS_FIELDS, Some("alert"))).or_else(|| fields_problem(alert, &ALERT_FIELDS, None));
+        if fields.is_some() {
+            return fields;
+        }
+        if body.get("push_type").is_some_and(|t| t != "alert") {
+            return Some("push_type must be alert".into());
+        }
+        if body.get("priority").is_some_and(|p| p != 5 && p != 10) {
+            return Some("priority must be 5 or 10".into());
+        }
+        if let Some(id) = body.get("collapse_id") {
+            if !id.as_str().is_some_and(|id| (1..=64).contains(&id.len()) && id.bytes().all(|b| (0x21..=0x7e).contains(&b))) {
+                return Some("collapse_id must be 1 to 64 visible ASCII characters".into());
+            }
+        }
+        if let Some(at) = body.get("expiration") {
+            if !at.as_i64().is_some_and(|at| (now - 60..=now + 3600 + 60).contains(&at)) {
+                return Some("expiration is not within the hour".into());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_gateways_rules_as_the_tests_mirror_them() {
+        let body = |payload: Value| json!({"payload": payload, "push_type": "alert", "priority": 10});
+        let good = json!({"aps": {"alert": {"title": "t", "body": "b"}, "category": "NOTICE"}, "server": "s"});
+        assert_eq!(gateway_problem(&body(good.clone()), 0), None);
+        let with = |path: &[&str], value: Value| {
+            let mut p = good.clone();
+            let mut at = &mut p;
+            for key in path {
+                at = &mut at[*key];
+            }
+            *at = value;
+            gateway_problem(&body(p), 0)
+        };
+        assert!(with(&["badge"], json!("1")).is_some());
+        assert!(with(&["server"], json!(7)).is_some());
+        assert!(with(&["aps", "badge"], json!("1")).is_some());
+        assert!(with(&["aps", "category"], json!("OTHER")).is_some());
+        assert!(with(&["aps", "sound"], json!("loud")).is_some());
+        assert!(with(&["aps", "interruption-level"], json!("critical")).is_some());
+        assert!(with(&["aps", "alert", "title"], json!("x".repeat(121))).is_some());
+        assert!(with(&["aps", "alert", "title"], Value::Null).is_some());
+        assert!(with(&["aps", "alert", "action"], json!("x")).is_some());
+        let mut late = body(good.clone());
+        late["expiration"] = json!(3661);
+        assert!(gateway_problem(&late, 0).is_some());
+        late["expiration"] = json!(3660);
+        assert_eq!(gateway_problem(&late, 0), None);
+    }
+
+    #[tokio::test]
+    async fn send_test_sends_one_notification_the_gateway_accepts() {
+        let dir = temp("test-payload");
+        let (base, seen) = serve(vec![canned(200, r#"{"apns_id":"11111111-2222"}"#)]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let s = named_server("https://rex.example.ts.net");
+        let before = now() as i64;
+        assert_eq!(send_test(&r, &s, &alex).await, Ok(json!({"sent": true})));
+        let after = now() as i64;
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let q = &seen[0];
+        assert_eq!((q.method.as_str(), q.path.as_str()), ("POST", "/v1/push"));
+        assert_eq!(q.header("authorization"), Some(format!("Bearer {SECRET}a1b2c3d4").as_str()));
+        let mut body: Value = serde_json::from_slice(&q.body).unwrap();
+        assert_eq!(gateway_problem(&body, after), None);
+        // The time it is kept for is the one field that differs from run to run.
+        let expiration = body.as_object_mut().unwrap().remove("expiration").unwrap().as_i64().unwrap();
+        assert!((before + 3600..=after + 3600).contains(&expiration), "{expiration}");
+        assert_eq!(
+            body,
+            json!({
+                "payload": {
+                    "aps": {
+                        "alert": {"title": "Rex DUO", "body": "Test notification from rex"},
+                        "sound": "default",
+                        "category": "NOTICE",
+                        "thread-id": "rexduo-test",
+                        "interruption-level": "active",
+                    },
+                    "server": "https://rex.example.ts.net",
+                },
+                "push_type": "alert",
+                "priority": 10,
+            })
+        );
+        // The gateway accepted it, so it is this phone's last notification.
+        let at = status(&r, &alex).await["last_push_at"].as_i64().unwrap();
+        assert!((before..=after).contains(&at), "{at}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_test_is_only_for_the_identity_that_registered_the_phone() {
+        let dir = temp("test-owner");
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        let s = named_server("https://rex.example.ts.net");
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let not_registered = json!({"code": "not_registered", "message": "This phone is not set up for notifications from this computer."});
+        // Nobody is registered.
+        assert_eq!(send_test(&r, &s, &alex).await, Err(not_registered.clone()));
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        // Someone else's client with this phone's id in its label, another phone of the
+        // owner, and a client with no device id: the ones `push_presence` answers
+        // `registered: false`.
+        let others = [app("a1b2c3d4", Some(SAM)), app("a1b2c3d4", Some("peer:12345")), app("ffff0000", Some(ALEX)), Requester { client_id: "client:mac".into(), label: "rex".into(), identity: Some(ALEX.into()) }];
+        for other in &others {
+            assert_eq!(r.act(&s, "push_presence", &json!({"active": false}), other).await.0.unwrap(), json!({"registered": false}), "{other:?}");
+            assert_eq!(send_test(&r, &s, other).await, Err(not_registered.clone()), "{other:?}");
+        }
+        // A client the server did not identify is refused before that.
+        assert_eq!(send_test(&r, &s, &app("a1b2c3d4", None)).await.unwrap_err()["code"], "refused");
+        // None of them sent anything or used up the owner's test.
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(r.tests.lock().unwrap().is_empty());
+        assert_eq!(send_test(&r, &s, &alex).await, Ok(json!({"sent": true})));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        for other in &others {
+            assert_eq!(status(&r, other).await["last_push_at"], Value::Null, "{other:?}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_phone_gets_one_test_every_ten_seconds() {
+        let dir = temp("test-soon");
+        let (base, seen) = serve(vec![canned(200, "{}"), canned(200, "{}")]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        let s = named_server("https://rex.example.ts.net");
+        for id in ["a1b2c3d4", "ffff0000"] {
+            r.store.lock().unwrap().register(phone(id, &base)).unwrap();
+        }
+        let (alex, other) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(ALEX)));
+        let too_soon = json!({"code": "test_too_soon", "message": "A test notification was sent a moment ago. Try again in a few seconds."});
+        assert_eq!(send_test(&r, &s, &alex).await, Ok(json!({"sent": true})));
+        assert_eq!(send_test(&r, &s, &alex).await, Err(too_soon.clone()));
+        assert_eq!(seen.lock().unwrap().len(), 1, "the second one asked the gateway nothing");
+        // Each phone has its own.
+        assert_eq!(send_test(&r, &s, &other).await, Ok(json!({"sent": true})));
+        assert_eq!(send_test(&r, &s, &other).await, Err(too_soon.clone()));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+
+        assert_eq!(TEST_INTERVAL, Duration::from_secs(10));
+        let t = Instant::now() + Duration::from_secs(60);
+        assert_eq!(r.take_test_slot("00000001", t), Ok(()));
+        assert_eq!(r.take_test_slot("00000001", t + Duration::from_millis(9_999)), Err(too_soon.clone()));
+        assert_eq!(r.take_test_slot("00000002", t + Duration::from_secs(5)), Ok(()));
+        // A refused one does not move the next one further out.
+        assert_eq!(r.take_test_slot("00000001", t + Duration::from_secs(10)), Ok(()));
+        assert_eq!(r.take_test_slot("00000002", t + Duration::from_secs(14)), Err(too_soon.clone()));
+        assert_eq!(r.take_test_slot("00000002", t + Duration::from_secs(15)), Ok(()));
+        // A clock that reads earlier than the last test never frees the slot early.
+        assert_eq!(r.take_test_slot("00000002", t), Err(too_soon));
+        // Nothing older than ten seconds is kept.
+        assert_eq!(r.take_test_slot("00000003", t + Duration::from_secs(600)), Ok(()));
+        assert_eq!(r.tests.lock().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn each_answer_of_the_gateway_to_a_test_has_its_error() {
+        let dir = temp("test-outcomes");
+        capture_log();
+        let (base, seen) = serve(vec![
+            canned(200, r#"{"apns_id":"11111111-2222"}"#),
+            canned(410, r#"{"error":"unregistered","reason":"Unregistered"}"#),
+            canned(429, r#"{"error":"rate_limited","message":"slow down"}"#),
+            canned(500, "boom"),
+            canned(502, r#"{"error":"apns_unreachable"}"#),
+            canned(503, ""),
+            canned(401, UNAUTHORIZED),
+            canned(400, r#"{"error":"bad_request"}"#),
+        ])
+        .await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        let s = named_server("https://rex.example.ts.net");
+        // One phone per answer, in the order the gateway gives them.
+        let cases = [
+            ("00000200", None),
+            ("00000410", Some("phone_gone")),
+            ("00000429", Some("limit_reached")),
+            ("00000500", Some("no_connection")),
+            ("00000502", Some("no_connection")),
+            ("00000503", Some("no_connection")),
+            ("00000401", Some("phone_gone")),
+            ("00000400", Some("no_connection")),
+        ];
+        for (id, _) in cases {
+            r.store.lock().unwrap().register(phone(id, &base)).unwrap();
+        }
+        let mut replies = vec![];
+        for (id, code) in cases {
+            let outcome = send_test(&r, &s, &app(id, Some(ALEX))).await;
+            match code {
+                None => assert_eq!(outcome, Ok(json!({"sent": true})), "{id}"),
+                Some(code) => assert_eq!(outcome.as_ref().unwrap_err()["code"], code, "{id}"),
+            }
+            replies.push(outcome.map_or_else(|e| e.to_string(), |v| v.to_string()));
+        }
+        assert_eq!(seen.lock().unwrap().len(), 8, "one request per test, no retry");
+        // The sentences an app may show.
+        let message = |code: &str| replies.iter().filter_map(|r| serde_json::from_str::<Value>(r).ok()).find(|v| v["code"] == code).unwrap()["message"].as_str().unwrap().to_string();
+        assert_eq!(message("phone_gone"), "This phone's notification address is no longer valid. Set up notifications on it again.");
+        assert_eq!(message("limit_reached"), "The notification service has sent as many notifications as it allows for now. Try again later.");
+        assert_eq!(message("no_connection"), "The notification service could not be reached.");
+        // The registrations fare as after any push: the phone the gateway dropped is gone,
+        // and one refusal of a secret is not yet the end of it.
+        let left: Vec<String> = devices(&r).iter().map(|d| d.device_id.clone()).collect();
+        assert_eq!(left, ["00000200", "00000429", "00000500", "00000502", "00000503", "00000401", "00000400"]);
+        // Only the accepted one counts as a notification that was sent.
+        for (id, code) in cases {
+            assert_eq!(status(&r, &app(id, Some(ALEX))).await["last_push_at"].is_null(), code.is_some(), "{id}");
+        }
+        // Neither a reply nor the log holds a secret or free text from the other end.
+        let log = captured_log();
+        assert!(log.contains("test notification asked for by Alex's iPhone #00000200"));
+        for text in replies.iter().chain([&log]) {
+            assert!(!text.contains(SECRET) && !text.contains("slow down") && !text.contains("boom"), "{text}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_is_not_there_is_no_connection() {
+        let dir = temp("test-unreachable");
+        // Bind, note the port, close: nothing listens there now.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        drop(l);
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let e = send_test(&r, &named_server("https://rex.example.ts.net"), &alex).await.unwrap_err();
+        assert_eq!(e, json!({"code": "no_connection", "message": "The notification service could not be reached."}));
+        assert_eq!(devices(&r).len(), 1);
+        assert_eq!(status(&r, &alex).await["last_push_at"], Value::Null);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_test_is_sent_while_rex_duo_is_open_on_the_phone() {
+        let dir = temp("test-foreground");
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        let s = named_server("https://rex.example.ts.net");
+        let alex = app("a1b2c3d4", Some(ALEX));
+        // The app says it is in the foreground, and the server lists it as connected.
+        assert_eq!(r.act(&s, "push_presence", &json!({"active": true}), &alex).await.0.unwrap(), json!({"registered": true}));
+        assert!(s.st.lock().unwrap().backgrounded.is_empty());
+        let open = ClientSnapshot {
+            client_id: alex.client_id.clone(),
+            kind: Some("app".into()),
+            platform: Some("ios".into()),
+            label: Some(alex.label.clone()),
+            connection_state: Some("connected".into()),
+            ..Default::default()
+        };
+        // An agent's push is held back for that phone, and one that used up its allowance
+        // of them is held back too.
+        r.deliver(&message("Hello"), devices(&r), &[open], &HashSet::new(), 1000.0).await;
+        assert!(seen.lock().unwrap().is_empty());
+        while r.limiter.lock().unwrap().allow("a1b2c3d4", 1000.0) {}
+        r.deliver(&message("Hello"), devices(&r), &[], &HashSet::new(), 1000.0).await;
+        assert!(seen.lock().unwrap().is_empty());
+        // The test goes out all the same.
+        assert_eq!(send_test(&r, &s, &alex).await, Ok(json!({"sent": true})));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let body: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert_eq!(body["payload"]["aps"]["thread-id"], "rexduo-test");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_test_to_a_phone_the_gateway_dropped_ends_its_registration() {
+        let dir = temp("test-gone");
+        let (base, seen) = serve(vec![canned(410, r#"{"error":"unregistered","reason":"BadDeviceToken"}"#)]).await;
+        // A dry-run relay, so `register` posts no desktop notice, with a sender that does send.
+        let r = relay_with(&dir, true, Sender::Gateway, &[&base]);
+        let s = named_server("https://rex.example.ts.net");
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let mut args = register_args();
+        args["gateway"] = json!(base);
+        register(&r, &args, ALEX).unwrap();
+        assert_eq!(send_test(&r, &s, &alex).await.unwrap_err()["code"], "phone_gone");
+        // As after any push the gateway answers that way: the phone is unregistered, here
+        // and in devices.json, it is told so the next time it asks, and that secret is not
+        // taken again.
+        assert!(devices(&r).is_empty());
+        assert!(DeviceStore::open(dir.join("devices.json")).devices.is_empty());
+        let answer = status(&r, &alex).await;
+        assert_eq!((&answer["registered"], &answer["devices"], &answer["last_push_at"]), (&json!(false), &json!(0), &Value::Null));
+        assert_eq!(register(&r, &args, ALEX).unwrap_err()["code"], "secret_dropped");
+        // The next test finds no registration; the gateway is not asked.
+        r.tests.lock().unwrap().clear();
+        assert_eq!(send_test(&r, &s, &alex).await.unwrap_err()["code"], "not_registered");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // With a new secret the phone is back.
+        args["push_secret"] = json!(NEW_SECRET);
+        assert_eq!(register(&r, &args, ALEX).unwrap()["registered"], true);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    async fn set_paused(r: &Relay, who: &Requester, paused: bool) -> Result<Value, Value> {
+        let (outcome, after) = r.act(&server(), "set_push_paused", &json!({"paused": paused}), who).await;
+        assert!(after.is_none());
+        outcome
+    }
+
+    fn paused(r: &Relay, id: &str) -> bool {
+        r.store.lock().unwrap().get(id).unwrap().paused
+    }
+
+    /// An agent's notification about a pane of the server named `server`.
+    fn agent_event(server: &str) -> PushIntent {
+        let mut i = PushIntent::new(PushCategory::Notice, BlockRef { server: server.into(), session_id: "session:1".into(), block_id: "block:1".into() });
+        i.headline = Some("Deploy".into());
+        i.text = Some("Hello".into());
+        i
+    }
+
+    #[tokio::test]
+    async fn a_paused_phone_gets_nothing_and_resumes_with_the_secret_the_helper_holds() {
+        const NAME: &str = "https://rex.example.ts.net";
+        let dir = temp("pause");
+        capture_log();
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        // One watched server, which is where the agent's event comes from.
+        let r = relay_watching(vec![None], &dir, false, Sender::Gateway, &[&base]);
+        r.servers[0].st.lock().unwrap().name = NAME.into();
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let before = devices(&r)[0].clone();
+
+        assert_eq!(set_paused(&r, &alex, true).await, Ok(json!({"paused": true, "registered": true})));
+        // The registration is as it was but for the pause: same secret, gateway and owner.
+        let now_paused = devices(&r)[0].clone();
+        assert!(now_paused.paused);
+        assert_eq!((&now_paused.push_secret, &now_paused.gateway, &now_paused.owner, &now_paused.registered_at), (&before.push_secret, &before.gateway, &before.owner, &before.registered_at));
+        // An agent's event, from the event to the gateway and at the last step alone: no
+        // notification is composed and the gateway gets no request.
+        r.clone().dispatch(agent_event(NAME)).await;
+        r.deliver(&message("Hello"), devices(&r), &[], &HashSet::new(), 1000.0).await;
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(!captured_log().contains("push NOTICE"));
+        assert_eq!(status(&r, &alex).await["last_push_at"], Value::Null);
+        // Presence is still taken, and says the phone is registered.
+        let s = server();
+        assert_eq!(r.act(&s, "push_presence", &json!({"active": false}), &alex).await.0.unwrap(), json!({"registered": true}));
+        assert!(s.st.lock().unwrap().backgrounded.contains("client:a1b2c3d4"));
+        // Pausing a paused phone is the same answer.
+        assert_eq!(set_paused(&r, &alex, true).await, Ok(json!({"paused": true, "registered": true})));
+
+        // Resumed: the next event goes out, with the secret the helper held all along.
+        assert_eq!(set_paused(&r, &alex, false).await, Ok(json!({"paused": false, "registered": true})));
+        r.clone().dispatch(agent_event(NAME)).await;
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].path, "/v1/push");
+        assert_eq!(seen[0].header("authorization"), Some(format!("Bearer {SECRET}a1b2c3d4").as_str()));
+        let log = captured_log();
+        assert!(log.contains("push NOTICE") && log.contains("notifications paused by") && log.contains("notifications resumed by"), "{log}");
+        assert!(!log.contains(SECRET));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pause_survives_a_restart_of_the_helper() {
+        let dir = temp("pause-restart");
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        set_paused(&r, &alex, true).await.unwrap();
+        drop(r);
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        assert!(paused(&r, "a1b2c3d4"));
+        assert_eq!(status(&r, &alex).await["paused"], true);
+        r.deliver(&message("Hello"), devices(&r), &[], &HashSet::new(), 1000.0).await;
+        assert!(seen.lock().unwrap().is_empty());
+        set_paused(&r, &alex, false).await.unwrap();
+        drop(r);
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        assert!(!paused(&r, "a1b2c3d4"));
+        r.deliver(&message("Hello"), devices(&r), &[], &HashSet::new(), 1000.0).await;
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pausing_is_only_for_the_identity_that_registered_the_phone() {
+        let dir = temp("pause-owner");
+        let r = relay(&dir, true);
+        let s = server();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let not_registered = json!({"code": "not_registered", "message": "This phone is not set up for notifications from this computer."});
+        // Nobody is registered.
+        assert_eq!(set_paused(&r, &alex, true).await, Err(not_registered.clone()));
+        register(&r, &register_args(), ALEX).unwrap();
+        // Someone else's client with this phone's id in its label, another phone of the
+        // owner, and a client with no device id: the ones `push_presence` answers
+        // `registered: false`. None of them pauses the phone.
+        let others = [app("a1b2c3d4", Some(SAM)), app("a1b2c3d4", Some("peer:12345")), app("ffff0000", Some(ALEX)), Requester { client_id: "client:mac".into(), label: "rex".into(), identity: Some(ALEX.into()) }];
+        for other in &others {
+            assert_eq!(r.act(&s, "push_presence", &json!({"active": false}), other).await.0.unwrap(), json!({"registered": false}), "{other:?}");
+            assert_eq!(set_paused(&r, other, true).await, Err(not_registered.clone()), "{other:?}");
+            assert!(!paused(&r, "a1b2c3d4"), "{other:?}");
+        }
+        // A client the server did not identify is refused before that.
+        assert_eq!(set_paused(&r, &app("a1b2c3d4", None), true).await.unwrap_err()["code"], "refused");
+        // Nor do they resume a phone its owner paused.
+        assert_eq!(set_paused(&r, &alex, true).await, Ok(json!({"paused": true, "registered": true})));
+        for other in &others {
+            assert_eq!(set_paused(&r, other, false).await, Err(not_registered.clone()), "{other:?}");
+        }
+        assert!(paused(&r, "a1b2c3d4"));
+        // The argument is a boolean and it is required.
+        for args in [json!({}), json!({"paused": "true"}), json!({"paused": 1}), json!({"paused": null})] {
+            assert_eq!(r.act(&s, "set_push_paused", &args, &alex).await.0.unwrap_err()["code"], "bad_request", "{args}");
+        }
+        assert!(paused(&r, "a1b2c3d4"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_paused_phone_gets_no_test_notification() {
+        let dir = temp("pause-test");
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        let r = relay_with(&dir, false, Sender::Gateway, &[&base]);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        let s = named_server("https://rex.example.ts.net");
+        let alex = app("a1b2c3d4", Some(ALEX));
+        set_paused(&r, &alex, true).await.unwrap();
+        let e = send_test(&r, &s, &alex).await.unwrap_err();
+        assert_eq!(e, json!({"code": "paused", "message": "Notifications from this computer are paused on this phone."}));
+        // The gateway was not asked, and the phone's one test of these ten seconds is unused.
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(r.tests.lock().unwrap().is_empty());
+        set_paused(&r, &alex, false).await.unwrap();
+        assert_eq!(send_test(&r, &s, &alex).await, Ok(json!({"sent": true})));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn registering_again_keeps_a_pause_for_the_same_secret_and_ends_it_for_a_new_one() {
+        let dir = temp("pause-register");
+        let r = relay(&dir, true);
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let with = |secret: &str, paused: Option<bool>| {
+            let mut args = register_args();
+            args["push_secret"] = json!(secret);
+            if let Some(p) = paused {
+                args["paused"] = json!(p);
+            }
+            args
+        };
+        let usual = json!({"registered": true, "devices": 1, "push_enabled": false, "helper_version": VERSION});
+        // A first registration is not paused.
+        assert_eq!(register(&r, &with(SECRET, None), ALEX).unwrap(), usual);
+        assert!(!paused(&r, "a1b2c3d4"));
+        // The same secret again, as the app sends it after every connect: the pause stays.
+        set_paused(&r, &alex, true).await.unwrap();
+        assert_eq!(register(&r, &with(SECRET, None), ALEX).unwrap(), usual);
+        assert!(paused(&r, "a1b2c3d4"));
+        assert_eq!(devices(&r)[0].push_secret, SECRET);
+        // A new secret is stored and the phone is resumed.
+        assert_eq!(register(&r, &with(NEW_SECRET, None), ALEX).unwrap(), usual);
+        assert!(!paused(&r, "a1b2c3d4"));
+        assert_eq!(devices(&r)[0].push_secret, NEW_SECRET);
+        // `paused` in the call sets the value at once: with the same secret, with a new
+        // one, and for a phone that was not registered.
+        assert_eq!(register(&r, &with(NEW_SECRET, Some(true)), ALEX).unwrap(), usual);
+        assert!(paused(&r, "a1b2c3d4"));
+        assert_eq!(register(&r, &with(NEW_SECRET, Some(false)), ALEX).unwrap(), usual);
+        assert!(!paused(&r, "a1b2c3d4"));
+        assert_eq!(register(&r, &with(SECRET, Some(true)), ALEX).unwrap(), usual);
+        assert!(paused(&r, "a1b2c3d4"));
+        assert_eq!(devices(&r)[0].push_secret, SECRET);
+        assert_eq!(r.unregister(&json!({"device_id": "a1b2c3d4"}), &alex, ALEX), Ok(json!({"removed": true})));
+        assert_eq!(register(&r, &with(SECRET, Some(true)), ALEX).unwrap(), usual);
+        assert!(paused(&r, "a1b2c3d4"));
+        // A registration after an unregister starts resumed, like a first one.
+        assert_eq!(r.unregister(&json!({"device_id": "a1b2c3d4"}), &alex, ALEX), Ok(json!({"removed": true})));
+        assert_eq!(register(&r, &with(SECRET, None), ALEX).unwrap(), usual);
+        assert!(!paused(&r, "a1b2c3d4"));
+        // The value is on disk each time, and anything but a boolean is refused whole.
+        set_paused(&r, &alex, true).await.unwrap();
+        assert!(DeviceStore::open(dir.join("devices.json")).devices[0].paused);
+        let mut bad = with(NEW_SECRET, None);
+        bad["paused"] = json!("yes");
+        assert_eq!(register(&r, &bad, ALEX).unwrap_err()["code"], "bad_request");
+        assert_eq!((devices(&r)[0].push_secret.as_str(), paused(&r, "a1b2c3d4")), (SECRET, true));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn helper_status_says_whether_the_callers_phone_is_paused() {
+        let dir = temp("pause-status");
+        let r = relay(&dir, true);
+        let (alex, other, sam) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(ALEX)), app("a1b2c3d4", Some(SAM)));
+        let no_phone = Requester { client_id: "client:mac".into(), label: "rex".into(), identity: Some(ALEX.into()) };
+        // No registration: not paused.
+        assert_eq!(status(&r, &alex).await["paused"], false);
+        register(&r, &register_args(), ALEX).unwrap();
+        assert_eq!(status(&r, &alex).await["paused"], false);
+        set_paused(&r, &alex, true).await.unwrap();
+        let answer = status(&r, &alex).await;
+        assert_eq!((&answer["paused"], &answer["registered"], &answer["devices"]), (&json!(true), &json!(true), &json!(1)));
+        // Only for that phone, and only for the identity it is registered to.
+        for who in [&other, &sam, &no_phone] {
+            let answer = status(&r, who).await;
+            assert_eq!((&answer["paused"], &answer["registered"]), (&json!(false), &json!(false)), "{who:?}");
+        }
+        set_paused(&r, &alex, false).await.unwrap();
+        assert_eq!(status(&r, &alex).await["paused"], false);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pausing_one_phone_leaves_the_others_on_the_helper_receiving() {
+        const NAME: &str = "https://rex.example.ts.net";
+        let dir = temp("pause-other");
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        let r = relay_watching(vec![None], &dir, false, Sender::Gateway, &[&base]);
+        r.servers[0].st.lock().unwrap().name = NAME.into();
+        for id in ["a1b2c3d4", "ffff0000"] {
+            r.store.lock().unwrap().register(phone(id, &base)).unwrap();
+        }
+        let (alex, other) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(ALEX)));
+        set_paused(&r, &alex, true).await.unwrap();
+        assert_eq!((paused(&r, "a1b2c3d4"), paused(&r, "ffff0000")), (true, false));
+        r.clone().dispatch(agent_event(NAME)).await;
+        // One request, with the other phone's secret.
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].header("authorization"), Some(format!("Bearer {SECRET}ffff0000").as_str()));
+        }
+        assert_eq!(status(&r, &alex).await["last_push_at"], Value::Null);
+        assert!(status(&r, &other).await["last_push_at"].is_i64());
+        assert_eq!(status(&r, &other).await["paused"], false);
+        // The other phone's test goes out as well; the paused one's does not.
+        let s = named_server(NAME);
+        assert_eq!(send_test(&r, &s, &other).await, Ok(json!({"sent": true})));
+        assert_eq!(send_test(&r, &s, &alex).await.unwrap_err()["code"], "paused");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn each_phone_is_notified_with_its_own_secret_only() {
+        const NAME: &str = "https://rex.example.ts.net";
+        let dir = temp("own-secret");
+        let (base, seen) = serve(vec![canned(200, "{}")]).await;
+        let r = relay_watching(vec![None], &dir, false, Sender::Gateway, &[&base]);
+        r.servers[0].st.lock().unwrap().name = NAME.into();
+        let (first, second) = (Device::new("a1b2c3d4", &base, SECRET, "sandbox", ALEX), Device::new("ffff0000", &base, NEW_SECRET, "sandbox", SAM));
+        for d in [&first, &second] {
+            r.store.lock().unwrap().register(d.clone()).unwrap();
+        }
+        let bearers = || -> Vec<String> { seen.lock().unwrap().iter().map(|q| q.header("authorization").unwrap().to_string()).collect() };
+
+        // One agent event: one request per phone, each with the secret that phone registered.
+        r.clone().dispatch(agent_event(NAME)).await;
+        assert_eq!(bearers(), [format!("Bearer {}", first.push_secret), format!("Bearer {}", second.push_secret)]);
+        for (q, (own, other)) in seen.lock().unwrap().iter().zip([(&first, &second), (&second, &first)]) {
+            let sent = format!("{:?}{}", q.headers, String::from_utf8_lossy(&q.body));
+            assert!(sent.contains(&own.push_secret) && !sent.contains(&other.push_secret), "the request for #{}", own.device_id);
+        }
+
+        // With the first phone paused, the next event is one request, with the second's secret.
+        set_paused(&r, &app("a1b2c3d4", Some(ALEX)), true).await.unwrap();
+        r.clone().dispatch(agent_event(NAME)).await;
+        let all = bearers();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[2], format!("Bearer {}", second.push_secret));
+        let last = seen.lock().unwrap()[2].clone();
+        assert!(!format!("{:?}{}", last.headers, String::from_utf8_lossy(&last.body)).contains(&first.push_secret));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// devices.json in a state folder that can't be written: no change is answered as made,
+    /// and the helper keeps the registrations the file has.
+    #[tokio::test]
+    async fn a_change_that_could_not_be_saved_is_refused_and_nothing_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("not-saved");
+        let r = relay(&dir, true);
+        let alex = app("a1b2c3d4", Some(ALEX));
+        register(&r, &register_args(), ALEX).unwrap();
+        let file = dir.join("devices.json");
+        let on_disk = || std::fs::read(&file).unwrap();
+        let before = on_disk();
+        let lock = |mode: u32| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let not_saved = json!({"code": "not_saved", "message": "Rex DUO Beacon couldn't save that. Try again."});
+
+        lock(0o500);
+        // A pause.
+        assert_eq!(set_paused(&r, &alex, true).await, Err(not_saved.clone()));
+        assert!(!paused(&r, "a1b2c3d4"));
+        assert_eq!(status(&r, &alex).await["paused"], false);
+        // A registration that sets the pause, and one of a second phone.
+        let mut pausing = register_args();
+        pausing["paused"] = json!(true);
+        assert_eq!(register(&r, &pausing, ALEX), Err(not_saved.clone()));
+        assert!(!paused(&r, "a1b2c3d4"));
+        let mut second = register_args();
+        second["device_id"] = json!("ffff0000");
+        second["push_secret"] = json!(NEW_SECRET);
+        assert_eq!(r.register(&second, &app("ffff0000", Some(ALEX)), ALEX), Err(not_saved.clone()));
+        assert_eq!(devices(&r).len(), 1);
+        // Taking the phone out.
+        assert_eq!(r.unregister(&json!({"device_id": "a1b2c3d4"}), &alex, ALEX), Err(not_saved.clone()));
+        assert_eq!(devices(&r).len(), 1);
+        assert_eq!(on_disk(), before);
+
+        // Writable again: the same requests go through.
+        lock(0o700);
+        assert_eq!(set_paused(&r, &alex, true).await, Ok(json!({"paused": true, "registered": true})));
+        assert!(paused(&r, "a1b2c3d4"));
+        assert_ne!(on_disk(), before);
+        assert_eq!(r.unregister(&json!({"device_id": "a1b2c3d4"}), &alex, ALEX), Ok(json!({"removed": true})));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn helper_status_counts_the_phones_someone_else_registered() {
+        let dir = temp("other-phones");
+        let r = relay(&dir, true);
+        let (alex, sam) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(SAM)));
+        assert_eq!(status(&r, &alex).await["other_phones"], 0);
+        // Alex registers two phones, Sam one.
+        let phone = |id: &str, secret: &str| {
+            let mut args = register_args();
+            args["device_id"] = json!(id);
+            args["push_secret"] = json!(secret);
+            args
+        };
+        register(&r, &register_args(), ALEX).unwrap();
+        assert_eq!(r.register(&phone("0000aaaa", &"B".repeat(43)), &app("0000aaaa", Some(ALEX)), ALEX).map(|v| v["devices"].clone()), Ok(json!(2)));
+        assert_eq!(r.register(&phone("ffff0000", NEW_SECRET), &sam, SAM).map(|v| v["devices"].clone()), Ok(json!(3)));
+        // Each sees the phones that are not theirs; someone with none sees all of them.
+        for (who, others) in [(&alex, 1), (&sam, 2), (&app("00000000", Some("tailscale:1")), 3)] {
+            let answer = status(&r, who).await;
+            assert_eq!((&answer["devices"], &answer["other_phones"]), (&json!(3), &json!(others)), "{who:?}");
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

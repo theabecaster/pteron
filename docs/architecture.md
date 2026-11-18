@@ -7,7 +7,7 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
 | Layer | Owns | Doesn't |
 |---|---|---|
 | `Packages/RexKit` | sockets, RPC, JSON → models, terminal byte stream | import UIKit or SwiftUI, read settings |
-| `RexDuo/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` | build views |
+| `RexDuo/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` and its `PushReconciler` | build views |
 | `RexDuo/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
 | `RexDuo/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
 

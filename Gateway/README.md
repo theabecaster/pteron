@@ -18,9 +18,10 @@ JSON in and out. Errors are `{"error": "<code>", "message": "<sentence>"}`.
 | `GET /v1/health` | none | Nothing. Touches neither Apple nor D1. | `200 {"ok": true, "version"}` |
 | `POST /v1/devices` | none | Registers `{"apns_token", "environment"}`. At most 3 registrations per token. | `201 {"device_id", "owner_key"}`, `400`, `409 too_many_devices`, `429` |
 | `GET /v1/devices/{id}` | owner key | Shows the registration, so a phone can learn whether it and a helper's secret still exist. | `200 {"environment", "secrets": [{"secret_id", "label", "created_at"}]}`, `401` |
-| `PUT /v1/devices/{id}` | owner key | Replaces the token and environment. The secrets stay, and a device whose token was dead is live again. | `200 {}`, `400`, `401`, `409 too_many_devices`, `429` |
+| `PUT /v1/devices/{id}` | owner key | Replaces the token and environment. The secrets stay, and a device whose token was dead is live again. With an id the phone chose it also makes the device (see below). | `200 {}`, `201 {"device_id"}`, `400`, `401`, `409 too_many_devices`, `429` |
 | `DELETE /v1/devices/{id}` | owner key | Unregisters: deletes the device and all its secrets. | `204`, `401`, `429` |
 | `POST /v1/devices/{id}/secrets` | owner key | Mints a secret for one helper from `{"label"}` (1 to 64 printable characters). At most 10 per device. | `201 {"secret_id", "push_secret"}`, `400`, `401`, `409 too_many_secrets`, `429` |
+| `PUT /v1/devices/{id}/secrets/{secret_id}` | owner key | Stores `{"label", "push_secret"}`, a secret the phone chose, under an id it chose, or puts it in the place of the one under that id (see below). At most 10 per device. | `201 {"secret_id"}`, `200 {"secret_id"}`, `400`, `401`, `409 conflict`, `409 too_many_secrets`, `429` |
 | `DELETE /v1/devices/{id}/secrets/{secret_id}` | owner key | Deletes one secret. It stops working at once. | `204` (also when already gone), `401`, `429` |
 | `POST /v1/push` | push secret | Sends `{"payload", "push_type", "priority", "collapse_id", "expiration"}` to the secret's phone. | `200 {"apns_id"}`, `400`, `401`, `410`, `413`, `429`, `502` |
 
@@ -32,7 +33,58 @@ unknown credential, a wrong owner key and an unknown device id can't be told apa
 method. So a device that is gone answers `401`, not `404`, also to `DELETE`. The fixed body lets
 a client tell the gateway's own `401` from a proxy's.
 
-There is no route to replace a secret: delete it and mint another.
+### Requests a phone can send again
+
+A phone has two ways to register and to make a secret. With `POST` the gateway makes the
+values and answers them once. With `PUT` the phone makes them, stores them before it sends,
+and can send the same request again: after an answer that never arrived, the repeat gets the
+same device or the same secret, and nothing new is made. Both ways work on the same devices
+and secrets, and every other route treats them alike.
+
+**`PUT /v1/devices/{device_id}`**, body `{"apns_token", "environment"}`,
+`Authorization: Bearer <owner_key>`.
+
+- `owner_key` is 32 random bytes as base64url without padding: 43 characters, in the one
+  spelling 32 bytes have. Another form answers `401`.
+- `device_id` is the first 22 characters of
+  base64url(SHA-256(`"rexduo-device-v1\n"` + `owner_key`)), where the hash is taken over
+  those bytes of text. An id of 22 characters that is not the id of the key in the request
+  answers `400 invalid_request`. The gateway decides that from the request alone, before it
+  reads D1, so the answer is the same whether a device has the id or not, and a key only
+  ever reaches its own device. The ids `POST` makes have 27 characters; for those and any
+  other length `PUT` is the token change it always was, with `401` for an id no device has.
+- No device has the id: it is made, `201 {"device_id"}`. This is a registration, with every
+  cap a registration has, the 3 devices per token among them.
+- The device holds this token and environment: `200 {}`. Nothing is written or counted.
+- The device holds another token or environment: they are replaced, `200 {}`. This is a
+  token change: one management write, with the caps a token change has. A device marked dead
+  is in this case also with the token it holds, and is live again, as after any token
+  change.
+
+**`PUT /v1/devices/{device_id}/secrets/{secret_id}`**, body `{"label", "push_secret"}`,
+owner key as above, for a device made by either route.
+
+- `secret_id` is 16 url-safe characters and `push_secret` 32 random bytes as base64url, 43
+  characters, and not the owner key. `label` is as for `POST`. Anything else answers
+  `400 invalid_request`. The gateway stores the hash of `push_secret`, as for a secret it
+  minted.
+- The device holds nothing under the id: the secret is stored, `201 {"secret_id"}`. One
+  management write, within the 10 secrets a device may hold. The 10 are ids, however often
+  each was sent. A device that holds 10 answers `409 too_many_secrets` to an id it does not
+  hold, from the one read: nothing is written or counted. An id it holds is still answered
+  as below.
+- The device holds this secret under the id: `200 {"secret_id"}`. Nothing is written or
+  counted, and the label stays as it was stored.
+- The device holds another secret under the id: it is replaced, with the label and the time
+  of this request, `200 {"secret_id"}`. One management write. The secret that was there
+  stops working at once.
+- `push_secret` is already stored in another row: `409 conflict`, and nothing is written or
+  counted.
+  The answer is the same whether that row is this device's or another's.
+
+A secret belongs to the device it was stored for and stays there: a push secret names
+exactly one row, and no route gives a row another device. Secret ids are each device's own,
+so two devices may use the same id for different secrets.
 
 Push answers:
 
@@ -92,8 +144,9 @@ compact, which is what the helper sends. The 4096-byte limit applies to that tex
 
 ## Secrets
 
-- `owner_key` and `push_secret` are 32 random bytes each. The gateway returns each once and
-  stores only its SHA-256, so a copy of the database can't push to anyone or manage a device.
+- `owner_key` and `push_secret` are 32 random bytes each, made by the gateway (`POST`, which
+  returns each once) or by the phone (`PUT`). The gateway stores only the SHA-256 of each, so
+  a copy of the database can't push to anyone or manage a device.
 - The APNs key is the Workers Secret `APNS_KEY_P8` (the `.p8` file's text). `scripts/deploy.sh`
   reads it from the APNs key file in `~/.appstoreconnect/private_keys/` (the default name is in
   the script), or from the path in `APNS_KEY`, and pipes it to `wrangler secret put`. It is in no
@@ -139,7 +192,9 @@ over the devices with the same token, so three devices on one token have the 1,5
 device alone has. A push still writes one device row, its own.
 
 **Management writes.** A management write is a secret minted, a secret deleted, a token change
-or the device deleted. Every one counts for its device, also the delete of a secret that is
+or the device deleted. A `PUT` that stores or replaces a secret counts as a secret minted, a
+`PUT` that makes a device counts as a registration, and a `PUT` that finds the device or the
+secret as the request says counts as nothing. Every one counts for its device, also the delete of a secret that is
 already gone. A mint or a token change counts for its client address as well; a delete does
 not, so a phone can turn a helper or itself off whatever else its address did that day. A
 device can always delete itself, whatever its own count is. Globally they draw on two budgets:
@@ -171,10 +226,23 @@ How a request is checked, cheapest first:
 1. The two per-minute limits that apply to every request (address, then everyone), including
    requests that will answer `400`, `401`, `404` or `405`.
 2. The route and method, the shape of the bearer credential (43 url-safe characters), the body
-   size (8 KB) and the body itself. Anything wrong here is answered without touching D1.
+   size (8 KB) and the body itself. For the two `PUT` routes also the form of the key, that
+   a device id of 22 characters is its key's, and the form of the secret id and the push
+   secret. Anything wrong here is answered without touching D1.
 3. For a push, the per-minute limit of its secret. Still no D1.
-4. D1: one read brings the credential and the counts its caps need. A request at a cap, and a
-   push for a dead token, is refused from that read and writes nothing.
+4. D1: one read brings the credential, the counts its caps need and, on the owner-key routes,
+   how many secrets the device holds and how many devices hold the token asked for. A request
+   at a cap, a secret for a device that holds 10, a token that has 3 devices, a push secret
+   that is in use and a push for a dead token are refused from that read.
+
+**A request that is refused writes nothing and counts nothing.** Every `400`, `401`, `404`,
+`405`, `409`, `413` and `429` is decided in steps 1 to 4, before the request is counted on
+its device, its address or a global budget, so requests that are refused take nothing from
+any allowance, however many they are. The counting and the change that follow are separate
+statements, and each repeats its own check, so that two requests at the same moment can't
+both take a last place: of a counter, of a token's 3 devices, of a device's 10 secrets, or
+of a push secret. The request that comes second in such a race is refused after its read,
+and what it counted until then stays counted.
 
 A push is counted once Apple has answered, in the write that also records a dead token.
 
@@ -218,14 +286,19 @@ A mint or a token change first counts itself in four rows (the device, the two a
 counters, the global counter). Minting a secret then writes 2 more (the secret and its index
 entry) and a token change 2 more (the device and its token-hash index entry), 6 in all; a
 device registered before the token hash existed gets the hash with its first such write, one
-more row, once: 7, the figure the table uses. Deleting a secret counts in two rows (the
+more row, once: 7, the figure the table uses. The `PUT` routes write the same rows: making a
+device is a registration, 7; a token update is a token change, 6; a secret stored is a mint,
+6; a secret replaced is 4 counts, the secret's row with its new hash and its index entry, 6
+(7 with the hash filled in, as for a mint). A `PUT` that finds things as it says, and one
+answered `409 conflict` or `409 too_many_secrets`, costs one read and writes nothing. Deleting a secret counts in two rows (the
 device and the counter for deletes) and writes 2 more, 4 in all. Deleting the device counts
 in the counter for deletes alone, because its own row goes, and then writes the device, its
 token-hash index entry and up to 10 secrets with an index entry each: 23, the figure the
 table uses for every delete.
 
 An index entry counts as a row written, so the tables are `WITHOUT ROWID` and carry two
-secondary indexes between them. Refused requests write nothing. Past a cap the Worker answers
+secondary indexes between them. Refused requests write nothing (see "How a request is
+checked"). Past a cap the Worker answers
 `429` until 00:00 UTC, and the helper drops those pushes.
 
 **Worker requests.** Cloudflare counts a request when it arrives, before any code here runs,

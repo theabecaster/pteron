@@ -68,6 +68,8 @@ struct ReleaseManifest: Equatable, Sendable {
 /// A release the phone has checked from end to end: what the installer is told to fetch.
 struct VerifiedRelease: Equatable, Sendable {
     var version: ReleaseVersion
+    /// The oldest version the release list still allows to run.
+    var minVersion: ReleaseVersion
     var assets: [HelperPlatform: ReleaseAsset]
     var expiresAt: Date
     /// The keys the installer checks a Linux build with, base64: the key that signed the release
@@ -145,6 +147,10 @@ enum HelperRelease {
     /// The hosts a fetch may be sent on to.
     static let hosts: Set<String> = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]
 
+    /// The list's entry for the Mac app under the name Rex DUO Beacon, and that file's name.
+    static let macBeaconKey = "macos-universal-beacon"
+    static let macBeaconAsset = "Rex-DUO-Beacon.zip"
+
     /// Where a build of `version` lives. The app builds every address itself.
     static func assetURL(_ platform: HelperPlatform, version: ReleaseVersion) -> String {
         "\(base)helper-v\(version)/\(platform.asset)"
@@ -217,17 +223,26 @@ enum HelperRelease {
         }
         guard let listed = o["assets"] as? [String: Any] else { throw bad("assets") }
         var assets: [HelperPlatform: ReleaseAsset] = [:]
-        for platform in HelperPlatform.allCases {
-            // A build the list leaves out is simply not there; one it names must be right.
-            guard let raw = listed[platform.rawValue] else { continue }
-            guard let a = raw as? [String: Any] else { throw bad(platform.rawValue) }
+        /// One entry of the list: nil when the list leaves it out; one it names must be right.
+        func entry(_ key: String, at address: String) throws -> ReleaseAsset? {
+            guard let raw = listed[key] else { return nil }
+            guard let a = raw as? [String: Any] else { throw bad(key) }
             // The address must be the one this app would build, to the letter.
-            guard a["url"] as? String == assetURL(platform, version: version) else { throw bad("\(platform.rawValue) url") }
+            guard a["url"] as? String == address else { throw bad("\(key) url") }
             guard let hash = a["sha256"] as? String, isHex64(hash.lowercased()), hash.utf8.count == 64 else {
-                throw bad("\(platform.rawValue) sha256")
+                throw bad("\(key) sha256")
             }
-            guard let size = wholeNumber(a["size"]), (1...maxAsset).contains(size) else { throw bad("\(platform.rawValue) size") }
-            assets[platform] = ReleaseAsset(sha256: hash.lowercased(), size: size)
+            guard let size = wholeNumber(a["size"]), (1...maxAsset).contains(size) else { throw bad("\(key) size") }
+            return ReleaseAsset(sha256: hash.lowercased(), size: size)
+        }
+        for platform in HelperPlatform.allCases {
+            assets[platform] = try entry(platform.rawValue, at: assetURL(platform, version: version))
+        }
+        // The Mac app under its own name, Rex DUO Beacon. A list that has this entry also keeps
+        // the earlier one, the same app in a folder of the earlier name, for the versions that
+        // update themselves from it. The installer takes either file; the app gives it this one.
+        if let beacon = try entry(macBeaconKey, at: "\(base)helper-v\(version)/\(macBeaconAsset)") {
+            assets[.mac] = beacon
         }
         return ReleaseManifest(version: version, minVersion: minVersion, expiresAt: expiresAt, nextKey: nextKey, assets: assets)
     }
@@ -275,7 +290,7 @@ enum HelperRelease {
     /// The quiet line for that date.
     static func renewalNotice(expiresAt: Date, now: Date) -> String? {
         guard let due = renewalDue(expiresAt: expiresAt, now: now) else { return nil }
-        return "Rex DUO Helper updates need renewing by \(due.formatted(date: .abbreviated, time: .omitted))"
+        return "Rex DUO Beacon updates need renewing by \(due.formatted(date: .abbreviated, time: .omitted))"
     }
 
     // MARK: Fields
@@ -337,40 +352,21 @@ final class InMemoryReleaseStore: ReleaseMemoryStore {
     func save(_ memory: ReleaseMemory) { value = memory }
 }
 
-/// One Keychain item, on this device only.
+/// One Keychain item, on this device only (`KeychainItem`).
 final class KeychainReleaseStore: ReleaseMemoryStore {
-    private let service: String
-    private let account = "helper-release"
+    private let item: KeychainItem
 
-    init(service: String = "dev.abrahamgonzalez.rexduo.helper-release") {
-        self.service = service
-    }
-
-    private var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+    init(service: String = "dev.abrahamgonzalez.rexduo.helper-release", keychain: KeychainCalls = .system) {
+        item = KeychainItem(service: service, account: "helper-release", keychain: keychain)
     }
 
     func load() throws -> ReleaseMemory {
-        var q = query
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &out)
-        if status == errSecItemNotFound { return ReleaseMemory() }
-        guard status == errSecSuccess, let data = out as? Data else { throw KeychainError(status: status) }
+        guard let data = try item.read() else { return ReleaseMemory() }
         return try JSONDecoder().decode(ReleaseMemory.self, from: data)
     }
 
     func save(_ memory: ReleaseMemory) throws {
-        let data = try JSONEncoder().encode(memory)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            status = SecItemAdd(add as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw KeychainError(status: status) }
+        try item.write(try JSONEncoder().encode(memory))
     }
 }
 
@@ -421,13 +417,35 @@ struct HelperReleaseFetcher {
                 }
                 assets[platform] = asset
             }
-            return .success(VerifiedRelease(version: manifest.version, assets: assets, expiresAt: manifest.expiresAt,
+            return .success(VerifiedRelease(version: manifest.version, minVersion: manifest.minVersion, assets: assets,
+                                            expiresAt: manifest.expiresAt,
                                             keys: HelperRelease.installerKeys(signer: signer, trusted: trust.keys)))
         } catch let fault as ReleaseFault {
             return .failure(fault)
         } catch {
             return .failure(.unreachable)
         }
+    }
+
+    /// The app's fetcher: the release list from its real address, remembered in the Keychain.
+    static func standard(defaults: UserDefaults = .standard) -> HelperReleaseFetcher {
+        #if DEBUG
+        // `-helperReleaseMirror <http://127.0.0.1:port>` (debug builds): read the release list from
+        // a copy of the release folders on this machine. The list is still checked against the
+        // built-in keys; the installer on the computer still downloads from the real address.
+        if let mirror = defaults.string(forKey: "helperReleaseMirror"), let root = URL(string: mirror),
+           root.host == "127.0.0.1" || root.host == "localhost" {
+            return HelperReleaseFetcher(transport: { url in
+                let path = url.absoluteString.replacingOccurrences(of: HelperRelease.base, with: "")
+                let (data, response) = try await URLSession.shared.data(from: root.appendingPathComponent(path))
+                guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= HelperRelease.maxDocument else {
+                    throw ReleaseFault.unreachable
+                }
+                return data
+            }, store: KeychainReleaseStore())
+        }
+        #endif
+        return HelperReleaseFetcher(store: KeychainReleaseStore())
     }
 
     private func get(_ address: String) async throws -> Data {

@@ -9,13 +9,17 @@ struct HumanStepCard: View {
     let theme: TermTheme
     let onDone: () -> Void
 
+    /// The words of the Mac's card. They name the program as the Mac's own question does.
+    static func allowCopy(name: String) -> (title: String, message: String, aside: String) {
+        ("Click Allow for Rex DUO Beacon on \(name)",
+         "\(name) asks whether Rex DUO Beacon may show notifications. Beacon only shows a short notice on \(name) when a phone connects. This iPhone gets notifications either way.",
+         "\(name) may also say Rex DUO Beacon added a background item. That message is expected.")
+    }
+
     /// Mac: the system asks whether the helper may show notifications.
     static func allow(name: String, theme: TermTheme, onDone: @escaping () -> Void) -> HumanStepCard {
-        HumanStepCard(
-            title: "On \(name): click Allow",
-            message: "Your Mac asks whether Rex DUO Helper may show notifications. That's only for a short notice when a phone connects. This iPhone gets its notifications either way.",
-            aside: "Your Mac may also say Rex DUO Helper added a background item. That's expected.",
-            theme: theme, onDone: onDone)
+        let copy = allowCopy(name: name)
+        return HumanStepCard(title: copy.title, message: copy.message, aside: copy.aside, theme: theme, onDone: onDone)
     }
 
     var body: some View {

@@ -27,6 +27,9 @@ pub enum SendResult {
     /// its side, so the relay gives the secret up only when it hears this twice, a minute
     /// apart (`devices::Strikes`).
     Unauthorized,
+    /// 429: the gateway's allowance for this phone is used up. This push is lost like a
+    /// failed one.
+    Limited(String),
     /// This push is lost. It is not sent again.
     Failed(String),
 }
@@ -73,7 +76,7 @@ pub fn outcome(status: u16, body: &[u8], retry_after: Option<&str>) -> SendResul
         410 => SendResult::Gone(word("reason").unwrap_or("unregistered").into()),
         429 => {
             let wait = retry_after.and_then(|s| s.parse::<u32>().ok()).map(|s| format!(", retry after {s} s")).unwrap_or_default();
-            SendResult::Failed(format!("the gateway is rate limiting (429{wait})"))
+            SendResult::Limited(format!("the gateway is rate limiting (429{wait})"))
         }
         s => match word("reason") {
             Some(reason) => SendResult::Failed(format!("gateway answered {s} {code}: {reason}")),
@@ -211,7 +214,7 @@ mod tests {
         assert_eq!(outcome(410, b"gone", None), SendResult::Gone("unregistered".into()));
         assert_eq!(
             outcome(429, br#"{"error":"rate_limited"}"#, Some("42")),
-            SendResult::Failed("the gateway is rate limiting (429, retry after 42 s)".into())
+            SendResult::Limited("the gateway is rate limiting (429, retry after 42 s)".into())
         );
         assert_eq!(
             outcome(502, br#"{"error":"apns_error","status":403,"reason":"InvalidProviderToken"}"#, None),
@@ -260,7 +263,7 @@ mod tests {
         let (m, d) = (message(PushCategory::Blocked), phone(&base));
         assert_eq!(Sender::Gateway.send(&m, &d).await, SendResult::Unauthorized);
         assert_eq!(Sender::Gateway.send(&m, &d).await, SendResult::Gone("Unregistered".into()));
-        assert_eq!(Sender::Gateway.send(&m, &d).await, SendResult::Failed("the gateway is rate limiting (429, retry after 7 s)".into()));
+        assert_eq!(Sender::Gateway.send(&m, &d).await, SendResult::Limited("the gateway is rate limiting (429, retry after 7 s)".into()));
         assert_eq!(Sender::Gateway.send(&m, &d).await, SendResult::Failed("gateway answered 500 error".into()));
         assert_eq!(Sender::Gateway.send(&m, &d).await, SendResult::Failed("gateway answered 502 apns_unreachable".into()));
         assert_eq!(seen.lock().unwrap().len(), 5, "one request per push, no retry");

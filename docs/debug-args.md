@@ -66,9 +66,32 @@ builds.
   `error-<exit code>` (10 to 21, or any other number for "stopped"). `-simulateHelperSetupOS linux`
   makes the computer a Linux one; `-simulateHelperSetupKind repair` titles the sheet "Repairing".
   Use it with `-servers x`, which leaves the server list empty, so the app connects to nothing.
+- `-simulateNotifications <name>`: show Settings → Notifications in that state, with no server
+  and nothing registered; the controls do nothing. One name per row of the two tables in
+  docs/notifications.md. The master switch: `master-off`, `master-not-asked`, `master-on`,
+  `master-quiet`, `master-denied`, `master-no-address` (with two healthy computers where the
+  switch lists them). A computer, listed first with a healthy one under it: `healthy`,
+  `update-available` (the Beacon before the newest; the simulated release list says 0.3.1), `off`, `offline`, `turns-off` (turned off while it could not be
+  reached), `not-installed`, `needs-manual`, `setting-up`,
+  `waiting`, `setup-failed`, `too-old`, `not-running`, `connecting` (on, and its Beacon has not said its version yet), `reconnecting`, `reconnect-failed`,
+  `changed`, `click-allow`, `limit` (the notification service asked for an hour's wait), `too-many` (it holds as many computers for this phone as it takes), `removing`, `remove-failed`, `updating`,
+  and the results of a test, `test-sent` and `test-failed`. `all` lists one
+  computer per state under made-up names (Studio, Laptop, Mini, …). `long-names` gives the
+  longest lines a long computer name, to check how they wrap. `confirm-remove`,
+  `confirm-trust`, `details` and `how` open the screen with that confirm or sheet up over the
+  first computer; a row's menu has no name, because iOS opens a menu only for a touch. Use it
+  with `-servers x -settings main`, and `-settingsScroll notifications` to bring the section
+  into view: `-settingsScroll notifications.<n>` puts its n-th computer (from 0) at the top,
+  and `-settingsScroll end` shows the end of the page, where a short section sits. A target
+  that is already partly in view stays where it is.
 - `-pushToken <hex>`: use this APNs token and skip the permission check (push registration in a
   simulator).
 - `-pushGateway <url>`: register with another push gateway (https, or http on this machine).
+- `-notificationsScript <steps>`: act on the first computer's row in Settings → Notifications as
+  taps would, for runs against a real server: steps separated by commas, from `ready`, `off`,
+  `on`, `flips:<n>`, `masterflips:<n>`, `test`, `remove`, `install`, `fix:<seconds>` (the row's one button), `sleep:<seconds>`. Each
+  step writes the row to the log, category `notifications-script`
+  (`State/NotificationsScript.swift`).
 - `-helperReleaseMirror http://127.0.0.1:<port>`: read the helper's release list from a copy of
   the release folders served on this machine (the list is still checked against the built-in
   keys). `-autoHelperSetup install|repair`: start that on the first server to connect. With

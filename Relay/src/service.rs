@@ -16,8 +16,16 @@ macro_rules! say {
 }
 
 pub const NAME: &str = "rex-duo-helper";
+/// The label of the Mac's LaunchAgent, which names its file.
 #[cfg(any(target_os = "macos", test))]
-pub const LABEL: &str = "dev.abrahamgonzalez.rexduo.helper";
+pub const LABEL: &str = "dev.abrahamgonzalez.rexduo.beacon";
+/// The label it had before. A Mac that still has that label's file is moved to `LABEL`
+/// (src/label.rs).
+#[cfg(any(target_os = "macos", test))]
+pub const EARLIER_LABEL: &str = "dev.abrahamgonzalez.rexduo.helper";
+/// The variable a LaunchAgent's file sets for its job: the file's label.
+#[cfg(any(target_os = "macos", test))]
+pub const LABEL_VARIABLE: &str = "REXDUO_LABEL";
 
 /// What the running helper last wrote to status.json, if it is alive.
 pub struct Running {
@@ -28,6 +36,12 @@ pub struct Running {
     pub dry_run: bool,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // used to restart an updated Mac app
     pub exe_mtime: u64,
+    /// The program the helper was started as.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // tells which app a Mac's helper runs from
+    pub exe: Option<PathBuf>,
+    /// The label of the launchd job the helper runs as, on a Mac.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // a Mac's LaunchAgent has a label
+    pub label: Option<String>,
     /// The newest version the helper knows of, when it is newer than the one running.
     pub update: Option<String>,
     /// Why the last update check or update failed.
@@ -40,10 +54,12 @@ pub fn status_path() -> PathBuf {
 
 pub fn running() -> Option<Running> {
     let v: Value = serde_json::from_slice(&std::fs::read(status_path()).ok()?).ok()?;
+    read_status(&v).filter(|r| pid_alive(r.pid))
+}
+
+/// What a status.json says, whether or not its helper is still alive.
+fn read_status(v: &Value) -> Option<Running> {
     let pid = v.get("pid")?.as_u64()?;
-    if !pid_alive(pid) {
-        return None;
-    }
     Some(Running {
         pid,
         version: v["version"].as_str().unwrap_or("?").into(),
@@ -51,6 +67,8 @@ pub fn running() -> Option<Running> {
         servers: v["servers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
         dry_run: v["dry_run"].as_bool().unwrap_or(false),
         exe_mtime: v["exe_mtime"].as_u64().unwrap_or(0),
+        exe: v["exe"].as_str().map(PathBuf::from),
+        label: v["label"].as_str().map(String::from),
         update: v["latest_version"].as_str().filter(|_| v["update_available"].as_bool() == Some(true)).map(String::from),
         update_error: v["last_error"].as_str().map(String::from),
     })
@@ -102,13 +120,13 @@ fn wait_for_start(limit: Duration) -> Option<Running> {
 /// One plain sentence about the running helper.
 pub fn describe(r: &Option<Running>) -> String {
     match r {
-        None => "Rex DUO Helper is not running.".into(),
+        None => "Rex DUO Beacon is not running.".into(),
         Some(r) => {
             let mode = if r.dry_run { " (dry run: pushes are logged, not sent)" } else { "" };
             if r.connected {
-                format!("Rex DUO Helper {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
+                format!("Rex DUO Beacon {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
             } else {
-                format!("Rex DUO Helper {} is running and waiting for Rex to start{mode}.", r.version)
+                format!("Rex DUO Beacon {} is running and waiting for Rex to start{mode}.", r.version)
             }
         }
     }
@@ -195,9 +213,10 @@ pub fn installed() -> bool {
     unit_path().exists()
 }
 
-/// Restarts the background service, so it runs the binary that is on disk now.
+/// Restarts the background service, so it runs the binary that is on disk now. The unit names
+/// the one path the binary has, so `_program` is for the Mac.
 #[cfg(not(target_os = "macos"))]
-pub fn restart() -> bool {
+pub fn restart_into(_program: &Path) -> bool {
     systemctl(&["restart", NAME])
 }
 
@@ -276,7 +295,7 @@ fn unit_word(path: &Path) -> Option<String> {
 fn unit_text(bin: &Path) -> Option<String> {
     Some(format!(
         "[Unit]\n\
-         Description=Rex DUO Helper (push notifications from Rex to the Rex DUO iPhone app)\n\n\
+         Description=Rex DUO Beacon (push notifications from Rex to the Rex DUO iPhone app)\n\n\
          [Service]\n\
          ExecStart={} run\n\
          Restart=on-failure\n\
@@ -367,7 +386,7 @@ pub fn uninstall() -> i32 {
     systemctl(&["daemon-reload"]);
     let _ = std::fs::remove_file(home().join(".local/bin").join(NAME));
     say!(
-        "Rex DUO Helper is stopped and removed. Registered phones stay in {}; delete that folder to forget them.",
+        "Rex DUO Beacon is stopped and removed. Registered phones stay in {}; delete that folder to forget them.",
         tilde(&default_state_dir())
     );
     0
@@ -376,35 +395,160 @@ pub fn uninstall() -> i32 {
 // MARK: macOS (LaunchAgent)
 
 #[cfg(target_os = "macos")]
-fn plist_path() -> PathBuf {
-    home().join(format!("Library/LaunchAgents/{LABEL}.plist"))
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn domain() -> String {
     format!("gui/{}", output("/usr/bin/id", &["-u"]).unwrap_or_else(|| "501".into()))
 }
 
+/// A job as launchctl names it: `gui/<uid>/<label>`.
 #[cfg(target_os = "macos")]
-fn loaded() -> bool {
-    loaded_label(LABEL)
+fn target(label: &str) -> String {
+    format!("{}/{label}", domain())
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn loaded_label(label: &str) -> bool {
-    quiet("/bin/launchctl", &["print", &format!("{}/{label}", domain())])
+    quiet("/bin/launchctl", &["print", &target(label)])
+}
+
+/// launchd itself, through launchctl.
+#[cfg(target_os = "macos")]
+struct System;
+
+#[cfg(target_os = "macos")]
+impl crate::label::Launchd for System {
+    fn loaded(&self, label: &str) -> bool {
+        loaded_label(label)
+    }
+    fn boot_out(&self, label: &str) {
+        if loaded_label(label) {
+            quiet("/bin/launchctl", &["bootout", &target(label)]);
+            // bootout returns before the job is gone, and the job writes its state on exit.
+            let t = Instant::now();
+            while loaded_label(label) && t.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    fn bootstrap(&self, _label: &str, file: &Path) -> bool {
+        quiet("/bin/launchctl", &["bootstrap", &domain(), &file.display().to_string()])
+    }
+    fn kickstart(&self, label: &str, again: bool) -> bool {
+        let target = target(label);
+        if again {
+            quiet("/bin/launchctl", &["kickstart", "-k", &target])
+        } else {
+            quiet("/bin/launchctl", &["kickstart", &target])
+        }
+    }
+}
+
+/// The LaunchAgent files of this user and their jobs.
+#[cfg(target_os = "macos")]
+pub(crate) fn agents() -> crate::label::Agents<'static> {
+    crate::label::Agents { dir: home().join("Library/LaunchAgents"), launchd: &System }
+}
+
+/// The label this process runs under as a launchd job (src/label.rs). None when it was
+/// started another way.
+#[cfg(target_os = "macos")]
+pub fn own_label() -> Option<&'static str> {
+    crate::label::own(std::env::var(LABEL_VARIABLE).ok().as_deref(), std::env::var("XPC_SERVICE_NAME").ok().as_deref())
+}
+
+/// How a helper that was started under the new label is waited for: status.json names a
+/// live helper that runs `program` under that label.
+#[cfg(target_os = "macos")]
+pub(crate) fn runs_new(program: &Path) -> bool {
+    let same = |exe: &Path| exe == program || exe.canonicalize().ok().is_some_and(|real| program.canonicalize().ok() == Some(real));
+    running().is_some_and(|r| r.label.as_deref() == Some(LABEL) && r.exe.as_deref().is_some_and(same))
 }
 
 /// True if the LaunchAgent is set up.
 #[cfg(target_os = "macos")]
 pub fn installed() -> bool {
-    plist_path().exists()
+    let agents = agents();
+    agents.has(agents.in_use())
 }
 
-/// Restarts the background job, so it runs the app that is on disk now.
+/// Restarts the background job as `program` (`label::Agents::restart_into`).
 #[cfg(target_os = "macos")]
-pub fn restart() -> bool {
-    quiet("/bin/launchctl", &["kickstart", "-k", &format!("{}/{LABEL}", domain())])
+pub fn restart_into(program: &Path) -> bool {
+    agents().restart_into(program)
+}
+
+/// True when the LaunchAgent runs `program`, whichever version of the helper wrote the file.
+#[cfg(target_os = "macos")]
+pub fn agent_runs(program: &Path) -> bool {
+    let agents = agents();
+    std::fs::read_to_string(agents.file(agents.in_use())).is_ok_and(|text| names_program(&text, program))
+}
+
+/// True when a LaunchAgent's text has `program` as the first of its program arguments.
+#[cfg(any(target_os = "macos", test))]
+fn names_program(plist: &str, program: &Path) -> bool {
+    plist.contains(&format!("<array><string>{}</string>", xml(&program.display().to_string())))
+}
+
+/// The program a LaunchAgent's text names: the first of its program arguments.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn program_of(plist: &str) -> Option<PathBuf> {
+    let text = plist.split("<array><string>").nth(1)?.split("</string>").next()?;
+    Some(PathBuf::from(text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")))
+}
+
+/// Writes the LaunchAgent of `label` for `program` at `path`. True when the file changed.
+///
+/// The text goes to `<file>.tmp` in the same folder, is synced, and takes the file's place in
+/// one rename. When a step fails, the temporary file is removed and the file at `path` is as
+/// it was.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn write_agent(path: &Path, label: &str, program: &Path) -> Result<bool, String> {
+    let plist = agent_plist(label, program);
+    if std::fs::read_to_string(path).ok().as_deref() == Some(plist.as_str()) {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    if let Err(e) = write_new(&tmp, &plist).and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("could not write {}: {e}", path.display()));
+    }
+    Ok(true)
+}
+
+/// Writes `text` to a new file at `tmp`, of mode 0644 whatever the umask, and syncs it.
+/// Whatever has that name is removed first, a link as the link it is, and the file is made
+/// only where nothing is: a link there is never written through.
+#[cfg(any(target_os = "macos", test))]
+fn write_new(tmp: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match std::fs::remove_file(tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    // Made for this account alone; the mode it ends with is set on the open file.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(tmp)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
+}
+
+/// Writes the LaunchAgent of `label` for `program` at `path`, as `write_agent` does. True
+/// when the file changed.
+///
+/// When the file names another program, `unload` unloads the job first, because launchd
+/// keeps the path a job was loaded with. The caller loads the job again.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn point_agent(path: &Path, label: &str, program: &Path, unload: &dyn Fn()) -> Result<bool, String> {
+    if std::fs::read_to_string(path).is_ok_and(|text| !names_program(&text, program)) {
+        unload();
+    }
+    write_agent(path, label, program)
 }
 
 /// Stops and removes the LaunchAgent and binary of the helper's old name (legacy.rs). The old
@@ -414,7 +558,7 @@ pub fn stop_legacy() -> Vec<String> {
     let old = crate::legacy::OLD_LABEL;
     let mut notes = vec![];
     if loaded_label(old) {
-        quiet("/bin/launchctl", &["bootout", &format!("{}/{old}", domain())]);
+        quiet("/bin/launchctl", &["bootout", &target(old)]);
         // bootout returns before the job is fully gone, and the job writes its state on exit.
         let t = Instant::now();
         while loaded_label(old) && t.elapsed() < Duration::from_secs(3) {
@@ -449,21 +593,24 @@ fn xml(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// The LaunchAgent that runs the helper at `program`, now and at every login.
+/// The LaunchAgent of `label` that runs the helper at `program`, now and at every login. The
+/// job is told its label, and belongs to the app by the app's bundle identifier.
 #[cfg(any(target_os = "macos", test))]
-fn agent_plist(program: &Path) -> String {
+fn agent_plist(label: &str, program: &Path) -> String {
+    let bundle = crate::update::BUNDLE_ID;
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>{LABEL}</string>
+  <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key>
   <array><string>{}</string><string>run</string><string>--log-file</string></array>
+  <key>EnvironmentVariables</key><dict><key>{LABEL_VARIABLE}</key><string>{label}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Background</string>
-  <key>AssociatedBundleIdentifiers</key><string>{LABEL}</string>
+  <key>AssociatedBundleIdentifiers</key><string>{bundle}</string>
 </dict>
 </plist>
 "#,
@@ -473,50 +620,51 @@ fn agent_plist(program: &Path) -> String {
 
 /// Writes the LaunchAgent and (re)starts the helper. Quiet; returns an error to show. A helper
 /// that already runs this version is left running unless `restart` says its config changed.
+/// A LaunchAgent under the earlier label is moved to the new one here (src/label.rs).
 #[cfg(target_os = "macos")]
 fn start_agent(restart: bool) -> Result<(), String> {
-    // From the app, run the binary inside it; otherwise install a copy to ~/.local/bin.
-    let program = match bundle() {
-        Some(_) => std::env::current_exe().map_err(|e| e.to_string())?,
-        None => install_binary()?,
+    // From the app, run the binary inside it; otherwise install a copy to ~/.local/bin. An
+    // app under its earlier name takes its name first (src/rename.rs), and the helper has
+    // then been started from there.
+    let moved = crate::rename::on_install();
+    let program = match (&moved, bundle()) {
+        (Some(app), _) => app.join("Contents/MacOS").join(NAME),
+        (None, Some(_)) => std::env::current_exe().map_err(|e| e.to_string())?,
+        (None, None) => install_binary()?,
     };
-    let plist = agent_plist(&program);
-    let path = plist_path();
-    let changed = std::fs::read_to_string(&path).ok().as_deref() != Some(plist.as_str());
-    if changed {
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::write(&path, &plist).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    }
-    let target = format!("{}/{LABEL}", domain());
-    if changed && loaded() {
-        quiet("/bin/launchctl", &["bootout", &target]);
-        // bootout returns before the job is fully gone.
-        let t = Instant::now();
-        while loaded() && t.elapsed() < Duration::from_secs(3) {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-    if !loaded() {
-        if !quiet("/bin/launchctl", &["bootstrap", &domain(), &path.display().to_string()]) {
-            return Err("macOS refused to start the background job (launchctl bootstrap failed)".into());
-        }
+    let restart = restart && moved.is_none();
+    // Start it if it stopped, restart it if the binary was updated.
+    let again = || {
+        restart
+            || match running() {
+                None => true,
+                Some(r) => r.version != crate::relay::VERSION || r.exe_mtime != mtime(&program),
+            }
+    };
+    let agents = agents();
+    let state_dir = default_state_dir();
+    // The label is moved while no update is at work on the job.
+    let lock = if agents.has(EARLIER_LABEL) {
+        let _ = std::fs::create_dir_all(&state_dir);
+        crate::update::UpdateLock::acquire(&state_dir, pid_alive).ok()
     } else {
-        // Already set up: start it if it stopped, restart it if the binary was updated.
-        let stale = match running() {
-            None => true,
-            Some(r) => r.version != crate::relay::VERSION || r.exe_mtime != mtime(&program),
-        };
-        if stale || restart {
-            quiet("/bin/launchctl", &["kickstart", "-k", &target]);
-        }
+        None
+    };
+    let confirm = crate::label::Confirm { runs: &runs_new, wait: LABEL_WAIT, poll: Duration::from_millis(250) };
+    if let Some(why) = agents.start(&program, lock.is_some(), &again, &confirm)? {
+        crate::label::put_off(&state_dir);
+        crate::info!("the background job keeps the label {EARLIER_LABEL} for now: {why}");
     }
     Ok(())
 }
 
+/// How long a helper that was loaded under the new label has to report in.
+#[cfg(target_os = "macos")]
+pub(crate) const LABEL_WAIT: Duration = Duration::from_secs(20);
+
 #[cfg(target_os = "macos")]
 fn stop_agent() {
-    quiet("/bin/launchctl", &["bootout", &format!("{}/{LABEL}", domain())]);
-    let _ = std::fs::remove_file(plist_path());
+    agents().stop_all();
 }
 
 #[cfg(target_os = "macos")]
@@ -525,7 +673,7 @@ pub fn install(config_changed: bool) -> i32 {
         say!("Moving from the old name: {note}");
     }
     if let Err(e) = start_agent(config_changed) {
-        eprintln!("Could not start Rex DUO Helper: {e}");
+        eprintln!("Could not start Rex DUO Beacon: {e}");
         return 1;
     }
     let r = wait_for_start(Duration::from_secs(6));
@@ -537,14 +685,12 @@ pub fn install(config_changed: bool) -> i32 {
 pub fn status() -> i32 {
     let r = running();
     say!("{}", describe(&r));
-    if plist_path().exists() {
-        say!(
-            "Starts at login ({}). Log: {}",
-            if loaded() { "loaded" } else { "not loaded" },
-            tilde(&crate::config::default_log_file())
-        );
+    let agents = agents();
+    let label = agents.in_use();
+    if agents.has(label) {
+        say!("{}", login_line(label, loaded_label(label), &tilde(&crate::config::default_log_file())));
     } else {
-        say!("Not set up to start at login. Open Rex DUO Helper.app, or run: {NAME} install");
+        say!("Not set up to start at login. Open Rex DUO Beacon.app, or run: {NAME} install");
     }
     say!("{}.", plural(phones()));
     if let Some(note) = update_note(&r) {
@@ -553,10 +699,16 @@ pub fn status() -> i32 {
     if r.is_some() { 0 } else { 3 }
 }
 
+/// What `status` says about the LaunchAgent: its label, and whether launchd has it.
+#[cfg(any(target_os = "macos", test))]
+fn login_line(label: &str, loaded: bool, log: &str) -> String {
+    format!("Starts at login ({label}, {}). Log: {log}", if loaded { "loaded" } else { "not loaded" })
+}
+
 #[cfg(target_os = "macos")]
 pub fn uninstall() -> i32 {
     stop_agent();
-    say!("Rex DUO Helper is stopped and won't start at login. To remove it, drag the app to the Trash.");
+    say!("Rex DUO Beacon is stopped and won't start at login. To remove it, drag the app to the Trash.");
     0
 }
 
@@ -571,7 +723,7 @@ fn dialog(text: &str, buttons: &[&str]) -> String {
         .map(|p| format!(" with icon (POSIX file \"{}\")", esc(&p.display().to_string())))
         .unwrap_or_default();
     let script = format!(
-        "display dialog \"{}\" with title \"Rex DUO Helper\" buttons {{{list}}} default button \"{}\"{icon}",
+        "display dialog \"{}\" with title \"Rex DUO Beacon\" buttons {{{list}}} default button \"{}\"{icon}",
         esc(text),
         esc(buttons.last().unwrap())
     );
@@ -607,7 +759,7 @@ trait AppHost {
     fn dialog(&mut self, text: &str, buttons: &[&str]) -> String;
 }
 
-/// Opening Rex DUO Helper.app: start the background helper (and at every login). Opened by
+/// Opening Rex DUO Beacon.app: start the background helper (and at every login). Opened by
 /// hand it then says so in one small dialog; opened by Rex DUO's setup it only asks for the
 /// notification permission, and shows nothing of its own whatever happens. The process
 /// exits; only the helper keeps running.
@@ -621,11 +773,11 @@ fn open_flow(opening: Opening, host: &mut dyn AppHost) -> i32 {
         return 0;
     }
     if !host.in_place() {
-        host.dialog("Move Rex DUO Helper to your Applications folder, then open it again.", &["OK"]);
+        host.dialog("Move Rex DUO Beacon to your Applications folder, then open it again.", &["OK"]);
         return 0;
     }
     if let Err(e) = host.start() {
-        host.dialog(&format!("Rex DUO Helper couldn't start.\n\n{e}"), &["OK"]);
+        host.dialog(&format!("Rex DUO Beacon couldn't start.\n\n{e}"), &["OK"]);
         return 1;
     }
     // The permission question for the "Rex DUO connected" notice, next to the welcome.
@@ -637,12 +789,12 @@ fn open_flow(opening: Opening, host: &mut dyn AppHost) -> i32 {
         None => "It's starting",
     };
     let text = format!(
-        "Rex DUO Helper is on.\n\n{state}, and it starts by itself when you log in.\n\n\
+        "Rex DUO Beacon is on.\n\n{state}, and it starts by itself when you log in.\n\n\
          On your iPhone, open Rex DUO and turn on notifications. You'll get a push when an agent needs you or finishes."
     );
     if host.dialog(&text, &["Turn Off", "Done"]) == "Turn Off" {
         host.stop();
-        host.dialog("Rex DUO Helper is off. Open it again to turn it back on.", &["OK"]);
+        host.dialog("Rex DUO Beacon is off. Open it again to turn it back on.", &["OK"]);
     }
     0
 }
@@ -690,6 +842,8 @@ mod tests {
             servers: vec!["https://rex.example.ts.net".into()],
             dry_run: false,
             exe_mtime: 0,
+            exe: None,
+            label: None,
             update: update.map(String::from),
             update_error: error.map(String::from),
         })
@@ -697,12 +851,28 @@ mod tests {
 
     #[test]
     fn status_sentences() {
-        assert_eq!(describe(&None), "Rex DUO Helper is not running.");
-        assert_eq!(describe(&running(None, None)), "Rex DUO Helper 0.3.0 is running and connected to Rex at https://rex.example.ts.net.");
+        assert_eq!(describe(&None), "Rex DUO Beacon is not running.");
+        assert_eq!(describe(&running(None, None)), "Rex DUO Beacon 0.3.0 is running and connected to Rex at https://rex.example.ts.net.");
         let mut dry = running(None, None);
         dry.as_mut().unwrap().dry_run = true;
         dry.as_mut().unwrap().connected = false;
-        assert_eq!(describe(&dry), "Rex DUO Helper 0.3.0 is running and waiting for Rex to start (dry run: pushes are logged, not sent).");
+        assert_eq!(describe(&dry), "Rex DUO Beacon 0.3.0 is running and waiting for Rex to start (dry run: pushes are logged, not sent).");
+    }
+
+    #[test]
+    fn status_reports_the_label_the_helper_runs_under() {
+        let v = serde_json::json!({"pid": 4242, "version": "0.3.1", "connected": true, "label": LABEL, "exe": "/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"});
+        let r = read_status(&v).unwrap();
+        assert_eq!((r.pid, r.label.as_deref()), (4242, Some("dev.abrahamgonzalez.rexduo.beacon")));
+        // A helper from before the label was written down, and one that is no launchd job.
+        let (mut unnamed, mut null) = (v.clone(), v.clone());
+        unnamed.as_object_mut().unwrap().remove("label");
+        null["label"] = Value::Null;
+        assert_eq!((read_status(&unnamed).unwrap().label, read_status(&null).unwrap().label), (None, None));
+        assert!(read_status(&serde_json::json!({"version": "0.3.1"})).is_none());
+        // `status` names the label in use and whether launchd has its job.
+        assert_eq!(login_line(LABEL, true, "~/Library/Logs/x.log"), "Starts at login (dev.abrahamgonzalez.rexduo.beacon, loaded). Log: ~/Library/Logs/x.log");
+        assert_eq!(login_line(EARLIER_LABEL, false, "x"), "Starts at login (dev.abrahamgonzalez.rexduo.helper, not loaded). Log: x");
     }
 
     #[test]
@@ -744,18 +914,112 @@ mod tests {
 
     #[test]
     fn the_launch_agent_names_the_helper_as_text() {
-        let plain = agent_plist(Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        let plain = agent_plist(LABEL, Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"));
         assert!(plain.contains(
-            "<array><string>/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper</string><string>run</string><string>--log-file</string></array>"
+            "<array><string>/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper</string><string>run</string><string>--log-file</string></array>"
         ));
-        assert!(plain.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.helper</string>"));
+        // The label names the job and is handed to it; the app is named by its bundle identifier.
+        assert!(plain.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.beacon</string>"));
+        assert!(plain.contains("<key>EnvironmentVariables</key><dict><key>REXDUO_LABEL</key><string>dev.abrahamgonzalez.rexduo.beacon</string></dict>"));
+        assert!(plain.contains("<key>AssociatedBundleIdentifiers</key><string>dev.abrahamgonzalez.rexduo.helper</string>"));
+        let earlier = agent_plist(EARLIER_LABEL, Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"));
+        assert_eq!(earlier, plain.replace(LABEL, EARLIER_LABEL));
+        assert_ne!(LABEL, EARLIER_LABEL);
+        // The file names its program, and no other.
+        let (new, old) = (Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        assert!(names_program(&plain, new) && !names_program(&plain, old));
+        assert!(names_program(&agent_plist(LABEL, old), old) && !names_program(&agent_plist(LABEL, old), new));
+        assert!(!names_program(&plain, Path::new("run")));
+        assert_eq!(program_of(&plain).as_deref(), Some(new));
+        assert_eq!(program_of("<plist/>"), None);
+        // Writing it again for the same program changes nothing; for another, it does.
+        let dir = std::env::temp_dir().join(format!("agent-{}-{}", std::process::id(), crate::util::now()));
+        let file = dir.join("LaunchAgents/agent.plist");
+        assert_eq!(write_agent(&file, LABEL, old), Ok(true));
+        assert_eq!(write_agent(&file, LABEL, old), Ok(false));
+        assert_eq!(write_agent(&file, LABEL, new), Ok(true));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), plain);
+        std::fs::remove_dir_all(dir).unwrap();
         // A home folder with markup in its name stays one string.
-        let odd = agent_plist(Path::new(r#"/Users/A&B <c> "d" 'e'/.local/bin/rex-duo-helper"#));
+        let odd = agent_plist(LABEL, Path::new(r#"/Users/A&B <c> "d" 'e'/.local/bin/rex-duo-helper"#));
         assert!(odd.contains(r#"<array><string>/Users/A&amp;B &lt;c&gt; "d" 'e'/.local/bin/rex-duo-helper</string><string>run</string>"#), "{odd}");
         for tag in ["<string>", "</string>", "<key>", "<dict>", "<array>"] {
             assert_eq!(odd.matches(tag).count(), plain.matches(tag).count(), "{tag}");
         }
         assert_eq!(odd.matches('&').count(), 3);
+        assert_eq!(program_of(&odd).as_deref(), Some(Path::new(r#"/Users/A&B <c> "d" 'e'/.local/bin/rex-duo-helper"#)));
+    }
+
+    #[test]
+    fn a_launch_agent_for_another_program_is_unloaded_and_written_over() {
+        let (new, old) = (Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        let dir = std::env::temp_dir().join(format!("agent-point-{}-{}", std::process::id(), crate::util::now()));
+        let file = dir.join("LaunchAgents/agent.plist");
+        let seen = std::cell::RefCell::new(vec![]);
+        let unload = || seen.borrow_mut().push(format!("unload, file {}", file.exists()));
+        // No file yet, and a file for the same program: written as it is, and nothing is unloaded.
+        assert_eq!(point_agent(&file, LABEL, old, &unload), Ok(true));
+        assert_eq!(point_agent(&file, LABEL, old, &unload), Ok(false));
+        assert!(seen.borrow().is_empty());
+        // For another program: the job is unloaded, once, while the file is there, and the
+        // file then names the new program.
+        assert_eq!(point_agent(&file, LABEL, new, &unload), Ok(true));
+        assert_eq!(*seen.borrow(), ["unload, file true"]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), agent_plist(LABEL, new));
+        // A file that can't be written is an error, as from `write_agent`.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
+        assert!(point_agent(&file, LABEL, old, &unload).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_launch_agent_is_written_beside_its_place_and_renamed_into_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let (new, old) = (Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        let dir = std::env::temp_dir().join(format!("agent-atomic-{}-{}", std::process::id(), crate::util::now()));
+        let folder = dir.join("LaunchAgents");
+        let (file, tmp) = (folder.join("agent.plist"), folder.join("agent.plist.tmp"));
+        let mode = |path: &Path| std::fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777;
+        let chmod = |path: &Path, mode| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+
+        // The whole text, in a file of mode 0644. The file is made with mode 0600 and given
+        // its mode once open, so the umask has no part in it, be it 0 or 077.
+        assert_eq!(write_agent(&file, LABEL, old), Ok(true));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), agent_plist(LABEL, old));
+        assert_eq!(mode(&file), 0o644);
+        assert!(!tmp.exists());
+
+        // A file of the temporary name is replaced by a new one, whatever it held and
+        // whatever its mode.
+        std::fs::write(&tmp, "x".repeat(4096)).unwrap();
+        chmod(&tmp, 0o600);
+        assert_eq!(write_agent(&file, LABEL, new), Ok(true));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), agent_plist(LABEL, new));
+        assert_eq!(mode(&file), 0o644);
+        assert!(!tmp.exists());
+
+        // A link of the temporary name is replaced too: what it points to stays as it is,
+        // and the LaunchAgent is a file of its own.
+        let elsewhere = dir.join("elsewhere");
+        std::fs::write(&elsewhere, "kept").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &tmp).unwrap();
+        assert_eq!(write_agent(&file, LABEL, old), Ok(true));
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "kept");
+        assert!(std::fs::symlink_metadata(&file).unwrap().is_file());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), agent_plist(LABEL, old));
+        assert_eq!(mode(&file), 0o644);
+        assert!(std::fs::symlink_metadata(&tmp).is_err());
+
+        // A folder that can't be written: an error, the file as it was, and nothing beside it.
+        chmod(&folder, 0o555);
+        let failed = write_agent(&file, LABEL, new);
+        chmod(&folder, 0o755);
+        assert!(failed.unwrap_err().starts_with("could not write "));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), agent_plist(LABEL, old));
+        let held: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(held, ["agent.plist"]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Records what opening the app did. A dialog shown during a phone setup fails the test
@@ -820,20 +1084,20 @@ mod tests {
     fn opening_the_app_by_hand_shows_its_dialogs() {
         let mut app = FakeApp::new(true);
         assert_eq!(open_flow(Opening::ByHand, &mut app), 0);
-        assert_eq!(app.did, ["start", "authorize", "started", "dialog: Rex DUO Helper is on."]);
+        assert_eq!(app.did, ["start", "authorize", "started", "dialog: Rex DUO Beacon is on."]);
 
         let mut off = FakeApp::new(true);
         off.click = "Turn Off";
         assert_eq!(open_flow(Opening::ByHand, &mut off), 0);
-        assert_eq!(off.did[3..], ["dialog: Rex DUO Helper is on.", "stop", "dialog: Rex DUO Helper is off. Open it again to turn it back on."]);
+        assert_eq!(off.did[3..], ["dialog: Rex DUO Beacon is on.", "stop", "dialog: Rex DUO Beacon is off. Open it again to turn it back on."]);
 
         let mut failing = FakeApp::new(true);
         failing.start = Err("no".into());
         assert_eq!(open_flow(Opening::ByHand, &mut failing), 1);
-        assert_eq!(failing.did, ["start", "dialog: Rex DUO Helper couldn't start."]);
+        assert_eq!(failing.did, ["start", "dialog: Rex DUO Beacon couldn't start."]);
         let mut moved = FakeApp::new(true);
         moved.in_place = false;
         assert_eq!(open_flow(Opening::ByHand, &mut moved), 0);
-        assert_eq!(moved.did, ["dialog: Move Rex DUO Helper to your Applications folder, then open it again."]);
+        assert_eq!(moved.did, ["dialog: Move Rex DUO Beacon to your Applications folder, then open it again."]);
     }
 }

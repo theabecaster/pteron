@@ -21,14 +21,14 @@ struct PasswordCard: View {
 
     static let title = "Keep notifications coming after you log out?"
     static func message(name: String, account: String?) -> String {
-        "\(name) stops the helper when you log out unless you allow it to keep running. That needs the password for \(account ?? "your account") on \(name)."
+        "\(name) stops Rex DUO Beacon when you log out, unless you allow Beacon to keep running. Allowing that takes the password for \(account ?? "your account") on \(name)."
     }
     static let wrongLine = "That password didn't work. Try again, or choose Not now."
     static func aside(_ name: String) -> String {
         "Your password goes straight to \(name) and isn't saved on this iPhone."
     }
     static func onComputerLine(_ name: String) -> String {
-        "Type the password on \(name). Rex DUO goes on as soon as it's done there."
+        "Type the password on \(name). Rex DUO continues once \(name) accepts the password."
     }
 
     var body: some View {
@@ -63,7 +63,7 @@ struct PasswordCard: View {
                 VStack(spacing: 2) {
                     PrimaryButton(title: "Continue", busyTitle: "Sending…", busy: sending, theme: theme, action: submit)
                         .opacity(password.isEmpty && !sending ? 0.5 : 1)
-                    SetupTextButton(title: "Type it on \(name) instead", theme: theme, action: onTypeThere)
+                    SetupTextButton(title: "Type the password on \(name) instead", theme: theme, action: onTypeThere)
                     SetupTextButton(title: "Not now", theme: theme, action: onNotNow)
                 }
                 .frame(maxWidth: .infinity)

@@ -146,26 +146,45 @@ Rex DUO can tell you when an agent needs your input, when it finishes, or when a
 for attention. While the app is open, these show as a short banner at the top for panes you
 aren't looking at. While it is closed, they arrive as iPhone notifications.
 
-To get them while the app is closed, turn on notifications, and the app sets up a small helper,
-Rex DUO Helper, on each computer for you. After you add a computer, Rex DUO offers to install
-the helper there; tap **Install**. Settings → Notifications shows each computer's helper and
-offers to install, repair, reinstall or update it. The helper runs on Mac and Linux computers
-and keeps itself up to date.
+To get notifications while the app is closed, each computer needs a small add-on, the Rex DUO
+add-on (on the computer the program is called Rex DUO Beacon). It runs on Mac and Linux
+computers and keeps itself up to date. After you add a computer, Rex DUO offers to install the
+add-on on it; tap **Install**.
+
+Everything else is in Settings → Notifications:
+
+- **Turn notifications on or off.** The **Notifications** switch is for the whole app. The
+  first time you turn it on, iOS asks for permission. If notifications are turned off for Rex
+  DUO in iOS Settings, the switch shows off and says so; tap **Open Settings** to turn them on.
+- **Choose computers.** With the switch on, each computer has its own switch. Turning a
+  computer on installs the add-on on that computer if it has none; turning it off stops
+  notifications from that computer only, and leaves the add-on installed. A computer that
+  can't be reached when you turn it off shows "Turns off when … is back" and stops then.
+- **See how a computer is doing.** A computer that works shows the add-on's version under its
+  name. Otherwise that line says what is wrong, with one button to fix it: **Update**,
+  **Repair**, **Retry**, **Continue** or **Trust…**.
+- **Send a test.** Touch and hold a computer, or tap **…**, and choose **Send Test
+  Notification**. The computer sends one notification to this iPhone.
+- **Remove the add-on.** In the same menu, choose **Remove Add-on…**. It stops notifications
+  from that computer to every phone that used the add-on, and removes the add-on from the
+  computer. **Reinstall Add-on** and **Show Details** are there too.
 
 ## Privacy and security
 
 - **Your sessions stay between your phone and your computers.** Rex DUO connects straight to
   each Rex server over your Tailscale network. There is no Rex DUO account and no analytics.
-- **Notifications go through a small relay.** Rex DUO Helper sends each notification to the Rex
-  DUO push service, which only passes it on to Apple for delivery. The helper never holds your
+- **Notifications go through a small relay.** Rex DUO Beacon sends each notification to the Rex
+  DUO push service, which only passes it on to Apple for delivery. Beacon never holds your
   phone's notification token or an Apple key.
 - **What the relay stores:** your phone's notification token and which of Apple's delivery
-  services it uses, and for each computer a fingerprint of the secret its helper uses, with the computer's
+  services it uses, and for each computer a fingerprint of the secret its Beacon uses, with the computer's
   name and when it was added, plus daily counts for its limits. It keeps fingerprints of keys,
   never the keys themselves, and it never stores or logs what a notification says. Turning
-  notifications off deletes your phone's entry, and entries unused for 180 days are deleted.
-- **Helpers are checked.** The app checks each helper's identity before it trusts it, and warns
-  you if a computer's helper changes. Helper updates are signed and checked before they install.
+  notifications off stops each computer from sending and keeps your phone's entry for when you
+  turn them on again; removing an add-on deletes that computer's entry, and entries unused for
+  180 days are deleted.
+- **Beacons are checked.** The app checks each Beacon's identity before it trusts it, and warns
+  you if a computer's Beacon changes. Beacon updates are signed and checked before they install.
 
 ## Troubleshooting
 
@@ -185,14 +204,14 @@ Use the computer's full Tailscale address (`https://…ts.net`) in Settings → 
 again with `rex server tailscale pair`.
 
 **Notifications don't arrive.**
-Open Settings → Notifications. If a computer says Rex DUO Helper isn't running, tap **Install**
-or **Repair**. If iOS has turned notifications off for Rex DUO, the section says so and offers
-**Open Settings**. The computer has to be on and Rex has to be running for the helper to see
-your agents.
+Open Settings → Notifications and look at the line under the computer's name. "Add-on isn't
+running": tap **Repair**. "Add-on needs an update": tap **Update**. If iOS has turned
+notifications off for Rex DUO, the section says so and offers **Open Settings**. The computer
+has to be on and Rex has to be running for the add-on to see your agents.
 
-**"Rex DUO Helper on … changed".**
-The helper on that computer was replaced. Tap **Trust** only if you reinstalled it yourself;
-otherwise tap **Reinstall**.
+**"Add-on on … has changed".**
+The add-on on that computer was replaced. Tap **Trust…** if you reinstalled or removed it
+yourself; otherwise choose **Reinstall Add-on** from the computer's menu.
 
 ## Building from source
 
