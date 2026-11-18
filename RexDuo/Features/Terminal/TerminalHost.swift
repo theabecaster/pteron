@@ -1,18 +1,20 @@
 import UIKit
 import RexKit
 import GameController
-/// The scroll view that zooms and pans the terminal in mirror mode.
+/// The scroll view that scales and pans the terminal in mirror mode.
 final class ZoomScrollView: UIScrollView {
     var panGate: ((UIPanGestureRecognizer) -> Bool)?
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         if g === panGestureRecognizer, let gate = panGate, !gate(panGestureRecognizer) { return false }
+        // A pinch sets the text size in every mode (the host's own pinch); the canvas never zooms by it.
+        if g === pinchGestureRecognizer { return false }
         return super.gestureRecognizerShouldBegin(g)
     }
 }
 
 /// A UIKit view that shows one Rex terminal block in a `GhosttyTerminalView`.
-/// Fit mode: claims the block and resizes it to this view. Mirror mode: keeps the server's size, zoom/pan.
+/// Fit mode: claims the block and resizes it to this view. Mirror mode: keeps the server's size, scaled and panned.
 ///
 /// The local grid always follows the server: it changes only when the stream says the server's
 /// size changed, at that point in the stream. Fit mode asks the server for the size that fits and
@@ -345,7 +347,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         if g === swipeGR { return swipeShouldBegin(swipeGR) }
-        if g === pinchGR { return fitted && !selecting }
+        if g === pinchGR { return TerminalPinch.starts(selecting: selecting) }
         if g === twoTapGR { return onCommand != nil && !selecting }
         return true
     }
@@ -563,7 +565,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
     }
 
-    /// Pinch: live preview by scaling, then one font change (and one resize claim) at the end.
+    /// Pinch: live preview by scaling, then one font change (and one resize claim) at the end. The size
+    /// is stored in every state; a pinch on a pane resized elsewhere also fits it here (`TerminalPinch`).
     @objc private func pinched(_ g: UIPinchGestureRecognizer) {
         switch g.state {
         case .began:
@@ -576,15 +579,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .ended:
             zoomer.transform = .identity
             zoomer.frame = bounds
-            let s = CGFloat(Prefs.fontSize(Double(pinchBase * g.scale)))
-            if abs(s - fontSize) > 0.01 {
-                setFontSize(s)
-                Prefs.shared.fontSize = Double(s)
+            let out = TerminalPinch.outcome(pinchState, base: Double(pinchBase), scale: Double(g.scale))
+            if let s = out.size {
+                setFontSize(CGFloat(s))
+                Prefs.shared.fontSize = s
             }
+            if out.fitHere { fitHere() }
         default:
             zoomer.transform = .identity
             zoomer.frame = bounds
         }
+    }
+
+    private var pinchState: TerminalPinch.PaneState {
+        sizing == .mirror ? .mirror : lostOwnership ? .resizedElsewhere : .fitted
     }
 
     private func clampFont(_ s: CGFloat) -> CGFloat { min(max(s, Self.fontRange.lowerBound), Self.fontRange.upperBound) }
@@ -872,7 +880,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     /// Tapping the "another device has this pane" chip takes the pane back.
-    @objc private func statusTapped() {
+    @objc private func statusTapped() { fitHere() }
+
+    /// Takes back a pane another client resized and fits it to this view: the chip, and a pinch
+    /// on such a pane.
+    private func fitHere() {
         guard sizing == .fit, lostOwnership else { return }
         lostOwnership = false
         hideStatus()

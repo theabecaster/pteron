@@ -94,8 +94,9 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   largest grid that fits (`TerminalLayout.fitGrid`, at least 12×4). Leaving the pane,
   backgrounding the app, or switching to mirror calls `session.disown_block`, and the Mac gets
   its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
-  tap to fit here".
-- Mirror: never claims or resizes. Shows the server's grid scaled to the view; pinch zooms, drag pans.
+  tap to fit here". Until then it shows the server's grid as mirror does. A pinch there fits the
+  pane here too (Gestures).
+- Mirror: never claims or resizes. Shows the server's grid scaled to the view's width; drag pans.
   Users always get fit; mirror is only for the `-sizing mirror` launch argument.
 - Fit really resizes panes on the Mac. Test it only in `zz-` sessions you created.
 
@@ -113,7 +114,11 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   shimmer and a confirming haptic), show handles to adjust with, and Copy / Paste / Select All.
   Double tap selects a word, triple tap a line. Mouse or trackpad drags select directly.
   Design and haptics: [selection.md](selection.md).
-- Pinch: in fit mode changes the font size (one resize claim at the end); in mirror mode zooms.
+- Pinch: sets the text size in every state (`TerminalPinch`). The text scales under the fingers;
+  on release the size is stored (`Prefs.fontSize`) and applied, and fit mode claims one new
+  grid. On a pane resized elsewhere the pinch also fits it here, as the chip does. Mirror draws
+  the server's grid at the new size, still scaled to the width. A pinch during a selection drag
+  doesn't start. The canvas never zooms by pinch.
 - Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%.
 - A tab shows its splits as the Mac lays them out while every pane keeps 40×8 cells
   (`SplitGeometry.legible`); otherwise one pane shows at a time, with dots in the title bar and a
