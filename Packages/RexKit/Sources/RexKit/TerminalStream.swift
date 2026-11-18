@@ -446,6 +446,12 @@ public final class TerminalStream {
     /// `busyRetryLimit + 1` tickets on the first start and one on each later one.
     static let retryDelays: [Duration] = [.seconds(3), .seconds(6), .seconds(12), .seconds(24), .seconds(30)]
     static func retryDelay(afterFailures n: Int) -> Duration { retryDelays[min(max(n, 1), retryDelays.count) - 1] }
+    /// Right after the control connection is back, a ticket is refused (`conflict`) until the
+    /// app's resync has attached the session again. That is moments away, so those starts are
+    /// tried again after `attachRetryDelay`, up to `attachRetryLimit` times, before the backoff.
+    static let attachRetryDelay: Duration = .milliseconds(250)
+    static let attachRetryLimit = 8
+    private var attachRetries = 0
     /// Every wait goes through here, so tests can see the waits and skip them.
     var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
@@ -469,6 +475,7 @@ public final class TerminalStream {
     public func start() {
         stopped = false
         failedStarts = 0
+        attachRetries = 0
         Task { await self.fullStart() }
     }
 
@@ -481,6 +488,7 @@ public final class TerminalStream {
         waitingForControl = false
         token = nil
         failedStarts = 0
+        attachRetries = 0
         dropInput()
         ws?.close()
         ws = nil
@@ -568,6 +576,7 @@ public final class TerminalStream {
     /// The control connection is connected (again).
     private func controlConnected() {
         connectEpoch += 1
+        attachRetries = 0
         if waitingForControl, !stopped {
             waitingForControl = false
             let myGen = gen
@@ -766,6 +775,16 @@ public final class TerminalStream {
             return
         }
         guard link.isConnected else { waitForControl(); return }
+        if (error as? RexError)?.code == "conflict", failedStarts == 0, attachRetries < Self.attachRetryLimit {
+            attachRetries += 1
+            let sleep = self.sleep
+            Task { [weak self] in
+                await sleep(Self.attachRetryDelay)
+                guard let self, myGen == self.gen, !self.stopped else { return }
+                await self.fullStart()
+            }
+            return
+        }
         failedStarts += 1
         sink?.streamStatus(.failed(error.localizedDescription))
         let delay = Self.retryDelay(afterFailures: failedStarts)
@@ -868,6 +887,7 @@ public final class TerminalStream {
         // A resume keeps its filter: it may be partway through the snapshot or a message.
         if fresh { beginStream(nonce: welcome.nonce, collectSnapshot: collectSnapshot) }
         failedStarts = 0
+        attachRetries = 0
         live = true
         sink?.streamStatus(.live)
     }

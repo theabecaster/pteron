@@ -115,6 +115,35 @@ final class StreamReconnectTests: XCTestCase {
         XCTAssertEqual(link.sockets.count, 2, "one drop, one resume")
     }
 
+    func testATicketRefusedUntilTheSessionIsAttachedAgainIsRetriedSoon() async {
+        let link = FakeLink()
+        let (stream, sink, log) = await liveStream(link)
+        await loseNetwork(link, stream)
+        // Back, but the resync hasn't attached the session yet; the old stream can't be resumed.
+        let notAttached = RexError(code: "conflict", message: "stream is not attached to session", status: 409)
+        link.failures["data.connect"] = [notAttached, notAttached]
+        link.plans = [.reject(0x03)]
+        link.connect()
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        XCTAssertEqual(log.asked.filter { $0 == TerminalStream.attachRetryDelay }.count, 2)
+        XCTAssertEqual(log.backoffs, [], "not the 3 s backoff")
+        XCTAssertFalse(sink.statuses.contains { if case .failed = $0 { return true } else { return false } })
+    }
+
+    func testATicketThatStaysRefusedFallsBackToTheBackoff() async {
+        let link = FakeLink()
+        let (stream, _, log) = await liveStream(link)
+        await loseNetwork(link, stream)
+        let notAttached = RexError(code: "conflict", message: "stream is not attached to session", status: 409)
+        link.failures["data.connect"] = Array(repeating: notAttached, count: TerminalStream.attachRetryLimit + 1)
+        link.plans = [.reject(0x03)]
+        link.connect()
+        let backedOff = await eventually { log.backoffs.count == 1 }
+        XCTAssertTrue(backedOff)
+        XCTAssertEqual(log.asked.filter { $0 == TerminalStream.attachRetryDelay }.count, TerminalStream.attachRetryLimit)
+    }
+
     func testWakeDoesNothingForAStoppedStream() async {
         let link = FakeLink()
         let (stream, _, _) = await liveStream(link)
