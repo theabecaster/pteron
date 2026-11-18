@@ -9,8 +9,9 @@ Rex is a separate product. Install it on each computer you want to reach from yo
 
 ## Get it
 
-<!-- TESTFLIGHT_LINK -->
-Public TestFlight link coming soon.
+Join the public beta on TestFlight: https://testflight.apple.com/join/zf8heFAX
+
+Open the link on your iPhone. It installs TestFlight first if you don't have it.
 
 ## Set up
 
