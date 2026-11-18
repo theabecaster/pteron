@@ -25,6 +25,11 @@ protocol StreamSocket: AnyObject {
     func receive() async throws -> Data?
     /// Closes with status 1000, which also ends the stream on the server.
     func close()
+    /// Returns when the server answers a ping; throws when the socket fails first.
+    func ping() async throws
+    /// Drops the connection without a status 1000 close, so the server keeps the stream for a RESUME.
+    /// A `receive` that is waiting throws.
+    func abort()
     /// The server's close status, or 0 if there is none (yet).
     var closeCode: Int { get }
 }
@@ -63,6 +68,17 @@ final class URLSessionStreamSocket: StreamSocket {
     }
 
     func close() { task.cancel(with: .normalClosure, reason: nil) }
+
+    func ping() async throws {
+        let task = self.task
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            task.sendPing { err in
+                if let err { c.resume(throwing: err) } else { c.resume() }
+            }
+        }
+    }
+
+    func abort() { task.cancel() }
 
     var closeCode: Int { task.closeCode == .invalid ? 0 : task.closeCode.rawValue }
 }

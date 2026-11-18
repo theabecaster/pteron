@@ -14,9 +14,11 @@ final class ControlReconnectTests: XCTestCase {
         private var connections: [NWConnection] = []
         private var requests = 0
 
-        init() throws {
+        /// `answersPings: false` is a connection that is half open: it takes messages but never
+        /// answers a ping.
+        init(answersPings: Bool = true) throws {
             let ws = NWProtocolWebSocket.Options()
-            ws.autoReplyPing = true
+            ws.autoReplyPing = answersPings
             ws.setClientRequestHandler(queue) { protocols, _ in
                 NWProtocolWebSocket.Response(status: .accept, subprotocol: protocols.first)
             }
@@ -118,5 +120,63 @@ final class ControlReconnectTests: XCTestCase {
         XCTAssertEqual(connects, 2)
         XCTAssertEqual(once, 1, "an observer that returned false is gone")
         XCTAssertEqual(control.state, .connected)
+    }
+
+    private func waitFor(_ condition: @MainActor () -> Bool, seconds: Double) async -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while !condition(), Date() < end { try? await Task.sleep(for: .milliseconds(5)) }
+        return condition()
+    }
+
+    func testWakeKeepsALiveConnection() async throws {
+        let server = try Server()
+        let port = await server.start()
+        defer { server.stop() }
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        defer { control.disconnect() }
+        var connects = 0
+        control.observeConnected { connects += 1; return true }
+        try await control.connect()
+
+        control.wake()
+        try? await Task.sleep(for: .seconds(RexControl.wakeTimeout + 0.5))
+        XCTAssertEqual(control.state, .connected)
+        XCTAssertEqual(connects, 1, "a connection that answers the ping is kept")
+    }
+
+    func testADropRightAfterWakeRetriesAtOnce() async throws {
+        let server = try Server()
+        let port = await server.start()
+        defer { server.stop() }
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        defer { control.disconnect() }
+        var connects = 0
+        control.observeConnected { connects += 1; return true }
+        try await control.connect()
+
+        // The socket died while the app was suspended and fails as the app wakes.
+        control.wake()
+        server.dropAll()
+        let dropped = Date()
+        let back = await waitFor({ connects == 2 }, seconds: 3)
+        XCTAssertTrue(back)
+        XCTAssertLessThan(Date().timeIntervalSince(dropped), 0.8, "not after the 1 s backoff")
+    }
+
+    func testWakeDropsAConnectionThatDoesNotAnswer() async throws {
+        let server = try Server(answersPings: false)
+        let port = await server.start()
+        defer { server.stop() }
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        defer { control.disconnect() }
+        var connects = 0
+        control.observeConnected { connects += 1; return true }
+        try await control.connect()
+
+        control.wake()
+        let woke = Date()
+        let back = await waitFor({ connects == 2 }, seconds: RexControl.wakeTimeout + 3)
+        XCTAssertTrue(back, "no pong: the connection is made again")
+        XCTAssertLessThan(Date().timeIntervalSince(woke), RexControl.wakeTimeout + 0.8, "at once, not after a backoff")
     }
 }

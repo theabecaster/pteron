@@ -254,6 +254,11 @@ public final class RexControl {
         resumeWelcome(throwing: failure)
         state = .failed(failure)
         guard wantConnected else { return }
+        if Date() < retryAtOnceUntil {
+            retryAtOnceUntil = .distantPast
+            scheduleRetry(after: 0)
+            return
+        }
         scheduleRetry(after: retryDelay)
         retryDelay = min(retryDelay * 2, 15)
     }
@@ -287,6 +292,39 @@ public final class RexControl {
         retryTask?.cancel()
         retryTask = nil
         Task { @MainActor in await self.attempt() }
+    }
+
+    /// How long `wake()` waits for a pong before it takes the connection for dead.
+    public static let wakeTimeout: Double = 2.5
+    /// The generation `wake()` pinged, until the pong.
+    private var unansweredPing: Int?
+    /// A drop before this time is retried at once, once: the app just came back (`wake()`).
+    private var retryAtOnceUntil = Date.distantPast
+
+    /// Back in the foreground. A connection that looks up may have died while the app was
+    /// suspended, and calls on it would hang until they time out. So it is pinged: no pong within
+    /// `wakeTimeout`, or a failed ping, counts as a drop, and the next attempt starts at once
+    /// instead of after the backoff. Not connected: tries now, as `kick()` does.
+    public func wake() {
+        guard wantConnected else { return }
+        guard state == .connected, let t = task else { kick(); return }
+        let gen = generation
+        unansweredPing = gen
+        // The socket usually fails by itself moments after the app wakes; that drop retries at once too.
+        retryAtOnceUntil = Date().addingTimeInterval(Self.wakeTimeout + 0.5)
+        t.sendPing { [weak self] err in
+            Task { @MainActor in
+                guard let self, self.unansweredPing == gen else { return }
+                self.unansweredPing = nil
+                if let err { self.handleDrop(gen: gen, failure: self.failure(err, t)) } else { self.retryAtOnceUntil = .distantPast }
+            }
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.wakeTimeout * 1_000_000_000))
+            guard let self, self.unansweredPing == gen else { return }
+            self.unansweredPing = nil
+            self.handleDrop(gen: gen, failure: .timedOut())
+        }
     }
 
     /// Calls `body` each time the connection becomes connected, the first time and after every

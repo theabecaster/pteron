@@ -165,6 +165,31 @@ final class FakeSocket: StreamSocket {
         deliver(.failure(URLError(.cancelled)))
     }
 
+    enum PingPlan { case answer, fail, silent }
+    /// How the socket answers a ping.
+    var pingPlan = PingPlan.answer
+    private(set) var pings = 0
+    private(set) var aborted = false
+
+    func ping() async throws {
+        pings += 1
+        switch pingPlan {
+        case .answer: return
+        case .fail:
+            // A dead connection fails the waiting receive too.
+            deliver(.failure(URLError(.networkConnectionLost)))
+            throw URLError(.networkConnectionLost)
+        case .silent:
+            // A half-open connection: no answer, ever.
+            try await Task.sleep(for: .seconds(3600))
+        }
+    }
+
+    func abort() {
+        aborted = true
+        deliver(.failure(URLError(.cancelled)))
+    }
+
     private func deliver(_ r: Result<Data?, Error>) {
         if let w = waiter {
             waiter = nil

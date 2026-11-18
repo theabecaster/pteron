@@ -501,6 +501,44 @@ public final class TerminalStream {
         Task { await self.fullStart() }
     }
 
+    /// How long `wake()` waits for the data socket to answer a ping before it drops it.
+    var wakeTimeout: Duration = .milliseconds(2500)
+    /// The socket `wake()` pinged, until it answers.
+    private var unansweredPing: ObjectIdentifier?
+
+    /// Back in the foreground. A data socket that looks open may have died while the app was
+    /// suspended, and the screen would stay frozen until it times out. So it is pinged: a socket
+    /// that fails is handled like any drop, and one that doesn't answer within `wakeTimeout` is
+    /// dropped (`abort`, no status 1000). Either way the stream goes on with a RESUME while the
+    /// server keeps it, with no new snapshot and no control connection, else with a fresh start.
+    /// A socket that answers is live, and nothing happens.
+    public func wake() {
+        guard !stopped, live, let socket = ws else { return }
+        let myGen = gen, sleep = self.sleep, timeout = wakeTimeout
+        let id = ObjectIdentifier(socket)
+        unansweredPing = id
+        Task { [weak self] in
+            let answered = (try? await socket.ping()) != nil
+            guard let self, self.unansweredPing == id else { return }
+            self.unansweredPing = nil
+            // The waiting `receive` fails with the socket and handles the drop.
+            if !answered { self.drop(socket, gen: myGen) }
+        }
+        Task { [weak self] in
+            await sleep(timeout)
+            guard let self, self.unansweredPing == id else { return }
+            self.unansweredPing = nil
+            self.drop(socket, gen: myGen)
+        }
+    }
+
+    /// Ends a socket that stopped answering, if it is still this stream's: its `receive` fails,
+    /// and `handleDataDrop` takes it from there.
+    private func drop(_ socket: any StreamSocket, gen myGen: Int) {
+        guard myGen == gen, !stopped, ws === socket else { return }
+        socket.abort()
+    }
+
     /// Stops reading the data socket: the message being waited for, if any, is still taken and
     /// passed on, and no further one is asked for until `resumeReading()`. For a sink that has
     /// more output than it can hold (see "Backpressure" above). The state outlives reconnects,

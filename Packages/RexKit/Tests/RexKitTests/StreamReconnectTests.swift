@@ -71,6 +71,60 @@ final class StreamReconnectTests: XCTestCase {
         XCTAssertFalse(stream.waitingForControl)
     }
 
+    // MARK: Back in the foreground
+
+    func testWakeKeepsASocketThatAnswers() async {
+        let link = FakeLink()
+        let (stream, sink, _) = await liveStream(link)
+        stream.wake()
+        await settle()
+        XCTAssertEqual(link.sockets[0].pings, 1)
+        XCTAssertFalse(link.sockets[0].aborted)
+        XCTAssertEqual(link.sockets.count, 1)
+        XCTAssertEqual(sink.statuses, [.connecting, .live])
+    }
+
+    func testWakeResumesASocketThatDoesNotAnswer() async {
+        let link = FakeLink()
+        let (stream, sink, log) = await liveStream(link)
+        link.sockets[0].push([1, 2, 3])
+        await settle()
+        // Half open after a suspension: the ping goes unanswered and the stream must not freeze.
+        link.sockets[0].pingPlan = .silent
+        link.disconnect()
+        stream.wake()
+        let resumed = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
+        XCTAssertTrue(resumed)
+        XCTAssertTrue(log.asked.contains(.milliseconds(2500)), "it waited out the ping")
+        XCTAssertTrue(link.sockets[0].aborted)
+        XCTAssertFalse(link.sockets[0].closed, "no status 1000, which would end the stream on the server")
+        XCTAssertTrue(link.sockets[1].isResume)
+        XCTAssertEqual(link.sockets[1].resumeCount, 3)
+        XCTAssertEqual(link.count("data.connect"), 1, "a resume needs neither a ticket nor the control connection")
+    }
+
+    func testWakeResumesASocketWhosePingFails() async {
+        let link = FakeLink()
+        let (stream, sink, _) = await liveStream(link)
+        link.sockets[0].pingPlan = .fail
+        stream.wake()
+        let resumed = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
+        XCTAssertTrue(resumed)
+        XCTAssertTrue(link.sockets[1].isResume)
+        await settle()
+        XCTAssertEqual(link.sockets.count, 2, "one drop, one resume")
+    }
+
+    func testWakeDoesNothingForAStoppedStream() async {
+        let link = FakeLink()
+        let (stream, _, _) = await liveStream(link)
+        stream.stop()
+        stream.wake()
+        await settle()
+        XCTAssertEqual(link.sockets[0].pings, 0)
+        XCTAssertEqual(link.sockets.count, 1)
+    }
+
     func testRefusedResumeAfterTheOutageMakesOneFreshStart() async {
         let link = FakeLink()
         let (stream, sink, _) = await liveStream(link)
