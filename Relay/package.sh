@@ -30,7 +30,7 @@ BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$HERE" rev-list --count HEAD 2>/dev/null
 IDENTITY="${IDENTITY:-Developer ID Application: Abraham Gonzalez (R2PVQ496X7)}"
 
 # notarytool auth. ASC_ISS (the issuer id) comes from the environment or $ASC_ENV.
-ASC_KEY_ID="${ASC_KEY_ID:-2M674J7J7N}"
+ASC_KEY_ID="${ASC_KEY_ID:-DWSFK499HH}"
 ASC_KEY="${ASC_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8}"
 ASC_ENV="${ASC_ENV:-$HOME/rexduo/.asc.env}"
 

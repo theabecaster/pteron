@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'; import fs from 'node:fs';
-const KID=process.env.ASC_KEY_ID||'2M674J7J7N', ISS=process.env.ASC_ISS;
+const KID=process.env.ASC_KEY_ID||'DWSFK499HH', ISS=process.env.ASC_ISS;
 const key=fs.readFileSync(process.env.ASC_KEY||process.env.HOME+'/.appstoreconnect/private_keys/AuthKey_'+KID+'.p8','utf8');
 const b=o=>Buffer.from(JSON.stringify(o)).toString('base64url');
 const now=Math.floor(Date.now()/1000);
