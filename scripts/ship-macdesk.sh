@@ -1,5 +1,5 @@
 #!/bin/zsh -l
-# Archive Rex DUO and upload it to App Store Connect. Runs on macdesk inside the GUI session
+# Archive the app and upload it to App Store Connect. Runs on macdesk inside the GUI session
 # (keychain unlocked), from a copy of the repo that already has the generated project:
 # see docs/release.md. Usage: scripts/ship-macdesk.sh <build-number>
 # DEST=export writes build/export/RexDuo.ipa and uploads nothing.

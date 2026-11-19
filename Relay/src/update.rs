@@ -3128,6 +3128,11 @@ mod tests {
         assert_eq!((both.version.as_str(), both.assets.len()), ("9.8.7", 4));
         assert_eq!(both.assets[MAC_KEY], m.assets[MAC_KEY]);
         assert!(taken(&both).ends_with("/helper-v9.8.7/Rex-DUO-Beacon.zip"));
+        // manifest-app.json has all three, as a release has today.
+        let all = accept_manifest(&read("manifest-app.json"), &read("manifest-app.json.sig"), &[key], None, now).unwrap();
+        assert_eq!((all.version.as_str(), all.assets.len()), ("9.8.7", 5));
+        assert_eq!(all.assets[MAC_BEACON_KEY], both.assets[MAC_BEACON_KEY]);
+        assert!(taken(&all).ends_with("/helper-v9.8.7/Beacon-macOS.zip"));
     }
 
     /// The helper against what `release.sh` really writes. `Relay/test-install.sh` runs this

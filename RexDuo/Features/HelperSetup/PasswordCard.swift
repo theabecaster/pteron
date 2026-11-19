@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 
 /// Linux, when the helper would stop at logout: asks for the computer account's password, which
@@ -21,14 +22,14 @@ struct PasswordCard: View {
 
     static let title = "Keep notifications coming after you log out?"
     static func message(name: String, account: String?) -> String {
-        "\(name) stops Rex DUO Beacon when you log out, unless you allow Beacon to keep running. Allowing that takes the password for \(account ?? "your account") on \(name)."
+        "\(name) stops \(Brand.beaconName) when you log out, unless you allow Beacon to keep running. Allowing that takes the password for \(account ?? "your account") on \(name)."
     }
     static let wrongLine = "That password didn't work. Try again, or choose Not now."
     static func aside(_ name: String) -> String {
         "Your password goes straight to \(name) and isn't saved on this iPhone."
     }
     static func onComputerLine(_ name: String) -> String {
-        "Type the password on \(name). Rex DUO continues once \(name) accepts the password."
+        "Type the password on \(name). \(Brand.appName) continues once \(name) accepts the password."
     }
 
     var body: some View {

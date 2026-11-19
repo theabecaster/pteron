@@ -115,7 +115,7 @@ final class Prefs {
             NotificationCenter.default.post(name: .keyBarChanged, object: nil)
         }
     }
-    /// The master switch: push notifications through Rex DUO Helper. Off until the user turns
+    /// The master switch: push notifications through Beacon. Off until the user turns
     /// them on, and kept as chosen while iOS has notifications turned off.
     var pushEnabled: Bool { didSet { d.set(pushEnabled, forKey: "pushEnabled") } }
     var servers: [ServerConfig] {

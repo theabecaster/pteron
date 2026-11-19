@@ -1,9 +1,10 @@
-# Rex DUO
+# Pteron
 
-iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's control API and
+An iOS remote for Rex, a terminal multiplexer (in code the app is still `RexDuo`, after its
+earlier name). The app connects to a Rex server's control API and
 terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt and
 its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built
-for the iPhone Duo and works on any iPhone. `Relay/` holds Rex DUO Beacon, a Rust program for
+for the iPhone Duo and works on any iPhone. `Relay/` holds Pteron Beacon, a Rust program for
 macOS and Linux that sends push notifications for Rex events, and `Gateway/` the Cloudflare Worker
 that passes them to Apple.
 
@@ -36,9 +37,9 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
   `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`). Foundation only,
   so it tests on macOS.
-- `Packages/RexGlance`: what the app shares with its extensions. `GlanceModel` holds `DeepLink`
-  (the `rexduo:` links that open the app; docs/glance.md). Foundation only, so it tests on macOS.
-- `RexDuoWidgets`: the app extension with the controls ("Open Rex DUO", "Jump to Waiting") for
+- `Packages/RexGlance`: what the app shares with its extensions. `GlanceModel` holds `Brand` (the
+  product's names) and `DeepLink` (the `rexduo:` links that open the app; docs/glance.md). Foundation only, so it tests on macOS.
+- `RexDuoWidgets`: the app extension with the controls ("Open Pteron", "Jump to Waiting") for
   Control Center, the Lock Screen and the Action button. It only opens the app with a link;
   `OpenLinkIntent.swift` there is compiled into the app as well, where the system runs it.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
@@ -59,7 +60,11 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   only a per-phone secret (`Gateway/README.md`). `Relay/release.sh` publishes Beacon releases and
   `Relay/setup.sh` is the installer: the app runs it in a tab on the computer to install the
   Beacon from the phone, and it is published as `install.sh` for a manual install (docs/helper.md).
-- `scripts/`: the Ghostty build and checks, the benchmark (`bench/`), release through a build Mac.
+- `Brand/`: the brand art under neutral names: the app's and Beacon's icons (Icon Composer
+  documents), the launch art and its outline, the glyph, and `make-launch-art.swift`, which
+  writes the launch image and `RexDuo/App/LaunchArt.swift` from them.
+- `scripts/`: `check-brand.sh` (no earlier product name outside the places that must keep
+  one), the Ghostty build and checks, the benchmark (`bench/`), release through a build Mac.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane. Code keeps Rex's names
   (`WindowInfo`, `blockID`) to match the server's `/llms.txt`; user-facing text says tab and pane.
 
@@ -101,7 +106,8 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
 - Releases (device installs, TestFlight, Beacon's packaging): [docs/release.md](docs/release.md).
 - CI (`.github/workflows/ci.yml`): job `build` runs RexKit, RexGlance and app tests on a self-hosted Mac
   runner on the latest Xcode, for pushes to main and manual runs (pull requests get RexKit and RexGlance tests on
-  GitHub's macOS runner and never touch the self-hosted one); job `helper` runs `cargo test` on
+  GitHub's macOS runner and never touch the self-hosted one); job `helper` runs
+  `scripts/check-brand.sh` and `cargo test` on
   GitHub's Linux runners. `build` is required for merging into main for outside contributors;
   their fork pull requests only run after the owner approves them. The owner and their agents may merge straight to main (admin bypass)
   after building and testing locally; don't wait on CI.
@@ -144,6 +150,8 @@ shell.
   `Prefs.shared` is the app's one instance, read directly only where SwiftUI doesn't reach (the
   UIKit key bar and terminal host, the replay screen).
 - Put pure logic (parsing, byte encoding, layout math) in its own type with tests, not in views.
+- The product name lives in GlanceModel's `Brand` and `Relay/src/brand.rs`, the brand art in `Brand/`;
+  code identifiers keep `rexduo`/`RexDuo` (compiled into shipped apps and Beacons).
 - RexKit doesn't import UIKit or SwiftUI; the app passes in what it needs (`ClientInfo`).
 - UI and state types are `@MainActor`. Use `@unchecked Sendable` or `nonisolated(unsafe)` only with a
   comment that says why it is safe.

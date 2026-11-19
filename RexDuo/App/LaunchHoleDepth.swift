@@ -1,6 +1,6 @@
 import UIKit
 
-/// What makes the hole Rexie leaves read as a hole, whatever shows through it. The app's canvas is
+/// What makes the hole Glide leaves read as a hole, whatever shows through it. The app's canvas is
 /// often the splash's own colour, and then a bare cutout is invisible. So the splash is treated as a
 /// sheet with some thickness lying over the app, lit from the top left like the sticker:
 ///
@@ -14,7 +14,7 @@ import UIKit
 /// the cover, so it scales with the hole and costs one more opaque-free layer for a second.
 enum LaunchHoleDepth {
     /// The splash strokes its outline back in by this much (`LaunchSplashView.holeImage`), so the
-    /// opening that shows the app starts this far inside Rexie's silhouette.
+    /// opening that shows the app starts this far inside Glide's silhouette.
     static let lip: CGFloat = 0.75
 
     /// Dimming over the whole opening: the app sits below the sheet, out of the light.

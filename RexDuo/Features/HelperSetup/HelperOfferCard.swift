@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 import UIKit
 
@@ -17,13 +18,13 @@ struct HelperOfferCard: View {
 
     static func title(_ name: String) -> String { "Get notifications from \(name)?" }
     static func message(_ name: String) -> String {
-        "Rex DUO Beacon runs on \(name) and notifies this iPhone when an agent finishes or needs you, even while Rex DUO is closed."
+        "\(Brand.beaconName) runs on \(name) and notifies this iPhone when an agent finishes or needs you, even while \(Brand.appName) is closed."
     }
     static func footnote(_ name: String) -> String {
-        "Rex DUO opens a tab on \(name) to install Beacon. Nothing runs as an administrator."
+        "\(Brand.appName) opens a tab on \(name) to install Beacon. Nothing runs as an administrator."
     }
     static func skippedLine(_ name: String) -> String {
-        "You won't get notifications from \(name) while Rex DUO is closed. You can install Rex DUO Beacon anytime in Settings → Notifications."
+        "You won't get notifications from \(name) while \(Brand.appName) is closed. You can install \(Brand.beaconName) anytime in Settings → Notifications."
     }
     /// How long the line after Skip stays before the page leaves.
     static let skipHold: TimeInterval = 3

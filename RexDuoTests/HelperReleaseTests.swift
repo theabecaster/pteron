@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GlanceModel
 import Testing
 @testable import RexDuo
 
@@ -126,13 +127,19 @@ struct HelperReleaseTests {
         let other = HelperRelease.binaryMessage(version: m.version, platform: .linuxArm64, sha256: linux.sha256)
         #expect(!HelperRelease.verify(keys: [key], message: other, signatureFile: signature))
 
-        // A list that also names the Mac app as Rex DUO Beacon: the app takes that entry for the
+        // A list that also names the Mac app a second time, as Beacon: the app takes that entry for the
         // Mac, and a list without it gives the earlier one.
         let earlier = try #require(m.assets[.mac])
         let both = try accept("manifest-beacon.json", "manifest-beacon.json.sig").get()
         #expect(both.assets.count == 3)
         #expect(both.assets[.mac]?.sha256 == "b38897a7da6e9596060b93420bbb0876b2a65d54d790e9e6aecfcd39faf824d0")
         #expect(both.assets[.mac] != earlier && both.assets[.linuxX64] == m.assets[.linuxX64])
+        // A list as a release has it today, with the Mac app a third time under `macos-app`: the
+        // app takes that one before the other two.
+        let all = try accept("manifest-app.json", "manifest-app.json.sig").get()
+        #expect(all.assets.count == 3)
+        #expect(all.assets[.mac]?.sha256 == "b6ed1d607a0e0900672ba2577996069ad5c551f9d840c93a42edf9026bbb1e53")
+        #expect(all.assets[.mac] != both.assets[.mac] && all.assets[.linuxArm64] == m.assets[.linuxArm64])
 
         #expect(accept("manifest-expired.json", "manifest-expired.json.sig") == .failure(.expired))
         #expect(accept("manifest-older.json", "manifest-older.json.sig", seen: ReleaseVersion("9.8.7")) == .failure(.tooOld))
@@ -209,6 +216,38 @@ struct HelperReleaseTests {
     }
 
     // MARK: Reading a list
+
+    /// The list with entries for the Mac app under its newer keys too, each with a hash of its own.
+    private func macList(app: String? = HelperRelease.macAppAsset, beacon: String? = HelperRelease.macBeaconAsset) -> Data {
+        list { o in
+            var assets = o["assets"] as! [String: Any]
+            let base = "https://github.com/theabecaster/rexduo/releases/download/helper-v0.4.0/"
+            if let app { assets[HelperRelease.macAppKey] = ["url": base + app, "sha256": String(repeating: "d4", count: 32), "size": 2000] as [String: Any] }
+            if let beacon { assets[HelperRelease.macBeaconKey] = ["url": base + beacon, "sha256": String(repeating: "e5", count: 32), "size": 3000] as [String: Any] }
+            o["assets"] = assets
+        }
+    }
+
+    @Test func theMacAppIsTakenFromTheNewestEntryAListHas() throws {
+        #expect((HelperRelease.macAppKey, HelperRelease.macAppAsset) == ("macos-app", "Beacon-macOS.zip"))
+        let app = ReleaseAsset(sha256: String(repeating: "d4", count: 32), size: 2000)
+        let beacon = ReleaseAsset(sha256: String(repeating: "e5", count: 32), size: 3000)
+        let earliest = ReleaseAsset(sha256: hashes[.mac]!, size: 1000)
+        #expect(try accept(macList()).get().assets[.mac] == app)
+        #expect(try accept(macList(beacon: nil)).get().assets[.mac] == app)
+        #expect(try accept(macList(app: nil)).get().assets[.mac] == beacon)
+        #expect(try accept(macList(app: nil, beacon: nil)).get().assets[.mac] == earliest)
+        // The other builds are untouched, and the Mac still counts once.
+        #expect(try accept(macList()).get().assets.count == 3)
+    }
+
+    @Test func everyMacEntryAListNamesMustBeRight() {
+        // Another file name under either key refuses the whole list, also when a better entry is right.
+        #expect(isMalformed(accept(macList(app: "Another-Beacon.zip"))))
+        #expect(isMalformed(accept(macList(app: HelperRelease.macBeaconAsset))))
+        #expect(isMalformed(accept(macList(beacon: "Beacon-macOS.zip"))))
+        #expect(isMalformed(accept(macList(app: nil, beacon: "Rex-DUO-Helper.zip"))))
+    }
 
     @Test func anAddressMustBeTheOneTheAppBuilds() {
         let good = "https://github.com/theabecaster/rexduo/releases/download/helper-v0.4.0/Rex-DUO-Helper.zip"
@@ -492,7 +531,7 @@ struct HelperReleaseTests {
         #expect(HelperRelease.renewalNotice(expiresAt: expiry, now: now) == nil)
         #expect(HelperRelease.renewalDue(expiresAt: expiry, now: now.addingTimeInterval(11 * 86_400)) == expiry)
         let line = HelperRelease.renewalNotice(expiresAt: expiry, now: now.addingTimeInterval(20 * 86_400))
-        #expect(line?.hasPrefix("Rex DUO Beacon updates need renewing by ") == true)
+        #expect(line?.hasPrefix("\(Brand.beaconName) updates need renewing by ") == true)
     }
 
     @Test func aHelperReportsWhenItsListExpires() {

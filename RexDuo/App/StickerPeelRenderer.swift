@@ -5,7 +5,7 @@ import Synchronization
 import os
 import simd
 
-/// The launch splash's sticker peel: Rexie bends off the screen around a rolling cylinder, shows the
+/// The launch splash's sticker peel: Glide bends off the screen around a rolling cylinder, shows the
 /// pale backing, catches the light on the curl and casts a soft shadow, then flies off. Drawn with
 /// Metal because Core Animation can only fold flat layers. `LaunchSplashView` keeps its Core
 /// Animation fold as the fallback when Metal fails or isn't ready in time.
@@ -88,8 +88,8 @@ struct StickerPeelError: Error, CustomStringConvertible {
 /// buffer are only read after `init` waits for their upload; the Metal device, queue, pipeline and
 /// sampler objects are thread-safe.
 final class StickerPeelKit: @unchecked Sendable {
-    /// Vertices per side of the mesh: about 2.4 pt per cell over the 150 pt art, so a 22 pt curl
-    /// spans a couple dozen cells.
+    /// Vertices per side of the mesh: about 2.8 pt per cell over the 182 pt art, so the tightest
+    /// curl's arc spans about nine cells. A constant, so new art never changes what the peel costs.
     static let grid = 64
     static let sampleCount = 4
 
@@ -101,7 +101,7 @@ final class StickerPeelKit: @unchecked Sendable {
     let shadowDepth: MTLDepthStencilState
     let smooth: MTLSamplerState
     let exact: MTLSamplerState
-    /// `LaunchRexie` at the screen's scale, premultiplied sRGB, with mipmaps for the shadow blur.
+    /// The launch art at the screen's scale, premultiplied sRGB, with mipmaps for the shadow blur.
     let art: MTLTexture
     let artScale: CGFloat
     /// Where the sticker's paper backing is: the art's alpha with the seams inside it filled
@@ -190,9 +190,9 @@ final class StickerPeelKit: @unchecked Sendable {
     /// Draws the art into a premultiplied BGRA sRGB bitmap ourselves, so alpha and color space are
     /// known, and generates mipmaps.
     private static func loadArt(device: MTLDevice, queue: MTLCommandQueue) throws -> (MTLTexture, MTLTexture, CGFloat) {
-        guard let img = UIImage(named: "LaunchRexie"), let cg = img.cgImage,
+        guard let img = UIImage(named: LaunchArt.assetName), let cg = img.cgImage,
               let space = CGColorSpace(name: CGColorSpace.sRGB) else {
-            throw StickerPeelError(description: "no LaunchRexie")
+            throw StickerPeelError(description: "no launch art")
         }
         let w = cg.width, h = cg.height
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
@@ -235,8 +235,8 @@ final class StickerPeelKit: @unchecked Sendable {
 
     /// The art's alpha with the thin seams inside the shape filled, for the paper backing.
     ///
-    /// The art is drawn from shapes that meet edge to edge (Rexie's body and mouth), and where two
-    /// antialiased edges meet, the texels are not quite opaque: about 70% along that seam. On the
+    /// Art drawn from shapes that meet edge to edge has a seam: where two antialiased edges meet,
+    /// the texels are not quite opaque, about 70% along the seam. On the
     /// art side nothing shows, but a backing cut with the same alpha lets a hairline of whatever
     /// lies behind it through, and behind it is the art's own colour where the sheet curls over
     /// itself. A sheet of paper has no such gap.

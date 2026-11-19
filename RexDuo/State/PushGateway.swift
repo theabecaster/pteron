@@ -223,7 +223,7 @@ enum GatewayError: Error, Equatable {
 /// functions; `transport` is the network, replaced in tests. Every call is a `PUT` or a `DELETE`
 /// that can be sent again and gives the same answer.
 struct PushGateway: Sendable {
-    /// The Rex DUO gateway. Debug builds can point elsewhere with `-pushGateway <url>`.
+    /// The app's gateway. Debug builds can point elsewhere with `-pushGateway <url>`.
     static let defaultURL = "https://rexduo-push.keptday.workers.dev"
 
     var base: URL

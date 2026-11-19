@@ -1,7 +1,8 @@
+import GlanceModel
 import SwiftUI
 import UIKit
 
-/// "Installing on <Name>": the steps of an install of Rex DUO Helper, the cards for what a person
+/// "Installing on <Name>": the steps of an install of Beacon, the cards for what a person
 /// has to do meanwhile, and how it ended. Full screen, in the pairing sheet's look. Where the
 /// window is wide or the fold splits it (`SetupLayout`), the installer's output sits beside the
 /// steps; elsewhere "Show details" pushes it. "Hide" closes the sheet and lets the install go
@@ -66,7 +67,7 @@ struct HelperSetupSheet: View {
             Button("Stop", role: .destructive) { model.helperSetup.close(run, cancelled: true) }
             Button("Keep Going", role: .cancel) {}
         } message: {
-            Text("\(run.name) keeps the Rex DUO Beacon it had before, if any.")
+            Text("\(run.name) keeps the \(Brand.beaconName) it had before, if any.")
         }
         // "Show Details" in the computer's row opens the sheet at the installer's output.
         .onAppear { if model.helperSetup.takeDetailsRequest(for: run) { showDetails = true } }
@@ -345,9 +346,9 @@ extension HelperSetupCenter {
         }
         let run = HelperSetupRun(name: name, account: "sam", state: state)
         run.simulatedDetails = """
-        Rex DUO Helper setup
+        \(Brand.beaconName) setup
         computer: \(linux ? "Linux x86_64" : "macOS, Apple silicon")
-        downloading Rex DUO Helper 0.4.0
+        downloading \(Brand.beaconName) 0.4.0
         checking the download
         """
         active = run

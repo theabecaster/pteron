@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import Observation
 import RexKit
 
@@ -132,15 +133,15 @@ struct PairingProblem: Equatable {
                                   actions: [])
         case .updateServer:
             return PairingProblem(symbol: "arrow.down.circle", title: "Update Rex on that computer",
-                                  message: "Rex there is too old for this version of Rex DUO. Update Rex on that computer, then try again.",
+                                  message: "Rex there is too old for this version of \(Brand.appName). Update Rex on that computer, then try again.",
                                   actions: [.tryAgain])
         case .updateApp:
-            return PairingProblem(symbol: "arrow.down.circle", title: "Update Rex DUO",
-                                  message: "That computer runs a newer Rex than this version of Rex DUO works with. Update Rex DUO, then try again.",
+            return PairingProblem(symbol: "arrow.down.circle", title: "Update \(Brand.appName)",
+                                  message: "That computer runs a newer Rex than this version of \(Brand.appName) works with. Update \(Brand.appName), then try again.",
                                   actions: [.tryAgain])
         case .insecure:
             return PairingProblem(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify that computer",
-                                  message: "The secure connection to that computer failed, so Rex DUO stopped there.",
+                                  message: "The secure connection to that computer failed, so \(Brand.appName) stopped there.",
                                   detail: problem.detail, actions: [.tryAgain])
         case .badAddress, .unknown:
             return PairingProblem(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't connect",
@@ -198,7 +199,7 @@ struct IdentityCopy: Equatable {
             sessions: shown,
             more: shown.isEmpty ? 0 : max(0, (id.sessionCount ?? 0) - shown.count),
             owner: id.belongsToSomeoneElse ? id.owner.map { "This computer belongs to \($0)." } : nil,
-            helper: id.hasHelper == false ? "Notifications need Rex DUO Beacon on this computer." : nil)
+            helper: id.hasHelper == false ? "Notifications need \(Brand.beaconName) on this computer." : nil)
     }
 }
 

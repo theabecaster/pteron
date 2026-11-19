@@ -5,48 +5,39 @@
 #
 # One file, three ways to run it:
 #
-#   From the app on the phone. The app keeps this file inside itself and starts it in a tab on the
-#   computer as `/bin/sh -c <this file> rexduo-setup <12 arguments>`. The app has already checked
-#   the signed release list, and the arguments carry what it learned: the version, the size and
-#   SHA-256 of the file for each kind of computer, and the keys it trusts. The app's one-time
-#   setup code is no argument: the app types it into the tab when this script asks for it.
+#   From the app on the phone, which carries this file and starts it in a tab on the computer
+#   as `/bin/sh -c <this file> rexduo-setup <12 arguments>`. The app has checked the signed
+#   release list, and the arguments carry what it learned (check_args). The one-time setup
+#   code is no argument: the app types it into the tab when this script asks for it.
 #
 #   By hand, with no arguments. It is published as install.sh:
 #     curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh
-#   It then reads the release list itself and checks it with the two keys below. On a Mac, whose
-#   own openssl does not check such a signature, Apple's checks of the app decide, within the
-#   version and the date Relay/release.sh writes into the published copy.
+#   It then reads the release list itself and checks it with the two keys below, or on a
+#   Mac leaves the decision to Apple's checks of the app (manual_mac).
 #
-#   To remove the helper, with the two arguments `3 -`. The app starts it so in a tab
-#   (`/bin/sh -c <this file> rexduo-setup 3 -`), and by hand it is:
-#     curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh -s -- 3 -
-#   It downloads nothing and asks for no setup code. It stops the helper's background service
-#   and deletes what an install put on this computer, each under its fixed name: on a Mac
-#   the app, under its name and its earlier ones (APP_NAMES), in /Applications and
-#   ~/Applications, the state folder in ~/Library/Application Support and the helper's log in
-#   ~/Library/Logs (both still named as the program first was, EARLIER_NAME); on Linux
-#   ~/.local/bin/rex-duo-helper and ~/.local/state/rex-duo-helper.
-#   The state folder holds the registered phones, so they are forgotten. A link is never
-#   followed, and lingering on Linux stays as it is. On a Mac the app stops its own service,
-#   once its code signature is accepted. On Linux nothing that is installed is run: systemctl
-#   stops and disables the service.
+#   To remove the helper, with the two arguments `3 -`: from the app in a tab
+#   (`/bin/sh -c <this file> rexduo-setup 3 -`), or by hand, `... | sh -s -- 3 -`.
+#   It downloads nothing and asks for no setup code. It stops the background service and
+#   deletes what an install put here, each under its fixed name: the app or the binary, the
+#   state folder, which holds the registered phones, and on a Mac the log ("Removing the
+#   helper" below). A link is never followed, and lingering on Linux stays as it is.
 #
-# To install, either way the steps are the same: find the system's own tools, download one file, check its
-# size and SHA-256 (and the Linux signature or the Mac code signature and notarization), put it
-# in place in one step, start the service and wait until the helper reports that it runs.
-# Nothing runs as an administrator, and nothing that was downloaded runs before it was checked.
+# An install is the same either way: find the system's own tools, download one file, check
+# its size and SHA-256 (and the Linux signature, or the Mac code signature and notarization),
+# put it in place in one step, start the service and wait until the helper reports that it
+# runs. Nothing runs as an administrator, and nothing downloaded runs before it was checked.
 #
 # Progress goes to the terminal as plain sentences and as an OSC 7501 program-status record
-# (id and app `rexduo-setup`), which Rex shows and the app follows. The exit code says how it
-# ended: 0 done, 10 arguments or setup code, 11 no build for this computer, 12 no curl or wget, 13 network,
-# 14 a check failed, 15 could not write, or could not stop or delete something, 16 another
-# install or removal is running, or the helper is updating itself, 17 installed but not
-# started, 18 nobody is logged in on the Mac, 19 no systemd for this user, 20 the Mac kept the
-# old app, 21 macOS is older than 14. The record titles of a removal are `stop`, `remove` and
-# `done`.
+# (id and app `rexduo-setup`), which Rex shows and the app follows. Exit codes: 0 done,
+# 10 arguments or setup code, 11 no build for this computer, 12 no curl or wget, 13 network,
+# 14 a check failed, 15 could not write, stop or delete something, 16 another install or
+# removal is running, or the helper is updating itself, 17 installed but not started,
+# 18 nobody is logged in on the Mac, 19 no systemd for this user, 20 the Mac kept the old
+# app, 21 macOS is older than 14. A removal's record titles are `stop`, `remove` and `done`.
 #
 # Everything is a function and the last line starts it, so a copy that broke off half way runs
-# nothing. Relay/test-install.sh tests this file.
+# nothing. Relay/test-install.sh tests this file. Tests keep it under 62,000 bytes: the app
+# runs no copy over 64 KiB.
 set -eu
 set -f
 set -C
@@ -55,13 +46,13 @@ umask 077
 # Where releases are published. Files of version V are at $BASE/helper-vV/<name>.
 BASE="https://github.com/theabecaster/rexduo/releases/download"
 # The keys releases are signed with (ed25519, 32 raw bytes in base64): the primary key signs
-# releases, the recovery key is kept apart from it. Relay/release.sh refuses to publish when
-# these differ from Relay/update-key.pub, which the helper checks its own updates with.
+# releases, the recovery key is kept apart. Relay/release.sh refuses to publish when these
+# differ from Relay/update-key.pub, which the helper checks its own updates with.
 PRIMARY_KEY="Yn851QvA2ZzvkX/TkpqQcsiIOqUd2wi0jAFRbh+0OP0="
 RECOVERY_KEY="p6Uwh2Qc232RxSymb4uFSkx/A/4Czn+/+QTz16RbLGE="
-# For a run by hand on a Mac: the oldest version this copy installs and the time it stops
-# installing (YYYY-MM-DDTHH:MM:SSZ). Both are empty here and in the copy the app carries.
-# Relay/release.sh fills them in, in the copy it publishes as install.sh and nowhere else.
+# For a run by hand on a Mac: the oldest version this copy installs and when it stops
+# installing (YYYY-MM-DDTHH:MM:SSZ). Empty here and in the copy the app carries:
+# Relay/release.sh fills them in only in the copy it publishes as install.sh.
 MANUAL_MAC_FLOOR=""
 MANUAL_MAC_EXPIRES=""
 # The only folders a tool is taken from: the system's own, which belong to root.
@@ -71,9 +62,9 @@ DOWNLOADERS="curl wget"
 CURL_ONLY="--proto =https --proto-redir =https --tlsv1.2"
 WGET_ONLY="--https-only"
 SYSTEM_APPS="/Applications"
-# The Mac's tool for its Launch Services records, which is in none of the tool folders.
+# The Mac's tool for its Launch Services records, in none of the tool folders.
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-# How long the helper has to report that it runs, and its service to be gone once stopped.
+# How long the helper has to report that it runs, and its service to be gone when stopped.
 WAIT_SECONDS=20
 # How long a removal waits for an update the helper is in the middle of.
 UPDATE_SECONDS=30
@@ -89,12 +80,12 @@ APP_NAME="$BEACON.app"
 # The name an installed app waits under while the one that replaces it starts.
 PREVIOUS_NAME="$BEACON.previous.app"
 # The folder names the app had before, newest first, with a colon between them (they hold
-# spaces). An app installed under one of them is the installed app, and takes its name by
-# itself when it is started (Relay/src/rename.rs). A copy it set aside had the same name
-# with `.previous` before `.app`.
+# spaces). An app installed under one of them is the installed app, and takes its name
+# itself when it starts (Relay/src/rename.rs). A copy it set aside had `.previous` before
+# `.app`.
 EARLIER_APP_NAMES="Rex DUO Beacon.app:Rex DUO Helper.app"
-# Every folder name the app may have, in a download and where it is installed. This is the
-# one list; Relay/src/update.rs has the same.
+# Every folder name the app may have, in a download and where it is installed: the one list,
+# the same as in Relay/src/update.rs.
 APP_NAMES="$APP_NAME:$EARLIER_APP_NAMES"
 # What the program called itself in its Info.plist when it first renamed its own folder.
 EARLIER_BEACON="Rex DUO Beacon"
@@ -103,19 +94,19 @@ EARLIER_NAME="Rex DUO Helper"
 # How a folder starts in which a version that did not start waits to be deleted.
 FAILED_PREFIX=".beacon-failed-"
 BIN_NAME="rex-duo-helper"
-# The name of the helper's background service on a Mac, which also names its file in
+# The name of the helper's background service on a Mac, also its file's name in
 # ~/Library/LaunchAgents, and the names it had before, newest first. The helper moves its
-# service from an earlier name to this one when it is started (Relay/src/label.rs).
+# service from an earlier name to this one when it starts (Relay/src/label.rs).
 LABEL="dev.abrahamgonzalez.rexduo.agent"
 EARLIER_LABELS="dev.abrahamgonzalez.rexduo.beacon dev.abrahamgonzalez.rexduo.helper"
 LABELS="$LABEL $EARLIER_LABELS"
 # A release's files for a Mac and the release list's entries for them, newest first. Each zip
-# holds the same app under one of its folder names. The file names are fixed for good: the
-# copies of this script and of the app that shipped ask for them by name.
+# holds the same app under one of its folder names. The file names are fixed for good:
+# shipped copies of this script and of the app ask for them by name.
 MAC_ASSETS="Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip"
 MAC_ENTRIES="macos-app macos-universal-beacon macos-universal"
-# What the Mac app's code signature must say: our bundle id, a Developer ID certificate of our
-# team, on Apple's chain. The same text as Relay/src/update.rs.
+# What the Mac app's code signature must say: our bundle id and a Developer ID certificate of
+# our team, on Apple's chain. The same text as in Relay/src/update.rs.
 REQUIREMENT='identifier "dev.abrahamgonzalez.rexduo.helper" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "R2PVQ496X7"'
 MAX_ASSET=67108864
 NO_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
@@ -199,20 +190,19 @@ fail() {
 }
 
 # launch_services <-u or -f> <app>: Launch Services forgets an app's path (-u) or records the
-# app that is there (-f). A tool that is missing or fails changes nothing.
+# app there (-f). A tool that is missing or fails changes nothing.
 launch_services() {
   if [ -f "$LSREGISTER" ] && [ -x "$LSREGISTER" ]; then
     "$LSREGISTER" "$1" "$2" </dev/null >/dev/null 2>&1 3<&- || :
   fi
 }
 
-# The app that was set aside goes back where it was, under the name it had, in place of a new
-# one that did not get as far as running, and is started again if its code signature was
-# accepted. The new one goes from where it was put, and from under the app's name if it took
-# that when it was started. Where the two had different names, Launch Services forgets the new
-# path and records the old one again first. An app whose service had an earlier name gets
-# that back as it was: what the new one left under other names of the service is stopped and
-# deleted, and the earlier files are there again before the app is started.
+# The app that was set aside goes back under the name it had, in place of a new one that did
+# not get as far as running, and is started again if its code signature was accepted. The new
+# one goes from where it was put, and from under the app's name if it took that on starting.
+# Where the names differ, Launch Services first forgets the new path and records the old one.
+# A service that had an earlier name gets it back: what the new app left under other names
+# of the service is stopped and deleted, and the earlier files are back before the start.
 put_back() {
   pb_moved=0
   if [ -n "$PLACED" ]; then
@@ -257,8 +247,8 @@ stop() {
 }
 
 # Runs however the script ends: the terminal gets its echo back, an app that was set aside
-# goes back, and the staging folder, a half-placed copy and the lock go away. It runs to its
-# end whatever signal arrives, and the exit code stays what it was.
+# goes back, and the staging folder, a half-placed copy and the lock go. It runs to its end
+# whatever signal arrives, and the exit code stays what it was.
 cleanup() {
   c_code=$?
   set +e
@@ -272,10 +262,10 @@ cleanup() {
   exit "$c_code"
 }
 
-# The script's own surroundings: a fixed PATH, none of the variables that change how a shell or
-# a tool behaves, and the terminal on its own descriptor, 3, so that no tool reads from it
-# unless it is handed over: the tab's input when the app started the script, else where the
-# messages go. The helper is always started without it.
+# The script's surroundings: a fixed PATH, none of the variables that change how a shell or a
+# tool behaves, and the terminal on its own descriptor, 3, so no tool reads from it unless it
+# is handed over: the tab's input when the app started the script, else where the messages
+# go. The helper is always started without it.
 harden() {
   PATH=/usr/bin:/bin:/usr/sbin:/sbin
   LC_ALL=C
@@ -430,8 +420,7 @@ ver_lt() { [ "$(ver_num "$1")" -lt "$(ver_num "$2")" ]; }
 
 # The 12 arguments the app passes: `2`, the version, the oldest version it accepts, a SHA-256
 # and a size for the Mac file and for each of the two Linux files, the keys the app trusts,
-# `ask` or `skip` for lingering, and `-`. Anything else stops here, before anything is
-# downloaded.
+# `ask` or `skip` for lingering, and `-`. Anything else stops here, before any download.
 check_args() {
   ca_bad="The installer was started with arguments it doesn't accept. Nothing was installed."
   [ $# -eq 12 ] || fail ARGS "$ca_bad"
@@ -453,15 +442,15 @@ check_args() {
   LINGER="${11}"
 }
 
-# The setup code: 64 hex digits that the app types into this tab, followed by Return, once the
-# `code` record says the installer waits for it. The echo is off by then, and the code is
-# never printed and never part of a command line: the shell's own `read` takes it, and the
-# shell's own `printf` later writes it to a file for the helper.
+# The setup code: 64 hex digits the app types into this tab, then Return, once the `code`
+# record says the installer waits for it. The echo is off by then, and the code is never
+# printed and never part of a command line: the shell's own `read` takes it, and its own
+# `printf` later writes it to a file for the helper.
 #
-# POSIX sh has no read with a time limit, so the terminal keeps the time. Without line editing
-# and with `min 0 time 10`, a read that gets nothing for one second returns with nothing, which
-# ends `read` without a line. The loop counts those seconds and keeps what came so far, so a
-# code that arrives in pieces is still one line. No other process is started while it waits.
+# POSIX sh has no read with a time limit, so the terminal keeps the time: without line
+# editing and with `min 0 time 10`, a read that gets nothing for a second ends without a
+# line. The loop counts those seconds and keeps what came so far, so a code that arrives in
+# pieces is still one line. No other process is started while it waits.
 read_code() {
   rc_none="$PHONE_APP did not send its setup code. Nothing was installed."
   [ "$(command -v printf)" = printf ] || fail ARCH "The installer needs a shell with its own printf."
@@ -717,8 +706,8 @@ fetch() {
   [ "$(size_of "$2")" -le "$3" ] || return 2
 }
 
-# key_der <base64 key> <file>: the public key as a file openssl reads, which is the fixed
-# 12-byte header of an ed25519 key, then the key. The all-zero placeholder is no key.
+# key_der <base64 key> <file>: the public key as a file openssl reads: the fixed 12-byte
+# header of an ed25519 key, then the key. The all-zero placeholder is no key.
 key_der() {
   [ "$1" != "$NO_KEY" ] || return 1
   rm -f "$2"
@@ -731,7 +720,7 @@ key_der() {
 
 # verify_sig <file> <signature file> <keys>: true when one of the first 8 lines of the
 # signature file is the base64 of an ed25519 signature over the file's bytes by one of the
-# keys, which come as one list with commas between them.
+# keys (one list, commas between them).
 verify_sig() {
   vs_lines=0
   while IFS= read -r vs_line || [ -n "$vs_line" ]; do
@@ -762,7 +751,7 @@ fingerprint() {
   sha256_of "$STAGE/fingerprint.raw"
 }
 
-# The release list is written by release.sh with one field per line, two spaces of indent per
+# release.sh writes the release list with one field per line, two spaces of indent per
 # level. These read exactly that shape and print nothing for anything else.
 
 # top_field <manifest> <name>: a string field of the manifest itself.
@@ -784,10 +773,10 @@ asset_field() {
   ' "$1"
 }
 
-# Run by hand on a Mac. macOS's own openssl does not check an ed25519 signature, so what is
-# installed there is decided by Apple's checks of the app (its code signature, our team and
-# identifier, its notarization) and by the two values of the published copy: no version below
-# MANUAL_MAC_FLOOR, and nothing after MANUAL_MAC_EXPIRES. A copy without them installs nothing.
+# Run by hand on a Mac. Its openssl does not check an ed25519 signature, so what is installed
+# is decided by Apple's checks of the app (code signature, our team and identifier,
+# notarization) and by the published copy's two values: no version below MANUAL_MAC_FLOOR,
+# nothing after MANUAL_MAC_EXPIRES. A copy without them installs nothing.
 manual_mac() {
   mm_page="${BASE%/download}"
   if ! is_version "$MANUAL_MAC_FLOOR" || ! is_stamp "$MANUAL_MAC_EXPIRES"; then
@@ -799,7 +788,7 @@ manual_mac() {
 }
 
 # Run by hand: reads the release list and checks it as the helper's updater does (signature,
-# then contents, then that it has not expired). Sets the version and this computer's file.
+# contents, then expiry). Sets the version and this computer's file.
 read_release() {
   rr_none="Nothing was installed."
   say "Getting the list of releases…"
@@ -823,8 +812,8 @@ read_release() {
   elif [ "$OS" != Darwin ]; then
     fail VERIFY "openssl 3 or newer is needed to check the release list's signature. $rr_none"
   else
-    # Here the list only names the version to get. What is installed is decided by the app's
-    # code signature, its notarization and its version, all checked below.
+    # Here the list only names the version to get. The app's code signature, notarization
+    # and version, all checked below, decide what is installed.
     say "On this Mac the release list's signature is not checked. Apple's code signature and notarization checks of the app are."
   fi
   VERSION="$(top_field "$rr_list" version)"
@@ -876,7 +865,7 @@ sig_ok() {
   "$CODESIGN" --verify --deep --strict "$1" >/dev/null 2>&1 && "$CODESIGN" --verify "-R=$REQUIREMENT" "$1" >/dev/null 2>&1
 }
 
-# not_ours <path>: a real folder is there and it does not pass sig_ok. Such a folder is never
+# not_ours <path>: a real folder is there and does not pass sig_ok. Such a folder is never
 # deleted, renamed or written into, whatever its name.
 not_ours() {
   [ -d "$1" ] && [ ! -L "$1" ] && ! sig_ok "$1"
@@ -918,8 +907,8 @@ allowed_name() {
 }
 
 # named <app>: it is this program as it is called now, by its folder or by what its Info.plist
-# calls it, or a build from since it renames its own folder. Such an app in a folder of an
-# earlier name renames that folder itself when it starts. An app that is neither is replaced.
+# calls it, or a build from since it renames its own folder, which it does when it starts
+# from a folder of an earlier name. An app that is neither is replaced.
 named() {
   [ "${1##*/}" = "$APP_NAME" ] && return 0
   nm="$("$PLUTIL" -extract CFBundleName raw -o - "$1/Contents/Info.plist" 2>/dev/null)" || return 1
@@ -942,8 +931,8 @@ helper_version() {
 # MARK: What is already here
 
 # Sets PLAN: `keep` (a newer helper is installed: only the service is repaired), `same` (this
-# version is installed and intact: nothing to download) or `fetch`. Removes what a run that was
-# cut short left behind.
+# version is installed and intact: nothing to download) or `fetch`. Removes what a run that
+# was cut short left.
 look() {
   PLAN=fetch
   HAVE=""
@@ -961,8 +950,8 @@ look() {
             set -f
             if [ -d "$lk_old" ] && [ ! -L "$lk_old" ] && sig_ok "$lk_old"; then rm -rf "$lk_old" 2>/dev/null || :; fi
           done
-          # What an update of the helper's own left of a version that did not start, under
-          # the name such a folder has now and the one it had before.
+          # What the helper's own update left of a version that did not start, under the
+          # name such a folder has now and the one it had before.
           set +f
           for lk_old in "$lk_dir"/".${lk_name%.app}.failed-"* "$lk_dir"/"$FAILED_PREFIX"*; do
             set -f
@@ -998,8 +987,8 @@ look() {
       done
       unset IFS
       if [ -n "$OLD_APP" ] && sig_ok "$OLD_APP"; then
-        # The app is whole, so a copy set aside beside it has no further use. It stays while the
-        # helper is in the middle of an update of its own, which still needs it to go back to.
+        # The app is whole, so a copy set aside beside it has no further use. It stays while
+        # the helper is in the middle of its own update, which may still go back to it.
         IFS=:
         for lk_name in $APP_NAMES; do
           unset IFS
@@ -1052,9 +1041,9 @@ look() {
 # MARK: Download, check, put in place
 
 # Gets this computer's file. A release has one for Linux and three for a Mac, and which of
-# the three the wanted SHA-256 describes depends on the release and on who read its list: they
-# are tried newest first until one is that file. Nothing is believed of a file but its size
-# and its SHA-256, which verify checks again.
+# the three the wanted SHA-256 describes depends on the release and on who read its list:
+# they are tried newest first until one is that file. Nothing is believed of a file but its
+# size and its SHA-256, which verify checks again.
 download() {
   step download 10 "Downloading $BEACON $VERSION…"
   d_rc=1
@@ -1084,8 +1073,8 @@ verify() {
   case "$OS" in
     Darwin)
       "$DITTO" -x -k "$STAGE/asset" "$STAGE/x" >/dev/null 2>&1 || fail VERIFY "The download could not be unzipped. $v_none"
-      # The zip holds one thing and no more: the app, as a real folder, not a link, whose
-      # name is on the list of the names it may have. Two entries are two lines, and no name.
+      # The zip holds one thing and no more: the app, a real folder, not a link, whose name
+      # is on the list of names it may have. Two entries are two lines, and no name.
       ZIP_APP="$("$LS" -A "$STAGE/x")"
       v_app="$STAGE/x/$ZIP_APP"
       if ! allowed_name "$ZIP_APP" || [ -L "$v_app" ] || [ ! -d "$v_app" ]; then
@@ -1123,15 +1112,13 @@ verify() {
 # Puts the checked app beside its place under another name, checks that copy, and renames it
 # to the folder name it came under, which is on the list of allowed names: a version from
 # before a name looks for itself under the name it knows, and a newer one takes its name
-# itself when it is started. An app that is there already, under any of the names, is renamed
-# to PREVIOUS_NAME first and stays beside the new one until the new one runs. From that rename
-# on, any way the script ends other than with the new helper running puts it back (cleanup).
-# A folder beside it that is not the app (not_ours) is never cleared out of the way: the
-# install stops, or leaves it where it is.
+# when it starts. An app already there, under any of the names, is first renamed to
+# PREVIOUS_NAME and stays beside the new one until that runs. From then on, any way the
+# script ends other than with the new helper running puts it back (cleanup). A folder there
+# that is not the app (not_ours) is never cleared away: the install stops, or leaves it.
 #
 # In place of an app under another name, Launch Services forgets that path and records the
-# new one here, before the helper is started: the helper then writes the LaunchAgent for the
-# new path and loads it again.
+# new one here, before the helper starts and writes its LaunchAgent for the new path.
 place_app() {
   pa_full="This Mac couldn't save $BEACON in $(tilde "$DEST"). Check it has free space, then try again."
   if not_ours "$DEST/.$ZIP_APP.new-$$"; then fail WRITE "$pa_full"; fi
@@ -1175,9 +1162,8 @@ install_mac() {
   if [ -n "$OLD_APP" ]; then
     DEST="${OLD_APP%/*}"
     # macOS lets an app be replaced by its own maker's code, so an installed helper updates
-    # itself. One that can't is set aside while the new one takes its place and starts.
-    # A folder of the app's name that does not pass the check stays as it is, and nothing is
-    # installed.
+    # itself. One that can't is set aside while the new one takes its place and starts. A
+    # folder of the app's name that does not pass the check stays, and nothing is installed.
     if sig_ok "$OLD_APP"; then
       OLD_OK=1
       say "An older $BEACON is installed. Asking it to update itself…"
@@ -1217,8 +1203,8 @@ install_linux() {
 # MARK: The service
 
 # start_service <helper binary>: the helper sets itself up to run in the background. The setup
-# code goes to it here and nowhere else, as a file only this account can read, in the staging
-# folder, which is closed to other accounts. The helper reads the file and deletes it.
+# code goes to it here and nowhere else, as a file only this account can read, in the
+# staging folder, closed to other accounts. The helper reads the file and deletes it.
 start_service() {
   set -- "$1" install
   if [ -n "$SERVER" ]; then set -- "$@" --server "$SERVER"; fi
@@ -1284,8 +1270,8 @@ linger_state() {
   printf '%s' "${ls_out#Linger=}"
 }
 
-# Without lingering, systemd stops the helper when the account logs out. Turning it on may ask
-# for the account's password, which is typed into this terminal and read by systemd alone.
+# Without lingering, systemd stops the helper when the account logs out. Turning it on may
+# ask for the account's password, typed into this terminal and read by systemd alone.
 linger() {
   [ -n "$LOGINCTL" ] || return 0
   [ "$(linger_state)" = no ] || return 0
@@ -1332,8 +1318,8 @@ updating() {
 
 # Sets HELPER to the helper that may be run to stop its own service. On a Mac it is the app,
 # under its name or an earlier one, looked for only where an install puts it: a real folder
-# that passes the check an install makes of an app that is already there. On Linux nothing
-# that is installed is run, so it is empty there, as it is on a Mac without such an app.
+# that passes the check an install makes of an app already there. On Linux nothing installed
+# is run, so it is empty there, as on a Mac without such an app.
 find_helper() {
   HELPER=""
   [ "$OS" = Darwin ] || return 0
@@ -1352,9 +1338,9 @@ find_helper() {
   unset IFS
 }
 
-# The app, looked for again once it was started: one that was put under an earlier name has
-# taken its name by then. It is the first of the allowed names beside where it was put that is
-# a real folder and passes the code signature check.
+# The app, looked for again once it was started: one put under an earlier name has taken its
+# name by then. It is the first of the allowed names, beside where it was put, that is a
+# real folder and passes the code signature check.
 find_app() {
   [ ! -e "$APP" ] || return 0
   IFS=:
@@ -1384,7 +1370,7 @@ service_up() {
 }
 
 # erase <path>: deletes one file or folder of the helper, named in full. A link is deleted as
-# a link, and what it points to stays. What is still there afterwards is added to STAYED.
+# a link, and what it points to stays. What is still there after is added to STAYED.
 erase() {
   case "$1" in /?*[!/]) ;; *) return 0 ;; esac
   if [ -L "$1" ]; then
@@ -1411,8 +1397,7 @@ erase_like() {
 }
 
 # erase_app <path>: erase, for an app or a copy of one. A folder there that does not pass the
-# code signature check (not_ours) stays where it is: one sentence says so, and it is added to
-# STAYED, once.
+# code signature check (not_ours) stays: one sentence says so, and it is added to STAYED, once.
 erase_app() {
   if not_ours "$1"; then
     case ", $STAYED, " in *", $(tilde "$1"), "*) return 0 ;; esac
@@ -1426,9 +1411,9 @@ erase_app() {
 
 # On a Mac the app's own `uninstall` stops its service and removes the launchd entry, under
 # every name of the service it knows. With no app that may be run, when that fails, or when a
-# file of the service is left afterwards (an app from before a name of the service knows the
-# earlier ones alone), launchctl does the same for every name. On Linux systemctl stops and disables the
-# service, and its unit file is deleted.
+# file of the service is left (an app from before a name of the service knows the earlier
+# ones alone), launchctl does the same for every name. On Linux systemctl stops and disables
+# the service, and its unit file is deleted.
 stop_helper() {
   step stop 20 "Stopping $BEACON…"
   sh_done=0
@@ -1463,7 +1448,7 @@ stop_helper() {
 }
 
 # old_name_gone <Applications folder>: deletes what the app's earlier names left there, and
-# Launch Services forgets the apps that were deleted.
+# Launch Services forgets the deleted apps.
 old_name_gone() {
   IFS=:
   for og_name in $EARLIER_APP_NAMES; do
@@ -1511,8 +1496,7 @@ remove_files() {
   erase "$STATE"
 }
 
-# The two arguments `3 -`: stops the helper and deletes what an install put on this computer.
-# Nothing is downloaded and no setup code is read.
+# The two arguments `3 -`: stops the helper and deletes what an install put here.
 remove() {
   if [ $# -ne 2 ] || [ "$2" != - ]; then
     fail ARGS "The installer was started with arguments it doesn't accept. Nothing was removed."

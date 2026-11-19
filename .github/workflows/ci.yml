@@ -48,6 +48,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # No earlier product name outside the places that must keep one. It reads every tracked
+      # file, the app's too, and needs only git and awk, so it runs here, on every pull request.
+      - name: Brand check
+        run: scripts/check-brand.sh --self-test && scripts/check-brand.sh
       - name: Helper tests
         working-directory: Relay
         run: cargo test --locked

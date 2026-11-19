@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import RexKit
 
 /// What sign-up needs from a computer's Rex connection: who is connected there and one call to
@@ -381,7 +382,7 @@ final class PushReconciler {
         link.held = nil
         link.lost += 1
         guard link.lost <= Self.lossesPerConnection else {
-            set(id, .failed("Rex DUO Beacon on \(channel.name(id)) keeps losing this iPhone."))
+            set(id, .failed("\(Brand.beaconName) on \(channel.name(id)) keeps losing this iPhone."))
             if !stopped.contains(id) { stopped.insert(id) }
             mending.remove(id)
             return
@@ -402,7 +403,7 @@ final class PushReconciler {
         if who != .person, disagrees {
             link.lost += 1
             guard link.lost <= Self.lossesPerConnection else {
-                set(id, .failed("Rex DUO Beacon on \(channel.name(id)) keeps pausing this iPhone."))
+                set(id, .failed("\(Brand.beaconName) on \(channel.name(id)) keeps pausing this iPhone."))
                 if !stopped.contains(id) { stopped.insert(id) }
                 return
             }
@@ -842,7 +843,7 @@ final class PushReconciler {
         guard case .success(let helperKey) = HelperIdentity.verify(reply: reply, challenge: challenge, called: relay, requester: me,
                                                                     device: phone.deviceID) else {
             link.held = nil
-            set(id, .failed("Rex DUO Beacon on \(name) couldn't prove its identity."))
+            set(id, .failed("\(Brand.beaconName) on \(name) couldn't prove its identity."))
             return .settled
         }
 

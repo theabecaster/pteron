@@ -1,6 +1,6 @@
 import Foundation
 
-/// The keys Rex DUO Helper releases are signed with: the same two values as
+/// The keys Beacon releases are signed with: the same two values as
 /// `Relay/update-key.pub`, each the base64 of the 32 raw bytes of an ed25519 public key. A test
 /// reads that file from the source tree and fails when the two differ, so a key is changed in
 /// both places or in neither.

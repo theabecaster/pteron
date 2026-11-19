@@ -8,7 +8,7 @@ build Mac's ssh host), `REXDUO_DEVICE` (the phone's UDID), and `ASC_KEY_ID` and 
 Store Connect key). The scripts' file names still say `macdesk`; any build Mac works.
 
 - Bundle id `dev.abrahamgonzalez.rexduo` (fixed: App Store Connect and the APNs topic depend on
-  it), team `R2PVQ496X7`, automatic signing. Display name "Rex DUO" (`CFBundleDisplayName`),
+  it), team `R2PVQ496X7`, automatic signing. Display name "Pteron" (`CFBundleDisplayName`, from `APP_DISPLAY_NAME` in project.yml),
   product `RexDuo.app`.
 - The build number is passed as `CURRENT_PROJECT_VERSION`; it must be higher than the last upload.
 - The project is generated and the build Mac needs no XcodeGen, so every flow generates it

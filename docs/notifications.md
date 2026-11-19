@@ -79,7 +79,7 @@ Rules:
 | iOS gave this phone no notification address | on | "Can't reach Apple's notification service" with a spinner | none; the app asks again every 30 s |
 
 The computers' group shows only while the switch is on. Footer, under the switch's own group:
-"Get notified when an agent finishes or needs you. Each computer needs Rex DUO Beacon to send
+"Get notified when an agent finishes or needs you. Each computer needs Pteron Beacon to send
 notifications." The
 permission is read at start and every time the app becomes active, so coming back from iOS
 Settings with notifications allowed turns everything on again with no tap. The master choice
@@ -110,7 +110,7 @@ are the phone's registration, each computer's secret and each helper's pinned ke
 | Repair did not work | on | "Couldn't reconnect" | Retry | Reinstall Beacon, Remove Beacon… |
 | Beacon changed | on | "Beacon has changed" | Trust… (a confirm) | Reinstall Beacon, Remove Beacon… |
 | The notification service holds as many computers for this phone as it takes (`409 too_many_secrets`) | on | "Too many computers for this phone" | Retry; the app does not try again by itself | Reinstall Beacon, Remove Beacon… |
-| Mac needs a click | on | spinner + "Click Allow for Rex DUO Beacon" | none | Show Details, Cancel Install |
+| Mac needs a click | on | spinner + "Click Allow for Pteron Beacon" | none | Show Details, Cancel Install |
 | The notification service asked the phone to wait | on | "Too many tries. Try again in N minutes." under an hour, "…in an hour." or "…in N hours." from an hour on, "…tomorrow." when the wait ends at or after the next midnight in UTC, "…later." when the service gave no time (`RateLimit.text`, from `Retry-After`) | none; the app tries again by itself when the wait is over | Remove Beacon… |
 | A test was sent, for 3 s | on | "Test notification sent" (secondary), or why it was not | none | as healthy |
 | Removing | off, disabled | spinner + "Removing…" | none | none |
@@ -200,11 +200,11 @@ is on its way;
   "System" (`os`), "Last notification" (`last_push_at`: "2 minutes ago", "Never" for null, no
   row when the field is absent), from `helper_status` (`HelperDetails`), and "Update check",
   which is the app's own read of the release list: "OK", or "Couldn't check" when its last
-  read failed. When no helper answers it reads "Rex DUO Beacon on <name>
+  read failed. When no helper answers it reads "Pteron Beacon on <name>
   isn't answering." For a computer whose install is under way or failed, Show Details brings
   back the install's sheet instead, at the installer's output (`showSetupDetails`).
 - **How:** beside "Install Beacon by hand". A small sheet, "Install by Hand", with where to
-  download Rex DUO Beacon and the step for a Mac ("drag Rex DUO Beacon to Applications and open
+  download Pteron Beacon and the step for a Mac ("drag Pteron Beacon to Applications and open
   it once") and for Linux ("run rex-duo-helper install"; `NotificationCopy.manualSteps`).
 - **Trust…:** a confirm, "Trust Beacon on <name>?", "Did you reinstall or remove Beacon on
   <name>? If you did, trust it. If you didn't, don't: something else is answering for it."
@@ -212,7 +212,7 @@ is on its way;
   (`PushRegistrar.offeredKey`), and Trust pins exactly that key (`trust(_:key:)`). If the
   helper offers another key by the time Trust is tapped, nothing is pinned, the row stays at
   "Beacon has changed", and its button shows the confirm again, for the key offered then.
-- **Remove Beacon…:** a destructive confirm, "Remove Rex DUO Beacon from <name>?", "<name>
+- **Remove Beacon…:** a destructive confirm, "Remove Pteron Beacon from <name>?", "<name>
   will stop sending notifications to this phone", plus "and to N other phones", where N is
   `helper_status.other_phones` (the phones on that computer that others registered) or, from
   a helper that does not give it, `helper_status.devices - 1`; "and to any other phone that
@@ -278,7 +278,7 @@ Settings to be notified." Then:
 3. It checks the server can run a command as a terminal's program: `server.version` reports
    `api_revision` 13 or later and the shell flavor's `options_schema` in `block_creator.list` has
    `command` and `shell`. Otherwise the sheet says how to install by hand.
-4. It creates a session "Rex DUO Beacon setup" whose one block runs
+4. It creates a session "Pteron Beacon setup" whose one block runs
    `/bin/sh -c <setup.sh> rexduo-setup <12 arguments>` with `shell: "none"` (`SetupBlock`). The
    script is `Relay/setup.sh`, copied into the app at build time. The arguments (`SetupArgs`) are
    the mode `2`, the version, the floor, each build's hash and size, the trusted keys joined by
@@ -294,7 +294,7 @@ off, reports the step `code`, and reads one line from its terminal; the app then
 and a Return with `terminal.write`. It writes only while `input_mode` says echo is off and
 `process` shows the block's own program in front (`foreground` is `child`, or a shell of the same
 path that `child` started; `SetupCode.allows`). If that doesn't hold, or the write fails, the app
-closes the tab and the sheet reads "Rex DUO can't get Beacon right now". The installer hands
+closes the tab and the sheet reads "Pteron can't get Beacon right now". The installer hands
 the code to the helper it installs.
 
 **Progress.** The installer reports one OSC 7501 record (`id` and `app` `rexduo-setup`; `title`
@@ -311,7 +311,7 @@ a `setup_challenge`, answered with `setup_proof` (HMAC-SHA256 keyed by the setup
 without a proof is asked again after 2 s, three requests in all (`SetupProof.requests`; the helper
 answers three per code). With a valid proof the helper's key becomes the pin, also in place of a
 key pinned before, so a reinstall needs no "Trust"; then the secret is minted and `register_push`
-sent. A wrong proof, or none in three replies, ends the run as "Rex DUO Beacon on <name> has
+sent. A wrong proof, or none in three replies, ends the run as "Pteron Beacon on <name> has
 changed": nothing is pinned, no secret is handed over, and the helper waits for "Trust…" in
 Settings. From the moment the code is written until the sheet closes, no other registration with
 that server's helper goes out (`HelperAdmission`); pinning a key on first use happens only

@@ -11,7 +11,7 @@ controls for Control Center, the Lock Screen's bottom slots and the Action butto
 
 | Control | Kind | Opens |
 |---|---|---|
-| Open Rex DUO | `dev.abrahamgonzalez.rexduo.control.open` | `rexduo://open` |
+| Open Pteron | `dev.abrahamgonzalez.rexduo.control.open` | `rexduo://open` |
 | Jump to Waiting | `dev.abrahamgonzalez.rexduo.control.waiting` | `rexduo://waiting` |
 
 - Each is a `ControlWidgetButton` whose action is `OpenLinkIntent`
@@ -25,6 +25,11 @@ controls for Control Center, the Lock Screen's bottom slots and the Action butto
 - The extension links `GlanceModel` (for `DeepLink`) and nothing else of ours: no RexKit, no
   engine.
 - Every word and symbol the controls show is in `ControlText`, at the top of `Controls.swift`.
+  The name is `Brand.appName` (GlanceModel). The symbols are custom ones, `mark.open` (the
+  mascot) and `mark.waiting` (the mascot with a mark for a waiting agent), symbol templates in
+  the extension's own `Assets.xcassets`: a control can only draw a symbol, and one from the
+  app's catalog would draw blank. Each template has three weights with the same path layout, so
+  the system can set it at any weight; `xcrun actool` on the catalog says so when one is wrong.
 - On a locked phone the system asks for the unlock before it opens the app.
 - **Why not `OpenURLIntent` alone.** Checked on the iOS 27.2 simulator, by tapping the control
   in Control Center:

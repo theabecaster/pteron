@@ -76,7 +76,7 @@ enum APNsEnvironment {
     }
 }
 
-/// Finds Rex DUO Helper among a server's clients.
+/// Finds Beacon among a server's clients.
 enum RelayLookup {
     static let clientName = "rex-push-relay"
     /// How Rex says a client connected on the server's own machine (its socket, or the Windows

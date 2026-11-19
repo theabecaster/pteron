@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class RevisionTests: XCTestCase {
     private func control(_ address: String, label: String = "test") -> RexControl {
-        RexControl(address: address, client: ClientInfo(name: "Rex DUO", version: "0.1.0", label: label))
+        RexControl(address: address, client: ClientInfo(name: "Sample App", version: "0.1.0", label: label))
     }
 
     private func waitFor(_ condition: @MainActor () -> Bool, seconds: Double = 5) async -> Bool {
@@ -31,13 +31,13 @@ final class RevisionTests: XCTestCase {
         XCTAssertEqual(hello.int("api_revision"), 18)
         XCTAssertNil(hello["api_min_revision"], "no minimum: a server on any revision connects, as before")
         XCTAssertEqual(Set(hello.keys), ["type", "api_revision", "client"])
-        XCTAssertEqual(hello.obj("client")?.str("name"), "Rex DUO")
+        XCTAssertEqual(hello.obj("client")?.str("name"), "Sample App")
         XCTAssertLessThan(server.lastHelloBytes, 512)
     }
 
     func testAHelloThatResumesStaysUnder512Bytes() {
         // A reconnect token as long as the server's (43 characters in practice), twice over.
-        let client = ClientInfo(name: "Rex DUO", version: "10.20.30", label: String(repeating: "x", count: 64))
+        let client = ClientInfo(name: "Sample App", version: "10.20.30", label: String(repeating: "x", count: 64))
         let hello = RexControl.hello(client: client, reconnectToken: String(repeating: "t", count: 96))
         XCTAssertNil(hello["api_min_revision"])
         XCTAssertLessThan(JSONCodec.data(hello).count, 512)

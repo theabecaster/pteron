@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GlanceModel
 import Testing
 import RexKit
 @testable import RexDuo
@@ -122,9 +123,9 @@ struct HelperTrustTests {
 
     @MainActor @Test func aFailureReadsAsOneSentence() {
         #expect(HelperFailure(code: "not_your_device", message: "Another account registered this iPhone.").sentence(helper: "Studio")
-                == "Rex DUO Beacon on Studio: Another account registered this iPhone.")
-        #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "Rex DUO Beacon on Studio: timed out.")
-        #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "Rex DUO Beacon on Studio: the request failed.")
+                == "\(Brand.beaconName) on Studio: Another account registered this iPhone.")
+        #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio: timed out.")
+        #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio: the request failed.")
     }
 
     // MARK: Labels

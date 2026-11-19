@@ -1,14 +1,32 @@
 # Development
 
-How to build, test and change Rex DUO. [AGENTS.md](../AGENTS.md) is the full working guide (the
+How to build, test and change Pteron. [AGENTS.md](../AGENTS.md) is the full working guide (the
 code map, the safety rules for testing against real sessions, and the conventions), written for
 coding agents and just as useful to people. This page is the short way in.
 
 The repository holds three programs:
 
 - `RexDuo/` and `Packages/RexKit/`: the iOS app (Swift, SwiftUI and UIKit).
-- `Relay/`: Rex DUO Helper, which sends push notifications from a computer (Rust).
+- `Relay/`: Pteron Beacon, which sends push notifications from a computer (Rust).
 - `Gateway/`: the push gateway that passes them to Apple (TypeScript on Cloudflare Workers).
+
+## The name and the brand art
+
+- The product's name is said in two places: `Brand` in `Packages/RexGlance` (the app, the
+  controls and every sentence they show) and `Relay/src/brand.rs` (Beacon). `APP_DISPLAY_NAME`
+  in `project.yml` repeats it for the two Info.plists and `BEACON=` in `Relay/setup.sh` for the
+  installer; tests hold both to the constants. Code identifiers keep the earlier name
+  (`RexDuo`, `rexduo://`, the bundle ids, `rex-duo-helper`): they are compiled into shipped
+  apps and Beacons.
+- `Brand/` holds the art under neutral names: `AppIcon.icon` and `BeaconIcon.icon` (Icon
+  Composer documents, compiled by actool), `launch-art.png` and `launch-outline.svg` (the
+  launch screen's picture and its outline), `glyph.svg`.
+- After a change to the launch art run `swift -O Brand/make-launch-art.swift`. It writes the
+  `LaunchMark` image set and `RexDuo/App/LaunchArt.swift` (size, outline, zoom pivot, reach
+  table), and stops when the picture and the outline disagree. Then run the app tests:
+  `LaunchArtTests` pins the numbers, so they change in the same commit as the art.
+- `scripts/check-brand.sh` fails when an earlier product name appears outside the places that
+  must keep one (its header lists them). CI runs it; run it before a commit that touches text.
 
 ## Requirements
 

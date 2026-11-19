@@ -1,6 +1,6 @@
 # iPhone Duo layout and the vertical bar
 
-How Rex DUO lays out the sidebar and the tab, and how it uses the system's vertical bar on the
+How Pteron lays out the sidebar and the tab, and how it uses the system's vertical bar on the
 iPhone Duo. Checked against the iOS 27.2 SDK and Apple's docs, November 2026.
 
 ## What Apple says about the vertical bar

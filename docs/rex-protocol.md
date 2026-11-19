@@ -1,4 +1,4 @@
-# Rex control protocol, as Rex DUO uses it
+# Rex control protocol, as Pteron uses it
 
 The source of truth is `https://<server>/llms.txt` on any Rex server. This file records what the
 app relies on; update it when you use a new method or event.
@@ -8,7 +8,7 @@ app relies on; update it when you use a new method or event.
 - `wss://<server>/api/control`, subprotocol `rex.control.v1`. Only servers with Rex's Tailscale on
   are reachable (`rex server tailscale on`), and the phone must be on the same tailnet and user.
 - The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 18), `client`
-  (`kind`, `platform`, `name` "Rex DUO", `version`, `label` = device name) and
+  (`kind`, `platform`, `name` "Pteron", `version`, `label` = device name) and
   `reconnect_token` when resuming, and no `api_min_revision` (see API revisions). The server
   answers `welcome` with `client.id`, `client.reconnect_token`, `limits.max_message_bytes` and
   the revisions. No welcome in 8 s fails the connect.
@@ -20,7 +20,7 @@ app relies on; update it when you use a new method or event.
   revision: …` means a retry would be refused the same way: `RexControl` stops (`retryStopped`)
   until the user taps Try Again or the app comes back, and the offline screen says which side to
   update, from the end of the reason ("update the server": "Update Rex on <server>"; "update the
-  client": "Update Rex DUO"; neither: the text for any other 1008). `event backlog exceeded` (the
+  client": "Update Pteron"; neither: the text for any other 1008). `event backlog exceeded` (the
   phone fell 8 MiB of events behind) is an ordinary drop: reconnect and resync.
 
 ## API revisions

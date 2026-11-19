@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 import RexKit
 
@@ -133,7 +134,7 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored let keymap: KeymapStore
     /// In-app agent alerts and haptics; shared by every server.
     @ObservationIgnored let notifier: AgentNotifier
-    /// Push registration with this server's Rex DUO Helper.
+    /// Push registration with this server's Beacon.
     @ObservationIgnored weak var push: PushRegistrar?
     @ObservationIgnored let prefs: Prefs
     /// Counts successful connections, so per-connection work (push registration) can tell a new
@@ -188,7 +189,7 @@ final class ServerConnection: Identifiable {
     /// The offline screen is up for this server.
     var showsOffline: Bool { phase.problem != nil || recovering }
     /// The connection dropped around a trip to the background and is being made again, while
-    /// `phase` stays `.online` (`ForegroundWake`). The title bar's Rexie breathes meanwhile.
+    /// `phase` stays `.online` (`ForegroundWake`). The title bar's Glide breathes meanwhile.
     var waking = false
 
     /// What an install of the helper on this server listens for. Set by `HelperSetupCenter`.
@@ -300,7 +301,7 @@ final class ServerConnection: Identifiable {
         self.push = push
         self.network = network
         control = RexControl(address: config.url, client: ClientInfo(
-            name: "Rex DUO",
+            name: Brand.appName,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)))
         keymap = KeymapStore(control: control)

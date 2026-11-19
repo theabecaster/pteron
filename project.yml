@@ -14,6 +14,9 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # The name under the icon and in the camera prompt, in both Info.plists. The same word as
+    # GlanceModel's Brand.appName, which the app's tests hold it to.
+    APP_DISPLAY_NAME: Pteron
 packages:
   RexKit:
     path: Packages/RexKit
@@ -26,6 +29,9 @@ targets:
     platform: iOS
     sources:
       - path: RexDuo
+      # The app icon, an Icon Composer document. actool compiles it into the layered icon and
+      # the flat ones older systems use.
+      - path: Brand/AppIcon.icon
       # The intent the controls run. The system runs it in the app, so the app compiles it too.
       - path: RexDuoWidgets/OpenLinkIntent.swift
     dependencies:
@@ -86,7 +92,7 @@ targets:
           - $(SRCROOT)/Relay/setup.sh
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/setup.sh
-    # Push from Rex DUO Helper. Development signing keeps "development" (sandbox tokens);
+    # Push from Beacon. Development signing keeps "development" (sandbox tokens);
     # exporting for App Store Connect switches it to production. Blocked-agent pushes use the
     # time-sensitive interruption level, which needs its own entitlement.
     entitlements:

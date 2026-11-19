@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import XCTest
 import RexKit
 @testable import RexDuo
@@ -653,7 +654,7 @@ final class ServerEventsTests: XCTestCase {
     func testAServerThatRefusesTheRevisionShowsWhichSideToUpdateAndStops() async throws {
         let cases: [(String, ConnectionProblem.Kind, String)] = [
             ("no common API revision: server speaks 0 to 5, client needs 13 to 18; update the server", .updateServer, "Update Rex on Desk"),
-            ("no common API revision: server speaks 19 to 24, client needs 0 to 18; update the client", .updateApp, "Update Rex DUO"),
+            ("no common API revision: server speaks 19 to 24, client needs 0 to 18; update the client", .updateApp, "Update \(Brand.appName)"),
             ("no common API revision: nothing in common", .notAllowed, "Desk didn't let this iPhone in"),
         ]
         for (reason, kind, title) in cases {

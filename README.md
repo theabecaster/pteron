@@ -1,11 +1,12 @@
-# Rex DUO
+# Pteron
 
-Rex DUO is a native iPhone app for [Rex](https://rex.superlogical.com), Super Logical's terminal
+Pteron is a native iPhone app for Rex, [Superlogical](https://superlogical.com)'s terminal
 multiplexer. It lets you see and drive the sessions, tabs and panes running on your computers,
 and tells you when an agent needs you. It is built for the iPhone Duo's folded and unfolded
 screens and works on any iPhone with iOS 18 or later.
 
-Rex is a separate product. Install it on each computer you want to reach from your phone.
+Pteron is an independent app. It is not affiliated with or endorsed by Superlogical. Rex is a
+separate product: install it on each computer you want to reach from your phone.
 
 ## Get it
 
@@ -15,16 +16,16 @@ Open the link on your iPhone. It installs TestFlight first if you don't have it.
 
 ## Set up
 
-1. **Turn on Rex's Tailscale serving on your computer.** Rex DUO reaches Rex over Tailscale, a
+1. **Turn on Rex's Tailscale serving on your computer.** Pteron reaches Rex over Tailscale, a
    private network that links your devices. In a terminal on the computer, run
    `rex server tailscale on` and sign in to Tailscale if Rex asks (`rex server status` shows the
    sign-in link). This lasts until the Rex server restarts; to keep it on, start the server with
    `--tailscale`.
 2. **Put your iPhone on the same tailnet.** Install Tailscale on the iPhone and sign in with the
    same account as the computer. Rex only lets in devices signed in to that account.
-3. **Add the computer in Rex DUO.** On a fresh install the sidebar offers **Pair via QR Code**,
+3. **Add the computer in Pteron.** On a fresh install the sidebar offers **Pair via QR Code**,
    and Settings → Servers → Add Server has it too. On the computer, run
-   `rex server tailscale pair` and point the camera at the code it shows. Rex DUO checks the
+   `rex server tailscale pair` and point the camera at the code it shows. Pteron checks the
    computer, shows its name, account and sessions, and **Add & Open** takes you to its active
    tab. You can also type the computer's address (such as `studio-rex.your-tailnet.ts.net`)
    under **Or Enter Its Address**.
@@ -32,7 +33,7 @@ Open the link on your iPhone. It installs TestFlight first if you don't have it.
 Repeat step 3 for each computer. A computer that Rex already knows about shows up under
 **Not added** in the sidebar, with an **Add** button.
 
-## Using Rex DUO
+## Using Pteron
 
 ### The sidebar
 
@@ -61,7 +62,7 @@ it to the phone again.
 
 The **Pane Actions** button splits the pane right or down, opens a new tab, shows all tabs,
 zooms, clears, renames, and closes the pane or tab. Closing a pane, tab or session stops what
-runs in it, on the computer too. Rex DUO asks first when an agent is running there, and always
+runs in it, on the computer too. Pteron asks first when an agent is running there, and always
 before it closes a session.
 
 ### Gestures
@@ -110,7 +111,7 @@ Shift-Tab.
 
 ### Hardware keyboards
 
-With a keyboard attached, Rex DUO uses Rex's own shortcuts, including any you changed in your Rex
+With a keyboard attached, Pteron uses Rex's own shortcuts, including any you changed in your Rex
 config. A few defaults:
 
 | Keys | Action |
@@ -139,7 +140,7 @@ changes the text size.
 
 ### iPhone Duo postures
 
-Rex DUO follows the size of its window, so it works the same in every posture:
+Pteron follows the size of its window, so it works the same in every posture:
 
 - **Folded:** the sidebar slides over the tab as a drawer, and one pane shows at a time.
 - **Unfolded:** the sidebar sits beside the tab, and splits are laid out as on your computer.
@@ -150,20 +151,20 @@ Folding or unfolding keeps your place: the same tab, the same pane and its keybo
 
 ## Notifications
 
-Rex DUO can tell you when an agent needs your input, when it finishes, or when a terminal asks
+Pteron can tell you when an agent needs your input, when it finishes, or when a terminal asks
 for attention. While the app is open, these show as a short banner at the top for panes you
 aren't looking at. While it is closed, they arrive as iPhone notifications.
 
-To get notifications while the app is closed, each computer needs a small add-on, the Rex DUO
-add-on (on the computer the program is called Rex DUO Beacon). It runs on Mac and Linux
-computers and keeps itself up to date. After you add a computer, Rex DUO offers to install the
+To get notifications while the app is closed, each computer needs a small add-on, the Pteron
+add-on (on the computer the program is called Pteron Beacon). It runs on Mac and Linux
+computers and keeps itself up to date. After you add a computer, Pteron offers to install the
 add-on on it; tap **Install**.
 
 Everything else is in Settings → Notifications:
 
 - **Turn notifications on or off.** The **Notifications** switch is for the whole app. The
-  first time you turn it on, iOS asks for permission. If notifications are turned off for Rex
-  DUO in iOS Settings, the switch shows off and says so; tap **Open Settings** to turn them on.
+  first time you turn it on, iOS asks for permission. If notifications are turned off for
+  Pteron in iOS Settings, the switch shows off and says so; tap **Open Settings** to turn them on.
 - **Choose computers.** With the switch on, each computer has its own switch. Turning a
   computer on installs the add-on on that computer if it has none; turning it off stops
   notifications from that computer only, and leaves the add-on installed. A computer that
@@ -179,10 +180,10 @@ Everything else is in Settings → Notifications:
 
 ## Privacy and security
 
-- **Your sessions stay between your phone and your computers.** Rex DUO connects straight to
-  each Rex server over your Tailscale network. There is no Rex DUO account and no analytics.
-- **Notifications go through a small relay.** Rex DUO Beacon sends each notification to the Rex
-  DUO push service, which only passes it on to Apple for delivery. Beacon never holds your
+- **Your sessions stay between your phone and your computers.** Pteron connects straight to
+  each Rex server over your Tailscale network. There is no Pteron account and no analytics.
+- **Notifications go through a small relay.** Pteron Beacon sends each notification to the
+  Pteron push service, which only passes it on to Apple for delivery. Beacon never holds your
   phone's notification token or an Apple key.
 - **What the relay stores:** your phone's notification token and which of Apple's delivery
   services it uses, and for each computer a fingerprint of the secret its Beacon uses, with the computer's
@@ -198,7 +199,7 @@ Everything else is in Settings → Notifications:
 
 **The app says it can't reach a computer, or it is "Out of range".**
 Check that Tailscale is connected on the iPhone and that the computer is on the same tailnet.
-Rex DUO reconnects by itself as soon as it can.
+Pteron reconnects by itself as soon as it can.
 
 **"Isn't answering".**
 The computer may be asleep, or Rex isn't running there. Wake it and open Rex.
@@ -214,7 +215,7 @@ again with `rex server tailscale pair`.
 **Notifications don't arrive.**
 Open Settings → Notifications and look at the line under the computer's name. "Add-on isn't
 running": tap **Repair**. "Add-on needs an update": tap **Update**. If iOS has turned
-notifications off for Rex DUO, the section says so and offers **Open Settings**. The computer
+notifications off for Pteron, the section says so and offers **Open Settings**. The computer
 has to be on and Rex has to be running for the add-on to see your agents.
 
 **"Add-on on … has changed".**
@@ -228,7 +229,7 @@ out, and [CONTRIBUTING.md](CONTRIBUTING.md) before you send a change.
 
 ## Licence
 
-Rex DUO is free software under the [GNU Affero General Public License, version 3](LICENSE)
+Pteron is free software under the [GNU Affero General Public License, version 3](LICENSE)
 (AGPL-3.0-only). You may use, study, change and share it. Anything built from it, including a
 hosted service, must be released under the same licence with its full source. The names and
 artwork are not licensed for other products. Third-party code and its licences are listed in

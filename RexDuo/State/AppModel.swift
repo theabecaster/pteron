@@ -144,9 +144,9 @@ final class AppModel {
     var settingsStart: SettingsPage?
     @ObservationIgnored let prefs: Prefs
     @ObservationIgnored let notifier = AgentNotifier()
-    /// Push registration with each server's Rex DUO Helper.
+    /// Push registration with each server's Beacon.
     @ObservationIgnored let push: PushRegistrar
-    /// Installing Rex DUO Helper on a server from here.
+    /// Installing Beacon on a server from here.
     @ObservationIgnored let helperSetup: HelperSetupCenter
     /// Latest request to show a tab; RootView observes it.
     var openRequest: OpenRequest?
@@ -258,7 +258,7 @@ final class AppModel {
             return .problem(ConnectionProblem.classify(failure, network: network?.snapshot ?? .unknown))
         }
         let client = ClientInfo(
-            name: "Rex DUO",
+            name: Brand.appName,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: PushIdentity.previewLabel(deviceName: UIDevice.current.name))
         return .reachable(await ServerPreview.fetch(address: url.absoluteString, client: client))

@@ -3,7 +3,7 @@ import Observation
 import RexKit
 import os
 
-/// One install (or repair) of Rex DUO Helper on one server, from the tap on Install to Connected
+/// One install (or repair) of Beacon on one server, from the tap on Install to Connected
 /// or an error. It opens a tab on the computer that runs the installer from the app bundle,
 /// follows the installer's progress records and exit code, types the run's setup code into the
 /// installer's terminal when the installer asks for it, then asks the helper for the proof that

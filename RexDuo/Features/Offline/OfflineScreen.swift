@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 import UIKit
 
@@ -17,7 +18,7 @@ struct OfflineCopy: Equatable {
         switch kind {
         case .noInternet:
             return OfflineCopy(symbol: "wifi.slash", title: "No connection",
-                               message: "This iPhone is offline right now. Rex DUO reconnects as soon as a network is back.")
+                               message: "This iPhone is offline right now. \(Brand.appName) reconnects as soon as a network is back.")
         case .offPrivateNetwork:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
                                message: "Can't reach \(server) from this network.",
@@ -36,23 +37,23 @@ struct OfflineCopy: Equatable {
                                hint: "Sign this iPhone in to that account, then try again.")
         case .insecure:
             return OfflineCopy(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify \(server)",
-                               message: "The secure connection failed, so Rex DUO stopped there.",
+                               message: "The secure connection failed, so \(Brand.appName) stopped there.",
                                hint: "Use the Mac's full https:// address in Settings.")
         case .updateServer:
             return OfflineCopy(symbol: "arrow.down.circle", title: "Update Rex on \(server)",
-                               message: "Rex there is too old for this version of Rex DUO.",
+                               message: "Rex there is too old for this version of \(Brand.appName).",
                                hint: "Update Rex on the Mac, then try again.")
         case .updateApp:
-            return OfflineCopy(symbol: "arrow.down.circle", title: "Update Rex DUO",
-                               message: "\(Server) runs a newer Rex than this version of Rex DUO works with.",
-                               hint: "Update Rex DUO, then try again.")
+            return OfflineCopy(symbol: "arrow.down.circle", title: "Update \(Brand.appName)",
+                               message: "\(Server) runs a newer Rex than this version of \(Brand.appName) works with.",
+                               hint: "Update \(Brand.appName), then try again.")
         case .badAddress:
             return OfflineCopy(symbol: "link", title: "That address won't work",
                                message: "“\(address)” isn't a server address.",
                                hint: "Use the full https:// address of the Mac in Settings.")
         case .unknown:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't reach \(server)",
-                               message: "Something interrupted the connection. Rex DUO keeps trying.")
+                               message: "Something interrupted the connection. \(Brand.appName) keeps trying.")
         }
     }
 

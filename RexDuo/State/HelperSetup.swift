@@ -1,8 +1,9 @@
 import CryptoKit
 import Foundation
+import GlanceModel
 import RexKit
 
-// Installing Rex DUO Helper from the phone, without the network or Rex in it: what the installer
+// Installing Beacon from the phone, without the network or Rex in it: what the installer
 // is told, what its progress means, and what the sheet shows for it. `HelperSetupRunner` drives
 // these against a real server. The flow is described in docs/notifications.md.
 
@@ -160,7 +161,7 @@ enum SetupCode {
 /// The block the installer runs in: a terminal that starts the command directly, with no shell of
 /// the user's around it, and stays open after the command exits so its output can still be read.
 enum SetupBlock {
-    static let label = "Rex DUO Beacon setup"
+    static let label = "\(Brand.beaconName) setup"
     static let flavor = "com.superlogical.terminal.shell"
     /// The oldest control API whose terminal takes a program to run directly (`command` with
     /// `shell: "none"`). The options themselves are checked too, in `supported`.
@@ -451,7 +452,7 @@ enum SetupError: Equatable {
     /// Installed, but the helper didn't start or didn't connect in time.
     case notStarted
     case noGUI, noSystemd, appManagement, interrupted
-    /// iOS doesn't let Rex DUO show notifications.
+    /// iOS doesn't let the app show notifications.
     case notificationsOff
     /// The helper there didn't show that this install started it.
     case identityChanged
@@ -482,22 +483,22 @@ enum SetupError: Equatable {
 
     func message(name: String) -> String {
         switch self {
-        case .network: "\(name) couldn't download Rex DUO Beacon. Check the internet connection on \(name), then try again."
-        case .noDownloader: "\(name) needs curl to download Rex DUO Beacon. Install curl on \(name), then try again."
+        case .network: "\(name) couldn't download \(Brand.beaconName). Check the internet connection on \(name), then try again."
+        case .noDownloader: "\(name) needs curl to download \(Brand.beaconName). Install curl on \(name), then try again."
         case .verify: "The download didn't pass its security check, so nothing was installed. Try again later."
-        case .release: "Rex DUO can't get Beacon right now. Try again later."
-        case .unsupportedComputer: "Rex DUO Beacon isn't available for this computer yet."
-        case .oldMacOS: "Rex DUO Beacon needs macOS 14 or later."
-        case .write: "\(name) couldn't save Rex DUO Beacon. Free up space on \(name), then try again."
+        case .release: "\(Brand.appName) can't get Beacon right now. Try again later."
+        case .unsupportedComputer: "\(Brand.beaconName) isn't available for this computer yet."
+        case .oldMacOS: "\(Brand.beaconName) needs macOS 14 or later."
+        case .write: "\(name) couldn't save \(Brand.beaconName). Free up space on \(name), then try again."
         case .busy: "Another install is already running on \(name)."
-        case .notStarted: "Rex DUO Beacon is installed but didn't start."
+        case .notStarted: "\(Brand.beaconName) is installed but didn't start."
         case .noGUI: "Log in on \(name), then try again."
-        case .noSystemd: "\(name) doesn't start background services the usual way. Show details says how to start Rex DUO Beacon."
-        case .appManagement: "\(name) didn't let Rex replace the old Rex DUO Beacon. On \(name), drag Rex DUO Beacon from Applications to the Trash, then try again."
+        case .noSystemd: "\(name) doesn't start background services the usual way. Show details says how to start \(Brand.beaconName)."
+        case .appManagement: "\(name) didn't let Rex replace the old \(Brand.beaconName). On \(name), drag \(Brand.beaconName) from Applications to the Trash, then try again."
         case .interrupted: "The install stopped before it finished."
-        case .notificationsOff: "Notifications are off for Rex DUO."
-        case .identityChanged: "Rex DUO Beacon on \(name) has changed. Only trust Beacon if you reinstalled it on \(name)."
-        case .manual: "Rex on \(name) is too old to install Rex DUO Beacon from here. Update Rex on \(name), or install Beacon by hand.\nMac: drag Rex DUO Beacon to Applications and open it once.\nLinux: run rex-duo-helper install."
+        case .notificationsOff: "Notifications are off for \(Brand.appName)."
+        case .identityChanged: "\(Brand.beaconName) on \(name) has changed. Only trust Beacon if you reinstalled it on \(name)."
+        case .manual: "Rex on \(name) is too old to install \(Brand.beaconName) from here. Update Rex on \(name), or install Beacon by hand.\nMac: drag \(Brand.beaconName) to Applications and open it once.\nLinux: run rex-duo-helper install."
         }
     }
 
@@ -514,7 +515,7 @@ enum SetupError: Equatable {
     }
 
     static func connectionLost(name: String) -> String {
-        "Lost the connection to \(name). The install keeps going on \(name), and Rex DUO catches up when it reconnects."
+        "Lost the connection to \(name). The install keeps going on \(name), and \(Brand.appName) catches up when it reconnects."
     }
 }
 
@@ -835,11 +836,11 @@ struct SetupState: Equatable {
     /// The one secondary line, under the row in progress.
     func detail(_ row: Step, name: String) -> String? {
         let mark = mark(row)
-        if row == .downloading, let version, mark != .pending, phase != .preparing { return "Rex DUO Beacon \(version)" }
+        if row == .downloading, let version, mark != .pending, phase != .preparing { return "\(Brand.beaconName) \(version)" }
         guard mark == .current else { return nil }
         switch row {
         case .downloading: return phase == .preparing ? "Getting ready…" : nil
-        case .verifying: return "Checking the download is the real Rex DUO Beacon…"
+        case .verifying: return "Checking the download is the real \(Brand.beaconName)…"
         case .installing:
             switch token {
             case "start": return "Starting Beacon…"

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GlanceModel
 import Security
 import os
 
@@ -147,7 +148,11 @@ enum HelperRelease {
     /// The hosts a fetch may be sent on to.
     static let hosts: Set<String> = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]
 
-    /// The list's entry for the Mac app under the name Rex DUO Beacon, and that file's name.
+    /// The list's entry for the Mac app, and that file's name. Both are fixed for good, whatever
+    /// the app inside is called: a shipped app refuses a list whose entry has another address.
+    static let macAppKey = "macos-app"
+    static let macAppAsset = "Beacon-macOS.zip"
+    /// The entry and the file of the same app in a folder of an earlier name.
     static let macBeaconKey = "macos-universal-beacon"
     static let macBeaconAsset = "Rex-DUO-Beacon.zip"
 
@@ -238,12 +243,13 @@ enum HelperRelease {
         for platform in HelperPlatform.allCases {
             assets[platform] = try entry(platform.rawValue, at: assetURL(platform, version: version))
         }
-        // The Mac app under its own name, Rex DUO Beacon. A list that has this entry also keeps
-        // the earlier one, the same app in a folder of the earlier name, for the versions that
-        // update themselves from it. The installer takes either file; the app gives it this one.
-        if let beacon = try entry(macBeaconKey, at: "\(base)helper-v\(version)/\(macBeaconAsset)") {
-            assets[.mac] = beacon
-        }
+        // The Mac app is in a list up to three times: once in a folder of its own name, and in
+        // folders of the two earlier names, for the versions that update themselves from those.
+        // Every entry a list names must be right. The installer takes any of the files; the app
+        // gives it the newest the list has.
+        let beacon = try entry(macBeaconKey, at: "\(base)helper-v\(version)/\(macBeaconAsset)")
+        let app = try entry(macAppKey, at: "\(base)helper-v\(version)/\(macAppAsset)")
+        if let newest = app ?? beacon { assets[.mac] = newest }
         return ReleaseManifest(version: version, minVersion: minVersion, expiresAt: expiresAt, nextKey: nextKey, assets: assets)
     }
 
@@ -290,7 +296,7 @@ enum HelperRelease {
     /// The quiet line for that date.
     static func renewalNotice(expiresAt: Date, now: Date) -> String? {
         guard let due = renewalDue(expiresAt: expiresAt, now: now) else { return nil }
-        return "Rex DUO Beacon updates need renewing by \(due.formatted(date: .abbreviated, time: .omitted))"
+        return "\(Brand.beaconName) updates need renewing by \(due.formatted(date: .abbreviated, time: .omitted))"
     }
 
     // MARK: Fields

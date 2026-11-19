@@ -1,8 +1,9 @@
 import CryptoKit
 import Foundation
+import GlanceModel
 import RexKit
 
-/// How the phone makes sure the client it is about to give a secret to is the real Rex DUO Helper
+/// How the phone makes sure the client it is about to give a secret to is the real Beacon
 /// on that server, and the same one as last time. The helper holds an ed25519 key and signs a
 /// challenge; the phone pins the public half the first time, or, during an install from the app,
 /// once the helper showed that install's setup proof (`HelperAdmission`, docs/notifications.md).
@@ -106,7 +107,7 @@ struct HelperFailure: Error, Equatable {
         let said = message.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = said.isEmpty ? "the request failed" : said
         let end = text.last.map { ".!?".contains($0) } == true ? "" : "."
-        return "Rex DUO Beacon on \(name): \(text)\(end)"
+        return "\(Brand.beaconName) on \(name): \(text)\(end)"
     }
 }
 

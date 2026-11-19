@@ -421,13 +421,17 @@ beacon = load("manifest-beacon.json")
 assert set(good["assets"]) == {"macos-universal", "linux-x86_64", "linux-aarch64"}, list(good["assets"])
 assert beacon["assets"].pop("macos-universal-beacon")["url"].endswith("/helper-v9.8.7/Rex-DUO-Beacon.zip") and beacon == good
 beacon = load("manifest-beacon.json")
-for m in (good, beacon, expired, older):
+# manifest-app.json adds the third, the one everything newer takes.
+app = load("manifest-app.json")
+assert app["assets"].pop("macos-app")["url"].endswith("/helper-v9.8.7/Beacon-macOS.zip") and app == beacon
+app = load("manifest-app.json")
+for m in (good, beacon, app, expired, older):
     for platform, a in m["assets"].items():
         assert a["url"].startswith(f"https://github.com/theabecaster/rexduo/releases/download/helper-v{m['version']}/"), a
         assert re.fullmatch(r"[0-9a-f]{64}", a["sha256"]) and 0 < a["size"] <= 64 << 20, a
 PY
 fixture_key="$(sed -n 's/^primary[[:space:]]*//p' "$fixtures/test-key.pub")"
-for name in manifest manifest-beacon manifest-expired manifest-older; do
+for name in manifest manifest-beacon manifest-app manifest-expired manifest-older; do
   verifies "$fixture_key" "$fixtures/$name.json" "$fixtures/$name.json.sig" || fail "Relay/fixtures/$name.json.sig is not the test key's signature"
 done
 if verifies "$fixture_key" "$fixtures/manifest.json" "$fixtures/manifest-untrusted.json.sig"; then fail "Relay/fixtures/manifest-untrusted.json.sig is signed by the test key"; fi
@@ -435,7 +439,7 @@ printf 'rex-duo-helper|9.8.7|linux-x86_64|%s' "$(sed -n '/"linux-x86_64"/,/}/s/.
 verifies "$fixture_key" "$box/fixture.text" "$fixtures/rex-duo-helper-linux-x86_64.sig" || fail "Relay/fixtures: the Linux signature is not over the agreed text"
 [[ "$fixture_key" != "$(committed_key primary)" && "$fixture_key" != "$(committed_key recovery)" ]] || fail "Relay/fixtures is signed by a release key"
 ! grep -rIl "PRIVATE KEY" "$fixtures" >/dev/null || fail "Relay/fixtures holds a private key"
-ok "Relay/fixtures: four lists and a Linux signature by the test key, one signature by another key"
+ok "Relay/fixtures: five lists and a Linux signature by the test key, one signature by another key"
 
 general=$group
 

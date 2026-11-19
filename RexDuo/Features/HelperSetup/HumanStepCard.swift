@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 
 /// Something a person does on the computer while the install goes on: a title, what to do, a
@@ -11,9 +12,9 @@ struct HumanStepCard: View {
 
     /// The words of the Mac's card. They name the program as the Mac's own question does.
     static func allowCopy(name: String) -> (title: String, message: String, aside: String) {
-        ("Click Allow for Rex DUO Beacon on \(name)",
-         "\(name) asks whether Rex DUO Beacon may show notifications. Beacon only shows a short notice on \(name) when a phone connects. This iPhone gets notifications either way.",
-         "\(name) may also say Rex DUO Beacon added a background item. That message is expected.")
+        ("Click Allow for \(Brand.beaconName) on \(name)",
+         "\(name) asks whether \(Brand.beaconName) may show notifications. Beacon only shows a short notice on \(name) when a phone connects. This iPhone gets notifications either way.",
+         "\(name) may also say \(Brand.beaconName) added a background item. That message is expected.")
     }
 
     /// Mac: the system asks whether the helper may show notifications.

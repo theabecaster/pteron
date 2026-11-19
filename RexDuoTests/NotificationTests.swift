@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import Testing
 import RexKit
 @testable import RexDuo
@@ -170,7 +171,7 @@ struct PushSupportTests {
         let peer: JSONObject = ["kind": "peer", "uid": 501]
         let clients: [JSONObject] = [
             ["client_id": "client:old", "info": ["name": "rex-push-relay"], "principal": peer, "connection_state": "connected"],
-            ["client_id": "client:phone", "info": ["name": "Rex DUO"], "principal": ["kind": "tailscale"]],
+            ["client_id": "client:phone", "info": ["name": Brand.appName], "principal": ["kind": "tailscale"]],
             ["client_id": "client:new", "info": ["name": "rex-push-relay"], "principal": peer],
             ["client_id": "client:lost", "info": ["name": "rex-push-relay"], "principal": peer, "connection_state": "lost"],
         ]

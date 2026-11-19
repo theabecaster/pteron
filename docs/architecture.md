@@ -64,7 +64,7 @@ of the app builds the extension), `RexDuoWidgets`, `RexDuoTests`.
   die, so a return to the foreground usually finds the connection down for a moment. A drop
   while in the background, or within 5 s after the return, is held: `phase` stays `.online`, the
   tab keeps its last frame with no dim, input queues as usual, and `ServerConnection.waking` puts
-  a small Rexie beside the tab's title, breathing, if it lasts over a second (`WakingMark`, Core
+  a small Glide beside the tab's title, breathing, if it lasts over a second (`WakingMark`, Core
   Animation, still with Reduce Motion; the sidebar's dot turns grey and still). On the return
   `RexControl.wake()` pings the connection: a failed ping, no pong in 2.5 s, or a drop in those
   seconds reconnects at once, not after the backoff. A reconnect inside the grace shows nothing

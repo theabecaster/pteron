@@ -9,6 +9,7 @@
 #   test-key.pub                       the key the tests trust, in the format of update-key.pub
 #   manifest.json, manifest.json.sig   version 9.8.7, expires in 2099, one entry for a Mac
 #   manifest-beacon.json, .sig         the same list with the Mac's second entry, macos-universal-beacon
+#   manifest-app.json, .sig            the same list with all three entries for a Mac, macos-app among them
 #   rex-duo-helper-linux-x86_64.sig    over rex-duo-helper|9.8.7|linux-x86_64|<sha256 in the list>
 #   manifest-expired.json, .sig        the same list, expired in 2020
 #   manifest-older.json, .sig          version 9.8.6
@@ -79,9 +80,15 @@ beacon = manifest("9.8.7", "2099-01-01T00:00:00Z")
 data = b"a beacon for a Mac\n"
 beacon["assets"]["macos-universal-beacon"] = {"url": f"{base}/helper-v9.8.7/Rex-DUO-Beacon.zip", "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
+# And a third time, in the zip everything newer takes: the list as a release has it today.
+app = json.loads(json.dumps(beacon))
+data = b"an app for a Mac\n"
+app["assets"]["macos-app"] = {"url": f"{base}/helper-v9.8.7/Beacon-macOS.zip", "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
 for name, m in {
     "manifest.json": manifest("9.8.7", "2099-01-01T00:00:00Z"),
     "manifest-beacon.json": beacon,
+    "manifest-app.json": app,
     "manifest-expired.json": manifest("9.8.7", "2020-01-01T00:00:00Z"),
     "manifest-older.json": manifest("9.8.6", "2099-01-01T00:00:00Z"),
 }.items():
@@ -93,7 +100,7 @@ with open(os.path.join(out, "binary.txt"), "w") as f:
 PY
 mv "$out/binary.txt" "$work/binary.txt"
 
-for name in manifest manifest-beacon manifest-expired manifest-older; do
+for name in manifest manifest-beacon manifest-app manifest-expired manifest-older; do
   sign_with test "$out/$name.json" "$out/$name.json.sig"
 done
 sign_with test "$work/binary.txt" "$out/rex-duo-helper-linux-x86_64.sig"

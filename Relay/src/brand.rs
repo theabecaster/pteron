@@ -82,6 +82,15 @@ mod tests {
         assert_eq!(setup.matches(APP).count(), 1, "setup.sh spells the name out once, on that line");
     }
 
+    /// The phone app carries setup.sh and runs no copy over 64 KiB (`SetupScript.maxBytes`
+    /// there). This line is lower, so the file is trimmed long before an app build would ship
+    /// an installer it can't run. The app's tests hold the copy it carries to the same line.
+    #[test]
+    fn setup_sh_stays_small_enough_for_the_app() {
+        let size = include_str!("../setup.sh").len();
+        assert!(size < 62_000, "setup.sh is {size} bytes; trim it under 62,000");
+    }
+
     /// The one line of a script that sets `name`, without its quotes.
     fn value<'a>(script: &'a str, name: &str) -> &'a str {
         let start = format!("{name}=");

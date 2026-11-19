@@ -1,4 +1,4 @@
-Rex DUO
+Pteron
 Copyright (C) 2026 Abraham Gonzalez
 
 Everything in this repository is licensed under the GNU Affero General Public License,
@@ -6,8 +6,8 @@ version 3 only (AGPL-3.0-only), unless a file says otherwise. The full text is i
 
 In short: you may read, run, study, change and share this code, but anything you build from it,
 including a service that people use over a network, must be released under the same licence
-with its full source code. The licence gives no permission to use the names "Rex DUO" or
-"Rex DUO Beacon", or the app's icons and artwork, for another product.
+with its full source code. The licence gives no permission to use the names "Pteron" or
+"Pteron Beacon", the Glide mascot, or the app's icons and artwork, for another product.
 
 Third-party code keeps its own licence:
 - libghostty-vt (Ghostty), MIT. Built from source into the app; its notice ships in the app
@@ -15,4 +15,5 @@ Third-party code keeps its own licence:
 - Beacon's Rust crates (Relay/Cargo.lock): MIT, Apache-2.0, ISC, BSD, CDLA-Permissive-2.0
   and Unicode-3.0. Their notices ship with every Beacon release as THIRD_PARTY_LICENSES.txt
   (also inside the Mac app), written by Relay/third-party-licenses.py.
-- Rex is a separate product by Super Logical and is not part of this repository.
+- Rex is a separate product by Superlogical and is not part of this repository. Pteron works
+  with Rex. It is an independent app, not affiliated with or endorsed by Superlogical.

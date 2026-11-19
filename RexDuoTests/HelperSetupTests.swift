@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GlanceModel
 import Testing
 import RexKit
 @testable import RexDuo
@@ -309,7 +310,9 @@ struct HelperSetupTests {
         let source = try Data(contentsOf: installerInRepository)
         let url = try #require(Bundle.main.url(forResource: "setup", withExtension: "sh"))
         #expect(try Data(contentsOf: url) == source)
-        #expect(source.count < 64 << 10)
+        // The app runs no copy over `maxBytes`. The installer is held well under it, on the
+        // same line as Beacon's own test of the file, so it is trimmed long before that.
+        #expect(source.count < 62_000, "setup.sh is \(source.count) bytes; trim it under 62,000")
         #expect(SetupScript.maxBytes == 64 << 10)
         #expect(SetupScript.bundled() == String(data: source, encoding: .utf8))
     }
@@ -321,9 +324,9 @@ struct HelperSetupTests {
         let command = args.command(script: "script")
         let theme = ThemeStore.fallback
         let payload = SetupBlock.session(command: command, theme: theme)
-        #expect(payload.str("label") == "Rex DUO Beacon setup")
+        #expect(payload.str("label") == "\(Brand.beaconName) setup")
         let window = try #require(payload.arr("initial_windows").first)
-        #expect(window.str("window_label") == "Rex DUO Beacon setup")
+        #expect(window.str("window_label") == "\(Brand.beaconName) setup")
         let block = try #require(window.obj("layout")?.obj("block"))
         #expect(block.str("flavor") == "com.superlogical.terminal.shell")
         #expect(block.str("label") == "rexduo-setup")
@@ -530,11 +533,11 @@ struct HelperSetupTests {
         #expect(s.phase == .running && s.hasTab)
         s.handle(record("download", progress: 30))
         #expect(s.step == .downloading && s.progress == 30)
-        #expect(s.detail(.downloading, name: "studio") == "Rex DUO Beacon 0.4.0")
+        #expect(s.detail(.downloading, name: "studio") == "\(Brand.beaconName) 0.4.0")
         s.handle(record("verify"))
         #expect(s.step == .verifying && s.progress == nil)
         #expect(s.mark(.downloading) == .done && s.mark(.verifying) == .current && s.mark(.installing) == .pending)
-        #expect(s.detail(.verifying, name: "studio") == "Checking the download is the real Rex DUO Beacon…")
+        #expect(s.detail(.verifying, name: "studio") == "Checking the download is the real \(Brand.beaconName)…")
         // A token the app doesn't know changes nothing, and steps never go back.
         s.handle(record("defragment"))
         s.handle(record("download"))
@@ -684,7 +687,7 @@ struct HelperSetupTests {
         s.handle(.helperRegistered)
         #expect(s.phase == .failed(.identityChanged))
         #expect(SetupError.identityChanged.message(name: "studio")
-            == "Rex DUO Beacon on studio has changed. Only trust Beacon if you reinstalled it on studio.")
+            == "\(Brand.beaconName) on studio has changed. Only trust Beacon if you reinstalled it on studio.")
         #expect(SetupError.identityChanged.actions(hasTab: true) == [.showDetails, .close])
 
         // Also after an answer without one, and while the installer still runs.
@@ -743,7 +746,7 @@ struct HelperSetupTests {
         #expect(s.hasTab)
         s.handle(.codeRefused)
         #expect(s.phase == .failed(.release) && !s.hasTab)
-        #expect(s.error?.message(name: "studio") == "Rex DUO can't get Beacon right now. Try again later.")
+        #expect(s.error?.message(name: "studio") == "\(Brand.appName) can't get Beacon right now. Try again later.")
         #expect(s.error?.actions(hasTab: s.hasTab) == [.tryAgain, .close])
         s.handle(.exited(code: 0))
         s.handle(.proof(.valid))
@@ -752,18 +755,18 @@ struct HelperSetupTests {
 
     @Test func exitCodesMapToTheirSentences() {
         let table: [(Int, SetupError, String)] = [
-            (10, .release, "Rex DUO can't get Beacon right now. Try again later."),
-            (11, .unsupportedComputer, "Rex DUO Beacon isn't available for this computer yet."),
-            (12, .noDownloader, "studio needs curl to download Rex DUO Beacon. Install curl on studio, then try again."),
-            (13, .network, "studio couldn't download Rex DUO Beacon. Check the internet connection on studio, then try again."),
+            (10, .release, "\(Brand.appName) can't get Beacon right now. Try again later."),
+            (11, .unsupportedComputer, "\(Brand.beaconName) isn't available for this computer yet."),
+            (12, .noDownloader, "studio needs curl to download \(Brand.beaconName). Install curl on studio, then try again."),
+            (13, .network, "studio couldn't download \(Brand.beaconName). Check the internet connection on studio, then try again."),
             (14, .verify, "The download didn't pass its security check, so nothing was installed. Try again later."),
-            (15, .write, "studio couldn't save Rex DUO Beacon. Free up space on studio, then try again."),
+            (15, .write, "studio couldn't save \(Brand.beaconName). Free up space on studio, then try again."),
             (16, .busy, "Another install is already running on studio."),
-            (17, .notStarted, "Rex DUO Beacon is installed but didn't start."),
+            (17, .notStarted, "\(Brand.beaconName) is installed but didn't start."),
             (18, .noGUI, "Log in on studio, then try again."),
-            (19, .noSystemd, "studio doesn't start background services the usual way. Show details says how to start Rex DUO Beacon."),
-            (20, .appManagement, "studio didn't let Rex replace the old Rex DUO Beacon. On studio, drag Rex DUO Beacon from Applications to the Trash, then try again."),
-            (21, .oldMacOS, "Rex DUO Beacon needs macOS 14 or later."),
+            (19, .noSystemd, "studio doesn't start background services the usual way. Show details says how to start \(Brand.beaconName)."),
+            (20, .appManagement, "studio didn't let Rex replace the old \(Brand.beaconName). On studio, drag \(Brand.beaconName) from Applications to the Trash, then try again."),
+            (21, .oldMacOS, "\(Brand.beaconName) needs macOS 14 or later."),
             (-1, .interrupted, "The install stopped before it finished."),
             (1, .interrupted, "The install stopped before it finished."),
             (137, .interrupted, "The install stopped before it finished."),
@@ -779,8 +782,8 @@ struct HelperSetupTests {
         }
         #expect(SetupError(exitCode: 0) == nil)
         #expect(SetupError.connectionLost(name: "studio")
-            == "Lost the connection to studio. The install keeps going on studio, and Rex DUO catches up when it reconnects.")
-        #expect(SetupError.notificationsOff.message(name: "studio") == "Notifications are off for Rex DUO.")
+            == "Lost the connection to studio. The install keeps going on studio, and \(Brand.appName) catches up when it reconnects.")
+        #expect(SetupError.notificationsOff.message(name: "studio") == "Notifications are off for \(Brand.appName).")
     }
 
     @Test func eachErrorOffersWhatHelps() {
@@ -951,14 +954,14 @@ struct HelperSetupTests {
     @Test func theOfferSaysWhatThePlanSays() {
         #expect(HelperOfferCard.title("studio") == "Get notifications from studio?")
         #expect(HelperOfferCard.message("studio")
-            == "Rex DUO Beacon runs on studio and notifies this iPhone when an agent finishes or needs you, even while Rex DUO is closed.")
-        #expect(HelperOfferCard.footnote("studio") == "Rex DUO opens a tab on studio to install Beacon. Nothing runs as an administrator.")
+            == "\(Brand.beaconName) runs on studio and notifies this iPhone when an agent finishes or needs you, even while \(Brand.appName) is closed.")
+        #expect(HelperOfferCard.footnote("studio") == "\(Brand.appName) opens a tab on studio to install Beacon. Nothing runs as an administrator.")
         #expect(HelperOfferCard.skippedLine("studio")
-            == "You won't get notifications from studio while Rex DUO is closed. You can install Rex DUO Beacon anytime in Settings → Notifications.")
+            == "You won't get notifications from studio while \(Brand.appName) is closed. You can install \(Brand.beaconName) anytime in Settings → Notifications.")
         #expect(HelperOfferCard.skipHold == 3)
         #expect(PasswordCard.title == "Keep notifications coming after you log out?")
         #expect(PasswordCard.message(name: "studio", account: "sam")
-            == "studio stops Rex DUO Beacon when you log out, unless you allow Beacon to keep running. Allowing that takes the password for sam on studio.")
+            == "studio stops \(Brand.beaconName) when you log out, unless you allow Beacon to keep running. Allowing that takes the password for sam on studio.")
         #expect(PasswordCard.wrongLine == "That password didn't work. Try again, or choose Not now.")
         #expect(PasswordCard.aside("studio") == "Your password goes straight to studio and isn't saved on this iPhone.")
     }
@@ -1159,7 +1162,7 @@ struct HelperSetupTests {
         let server = Server(), id = UUID(), tab = Self.tabs[0]
         let closer = closer(sessions, server)
         closer.made(tab, on: id)
-        // Another "Rex DUO Beacon setup" session on the computer: the app has no record of making it.
+        // Another "Beacon setup" session on the computer: the app has no record of making it.
         let stranger = SetupSessions.Entry(sessionID: "session:other", blockID: "block:9", windowID: nil, createdAt: tab.createdAt)
         for reason in [SetupSessionCloser.Reason.exited(code: 0), .done, .retry, .cancel, .dismissed(detailsShown: true)] {
             #expect(await closer.handle(reason, stranger, on: id) == false)
@@ -1172,7 +1175,7 @@ struct HelperSetupTests {
         await closer.connected(id, inUse: [])
         await closer.connected(UUID(), inUse: [])
         #expect(server.asked == [tab] && !server.asked.contains(where: stranger.isSame) && sessions.entries(id).isEmpty)
-        #expect(SetupBlock.label == "Rex DUO Beacon setup")
+        #expect(SetupBlock.label == "\(Brand.beaconName) setup")
     }
 
     @Test func aTabLeftFromAnEarlierRunOfTheAppClosesOnTheNextConnection() async {

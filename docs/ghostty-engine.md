@@ -1,6 +1,6 @@
 # The terminal engine
 
-Rex DUO's terminal: **libghostty-vt** (upstream's `ghostty-vt.xcframework`) parses the stream
+Pteron's terminal: **libghostty-vt** (upstream's `ghostty-vt.xcframework`) parses the stream
 and holds the terminal's state, and **our own Metal renderer** draws it. A pane starts by
 restoring the Ghostty snapshot (`GHOSTSNP`) that opens every Rex data stream.
 

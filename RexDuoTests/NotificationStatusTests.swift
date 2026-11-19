@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import Testing
 import RexKit
 @testable import RexDuo
@@ -26,7 +27,7 @@ struct NotificationStatusTests {
     @Test func masterOffByTheUser() {
         let s = MasterStatus.make(MasterFacts(permission: .allowed, choice: false))
         #expect(s == MasterStatus(switchOn: false, switchEnabled: true, line: nil, fix: nil, showsComputers: false))
-        #expect(MasterStatus.footer == "Get notified when an agent finishes or needs you. Each computer needs Rex DUO Beacon to send notifications.")
+        #expect(MasterStatus.footer == "Get notified when an agent finishes or needs you. Each computer needs \(Brand.beaconName) to send notifications.")
         #expect(MasterStatus.title == "Notifications")
     }
 
@@ -177,7 +178,7 @@ struct NotificationStatusTests {
 
     @Test func macNeedsAClick() {
         let s = row { $0.setup = .clickAllow }
-        #expect(s == ComputerStatus(switchOn: true, line: line("Click Allow for Rex DUO Beacon", .none, spinner: true), fix: nil,
+        #expect(s == ComputerStatus(switchOn: true, line: line("Click Allow for \(Brand.beaconName)", .none, spinner: true), fix: nil,
                                     menu: [.showDetails, .cancel]))
     }
 
@@ -479,7 +480,7 @@ struct NotificationStatusTests {
 
     @Test func theConfirmCountsTheOtherPhones() {
         let one = NotificationCopy.removeConfirm(name: "Studio", devices: 1)
-        #expect(one.title == "Remove Rex DUO Beacon from Studio?")
+        #expect(one.title == "Remove \(Brand.beaconName) from Studio?")
         #expect(one.message == "Studio will stop sending notifications to this phone.")
         #expect(one.confirm == "Remove" && one.cancel == "Cancel")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 2).message
@@ -592,7 +593,7 @@ struct NotificationStatusTests {
             }
         }
         // The program is named in full where a screen first says it.
-        #expect(MasterStatus.footer.contains("Rex DUO Beacon") && NotificationCopy.manualSteps[0].contains("Rex DUO Beacon"))
+        #expect(MasterStatus.footer.contains(Brand.beaconName) && NotificationCopy.manualSteps[0].contains(Brand.beaconName))
         #expect(sentences.filter { $0.contains("Beacon") }.count > 30)
     }
 
@@ -949,11 +950,11 @@ struct NotificationStatusTests {
         // where to get the program, under its real name, then what to do with it on each system.
         #expect(NotificationCopy.manualTitle == "Install by Hand")
         #expect(NotificationCopy.manualSteps == [
-            "On the computer, download Rex DUO Beacon from github.com/theabecaster/rexduo/releases.",
-            "Mac: drag Rex DUO Beacon to Applications and open it once.",
+            "On the computer, download \(Brand.beaconName) from github.com/theabecaster/rexduo/releases.",
+            "Mac: drag \(Brand.beaconName) to Applications and open it once.",
             "Linux: run rex-duo-helper install.",
         ])
-        #expect(NotificationCopy.noDetails(name: "Studio") == "Rex DUO Beacon on Studio isn't answering.")
+        #expect(NotificationCopy.noDetails(name: "Studio") == "\(Brand.beaconName) on Studio isn't answering.")
     }
 }
 

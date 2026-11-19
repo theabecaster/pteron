@@ -3,8 +3,8 @@ import UIKit
 import Darwin
 
 extension View {
-    /// Covers the app with the launch splash, then peels Rexie off the screen like a sticker and
-    /// flies the app out of the Rexie-shaped hole it leaves (iris-out). Apply once, to the root view.
+    /// Covers the app with the launch splash, then peels Glide off the screen like a sticker and
+    /// flies the app out of the Glide-shaped hole it leaves (iris-out). Apply once, to the root view.
     /// The first call, during the app's first body, starts compiling the peel's shaders.
     func launchTransition() -> some View {
         StickerPeel.prewarm()
@@ -65,28 +65,21 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
 /// while the app connects underneath.
 ///
 /// Layers (bottom to top):
-/// - `cover`: the background with a Rexie-shaped hole. A huge border frames `hole`, a bitmap of the
-///   background with Rexie cut out, so it needs no mask or offscreen pass. Zooming only scales `cover`.
+/// - `cover`: the background with a Glide-shaped hole. A huge border frames `hole`, a bitmap of the
+///   background with Glide cut out, so it needs no mask or offscreen pass. Zooming only scales `cover`.
 ///   `depth` lies on the hole: the shadow and lit edge that make it read as a hole whatever the app
 ///   shows through it (`LaunchHoleDepth`). It appears with the peel and lifts as the hole opens.
 /// - `shadow`: a flat, path-only shadow on the "screen" under the folding cutout (fallback only).
-/// - `piece`: the Rexie art, the same image as the static launch screen (`LaunchRexie`) on the same
+/// - `piece`: the Glide art, the same image as the static launch screen (`LaunchArt`) on the same
 ///   pixel grid, so the first frame matches it exactly. `shade` darkens it as it tilts.
 /// - the peel's `CAMetalLayer`, whose first frame is the same pixels as `piece`; the two swap in one
 ///   transaction.
 ///
-/// Rexie peels off from the bottom-left corner and flies away, leaving the hole; the hole then grows
-/// around a point deep inside Rexie's head until the app fills the screen. Without Metal in time, the
+/// Glide peels off from the bottom-left corner and flies away, leaving the hole; the hole then grows
+/// around a point deep inside Glide's head until the app fills the screen. Without Metal in time, the
 /// flat cutout folds forward about its bottom edge and drops past the viewer instead.
 final class LaunchSplashView: UIView {
-    private enum Metric {
-        /// Point size of `LaunchRexie`; the art is the icon's "Rexie Neue Color" layer, 448 x 457 SVG units.
-        static let size = CGSize(width: 150, height: 153)
-        static let svg = CGSize(width: 448, height: 457)
-        /// Centre and radius of the largest circle inside the silhouette (SVG units): the zoom pivot.
-        /// Once that circle covers the screen, nothing of the cover is left on screen.
-        static let pivot = CGPoint(x: 232, y: 184)
-        static let pivotRadius: CGFloat = 140
+    enum Metric {
         /// Hole bitmap pixels per point: sharp up to a few times zoom; past that the edges move fast.
         static let holeScale: CGFloat = 8
         static let holeMargin: CGFloat = 6
@@ -107,6 +100,11 @@ final class LaunchSplashView: UIView {
     static let handoff: CFTimeInterval = 0.3
     /// The Metal kit must arrive this long before the start, or the Core Animation fold runs.
     static let metalLead: CFTimeInterval = 0.1
+    /// How long the hole takes to open, after the Metal peel and after the fold. The hole has
+    /// further to grow than the art before it had (its pivot circle is smaller), so it takes a
+    /// little longer, which keeps the opening's pace frame by frame close to what it was.
+    static let metalIris: CFTimeInterval = 0.80
+    static let foldIris: CFTimeInterval = 0.87
 
     private struct Pending {
         let content: UIView?
@@ -140,49 +138,6 @@ final class LaunchSplashView: UIView {
         #endif
     }
 
-    /// Rexie's outline in points (origin at the art's top-left): the body plus the mouth that fills
-    /// its notch, from the icon's "Rexie Neue Color" and "Mouth Neue" vectors.
-    static let silhouette: CGPath = {
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: x * Metric.size.width / Metric.svg.width, y: y * Metric.size.height / Metric.svg.height)
-        }
-        let b = CGMutablePath()
-        b.move(to: p(165.10, 20.20))
-        b.addCurve(to: p(209.05, 46.33), control1: p(177.76, 14.20), control2: p(199.03, 31.90))
-        b.addCurve(to: p(219.03, 44.55), control1: p(212.34, 45.67), control2: p(215.67, 45.08))
-        b.addCurve(to: p(423.81, 154.72), control1: p(320.02, 28.62), control2: p(411.70, 77.94))
-        b.addCurve(to: p(297.37, 314.53), control1: p(434.49, 222.42), control2: p(379.71, 288.85))
-        b.addLine(to: p(297.37, 314.56))
-        b.addCurve(to: p(201.94, 328.17), control1: p(275.21, 320.53), control2: p(237.14, 326.79))
-        b.addCurve(to: p(201.11, 333.46), control1: p(198.62, 328.30), control2: p(197.92, 332.55))
-        b.addCurve(to: p(294.57, 345.42), control1: p(223.96, 340.02), control2: p(261.11, 347.29))
-        b.addCurve(to: p(294.62, 345.72), control1: p(294.58, 345.52), control2: p(294.60, 345.62))
-        b.addCurve(to: p(204.14, 428.36), control1: p(284.02, 387.43), control2: p(246.97, 421.60))
-        b.addCurve(to: p(83.67, 358.60), control1: p(151.73, 436.63), control2: p(102.10, 406.43))
-        b.addCurve(to: p(47.26, 331.22), control1: p(62.91, 351.82), control2: p(48.18, 342.99))
-        b.addCurve(to: p(70.39, 290.35), control1: p(45.48, 308.60), control2: p(73.81, 312.04))
-        b.addCurve(to: p(24.03, 249.37), control1: p(66.67, 266.77), control2: p(26.17, 276.57))
-        b.addCurve(to: p(56.99, 202.23), control1: p(22.13, 225.19), control2: p(58.68, 229.32))
-        b.addCurve(to: p(23.59, 149.63), control1: p(55.63, 180.35), control2: p(16.85, 172.79))
-        b.addCurve(to: p(80.79, 124.23), control1: p(30.61, 125.53), control2: p(68.02, 142.32))
-        b.addCurve(to: p(80.95, 67.54), control1: p(93.43, 106.33), control2: p(65.73, 83.54))
-        b.addCurve(to: p(142.66, 70.35), control1: p(97.84, 49.78), control2: p(123.33, 80.99))
-        b.addCurve(to: p(165.10, 20.20), control1: p(162.10, 59.64), control2: p(146.04, 29.24))
-        b.closeSubpath()
-        let m = CGMutablePath()
-        m.move(to: p(296.68, 314.21))
-        m.addLine(to: p(296.69, 314.25))
-        m.addCurve(to: p(293.93, 345.55), control1: p(292.80, 324.22), control2: p(292.25, 334.81))
-        m.addCurve(to: p(293.48, 347.28), control1: p(293.79, 346.13), control2: p(293.64, 346.70))
-        m.addCurve(to: p(200.46, 335.20), control1: p(260.09, 349.07), control2: p(223.18, 341.78))
-        m.addCurve(to: p(197.73, 331.13), control1: p(198.37, 334.60), control2: p(197.46, 332.81))
-        m.addCurve(to: p(201.51, 327.92), control1: p(197.99, 329.46), control2: p(199.38, 328.00))
-        m.addCurve(to: p(296.74, 314.19), control1: p(236.71, 326.53), control2: p(274.78, 320.18))
-        m.addCurve(to: p(296.68, 314.21), control1: p(296.72, 314.19), control2: p(296.70, 314.20))
-        m.closeSubpath()
-        return b.union(m)
-    }()
-
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = false
@@ -204,14 +159,14 @@ final class LaunchSplashView: UIView {
         depth.opacity = 0
         cover.addSublayer(depth)
         // Drawn off the main thread: it isn't needed before the peel, a few hundred ms from now.
-        let outline = Shared(Self.silhouette)
-        let size = Metric.size, margin = Metric.holeMargin * 2, scale = Metric.holeScale
+        let outline = Shared(LaunchArt.silhouette)
+        let size = LaunchArt.size, margin = Metric.holeMargin * 2, scale = Metric.holeScale
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let drawn = Shared(LaunchHoleDepth.image(silhouette: outline.value, size: size, margin: margin, scale: scale))
             DispatchQueue.main.async { self?.depth.contents = drawn.value }
         }
 
-        shadow.shadowPath = Self.silhouette
+        shadow.shadowPath = LaunchArt.silhouette
         shadow.shadowColor = UIColor.black.cgColor
         shadow.shadowOpacity = 0.5
         shadow.shadowRadius = 8
@@ -222,7 +177,7 @@ final class LaunchSplashView: UIView {
         piece.contentsGravity = .resize
         shade.contentsGravity = .resize
         shade.opacity = 0
-        if let img = UIImage(named: "LaunchRexie") {
+        if let img = UIImage(named: LaunchArt.assetName) {
             piece.contents = img.cgImage
             piece.contentsScale = img.scale
             shade.contents = Self.silhouetteImage(of: img)
@@ -251,7 +206,7 @@ final class LaunchSplashView: UIView {
 
         // The hole bitmap sits inside a border wide enough to reach past the screen corners at any
         // scale; the border overlaps the bitmap's edge so no seam shows. Scaling pivots on the
-        // inscribed circle's centre, so the solid inside of Rexie is what ends up covering the screen.
+        // inscribed circle's centre, so the solid inside of Glide is what ends up covering the screen.
         let border = hypot(bounds.width, bounds.height)
         let m = Metric.holeMargin
         let t = cover.transform
@@ -268,26 +223,26 @@ final class LaunchSplashView: UIView {
         CATransaction.commit()
     }
 
-    /// Where iOS draws `LaunchRexie` on the static launch screen: centered, on the pixel grid.
+    /// Where iOS draws the launch art on the static launch screen: centered, on the pixel grid.
     private var artRect: CGRect {
         let s = max(traitCollection.displayScale, 1)
-        let size = Metric.size
+        let size = LaunchArt.size
         let x = ((bounds.midX - size.width / 2) * s).rounded() / s
         let y = ((bounds.midY - size.height / 2) * s).rounded() / s
         return CGRect(origin: CGPoint(x: x, y: y), size: size)
     }
 
     private func pivotPoint(in art: CGRect) -> CGPoint {
-        CGPoint(x: art.minX + Metric.pivot.x * art.width / Metric.svg.width,
-                y: art.minY + Metric.pivot.y * art.height / Metric.svg.height)
+        let p = LaunchArt.point(LaunchArt.pivot.x, LaunchArt.pivot.y)
+        return CGPoint(x: art.minX + p.x, y: art.minY + p.y)
     }
 
-    /// The background with Rexie cut out, drawn once (with `holeMargin * 2` of background around the
+    /// The background with Glide cut out, drawn once (with `holeMargin * 2` of background around the
     /// art). The outline is stroked back in by 0.75 pt so the hole's anti-aliased edge stays under the
     /// art's edge on the first frame.
     private static func holeImage(color: UIColor) -> CGImage? {
         let m = Metric.holeMargin * 2
-        let size = CGSize(width: Metric.size.width + 2 * m, height: Metric.size.height + 2 * m)
+        let size = CGSize(width: LaunchArt.size.width + 2 * m, height: LaunchArt.size.height + 2 * m)
         let format = UIGraphicsImageRendererFormat()
         format.scale = Metric.holeScale
         format.opaque = false
@@ -297,11 +252,11 @@ final class LaunchSplashView: UIView {
             color.setFill()
             cg.fill(CGRect(origin: .zero, size: size))
             cg.translateBy(x: m, y: m)
-            cg.addPath(silhouette)
+            cg.addPath(LaunchArt.silhouette)
             cg.setBlendMode(.clear)
             cg.fillPath()
             cg.setBlendMode(.normal)
-            cg.addPath(silhouette)
+            cg.addPath(LaunchArt.silhouette)
             color.setStroke()
             cg.setLineWidth(1.5)
             cg.strokePath()
@@ -350,7 +305,7 @@ final class LaunchSplashView: UIView {
             return
         }
         // Once the kit is built, draw the renderer's first frame off the main thread, then decide.
-        let timeline = StickerPeelTimeline(art: artRect, size: bounds.size, outline: Self.silhouette)
+        let timeline = StickerPeelTimeline(art: artRect, size: bounds.size, outline: LaunchArt.silhouette)
         let scale = traitCollection.displayScale, slow = Debug.slow
         let finished: @Sendable (StickerPeelStats) -> Void = { [weak self] stats in
             Task { @MainActor in self?.peelFinished(stats) }
@@ -433,23 +388,21 @@ final class LaunchSplashView: UIView {
 
         // Timeline (seconds after t0):
         //   Metal peel (StickerPeelTimeline):
-        //     0.00–0.76  Rexie peels from the bottom-left corner toward the top right, curling over itself
+        //     0.00–0.76  Glide peels from the bottom-left corner toward the top right, curling over itself
         //     0.62–1.00  the loose sticker flies off toward the top right; its shadow fades by 0.92
-        //     0.62–1.40  hole grows around the pivot until the app fills the screen; app settles 1.2x -> 1.0x
+        //     0.62–1.42  hole grows around the pivot until the app fills the screen; app settles 1.2x -> 1.0x
         //   Core Animation fold (fallback):
         //     0.00–0.60  cutout folds forward about its bottom edge (top toward the viewer), darkening
-        //     0.25–0.65  ...and drops past the bottom of the screen, leaving a Rexie-shaped hole
-        //     0.45–1.30  hole grows as above
+        //     0.25–0.65  ...and drops past the bottom of the screen, leaving a Glide-shaped hole
+        //     0.45–1.32  hole grows as above
         let irisStart = (metal == nil ? 0.45 : StickerPeelTimeline.flightStart) * k
-        let irisDuration = (metal == nil ? 0.85 : 0.78) * k
+        let irisDuration = (metal == nil ? Self.foldIris : Self.metalIris) * k
         if metal == nil { fold(t0: t0) }
 
         let art = artRect
         let pivot = pivotPoint(in: art)
-        let corners = [CGPoint.zero, CGPoint(x: bounds.maxX, y: 0), CGPoint(x: 0, y: bounds.maxY),
-                       CGPoint(x: bounds.maxX, y: bounds.maxY)]
-        let reach = corners.map { hypot($0.x - pivot.x, $0.y - pivot.y) }.max() ?? 1
-        let holeEnd = reach / (Metric.pivotRadius * art.width / Metric.svg.width) * 1.06
+        // The smallest scale at which the hole has cleared the whole screen, and a little more.
+        let holeEnd = LaunchClearing.scale(pivot: pivot, in: bounds, extent: LaunchArt.extent.map { $0 * LaunchArt.pointsPerUnit })
 
         // Zooming reads as constant speed when the scale moves evenly in log space, so the keyframes ease
         // the exponent (smoothstep): the hole opens gently, rushes through the screen edges, then lands.

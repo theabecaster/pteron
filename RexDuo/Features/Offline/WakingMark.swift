@@ -1,10 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// A small Rexie beside the tab's title while its server is waking up (`ServerConnection.waking`):
+/// A small Glide beside the tab's title while its server is waking up (`ServerConnection.waking`):
 /// back from the background, the connection is being made again and the screen shows what it had.
 /// It appears only after `delay`, so the usual quick reconnect shows nothing, then breathes until
-/// the connection is back. It is the launch screen's Rexie, small: the app is waking, not broken.
+/// the connection is back. It is the launch screen's Glide, small: the app is waking, not broken.
 ///
 /// Core Animation runs it in the render server, so it costs the main thread nothing per frame, and
 /// it exists only while waking. With Reduce Motion it holds still.
@@ -29,7 +29,7 @@ private struct WakingMarkView: UIViewRepresentable {
     func updateUIView(_ uiView: MarkView, context: Context) {}
 
     final class MarkView: UIView {
-        private let art = UIImageView(image: UIImage(named: "LaunchRexie"))
+        private let art = UIImageView(image: UIImage(named: LaunchArt.assetName))
 
         init(still: Bool) {
             super.init(frame: .zero)

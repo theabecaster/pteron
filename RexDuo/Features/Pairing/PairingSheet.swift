@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 import UIKit
 
@@ -143,7 +144,7 @@ struct PairingSheet: View {
                 EmptyView()
             case .denied:
                 PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera is off",
-                            message: "Rex DUO needs the camera to scan a pairing code. Allow it in Settings.") {
+                            message: "\(Brand.appName) needs the camera to scan a pairing code. Allow it in Settings.") {
                     PrimaryButton(title: "Open Settings", busy: false, theme: theme) {
                         Haptic.tap()
                         if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
@@ -152,12 +153,12 @@ struct PairingSheet: View {
                 }
             case .restricted:
                 PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera is restricted",
-                            message: "This iPhone doesn't allow apps to use the camera, so Rex DUO can't scan a pairing code.") {
+                            message: "This iPhone doesn't allow apps to use the camera, so \(Brand.appName) can't scan a pairing code.") {
                     PrimaryButton(title: "Enter Address Instead", busy: false, theme: theme, action: enterAddress)
                 }
             case .unavailable:
                 PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera isn't available",
-                            message: "Rex DUO can't use the camera right now to scan a pairing code.") {
+                            message: "\(Brand.appName) can't use the camera right now to scan a pairing code.") {
                     PrimaryButton(title: "Enter Address Instead", busy: false, theme: theme, action: enterAddress)
                 }
             }

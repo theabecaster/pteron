@@ -124,8 +124,8 @@ pub struct Effects<'a> {
 /// Does one move: renames the bundle (unless the new one is already there), has Launch
 /// Services forget the earlier path and record the new one, starts the helper from the new
 /// place, and waits until it reports in from there. Then the earlier names' leftovers go, and
-/// Launch Services forgets them: the bundle itself when it was not renamed, and a copy an
-/// update set aside under any earlier name.
+/// Launch Services forgets them: the bundle itself when it was not renamed, an app still there
+/// under any other earlier name, and a copy an update set aside under any earlier name.
 ///
 /// When the helper does not come up there, everything goes back: the bundle to its earlier
 /// name, Launch Services to the earlier path, the LaunchAgent to its earlier path, and the
@@ -153,6 +153,7 @@ pub fn carry_out(step: &Step, fx: &Effects) -> Result<(), String> {
                     let _ = std::fs::remove_dir_all(&step.from);
                     (fx.launch_services)("-u", &step.from);
                 }
+                remove_other_earlier(&step.to, &step.from, fx.signature_ok, fx.launch_services);
                 remove_old_previous(&step.to, fx.signature_ok, fx.launch_services);
                 return Ok(());
             }
@@ -222,6 +223,25 @@ pub fn carry_out_with(step: &Step, agents: &Agents, world: &World) -> Result<(),
             poll: world.poll,
         },
     )
+}
+
+/// Removes the apps still beside `app` under an earlier name (`EARLIER_APP_NAMES`) and has
+/// Launch Services forget them, so a Mac that had the app under two earlier names keeps one
+/// app. `moved` is the bundle the move was about, which `carry_out` has dealt with itself. As
+/// for a set-aside copy, only a real folder of such a name whose code signature is intact and
+/// ours goes; another one stays where it is, with one line in the log.
+fn remove_other_earlier(app: &Path, moved: &Path, signature_ok: &dyn Fn(&Path) -> bool, launch_services: &dyn Fn(&str, &Path)) {
+    let Some(dir) = app.parent() else { return };
+    for earlier in EARLIER_APP_NAMES.map(|name| dir.join(name)) {
+        if earlier == moved || !std::fs::symlink_metadata(&earlier).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        if !signature_ok(&earlier) {
+            crate::info!("{} stays where it is: it did not pass the code signature check", earlier.display());
+        } else if std::fs::remove_dir_all(&earlier).is_ok() {
+            launch_services("-u", &earlier);
+        }
+    }
 }
 
 /// Removes the copies an update set aside beside `app` under an earlier name
@@ -804,6 +824,66 @@ mod tests {
             assert_eq!(mac.carry_out(&step), Ok(()));
             assert_eq!((mac.build(APP_NAME).as_deref(), mac.build(was.previous).as_deref()), (Some("0.3.1"), Some("not ours")));
             assert!(!mac.events(was).iter().any(|event| event.contains("Earlier.previous.app")));
+        }
+    }
+
+    /// A Mac that had the app under both earlier names: whichever of them the move is about,
+    /// the other one goes too once the helper runs from the new place.
+    #[test]
+    fn an_app_left_under_the_other_earlier_name_goes_with_the_move() {
+        for (was, other) in [(generations()[0], generations()[1]), (generations()[1], generations()[0])] {
+            // Renamed, and beside an app already under the new name: the same either way.
+            for leftover in [false, true] {
+                let mac = Mac::new("two-earlier");
+                let from = mac.app(was.app, "0.3.1");
+                let stale = mac.app(other.app, "0.3.0");
+                if leftover {
+                    mac.app(APP_NAME, "0.3.1");
+                }
+                mac.seed(was.label, &from);
+                let yes: &dyn Fn(&Path) -> bool = &|_| true;
+                let step = plan(&from, &mac.homes(), "0.3.1", &look(yes, &|_| Some("0.3.1".to_string()))).unwrap().unwrap();
+                assert_eq!(step.leftover, leftover);
+                assert_eq!(mac.carry_out(&step), Ok(()));
+                assert_eq!(std::fs::read_dir(&mac.apps).unwrap().count(), 1, "{} beside {}, leftover {leftover}", was.app, other.app);
+                assert_eq!(mac.build(APP_NAME).as_deref(), Some("0.3.1"));
+                // Launch Services forgets the other one after it is deleted, as the last thing.
+                let forgot = format!("lsregister -u {}", mac.short(&stale));
+                assert!(mac.launchd.events().last().is_some_and(|event| event.starts_with(&forgot)));
+            }
+
+            // One whose signature is not ours stays with what it holds, and so does a link of
+            // that name with what it points at. Launch Services is told nothing about either.
+            for kind in ["not ours", "link"] {
+                let mac = Mac::new("two-earlier-kept");
+                let from = mac.app(was.app, "0.3.1");
+                let elsewhere = mac.dir.join("elsewhere.app");
+                if kind == "link" {
+                    std::fs::create_dir_all(&elsewhere).unwrap();
+                    std::os::unix::fs::symlink(&elsewhere, mac.apps.join(other.app)).unwrap();
+                } else {
+                    mac.app(other.app, "not ours");
+                }
+                mac.seed(was.label, &from);
+                let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
+                assert_eq!(mac.carry_out(&step), Ok(()));
+                assert!(std::fs::symlink_metadata(mac.apps.join(other.app)).is_ok(), "{kind}");
+                assert!(kind != "link" || elsewhere.is_dir());
+                assert!(kind != "not ours" || mac.build(other.app).as_deref() == Some("not ours"));
+                assert!(!mac.launchd.events().iter().any(|event| event.contains(other.app)), "{kind}");
+            }
+
+            // When the helper does not come up under the new name, everything goes back and
+            // the other earlier app is still there.
+            let mut mac = Mac::new("two-earlier-back");
+            let from = mac.app(was.app, "0.3.1");
+            mac.app(other.app, "0.3.0");
+            mac.seed(was.label, &from);
+            let earlier_place = program_in(&from);
+            mac.launchd.comes_up = Box::new(move |_, program| program == earlier_place);
+            let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
+            assert!(mac.carry_out(&step).is_err());
+            assert_eq!((mac.build(was.app).as_deref(), mac.build(other.app).as_deref()), (Some("0.3.1"), Some("0.3.0")));
         }
     }
 

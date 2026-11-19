@@ -3,15 +3,17 @@ import GlanceModel
 import SwiftUI
 import WidgetKit
 
-/// Every word and symbol the controls show. Renaming the app or changing a glyph is one line here.
+/// Every word and symbol the controls show. Changing a glyph is one line here; the name is
+/// `Brand.appName`.
 enum ControlText {
     /// The app's name, as the Open control's label and inside the other strings.
-    static let appName = "Rex DUO"
+    static let appName = Brand.appName
     static let jump = "Jump to Waiting"
 
-    static let openSymbol = "apple.terminal"
-    /// The agent board's "needs you" glyph.
-    static let jumpSymbol = "hand.raised.fill"
+    /// The symbols, custom ones in this extension's asset catalog: the mascot, and the mascot
+    /// with a mark for an agent that waits.
+    static let openSymbol = "mark.open"
+    static let jumpSymbol = "mark.waiting"
 
     // Shown in the controls gallery.
     static var openName: LocalizedStringResource { "Open \(appName)" }
@@ -27,7 +29,7 @@ struct OpenControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: OpenLinkIntent(link: .open)) {
-                Label(ControlText.appName, systemImage: ControlText.openSymbol)
+                Label(ControlText.appName, image: ControlText.openSymbol)
             }
         }
         .displayName(ControlText.openName)
@@ -44,7 +46,7 @@ struct WaitingControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: OpenLinkIntent(link: .waiting)) {
-                Label(ControlText.jump, systemImage: ControlText.jumpSymbol)
+                Label(ControlText.jump, image: ControlText.jumpSymbol)
             }
             .tint(Self.tint)
         }

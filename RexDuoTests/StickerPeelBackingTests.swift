@@ -68,9 +68,9 @@ struct StickerPeelBackingTests {
 
     // MARK: The real art
 
-    /// `LaunchRexie`'s alpha, a byte a pixel.
+    /// The launch art's alpha, a byte a pixel.
     private func artAlpha() throws -> (alpha: [UInt8], width: Int, height: Int) {
-        let cg = try #require(UIImage(named: "LaunchRexie")?.cgImage)
+        let cg = try #require(UIImage(named: LaunchArt.assetName)?.cgImage)
         let w = cg.width, h = cg.height
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
         let ok = bytes.withUnsafeMutableBytes { buf -> Bool in
@@ -94,14 +94,12 @@ struct StickerPeelBackingTests {
         }
     }
 
-    @Test func theArtHasASeamAndTheBackingDoesNot() throws {
+    @Test func insideTheShapeTheArtAndItsBackingAreOpaque() throws {
         let (a, w, h) = try artAlpha()
         let inside = interior(a, w, h, reach: 4)
-        // The reason this exists: inside the art, where body and mouth meet, texels are see-through.
-        let seam = inside.filter { a[$0] < 255 }
-        #expect(!seam.isEmpty)
-        #expect((seam.map { a[$0] }.min() ?? 255) < 230)
-
+        #expect(inside.count > w * h / 4)
+        // This art is one flat picture, with no seam between shapes for the backing to close.
+        #expect(inside.allSatisfy { a[$0] == 255 })
         let c = close(a, w, h)
         #expect(inside.allSatisfy { c[$0] == 255 })
     }
@@ -129,9 +127,9 @@ struct StickerPeelBackingTests {
             } }
             if !near { #expect(c[i] == 0, "(\(x), \(y))") }
         }
-        // ...and only the seam changes: a few hundred texels, none of them next to a clear one.
+        // ...and nothing changes next to a clear texel. (This art has no seam, so little or
+        // nothing changes at all.)
         let changed = (0..<(w * h)).filter { a[$0] != c[$0] }
-        #expect(!changed.isEmpty)
         #expect(changed.count < 1000, "\(changed.count) texels changed")
         for i in changed {
             let x = i % w, y = i / w

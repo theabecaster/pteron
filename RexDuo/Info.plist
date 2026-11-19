@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Rex DUO</string>
+	<string>$(APP_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -38,7 +38,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Rex DUO uses the camera to scan the pairing code your computer shows, and to take a photo you send to a pane. Nothing else is recorded.</string>
+	<string>$(APP_DISPLAY_NAME) uses the camera to scan the pairing code your computer shows, and to take a photo you send to a pane. Nothing else is recorded.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIAppFonts</key>
@@ -60,7 +60,7 @@
 		<key>UIColorName</key>
 		<string>LaunchBackground</string>
 		<key>UIImageName</key>
-		<string>LaunchRexie</string>
+		<string>LaunchMark</string>
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>

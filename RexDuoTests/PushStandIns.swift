@@ -141,7 +141,7 @@ final class GatewayStandIn {
     }
 }
 
-/// Rex DUO Beacon on each computer, as the app reaches it through Rex: it proves its key,
+/// Beacon on each computer, as the app reaches it through Rex: it proves its key,
 /// takes a secret, pauses and resumes, and records every action it was asked for.
 @MainActor
 final class HelperStandIn: HelperChannel {

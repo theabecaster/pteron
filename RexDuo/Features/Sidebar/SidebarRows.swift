@@ -49,7 +49,7 @@ enum MachineGlyph {
 }
 
 /// Connected: a green dot. Waking up (back from the background, reconnecting): the same dot, grey
-/// and still; the title bar's Rexie is the one that moves. Connecting or trying again: a spinner.
+/// and still; the title bar's Glide is the one that moves. Connecting or trying again: a spinner.
 /// Offline: a crossed antenna.
 struct ConnectionDot: View {
     let server: ServerConnection

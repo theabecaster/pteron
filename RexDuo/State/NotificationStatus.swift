@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 
 // What Settings → Notifications shows, as a function of plain facts. The master switch and each
 // computer's row are value types; `MasterStatus.make` and `ComputerStatus.make` build them, and
@@ -92,7 +93,7 @@ struct MasterStatus: Equatable, Sendable {
     static let title = "Notifications"
     /// The header over the computers, which have a group of their own under the switch's.
     static let computersHeader = "Computers"
-    static let footer = "Get notified when an agent finishes or needs you. Each computer needs Rex DUO Beacon to send notifications."
+    static let footer = "Get notified when an agent finishes or needs you. Each computer needs \(Brand.beaconName) to send notifications."
 
     var switchOn: Bool
     var switchEnabled = true
@@ -311,7 +312,7 @@ struct ComputerStatus: Equatable, Sendable {
                 return ComputerStatus(switchOn: true, line: problem("Waiting for you"), fix: .continueSetup,
                                       menu: [.showDetails, .cancel])
             case .clickAllow:
-                return ComputerStatus(switchOn: true, line: working("Click Allow for Rex DUO Beacon"), menu: [.showDetails, .cancel])
+                return ComputerStatus(switchOn: true, line: working("Click Allow for \(Brand.beaconName)"), menu: [.showDetails, .cancel])
             case .failed(let why):
                 return ComputerStatus(switchOn: true, line: problem(why.text), fix: .retry, menu: [.showDetails, .remove])
             case .manual:
@@ -658,7 +659,7 @@ enum NotificationCopy {
         } else {
             others = " and to any other phone that uses Beacon"
         }
-        return Confirm(title: "Remove Rex DUO Beacon from \(name)?",
+        return Confirm(title: "Remove \(Brand.beaconName) from \(name)?",
                        message: "\(name) will stop sending notifications to this phone\(others).", confirm: "Remove")
     }
 
@@ -673,12 +674,12 @@ enum NotificationCopy {
     static let manualTitle = "Install by Hand"
 
     /// "Show Details" on a computer where no helper answers.
-    static func noDetails(name: String) -> String { "Rex DUO Beacon on \(name) isn't answering." }
+    static func noDetails(name: String) -> String { "\(Brand.beaconName) on \(name) isn't answering." }
 
     /// "How": installing the helper by hand, one step per line.
     static let manualSteps = [
-        "On the computer, download Rex DUO Beacon from github.com/theabecaster/rexduo/releases.",
-        "Mac: drag Rex DUO Beacon to Applications and open it once.",
+        "On the computer, download \(Brand.beaconName) from github.com/theabecaster/rexduo/releases.",
+        "Mac: drag \(Brand.beaconName) to Applications and open it once.",
         "Linux: run rex-duo-helper install.",
     ]
 

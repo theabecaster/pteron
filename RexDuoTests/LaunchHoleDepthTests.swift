@@ -81,7 +81,9 @@ struct LaunchHoleDepthTests {
 
     // MARK: The bitmap
 
-    private static let size = CGSize(width: 150, height: 153)
+    private static let size = LaunchArt.size
+    /// The zoom pivot in points, deep inside the head.
+    private static let middle = LaunchArt.point(LaunchArt.pivot.x, LaunchArt.pivot.y)
     private static let margin: CGFloat = 12
     private static let scale: CGFloat = 4
 
@@ -97,7 +99,7 @@ struct LaunchHoleDepthTests {
     }
 
     private func image() throws -> CGImage {
-        try #require(LaunchHoleDepth.image(silhouette: LaunchSplashView.silhouette, size: Self.size, margin: Self.margin, scale: Self.scale))
+        try #require(LaunchHoleDepth.image(silhouette: LaunchArt.silhouette, size: Self.size, margin: Self.margin, scale: Self.scale))
     }
 
     @Test func theBitmapMatchesTheHoleBitmapsSize() throws {
@@ -108,39 +110,40 @@ struct LaunchHoleDepthTests {
 
     @Test func nothingIsDrawnOnTheSplashItself() throws {
         let img = try image()
-        // Outside Rexie: the corners of the art's box and the margin around it.
-        for p in [CGPoint(x: 2, y: 2), CGPoint(x: 148, y: 2), CGPoint(x: 2, y: 151), CGPoint(x: 148, y: 151),
-                  CGPoint(x: -8, y: 76), CGPoint(x: 158, y: 76), CGPoint(x: 75, y: -8), CGPoint(x: 75, y: 161)] {
+        // Outside Glide: the corners of the art's box and the margin around it.
+        let w = Self.size.width, h = Self.size.height
+        let corners = [CGPoint(x: 2, y: 2), CGPoint(x: w - 2, y: 2), CGPoint(x: 2, y: h - 2), CGPoint(x: w - 2, y: h - 2)]
+        for p in corners + [CGPoint(x: -8, y: h / 2), CGPoint(x: w + 8, y: h / 2), CGPoint(x: w / 2, y: -8), CGPoint(x: w / 2, y: h + 8)] {
             #expect(pixel(img, at: p).a == 0, "\(p)")
         }
-        #expect(!LaunchSplashView.silhouette.contains(CGPoint(x: 2, y: 2)))
+        #expect(corners.allSatisfy { !LaunchArt.silhouette.contains($0) })
     }
 
     @Test func theOpeningStartsInsideTheLip() {
-        let silhouette = LaunchSplashView.silhouette
+        let silhouette = LaunchArt.silhouette
         let opening = LaunchHoleDepth.opening(in: silhouette)
         let box = silhouette.boundingBoxOfPath, inner = opening.boundingBoxOfPath
         // Smaller than the silhouette by the lip on every side, and never outside it.
         #expect(abs((inner.minX - box.minX) - LaunchHoleDepth.lip) < 0.2)
         #expect(abs((box.maxX - inner.maxX) - LaunchHoleDepth.lip) < 0.2)
         #expect(abs((inner.minY - box.minY) - LaunchHoleDepth.lip) < 0.2)
-        #expect(silhouette.contains(CGPoint(x: 78, y: 62)) && opening.contains(CGPoint(x: 78, y: 62)))
+        #expect(silhouette.contains(Self.middle) && opening.contains(Self.middle))
     }
 
     @Test func theMiddleIsDimmedAndTheTopLeftIsInShadow() throws {
         let img = try image()
         // The zoom pivot, deep inside the head: only the ambient dimming, plus what little of the
         // shadow reaches that far.
-        let middle = pixel(img, at: CGPoint(x: 78, y: 62))
+        let middle = pixel(img, at: Self.middle)
         #expect(middle.a >= Double(LaunchHoleDepth.ambient) - 0.02 && middle.a < 0.4)
         #expect(middle.r < 0.02 && middle.g < 0.02 && middle.b < 0.02)
 
         // Walk in from the top edge and from the bottom edge along the same column. The light is at
         // the top left, so the shadow lies under the top edge and not under the bottom one.
-        let silhouette = LaunchSplashView.silhouette
-        let x: CGFloat = 78
-        let top = try #require(stride(from: CGFloat(0), to: 153, by: 0.25).first { silhouette.contains(CGPoint(x: x, y: $0)) })
-        let bottom = try #require(stride(from: CGFloat(153), to: 0, by: -0.25).first { silhouette.contains(CGPoint(x: x, y: $0)) })
+        let silhouette = LaunchArt.silhouette
+        let x = Self.middle.x, h = Self.size.height
+        let top = try #require(stride(from: CGFloat(0), to: h, by: 0.25).first { silhouette.contains(CGPoint(x: x, y: $0)) })
+        let bottom = try #require(stride(from: h, to: 0, by: -0.25).first { silhouette.contains(CGPoint(x: x, y: $0)) })
         let underTop = pixel(img, at: CGPoint(x: x, y: top + 3))
         let aboveBottom = pixel(img, at: CGPoint(x: x, y: bottom - 3))
         #expect(underTop.a > aboveBottom.a + 0.15, "top \(underTop.a) bottom \(aboveBottom.a)")
@@ -149,9 +152,9 @@ struct LaunchHoleDepthTests {
 
     @Test func theCutEdgeIsLit() throws {
         let img = try image()
-        let silhouette = LaunchSplashView.silhouette
-        let x: CGFloat = 78
-        let bottom = try #require(stride(from: CGFloat(153), to: 0, by: -0.25).first { silhouette.contains(CGPoint(x: x, y: $0)) })
+        let silhouette = LaunchArt.silhouette
+        let x = Self.middle.x
+        let bottom = try #require(stride(from: Self.size.height, to: 0, by: -0.25).first { silhouette.contains(CGPoint(x: x, y: $0)) })
         // Just inside the lip at the bottom: light, where a little further in is only dimming.
         let rim = pixel(img, at: CGPoint(x: x, y: bottom - LaunchHoleDepth.lip - LaunchHoleDepth.rimWidth / 2))
         let inside = pixel(img, at: CGPoint(x: x, y: bottom - 4))

@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import GlanceModel
 import Network
 import RexKit
 import Testing
@@ -436,7 +437,7 @@ struct PairingTests {
 
     @Test func theHelperLineShowsOnlyWithoutAHelper() {
         #expect(IdentityCopy.of(ServerIdentity(hasHelper: true)).helper == nil)
-        #expect(IdentityCopy.of(ServerIdentity(hasHelper: false)).helper == "Notifications need Rex DUO Beacon on this computer.")
+        #expect(IdentityCopy.of(ServerIdentity(hasHelper: false)).helper == "Notifications need \(Brand.beaconName) on this computer.")
     }
 
     @Test func aComputerThatSaidNothingGetsABareCard() {

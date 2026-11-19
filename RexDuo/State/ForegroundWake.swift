@@ -3,7 +3,7 @@ import Foundation
 /// What a dropped connection shows around a trip to the background. iOS suspends the app and its
 /// sockets die, so coming back almost always finds the connection down for a moment while it is
 /// made again. That moment is the app waking up, not a problem: the tab stays as it was, the
-/// title bar's Rexie breathes if it takes more than a second, and no offline screen shows.
+/// title bar's Glide breathes if it takes more than a second, and no offline screen shows.
 ///
 /// - `enteredBackground` while online: from then on a drop is held, not shown.
 /// - `enteredForeground`: drops stay held for `grace` more.
