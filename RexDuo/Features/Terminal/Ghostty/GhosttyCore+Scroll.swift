@@ -47,6 +47,27 @@ enum GhosttyScrollMath {
         let blank = max(0, rows - contentRows)
         return min(max(cover - blank * max(1, cellHeight), 0), max(cover, 0))
     }
+
+    /// Where to put the viewport so a find match shows (`GhosttyScrollState.Request.reveal`), or
+    /// nil when it already does. `top` and `bottom` are the match's first and last screen rows;
+    /// `viewTop` the first row the viewport shows (`maxRow` while it follows the active area),
+    /// `len` its rows. The bottom `cover + findInset` pixels are hidden less the shift `bounce`
+    /// the grid is drawn with; the top `bounce` pixels are off screen. A match that doesn't show
+    /// gets its first row a third of the way down, or the bottom position (`maxRow`) when that is
+    /// as far as the viewport goes.
+    static func reveal(top: Int, bottom: Int, viewTop: Int, len: Int, cellHeight: Int, cover: Int, findInset: Int,
+                       bounce: Int, maxRow: Int) -> Int? {
+        let cell = max(1, cellHeight)
+        let hidden = max(0, cover + findInset)
+        // Row k of the viewport is drawn from `k * cell - bounce`; it shows if it is whole
+        // between the top edge and the hidden band.
+        let first = bounce > 0 ? (bounce + cell - 1) / cell : 0
+        let lastEdge = len * cell + bounce - hidden
+        let last = lastEdge / cell - 1
+        let visible = max(1, last - first + 1)
+        if top >= viewTop + first, bottom <= viewTop + last { return nil }
+        return min(max(0, top - visible / 3), max(0, maxRow))
+    }
 }
 
 /// The scroll position of one terminal, shared by the main thread (which owns the gesture) and
@@ -86,6 +107,9 @@ final class GhosttyScrollState: @unchecked Sendable {
         case pages(Int)
         /// Shell prompts (OSC 133), negative back.
         case prompts(Int)
+        /// Bring these screen rows (a find match) into view, if they aren't
+        /// (`GhosttyScrollMath.reveal`).
+        case reveal(top: Int, bottom: Int)
         case top
         case bottom
     }
@@ -127,6 +151,9 @@ final class GhosttyScrollState: @unchecked Sendable {
     private var coverWanted = 0
     /// The cover the render side has taken over.
     private var coverTaken = 0
+    /// Pixels the find bar covers at the view's bottom, apart from the keyboard's cover.
+    private var findInsetWanted = 0
+    private var findInsetTaken = 0
     private var latest = Snapshot()
     private var sent = Snapshot()
     private var publishScheduled = false
@@ -142,8 +169,12 @@ final class GhosttyScrollState: @unchecked Sendable {
     private var cellHeight = 0
     private var appliedSequence = 0
     private var overscanGeneration = -1
-    /// Pixels of the view's bottom that are covered, as of this frame.
+    /// Pixels of the view's bottom that the keyboard covers, as of this frame.
     private var cover = 0
+    /// Pixels the find bar covers below that, as of this frame. The pin and the clamps count
+    /// both (`covered`); what decides "reading" (the `.lines` path) counts the keyboard only.
+    private var findInset = 0
+    private var covered: Int { cover + findInset }
     /// The cover changed and `finishFrame` has not seen it yet.
     private var coverChanged = false
     /// The shift that keeps the last row with content above the cover (last frame's).
@@ -159,6 +190,8 @@ final class GhosttyScrollState: @unchecked Sendable {
     private(set) var renderBounce = 0
     /// True if this frame's request moved the viewport to another row.
     private(set) var movedViewport = false
+    /// True if this frame applied a `.reveal`.
+    private(set) var appliedReveal = false
     /// Scroll calls made so far (tests and tuning).
     private(set) var viewportCalls = 0
 
@@ -185,7 +218,7 @@ final class GhosttyScrollState: @unchecked Sendable {
     var hasPending: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return pending != nil || coverWanted != coverTaken
+        return pending != nil || coverWanted != coverTaken || findInsetWanted != findInsetTaken
     }
 
     /// How many pixels of the view's bottom are covered, from the next frame on. Doesn't ask for
@@ -196,8 +229,16 @@ final class GhosttyScrollState: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// How many pixels at the view's bottom the find bar covers, from the next frame on. Kept
+    /// apart from the keyboard's cover. Doesn't ask for a frame.
+    func setFindInset(px: Int) {
+        lock.lock()
+        findInsetWanted = max(0, px)
+        lock.unlock()
+    }
+
     /// The frame builder counts the screen's rows with content only while it matters.
-    var needsContentRows: Bool { cover > 0 || coverChanged }
+    var needsContentRows: Bool { covered > 0 || coverChanged }
 
     /// The last frame's scroll state.
     var snapshot: Snapshot {
@@ -248,14 +289,18 @@ final class GhosttyScrollState: @unchecked Sendable {
         let seq = sequence
         let wanted = coverWanted
         coverTaken = wanted
+        let insetWanted = findInsetWanted
+        findInsetTaken = insetWanted
         lock.unlock()
-        if wanted != cover {
+        if wanted != cover || insetWanted != findInset {
             cover = wanted
+            findInset = insetWanted
             coverChanged = true
-            if cover == 0 { pin = 0 }
+            if covered == 0 { pin = 0 }
         }
 
         movedViewport = false
+        appliedReveal = false
         positioned = false
         if let request {
             let before = (bar.offset, active)
@@ -293,6 +338,20 @@ final class GhosttyScrollState: @unchecked Sendable {
                 scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_TOP)
             case .bottom:
                 scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM)
+            case .reveal(let top, let bottom):
+                appliedReveal = true
+                let viewTop = active ? bar.maxRow : min(bar.offset, bar.maxRow)
+                if let row = GhosttyScrollMath.reveal(top: top, bottom: bottom, viewTop: viewTop, len: bar.len, cellHeight: cell,
+                                                      cover: cover, findInset: findInset, bounce: bounce, maxRow: bar.maxRow) {
+                    if row >= bar.maxRow {
+                        if !active { scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM) }
+                    } else {
+                        scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW) { $0.row = row }
+                    }
+                } else {
+                    // Already in view: nothing moves, the shift stays.
+                    keepsShift = true
+                }
             }
             (bar, active) = Self.read(t)
             movedViewport = before != (bar.offset, active)
@@ -349,12 +408,12 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// `contentRows`: the screen's rows from the top through the last one with content or the
     /// cursor.
     func finishFrame(contentRows: Int) {
-        guard cover > 0 || coverChanged else { return }
+        guard covered > 0 || coverChanged else { return }
         coverChanged = false
         guard frameActive else { return }
-        pin = GhosttyScrollMath.pin(cover: cover, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
+        pin = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
         guard !positioned else { return }
-        let shift = following ? pin : min(bounce, cover)
+        let shift = following ? pin : min(bounce, covered)
         guard shift != bounce else { return }
         rebase += shift - bounce
         bounce = shift

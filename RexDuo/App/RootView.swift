@@ -317,6 +317,9 @@ struct RootView: View {
                 newTabOffscreen()
             case .nextTab, .previousTab, .goToTab, .tabOverview:
                 if let sel = model.selection ?? firstTab() { show(sel) } else { Haptic.bump() }
+            case .find:
+                // No pane to search: as before find existed, the key does nothing.
+                break
             default:
                 Haptic.bump()
             }

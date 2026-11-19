@@ -52,6 +52,8 @@ final class FitClaim {
     private var generation = 0
     /// A request settled and has not been answered with `onClaimed` yet.
     private var unanswered = false
+    /// The newest request still waiting out the settle delay.
+    private var settling: (cols: Int, rows: Int)?
 
     /// The pane has the size asked for: owned, resized, and still wanted.
     var onClaimed: ((_ cols: Int, _ rows: Int) -> Void)?
@@ -65,13 +67,26 @@ final class FitClaim {
     /// True between the first call for a size and the release.
     var isClaiming: Bool { goal != .nothing }
 
+    /// A request is waiting out the settle delay: a newer one would supersede it.
+    var isSettling: Bool { settling != nil }
+
+    /// The newest size asked for: the one settling, else the goal. Nil when nothing is wanted.
+    /// Find's fit hold keeps the grid at this size while the keyboard rises.
+    var wanted: (cols: Int, rows: Int)? {
+        if let settling { return settling }
+        if case .size(let c, let r) = goal { return (c, r) }
+        return nil
+    }
+
     /// Asks for the pane at this size, once the layout has settled. The newest request wins.
     func request(cols: Int, rows: Int) {
         generation += 1
         let mine = generation
+        settling = (cols, rows)
         Task { [weak self, settle] in
             await settle()
             guard let self, self.generation == mine else { return }
+            self.settling = nil
             self.goal = .size(cols, rows)
             self.unanswered = true
             self.work()
@@ -82,6 +97,7 @@ final class FitClaim {
     /// dropped; a call in flight finishes first, and no resize follows it.
     func release() {
         generation += 1
+        settling = nil
         goal = .nothing
         work()
     }
@@ -90,6 +106,7 @@ final class FitClaim {
     /// started. A size already in place stays; a claim not yet resized is given up.
     func pause() {
         generation += 1
+        settling = nil
         goal = applied.map { .size($0.0, $0.1) } ?? .nothing
         work()
     }
@@ -98,6 +115,7 @@ final class FitClaim {
     /// back.
     func lost() {
         generation += 1
+        settling = nil
         goal = .nothing
         // With a call in flight the worker gives back whatever that call claimed.
         guard !working else { return }

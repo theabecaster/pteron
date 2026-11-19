@@ -126,6 +126,12 @@ scenarios=(
   "unicode|unicode.vt|-replayRate max"
   "top|top.timed|"
   "claude|claude.timed|"
+  # Find open, with the same budgets as the runs without it: stepping 20 matches
+  # and a fling through the scrollback where the replay allows one, and a run at the 10k cap.
+  "seq-find|seq.vt|-replayRate max -findTest 99 -findSteps 20 -perfScroll 6"
+  "unicode-find|unicode.vt|-replayRate max -findTest e -findSteps 20"
+  "claude-find|claude.timed|-findTest e -findSteps 20"
+  "cap-find|cap.vt|-replayRate max -findTest 99"
 )
 
 # A warm-up for `unicode`. Its time to the final frame is likely mostly CoreText loading its fallback
@@ -152,7 +158,7 @@ for run in $(seq 1 $runs); do
   for s in $scenarios; do
     name=${s%%|*}; rest=${s#*|}; file=${rest%%|*}; extra=${rest#*|}
     [[ -z $only || ",$only," == *",$name,"* ]] || continue
-    if [[ $name == unicode && ! -f "$out/results/${name}__${run}.json" ]]; then warm_up; fi
+    if [[ $name == unicode* && ! -f "$out/results/${name}__${run}.json" ]]; then warm_up; fi
     run_one "${name}__${run}" 60 -replay "$out/scenarios/$file" -replayCols $cols -replayRows $rows ${=extra}
   done
 done

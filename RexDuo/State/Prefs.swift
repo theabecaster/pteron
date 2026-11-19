@@ -171,6 +171,10 @@ final class Prefs {
     // The agent board has no switch: it always shows while the phone stands as a tent, after the
     // hinge has held for a second (`TentDetector`), comes back 60 s after the last touch
     // (`BoardPresence`), and keeps the screen awake except in Low Power Mode (`BoardAwake`).
+    // Find has no settings: tints from the theme's yellows, the current match's text black or
+    // white by contrast, refreshes at most every 24 ms, needles under 3 characters searched after
+    // 300 ms, at most 1 KB of needle, 2,048 pages converted per refresh (`GhosttyFind`,
+    // `FindQuery`), and the hand-over in `FindHandover.shipped`.
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0

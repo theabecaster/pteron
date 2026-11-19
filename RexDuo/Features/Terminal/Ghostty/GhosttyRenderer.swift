@@ -91,6 +91,10 @@ private struct GhosttyUniforms {
     var origin: SIMD2<Float>
     var cursorCell: SIMD2<UInt32>
     var cursorText: SIMD4<Float>
+    /// The current find match's text color, and its rows: (row, first column, last column, 0).
+    var matchText: SIMD4<Float> = .zero
+    var matchSpans: (SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>) = (.zero, .zero, .zero, .zero)
+    var matchCount: UInt32 = 0
 }
 
 /// Draws one pane. Configuration comes from the main thread; everything else runs on the render thread.
@@ -128,6 +132,7 @@ final class GhosttyRenderer: @unchecked Sendable {
     private var focused = true
     private var pendingAtlas: GhosttyGlyphAtlas?
     private var pendingSelection: UInt32?
+    private var pendingFindColors: GhosttyFindHighlights.Colors?
     private var redraw = true
     /// The layer, its size or its visibility changed: what was learned about its drawables
     /// (`drawableRetryAt`) no longer holds.
@@ -164,7 +169,15 @@ final class GhosttyRenderer: @unchecked Sendable {
         var glyphs: MTLBuffer?
         /// The `frame.rowsVersion` whose row instances the buffers hold. -1: none.
         var rowsVersion = -1
+        /// Find's tints. Made on the first match, freed at the first frame after find closed.
+        var highlights: MTLBuffer?
+        /// The `frame.highlightsVersion` the highlight buffer holds. -1: none.
+        var highlightsVersion = -1
     }
+
+    /// Any buffer set holds a highlight buffer (tests: none before the first match, none after
+    /// find closed). Render thread, or a test's thread for a renderer no thread draws.
+    var hasHighlightBuffers: Bool { buffers.contains { $0.highlights != nil } }
 
     init(core: GhosttyCore, atlas: GhosttyGlyphAtlas) {
         self.core = core
@@ -234,6 +247,7 @@ final class GhosttyRenderer: @unchecked Sendable {
     }
     func setAtlas(_ a: GhosttyGlyphAtlas) { configure { pendingAtlas = a } }
     func setSelectionColor(_ c: UInt32) { configure { pendingSelection = c } }
+    func setFindColors(_ c: GhosttyFindHighlights.Colors) { configure { pendingFindColors = c } }
 
     // MARK: Cursor blink (render thread)
 
@@ -375,10 +389,12 @@ final class GhosttyRenderer: @unchecked Sendable {
         configLock.lock()
         var mustDraw = redraw
         redraw = false
-        let atlas = pendingAtlas, selection = pendingSelection
+        let atlas = pendingAtlas, selection = pendingSelection, findColors = pendingFindColors
         pendingAtlas = nil
         pendingSelection = nil
+        pendingFindColors = nil
         configLock.unlock()
+        if let findColors { frame.findColors = findColors }
         if let atlas {
             frame.atlas = atlas
             frame.invalidate()
@@ -452,6 +468,31 @@ final class GhosttyRenderer: @unchecked Sendable {
             set.rowsVersion = -1
         }
         guard let rectBuffer = set.rects, let glyphBuffer = set.glyphs else { return nil }
+
+        // Find's tints: their own buffer per set, drawn between the backgrounds and the cursor
+        // slot. With none the frame is drawn exactly as without find.
+        let highlights = frame.highlights
+        var highlightBuffer: MTLBuffer?
+        if !highlights.isEmpty {
+            let bytes = highlights.count * stride
+            if (set.highlights?.length ?? 0) < bytes {
+                set.highlights = metal.device.makeBuffer(length: max(1024, bytes * 2), options: .storageModeShared)
+                set.highlightsVersion = -1
+            }
+            if let b = set.highlights, set.highlightsVersion != frame.highlightsVersion {
+                highlights.withUnsafeBufferPointer { p in
+                    b.contents().copyMemory(from: UnsafeRawPointer(p.baseAddress!), byteCount: bytes)
+                }
+                set.highlightsVersion = frame.highlightsVersion
+            }
+            highlightBuffer = set.highlights
+        } else if !frame.findOpen, buffers.contains(where: { $0.highlights != nil }) {
+            // Find closed: frames already with the GPU keep the buffers they use.
+            for b in buffers {
+                b.highlights = nil
+                b.highlightsVersion = -1
+            }
+        }
 
         // A frame in which only the cursor or the scroll offset moved (a blink, a smooth scroll
         // between two rows) finds the rows' instances already in this buffer.
@@ -555,6 +596,16 @@ final class GhosttyRenderer: @unchecked Sendable {
             cursorCell: cursorCell,
             // Ghostty's default: the character under a block cursor takes the background color.
             cursorText: SIMD4(channel(bg, 0), channel(bg, 8), channel(bg, 16), 1))
+        if highlightBuffer != nil, !frame.matchSpans.isEmpty {
+            let t = frame.findColors.currentText
+            uniforms.matchText = SIMD4(Float((t >> 16) & 0xff) / 255, Float((t >> 8) & 0xff) / 255, Float(t & 0xff) / 255, 1)
+            var spans = [SIMD4<UInt32>](repeating: .zero, count: GhosttyFindHighlights.maxSpans)
+            for (i, r) in frame.matchSpans.prefix(GhosttyFindHighlights.maxSpans).enumerated() {
+                spans[i] = SIMD4(UInt32(r.row), UInt32(r.first), UInt32(r.last), 0)
+            }
+            uniforms.matchSpans = (spans[0], spans[1], spans[2], spans[3])
+            uniforms.matchCount = UInt32(min(frame.matchSpans.count, GhosttyFindHighlights.maxSpans))
+        }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
@@ -565,7 +616,22 @@ final class GhosttyRenderer: @unchecked Sendable {
         guard let commands = metal.queue.makeCommandBuffer(),
               let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<GhosttyUniforms>.stride, index: 1)
-        if firstB > 1 || isBlock {
+        if let highlightBuffer {
+            // Pass A in three draws on the rect buffer: backgrounds, find's tints (their own
+            // buffer), then the cursor slot and underlines, so an opaque current match never
+            // hides a block cursor or an underline inside it.
+            encoder.setRenderPipelineState(metal.rectPipeline)
+            if backgroundCount > 0 {
+                encoder.setVertexBuffer(rectBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: backgroundCount)
+            }
+            encoder.setVertexBuffer(highlightBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: highlights.count)
+            if firstB - backgroundCount > 1 || isBlock {
+                encoder.setVertexBuffer(rectBuffer, offset: backgroundCount * stride, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: firstB - backgroundCount)
+            }
+        } else if firstB > 1 || isBlock {
             encoder.setRenderPipelineState(metal.rectPipeline)
             encoder.setVertexBuffer(rectBuffer, offset: 0, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: firstB)

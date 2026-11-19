@@ -58,8 +58,11 @@ extension GhosttyTerminalView {
     /// (`GhosttyScroller.setCover`).
     func setCover(_ points: CGFloat) { scroller.setCover(points) }
 
-    /// The part of this view that shows: all of it but what the keyboard covers.
-    var visibleHeight: CGFloat { bounds.height - scroller.cover }
+    /// The find bar covers the bottom `points` of this view (`GhosttyScroller.setFindInset`).
+    func setFindInset(_ points: CGFloat) { scroller.setFindInset(points) }
+
+    /// The part of this view that shows: all of it but what the keyboard and the find bar cover.
+    var visibleHeight: CGFloat { bounds.height - scroller.coveredBottom }
 
     // MARK: For input (chunk 2a)
 
@@ -108,7 +111,7 @@ extension GhosttyTerminalView {
         var lines = 0
         if p.y < edge, s.offset > 0 {
             lines = -1
-        } else if p.y > visibleHeight - edge, !s.active || CGFloat(s.bounce) < scroller.cover * displayScale - 0.5 {
+        } else if p.y > visibleHeight - edge, !s.active || CGFloat(s.bounce) < scroller.coveredBottom * displayScale - 0.5 {
             // Down to the last row position, then through the rows the keyboard covers.
             lines = 1
         }

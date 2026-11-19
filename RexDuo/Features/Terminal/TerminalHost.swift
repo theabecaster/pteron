@@ -35,6 +35,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     let term: GhosttyTerminalView
     private let zoomer = ZoomScrollView()
     private let statusLabel = UILabel()
+    /// Find in this pane (TerminalHost+Find.swift). Nil until find first opens.
+    var finder: PaneFind?
     let keyBar: KeyBar
     /// Back to the newest line. It shows only while the view is well into the scrollback
     /// (`JumpToBottomRule`).
@@ -89,7 +91,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// that isn't known. The grid is fitted to its height while the keyboard covers the pane.
     private var restSize: CGSize?
     /// The program is on the alternate screen (`alternateScreenHook`).
-    private var alternateScreen = false
+    private(set) var alternateScreen = false
     /// The size the server confirmed for this pane in fit mode.
     private var claimedSize: (Int, Int)?
     /// Own, resize, give back: every fit-mode call to the server goes through here, in order.
@@ -116,10 +118,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// but shows no software keyboard and no key bar (`setKeyboardQuiet`).
     private(set) var keyboardQuiet = false
     /// An input view with no height: the system keyboard's place, empty.
-    private let quietInputView = UIView(frame: .zero)
+    let quietInputView = UIView(frame: .zero)
     /// A sheet, an alert or a menu covered the pane while it had the keyboard, and the pane
     /// gave it up; it takes it back when the cover goes.
-    private var resignedUnderCover = false
+    var resignedUnderCover = false
     /// Whether a hardware keyboard is attached. Tests put their own here.
     var hardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
@@ -158,7 +160,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var touchIsPointer = false
 
     // Hardware keys.
-    private var cachedCommands: (generation: Int, commands: [UIKeyCommand])?
+    private var cachedCommands: (generation: Int, findEditing: Bool, commands: [UIKeyCommand])?
     /// Repeats a held key that a binding took from the engine. Tests put their own here.
     var keyRepeat = KeyRepeater()
 
@@ -231,6 +233,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(fitHoldDeferralCleared(_:)),
+                                               name: FitHoldDeferral.cleared, object: nil)
         // Moments when the keyboard may be free for the active pane to take (`reclaimKeyboard`).
         let free: [Notification.Name] = [.GCKeyboardDidConnect, UIApplication.didBecomeActiveNotification,
                                          UIWindow.didBecomeKeyNotification, UITextField.textDidEndEditingNotification,
@@ -261,7 +265,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     // MARK: Gestures
 
-    private var fitted: Bool { sizing == .fit && !lostOwnership }
+    var fitted: Bool { sizing == .fit && !lostOwnership }
 
     private func setupGestures() {
         // Gates, not failure requirements: a pan that waits for another to fail starts late and
@@ -414,6 +418,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // A touch on the jump-to-bottom button is the button's alone: it is no tap, swipe or
         // pinch on the pane, and it doesn't count as the pane's latest touch.
         if touch.view?.isDescendant(of: jumpButton) == true { return false }
+        // The find bar's touches are its own too.
+        if let f = finder, touch.view?.isDescendant(of: f.overlay) == true { return false }
         // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
         if g === tapGR {
             self.touch = (keyboardUp, term.hasActiveSelection, term.touchStopsScroll(now: CACurrentMediaTime()))
@@ -572,6 +578,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 self.files?.open(selection: text)
             })
         }
+        // A one-row selection of at most 200 bytes can be searched for. The row count is read
+        // before the text, which is read on the main thread.
+        if term.hasActiveSelection, let e = term.core.selectionExtent, e.startRow == e.endRow,
+           let text = term.selectedText, !text.isEmpty, text.utf8.count <= 200 {
+            items.append(UIAction(title: "Find Selection", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+                guard let self else { return }
+                self.onFocus?()
+                self.clearSelection()
+                self.openFind(text: text, focus: true)
+            })
+        }
         if UIPasteboard.general.hasStrings || [.files, .image].contains(files?.pasteChoice) {
             items.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
                 guard let self else { return }
@@ -670,7 +687,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// shift+enter, …) are caught in `handleKey` instead, before the engine turns them into bytes.
     override var keyCommands: [UIKeyCommand]? {
         guard let keymap else { return nil }
-        if let c = cachedCommands, c.generation == keymap.generation { return c.commands }
+        // While the pane's find field edits, only app commands and the find keys stay, and no key
+        // that edits text: those are the field's (an allowlist, so a new pane action stays out).
+        let editing = findFieldHoldingKeyboard != nil
+        if let c = cachedCommands, c.generation == keymap.generation, c.findEditing == editing { return c.commands }
         var taken = Set<String>()
         var out: [UIKeyCommand] = []
         func add(_ title: String, _ input: String, _ flags: UIKeyModifierFlags, _ payload: String, physical: Bool, repeats: Bool) {
@@ -689,17 +709,21 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         var decided = Set<KeyChord>()
         for b in keymap.bindings where b.chord.mods.contains(.cmd) && !decided.contains(b.chord) {
             // The first binding on a key that the app can perform runs; one it can't falls through.
-            guard AppAction.resolve(b.action, b.args) != nil else { continue }
+            guard let action = AppAction.resolve(b.action, b.args) else { continue }
             decided.insert(b.chord)
+            if editing, !FindKeys.keepsWhileEditing(action: action, chord: b.chord) { continue }
             guard let input = KeyInput.commandInput(b.chord) else { continue }
             add(KeyActions.title(b), input, KeyInput.flags(b.chord.mods), b.chord.spelling,
                 physical: b.chord.isPhysical, repeats: KeyActions.repeats(b.action))
         }
-        // The Edit menu's keys, as on the Mac (unless the keymap took them).
-        add("Copy", "c", .command, "edit:copy", physical: false, repeats: false)
-        add("Paste", "v", .command, "edit:paste", physical: false, repeats: false)
-        add("Select All", "a", .command, "edit:selectAll", physical: false, repeats: false)
-        cachedCommands = (keymap.generation, out)
+        // The Edit menu's keys, as on the Mac (unless the keymap took them). Not while the find
+        // field edits: they are its own.
+        if !editing {
+            add("Copy", "c", .command, "edit:copy", physical: false, repeats: false)
+            add("Paste", "v", .command, "edit:paste", physical: false, repeats: false)
+            add("Select All", "a", .command, "edit:selectAll", physical: false, repeats: false)
+        }
+        cachedCommands = (keymap.generation, editing, out)
         return out
     }
 
@@ -765,6 +789,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     private func perform(_ action: AppAction, press: KeyInput.Press?) {
         switch action {
+        case .command(.find(let step)):
+            // This pane's own find.
+            performFind(step)
         case .command(let c):
             onCommand?(c)
         case .splitAuto:
@@ -820,10 +847,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         KeyboardFocusPolicy.Situation(
             paneActive: isActive, inWindow: window != nil,
             appActive: UIApplication.shared.applicationState == .active,
-            holdsKeyboard: term.isFirstResponder, hardwareKeyboard: hardwareKeyboard(),
+            holdsKeyboard: term.isFirstResponder || findFieldHoldingKeyboard != nil, hardwareKeyboard: hardwareKeyboard(),
             hadKeyboard: hadKeyboard, userHidKeyboard: userHidKeyboard,
             sheetUp: covered || KeyboardFocusPolicy.sheetUp(in: window),
-            holder: KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: term))
+            holder: KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: term, ownFields: ownFindFields))
     }
 
     /// The terminal has the keyboard and shows it (the system keyboard or the key bar).
@@ -846,8 +873,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // `-focus none` (testing): the simulator reports a hardware keyboard; leave the keyboard down.
         if UserDefaults.standard.string(forKey: "focus") == "none" { return }
         #endif
-        // Cheap checks first: this runs for every pane on every notification.
-        guard isActive, window != nil, !term.isFirstResponder else { return }
+        // Cheap checks first: this runs for every pane on every notification. The pane's own find
+        // field holding the keyboard counts as holding it.
+        guard isActive, window != nil, !term.isFirstResponder, findFieldHoldingKeyboard == nil else { return }
         // Later: the view may still be on its way into the window, or the app into the foreground.
         DispatchQueue.main.async { [weak self] in
             guard let self, KeyboardFocusPolicy.takesKeyboard(self.keyboardSituation) else { return }
@@ -856,6 +884,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 self.movedWithKeyboardAt = -10
                 return
             }
+            // A fold moved the pane while its overlay find field had the keyboard: the field gets it back.
+            if afterMove, self.findRetakesAfterMove() { return }
             self.setKeyboardQuiet(KeyboardFocusPolicy.takesQuietly(self.keyboardSituation))
             _ = self.term.becomeFirstResponder()
         }
@@ -864,6 +894,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane stopped being the active one: it must not keep the keyboard, or keys would go
     /// to a pane the user has left.
     private func resignIfInactive() {
+        // A find field of this pane gives it up too; its bar, needle and matches stay.
+        resignFindFieldIfInactive()
         guard KeyboardFocusPolicy.mustResign(paneActive: isActive, holdsKeyboard: term.isFirstResponder) else { return }
         _ = term.resignFirstResponder()
     }
@@ -875,13 +907,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         } else {
             lostKeyboardAt = CACurrentMediaTime()
             keyRepeat.stop()
+            findHandOverAbandoned()
         }
     }
 
     /// Being first responder and showing a keyboard are two things. Quiet: the terminal's input
     /// view is an empty one and it has no key bar, so as first responder it gets hardware keys
     /// and nothing shows. Not quiet: the system keyboard and the key bar.
-    private func setKeyboardQuiet(_ quiet: Bool) {
+    func setKeyboardQuiet(_ quiet: Bool) {
         guard quiet != keyboardQuiet else { return }
         keyboardQuiet = quiet
         term.inputView = quiet ? quietInputView : nil
@@ -908,9 +941,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func coverChanged(covered: Bool) {
         if covered {
             stopKeyRepeats()
+            // The find field's keyboard is treated like the terminal's.
+            if findFieldCovered() {
+                resignedUnderCover = true
+                return
+            }
             guard term.isFirstResponder else { return }
             resignedUnderCover = true
             _ = term.resignFirstResponder()
+        } else if findRetakesAfterCover() {
+            resignedUnderCover = false
         } else if resignedUnderCover {
             resignedUnderCover = false
             // It had the keyboard: the policy lets it take it back without a hardware keyboard.
@@ -936,6 +976,20 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if c {
             stopKeyRepeats()
             coverTookKeyBar = false
+            // The find field's keyboard counts as the terminal's: the key bar of a hardware
+            // keyboard comes back with it, a software keyboard stays down.
+            if let place = findFieldHoldingKeyboard, place == .accessory {
+                if softwareKeyboard || !hardwareKeyboard() {
+                    userHidKeyboard = true
+                } else {
+                    coverTookKeyBar = true
+                    _ = findFieldCovered()
+                }
+                resignFindField()
+            } else if findFieldHoldingKeyboard == .overlay {
+                // Quiet, as the terminal would be: it keeps the keyboard and takes no key covered.
+                yieldOverlayFieldToTerminal()
+            }
             // A pane that holds the keyboard quietly shows nothing and keeps it: covered, it
             // takes no key anyway (`GhosttyTerminalView.covered`).
             if keyboardUp {
@@ -947,14 +1001,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 _ = term.resignFirstResponder()
             }
             term.covered = true
+            layoutFind()
         } else {
             term.covered = false
+            layoutFind()
             // Only the key bar of a hardware keyboard comes back by itself. Anything else
             // waits for a tap, or for the next moment a pane looks for the keyboard.
             if coverTookKeyBar {
                 coverTookKeyBar = false
                 movedWithKeyboardAt = CACurrentMediaTime()
-                reclaimKeyboard()
+                // The find field that had it gets it back, in the accessory slot as before.
+                if !findRetakesAfterCover() { reclaimKeyboard() }
             }
             // A pane first laid out under the board has claimed nothing yet: it starts now.
             if !started {
@@ -978,7 +1035,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// in this same turn of the run loop counts.
     func noteKeyboardBeforeMove() {
         let now = CACurrentMediaTime()
-        if term.isFirstResponder || now - lostKeyboardAt < 0.05 { movedWithKeyboardAt = now }
+        let field = noteFindFieldBeforeMove(now: now)
+        if term.isFirstResponder || now - lostKeyboardAt < 0.05 || field { movedWithKeyboardAt = now }
     }
 
     /// The key bar's hide key: the keyboard and the bar go away until the next tap on the pane.
@@ -1065,6 +1123,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         statusLabel.textColor = chip.text
         statusLabel.layer.borderColor = chip.rim.cgColor
         keyBar.apply(theme: t)
+        applyFindTheme(t)
         jumpButton.apply(tint: t.uiFG, accent: t.uiCursor)
         selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
     }
@@ -1074,11 +1133,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func setKeyBarSurroundings(barEdge: NSDirectionalRectEdge?, crease: CGRect?) {
         keyBar.barEdge = barEdge
         keyBar.crease = crease
+        setFindSurroundings(barEdge: barEdge, crease: crease)
     }
 
     func setFontSize(_ s: CGFloat) {
         guard abs(s - fontSize) > 0.01 else { return }
         fontSize = s
+        // A new font ends find's hold: the grid that fits changes anyway.
+        releaseFitHold(deferrable: false)
         // The server's grid at the new cell size. The terminal keeps its modes and its content;
         // fit mode then claims the grid that fits now and the program redraws itself.
         term.setFont(size: s)
@@ -1100,6 +1162,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func alternateScreenChanged(_ alternate: Bool) {
         guard alternate != alternateScreen else { return }
         alternateScreen = alternate
+        if let f = finder { f.edge = alternate ? .top : .bottom }
         lastBounds = .zero
         setNeedsLayout()
     }
@@ -1107,6 +1170,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func setSizing(_ m: SizingMode) {
         guard m != sizing else { return }
         sizing = m
+        releaseFitHold(deferrable: false)
         if m == .mirror {
             claimedSize = nil
             claim.release()
@@ -1160,16 +1224,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// iOS 26 swipes back from anywhere in the content. Over the terminal a horizontal flick
     /// switches panes instead; the screen-edge swipe back still works.
-    private func yieldContentSwipeBack() {
+    func yieldContentSwipeBack() {
         guard #available(iOS 26.0, *) else { return }
         var r: UIResponder? = next
+        // A drag on the find bar starts no swipe back either.
+        let pans: [UIGestureRecognizer] = [swipeGR] + (finder.map { [$0.overlayPan] } ?? [])
         while let cur = r {
             if let nav = cur as? UINavigationController {
-                nav.interactiveContentPopGestureRecognizer?.require(toFail: swipeGR)
+                for p in pans { nav.interactiveContentPopGestureRecognizer?.require(toFail: p) }
                 return
             }
             if let vc = cur as? UIViewController, let nav = vc.navigationController {
-                nav.interactiveContentPopGestureRecognizer?.require(toFail: swipeGR)
+                for p in pans { nav.interactiveContentPopGestureRecognizer?.require(toFail: p) }
                 return
             }
             r = cur.next
@@ -1179,6 +1245,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func stop() {
         stopKeyRepeats()
+        // Find closes with the pane: its handle and tints go, and any hold.
+        closeFind(giveBack: false)
         // A snapshot half received is of no use to the next start.
         snapshot.reset()
         stream.stop()
@@ -1193,9 +1261,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         super.layoutSubviews()
         if zoomer.transform == .identity { zoomer.frame = bounds }
         if !statusLabel.isHidden { layoutStatus() }
+        layoutFind()
         placeJumpButton()
         guard bounds.width > 20, bounds.height > 20 else { return }
         guard bounds.size != lastBounds else { return }
+        // A new width ends find's hold: the grid that fits is another one.
+        releaseFitHoldIfWidthChanged()
         lastBounds = bounds.size
         layoutTerminal()
     }
@@ -1208,11 +1279,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The button's circle sits 12 pt in from the pane's trailing edge and that far above its
     /// bottom, clear of the home indicator. Its center is set, not its frame: it has a transform
     /// while it comes and goes.
-    private func placeJumpButton() {
+    func placeJumpButton() {
         let radius = JumpToBottomButton.diameter / 2
         let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
         let x = rightToLeft ? bounds.minX + 12 + radius : bounds.maxX - 12 - radius
-        let center = CGPoint(x: x, y: bounds.maxY - max(12, safeAreaInsets.bottom + 4) - radius)
+        var y = bounds.maxY - max(12, safeAreaInsets.bottom + 4) - radius
+        // Above the find bar while it floats at the bottom.
+        if let bar = findBottomBarFrame { y = min(y, FindBarPlacement.jumpCenterY(bar: bar, radius: radius)) }
+        let center = CGPoint(x: x, y: y)
         if jumpButton.center != center { jumpButton.center = center }
     }
 
@@ -1257,7 +1331,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             let want = fitGrid()
             // A new size needs no redraw from the server: the terminal reflows as the server's
             // does (both are Ghostty), and the stream carries the resize.
-            if started, let c = claimedSize, c == want, serverSize == want { return }
+            if started, let c = claimedSize, c == want, serverSize == want {
+                // While find holds the fit, a request still settling would land after this layout
+                // with another size: ask again for this one, which supersedes it (and sends nothing
+                // for a size in place). With no hold the claim works as it always did.
+                if findHold != nil, claim.isSettling { claim.request(cols: want.0, rows: want.1) }
+                return
+            }
             claim.request(cols: want.0, rows: want.1)
         case .mirror:
             if !started { started = true; stream.start() }
@@ -1270,9 +1350,34 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Largest grid that fits the pane at the current font: the pane as it is with the keyboard
     /// down, unless the program is on the alternate screen.
     private func fitGrid() -> (Int, Int) {
-        let size = TerminalLayout.fitSize(bounds: bounds.size, rest: restSize, alternateScreen: alternateScreen)
-        let g = TerminalLayout.fitGrid(in: size, cell: cellSize())
+        let g = TerminalLayout.fitGrid(bounds: bounds.size, rest: restSize, alternateScreen: alternateScreen, cell: cellSize(),
+                                       held: findHold)
         return (g.cols, g.rows)
+    }
+
+    /// FitClaim's newest wanted size (find's hold takes it).
+    var claimWanted: (cols: Int, rows: Int)? { claim.wanted }
+
+    /// Find's hold ended: fit again to what the pane is now.
+    func relayoutAfterHold() {
+        lastBounds = .zero
+        setNeedsLayout()
+    }
+
+    /// The hold's lift for a match under the keyboard changed.
+    func positionTermForFind() { positionTerm() }
+
+    /// The status chip is down.
+    var statusChipHidden: Bool { statusLabel.isHidden }
+
+    /// Mirror mode's zoom and vertical pan, for the find bar's inset.
+    var zoomScale: CGFloat { zoomer.zoomScale }
+    var zoomOffsetY: CGFloat { zoomer.contentOffset.y }
+
+    /// The find overlay goes over the terminal and under the selection's loupe and handles and
+    /// the status chip.
+    func insertFindOverlay(_ overlay: UIView) {
+        insertSubview(overlay, aboveSubview: zoomer)
     }
 
     /// Sizes the engine to a grid, at this point of the stream, keeping the modes the program set.
@@ -1296,7 +1401,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             term.frame = CGRect(origin: .zero, size: size)
             zoomer.contentSize = bounds.size
             zoomer.contentOffset = .zero
-            term.setCover(TerminalLayout.cover(terminal: size.height, pane: bounds.height))
+            // Under find's hold on the alternate screen the keyboard hides the program's bottom
+            // rows and shifts nothing, unless the current match is under it.
+            let cover = TerminalLayout.cover(terminal: size.height, pane: bounds.height)
+            let holds = findHold != nil && alternateScreen
+            term.setCover(holds && !(finder?.liftsForMatch ?? false) ? 0 : cover)
         } else {
             term.setCover(0)
             zoomer.minimumZoomScale = min(zoomer.minimumZoomScale, 1)
@@ -1385,6 +1494,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
             claimedSize = nil
             lostOwnership = true
+            releaseFitHold(deferrable: false)
             claim.lost()
             showStatus(Self.lostText)
         }
@@ -1409,6 +1519,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
             if isActive { FilesTest.run(on: self) }  // `-filesTest` (testing, FilesTest.swift)
             if isActive { KeyboardTest.run(on: self) }  // `-keyboardTest` (testing, KeyboardTest.swift)
+            if isActive { FindScript.run(on: self) }  // `-findScript` (testing, spike S1, FindScript.swift)
             // `-typeTest <text>` (Debug builds, testing): types into the live shell.
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true

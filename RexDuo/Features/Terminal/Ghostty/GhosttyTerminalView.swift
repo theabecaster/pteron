@@ -99,6 +99,13 @@ final class GhosttyTerminalView: UIView {
     let taps = GhosttyTapState()
     // END taps
 
+    // Find: stored state for GhosttyTerminalView+Find.swift.
+    /// Called on the main thread with the newest result after a search pass published one.
+    var findHook: ((FindResult) -> Void)?
+    /// A hop to the main thread for `findHook` is queued.
+    let findUpdatePending = GhosttyFlag()
+    // END find
+
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
     private var gridEpoch = 0
@@ -284,6 +291,12 @@ final class GhosttyTerminalView: UIView {
         // A 55% wash, as TermTheme.uiSelection is.
         let s = Self.rgb(t.selectionBackground)
         renderer.setSelectionColor(GhosttyRowBuilder.pack(UInt8((s >> 16) & 0xff), UInt8((s >> 8) & 0xff), UInt8(s & 0xff), 140))
+        renderer.setFindColors(Self.findColors(t))
+    }
+
+    /// Find's tints from the theme: ANSI yellow for every match, bright yellow for the current one.
+    static func findColors(_ t: TermTheme) -> GhosttyFindHighlights.Colors {
+        .theme(yellow: rgb(t.ansi[safe: 3] ?? t.foreground), brightYellow: rgb(t.ansi[safe: 11] ?? t.foreground))
     }
 
     static func rgb(_ hex: String) -> UInt32 {
@@ -348,5 +361,7 @@ final class GhosttyTerminalView: UIView {
             GhosttyRenderThread.shared.add(renderer)
         }
         renderer.setVisible(visible)
+        // A find that missed output while hidden refreshes once.
+        if visible { core.find?.visibilityChanged() }
     }
 }

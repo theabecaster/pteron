@@ -111,6 +111,10 @@ final class ReplayView: UIView {
         host.frame = area
         addSubview(host)
         self.host = host
+        // `-findTest <needle>`: find is open with this needle before the first byte arrives.
+        if let needle = UserDefaults.standard.string(forKey: "findTest"), !needle.isEmpty {
+            host.openFind(text: needle, focus: false)
+        }
 
         let cell = host.term.cellSize
         let fit = TerminalLayout.fitGrid(in: area.size, cell: cell)

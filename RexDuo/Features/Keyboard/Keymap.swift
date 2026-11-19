@@ -147,8 +147,11 @@ enum AppAction {
         case "client.prompt.previous": return .promptPrevious
         case "client.prompt.next": return .promptNext
         case "client.key.forward": return .forwardKey
+        case "client.find.open": return .command(.find(.open))
+        case "client.find.next": return .command(.find(.next))
+        case "client.find.previous": return .command(.find(.previous))
         default:
-            // Rex's own client actions that the app doesn't have (find, palette, resize, …).
+            // Rex's own client actions that the app doesn't have (palette, resize, copy mode, …).
             if name.hasPrefix("client.") || name.hasPrefix("pane.") || name.hasPrefix("session.") { return nil }
             // Dotted: a block action (com.superlogical.terminal.clear). No dot: a config-file action.
             return .server(name, args)
@@ -203,6 +206,9 @@ enum KeyActions {
         Info(name: "client.prompt.next", title: "Jump to Next Prompt", category: "Pane", repeats: true),
         Info(name: "client.scroll.page_up", title: "Scroll Page Up", category: "Pane", repeats: true),
         Info(name: "client.scroll.page_down", title: "Scroll Page Down", category: "Pane", repeats: true),
+        Info(name: "client.find.open", title: "Find…", category: "Pane", repeats: false),
+        Info(name: "client.find.next", title: "Find Next", category: "Pane", repeats: true),
+        Info(name: "client.find.previous", title: "Find Previous", category: "Pane", repeats: true),
         Info(name: "client.font.increase", title: "Increase Font Size", category: "View", repeats: true),
         Info(name: "client.font.decrease", title: "Decrease Font Size", category: "View", repeats: true),
         Info(name: "client.font.reset", title: "Reset Font Size", category: "View", repeats: false),
@@ -285,6 +291,9 @@ enum KeyDefaults {
         bind(["cmd+right"], "pane.send_key", ["key": "ctrl+e"])
         bind(["alt+left"], "pane.send_key", ["key": "alt+b"])
         bind(["alt+right"], "pane.send_key", ["key": "alt+f"])
+        bind(["cmd+f"], "client.find.open")
+        bind(["cmd+g"], "client.find.next")
+        bind(["shift+cmd+g"], "client.find.previous")
         bind(["cmd+up"], "client.prompt.previous")
         bind(["cmd+down"], "client.prompt.next")
         bind(["shift+cmd+=", "cmd+="], "client.font.increase")

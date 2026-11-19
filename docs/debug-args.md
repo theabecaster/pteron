@@ -114,6 +114,13 @@ builds.
   "SIDEBAR_FOLD_BENCH"'`; on a phone the line also goes to stdout, so `xcrun devicectl device
   process launch --console …` prints it. Numbers mean something only from an optimized build
   (`SWIFT_OPTIMIZATION_LEVEL=-O` on the Debug configuration).
+- `-findScript '<step>;<step>…'`: drive find over the active pane once it is live and log each
+  step with the keyboard notifications it caused (`FIND_SCRIPT`, also on stdout for
+  `devicectl … --console`): `up`, `hw`, `down`, `resign`, `open`, `menu`, `type:<text>`, `esc`,
+  `focus`, `done`, `next`, `prev`, `tap`, `gate`, `wait:<s>` (`Features/Terminal/Find/FindScript.swift`).
+  `-findScriptEvery <s>` spaces the steps. `-findHandover spacer` tries the fallback hand-over,
+  `-findHandover nil` spike S1's rejected variant, `-findCarriesCommands YES` the field carrying
+  app commands itself. Use a `zz-` session.
 - `-typeTest 'text\n'`: type into the active pane once it is live. With `-scrollBackTest <seconds>`,
   scroll two pages back first and type that much later.
 - `-keyboardTest '<step>;<step>…'`: show and hide the software keyboard over the active pane once
@@ -135,7 +142,9 @@ builds.
   `-replay <file>`: no server; feed a capture to a real pane (`ReplayScreen`, more arguments
   there). `-perfLog <name>`: measure the pane into `Documents/perf/<name>.json` (`PerfProbe`);
   with it, `-perfIdle <seconds>` and `-perfScroll <seconds>` add an idle phase and a scripted
-  fling through the scrollback. `-perfClean YES` deletes `Documents/perf` and `Documents/bench`
+  fling through the scrollback. `-findTest <needle>` opens find on the replay's pane before the
+  first byte, and `-findSteps <n>` then steps n matches 100 ms apart after the replay (a `find`
+  phase). `-perfClean YES` deletes `Documents/perf` and `Documents/bench`
   and quits. `-peelLeadIn <seconds>` and `-drawables 2` are A/B switches for the device
   benchmark. All of these also work in the benchmark's `BENCH` Release build.
 - `-selectionDemo <steps>`, `-selectionLoupe off`: docs/selection.md.

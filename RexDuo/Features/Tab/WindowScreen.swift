@@ -30,6 +30,7 @@ struct WindowScreen: View {
     @Environment(\.division) private var division
     @Environment(\.rootOrigin) private var rootOrigin
     @Environment(\.bookCrease) private var bookCrease
+    @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
 
     let server: ServerConnection
     let sessionID: String
@@ -331,6 +332,7 @@ struct WindowScreen: View {
         case .toggleZoom: toggleZoom()
         case .clear: if let b = activeBlock(w) { Task { await server.clear(sessionID, b) } }
         case .tabOverview: openOverview()
+        case .find(let step): if let b = activeBlock(w) { host(b)?.performFind(step) }
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
         }
     }
@@ -442,6 +444,9 @@ struct WindowScreen: View {
                 Button { rename() } label: { Label("Rename Tab…", systemImage: "pencil") }
             }
             Section {
+                FindMenuItem(keymap: server.keymap) { host(block)?.findFromMenu() }
+            }
+            Section {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }
                 Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
             }
@@ -450,6 +455,11 @@ struct WindowScreen: View {
             Label("Pane Actions", systemImage: "square.split.2x2")
         }
         .accessibilityLabel("Pane Actions")
+    }
+
+    /// The live host of a pane of this tab, if it is on screen.
+    private func host(_ block: String) -> TerminalHost? {
+        pool?.host(for: TerminalHostPool.Key(server: server.id, session: sessionID, block: block))
     }
 
     // MARK: Panes

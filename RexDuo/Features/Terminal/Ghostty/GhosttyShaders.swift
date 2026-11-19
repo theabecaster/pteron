@@ -15,6 +15,9 @@ struct GhosttyUniforms {
     float2 origin;      // top-left of the grid in pixels (fractional while scrolling smoothly)
     uint2 cursorCell;   // cell under a block cursor, 0xffff when there is none
     float4 cursorText;  // color of the glyph under a block cursor
+    float4 matchText;   // text color of the current find match
+    uint4 matchSpans[4]; // its rows: row, first column, last column
+    uint matchCount;    // 0 while nothing is found
 };
 
 struct RectInstance {
@@ -80,6 +83,15 @@ vertex GlyphOut ghosttyGlyphVertex(uint vid [[vertex_id]], uint iid [[instance_i
     float2 pos = float2(short2(in.pos)) + float2(0.0, float(cell.y) * u.cell.y);
     float2 px = u.origin + pos + corner * size;
     float4 c = float4(uchar4(in.color)) / 255.0;
+    // Text in the current find match is black or white, whichever reads on its fill.
+    if (in.kind == 1) {
+        for (uint i = 0; i < u.matchCount; i++) {
+            uint4 s = u.matchSpans[i];
+            if (uint(cell.y) == s.x && uint(cell.x) >= s.y && uint(cell.x) <= s.z) {
+                c = float4(u.matchText.rgb, c.a);
+            }
+        }
+    }
     // Text under a block cursor takes the cursor's text color, as in Ghostty's shader.
     if (in.kind == 1 && uint(cell.x) == u.cursorCell.x && uint(cell.y) == u.cursorCell.y) {
         c = float4(u.cursorText.rgb, c.a);

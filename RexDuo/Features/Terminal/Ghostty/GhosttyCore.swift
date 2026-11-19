@@ -91,6 +91,11 @@ final class GhosttyCore: @unchecked Sendable {
 
     /// Terminals alive in the process. Tests use it to check teardown.
     static let liveTerminals = Atomic<Int>(0)
+    #if DEBUG || BENCH
+    /// The benchmark (`PerfProbe`) measures the render thread's longest wait for `termLock`.
+    static let measuresLockWait = Atomic<Bool>(false)
+    static let lockWaitWorstNs = Atomic<Int>(0)
+    #endif
 
     // MARK: State (internal so phase 2 extensions can use it; respect the locks)
 
@@ -121,6 +126,15 @@ final class GhosttyCore: @unchecked Sendable {
     /// Set when the user changed the selection, so the next frame shows it even during a render
     /// hold (GhosttyCore+Selection.swift). Any thread.
     let selectionDirty = Atomic<Bool>(false)
+    /// Set when the user acted on find (a needle, a step, open, close), so the next frame shows
+    /// it even during a render hold, as a selection does (GhosttyCore+Find.swift). Any thread.
+    let findDirty = Atomic<Bool>(false)
+    /// The pane's find, made when it first opens (`makeFind`). Nil for a pane that never searched.
+    let findSlot = Mutex<GhosttyFind?>(nil)
+    /// The find result the frame being drawn shows: latched where `begin_update` runs, so a held
+    /// frame that redraws for another reason keeps the result of the rows it shows. Guarded by
+    /// `stateLock`.
+    var frameFind: FindResult?
 
     /// The key encoder and the input modes, synced under `termLock` after every change to the
     /// terminal that can change a mode, so typing never waits for that lock (GhosttyCore+Input.swift).
@@ -204,6 +218,7 @@ final class GhosttyCore: @unchecked Sendable {
     deinit {
         // Nothing else can reach us here: queued work, the renderer and selection anchors hold
         // strong references.
+        findSlot.withLock { $0 }?.freeHandle()
         releaseTrackedRefs()
         freeRenderState()
         if let t = terminal {
@@ -383,6 +398,7 @@ final class GhosttyCore: @unchecked Sendable {
                 backlog.subtract(n, ordering: .relaxed)
                 settleBackpressure()
                 onDirty?()
+                noteFindChanged()
             }
         }
         settleBackpressure()
@@ -522,6 +538,7 @@ final class GhosttyCore: @unchecked Sendable {
             }
             termLock.unlock()
             onDirty?()
+            noteFindChanged()
         }
     }
 
@@ -546,6 +563,7 @@ final class GhosttyCore: @unchecked Sendable {
             }
             termLock.unlock()
             onDirty?()
+            noteFindChanged()
         }
     }
 
@@ -611,8 +629,10 @@ final class GhosttyCore: @unchecked Sendable {
 
             termLock.lock()
             // First, what borrows the old terminal. The main thread reads a drag's anchor under
-            // this lock, so it finds the anchor whole or gone, never half freed.
+            // this lock, so it finds the anchor whole or gone, never half freed. Find's handle
+            // too: the next pass makes one on the new terminal, with the needle kept.
             releaseTrackedRefs()
+            findSlot.withLock { $0 }?.terminalWillSwap()
             stateLock.lock()
             let old = terminal
             terminal = restored
@@ -655,6 +675,7 @@ final class GhosttyCore: @unchecked Sendable {
             }
             termLock.unlock()
             onDirty?()
+            noteFindChanged()
             if let trailing, consumed < snapshot.count {
                 let rest = trailing(snapshot[consumed...])
                 backlog.add(rest.count, ordering: .relaxed)
@@ -664,6 +685,12 @@ final class GhosttyCore: @unchecked Sendable {
             }
             completion(consumed)
         }
+    }
+
+    /// Output, a resize, a reset or a restore changed the terminal: find refreshes (throttled).
+    /// While find is closed it costs a lock of `findSlot` and, once find has opened, one atomic load.
+    @inline(__always) func noteFindChanged() {
+        findSlot.withLock { $0 }?.noteChanged()
     }
 
     /// Frees every tracked grid reference. Call with `termLock` held.
@@ -716,7 +743,23 @@ final class GhosttyCore: @unchecked Sendable {
     /// The terminal lock is held only for `begin_update`. `end_update` and all reads happen
     /// while the feed queue is free to parse.
     func lockFrame(now: CFTimeInterval) -> GhosttyRenderState? {
+        #if DEBUG || BENCH
+        if Self.measuresLockWait.load(ordering: .relaxed) {
+            let start = CACurrentMediaTime()
+            lockTerminal()
+            let waited = Int((CACurrentMediaTime() - start) * 1e9)
+            var seen = Self.lockWaitWorstNs.load(ordering: .relaxed)
+            while waited > seen {
+                let (done, now) = Self.lockWaitWorstNs.compareExchange(expected: seen, desired: waited, ordering: .relaxed)
+                if done { break }
+                seen = now
+            }
+        } else {
+            lockTerminal()
+        }
+        #else
         lockTerminal()
+        #endif
         stateLock.lock()
         guard let t = terminal, let rs = renderState else {
             stateLock.unlock()
@@ -729,11 +772,24 @@ final class GhosttyCore: @unchecked Sendable {
             ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE, &cfg)
             held = false
         }
-        // Upstream: a hold may be ignored when someone scrolls or selects.
+        // Upstream: a hold may be ignored when someone scrolls or selects. Find's user actions
+        // too; a refresh caused by output waits for the program's frame.
         let selectionChanged = selectionDirty.exchange(false, ordering: .relaxed)
-        if !held || scroll.hasPending || selectionChanged {
+        let findChanged = findDirty.exchange(false, ordering: .relaxed)
+        if !held || scroll.hasPending || selectionChanged || findChanged {
             scroll.prepareFrame(terminal: t, renderState: rs, cellHeightPx: Int(cellHeightPx), generation: stateGeneration)
             ghostty_render_state_begin_update(rs, t)
+            // The find result these rows go with (a leaf lock, under `stateLock`).
+            if let find = findSlot.withLock({ $0 }) {
+                frameFind = find.published.withLock { $0 }
+                // The viewport moved: find reads the matches around its new place. Right after a
+                // reveal at once, else with the next throttled refresh.
+                if scroll.movedViewport || scroll.appliedReveal {
+                    if scroll.appliedReveal { find.revealApplied() } else { find.noteChanged() }
+                }
+            } else {
+                frameFind = nil
+            }
             // Read in the same critical section so they describe the same moment as the rows.
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &viewportActive)

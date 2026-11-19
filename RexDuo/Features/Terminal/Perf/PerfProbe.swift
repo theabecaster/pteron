@@ -471,6 +471,7 @@ final class PerfProbe: Sendable {
 
     @MainActor
     private func install(_ now: Double) {
+        GhosttyCore.measuresLockWait.store(true, ordering: .relaxed)
         main.ticks.reserveCapacity(1 << 14)
         main.busy.reserveCapacity(1 << 16)
         main.sliceStart = now
@@ -580,13 +581,15 @@ final class PerfProbe: Sendable {
     private func runPhases() async {
         let d = UserDefaults.standard
         let idle = d.double(forKey: "perfIdle"), scroll = d.double(forKey: "perfScroll")
-        guard idle > 0 || scroll > 0 else { return }
+        let steps = d.integer(forKey: "findSteps")
+        guard idle > 0 || scroll > 0 || steps > 0 else { return }
         // The transition must not land in a phase (5 s at most: one that never ends isn't waited for).
         for _ in 0..<50 {
             let waiting = state.withLock { $0.launchSteps["splash"] != nil && $0.launchSteps["done"] == nil }
             guard waiting else { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        if steps > 0 { main.phases["find"] = await findPhase(steps: steps) }
         if idle > 0 { main.phases["idle"] = await idlePhase(seconds: idle) }
         if scroll > 0 { main.phases["scroll"] = await scrollPhase(seconds: scroll) }
     }
@@ -640,6 +643,28 @@ final class PerfProbe: Sendable {
                        "buildMsPerPass": b.passes > a.passes ? ms((b.buildSeconds - a.buildSeconds) / Double(b.passes - a.passes)) : 0,
                        "encodeMs": ms(b.encodeSeconds - a.encodeSeconds)],
         ]
+    }
+
+    /// `-findSteps <n>` (with `-findTest`): the next match n times, 100 ms apart, after the
+    /// replay: each step selects a match, scrolls to it (`.reveal`) and refreshes at once.
+    @MainActor
+    private func findPhase(steps: Int) async -> JSONObject {
+        guard let host = main.host, host.findOpen else { return ["error": "find is not open"] }
+        main.link?.isPaused = false
+        let a = phaseMark()
+        for _ in 0..<steps {
+            host.performFind(.next)
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let b = phaseMark()
+        let window = PerfWindow(from: a.at, to: b.at)
+        let period = 1 / Double(max(60, UIScreen.main.maximumFramesPerSecond))
+        var out = phaseResult(a, b)
+        out["steps"] = steps
+        out["selected"] = host.term.findResult.selectedIndex ?? -1
+        out["presents"] = Self.hitchJSON(PerfHitchStats.measure(state.withLock { $0.presents }, in: window, period: period), window: window)
+        out["mainLink"] = Self.hitchJSON(PerfHitchStats.measure(main.ticks, in: window, period: period), window: window)
+        return out
     }
 
     @MainActor
@@ -738,6 +763,11 @@ final class PerfProbe: Sendable {
         uninstall()
         var json = Self.result(name: name, state: s, ticks: ticks, busy: busy, idle: idle, now: now,
                                screenHz: UIScreen.main.maximumFramesPerSecond, screen: UIScreen.main.bounds.size, scale: UIScreen.main.scale)
+        // Find (`-findTest`): its passes and feeds, to compare with a run that has none.
+        if let find = main.host?.term.core.find {
+            json["find"] = ["passes": find.passes.load(ordering: .relaxed), "feeds": find.feeds.load(ordering: .relaxed),
+                            "total": find.published.withLock { $0.total }]
+        }
         json.merge(phases) { a, _ in a }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Atomic: whoever waits for the file never reads half of it.
@@ -857,7 +887,8 @@ final class PerfProbe: Sendable {
         out["memory"] = ["startMB": mb(start.footprint), "peakMB": mb(max(s.peak, end.footprint)), "endMB": mb(end.footprint),
                          "idleMB": mb(idle)]
         // The renderer's own timers, for tuning: row rebuild and encode, per pass.
-        out["ghosttyRender"] = ["passes": s.passes, "buildMs": ms(s.buildSeconds), "buildWorstMs": ms(s.buildWorst),
+        out["ghosttyRender"] = ["termLockWaitWorstMs": ms(Double(GhosttyCore.lockWaitWorstNs.load(ordering: .relaxed)) / 1e9),
+                                "passes": s.passes, "buildMs": ms(s.buildSeconds), "buildWorstMs": ms(s.buildWorst),
                                 "encodeMs": ms(s.encodeSeconds), "encodeWorstMs": ms(s.encodeWorst)]
         return out
     }

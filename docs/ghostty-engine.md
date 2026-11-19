@@ -79,6 +79,7 @@ that terminal's lock.
 | `rex.ghostty.feed` (serial queue, user-initiated) | one per `GhosttyCore` | parses bytes; resize, colors, reset, snapshot restore and history compression, all in the order they were asked for |
 | `rex.ghostty.render` (thread, user-interactive) | `GhosttyRenderThread.shared`, one per process | one `CADisplayLink` (60 to 120 Hz) and the cursor blink timer for all panes; builds and presents frames; exits with the last pane |
 | `rex.ghostty.glyphs` (thread, user-initiated) | `GhosttyGlyphWorker.shared` | rasterizes fallback glyphs and clusters with CoreText |
+| `rex.ghostty.find` (serial queue, user-initiated) | `GhosttyFind.queue`, one per process | find's passes for every pane: ticks, feeds, steps, closing (GhosttyCore+Find.swift) |
 
 Locks of one `GhosttyCore` (`GhosttyLock`, an `os_unfair_lock`):
 
@@ -86,8 +87,10 @@ Locks of one `GhosttyCore` (`GhosttyLock`, an `os_unfair_lock`):
 - `stateLock`: the render state and its iterators, the render hold, the scrollbar.
 - `opLock`: the queue of work for the feed queue. `handlerLock`: the dirty handler.
 
-**Lock order: `termLock` first, then `stateLock`.** Under those come the small ones that are
-never held while taking another: the scroll state's lock, the input mirror's, the clipboard's,
+**Lock order: `termLock` first, then `stateLock`.** Find's `searchLock` (its search handle)
+comes after `termLock` (`termLock → searchLock`) and is never held with `stateLock`. Under those
+come the small ones that are never held while taking another: find's `published` result (the
+render thread reads it under `stateLock`; it is never held across a library call), the scroll state's lock, the input mirror's, the clipboard's,
 the renderer's config lock, and the glyph atlas lock (taken under `stateLock` during a row
 build, after `termLock` has been released).
 
@@ -102,6 +105,12 @@ Rules that keep the UI and the frame from waiting:
   and the render thread applies it in its next frame.
 - The glyph worker takes the atlas lock only to store a finished bitmap, so a frame never waits
   for CoreText.
+- Find ticks with `searchLock` alone, in 0.25 ms chunks, at most 2 ms a pass, and takes
+  `termLock` (through `lockTerminal`, so the feed queue yields) only to feed, set a needle, step
+  or close. Output refreshes are coalesced to one per 24 ms and run only while the pane is drawn;
+  the render thread reads only `published` and never waits on a tick. Nothing exists before find
+  first opens; the handle is freed when it closes, and swapped with the terminal on a restore
+  (freed after the tracked refs, remade on the next pass with the needle kept).
 
 Rules that were once broken, and must stay kept (the input mirror's lock is taken under
 `termLock` or alone):
@@ -381,6 +390,13 @@ pass:
 | frame gaps over 25 ms | 1, every scenario but `top` (it draws twice a second by itself) | 0 |
 | first byte to the final frame | `seq`, `yes` 60 ms; `unicode` 150 | 19.7, 21.4; 38.3 |
 | memory peak, at rest | 40 MB, 32 MB | 23.5 to 32, 23.4 to 26.6 |
+
+Find open runs the same budgets: `seq-find`, `unicode-find` and `claude-find` replay with find
+open and step 20 matches (`-findTest 99` for `seq`'s digits, `e` for the others, `-findSteps 20`;
+`seq-find` also flings with `-perfScroll 6`), and `cap-find` (`-findTest 99`) streams
+`yes` after `seq 1 10000` filled the scrollback to its cap, so every line prunes one. Each result
+also has `ghosttyRender.termLockWaitWorstMs` (the render thread's longest wait for the terminal
+lock, every run) and, with find open, `find` (passes, feeds, total) and a `find` phase for the steps.
 
 Times have about twice the measured median as headroom, memory a quarter, so a busy Mac doesn't
 fail a run and a real regression does. They hold for the iPhone 17 simulator at 60 Hz, grid 60×50

@@ -47,7 +47,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is the engine,
-  `Selection/` the touch selection UI, `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
+  `Selection/` the touch selection UI, `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection;

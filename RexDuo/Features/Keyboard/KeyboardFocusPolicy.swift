@@ -21,11 +21,21 @@ enum KeyboardFocusPolicy {
         case nobody
         /// Another pane's terminal.
         case terminal
-        /// A text field or text view (Settings, a rename field, search).
+        /// Another pane's find field. A pane takes the keyboard from it as from a terminal, and
+        /// app shortcuts run from it (⌘W closes the pane, as on the Mac).
+        case findField
+        /// A field the app owns for one of its own surfaces (`AppFieldKind`), each with its own
+        /// answer to `runsAppShortcut`.
+        case appField(AppFieldKind)
+        /// A text field or text view (Settings, a rename field).
         case textInput
         /// Something that types nothing (a SwiftUI hosting view, a view controller).
         case other
     }
+
+    /// The app's own fields beside find's. Later surfaces (the palette, the file browser's
+    /// search) add their kind here and their `runsAppShortcut` answer.
+    enum AppFieldKind: Equatable {}
 
     struct Situation: Equatable {
         /// The pane is the tab's active pane.
@@ -48,8 +58,10 @@ enum KeyboardFocusPolicy {
         guard s.paneActive, s.inWindow, s.appActive, !s.holdsKeyboard, !s.sheetUp else { return false }
         switch s.holder {
         case .textInput: return false
-        // The keyboard follows the active pane, hardware or not: no other pane may keep it.
-        case .terminal: return true
+        case .appField(let kind): switch kind {}
+        // The keyboard follows the active pane, hardware or not: no other pane may keep it,
+        // in its terminal or in its find field.
+        case .terminal, .findField: return true
         // Free: a hardware keyboard always types into the active pane. Without one there is
         // only a software keyboard to bring back, and not after the user put it away.
         case .nobody, .other: return s.hardwareKeyboard || (s.hadKeyboard && !s.userHidKeyboard)
@@ -66,8 +78,14 @@ enum KeyboardFocusPolicy {
     /// App-wide shortcuts from the app's menu (`AppShortcutCommands`) run only when no terminal can
     /// take the key: never under a sheet, and never while a text field is being edited (⌘W in a
     /// rename field must not close a pane).
+    /// A find field passes: its find keys and the app's commands work there as on the Mac.
     static func runsAppShortcut(holder: Holder, sheetUp: Bool) -> Bool {
-        !sheetUp && holder != .textInput
+        guard !sheetUp else { return false }
+        switch holder {
+        case .textInput: return false
+        case .appField(let kind): switch kind {}
+        case .nobody, .terminal, .findField, .other: return true
+        }
     }
 
     /// Limits how often a pane takes the keyboard back after its view was moved. Taking the keyboard
@@ -88,11 +106,14 @@ enum KeyboardFocusPolicy {
         }
     }
 
-    /// Classifies the app's first responder, seen from the pane whose engine view is `own`.
+    /// Classifies the app's first responder, seen from the pane whose engine view is `own` and
+    /// whose find fields are `ownFields`: the pane's own views are nobody else's. Any other
+    /// pane's find field is `.findField`.
     @MainActor
-    static func holder(_ responder: UIResponder?, own: UIView?) -> Holder {
+    static func holder(_ responder: UIResponder?, own: UIView?, ownFields: [UIView] = []) -> Holder {
         guard let responder else { return .nobody }
-        if responder === own { return .nobody }
+        if responder === own || ownFields.contains(where: { $0 === responder }) { return .nobody }
+        if responder is FindField { return .findField }
         // The terminal view may decline unknown actions, so a focused terminal can report its host.
         if responder is GhosttyTerminalView || responder is TerminalHost { return .terminal }
         if responder is any UIKeyInput { return .textInput }

@@ -82,6 +82,22 @@ git: `git show 447a94a:docs/ghostty-api-notes.md`.
   `(false)`, and end a hold after 1 s by setting the mode off with `OPT_MODE`, which fires no
   callback. Resize, RIS and reset also end a hold.
 
+## Search
+
+- `ghostty_search_*` (search.h) covers screen and scrollback of both screens. `new`, `free`,
+  `feed`, `run`, `select_next/prev` and `set(NEEDLE)` read or change the terminal: serialize them
+  with all terminal access (`termLock`). `tick` and `get` don't.
+- Results are untracked `GhosttySelection` snapshots: valid only until the next terminal change.
+  Convert them in the same critical section as the feed (`ghostty_terminal_point_from_grid_ref`,
+  `SCREEN` rows: the scrollbar's row space). Rows in one page are consecutive screen rows, so one
+  conversion per page (`node`) gives the rest (`GhosttyFind.PageRows`, tested against one per match).
+- `VIEWPORT_MATCHES` is cached at the last feed and may include matches just outside the viewport.
+  An undersized buffer returns `OUT_OF_SPACE` with the size needed; read again before feeding.
+- `select_next` goes older and wraps; `SELECTED_INDEX` 0 is the newest match. Set
+  `SELECT_SCROLL` to `NONE`: the renderer moves the viewport (`.reveal`), never the search.
+- Setting the same needle again keeps the results; a new needle restarts. Status `COMPLETE` is as
+  of the last feed: keep feeding while the search is in use.
+
 ## Scrollback, resize, memory
 
 - The library never moves a pinned viewport to the bottom, on output or on paste. The app does it

@@ -164,6 +164,21 @@ Three behaviours were choices, not necessities. They stand; each is one small ch
 2. **Link taps (row 29).** A finger tap opens links, and web addresses in plain text open too.
 3. **Row 7.** Ctrl+Return from the key bar sends Return.
 
+## Find (about 3 minutes, on a device)
+
+In a `zz-find` session with `seq 1 3000; echo error` and a few lines with `error` in them:
+
+1. Software keyboard up: ⌘-less, pane menu → Find…. The find bar takes the key bar's place; the
+   keyboard doesn't move or flicker. Type `error`: the count shows, Return steps older.
+2. Escape: the terminal has the keyboard and the key bar again; the bar floats in the pane. Tap
+   its field: it goes back to the accessory slot. Done closes.
+3. Keyboard down: ⌘F (or the menu) raises the keyboard once; Done lowers it.
+4. Hardware keyboard: ⌘F, ⌘G, ⇧⌘G, ⌘V in the field, ⌘T and ⌘] from the field, Escape. The title
+   bar never jumps; fit mode sends no `FIT_RESIZE` (Debug log).
+5. `vim` on the alternate screen: the bar is at the top, below the chip; a match under it sends it
+   to the bottom on the next step.
+6. `yes | head -n 20000` with find open: the count grows, typing stays smooth.
+
 ## Manual script (about 5 minutes)
 
 Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 29, 30, 39, 41, 42, 44, 45, 46a (on a Duo), 48.

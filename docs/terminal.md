@@ -244,6 +244,65 @@ Around that:
   work when no terminal is first responder (no tab open, keyboard put away). The menu replaces
   the system's Settings item, whose ⌘, would open the Settings app before the keymap sees it.
 
+## Find
+
+Find in Scrollback, as on the Rex Mac app: type a needle, every match on screen is tinted, the
+current one stands out, and Next and Previous step through the pane's screen and history.
+
+- **Where it searches.** The pane's own terminal, with libghostty-vt's search
+  (`GhosttyCore+Find.swift`; [ghostty-api-notes.md](ghostty-api-notes.md), Search). No server call:
+  the phone holds the newest 10,000 lines, and a match older than that has no row to show. Matching
+  is the library's: byte for byte, with ASCII letters folded (no regex, no case option, as on the
+  Mac). The needle is the field's first line, composed (NFC), at most 1 KB (`FindQuery`). With the
+  history at its cap and nothing found the count says "No Results in recent history".
+- **Opening.** ⌘F (the keymap's `client.find.open`), "Find…" in the pane menu's section above
+  Close (its key text comes from the keymap, `KeyLabel`, and hides when nothing runs it), "Find
+  Selection" in the edit menu (a one-row selection of at most 200 bytes), or another client
+  performing `client.find.open`. The field starts with the last needle used in any pane, selected.
+- **Keys.** Return and ⌘G: next (older, `chevron.up`); ⇧Return and ⇧⌘G: previous (newer,
+  `chevron.down`). With find closed ⌘G and ⇧⌘G do nothing, as before. Escape with text gives the
+  keyboard back to the terminal; with none it closes. Return and Escape belong to an input method
+  while it composes. While the field edits, only app commands and the find keys stay with the pane
+  (an allowlist, `FindKeys`): ⌘V, ⌘A, arrows and Delete with any modifier edit the field. ⌘W
+  closes the pane, as on the Mac.
+- **Two bars, one model.** `FindAccessoryBar` sits in the keyboard's accessory slot (the key bar's
+  height function, so the keyboard keeps its frame) and holds the keyboard while the system
+  keyboard or the key bar shows. `FindOverlayBar` floats in the pane (bottom; top on the alternate
+  screen, below the status chip) whenever the field isn't in the accessory slot, and holds the
+  keyboard when the terminal held it quietly (after the hide key, with a hardware keyboard). No
+  view moves between the keyboard's window and the pane.
+- **The hand-over** (spike S1, checked on the Duo). Terminal to field: the terminal shows the find
+  bar in its accessory slot (`reloadInputViews`), and once the bar is in the keyboard's window its
+  field becomes first responder with the terminal's input views; the key bar is the terminal's
+  accessory again at once, without a reload. Field to terminal: the terminal takes the keyboard
+  back as panes do from each other; one more reload of the same views a turn later puts back the
+  2 pt the window is otherwise laid out off by. With the keyboard down (no hardware keyboard) the
+  keyboard rises as a tap's does. `FindHandover.shipped` is the one switch to the fallback (the
+  floating field with an empty accessory of the key bar's height, `FindSpacer`).
+- **No resize.** The keyboard's frame is the same before and after every hand-over (a rise and a
+  fall when it was down). Fit mode's grid while the field holds the keyboard on a rising
+  keyboard is the newest one asked for (`FitClaim.wanted`, the *fit hold*), taken before the
+  keyboard moves and released at once when the field stops editing, find closes, the font, width
+  or sizing changes, or the pane is lost. `FitHoldDeferral` can make the release wait while
+  another surface holds the layout; it is built for goto's palette and unused until goto lands. A layout that finds the claimed size while another request settles asks for the
+  claimed size again, which supersedes it.
+- **Tints.** Every match: the theme's yellow at 30%. The current one: opaque bright yellow, its
+  text black or white by contrast (at least 4.5:1 on every theme), on its first four rows. Drawn
+  between the backgrounds and the cursor, so a block cursor and underlines stay on top
+  ([ghostty-engine.md](ghostty-engine.md), From bytes to a frame).
+- **Scrolling.** A step scrolls only when the match isn't in view, its first row a third of the
+  way down (`.reveal`). The bottom bar's height counts like the keyboard's cover for the last rows
+  (`setFindInset`) but never as reading: a drag under it doesn't hide the keyboard. The
+  jump-to-bottom button sits above it. On the alternate screen under the hold the keyboard hides
+  the program's bottom rows, and a match under it lifts the grid until the next step.
+- **Focus.** The pane's own field holding the keyboard counts as the pane holding it: no reclaim
+  takes it away. Another pane becoming active takes it (the bar stays open there). A sheet, a
+  menu or the agent board takes it as from the terminal and gives it back. A fold gives the
+  floating field its keyboard back.
+- **Compatibility.** Local only: no method, event or capability. The keys and the label come from
+  each pane's server keymap, and from `KeyDefaults` (⌘F, ⌘G, ⇧⌘G) where `client.keymap` fails
+  (any server revision). Copy-mode actions (`pane.copy_mode.*`) stay unbound on the phone.
+
 ## Files
 
 A pane takes files as the Rex Mac app's terminal takes a dropped file: they are copied to the

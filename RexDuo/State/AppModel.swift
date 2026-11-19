@@ -83,6 +83,18 @@ enum RexCommand: Equatable {
     case nextTab, previousTab, goToTab(Int), nextPane, previousPane
     case toggleZoom, clear, toggleSidebar, toggleAgents, tabOverview, jumpToWaiting
     case fontBigger, fontSmaller, fontReset, settings
+    /// Find in the active pane's history (`client.find.*`).
+    case find(FindStep)
+}
+
+/// What a find key asks for.
+enum FindStep: Equatable {
+    /// Open find (or, while its field edits, select the field's text).
+    case open
+    /// The next match, toward older output. With find closed it does nothing.
+    case next
+    /// The previous match, toward newer output.
+    case previous
 }
 
 struct CommandRequest: Equatable {

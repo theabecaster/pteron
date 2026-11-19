@@ -654,6 +654,27 @@ final class GhosttyFrameBuilder {
     /// (The name is from when only scroll steps reused rows.)
     var reusesRowsOnScroll = true
 
+    // Find (GhosttyFindHighlights). Empty while find is closed.
+    /// The tints over the rows, in drawing order.
+    private(set) var highlights: [GhosttyRectInstance] = []
+    /// The current match's rows whose text is recolored.
+    private(set) var matchSpans: [GhosttyFindHighlights.RowRange] = []
+    /// Bumped whenever `highlights` changed, so a GPU buffer that holds a version is reused.
+    private(set) var highlightsVersion = 0
+    /// Find is open on the pane (its tints may still be empty).
+    private(set) var findOpen = false
+    var findColors = GhosttyFindHighlights.Colors.fallback {
+        didSet { if findColors != oldValue { highlightKey = nil } }
+    }
+    private struct HighlightKey: Equatable {
+        var serial: Int, viewTop: Int, rows: Int, cols: Int, cellWidth: Int, cellHeight: Int, paused: Bool
+    }
+    private var highlightKey: HighlightKey?
+    /// Rows left the top of a full scrollback (whole pages): the published rows are off by that
+    /// much until the next refresh. Tints pause until a result newer than this serial arrives.
+    private var pausedAtSerial: Int?
+    private var lastTotal = 0
+
     private var spare: [GhosttyRow] = []
     /// The previous frame's rows while a full frame is rebuilt. Kept to avoid allocating.
     private var previous: [GhosttyRow?] = []
@@ -825,7 +846,59 @@ final class GhosttyFrameBuilder {
             cursor = next
             changed = true
         }
+        if updateHighlights(core) { changed = true }
         return changed
+    }
+
+    /// The find tints for this frame, from the result latched with its rows (`GhosttyCore.frameFind`).
+    /// True when they changed. Under `stateLock`, in `update`.
+    private func updateHighlights(_ core: GhosttyCore) -> Bool {
+        guard let found = core.frameFind, found.open else {
+            pausedAtSerial = nil
+            lastTotal = 0
+            highlightKey = nil
+            let had = findOpen || !highlights.isEmpty
+            findOpen = false
+            if !highlights.isEmpty || !matchSpans.isEmpty {
+                highlights = []
+                matchSpans = []
+                highlightsVersion &+= 1
+            }
+            return had
+        }
+        let bar = core.scrollbar
+        let total = Int(bar.total), len = Int(bar.len)
+        let maxRow = max(0, total - len)
+        let viewTop = core.viewportActive ? maxRow : min(Int(bar.offset), maxRow)
+        if total < lastTotal, pausedAtSerial == nil { pausedAtSerial = found.serial }
+        if let p = pausedAtSerial, found.serial != p { pausedAtSerial = nil }
+        lastTotal = total
+        let m = atlas.metrics
+        let key = HighlightKey(serial: found.serial, viewTop: viewTop, rows: rows.count, cols: cols,
+                               cellWidth: m.cellWidth, cellHeight: m.cellHeight, paused: pausedAtSerial != nil)
+        let wasOpen = findOpen
+        findOpen = true
+        guard key != highlightKey else { return !wasOpen }
+        highlightKey = key
+        let built: (rects: [GhosttyRectInstance], spans: [GhosttyFindHighlights.RowRange])
+        if key.paused {
+            built = ([], [])
+        } else {
+            let rows = self.rows
+            built = GhosttyFindHighlights.build(found, viewTop: viewTop, rows: rows.count, cols: cols, cellWidth: m.cellWidth,
+                                                cellHeight: m.cellHeight, colors: findColors) { r, c in
+                r < rows.count && rows[r].wideColumns.contains(UInt16(c))
+            }
+        }
+        let same = built.rects.count == highlights.count && built.spans == matchSpans
+            && zip(built.rects, highlights).allSatisfy { a, b in
+                a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h && a.color == b.color && a.row == b.row
+            }
+        guard !same else { return !wasOpen }
+        highlights = built.rects
+        matchSpans = built.spans
+        highlightsVersion &+= 1
+        return true
     }
 
     /// The screen's rows from the top through the last one that draws something or holds the

@@ -62,6 +62,14 @@ const scenarios = {
     return Buffer.from('y\r\n'.repeat(200000));
   },
 
+  // `seq 1 10000` (the scrollback at its 10,000-line cap) then the `yes` stream: every line
+  // after the cap prunes one, for find's refreshes at the cap.
+  'cap.vt'() {
+    let s = '';
+    for (let i = 1; i <= 10000; i++) s += i + '\r\n';
+    return Buffer.concat([Buffer.from(s), Buffer.from('y\r\n'.repeat(100000))]);
+  },
+
   'unicode.vt'() {
     const r = rng(7);
     const pick = (list) => list[Math.floor(r() * list.length)];

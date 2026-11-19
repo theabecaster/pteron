@@ -79,6 +79,10 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     var userMoving: Bool { surface.isDragging || surface.isDecelerating }
     /// Points of the view's bottom that the keyboard covers (`setCover`).
     private(set) var cover: CGFloat = 0
+    /// Points the find bar covers above the bottom edge, apart from the keyboard (`setFindInset`).
+    private(set) var findInset: CGFloat = 0
+    /// Everything that hides the view's bottom: the keyboard and the find bar.
+    var coveredBottom: CGFloat { cover + findInset }
     /// This drag has already said that it went into the scrollback.
     private var toldReading = false
     private var alternateScreen = false
@@ -178,7 +182,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         if !interacting, snapshot.appliedSequence >= lastRequest {
             // The shift at rest is inside the cover; anything else is a rubber band that nothing
             // brought back (an offset set past an edge without a finger), and is put right.
-            let shift = min(max(snapshot.bounce, 0), Int((cover * scale).rounded()))
+            let shift = min(max(snapshot.bounce, 0), Int((coveredBottom * scale).rounded()))
             settle = shift != snapshot.bounce
             y = CGFloat(snapshot.position + shift) / scale
         }
@@ -205,12 +209,28 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         let c = max(0, points)
         guard abs(c - cover) > 0.01 else { return }
         cover = c
-        applying = true
-        surface.contentInset.bottom = c
-        surface.verticalScrollIndicatorInsets.bottom = c
-        applying = false
+        applyInsets()
         core.scroll.setCover(px: Int((c * scale).rounded()))
         core.onDirty?()
+    }
+
+    /// The find bar covers the bottom `points` of the view (the bottom overlay on the main
+    /// screen). Like the keyboard's cover it adds room to scroll past the last row and keeps the
+    /// last rows above it, but it never counts as the keyboard: a drag under it is not reading.
+    func setFindInset(_ points: CGFloat) {
+        let c = max(0, points)
+        guard abs(c - findInset) > 0.01 else { return }
+        findInset = c
+        applyInsets()
+        core.scroll.setFindInset(px: Int((c * scale).rounded()))
+        core.onDirty?()
+    }
+
+    private func applyInsets() {
+        applying = true
+        surface.contentInset.bottom = coveredBottom
+        surface.verticalScrollIndicatorInsets.bottom = coveredBottom
+        applying = false
     }
 
     func layoutChanged() {

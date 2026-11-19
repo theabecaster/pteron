@@ -26,4 +26,10 @@ export const scenarios = {
   unicode:    { 'mainBusy.totalMs': 15,  'presents.gapsOver25': 1, 'flow.drawnMs': 150 },   // measured 4.4, 0, 38.3
   top:        { 'mainBusy.totalMs': 160 },                                                  // measured 78
   claude:     { 'mainBusy.totalMs': 250, 'presents.gapsOver25': 1 },                        // measured 122, 0
+  // Find open: the same numbers as without it (a miss blocks the merge). `cap-find` is `yes`
+  // after the scrollback reached its cap.
+  'seq-find':     { 'mainBusy.totalMs': 10,  'presents.gapsOver25': 1, 'flow.drawnMs': 60 },
+  'unicode-find': { 'mainBusy.totalMs': 15,  'presents.gapsOver25': 1, 'flow.drawnMs': 150 },
+  'claude-find':  { 'mainBusy.totalMs': 250, 'presents.gapsOver25': 1 },
+  'cap-find':     { 'mainBusy.totalMs': 10,  'presents.gapsOver25': 1, 'flow.drawnMs': 60 },
 };

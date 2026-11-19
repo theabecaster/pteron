@@ -24,6 +24,14 @@ enum TerminalLayout {
         return CGSize(width: bounds.width, height: rest.height)
     }
 
+    /// The grid fit mode asks for: the one that fits (`fitSize`), unless find holds a grid while
+    /// the keyboard rises for its field (`held`), which wins until the hold is released.
+    static func fitGrid(bounds: CGSize, rest: CGSize?, alternateScreen: Bool, cell: CGSize,
+                        held: (cols: Int, rows: Int)?) -> (cols: Int, rows: Int) {
+        if let held { return held }
+        return fitGrid(in: fitSize(bounds: bounds, rest: rest, alternateScreen: alternateScreen), cell: cell)
+    }
+
     /// How much of a terminal `terminal` points tall the bottom of a pane `pane` points tall
     /// hides. A grid that fits its pane can be a point or so taller than it; that is no cover.
     static func cover(terminal: CGFloat, pane: CGFloat) -> CGFloat {
