@@ -23,6 +23,12 @@ struct RootView: View {
     @State private var keyboardPad: CGFloat = 0
     /// Where the system puts its vertical bar, if it has one here.
     @State private var barEdge: HorizontalEdge?
+    /// The crease book mode lays out against, once the fold has held still.
+    @State private var creaseSettle = CreaseSettle()
+    /// Book mode collapsing the inline sidebar and bringing it back.
+    @State private var bookSidebar = BookSidebar()
+    /// Whether the tab on screen would be in book mode with the sidebar collapsed. Nil with no tab.
+    @State private var bookFits: Bool?
     /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
     @State private var hostPool = TerminalHostPool()
     #if DEBUG
@@ -58,6 +64,7 @@ struct RootView: View {
             .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
             // The mode the sidebar had last time, and saved when it changes.
             .onChange(of: sidebar.mode) { _, m in if prefs.sidebarMode != m { prefs.sidebarMode = m } }
+            .onChange(of: sidebar.open) { _, open in bookSidebar.sidebarChanged(open: open) }
             // The tab on screen always has a row: its folded session and machine open (a tap, Jump to
             // Waiting, a push, a toast, a new session).
             .onChange(of: model.selection) { _, sel in
@@ -189,9 +196,51 @@ struct RootView: View {
             }
             .environment(\.division, division)
             .environment(\.rootOrigin, geo.frame(in: .global).origin)
+            .environment(\.bookCrease, creaseSettle.crease(division))
             .environment(\.verticalBarEdge, barEdge)
             .onChange(of: arr.inline, initial: true) { _, new in inline = new }
+            .task(id: CreaseSettle.live(division)) { await settleCrease(division) }
+            // The tab was measured after a launch in book mode, or the window is wide again.
+            .onChange(of: bookFits) { _, _ in bookObserved(division) }
+            .onChange(of: inline) { _, _ in bookObserved(division) }
         }
+    }
+
+    /// Book mode goes on or off once the fold has held still (`CreaseSettle`), and takes the inline
+    /// sidebar with it (`BookSidebar`). Each way the tab changes size once: going in, the sidebar
+    /// gives its room and the split moves to the crease in one layout; going out, the sidebar slides
+    /// back over the tab first, as when it is toggled, and the tab makes room as book mode ends.
+    private func settleCrease(_ division: Division?) async {
+        if creaseSettle.started {
+            try? await Task.sleep(nanoseconds: CreaseSettle.delay)
+            if Task.isCancelled { return }
+        }
+        let book = CreaseSettle.live(division) != nil
+        if !book, bookChanged(false) == .reopen {
+            try? await Task.sleep(nanoseconds: BookSidebar.slideTime)
+            // The fold moved again while the sidebar slid: the new settle decides.
+            if Task.isCancelled { return }
+        }
+        creaseSettle.settle(division)
+        if book { bookChanged(true) }
+    }
+
+    /// The window turned wide or narrow, or the tab's answer changed. Opened from shut into book
+    /// mode, the fold hasn't settled yet: book mode isn't over, so the sidebar waits for the settle.
+    private func bookObserved(_ division: Division?) {
+        guard !creaseSettle.pending(division) else { return }
+        bookChanged(creaseSettle.crease(division) != nil)
+    }
+
+    @discardableResult
+    private func bookChanged(_ book: Bool) -> BookSidebar.Action? {
+        let action = bookSidebar.update(book: book, fits: bookFits, open: sidebar.open, inline: inline)
+        switch action {
+        case .collapse: sidebar.open = false
+        case .reopen: sidebar.open = true
+        case nil: break
+        }
+        return action
     }
 
     /// Not under `-simulateDuo`, which shrinks its root for the keyboard itself.
@@ -219,7 +268,8 @@ struct RootView: View {
         ZStack {
             if let cur = model.current {
                 WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
-                             mode: mode, sidebarVisible: sidebarBinding, onOpen: open)
+                             mode: mode, sidebarVisible: sidebarBinding, onOpen: open,
+                             onBookFits: { if bookFits != $0 { bookFits = $0 } })
                     .overlay { TabOfflineOverlay(server: cur.server, sidebarVisible: sidebarBinding) }
                     .transition(.opacity)
             } else {
@@ -229,6 +279,7 @@ struct RootView: View {
         }
         // Signal back: the offline screen dissolves into the tab.
         .animation(.easeInOut(duration: 0.35), value: model.current == nil)
+        .onChange(of: model.current == nil) { _, none in if none { bookFits = nil } }
     }
 
     private var sidebarBinding: Binding<Bool> {

@@ -27,6 +27,9 @@ struct WindowScreen: View {
     @Environment(\.verticalSizeClass) private var vSize
     /// Where the system's vertical bar is, if any: the tab's actions go there as toolbar items.
     @Environment(\.verticalBarEdge) private var barEdge
+    @Environment(\.division) private var division
+    @Environment(\.rootOrigin) private var rootOrigin
+    @Environment(\.bookCrease) private var bookCrease
 
     let server: ServerConnection
     let sessionID: String
@@ -35,6 +38,8 @@ struct WindowScreen: View {
     @Binding var sidebarVisible: Bool
     /// Opens another tab (tab overview, title menu, tab swipes, waiting pill).
     var onOpen: (Selection) -> Void = { _ in }
+    /// Whether this tab would be in book mode with the sidebar collapsed (`bookFits`).
+    var onBookFits: (Bool?) -> Void = { _ in }
 
     @State private var renaming = false
     @State private var renameText = ""
@@ -47,6 +52,8 @@ struct WindowScreen: View {
     /// flip splits to one pane. And for each pane's grid, which stays the one that fits it with
     /// the keyboard down while the keyboard covers it (`PaneLayout`).
     @State private var canvasSize: CGSize = .zero
+    /// Where the panes' area ends, in global coordinates. The sidebar doesn't move it.
+    @State private var canvasMaxX: CGFloat?
 
     private var view: SessionView? { server.views[sessionID] }
     private var window: WindowInfo? { view?.window(windowID) }
@@ -125,6 +132,7 @@ struct WindowScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             if keyboardUp { keyboardUp = false }
         }
+        .onChange(of: bookFits, initial: true) { _, fits in onBookFits(fits) }
     }
 
     private func panes(_ w: WindowInfo, _ theme: TermTheme) -> some View {
@@ -134,6 +142,7 @@ struct WindowScreen: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
                 if !keyboardUp, s != canvasSize { canvasSize = s }
             }
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { canvasMaxX = $0 }
             // The rows stay above the home indicator, but the terminal's color runs on to the
             // window's bottom: no band of chrome under the panes with the keyboard down, and the
             // key bar's glass floats on the terminal with it up.
@@ -160,6 +169,20 @@ struct WindowScreen: View {
     }
 
     private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
+
+    /// Whether this tab, with the fold bent as it is now, would be in book mode if the sidebar
+    /// were collapsed (`BookSidebar`). Nil until the tab is measured.
+    private var bookFits: Bool? {
+        guard let w = window, canvasSize != .zero, let canvasMaxX else { return nil }
+        // Zoom aside, as `splitsFit`; beside the sidebar the splits may be too narrow to show.
+        guard w.orderedBlockIDs.count > 1, w.zoomedBlockID == nil, !zoomedHere else { return false }
+        // A split whose layout hasn't arrived yet isn't measured.
+        guard let layout = w.layout else { return nil }
+        // Collapsed, the panes' area runs from the root's leading edge to where it ends now.
+        return BookSplit.fitsCollapsed(leaves: layout.leaves.map(\.rect), splits: layout.splits,
+                                       canvas: CGSize(width: canvasMaxX - rootOrigin.x, height: canvasSize.height),
+                                       crease: CreaseSettle.live(division), fontSize: prefs.fontSize)
+    }
 
     /// Zoom means something only while more than one pane is on screen.
     private func canZoom(_ w: WindowInfo) -> Bool { zoomedHere || splitsFit(w) }
@@ -450,9 +473,13 @@ struct WindowScreen: View {
             let active = activeBlock(w)
             GeometryReader { geo in
                 let size = geo.size
+                // Partly folded with a split across the crease: that divider is drawn on the crease.
+                let book = BookSplit.decide(leaves: layout.leaves.map(\.rect), splits: layout.splits, areaWidth: size.width,
+                                            areaMinX: geo.frame(in: .global).minX - rootOrigin.x,
+                                            crease: bookCrease, canvas: canvasSize, fontSize: prefs.fontSize)
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.leaves, id: \.id) { leaf in
-                        let r = leaf.rect
+                        let r = book?.rect(leaf.rect) ?? leaf.rect
                         let frame = PaneLayout.split(r, in: size)
                         PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
                                  onFocus: {
@@ -468,8 +495,11 @@ struct WindowScreen: View {
                         .offset(x: frame.minX, y: frame.minY)
                     }
                     ForEach(layout.splits, id: \.id) { sp in
-                        SplitHandle(split: sp, canvas: size, theme: theme) { ratio in
-                            Task { await server.resizePane(sessionID, direction: sp.direction, before: sp.beforeFirst, after: sp.afterFirst, ratio: ratio) }
+                        if let handle = book.map({ $0.handle(sp) }) ?? sp {
+                            SplitHandle(split: handle, canvas: size, theme: theme) { shown in
+                                let ratio = book?.ratio(sp, shown: shown) ?? shown
+                                Task { await server.resizePane(sessionID, direction: sp.direction, before: sp.beforeFirst, after: sp.afterFirst, ratio: ratio) }
+                            }
                         }
                     }
                 }

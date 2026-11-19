@@ -45,6 +45,46 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Toggle Sidebar command and a swipe from
   the left edge show and hide it. A drag or toggle resizes the terminals once, never per frame.
+- **Book mode** (`BookSplit`). Partly folded with a vertical crease, a tab that shows its splits
+  draws the side-by-side divider nearest the crease on the crease: the panes on its left fill the
+  left page and the panes on its right fill the right page, each side keeping its proportions.
+  Panes stay 3 pt clear of the fold's reserved region, which already includes Apple's tap margins.
+  - **On** only when all of these hold: the fold reports an active vertical region; the tab has
+    a side-by-side divider that runs the panes' full height (stacked splits may sit on either
+    side of it); and every pane still keeps 40×8 cells on its page.
+  - **Book mode collapses the sidebar** (`BookSidebar`). Beside the open sidebar the left page
+    has too little room for a legible pane (191.5 pt of it beside the 260 pt sidebar; 40 columns
+    need 264 pt at 11 pt text). So when the phone settles into book mode and the tab on screen
+    has a split that fits the two pages with the sidebar collapsed (also one too narrow to show
+    beside the sidebar), the sidebar collapses, with
+    its usual slide, and the split moves to the crease in the same layout. When book mode ends,
+    the sidebar comes back at the width it had, and the tab makes room once it has slid in.
+    - Only on the way into book mode. Another tab, or a split made later, collapses nothing. A
+      tab with nothing to align (one pane, a stacked top split, panes too narrow even with the
+      sidebar collapsed) leaves the sidebar as it is.
+    - The user's own choice stands. Show the sidebar during book mode and it stays; the tab is
+      then laid out as when flat, and nothing collapses the sidebar again until the next time
+      the phone goes into book mode. Hide it yourself and it stays hidden afterwards.
+    - It is never stored: the sidebar's widths are saved only by a drag of its edge, and a
+      launch starts with the sidebar showing. Only the inline sidebar is concerned; the drawer
+      of a narrow window is left alone. Folded shut from book mode, the sidebar comes back when
+      the window is wide again.
+  - **Off**, and laid out exactly as when flat, in every other case: flat, tabletop, a single
+    pane, a zoomed pane, one pane at a time, a tab whose top split is stacked, three columns too
+    narrow for a page.
+  - **Display only.** Rex's split ratios don't change and the Mac's layout stays as it is. The
+    panes are fitted to their new widths like after any layout change: one `terminal.resize`
+    per pane each time the phone settles into or out of book mode, columns only.
+  - **No handle on the aligned divider.** It sits on the crease whatever its ratio, so a drag
+    would move the Mac's layout while nothing moved on the phone, and nothing tappable belongs
+    in the crease. Flatten the phone (or use the Mac) to change that ratio. Other dividers keep
+    their handles. A split that holds the aligned one (`a | b | c` with `b|c` on the crease)
+    is dragged within its page, and Rex gets the ratio that puts the border where the finger
+    let go.
+  - **Settle** (`CreaseSettle`). A hand near the angle where the fold turns active flips it back
+    and forth. The fold has to hold for 400 ms before book mode goes on or off (and before the
+    sidebar moves), then the fit claim's 120 ms settle sends one resize. The first layout doesn't
+    wait, and a crease that is gone or has moved (fully folded, rotated) is dropped at once.
 - **Vertical bar.** Where `verticalBarEdge` reports a bar, the navigation bar shows and its items
   go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the

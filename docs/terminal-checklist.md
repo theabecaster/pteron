@@ -76,6 +76,7 @@ How a row is verified:
 | 45a | The software keyboard covers a fitted pane | `GhosttyScrollTests` (the cover), `KeyboardCoverLayoutTests`; live (`-keyboardTest` over a real `claude` in a `zz-` session: the pane's tty size logged while the keyboard cycled through a streamed reply) | The grid keeps its rows on the main screen; the alternate screen fits above the keyboard. Reading mode (a drag into the scrollback hides the keyboard) needs a finger: hand. |
 | 45b | Jump-to-bottom button | `JumpToBottomRuleTests`, `JumpToBottomViewTests`; hand | Shows half a screen (at least 3 rows) into the scrollback, hides within a row of the bottom, during a selection or a pinch, and under a mouse program or the alternate screen. The tap returns to the newest line and leaves the keyboard and the focus alone. The touch itself (no keyboard, no pane swipe from it) needs a finger: hand. Run live in the simulator with `-keyboardTest` (`scroll:`, `jump`; the log gives `jump=`, `unseen=` and `first=`) in a `zz-` session, on the folded Duo, a regular iPhone and the simulated unfolded and landscape postures: the button comes up under a streaming agent reply and its arrow takes the cursor's color; `jump` returns to the bottom and the button goes; with the keyboard up the pane's size (`stty size`) stays through scroll and jump, the button sits above the key bar, and it stays hidden among the rows the keyboard covers; with the keyboard down `jump` leaves the terminal out of first responder; in `less` and `vim` it never shows; in a split only the scrolled pane has one; a recording of it coming and going shows the glass forming and leaving with no flash. |
 | 46 | Fold / unfold: the pool moves a live pane | `GhosttyIntegrationTests.testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached`, `testSelectionAndCursorSurviveTheMove`; live (`-simulateDuo folded,unfolded,folded` on an iPad simulator) | Draws at once on return, at the new size and scale, without new output. Draws nothing and wakes nothing while detached. |
+| 46a | Book mode: a split lands on the crease | `BookSplitTests`, `CreaseSettleTests`; `BookSidebarTests`; live (`-simulateDuo book`, and `unfolded,book` with `-simulateDuoEvery` counting `FIT_RESIZE`); hand on a Duo | Partly folded with a vertical crease, the side-by-side divider nearest the crease sits on it and no pane or handle is in the fold. The inline sidebar collapses on the way in and comes back on the way out, unless the user showed or hid it meanwhile; nothing about it is stored. Rex's ratios don't change. Each pane gets one resize per settled change of posture and none while the fold flickers, and the sidebar doesn't move then either. Everything else is laid out as when flat ([duo-layout.md](duo-layout.md), Book mode). The simulated fold is a guess: step 12 checks a real hinge. |
 | 47 | Reconnect and resume | RexKit `Stream*` tests | Host and stream code. A fresh connection brings a snapshot; a resume carries none. Not run live. |
 | 48 | Background and foreground | `GhosttyIntegrationTests` (visibility), `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread`; hand | No Metal work and no display-link wake in the background; one frame on return. After more than 30 s the host opens a fresh stream. A fitted pane is given back in the background and stays the Mac's until the app returns (live: `rex block call size` shows `owner: null` 4 s after backgrounding, the phone's client again on return). |
 | 49 | Reset and the `terminal.format` fallback | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `StreamSnapshotHandoffTests` | A snapshot that doesn't decode, or is over the 16 MiB cap, falls back: `streamReset` feeds RIS and clear-scrollback, then `streamSnapshot` feeds the screen as text. |
@@ -161,7 +162,7 @@ Three behaviours were choices, not necessities. They stand; each is one small ch
 
 ## Manual script (about 5 minutes)
 
-Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 29, 30, 39, 41, 42, 44, 45, 48.
+Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 29, 30, 39, 41, 42, 44, 45, 46a (on a Duo), 48.
 
 Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In the app open
 `zz-manual` (panes fit the phone by default). Close the session when done.
@@ -207,6 +208,23 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
     moves nothing.
 11. **Background (48).** Send the app to the background for a few seconds and return: the screen is
     there at once and current. On a device, scrolling should run at 120 Hz (41).
+12. **Book mode (46a), on a Duo.** Unfolded in landscape, sidebar showing, a tab with two panes
+    side by side (`rex split`). Bend the phone slowly toward a book and back. Expected: once it
+    is bent the sidebar slides away and the border between the panes moves onto the fold, with
+    both panes clear of it and no text cut; flat again, the sidebar comes back at its width and
+    the panes go back. Bend it again and show the sidebar by hand: it stays, flat or bent, and
+    quitting and opening the app shows the sidebar as usual. Then check what the simulator can only guess:
+    - **Region width.** The gap between the panes is the fold's reserved region plus 6 pt. If
+      it looks too wide or too narrow for the hinge, note the region's width (`Division.frame`).
+    - **When it turns active.** Note the angle at which the layout changes each way. It should
+      not change while the phone is merely not quite flat on a table.
+    - **Jitter.** Hold the phone at that angle for 20 s. The layout must not flip back and
+      forth, and with a Debug build `FIT_RESIZE` must stay silent while the layout is still
+      (docs/debug-args.md). Each real change is one line per pane.
+    - **The crease stays put.** Flat and bent, the fold's middle should be the same x; if it
+      moves by more than a point, book mode drops and comes back 400 ms later (`CreaseSettle`).
+    - Drag a border that is not on the fold: it follows the finger. The border on the fold
+      has no handle. `stty size` in a pane says the same before and after raising the keyboard.
 
 ## Selection (about 5 minutes, on a device)
 

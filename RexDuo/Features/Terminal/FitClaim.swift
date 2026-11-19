@@ -162,6 +162,10 @@ final class StreamFitTransport: FitClaimTransport {
     }
 
     func resize(cols: Int, rows: Int) async {
+        #if DEBUG
+        // One line per resize sent, to count them (docs/debug-args.md).
+        NSLog("FIT_RESIZE %@ %dx%d", stream.blockID, cols, rows)
+        #endif
         _ = try? await stream.control.blockCall("com.superlogical.terminal.resize", session: stream.sessionID,
                                                 block: stream.blockID, args: ["columns": cols, "rows": rows])
     }

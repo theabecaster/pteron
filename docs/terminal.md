@@ -153,7 +153,8 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   grid. On a pane resized elsewhere the pinch also fits it here, as the chip does. Mirror draws
   the server's grid at the new size, still scaled to the width. A pinch during a selection drag
   doesn't start. The canvas never zooms by pinch.
-- Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%.
+- Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%. In
+  book mode the border on the crease has no handle ([duo-layout.md](duo-layout.md), Book mode).
 - A tab shows its splits as the Mac lays them out while every pane keeps 40×8 cells
   (`SplitGeometry.legible`); otherwise one pane shows at a time, with dots in the title bar and a
   sideways swipe on the terminal to move between panes.

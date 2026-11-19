@@ -163,6 +163,9 @@ extension EnvironmentValues {
     /// Where the root's coordinates (the ones `division` is in) start, in global coordinates. A view
     /// subtracts it from its own global frame to place itself against the fold.
     @Entry var rootOrigin: CGPoint = .zero
+    /// The crease book mode lays a tab's splits out against, in the root's coordinates: an active
+    /// vertical fold that has held still (`CreaseSettle`). Nil otherwise.
+    @Entry var bookCrease: CGRect? = nil
     /// The edge of the system's vertical bar (iPhone Duo: the outer screen, and the inner screen in
     /// landscape). Nil where bars are horizontal. Toolbar items go there instead of the title bar.
     @Entry var verticalBarEdge: HorizontalEdge? = nil

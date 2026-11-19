@@ -22,6 +22,10 @@ builds.
   `tabletop`, `folded`, `foldedLandscape`, `halfWindow`, `iPhone`, `iPhoneLandscape`,
   `proMaxLandscape` (sizes in `DuoSimulation`, `State/Posture.swift`). A list cycles every
   `-simulateDuoEvery` seconds (default 10).
+  In a Debug build every `terminal.resize` fit mode sends logs one `FIT_RESIZE <block> <cols>x<rows>`
+  line, to count what a fold costs: `xcrun simctl spawn <id> log show --last 1m --predicate
+  'eventMessage CONTAINS "FIT_RESIZE"'`. `-simulateDuo unfolded,book -simulateDuoEvery 0.2` flips
+  faster than book mode settles and should log none.
 - `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
   keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",
