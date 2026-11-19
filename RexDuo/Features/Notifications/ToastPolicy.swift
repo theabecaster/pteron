@@ -16,6 +16,7 @@ struct AgentToast: Equatable, Identifiable {
 ///   user isn't looking at.
 /// - Never more than one toast: a new alert updates the one on screen and counts the rest.
 /// - A sheet or alert over the app holds the toast until it closes.
+/// - No toast over the agent board, which lists every waiting agent itself.
 /// - The same pane toasts at most once per `cooldown`, so an agent that flaps between working and
 ///   waiting doesn't nag.
 enum ToastPolicy {
@@ -25,9 +26,11 @@ enum ToastPolicy {
         var visibleBlocks: Set<String> = []
         /// A sheet, cover or alert hides the app's own screen.
         var modalPresented = false
+        /// The agent board covers the tab. It already shows who waits.
+        var boardShowing = false
     }
 
-    enum Reason: Equatable { case background, looking, recentlyShown }
+    enum Reason: Equatable { case background, board, looking, recentlyShown }
 
     enum Decision: Equatable {
         case show(AgentToast)
@@ -46,6 +49,7 @@ enum ToastPolicy {
     static func decide(_ a: AgentAlert, context c: Context, current: AgentToast?,
                        lastShown: [String: Date], now: Date) -> Decision {
         guard c.appActive else { return .suppress(.background) }
+        if c.boardShowing { return .suppress(.board) }
         if c.visibleBlocks.contains(a.blockID) { return .suppress(.looking) }
         if c.modalPresented { return .hold }
         if var t = current {

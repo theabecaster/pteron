@@ -160,6 +160,9 @@ final class Prefs {
     /// Panes always fit the phone. `-sizing mirror` (launch argument) keeps the Mac's size for one
     /// run, for checks that must not resize real panes.
     let sizing: SizingMode
+    // The agent board has no switch: it always shows while the phone stands as a tent, after the
+    // hinge has held for a second (`TentDetector`), comes back 60 s after the last touch
+    // (`BoardPresence`), and keeps the screen awake except in Low Power Mode (`BoardAwake`).
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0

@@ -102,7 +102,8 @@ extension GhosttyTerminalView {
 // MARK: First responder
 
 extension GhosttyTerminalView {
-    override var canBecomeFirstResponder: Bool { true }
+    /// Not under a cover (the agent board): a covered pane takes no keyboard.
+    override var canBecomeFirstResponder: Bool { !covered }
 
     override func becomeFirstResponder() -> Bool {
         let was = isFirstResponder
@@ -164,6 +165,7 @@ extension GhosttyTerminalView {
     /// Text from the system keyboard, an input method's commit, dictation, or a hardware key
     /// that went through the text system.
     func insertText(_ text: String) {
+        guard !covered else { return }
         if takeCommandKey(text) { return }
         // Return ends the line: nothing on it is edited any more.
         if text == "\n" { resetInputDocument() }
@@ -206,6 +208,7 @@ extension GhosttyTerminalView {
     }
 
     func deleteBackward() {
+        guard !covered else { return }
         if takeCommandKey("\u{7f}") { return }
         let edit = editInputDocument { $0.deleteBackward() }
         guard edit.move == 0, edit.text.isEmpty else {
@@ -255,6 +258,8 @@ extension GhosttyTerminalView {
 
 extension GhosttyTerminalView {
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Covered: no key is this pane's, bound or not. They go on up the responder chain.
+        guard !covered else { return super.pressesBegan(presses, with: event) }
         var rest = Set<UIPress>()
         for press in presses {
             guard let key = press.key else {
@@ -285,6 +290,7 @@ extension GhosttyTerminalView {
     /// A hardware key went down. True if it was handled here and must not go on to the text
     /// system. Takes `UIKey`'s properties, since a `UIKey` can't be made in a test.
     func hardwareKeyDown(usage: Int, flags: UIKeyModifierFlags, characters: String, charactersIgnoringModifiers: String) -> Bool {
+        guard !covered else { return false }
         let route = GhosttyInputKeymap.route(usage: usage, flags: flags, characters: characters,
                                              charactersIgnoringModifiers: charactersIgnoringModifiers,
                                              layoutLanguage: inputState.layoutLanguage ?? textInputMode?.primaryLanguage)

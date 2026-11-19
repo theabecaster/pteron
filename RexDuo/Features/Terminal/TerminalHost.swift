@@ -124,6 +124,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var hardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
+    /// The agent board lies over the pane (`setCovered`).
+    private(set) var covered = false
+    /// The cover took the keyboard from a pane that showed only its key bar; it gets it back.
+    private var coverTookKeyBar = false
+    /// How long an uncovered pane waits for its keyboard before it fits itself again.
+    static let uncoverSettle: TimeInterval = 0.4
+    /// The relayout due `uncoverSettle` after the board left, dropped if it comes back sooner.
+    private var uncoverRelayout: DispatchWorkItem?
+    /// Called for every hardware key press that reaches the pane.
+    var onKeyPress: (() -> Void)?
     /// The view let go of its stream for good (see `TerminalHostPool`).
     var onStopped: (() -> Void)?
 
@@ -686,7 +696,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     @objc private func keyCommandFired(_ sender: UIKeyCommand) {
-        guard let payload = sender.propertyList as? String else { return }
+        // Under the board a pane that kept a hardware keyboard takes no ⌘ shortcut either:
+        // UIKit finds these on the responder chain, past `pressesBegan`'s check.
+        guard !covered, let payload = sender.propertyList as? String else { return }
         switch payload {
         case "edit:copy": perform(.copy, press: nil)
         case "edit:paste": perform(.paste, press: nil)
@@ -700,10 +712,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// A hardware key press, before the engine sees it (`keyHook`). True when a binding ran (the key doesn't reach the
     /// terminal). Only keys the keymap binds are taken; every other key is typed as usual.
     private func handleKey(_ key: UIKey) -> Bool {
+        onKeyPress?()
         // A sheet, an alert or a menu covers the pane: the key is not for it. (The pane gives
         // the keyboard up when it is covered, `coverChanged`; this catches a cover that came
         // without that.)
-        if KeyboardFocusPolicy.sheetUp(in: window) {
+        if KeyboardFocusPolicy.sheetUp(in: window) || covered {
             stopKeyRepeats()
             return true
         }
@@ -723,6 +736,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// through the same lookup and the same actions as `handleKey`. False when nothing is bound
     /// (nothing is sent). A held bar key (`isRepeat`) runs again only where a held hardware key would.
     func keyBarShortcut(_ press: KeyInput.Press, isRepeat: Bool) -> Bool {
+        // Under the board no shortcut is this pane's.
+        guard !covered else { return false }
         guard let keymap, let (binding, action) = keymap.resolve(press: press) else { return false }
         if !isRepeat || KeyActions.repeats(binding.action) { perform(action, press: press) }
         return true
@@ -731,7 +746,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// A held key repeats only in the active pane, on screen, while it has the keyboard and
     /// nothing covers it. (`KeyRepeater` adds the app's state, the key's own state and a limit.)
     private var mayRepeatKeys: Bool {
-        isActive && window != nil && term.isFirstResponder && !KeyboardFocusPolicy.sheetUp(in: window)
+        isActive && window != nil && term.isFirstResponder && !covered && !KeyboardFocusPolicy.sheetUp(in: window)
     }
 
     /// Ends every key repeat of this pane: the host's (bound keys) and the engine's.
@@ -799,7 +814,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             appActive: UIApplication.shared.applicationState == .active,
             holdsKeyboard: term.isFirstResponder, hardwareKeyboard: hardwareKeyboard(),
             hadKeyboard: hadKeyboard, userHidKeyboard: userHidKeyboard,
-            sheetUp: KeyboardFocusPolicy.sheetUp(in: window),
+            sheetUp: covered || KeyboardFocusPolicy.sheetUp(in: window),
             holder: KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: term))
     }
 
@@ -893,6 +908,60 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // It had the keyboard: the policy lets it take it back without a hardware keyboard.
             movedWithKeyboardAt = CACurrentMediaTime()
             reclaimKeyboard()
+        }
+    }
+
+    /// The agent board covers the pane, or uncovers it (`TerminalHostPool.setCovered`). Covered,
+    /// the pane draws nothing, gives up the keyboard and can't take it, and takes no key. It
+    /// keeps its stream and its size on the Mac: nothing is claimed, resized or given back, also
+    /// when the layout under the board changes (`layoutTerminal`).
+    ///
+    /// Uncovered, the pane is as it was. A software keyboard that was up (`softwareKeyboard`, or
+    /// no hardware keyboard to type with) stays down, as after the hide key. A pane that showed
+    /// only its key bar, for a hardware keyboard, gets the keyboard and the bar back, so its
+    /// size is the one from before.
+    func setCovered(_ c: Bool, softwareKeyboard: Bool = false) {
+        guard c != covered else { return }
+        covered = c
+        uncoverRelayout?.cancel()
+        uncoverRelayout = nil
+        if c {
+            stopKeyRepeats()
+            coverTookKeyBar = false
+            // A pane that holds the keyboard quietly shows nothing and keeps it: covered, it
+            // takes no key anyway (`GhosttyTerminalView.covered`).
+            if keyboardUp {
+                if softwareKeyboard || !hardwareKeyboard() {
+                    userHidKeyboard = true
+                } else {
+                    coverTookKeyBar = true
+                }
+                _ = term.resignFirstResponder()
+            }
+            term.covered = true
+        } else {
+            term.covered = false
+            // Only the key bar of a hardware keyboard comes back by itself. Anything else
+            // waits for a tap, or for the next moment a pane looks for the keyboard.
+            if coverTookKeyBar {
+                coverTookKeyBar = false
+                movedWithKeyboardAt = CACurrentMediaTime()
+                reclaimKeyboard()
+            }
+            // A pane first laid out under the board has claimed nothing yet: it starts now.
+            if !started {
+                lastBounds = .zero
+                setNeedsLayout()
+            }
+            // Once the keyboard is back where it was: fit again if the pane's room changed under
+            // the board (a rotation). Before that, the layout is still the one without a key bar.
+            let relayout = DispatchWorkItem { [weak self] in
+                guard let self, !self.covered, self.window != nil else { return }
+                self.lastBounds = .zero
+                self.setNeedsLayout()
+            }
+            uncoverRelayout = relayout
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.uncoverSettle, execute: relayout)
         }
     }
 
@@ -1173,6 +1242,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // In the background the pane belongs to the Mac. A layout change there (the keyboard
             // leaving as the app goes away) must not claim it back; `willForeground` lays out again.
             guard backgroundedAt == nil else { return }
+            // Under the board the pane keeps the size it has; `setCovered(false)` lays out again.
+            guard !covered else { return }
             let want = fitGrid()
             // A new size needs no redraw from the server: the terminal reflows as the server's
             // does (both are Ghostty), and the stream carries the resize.

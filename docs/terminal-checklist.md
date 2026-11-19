@@ -77,6 +77,7 @@ How a row is verified:
 | 45b | Jump-to-bottom button | `JumpToBottomRuleTests`, `JumpToBottomViewTests`; hand | Shows half a screen (at least 3 rows) into the scrollback, hides within a row of the bottom, during a selection or a pinch, and under a mouse program or the alternate screen. The tap returns to the newest line and leaves the keyboard and the focus alone. The touch itself (no keyboard, no pane swipe from it) needs a finger: hand. Run live in the simulator with `-keyboardTest` (`scroll:`, `jump`; the log gives `jump=`, `unseen=` and `first=`) in a `zz-` session, on the folded Duo, a regular iPhone and the simulated unfolded and landscape postures: the button comes up under a streaming agent reply and its arrow takes the cursor's color; `jump` returns to the bottom and the button goes; with the keyboard up the pane's size (`stty size`) stays through scroll and jump, the button sits above the key bar, and it stays hidden among the rows the keyboard covers; with the keyboard down `jump` leaves the terminal out of first responder; in `less` and `vim` it never shows; in a split only the scrolled pane has one; a recording of it coming and going shows the glass forming and leaving with no flash. |
 | 46 | Fold / unfold: the pool moves a live pane | `GhosttyIntegrationTests.testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached`, `testSelectionAndCursorSurviveTheMove`; live (`-simulateDuo folded,unfolded,folded` on an iPad simulator) | Draws at once on return, at the new size and scale, without new output. Draws nothing and wakes nothing while detached. |
 | 46a | Book mode: a split lands on the crease | `BookSplitTests`, `CreaseSettleTests`; `BookSidebarTests`; live (`-simulateDuo book`, and `unfolded,book` with `-simulateDuoEvery` counting `FIT_RESIZE`); hand on a Duo | Partly folded with a vertical crease, the side-by-side divider nearest the crease sits on it and no pane or handle is in the fold. The inline sidebar collapses on the way in and comes back on the way out, unless the user showed or hid it meanwhile; nothing about it is stored. Rex's ratios don't change. Each pane gets one resize per settled change of posture and none while the fold flickers, and the sidebar doesn't move then either. Everything else is laid out as when flat ([duo-layout.md](duo-layout.md), Book mode). The simulated fold is a guess: step 12 checks a real hinge. |
+| 46b | Tent mode: the agent board covers the tab | `TentDetectorTests`, `BoardPresenceTests`, `AgentBoardModelTests`, `BoardOrderThrottleTests`, `BoardLayoutTests`, `PaneCoverTests`; live (`-boardDemo` in every scenario, and `-simulateTent off,90` with `-simulateTentEvery` counting `FIT_RESIZE`); hand on a Duo | The hinge decides only when the board comes and goes. Under it panes draw nothing, take no key and keep their size on the Mac; a pane that was never covered behaves as before. The simulator has no hinge and takes no taps from a script: step 13 checks a real one ([duo-layout.md](duo-layout.md), Tent mode). |
 | 47 | Reconnect and resume | RexKit `Stream*` tests | Host and stream code. A fresh connection brings a snapshot; a resume carries none. Not run live. |
 | 48 | Background and foreground | `GhosttyIntegrationTests` (visibility), `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread`; hand | No Metal work and no display-link wake in the background; one frame on return. After more than 30 s the host opens a fresh stream. A fitted pane is given back in the background and stays the Mac's until the app returns (live: `rex block call size` shows `owner: null` 4 s after backgrounding, the phone's client again on return). |
 | 49 | Reset and the `terminal.format` fallback | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `StreamSnapshotHandoffTests` | A snapshot that doesn't decode, or is over the 16 MiB cap, falls back: `streamReset` feeds RIS and clear-scrollback, then `streamSnapshot` feeds the screen as text. |
@@ -225,6 +226,28 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
       moves by more than a point, book mode drops and comes back 400 ms later (`CreaseSettle`).
     - Drag a border that is not on the fold: it follows the finger. The border on the fold
       has no handle. `stty size` in a pane says the same before and after raising the keyboard.
+13. **Tent mode (46b), on a Duo**, with a Debug build launched with `-hingeLog YES` and at least
+    one agent running in a `zz-` session. Fold the phone back and stand it as a tent. Expected:
+    after about a second the board replaces the tab on the outer screen, and it goes at once
+    when the phone is shut or opened flat. Then check what only a device can show:
+    - **What the hinge reports.** Read the `HINGE` lines: the angle on the outer screen in tent
+      (if it stays 0 or `none`, tent never triggers and the rule needs another signal), the
+      status there, and the angles at which the outer and the inner screen take over.
+    - **No false tent.** Half open in the hand like a book, in Split View on the inner screen,
+      and folded shut in a pocket grip: no board. Note any posture that shows one.
+    - **Nothing resized.** `FIT_RESIZE` logs no line as the board comes and goes, also after
+      turning the tent on its other side. `stty size` in the pane is the same before and after.
+    - **Touch.** A tile opens its pane and the board goes; it is back after 60 s untouched, and
+      not while typing. "+K more" opens the sidebar in Agents mode. Nothing under the board
+      takes a tap, and the vertical bar's items are covered or do nothing harmful.
+    - **Keyboards.** With the software keyboard up on entry: it goes, and stays down
+      afterwards. With a hardware keyboard: no key reaches the pane under the board; afterwards
+      the key bar is back and the pane has its size.
+    - **Screen.** It stays awake on the board, sleeps as usual in Low Power Mode, and sleeps
+      as usual again after leaving tent.
+    - **Look.** Both ways up, Light and Dark Mode, Reduce Motion (rings hold still), Reduce
+      Transparency (no glow), the largest text size (fewer tiles, none cut), VoiceOver (the
+      headline first, then one button per tile).
 
 ## Selection (about 5 minutes, on a device)
 

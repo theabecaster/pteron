@@ -14,7 +14,8 @@ struct Division: Equatable {
 /// How the root lays out the sidebar and the tab. One model everywhere, like the Mac app: the tab
 /// fills the window, and the sidebar sits beside it (wide) or slides over it as a drawer (narrow).
 /// Picked from the window's width and the fold, never from orientation or the hinge (Apple: use
-/// reserved regions for layout, the hinge only for effects).
+/// reserved regions for layout, the hinge only for effects). The hinge is read in one place, to
+/// tell when the phone stands as a tent (`TentDetector`), and never for layout.
 struct Arrangement: Equatable {
     /// Wide enough for a sidebar beside a usable tab: the sidebar is inline, resizable and
     /// collapsible. Narrower (folded Duo, iPhone portrait, half the inner screen), it is a drawer.
@@ -237,6 +238,10 @@ struct DuoSimulation: Equatable {
             return EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)
         }
     }
+
+    /// Whether the window covers its whole screen there, for `TentDetector`: every posture but
+    /// the half of the inner screen beside another app.
+    var fillsScreen: Bool { name != "halfWindow" }
 
     /// The fold as `reservedRegions` reports it: in the coordinates of the root, which sits inside the
     /// safe area.

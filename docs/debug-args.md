@@ -26,6 +26,28 @@ builds.
   line, to count what a fold costs: `xcrun simctl spawn <id> log show --last 1m --predicate
   'eventMessage CONTAINS "FIT_RESIZE"'`. `-simulateDuo unfolded,book -simulateDuoEvery 0.2` flips
   faster than book mode settles and should log none.
+- `-simulateTent <degrees|off>[,<degrees|off>…]`: the hinge reports these angles instead of the
+  real ones, one after the other every `-simulateTentEvery` seconds (default 10); `off` is no
+  hinge. `-simulateTent 90` shows the agent board after the one-second hold;
+  `-simulateTent off,90,17,10 -simulateTentEvery 3` goes in, stays in at 17° and leaves at 10°
+  (`TentDetector`). With `-simulateDuo` the posture supplies the rest: `folded`,
+  `foldedLandscape` and the iPhone postures go into tent, the postures with a fold never do, and
+  neither does `halfWindow`, which doesn't fill its screen. `-simulateDuo folded,book` leaves
+  tent by the fold. Entering and leaving must log no `FIT_RESIZE` line.
+  `-boardReturnAfter <seconds>`: the board comes back that long after the last touch, instead
+  of 60 s. `-hingeLog YES`: one `HINGE angle= status= division= fills= tent=` line (log category
+  `hinge`) for each change of a degree or more, of the status, of the fold or of tent, to see on
+  a device what the hinge reports: `xcrun simctl spawn <id> log show --last 1m --predicate
+  'eventMessage CONTAINS "HINGE "'`.
+- `-boardDemo <scenario>`: the agent board at launch, filled with made-up agents
+  (`Features/Board/BoardDemo.swift`). The app uses no server in such a run, whatever is saved or
+  passed with `-servers`, so nothing real is opened, and a tile's tap does nothing. Scenarios:
+  `none` (no machines), `0` (a machine, no agents), `idle`, `1`, `3`, `6`, `12` (7 tiles and
+  "+5 more"), `machines` (two machines and one not connected yet), `offline` (last known tiles,
+  dimmed), `stale` (a quiet machine and one that is down with a waiting agent: the headline says
+  "Reconnecting…", not "All quiet"), `states` (every state), `long` (long names, messages and places), `churn` (states
+  that change every 0.3 s, for the once-a-second reorder). Use it with `-simulateDuo folded` or
+  `foldedLandscape`, in Light and Dark Mode.
 - `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
   keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",

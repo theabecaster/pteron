@@ -173,8 +173,24 @@ final class TerminalHostPool {
 
     func host(for key: Key) -> TerminalHost? { hosts[key] }
 
+    /// The agent board covers every pane (`TerminalHost.setCovered`), the ones made later too.
+    @ObservationIgnored private(set) var covered = false
+    /// A hardware key reached a pane. The hosts are told only while someone listens.
+    @ObservationIgnored var onKeyPress: (() -> Void)? {
+        didSet { for host in hosts.values { host.onKeyPress = onKeyPress } }
+    }
+
+    /// `softwareKeyboard`: the software keyboard is on screen as the cover comes.
+    func setCovered(_ c: Bool, softwareKeyboard: Bool = false) {
+        guard c != covered else { return }
+        covered = c
+        for host in hosts.values { host.setCovered(c, softwareKeyboard: softwareKeyboard) }
+    }
+
     func add(_ host: TerminalHost, for key: Key) {
         hosts[key] = host
+        if covered { host.setCovered(true) }
+        host.onKeyPress = onKeyPress
         host.onStopped = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
             self.hosts[key] = nil

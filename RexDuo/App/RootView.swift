@@ -116,7 +116,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
-                layout(theme, fake: .some(sim.rootDivision))
+                layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen)
                     .safeAreaPadding(sim.safeArea)
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
@@ -162,8 +162,8 @@ struct RootView: View {
     #endif
 
     /// The sidebar and the tab, arranged for the window's width and the fold. `fake` replaces the fold
-    /// (debug simulation).
-    private func layout(_ theme: TermTheme, fake: Division??) -> some View {
+    /// (debug simulation), which then also says whether its window `fills` its screen.
+    private func layout(_ theme: TermTheme, fake: Division??, fills: Bool? = nil) -> some View {
         GeometryReader { geo in
             let division = fake ?? Self.division(geo)
             // The root ignores the keyboard, so the arrangement doesn't change when it shows.
@@ -194,6 +194,9 @@ struct RootView: View {
                     }
                 }
             }
+            // Standing as a tent, the agent board covers all of it (`TentBoard`).
+            .modifier(TentBoard(division: division, size: geo.size, inline: arr.inline, fills: fills, sidebar: $sidebar,
+                                pool: hostPool, keyboardHeight: keyboardHeight, theme: theme))
             .environment(\.division, division)
             .environment(\.rootOrigin, geo.frame(in: .global).origin)
             .environment(\.bookCrease, creaseSettle.crease(division))
@@ -241,6 +244,14 @@ struct RootView: View {
         case nil: break
         }
         return action
+    }
+
+    /// The room the docked keyboard or the key bar takes, under `-simulateDuo` too.
+    private var keyboardHeight: CGFloat {
+        #if DEBUG
+        if simKeyboard > 0 { return simKeyboard }
+        #endif
+        return keyboardPad
     }
 
     /// Not under `-simulateDuo`, which shrinks its root for the keyboard itself.

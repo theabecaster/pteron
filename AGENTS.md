@@ -27,7 +27,9 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `scripts/bench/budgets.mjs` holds the budgets, and a change to a measured path runs the benchmark.
 - **Postures come from the window and the fold.** Layout follows the window's size and the fold's
   reserved region (`Arrangement` in `State/Posture.swift`), never the orientation, the device model
-  or the hinge, so it also works in Split View and on other iPhones.
+  or the hinge, so it also works in Split View and on other iPhones. The hinge is read in one
+  place, `TentDetector`, and only to decide when the agent board comes and goes while the phone
+  stands as a tent; the board lays itself out from its own size like everything else.
 
 ## Map
 
@@ -42,7 +44,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `Selection/` the touch selection UI, `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
-  `State/Pairing.swift`), Files (sending photos and files to a pane, drops, Open from a selection;
+  `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection;
   docs/terminal.md, Files).
 - `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.

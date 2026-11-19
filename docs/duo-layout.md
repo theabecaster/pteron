@@ -85,6 +85,64 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     and forth. The fold has to hold for 400 ms before book mode goes on or off (and before the
     sidebar moves), then the fit claim's 120 ms settle sends one resize. The first layout doesn't
     wait, and a crease that is gone or has moved (fully folded, rotated) is dropped at once.
+- **Tent mode** (`TentDetector`, `Features/Board`). Folded back and stood on a desk as a tent,
+  the phone shows the agent board on its outer screen instead of the tab: who needs you, read
+  from a meter away.
+  - **The hinge is used here and only here, to enter and to leave.** Enter: the window fills
+    its screen, has no fold in it (an inactive one counts, so the inner screen never
+    qualifies, and Split View there doesn't fill the screen), and the hinge has stayed between
+    20° and 160° for one second. Leave at once: the hinge goes under 15° or stops reporting, or
+    a fold appears in the window. Between 15° and 20° and above 160° a tent stays a tent. The
+    decision reads the angle, never the hinge's status (`-hingeLog` logs both). An iPhone
+    without a hinge, an iOS before 27.1, and a hinge that reports 0° on the outer screen never
+    enter. Nothing about layout reads the hinge.
+  - **Only where there is a hinge.** UIKit has no "does this device have a hinge" question;
+    the one sign is a `UIHingeInteraction` update that carries a `UIHinge` (iOS 27.1+). A view
+    of no size holds that interaction, and the rest of tent mode (detector, timers, touch
+    watch, power observer, the panes' key hook) starts with the first such update. An iPhone
+    that never reports a hinge, and any iOS before 27.1, gets an empty overlay and nothing else.
+  - **What it shows.** One large line for the most urgent state ("2 need you", else "1 error",
+    "3 working", "All done", "All quiet"), and under it the machine, or how many are connected.
+    Then a tile per agent that isn't idle, from the same data and in the same order as the
+    sidebar's Agents mode, across machines: waiting (the longest first), error, working, done.
+    A tile has the agent's glyph in a ring for its state (an arc that turns slowly, or fills to
+    its progress; a solid ring that breathes, with a raised hand; a full ring with a check or an
+    x), its name, the state in the Agents mode's words, its last message and "session › tab".
+    A waiting tile also says for how long ("12m"), the one time the app tracks. The machine's
+    name shows only when the tiles span machines. Idle agents are a "+N idle" line. The edges
+    glow in the most urgent state's color while somebody waits, fails or works.
+  - **Layout by count, from the board's own size, never scrolling** (`BoardLayout`). One agent:
+    a hero tile. Two: side by side or stacked, by the window's shape. Three: full rows in a
+    tall window. Up to eight: two columns, the first tile on a row of its own when the count is
+    odd. More, or more than the height holds: one tile fewer and "+K more", which opens the
+    sidebar in Agents mode. Under 300 pt of width, one column. Larger text makes the header
+    taller (up to 1.5×) and the tiles too (up to 1.25×), so fewer tiles show and none is cut.
+  - **Quiet.** With no agent at work it is a desk clock with "All quiet" under it. With no
+    server it says "No machines paired", with no button.
+  - **Never stale as current.** Only connected machines count in the headline and the glow. A
+    machine whose connection is down keeps its last known tiles, dimmed and after the live
+    ones. The headline is "Reconnecting…" with none connected, and also instead of "All quiet"
+    or "All done" while such tiles show: a dimmed tile that last needed you is not quiet. A pane whose program has exited
+    has no tile.
+  - **Display only** (`TerminalHostPool.setCovered`). The tab stays mounted under the board,
+    with its streams, so it is there at once afterwards. Meanwhile its panes draw nothing and
+    take no key, from a hardware keyboard or the key bar's cmd. Nothing is claimed, resized or
+    given back on the Mac when the board comes or goes, also when the phone turns under it:
+    `FIT_RESIZE` stays silent. The software keyboard and a sidebar drawer are put away on the
+    way in, and the keyboard stays down afterwards, as after the hide key. A pane that showed
+    only its key bar for a hardware keyboard gets it back.
+  - **Touch** (`BoardPresence`). A tile opens its agent's tab with its pane in view, as in
+    Agents mode, and the board goes. So does anything else that puts the app on screen: the
+    sidebar, Settings, a tab opened from a push, an app shortcut. Still in tent, the board
+    comes back after 60 s without a touch or a key; a keyboard on screen or a sheet counts as
+    use. A sheet that is up when tent begins is left alone, and the board shows when it closes.
+    Leaving tent removes the board.
+  - **Around it.** No toast shows over the board; pushes are unchanged. The screen stays awake
+    while it shows, except in Low Power Mode, and the idle timer is given back when it goes or
+    the app leaves the foreground. Reduce Motion holds the rings still, Reduce Transparency
+    removes the glow, and VoiceOver reads the headline, then one button per tile.
+  - **Reorder** (`BoardOrderThrottle`). Agents that change state quickly reorder the tiles at
+    most once a second, with a spring; a tile that comes or goes fades at once.
 - **Vertical bar.** Where `verticalBarEdge` reports a bar, the navigation bar shows and its items
   go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the

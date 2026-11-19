@@ -19,6 +19,8 @@ mutes the haptic. Desktop notifications (OSC 9 / 777) show nothing in the app.
 - One toast at a time. A new alert updates the toast on screen ("2 more agents are waiting").
 - A sheet, cover or alert holds the toast until it closes (dropped after 2 minutes or once the
   agent stops waiting). The same pane toasts at most once per 30 s.
+- No toast while the agent board shows (tent mode, [duo-layout.md](duo-layout.md)): it lists
+  every waiting agent itself. A toast already up goes when the board comes.
 - It fades after 6 s and can be swiped up. A tap opens the pane (`AppModel.openPane`).
 
 `NotificationDelegate` (in `App/AppDelegate.swift`) shows no banners while the app is in front,

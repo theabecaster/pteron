@@ -104,6 +104,12 @@ final class GhosttyTerminalView: UIView {
     private var gridEpoch = 0
     private var restoreEpoch = -1
     private var inForeground = true
+    /// Something opaque lies over the pane (the agent board): nothing is drawn and no key is
+    /// taken, as for a pane off screen. Parsing goes on, so the screen is current when the cover
+    /// goes. False unless the host says otherwise.
+    var covered = false {
+        didSet { if covered != oldValue { updateVisibility() } }
+    }
 
     /// Drawables per pane's layer. Benchmark builds take `-drawables 2` to compare.
     nonisolated static let drawableCount: Int = {
@@ -334,9 +340,9 @@ final class GhosttyTerminalView: UIView {
         updateVisibility()
     }
 
-    /// Draw only on screen and in the foreground. Parsing continues either way.
+    /// Draw only on screen, in the foreground and uncovered. Parsing continues either way.
     private func updateVisibility() {
-        let visible = window != nil && inForeground
+        let visible = window != nil && inForeground && !covered
         if visible && !registered {
             registered = true
             GhosttyRenderThread.shared.add(renderer)

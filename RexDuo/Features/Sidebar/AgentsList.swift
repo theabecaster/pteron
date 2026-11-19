@@ -170,23 +170,35 @@ struct AgentRowLabel: View {
             .filter { !$0.isEmpty }.joined(separator: " › ")
     }
 
+    /// An agent's state in words. The agent board says it the same way.
+    nonisolated static func stateText(_ s: ProgramStatus?) -> String {
+        switch s?.state ?? "idle" {
+        case "working": return "Working" + (s?.progress.map { " \($0)%" } ?? "")
+        case "blocked":
+            switch s?.waitingFor {
+            case "permission": return "Needs permission"
+            case "question": return "Has a question"
+            case "auth": return "Needs password"
+            default: return "Waiting for you"
+            }
+        case "done": return "Done"
+        case "error": return "Error"
+        default: return "Idle"
+        }
+    }
+
     /// The state in words, or, where they don't fit, the row glyph (and progress) in the same pill.
     private func stateLabel(_ s: ProgramStatus?) -> some View {
         let state = s?.state ?? "idle"
         let progress = s?.progress.map { "\($0)%" }
-        let (text, color): (String, Color) = {
+        let text = Self.stateText(s)
+        let color: Color = {
             switch state {
-            case "working": return ("Working" + (progress.map { " \($0)" } ?? ""), theme.chrome.working)
-            case "blocked":
-                switch s?.waitingFor {
-                case "permission": return ("Needs permission", theme.chrome.blocked)
-                case "question": return ("Has a question", theme.chrome.blocked)
-                case "auth": return ("Needs password", theme.chrome.blocked)
-                default: return ("Waiting for you", theme.chrome.blocked)
-                }
-            case "done": return ("Done", theme.chrome.done)
-            case "error": return ("Error", theme.chrome.error)
-            default: return ("Idle", theme.chrome.tertiary)
+            case "working": return theme.chrome.working
+            case "blocked": return theme.chrome.blocked
+            case "done": return theme.chrome.done
+            case "error": return theme.chrome.error
+            default: return theme.chrome.tertiary
             }
         }()
         // Idle has no glyph, so it keeps its one short word.

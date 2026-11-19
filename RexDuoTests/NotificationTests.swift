@@ -32,6 +32,14 @@ struct ToastPolicyTests {
         #expect(decide(alert("block:a"), .init(appActive: false)) == .suppress(.background))
     }
 
+    @Test func suppressedWhileTheAgentBoardShows() {
+        #expect(decide(alert("block:a"), .init(boardShowing: true)) == .suppress(.board))
+        // Also under a sheet: it is not held to show over the board later.
+        #expect(decide(alert("block:a"), .init(modalPresented: true, boardShowing: true)) == .suppress(.board))
+        // In the background the helper pushes, board or not.
+        #expect(decide(alert("block:a"), .init(appActive: false, boardShowing: true)) == .suppress(.background))
+    }
+
     @Test func heldWhileASheetCoversTheScreen() {
         #expect(decide(alert("block:a"), .init(modalPresented: true)) == .hold)
         // Looking at the pane wins: a sheet can't hide a pane the user is reading.

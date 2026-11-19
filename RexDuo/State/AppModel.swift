@@ -115,6 +115,8 @@ final class AppModel {
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false
+    /// The agent board covers the tab (`TentBoard`). Toasts stay away meanwhile.
+    var boardShown = false
     /// The "Pair via QR Code" scanner, opened from the screen shown when there are no servers.
     var showPairing = false
     @ObservationIgnored private var landing: Task<Void, Never>?
@@ -196,7 +198,8 @@ final class AppModel {
 
     func rebuildServers() {
         #if DEBUG
-        let configs = Self.debugServers ?? prefs.servers
+        // `-boardDemo` shows made-up agents: no server is used, so no real pane is opened.
+        let configs = BoardDemo.scenario != nil ? [] : Self.debugServers ?? prefs.servers
         #else
         let configs = prefs.servers
         #endif

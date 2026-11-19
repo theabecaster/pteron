@@ -44,13 +44,16 @@ private struct AgentToasts: ViewModifier {
                 model.showSettings = false
                 ScreenInspector.dismissModals()
             }
+            // The board takes the screen: a toast already up goes.
+            .onChange(of: model.boardShown) { _, shown in if shown, toast != nil { dismiss() } }
             .task(id: held.map(\.id)) { await offerHeld() }
     }
 
     private func consider(_ a: AgentAlert) {
         let ctx = ToastPolicy.Context(appActive: phase == .active,
                                       visibleBlocks: ScreenInspector.visibleBlocks(),
-                                      modalPresented: ScreenInspector.modalPresented())
+                                      modalPresented: ScreenInspector.modalPresented(),
+                                      boardShowing: model.boardShown)
         switch ToastPolicy.decide(a, context: ctx, current: toast, lastShown: lastShown, now: Date()) {
         case .show(let t), .update(let t):
             let isNew = toast == nil
