@@ -60,7 +60,7 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
                     }
                     // Dragged past the collapse point: letting go now hides it.
                     .opacity(willCollapse ? 0.55 : 1)
-                    .offset(x: open ? 0 : -(w + 24))
+                    .offset(x: open ? 0 : SidebarWidth.hiddenOffset(width: w, leadingInset: geo.safeAreaInsets.leading))
                     .allowsHitTesting(open)
                     .accessibilityHidden(!open)
                     .animation(Self.slide, value: open)

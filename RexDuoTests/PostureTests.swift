@@ -74,6 +74,17 @@ struct SidebarWidthTests {
         #expect(SidebarWidth.release(330, container: 951, inline: true, crease: nil) == 330)
     }
 
+    /// The sidebar and its background, which runs under the leading inset, end left of the
+    /// window's edge when hidden, with or without a vertical bar or the Dynamic Island there.
+    @Test(arguments: [0, 59, 62, 84] as [CGFloat])
+    func hiddenSidebarLeavesTheWindowWhateverTheLeadingInset(inset: CGFloat) {
+        for width: CGFloat in [200, 260, 400] {
+            // In window coordinates: the sidebar's place at the safe area's edge, moved.
+            let x = inset + SidebarWidth.hiddenOffset(width: width, leadingInset: inset)
+            #expect(x + width <= -24)
+        }
+    }
+
     @Test func eachPostureHasItsOwnWidth() {
         #expect(SidebarWidth.key(container: 951, inline: true) != SidebarWidth.key(container: 874, inline: true))
         #expect(SidebarWidth.key(container: 382, inline: false) == "drawer-382")

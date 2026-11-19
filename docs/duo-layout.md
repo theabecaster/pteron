@@ -38,13 +38,16 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
 ## What the app does
 
 - **One sidebar model** (`Arrangement`, `SidebarSplit`). The tab always fills the window. At 600 pt
-  wide or more (every landscape, the unfolded Duo, the folded Duo on its side) the sidebar sits
-  inline at 260 pt. Narrower (folded Duo, iPhone portrait, half the inner screen) the same sidebar
-  is a drawer over the tab.
+  wide or more inside the safe area (the unfolded Duo, iPhones in landscape) the sidebar sits
+  inline at 260 pt. Narrower (folded Duo, iPhone portrait, half the inner screen, and the folded
+  Duo on its side, which is 594 pt inside its vertical bar) the same sidebar is a drawer over the
+  tab.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Toggle Sidebar command and a swipe from
   the left edge show and hide it. A drag or toggle resizes the terminals once, never per frame.
+  Hidden, it moves past the window's edge, also past a leading inset (the vertical bar on the
+  left in Split View or landscape, the Dynamic Island), so none of it shows under the bar.
 - **Book mode** (`BookSplit`). Partly folded with a vertical crease, a tab that shows its splits
   draws the side-by-side divider nearest the crease on the crease: the panes on its left fill the
   left page and the panes on its right fill the right page, each side keeping its proportions.

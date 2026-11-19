@@ -150,6 +150,15 @@ enum SidebarWidth {
         return w.snapped ?? clamp(w.width, container: container, inline: inline)
     }
 
+    /// How far a hidden sidebar moves left, from its place at the safe area's leading edge. It
+    /// goes past the window's edge, not only the safe area's: a leading inset (the vertical bar
+    /// on the left, an app on the left of Split View, the Dynamic Island in landscape) is screen
+    /// the app draws under, so moving by the width alone left that much of the sidebar showing.
+    /// The 24 pt more keep the drawer's shadow off screen too.
+    static func hiddenOffset(width: CGFloat, leadingInset: CGFloat) -> CGFloat {
+        -(width + leadingInset + 24)
+    }
+
     /// One remembered width per posture: inline or drawer, at this window width.
     static func key(container: CGFloat, inline: Bool) -> String {
         "\(inline ? "inline" : "drawer")-\(Int(container.rounded()))"
