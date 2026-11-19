@@ -73,6 +73,7 @@ How a row is verified:
 | 44 | "Resized elsewhere · tap to fit here", status chip | hand | Host code. Not run since the audit. |
 | 45 | Keyboard show / hide, any new view size | `GhosttyIntegrationTests.testResizingTheViewNeverScrollsTheTerminal`; hand | A view that grew (keyboard gone, unfold) stays at the bottom. (Before: UIKit's offset fix-up for the new size was sent on as a scroll, and the terminal was left scrolled into history.) |
 | 45a | The software keyboard covers a fitted pane | `GhosttyScrollTests` (the cover), `KeyboardCoverLayoutTests`; live (`-keyboardTest` over a real `claude` in a `zz-` session: the pane's tty size logged while the keyboard cycled through a streamed reply) | The grid keeps its rows on the main screen; the alternate screen fits above the keyboard. Reading mode (a drag into the scrollback hides the keyboard) needs a finger: hand. |
+| 45b | Jump-to-bottom button | `JumpToBottomRuleTests`, `JumpToBottomViewTests`; hand | Shows half a screen (at least 3 rows) into the scrollback, hides within a row of the bottom, during a selection or a pinch, and under a mouse program or the alternate screen. The tap returns to the newest line and leaves the keyboard and the focus alone. The touch itself (no keyboard, no pane swipe from it) needs a finger: hand. Run live in the simulator with `-keyboardTest` (`scroll:`, `jump`; the log gives `jump=`, `unseen=` and `first=`) in a `zz-` session, on the folded Duo, a regular iPhone and the simulated unfolded and landscape postures: the button comes up under a streaming agent reply and its arrow takes the cursor's color; `jump` returns to the bottom and the button goes; with the keyboard up the pane's size (`stty size`) stays through scroll and jump, the button sits above the key bar, and it stays hidden among the rows the keyboard covers; with the keyboard down `jump` leaves the terminal out of first responder; in `less` and `vim` it never shows; in a split only the scrolled pane has one; a recording of it coming and going shows the glass forming and leaving with no flash. |
 | 46 | Fold / unfold: the pool moves a live pane | `GhosttyIntegrationTests.testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached`, `testSelectionAndCursorSurviveTheMove`; live (`-simulateDuo folded,unfolded,folded` on an iPad simulator) | Draws at once on return, at the new size and scale, without new output. Draws nothing and wakes nothing while detached. |
 | 47 | Reconnect and resume | RexKit `Stream*` tests | Host and stream code. A fresh connection brings a snapshot; a resume carries none. Not run live. |
 | 48 | Background and foreground | `GhosttyIntegrationTests` (visibility), `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread`; hand | No Metal work and no display-link wake in the background; one frame on return. After more than 30 s the host opens a fresh stream. A fitted pane is given back in the background and stays the Mac's until the app returns (live: `rex block call size` shows `owner: null` 4 s after backgrounding, the phone's client again on return). |
@@ -179,10 +180,13 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
 5. **Gestures (26).** Flick horizontally: the pane swipes (with two panes) and the terminal doesn't
    scroll. Two-finger tap: the pane zooms. Pinch: the text scales, and on release the font and
    grid change without the screen being reloaded (18).
-6. **Keyboard (45, 45a, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
+6. **Keyboard (45, 45a, 45b, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
    stays at the bottom both times, and `stty size` says the same before and after. With the
    keyboard up, drag down: the covered rows, then the scrollback, and the keyboard goes away
    without the text jumping; a tap brings it back. Hold the space bar and slide: the cursor moves along the line.
+   Drag half a screen into the scrollback: the jump-to-bottom button comes up in the bottom
+   trailing corner, and its arrow takes the cursor's color when a command prints below. Tap it:
+   the view returns to the prompt, the keyboard stays down and the pane's focus doesn't change.
 7. **Mouse program (39).** Run `vim` (or `less` on a long file). One-finger drag: the file scrolls
    (arrows or wheel), not the scrollback. Two-finger drag: nothing to scroll on the alternate
    screen. In vim with `:set mouse=a`, tap a line: the cursor goes there. Long press a word: it is

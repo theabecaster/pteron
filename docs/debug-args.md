@@ -39,8 +39,9 @@ builds.
   scroll two pages back first and type that much later.
 - `-keyboardTest '<step>;<step>…'`: show and hide the software keyboard over the active pane once
   it is live (`Features/Terminal/KeyboardTest.swift`): `up`, `down`, `scroll:<points>`,
-  `type:<text>`, `wait:<s>`. Each step logs the grid, the cover and the scroll position
-  (`KEYBOARD_TEST`). The simulator shows the software keyboard only with Connect Hardware
+  `type:<text>`, `jump` (a tap on the jump-to-bottom button), `wait:<s>`. Each step logs the
+  grid, the cover, the scroll position, the button's state, `jump=` and `unseen=`, and whether
+  the terminal is first responder, `first=` (`KEYBOARD_TEST`). The simulator shows the software keyboard only with Connect Hardware
   Keyboard off.
 - `-filesTest '<step>;<step>…'`: drive sending files and Open in the active pane once it is live
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,

@@ -36,6 +36,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private let zoomer = ZoomScrollView()
     private let statusLabel = UILabel()
     private let keyBar: KeyBar
+    /// Back to the newest line. It shows only while the view is well into the scrollback
+    /// (`JumpToBottomRule`).
+    let jumpButton = JumpToBottomButton()
+    private var jumpRule = JumpToBottomRule()
+    /// Where the view is in the scrollback, as the engine last said (`scrollPlaceHook`).
+    private var scrollPlace = GhosttyScrollPlace()
 
     var sizing: SizingMode
     var fontSize: CGFloat
@@ -134,7 +140,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// SELECTION UI: the loupe, handles, haptics, double and triple tap (Selection/, docs/selection.md).
     private var selectionUI: TerminalSelectionController!
     /// A long-press or pointer selection drag is under way: nothing else may scroll or swipe.
-    private var selecting = false
+    private var selecting = false { didSet { if selecting != oldValue { updateJumpButton() } } }
+    private var pinching = false { didSet { if pinching != oldValue { updateJumpButton() } } }
     private var pointerSelectGR: UIPanGestureRecognizer!
     private var twoTapGR: UITapGestureRecognizer!
     /// The latest touch came from a mouse or trackpad (its drags select instead of scrolling).
@@ -219,11 +226,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term.keyboardFocusHook = { [weak self] focused in self?.keyboardFocusChanged(focused) }
         term.alternateScreenHook = { [weak self] alternate in self?.alternateScreenChanged(alternate) }
         term.readingHook = { [weak self] in self?.readingBegan() }
+        term.scrollPlaceHook = { [weak self] place in self?.scrollPlaceChanged(place) }
         // A program may write the pasteboard (OSC 52) only from the pane the user works in.
         term.setProgramClipboardGate { [weak self] in self?.isFrontPane ?? false }
         // The pane shows its own focus (cursor, border): no system focus halo on top of it.
         term.focusEffect = nil
         setupGestures()
+        // Over the selection handles (it hides while there is a selection), under the status chip.
+        jumpButton.onFire = { [weak self] in self?.jumpToBottom() }
+        insertSubview(jumpButton, belowSubview: statusLabel)
         PerfProbe.active?.paneOpened(self)  // PERF
     }
 
@@ -294,8 +305,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             guard let self else { return }
             SelectionShimmer.play(on: self.term.layer, rects: rects, dark: self.theme.isDark)
         }
-        ui.presentMenu = { [weak self] rect in self?.presentEditMenu(at: rect) }
-        ui.dismissMenu = { [weak self] in self?.editMenu.dismissMenu() }
+        // The controller shows or hides the menu whenever it makes or drops a selection, which
+        // is also when the jump-to-bottom button has to look again.
+        ui.presentMenu = { [weak self] rect in
+            self?.presentEditMenu(at: rect)
+            self?.updateJumpButton()
+        }
+        ui.dismissMenu = { [weak self] in
+            self?.editMenu.dismissMenu()
+            self?.updateJumpButton()
+        }
         ui.trackingChanged = { [weak self] tracking in self?.selecting = tracking }
         selectionUI = ui
     }
@@ -318,6 +337,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func clearSelection() {
         term.clearSelectedRange()
         selectionUI.selectionCleared()
+        updateJumpButton()
     }
 
     /// Mostly-horizontal motion of a pan that is about to begin.
@@ -372,6 +392,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // A touch on the jump-to-bottom button is the button's alone: it is no tap, swipe or
+        // pinch on the pane, and it doesn't count as the pane's latest touch.
+        if touch.view?.isDescendant(of: jumpButton) == true { return false }
         // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
         if g === tapGR {
             self.touch = (keyboardUp, term.hasActiveSelection, term.touchStopsScroll(now: CACurrentMediaTime()))
@@ -541,6 +564,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         items.append(UIAction(title: "Select All", image: UIImage(systemName: "character.textbox")) { [weak self] _ in
             guard let self else { return }
             self.selectionUI.selectAll(showsMenu: false)
+            self.updateJumpButton()
             // Once this menu has gone: Copy for what is selected now.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.selectionUI.showMenu() }
         })
@@ -592,12 +616,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         switch g.state {
         case .began:
             pinchBase = fontSize
+            pinching = true
         case .changed:
             let k = clampFont(pinchBase * g.scale) / fontSize
             let p = g.location(in: self)
             let d = CGPoint(x: p.x - bounds.midX, y: p.y - bounds.midY)
             zoomer.transform = CGAffineTransform(translationX: d.x, y: d.y).scaledBy(x: k, y: k).translatedBy(x: -d.x, y: -d.y)
         case .ended:
+            pinching = false
             zoomer.transform = .identity
             zoomer.frame = bounds
             let out = TerminalPinch.outcome(pinchState, base: Double(pinchBase), scale: Double(g.scale))
@@ -607,6 +633,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             }
             if out.fitHere { fitHere() }
         default:
+            pinching = false
             zoomer.transform = .identity
             zoomer.frame = bounds
         }
@@ -717,6 +744,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             pasteFromClipboard()
         case .selectAll:
             selectionUI.selectAll(showsMenu: false)  // SELECTION UI: with handles
+            updateJumpButton()
         case .pageUp:
             term.scrollPage(up: true)
         case .pageDown:
@@ -947,6 +975,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         statusLabel.backgroundColor = t.uiFG.withAlphaComponent(0.15)
         statusLabel.textColor = t.uiFG
         keyBar.apply(theme: t)
+        jumpButton.apply(tint: t.uiFG, accent: t.uiCursor)
         selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
     }
 
@@ -1074,10 +1103,55 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         super.layoutSubviews()
         if zoomer.transform == .identity { zoomer.frame = bounds }
         if !statusLabel.isHidden { layoutStatus() }
+        placeJumpButton()
         guard bounds.width > 20, bounds.height > 20 else { return }
         guard bounds.size != lastBounds else { return }
         lastBounds = bounds.size
         layoutTerminal()
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        placeJumpButton()
+    }
+
+    /// The button's circle sits 12 pt in from the pane's trailing edge and that far above its
+    /// bottom, clear of the home indicator. Its center is set, not its frame: it has a transform
+    /// while it comes and goes.
+    private func placeJumpButton() {
+        let radius = JumpToBottomButton.diameter / 2
+        let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
+        let x = rightToLeft ? bounds.minX + 12 + radius : bounds.maxX - 12 - radius
+        let center = CGPoint(x: x, y: bounds.maxY - max(12, safeAreaInsets.bottom + 4) - radius)
+        if jumpButton.center != center { jumpButton.center = center }
+    }
+
+    // MARK: Jump to bottom
+
+    /// The engine says where the view is in the scrollback: on its news, and on every scroll step.
+    private func scrollPlaceChanged(_ place: GhosttyScrollPlace) {
+        scrollPlace = place
+        updateJumpButton()
+    }
+
+    /// Asks the rule again, and touches the button only when the answer changed. Called when
+    /// the scroll place, a selection or a pinch changes.
+    private func updateJumpButton() {
+        let cell = term.cellSize.height
+        // The cheap answers first: a standing selection is asked of the engine.
+        let blocked = scrollPlace.programScroll || selecting || pinching || term.hasActiveSelection
+        let input = JumpToBottomRule.Input(rowsAbove: scrollPlace.rowsAbove, screenRows: cell > 0 ? Int(term.visibleHeight / cell) : 0,
+                                           blocked: blocked, total: scrollPlace.total, rebase: scrollPlace.rebase,
+                                           sequence: scrollPlace.sequence)
+        guard jumpRule.update(input) else { return }
+        jumpButton.set(shown: jumpRule.shown, unseen: jumpRule.unseen, animated: window != nil)
+    }
+
+    /// The button's tap: back to the newest line. Nothing else changes: the keyboard stays
+    /// where it is, and the pane's focus too.
+    private func jumpToBottom() {
+        Haptic.tap()
+        term.scrollToBottomForInput()
     }
 
     private func layoutTerminal() {

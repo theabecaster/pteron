@@ -22,6 +22,20 @@ final class GhosttyScrollSurface: UIScrollView {
     }
 }
 
+/// Where the view is in the scrollback, for whoever shows a way back down (`scrollPlaceHook`).
+struct GhosttyScrollPlace: Equatable {
+    /// Rows between the view and the newest line; 0 at the bottom.
+    var rowsAbove = 0.0
+    /// Rows in all, scrollback included.
+    var total = 0
+    /// How far the terminal has moved by itself (`GhosttyScrollState.Snapshot.rebase`).
+    var rebase = 0
+    /// The newest scroll request the frame had applied.
+    var sequence = 0
+    /// The program gets one-finger drags (mouse tracking or alternate screen).
+    var programScroll = false
+}
+
 /// Scrolling and mouse reporting for one `GhosttyTerminalView`.
 ///
 /// Structure: the terminal view stays a plain view. It holds the Metal view and, above it, a
@@ -181,6 +195,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             alternateScreen = snapshot.alternateScreen
             view?.alternateScreenHook?(alternateScreen)
         }
+        tellPlace()
     }
 
     /// The keyboard covers the bottom `points` of the view, whose grid keeps its rows. The scroll
@@ -225,6 +240,18 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         } else {
             sendOffset()
         }
+        tellPlace()
+    }
+
+    /// Tells the view's `scrollPlaceHook` how far the view is from the newest line. An offset
+    /// among the rows the keyboard covers is past the last row position, so it counts as the bottom.
+    private func tellPlace() {
+        guard let view, let hook = view.scrollPlaceHook else { return }
+        let cell = view.cellSize.height
+        guard cell > 0 else { return }
+        let end = CGFloat(state.maxRow * state.cellHeight) / scale
+        hook(GhosttyScrollPlace(rowsAbove: Double(max(0, (end - surface.contentOffset.y) / cell)), total: state.total,
+                                rebase: state.rebase, sequence: state.appliedSequence, programScroll: state.programScroll))
     }
 
     private func sendOffset() {

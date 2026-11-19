@@ -134,6 +134,12 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 - Dragging into the scrollback while the software keyboard is up puts the keyboard away, as the
   key bar's hide key does: reading gets the whole pane. Nothing moves under the finger; the rows
   the keyboard covered come into view below. A tap brings the keyboard back.
+- Jump to bottom: while the view is half a screen or more (at least 3 rows) into the scrollback,
+  a small glass button with a down arrow shows in the pane's bottom trailing corner, and goes
+  again within a row of the bottom (`JumpToBottomRule`). A tap returns to the newest line and
+  nothing else: it doesn't bring the keyboard back or focus the pane. The arrow takes the
+  cursor's color once output has arrived below. No button during a selection or a pinch, or
+  while the program takes the drags (mouse tracking, the alternate screen).
 - Horizontal swipe: next or previous pane, only when the drag is at least twice as sideways as up or
   down and doesn't catch moving scrollback; anything less scrolls. Swipe on the title bar: next or
   previous tab.

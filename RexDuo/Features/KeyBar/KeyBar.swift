@@ -73,7 +73,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         super.init(frame: CGRect(x: 0, y: 0, width: 400, height: Self.barHeight), inputViewStyle: .default)
         allowsSelfSizing = true
         backgroundColor = .clear
-        GlassHideKey.makeGlass(capsule)
+        Glass.makeGlass(capsule)
         scroll.showsHorizontalScrollIndicator = false
         scroll.alwaysBounceHorizontal = true
         scroll.delaysContentTouches = false
@@ -166,7 +166,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             }
         }
         capsule.frame = CGRect(x: lo, y: ((rowHeight - h) / 2).rounded(), width: max(hi - lo, h), height: h)
-        GlassHideKey.round(capsule, radius: h / 2)
+        Glass.round(capsule, radius: h / 2)
         scroll.layer.cornerRadius = h / 2
     }
 
@@ -497,42 +497,15 @@ private final class GlassHideKey: UIControl {
     var keyMidX: CGFloat = 0 { didSet { if keyMidX != oldValue { setNeedsLayout() } } }
 
     /// Tinted like the keyboard at the bar's end; plain like the vertical bar's items in its column.
-    var keyboardTinted = true { didSet { if keyboardTinted != oldValue { Self.makeGlass(glass, keyboardTinted: keyboardTinted) } } }
+    var keyboardTinted = true { didSet { if keyboardTinted != oldValue { Glass.makeGlass(glass, keyboardTinted: keyboardTinted) } } }
 
     private let glass = UIVisualEffectView()
     private let icon = UIImageView()
 
-    /// The keyboard's own color under its glass (iOS 27.2 simulator, sampled over plain white and
-    /// over a dark terminal). Glass tinted with it reads as the same material as the keyboard.
-    static let keyboardTint = UIColor { t in
-        t.userInterfaceStyle == .dark
-            ? UIColor(red: 0.13, green: 0.137, blue: 0.15, alpha: 1)
-            : UIColor(red: 0.89, green: 0.894, blue: 0.914, alpha: 1)
-    }
-
-    /// Liquid Glass, as the keyboard and the system's bars use. Before iOS 26 the keyboard is
-    /// opaque and square, and a material stands in.
-    static func makeGlass(_ view: UIVisualEffectView, keyboardTinted: Bool = true) {
-        if #available(iOS 26.0, *) {
-            let glass = UIGlassEffect()
-            if keyboardTinted { glass.tintColor = keyboardTint }
-            view.effect = glass
-            view.cornerConfiguration = .capsule()
-        } else {
-            view.effect = UIBlurEffect(style: .systemChromeMaterial)
-            view.clipsToBounds = true
-        }
-    }
-
-    /// Rounds the fallback material; the glass is a capsule on its own.
-    static func round(_ view: UIVisualEffectView, radius: CGFloat) {
-        if view.clipsToBounds { view.layer.cornerRadius = radius }
-    }
-
     init() {
         super.init(frame: .zero)
         glass.isUserInteractionEnabled = false
-        Self.makeGlass(glass)
+        Glass.makeGlass(glass)
         icon.image = UIImage(systemName: KeyBar.symbols["hide"] ?? "keyboard.chevron.compact.down",
                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
         icon.contentMode = .center
@@ -551,7 +524,7 @@ private final class GlassHideKey: UIControl {
         super.layoutSubviews()
         glass.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
         glass.center = CGPoint(x: keyMidX, y: bounds.midY)
-        Self.round(glass, radius: diameter / 2)
+        Glass.round(glass, radius: diameter / 2)
         icon.frame = glass.contentView.bounds
     }
 

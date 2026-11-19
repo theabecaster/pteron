@@ -17,8 +17,9 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 
 - **Mac-like.** The app is the Rex Mac app on a phone: a sidebar beside or over the tab, splits laid
   out as the Mac lays them out, Rex's keymap. Keep chrome off the terminal: no toolbars, badges or
-  standing overlays on a pane, only short-lived notices, because every point of chrome costs rows
-  of text.
+  standing overlays on a pane, only short-lived notices and controls that show just while they
+  apply (the jump-to-bottom button, only while scrolled into history), because every point of
+  chrome costs rows of text.
 - **Few settings.** Settings holds only what a user would choose and understand: servers, a theme
   for Light and Dark Mode, text size, the key bar layout, notifications. Pick the best value for
   everything else and record it under "Fixed choices" in `Prefs`.
@@ -45,7 +46,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   docs/terminal.md, Files).
 - `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
-- `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts.
+- `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass.
 - `RexDuoTests`: app tests, run in the simulator. Beacon tests live in `Relay/src`.
 - `Gateway/`: the push gateway. It holds the APNs key and the phones' APNs tokens; a Beacon holds
   only a per-phone secret (`Gateway/README.md`). `Relay/release.sh` publishes Beacon releases and

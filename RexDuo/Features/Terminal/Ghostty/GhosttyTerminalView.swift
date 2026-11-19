@@ -85,6 +85,9 @@ final class GhosttyTerminalView: UIView {
     var alternateScreenHook: ((Bool) -> Void)?
     /// Called once for a drag that goes into the scrollback while the keyboard covers the view.
     var readingHook: (() -> Void)?
+    /// Called with where the view is in the scrollback: when the render thread's news arrives
+    /// (at most 30 times a second) and on every scroll step.
+    var scrollPlaceHook: ((GhosttyScrollPlace) -> Void)?
     // END scroll
 
     // Taps: links and prompt clicks (GhosttyTap.swift).
