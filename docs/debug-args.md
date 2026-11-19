@@ -23,10 +23,48 @@ builds.
   that sync read `block_creator.list`: `xcrun simctl spawn <id> log show --last 1m --predicate
   'eventMessage CONTAINS "CONTROL_"'`.
 - `-simulateDuo <posture>[,<posture>…]`: lay the root out at that window size with its size classes,
-  rough insets and a fake fold (red dashed line). Postures: `unfolded`, `book`, `unfoldedPortrait`,
-  `tabletop`, `folded`, `foldedLandscape`, `halfWindow`, `iPhone`, `iPhoneLandscape`,
-  `proMaxLandscape` (sizes in `DuoSimulation`, `State/Posture.swift`). A list cycles every
-  `-simulateDuoEvery` seconds (default 10).
+  its insets and a fake fold (red dashed line). A list cycles every `-simulateDuoEvery` seconds
+  (default 10). The postures, each described once in `DuoSimulation.postures`
+  (`State/Posture.swift`), with the window in points and the insets as top, leading, bottom,
+  trailing:
+
+  | Posture | Window | Insets | What it is |
+  | --- | --- | --- | --- |
+  | `unfolded` | 951×669 | 0, 0, 20, 84 | Inner screen, landscape, flat fold at 475.5 |
+  | `book` | 951×669 | 0, 0, 20, 84 | The same, partly folded: a 40 pt fold from 455.5 |
+  | `unfoldedPortrait` | 669×951 | 44, 0, 20, 0 | Inner screen, portrait, flat fold at 475.5 |
+  | `tabletop` | 669×951 | 44, 0, 20, 0 | The same, partly folded: a 40 pt fold from 455.5 |
+  | `folded` | 466×678 | 0, 0, 20, 84 | Outer screen, bar on the right |
+  | `foldedLandscape` | 678×466 | 0, 0, 20, 84 | Outer screen on its side, bar on the right |
+  | `foldedLandscapeBarLeft` | 678×466 | 0, 84, 34, 0 | Outer screen on its side the other way, bar on the left |
+  | `halfWindow` | 475×669 | 0, 0, 20, 84 | Right half of the inner screen in Split View |
+  | `halfWindowBarLeft` | 475×669 | 0, 84, 20, 0 | Left half of the inner screen in Split View, bar on the left |
+  | `iPhone` | 402×874 | 62, 0, 34, 0 | iPhone, portrait |
+  | `iPhoneLandscape` | 874×402 | 0, 62, 21, 62 | iPhone, landscape |
+  | `iPhoneLandscapeIslandLeft` | 874×402 | 0, 62, 20, 62 | iPhone, landscape, Dynamic Island on the left |
+  | `proMaxLandscape` | 956×440 | 0, 62, 21, 62 | iPhone Pro Max, landscape |
+
+  - **The insets reach the sidebar and the tab.** The root is laid out inside them, so they
+    pick the inline sidebar or the drawer (the outer screen on its side is 594 pt inside its
+    bar: a drawer), and the sidebar and the tab get them as their safe area: panes, title bar
+    and sidebar rows stay inside, backgrounds run under them to the window's edge. With the
+    simulated keyboard up the bottom inset is gone, as under a real keyboard.
+  - **Where the numbers come from.** Measured in the iOS 27.2 simulators as the window's
+    `safeAreaInsets`: `foldedLandscapeBarLeft` on the iPhone Duo with the interface in
+    `landscapeRight` (`verticalBarEdge` is then leading; in `landscapeLeft` the same 84 pt are
+    trailing), `iPhoneLandscapeIslandLeft` on the iPhone 17, which reports the same insets in
+    both landscape orientations, so the island's side changes nothing. `halfWindowBarLeft` is
+    not measured, since the Duo simulator shows the outer screen only: it is `halfWindow` with
+    the bar on the other side, the outer edge, where Apple puts it in Split View
+    ([duo-layout.md](duo-layout.md)). The other postures' insets are rough: the Duo simulator's
+    outer screen measures 34 pt at the bottom, not 20, and the iPhone 17 in landscape 20, not 21.
+  - **Not simulated.** The vertical bar itself: `verticalBarEdge` comes from the real device,
+    so the sidebar toggle and the tab's actions stay in the title bar and the inset is empty.
+  - **Posture pixel matrix.** A change to layout is compared with its base in every posture
+    above, each with the sidebar showing and with `-sidebar closed`, in a `zz-` session with
+    `-focus none`. Run base, branch, base again: what differs between the two base runs is
+    noise (the sidebar's pulsing status dots, the simulator's clock and home indicator).
+    A new posture goes into this table and so into the matrix.
   In a Debug build every `terminal.resize` fit mode sends logs one `FIT_RESIZE <block> <cols>x<rows>`
   line, to count what a fold costs: `xcrun simctl spawn <id> log show --last 1m --predicate
   'eventMessage CONTAINS "FIT_RESIZE"'`. `-simulateDuo unfolded,book -simulateDuoEvery 0.2` flips

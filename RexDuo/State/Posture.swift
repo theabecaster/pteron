@@ -182,75 +182,88 @@ extension EnvironmentValues {
 }
 
 #if DEBUG
-/// `-simulateDuo unfolded|book|unfoldedPortrait|tabletop|folded|foldedLandscape|halfWindow|iPhone|
-/// iPhoneLandscape|proMaxLandscape` (testing): lays the root out in that window size, with its size
-/// classes and a fake fold, so one big simulator screen shows every layout.
-/// A comma-separated list cycles through the postures every `-simulateDuoEvery` seconds (default 10),
-/// to check what a fold or an unfold keeps.
+/// `-simulateDuo <posture>` (testing): lays the root out as that window, with its size classes, the
+/// system's insets and a fake fold, so one big simulator screen shows every layout. Each posture is
+/// described once, in `postures`. A comma-separated list cycles through the postures every
+/// `-simulateDuoEvery` seconds (default 10), to check what a fold or an unfold keeps.
 struct DuoSimulation: Equatable {
     var name: String
+    /// The whole window, insets included.
     var size: CGSize
     var horizontal: UserInterfaceSizeClass
     var vertical: UserInterfaceSizeClass
+    /// The fold, in the window's coordinates.
     var division: Division?
+    /// The system's insets there: the vertical bar (84 pt, on the outer screen and the inner
+    /// screen in landscape), the status bar, the Dynamic Island and the home indicator. The root
+    /// gets them twice, as on a device: as the room it is laid out in (`rootSize`), and as the
+    /// safe area of the sidebar and the tab, which draw under them (`insets(keyboard:)`).
+    var safeArea: EdgeInsets
+    /// Whether the window covers its whole screen there, for `TentDetector`: every posture but
+    /// a half of the inner screen beside another app.
+    var fillsScreen = true
+
+    /// The Duo's vertical bar, as the simulator reports it on the outer screen.
+    private static let bar: CGFloat = 84
+
+    /// Every posture. The insets of the three with the bar or the island on the left come from
+    /// the iOS 27.2 simulators (docs/debug-args.md says which); the others are rough.
+    static let postures: [DuoSimulation] = [
+        .init(name: "unfolded", size: CGSize(width: 951, height: 669), horizontal: .regular, vertical: .regular,
+              division: Division(frame: CGRect(x: 475.5, y: 0, width: 0, height: 669), isActive: false),
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar)),
+        .init(name: "book", size: CGSize(width: 951, height: 669), horizontal: .regular, vertical: .regular,
+              division: Division(frame: CGRect(x: 455.5, y: 0, width: 40, height: 669), isActive: true),
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar)),
+        .init(name: "unfoldedPortrait", size: CGSize(width: 669, height: 951), horizontal: .regular, vertical: .regular,
+              division: Division(frame: CGRect(x: 0, y: 475.5, width: 669, height: 0), isActive: false),
+              safeArea: EdgeInsets(top: 44, leading: 0, bottom: 20, trailing: 0)),
+        .init(name: "tabletop", size: CGSize(width: 669, height: 951), horizontal: .regular, vertical: .regular,
+              division: Division(frame: CGRect(x: 0, y: 455.5, width: 669, height: 40), isActive: true),
+              safeArea: EdgeInsets(top: 44, leading: 0, bottom: 20, trailing: 0)),
+        .init(name: "folded", size: CGSize(width: 466, height: 678), horizontal: .compact, vertical: .regular,
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar)),
+        .init(name: "foldedLandscape", size: CGSize(width: 678, height: 466), horizontal: .compact, vertical: .compact,
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar)),
+        // The outer screen on its side the other way: the bar is on the left.
+        .init(name: "foldedLandscapeBarLeft", size: CGSize(width: 678, height: 466), horizontal: .compact, vertical: .compact,
+              safeArea: EdgeInsets(top: 0, leading: bar, bottom: 34, trailing: 0)),
+        // Unfolded, with the app on the right half of the inner screen beside another app.
+        .init(name: "halfWindow", size: CGSize(width: 475, height: 669), horizontal: .compact, vertical: .regular,
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar), fillsScreen: false),
+        // The same on the left half: the bar is on the outer edge, the left.
+        .init(name: "halfWindowBarLeft", size: CGSize(width: 475, height: 669), horizontal: .compact, vertical: .regular,
+              safeArea: EdgeInsets(top: 0, leading: bar, bottom: 20, trailing: 0), fillsScreen: false),
+        .init(name: "iPhone", size: CGSize(width: 402, height: 874), horizontal: .compact, vertical: .regular,
+              safeArea: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0)),
+        .init(name: "iPhoneLandscape", size: CGSize(width: 874, height: 402), horizontal: .compact, vertical: .compact,
+              safeArea: EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)),
+        // The Dynamic Island on the left. iOS insets both sides alike, whichever holds the island.
+        .init(name: "iPhoneLandscapeIslandLeft", size: CGSize(width: 874, height: 402), horizontal: .compact, vertical: .compact,
+              safeArea: EdgeInsets(top: 0, leading: 62, bottom: 20, trailing: 62)),
+        .init(name: "proMaxLandscape", size: CGSize(width: 956, height: 440), horizontal: .regular, vertical: .compact,
+              safeArea: EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)),
+    ]
 
     static func named(_ raw: String) -> DuoSimulation? {
-        switch raw.trimmingCharacters(in: .whitespaces) {
-        case "unfolded":
-            return .init(name: "unfolded", size: CGSize(width: 951, height: 669), horizontal: .regular, vertical: .regular,
-                         division: Division(frame: CGRect(x: 475.5, y: 0, width: 0, height: 669), isActive: false))
-        case "book":
-            return .init(name: "book", size: CGSize(width: 951, height: 669), horizontal: .regular, vertical: .regular,
-                         division: Division(frame: CGRect(x: 455.5, y: 0, width: 40, height: 669), isActive: true))
-        case "unfoldedPortrait":
-            return .init(name: "unfoldedPortrait", size: CGSize(width: 669, height: 951), horizontal: .regular, vertical: .regular,
-                         division: Division(frame: CGRect(x: 0, y: 475.5, width: 669, height: 0), isActive: false))
-        case "tabletop":
-            return .init(name: "tabletop", size: CGSize(width: 669, height: 951), horizontal: .regular, vertical: .regular,
-                         division: Division(frame: CGRect(x: 0, y: 455.5, width: 669, height: 40), isActive: true))
-        case "folded":
-            return .init(name: "folded", size: CGSize(width: 466, height: 678), horizontal: .compact, vertical: .regular,
-                         division: nil)
-        case "foldedLandscape":
-            return .init(name: "foldedLandscape", size: CGSize(width: 678, height: 466), horizontal: .compact, vertical: .compact,
-                         division: nil)
-        case "halfWindow":
-            // Unfolded, with the app on one half of the inner screen beside another app.
-            return .init(name: "halfWindow", size: CGSize(width: 475, height: 669), horizontal: .compact, vertical: .regular,
-                         division: nil)
-        case "iPhone":
-            return .init(name: "iPhone", size: CGSize(width: 402, height: 874), horizontal: .compact, vertical: .regular,
-                         division: nil)
-        case "iPhoneLandscape":
-            return .init(name: "iPhoneLandscape", size: CGSize(width: 874, height: 402), horizontal: .compact, vertical: .compact,
-                         division: nil)
-        case "proMaxLandscape":
-            return .init(name: "proMaxLandscape", size: CGSize(width: 956, height: 440), horizontal: .regular, vertical: .compact,
-                         division: nil)
-        default:
-            return nil
-        }
+        let name = raw.trimmingCharacters(in: .whitespaces)
+        return postures.first { $0.name == name }
     }
 
-    /// The system's insets in that posture, roughly: the vertical bar (about 84 pt, on the outer screen
-    /// and the inner screen in landscape), the status bar and the home indicator. Without them the
-    /// simulation hides layouts that only fit the full window.
-    var safeArea: EdgeInsets {
-        switch name {
-        case "unfolded", "book", "folded", "foldedLandscape", "halfWindow":
-            return EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: 84)
-        case "unfoldedPortrait", "tabletop":
-            return EdgeInsets(top: 44, leading: 0, bottom: 20, trailing: 0)
-        case "iPhone":
-            return EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0)
-        default:
-            return EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)
-        }
+    /// The safe area the sidebar and the tab get, with the simulated keyboard `keyboard` pt
+    /// tall. The keyboard covers the home indicator, so the bottom inset goes while it is up.
+    func insets(keyboard: CGFloat = 0) -> EdgeInsets {
+        var e = safeArea
+        if keyboard > 0 { e.bottom = 0 }
+        return e
     }
 
-    /// Whether the window covers its whole screen there, for `TentDetector`: every posture but
-    /// the half of the inner screen beside another app.
-    var fillsScreen: Bool { name != "halfWindow" }
+    /// The window inside its insets: the size the root is laid out in, which picks the
+    /// arrangement.
+    var rootSize: CGSize {
+        CGSize(width: size.width - safeArea.leading - safeArea.trailing,
+               height: size.height - safeArea.top - safeArea.bottom)
+    }
 
     /// The fold as `reservedRegions` reports it: in the coordinates of the root, which sits inside the
     /// safe area.

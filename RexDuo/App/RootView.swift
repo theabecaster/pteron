@@ -111,12 +111,14 @@ struct RootView: View {
     #if DEBUG
     /// `-simulateDuo`: the root in that posture's size at the bottom-leading corner of a bigger
     /// simulator screen, with that posture's size classes and a fake fold, drawn as a dashed red line.
-    /// The keyboard shrinks it from below by its height, as on the device.
+    /// The keyboard shrinks it from below by its height, as on the device. The posture's insets
+    /// are given twice, as a device gives them: around the root, which is laid out inside them,
+    /// and to the sidebar and the tab inside the navigation stack, which fills the window.
     private func simulated(_ sim: DuoSimulation, _ theme: TermTheme) -> some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
-                layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen)
+                layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen, insets: sim.insets(keyboard: simKeyboard))
                     .safeAreaPadding(sim.safeArea)
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
@@ -162,8 +164,9 @@ struct RootView: View {
     #endif
 
     /// The sidebar and the tab, arranged for the window's width and the fold. `fake` replaces the fold
-    /// (debug simulation), which then also says whether its window `fills` its screen.
-    private func layout(_ theme: TermTheme, fake: Division??, fills: Bool? = nil) -> some View {
+    /// (debug simulation), which then also says whether its window `fills` its screen and gives the
+    /// safe area's `insets`.
+    private func layout(_ theme: TermTheme, fake: Division??, fills: Bool? = nil, insets: EdgeInsets = EdgeInsets()) -> some View {
         GeometryReader { geo in
             let division = fake ?? Self.division(geo)
             // The root ignores the keyboard, so the arrangement doesn't change when it shows.
@@ -174,6 +177,11 @@ struct RootView: View {
                 } tab: {
                     tab(arr)
                 }
+                #if DEBUG
+                // `-simulateDuo`: the navigation stack fills the simulated window and takes its
+                // safe area from the real one, so the posture's insets are given again here.
+                .safeAreaPadding(insets)
+                #endif
                 // The keyboard's room, from its frames (`KeyboardInset`), not SwiftUI's keyboard
                 // safe area, which can stay at a frame the keyboard had for a moment. Here, inside
                 // the navigation stack: its content is hosted on its own.

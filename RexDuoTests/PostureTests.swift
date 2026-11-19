@@ -111,3 +111,119 @@ struct SplitLegibilityTests {
         #expect(!SplitGeometry.legible(halves, canvas: .zero, fontSize: 11))
     }
 }
+
+#if DEBUG
+/// The `-simulateDuo` postures: each window's size, insets and fold, and what the root, the
+/// sidebar and the tab get from them.
+struct DuoSimulationTests {
+    struct Expected: Sendable {
+        var name: String
+        var size: CGSize
+        /// Top, leading, bottom, trailing.
+        var insets: [CGFloat]
+        var fold: CGRect? = nil
+        var foldActive = false
+        var fills = true
+        /// What the root is laid out in, and the arrangement that gives.
+        var root: CGSize
+        var inline: Bool
+    }
+
+    static let expected: [Expected] = [
+        .init(name: "unfolded", size: CGSize(width: 951, height: 669), insets: [0, 0, 20, 84],
+              fold: CGRect(x: 475.5, y: 0, width: 0, height: 669), root: CGSize(width: 867, height: 649), inline: true),
+        .init(name: "book", size: CGSize(width: 951, height: 669), insets: [0, 0, 20, 84],
+              fold: CGRect(x: 455.5, y: 0, width: 40, height: 669), foldActive: true,
+              root: CGSize(width: 867, height: 649), inline: true),
+        .init(name: "unfoldedPortrait", size: CGSize(width: 669, height: 951), insets: [44, 0, 20, 0],
+              fold: CGRect(x: 0, y: 475.5, width: 669, height: 0), root: CGSize(width: 669, height: 887), inline: true),
+        .init(name: "tabletop", size: CGSize(width: 669, height: 951), insets: [44, 0, 20, 0],
+              fold: CGRect(x: 0, y: 455.5, width: 669, height: 40), foldActive: true,
+              root: CGSize(width: 669, height: 887), inline: true),
+        .init(name: "folded", size: CGSize(width: 466, height: 678), insets: [0, 0, 20, 84],
+              root: CGSize(width: 382, height: 658), inline: false),
+        .init(name: "foldedLandscape", size: CGSize(width: 678, height: 466), insets: [0, 0, 20, 84],
+              root: CGSize(width: 594, height: 446), inline: false),
+        .init(name: "foldedLandscapeBarLeft", size: CGSize(width: 678, height: 466), insets: [0, 84, 34, 0],
+              root: CGSize(width: 594, height: 432), inline: false),
+        .init(name: "halfWindow", size: CGSize(width: 475, height: 669), insets: [0, 0, 20, 84], fills: false,
+              root: CGSize(width: 391, height: 649), inline: false),
+        .init(name: "halfWindowBarLeft", size: CGSize(width: 475, height: 669), insets: [0, 84, 20, 0], fills: false,
+              root: CGSize(width: 391, height: 649), inline: false),
+        .init(name: "iPhone", size: CGSize(width: 402, height: 874), insets: [62, 0, 34, 0],
+              root: CGSize(width: 402, height: 778), inline: false),
+        .init(name: "iPhoneLandscape", size: CGSize(width: 874, height: 402), insets: [0, 62, 21, 62],
+              root: CGSize(width: 750, height: 381), inline: true),
+        .init(name: "iPhoneLandscapeIslandLeft", size: CGSize(width: 874, height: 402), insets: [0, 62, 20, 62],
+              root: CGSize(width: 750, height: 382), inline: true),
+        .init(name: "proMaxLandscape", size: CGSize(width: 956, height: 440), insets: [0, 62, 21, 62],
+              root: CGSize(width: 832, height: 419), inline: true),
+    ]
+
+    @Test func everyPostureIsListedOnce() {
+        #expect(DuoSimulation.postures.map(\.name) == Self.expected.map(\.name))
+        #expect(Set(DuoSimulation.postures.map(\.name)).count == DuoSimulation.postures.count)
+    }
+
+    @Test(arguments: expected)
+    func aPostureIsItsWindowItsInsetsAndItsFold(e: Expected) throws {
+        let sim = try #require(DuoSimulation.named(e.name))
+        #expect(sim.size == e.size)
+        #expect(sim.safeArea == EdgeInsets(top: e.insets[0], leading: e.insets[1], bottom: e.insets[2], trailing: e.insets[3]))
+        #expect(sim.division == e.fold.map { Division(frame: $0, isActive: e.foldActive) })
+        #expect(sim.fillsScreen == e.fills)
+    }
+
+    /// The root is laid out inside the insets, so they decide between the inline sidebar and the
+    /// drawer: the outer screen on its side is 594 pt inside its bar, on either side.
+    @Test(arguments: expected)
+    func theRootIsLaidOutInsideTheInsets(e: Expected) throws {
+        let sim = try #require(DuoSimulation.named(e.name))
+        #expect(sim.rootSize == e.root)
+        #expect(Arrangement.decide(size: sim.rootSize, division: sim.rootDivision).inline == e.inline)
+    }
+
+    /// The sidebar and the tab get the posture's whole safe area, on the sides it has it.
+    @Test(arguments: expected)
+    func theTabGetsThePosturesInsets(e: Expected) throws {
+        let sim = try #require(DuoSimulation.named(e.name))
+        #expect(sim.insets() == sim.safeArea)
+        #expect(sim.insets(keyboard: 0) == sim.safeArea)
+    }
+
+    /// The keyboard covers the home indicator: nothing is left under the tab but the keyboard.
+    @Test(arguments: expected)
+    func theKeyboardTakesTheBottomInset(e: Expected) throws {
+        let sim = try #require(DuoSimulation.named(e.name))
+        var want = sim.safeArea
+        want.bottom = 0
+        #expect(sim.insets(keyboard: 336) == want)
+    }
+
+    @Test func theFoldIsGivenInTheRootsCoordinates() throws {
+        let portrait = try #require(DuoSimulation.named("unfoldedPortrait"))
+        #expect(portrait.rootDivision?.frame == CGRect(x: 0, y: 431.5, width: 669, height: 0))
+        let book = try #require(DuoSimulation.named("book"))
+        #expect(book.rootDivision == book.division)
+        #expect(DuoSimulation.named("folded")?.rootDivision == nil)
+    }
+
+    @Test func namesAreTrimmedAndUnknownOnesAreNoPosture() {
+        #expect(DuoSimulation.named(" halfWindowBarLeft ")?.name == "halfWindowBarLeft")
+        #expect(DuoSimulation.named("sideways") == nil)
+    }
+
+    /// The postures that catch what only a leading inset shows, like a hidden sidebar that moves
+    /// by its width alone and stays in view under the bar: the bar or the island is on the left.
+    @Test func thePosturesWithTheBarOrTheIslandOnTheLeft() {
+        let left = DuoSimulation.postures.filter { $0.safeArea.leading > 0 }.map(\.name)
+        #expect(left == ["foldedLandscapeBarLeft", "halfWindowBarLeft", "iPhoneLandscape", "iPhoneLandscapeIslandLeft",
+                         "proMaxLandscape"])
+        for name in left {
+            let inset = DuoSimulation.named(name)?.insets().leading ?? 0
+            // A sidebar at the safe area's edge, moved left by its width and its shadow's 24 pt.
+            #expect(inset - 24 > 0, "\(name)")
+        }
+    }
+}
+#endif

@@ -48,6 +48,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   the left edge show and hide it. A drag or toggle resizes the terminals once, never per frame.
   Hidden, it moves past the window's edge, also past a leading inset (the vertical bar on the
   left in Split View or landscape, the Dynamic Island), so none of it shows under the bar.
+  `-simulateDuo foldedLandscapeBarLeft`, `halfWindowBarLeft` and `iPhoneLandscapeIslandLeft`
+  with `-sidebar closed` show those windows ([debug-args.md](debug-args.md)).
 - **Book mode** (`BookSplit`). Partly folded with a vertical crease, a tab that shows its splits
   draws the side-by-side divider nearest the crease on the crease: the panes on its left fill the
   left page and the panes on its right fill the right page, each side keeping its proportions.
