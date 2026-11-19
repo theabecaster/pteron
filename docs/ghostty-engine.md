@@ -352,6 +352,12 @@ scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
   after an interruption. `--only seq,claude` and `--runs N` narrow it (with `--only`, only the
   scenarios that ran are checked).
 - The app is terminated after each run and when the script ends or is interrupted.
+- Every measured `unicode` run follows an unmeasured one, whose result is thrown away. The
+  scenario's time to the final frame is likely mostly CoreText loading its fallback fonts (CJK, emoji) in
+  the new process. On a simulator in its first minutes after its first boot that load is slow
+  unless a process did the same seconds before: 110 to 310 ms with one or two frame gaps over
+  25 ms, on any commit, against 16 to 57 ms right after another launch and on a simulator that
+  has settled.
 - Replay runs use no server. `--live` opens the named session in mirror mode (no claim, no
   resize) after `seq 1 3000` in its pane. Use a throwaway session. Live numbers have no budget:
   they depend on the network and the server.

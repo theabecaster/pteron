@@ -8,7 +8,8 @@
 # Builds the app once (Release), then for every scenario and run launches it with
 # `-replay <file> -perfLog <name>`, waits for the result file in the app's Documents/perf and
 # copies it to <out>/results. Replay runs touch no server. About 4 minutes for the 21 replay
-# runs after the build; --live adds about 1.
+# runs after the build; --live adds about 1. Every `unicode` run follows an unmeasured one, which
+# likely warms the simulator's fallback fonts.
 #
 # Results land in <out>/results, one JSON per run (default <out>: build/bench in the repo,
 # an ignored directory). The report is printed at the end; `node scripts/bench/report.mjs
@@ -30,7 +31,8 @@
 # Environment: BENCH_DD (derived data, default build/dd-bench).
 set -euo pipefail
 
-usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+self=$0   # inside a function, $0 is the function's name
+usage() { sed -n '2,30p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
 live=""; runs=3; only=""; out=""; build=1; fresh=0
@@ -50,7 +52,9 @@ here=${0:A:h}
 root=${here:h:h}
 bundle=dev.abrahamgonzalez.rexduo
 dd=${BENCH_DD:-$root/build/dd-bench}
-out=${out:-$root/build/bench}
+# Absolute, against the caller's directory: the app reads the scenarios by this path, and a
+# relative one would be looked up in its own container.
+out=${${out:-$root/build/bench}:a}
 if (( fresh )); then rm -rf "$out/results"; fi
 cols=60; rows=50   # fits an iPhone 17 at the default 11 pt font, so the terminal is drawn 1:1
 mkdir -p "$out/results" "$out/scenarios"
@@ -124,10 +128,31 @@ scenarios=(
   "claude|claude.timed|"
 )
 
+# A warm-up for `unicode`. Its time to the final frame is likely mostly CoreText loading its fallback
+# fonts (CJK, emoji) in the new process, and on a simulator in its first minutes after its first
+# boot that load is slow unless a process did the same seconds before: 110 to 310 ms with one or
+# two stalls between frames, whatever the code, against 16 to 57 ms right after another launch
+# and on a simulator that has settled. So an unmeasured launch goes right before every measured
+# one. Its result is thrown away: it never reaches <out>/results, so no report or median sees it.
+warm_up() {
+  local name=unicode__warmup data file waited=0
+  echo "unicode warm-up (not measured)" >&2
+  xcrun simctl terminate "$sim" $bundle >/dev/null 2>&1 || true
+  data=$(xcrun simctl get_app_container "$sim" $bundle data)
+  file="$data/Documents/perf/$name.json"
+  rm -f "$file"
+  xcrun simctl launch "$sim" $bundle -perfLog $name -replay "$out/scenarios/unicode.vt" \
+    -replayCols $cols -replayRows $rows -replayRate max >/dev/null
+  until [[ -f $file ]] || (( waited >= 240 )); do sleep 0.25; (( waited += 1 )); done
+  [[ -f $file ]] || echo "  warm-up: no result after 60 s, going on" >&2
+  rm -f "$file"
+  xcrun simctl terminate "$sim" $bundle >/dev/null 2>&1 || true
+}
 for run in $(seq 1 $runs); do
   for s in $scenarios; do
     name=${s%%|*}; rest=${s#*|}; file=${rest%%|*}; extra=${rest#*|}
     [[ -z $only || ",$only," == *",$name,"* ]] || continue
+    if [[ $name == unicode && ! -f "$out/results/${name}__${run}.json" ]]; then warm_up; fi
     run_one "${name}__${run}" 60 -replay "$out/scenarios/$file" -replayCols $cols -replayRows $rows ${=extra}
   done
 done
