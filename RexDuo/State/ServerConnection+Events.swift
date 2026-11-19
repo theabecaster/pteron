@@ -27,6 +27,9 @@ extension ServerConnection {
             }
         case "session_destroyed":
             let id = p.str("session_id") ?? p.obj("session")?.str("session_id") ?? ""
+            for w in views[id]?.windows ?? [] {
+                for b in w.allBlocks { forgetBlockAlerts(b.id) }
+            }
             sessions.removeAll { $0.id == id }
             views[id] = nil
         case "session_moved":
@@ -98,6 +101,7 @@ extension ServerConnection {
         case "block_event":
             handleBlockEvent(sessionID: sid, p)
         case "window_created", "window_closed", "window_label_changed", "active_window_changed", "block_closed", "block_owner_changed":
+            if type == "block_closed", let bid = p.str("block_id") { forgetBlockAlerts(bid) }
             touchedSessions.insert(sid)
             refreshView(sid)
         default:
@@ -126,13 +130,21 @@ extension ServerConnection {
                 if st.state == "blocked", prev != "blocked" { notifyBlocked(sid, bid, st, m) }
             }
         case "program_status_removed":
-            for id in (e["ids"] as? [String]) ?? [] { m.statuses[id] = nil }
+            for id in (e["ids"] as? [String]) ?? [] where m.statuses.removeValue(forKey: id) != nil {
+                agentRecordRemoved(bid)
+            }
         case "bell":
             m.bellAt = Date()
         case "child_exited":
             m.exited = true
+            stageProgress(bid, nil)
+        case "progress_report":
+            receiveProgress(bid, e)
+            return
         case "desktop_notification":
-            // No banner in the app; the helper pushes these while the app is in the background.
+            // A toast while the app is in front (`receiveNotice`); the helper pushes these while
+            // it is in the background.
+            receiveNotice(sid, bid, e)
             return
         default:
             return

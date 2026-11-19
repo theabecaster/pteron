@@ -185,6 +185,12 @@ final class Prefs {
     // legible (`WindowScreen.splitsFit`); agent status always shows in the sidebar; haptics follow
     // iOS's System Haptics; in-app banners for waiting agents are always on; sidebar text follows
     // Dynamic Type.
+    // Progress rings and notice toasts have no switch either: rings apply at most every 0.5 s and
+    // go 15 s after the last report (`ServerConnection.progressFlush`, `progressStale`); a notice
+    // waits 1 s for an agent status and counts a pane as an agent's 10 s after its last record
+    // (`noticeWait`, `NoticeFilter.agentMemory`); notice toasts keep 10 s apart, 30 s per pane,
+    // drop repeats within 30 s and stay quiet 2 s after the app comes back (`ToastPolicy`); at
+    // most 5 notices per pane and 50 in all queue (`AgentNotifier.perPaneLimit`, `noticeLimit`).
 
     /// The key bar's keys.
     var keyBar: [String] { keyBarLayout.keys }

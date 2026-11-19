@@ -142,7 +142,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     comes back after 60 s without a touch or a key; a keyboard on screen or a sheet counts as
     use. A sheet that is up when tent begins is left alone, and the board shows when it closes.
     Leaving tent removes the board.
-  - **Around it.** No toast shows over the board; pushes are unchanged. The screen stays awake
+  - **Around it.** No toast shows over the board; pushes are unchanged. Waiting agents' toasts
+    are dropped (the board lists them); programs' notices wait and show as one toast after it. The screen stays awake
     while it shows, except in Low Power Mode, and the idle timer is given back when it goes or
     the app leaves the foreground. Reduce Motion holds the rings still, Reduce Transparency
     removes the glow, and VoiceOver reads the headline, then one button per tile.

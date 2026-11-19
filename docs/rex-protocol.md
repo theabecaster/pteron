@@ -141,7 +141,21 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
   block.
 - `block_event` names: `title_changed`, `pwd_changed`, `process_changed`,
   `program_status_changed`, `program_status_removed`, `bell`, `child_exited`,
-  `desktop_notification`.
+  `desktop_notification` (a notice toast, [notifications.md](notifications.md)), `progress_report`
+  (a progress ring, [sidebar.md](sidebar.md)).
+
+### Progress and notices (terminal block events)
+
+| Event | Payload, as Rex preview.21 sends it |
+| --- | --- |
+| `progress_report` | `state` set, indeterminate, pause, error or remove; `progress` 0 to 100 (the schema allows 255, the app clamps). `\e]9;4;1` without a value comes as `set` with 0, `\e]9;4;2` as `error` alone. Repeats are sent, also identical ones. No method reads the current value. |
+| `desktop_notification` | `title` (empty for OSC 9) and `body` |
+
+Compatibility: neither is in any `llms.txt`; both are listed at runtime in the terminal creator's
+`api.events` (`block_creator.list`), seen on rev-13 builds and on preview.20 and .21. The app uses
+them only for blocks whose host's terminal creator lists them (`ServerConnection.sendsEvent`); an
+unknown or failed creator list counts as absent. Without them the app shows no ring and no notice,
+exactly as before. Nothing is probed or sent for either. Unknown `state` values are ignored.
 
 ## Dropped events (`event_dropped`, revision 18)
 
@@ -164,7 +178,7 @@ session and features hang work on it.
 | any other type without one | a full sync |
 
 A status read back this way doesn't toast, as after any resync. A dropped `desktop_notification`
-is lost. A metadata read is older than any live event that arrives while it is out: what such an
+is lost. A dropped `progress_report` clears that pane's ring until the next report (its handler). A metadata read is older than any live event that arrives while it is out: what such an
 event set (status, title or process) is kept, and the read fills in the rest.
 
 ## Prompts (`client_prompt_requested`, revision 17)

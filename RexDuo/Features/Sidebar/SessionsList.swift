@@ -34,6 +34,9 @@ struct SessionsList: View {
     private var sessionGap: CGFloat { min(sessionGapScaled, 10) }
 
     var body: some View {
+        #if DEBUG
+        let _ = RenderCount.bump(.sessionLists)
+        #endif
         // The root's callback changes with the posture (a drawer closes on select, inline stays).
         actions.onSelect = onSelect
         let servers = Dictionary(model.servers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -439,6 +442,9 @@ struct TabRow: View, Equatable {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = RenderCount.bump(.tabRows)
+        #endif
         let server = server, w = window, sid = sessionID, actions = actions
         let target = SidebarActions.Target(server: server, sessionID: sid, windowID: w.id, label: w.label)
         let close = { actions.closeTab(target, hasAgent: server.windowAgent(w) != nil) }

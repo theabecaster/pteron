@@ -8,20 +8,54 @@ Two paths, one per app state.
 `AgentAlert` ("<Agent> needs permission / has a question / needs a password / is waiting for you")
 to `AgentNotifier` (one instance, shared by all servers), which also plays a warning haptic at most
 once every 3 s (`AgentNotifier.hapticInterval`). Both are always on; iOS's System Haptics setting
-mutes the haptic. Desktop notifications (OSC 9 / 777) show nothing in the app.
+mutes the haptic.
+
+A desktop notification (OSC 9 / 777, the terminal's `desktop_notification` block event) becomes a
+notice: `ServerConnection.receiveNotice` waits 1 s, so an agent status sent right after it still
+counts, then drops it if the pane runs an agent (by its status app, foreground or title), has any
+OSC 7501 record, or lost one less than 10 s ago (`NoticeFilter`): agents already alert through
+their status. It also drops an empty one, one whose body starts with `4;` (an older server passing
+an OSC 9;4 progress report through), and one whose connection changed during the wait. Else it
+posts an `AgentAlert` of kind `.notice` (`AgentNotifier.postNotice`): the program's title, or the
+tab's name for OSC 9, and "session › tab — text", cleaned of control characters and direction
+overrides (`AlertCopy`), so a program can't pose as the app. No haptic. Only servers whose
+terminal creator lists the event get notices (Compatibility in [rex-protocol.md](rex-protocol.md)).
 
 `Features/Notifications` turns alerts into a toast. `.agentToasts()` is applied once, in
 `RexDuoApp`. The rules are in `ToastPolicy` (tested):
 
-- Only while the app is active, and only for a pane that isn't on screen. `ScreenInspector` reads
+- Only while the app is active, and only for a pane that isn't on screen. `VisiblePanes` reads
   the visible panes from UIKit (`TerminalHost` views at least half inside the key window), so the
-  tab and sidebar views don't report anything.
+  tab and sidebar views don't report anything; the Waiting pill asks it too.
 - One toast at a time. A new alert updates the toast on screen ("2 more agents are waiting").
 - A sheet, cover or alert holds the toast until it closes (dropped after 2 minutes or once the
   agent stops waiting). The same pane toasts at most once per 30 s.
 - No toast while the agent board shows (tent mode, [duo-layout.md](duo-layout.md)): it lists
   every waiting agent itself. A toast already up goes when the board comes.
 - It fades after 6 s and can be swiped up. A tap opens the pane (`AppModel.openPane`).
+
+Waiting agents keep exactly that sequence: they read `AgentNotifier.latest`, so posts in one
+main-actor turn collapse to the newest, and nothing queues behind them (`WaitingSequenceTests`
+plays main's logic against `ToastState`). Notices have their own rules (`ToastState`,
+`ToastPolicy.decideNotice`):
+
+- A pane that floods is held back before the 1 s wait: the same text from it within 30 s is
+  dropped, and at most 5 of its notices wait at once. The notifier queues them, at most 5 per
+  pane (that pane's oldest goes) and 50 in all (the oldest of the busiest pane goes), so a noisy
+  pane never pushes out another's. The toast drains the queue on each change, so every notice
+  of a turn is decided, in order.
+- A waiting agent outranks a notice: it replaces a notice toast, and a notice never updates or
+  replaces a toast. A notice that can't show now (a toast is up, less than 10 s since the last
+  notice toast, or its pane toasted a notice less than 30 s ago) waits in one slot, newest per
+  pane, never dropped. When it may, the slot shows as one toast that counts the rest ("2 more
+  notifications"), after held waiting alerts.
+- A sheet or the agent board holds notices per pane, with no age limit; a notice toast up when
+  the board comes goes back to the hold. They show as one toast once both are gone. Waiting
+  alerts are still dropped on the board, which lists them.
+- A notice for a pane on screen, when posted or when it would show, is dropped: the user is
+  looking at it. So is the same text from the same pane within 30 s, and any notice in the first
+  2 s after the app comes to the front (what came while it was away was the helper's to push).
+- The toast: a bell in the secondary color, the same size, place, motion, swipe and tap.
 
 `NotificationDelegate` (in `App/AppDelegate.swift`) shows no banners while the app is in front,
 except the one "Send Test Notification" asks for (thread id `rexduo-test`, `PushTest`).
@@ -242,6 +276,10 @@ and how to verify by hand.
 | Agent becomes `blocked` | `AGENT_BLOCKED` | time-sensitive, sound |
 | Agent reports `done` or `error` | `AGENT_DONE` | passive |
 | Desktop notification (OSC 9 / 777) | `NOTICE` | active, sound |
+
+The helper doesn't filter agents' notices yet: a Claude OSC 9 next to its `blocked` status gives
+two pushes, as before. The app's toasts filter them (above); the helper gets the same filter with
+its next release.
 
 The push decisions (debounce, rate limit, skip phones that are in front) are in
 `Relay/src/policy.rs` and `devices.rs`, tested with `cargo test`. The app doesn't share that

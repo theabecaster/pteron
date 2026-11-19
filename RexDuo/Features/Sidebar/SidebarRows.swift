@@ -337,6 +337,112 @@ struct StatusBadge: View {
     }
 }
 
+/// What a tab's status glyph shows. Agent status (OSC 7501) that needs or holds attention ranks
+/// above a program's progress bar (OSC 9;4), so a tab whose agent works keeps its working dot
+/// even while another pane builds; a bar ranks above done and idle.
+enum TabBadge: Equatable {
+    /// `StatusBadge` for this OSC 7501 state, or nothing.
+    case status(String?)
+    case ring(TermProgress)
+
+    /// `status` is the tab's top agent status; `progress` the bars of its panes without an
+    /// OSC 7501 record. Of several bars: an error first, else the lowest percent, else
+    /// indeterminate.
+    static func of(status: String?, progress: [TermProgress]) -> TabBadge {
+        switch status {
+        case "blocked", "error", "working": return .status(status)
+        default: break
+        }
+        guard let ring = lowest(progress) else { return .status(status) }
+        return .ring(ring)
+    }
+
+    static func lowest(_ bars: [TermProgress]) -> TermProgress? {
+        func key(_ p: TermProgress) -> (Int, Int) {
+            (p.state == .error ? 0 : p.percent == nil ? 2 : 1, p.percent ?? 0)
+        }
+        return bars.min { key($0) < key($1) }
+    }
+}
+
+/// A tab's status glyph, observing only that tab's blocks. With `showsProgress` (sidebar tab rows
+/// and overview cards) a program's progress bar shows as a ring where no agent status outranks
+/// it; without, it is exactly `StatusBadge` of the tab's status, as the title bar wants it. Its own
+/// view, so a progress report re-renders this leaf and not the row around it.
+struct WindowStatusBadge: View {
+    let server: ServerConnection
+    let window: WindowInfo
+    let theme: TermTheme
+    var showsProgress = false
+
+    var body: some View {
+        #if DEBUG
+        let _ = RenderCount.bump(.statusLeaves)
+        #endif
+        let status = server.windowStatus(window)
+        if showsProgress {
+            switch TabBadge.of(status: status?.state, progress: bars(status?.state)) {
+            case .status(let state): StatusBadge(state: state, theme: theme)
+            case .ring(let p): ProgressRing(progress: p, theme: theme)
+            }
+        } else {
+            StatusBadge(status: status, theme: theme)
+        }
+    }
+
+    /// The bars of the panes that report no agent status. Read only when no agent status
+    /// outranks them, so a working agent's tab doesn't observe its panes' bars at all.
+    private func bars(_ state: String?) -> [TermProgress] {
+        if state == "blocked" || state == "error" || state == "working" { return [] }
+        return window.allBlocks.compactMap { b in
+            guard server.meta[b.id]?.statuses.isEmpty ?? true else { return nil }
+            return server.progress.value(b.id)
+        }
+    }
+}
+
+/// A program's progress bar (OSC 9;4) in the status glyph's place: an arc over a faint track,
+/// paler while paused, red on error. Busy with no percent is the working dot.
+struct ProgressRing: View {
+    let progress: TermProgress
+    let theme: TermTheme
+    var size: CGFloat = 10
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if progress.state == .indeterminate {
+            PulsingDot(color: theme.chrome.working, size: size * 0.7)
+                .accessibilityLabel("working")
+        } else {
+            let color = progress.state == .error ? theme.chrome.error : theme.chrome.working
+            let fill = CGFloat(progress.percent ?? 100) / 100
+            ZStack {
+                Circle().stroke(color.opacity(0.22), lineWidth: 1.5)
+                Circle()
+                    .trim(from: 0, to: fill)
+                    .stroke(progress.state == .pause ? color.opacity(0.45) : color,
+                            style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .padding(0.75)
+            .frame(width: size, height: size)
+            .animation(reduceMotion ? nil : .linear(duration: 0.2), value: fill)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.spoken(progress))
+        }
+    }
+
+    nonisolated static func spoken(_ p: TermProgress) -> String {
+        let state: String
+        switch p.state {
+        case .pause: state = "paused"
+        case .error: state = "error"
+        case .set, .indeterminate: state = "working"
+        }
+        return p.percent.map { "\(state), \($0) percent" } ?? state
+    }
+}
+
 /// The "working" dot. A symbol effect, not a SwiftUI repeat-forever animation, so many rows stay cheap.
 /// With Reduce Motion on it holds still.
 struct PulsingDot: View {
@@ -366,6 +472,9 @@ struct TabRowLabel: View {
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
+        #if DEBUG
+        let _ = RenderCount.bump(.tabRowLabels)
+        #endif
         let agent = server.windowAgent(window)
         HStack(spacing: 9) {
             ZStack {
@@ -390,7 +499,7 @@ struct TabRowLabel: View {
                         .foregroundStyle(theme.chrome.tertiary)
                         .accessibilityLabel("\(window.allBlocks.count) panes")
                 }
-                StatusBadge(status: server.windowStatus(window), theme: theme)
+                WindowStatusBadge(server: server, window: window, theme: theme, showsProgress: true)
             }
             .fixedSize()
             .layoutPriority(1)

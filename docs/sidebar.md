@@ -101,6 +101,31 @@ any iPhone. Long names truncate at the end on one line, or wrap to two at access
 Badges never wrap: they shrink to glyphs first. Pills stop growing at `accessibility1` and icons
 at `xxxLarge`; text follows every size.
 
+## Progress rings
+
+A program that reports progress with OSC 9;4 (`progress_report`) gets a ring in its tab's status
+place. Only these show it:
+
+| Surface | Shows |
+| --- | --- |
+| Sidebar tab row (`TabRowLabel`) | a ring, except for panes with an OSC 7501 record |
+| Overview card (`TabCard`) | the same |
+| Title bar badge and its swipe neighbour | unchanged: no ring |
+| Folded group pills, Agents list, agent board, Waiting pill, toasts | unchanged |
+
+- A pane with any OSC 7501 record gives no ring: its agent badge stays the signal. Agent status
+  that needs or holds attention (blocked, error, working) outranks a ring for the whole tab, so a
+  tab whose agent works keeps its working dot while another pane builds; a ring outranks done
+  and idle (`TabBadge`). Of several bars: an error, else the lowest percent, else indeterminate.
+- Look: the 10 pt glyph box, a 1.5 pt arc over a track at 22%, in the working color; paused at
+  45%, red on error; busy with no percent is the working dot. The arc moves in 0.2 s, not with
+  Reduce Motion. VoiceOver: "working, 42 percent".
+- A ring goes on `remove`, when the pane's program exits or the pane closes, 15 s after the last
+  report (as Ghostty's bar), and on every reconnect: no method reads a bar back, so a program
+  that reported once loses its ring after a reconnect until it reports again. A sync (which
+  means events may have been missed) clears only the rings with no report since it began; a
+  ring reported during the sync stays.
+
 ## Performance
 
 - One flat `ForEach` over `SidebarOutline.rows`, with ids `m:`, `s:`, `t:` that never change for an
@@ -108,8 +133,12 @@ at `xxxLarge`; text follows every size.
 - Rows (`MachineRow`, `SessionRow`, `TabRow`) are equatable views without closures; actions and
   dialogs go through one `SidebarActions` object. A fold re-renders only the rows it changes.
 - Headers get their tabs from the row, so they don't read `server.views` themselves.
-- Status reads stay in leaf views: a tab's status in `TabRowLabel`, an agent's in `AgentRowLabel`,
-  a closed group's summary in `GroupSummary`. A status change re-renders only them.
+- Status reads stay in leaf views: a tab's status in `WindowStatusBadge`, an agent's in
+  `AgentRowLabel`, a closed group's summary in `GroupSummary`. A status change re-renders only them.
+- Progress bars live in their own per-block boxes (`ServerConnection.progress`, a
+  `BlockBoxTable`), written at most twice a second and only on change, and read only by
+  `WindowStatusBadge`. A flood of reports re-renders that leaf and no row (`-renderCount`,
+  docs/debug-args.md).
 - Agents mode and the waiting count read `ServerConnection.agentKeys`: each agent's place, kind and
   state, recomputed once per main-actor turn and set only when one of those changes. A title,
   directory or status line change in some pane doesn't re-render or re-sort the list. The mode

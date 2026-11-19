@@ -377,7 +377,7 @@ struct WindowScreen: View {
             }
             if let w, let b = activeBlock(w) {
                 let single = !useSplits(w)
-                WaitingPill(visible: single ? [b] : Set(w.orderedBlockIDs), theme: theme, onJump: jump)
+                WaitingPill(visible: VisiblePanes.inTab(w, active: b, single: single), theme: theme, onJump: jump)
                     .layoutPriority(1)
                 if single, w.orderedBlockIDs.count > 1 {
                     PaneDots(ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
@@ -767,7 +767,7 @@ struct TabCard: View {
                                 .monospacedDigit()
                                 .foregroundStyle(theme.chrome.tertiary)
                         }
-                        WindowBadge(server: server, window: window, theme: theme)
+                        WindowBadge(server: server, window: window, theme: theme, showsProgress: true)
                     }
                     .fixedSize()
                     .layoutPriority(1)
@@ -795,13 +795,15 @@ struct TabCard: View {
     }
 }
 
-/// A tab's combined status, observing only that tab's blocks.
+/// A tab's combined status, observing only that tab's blocks. The overview card passes
+/// `showsProgress` for a program's progress ring; the title bar's swipe neighbour doesn't.
 struct WindowBadge: View {
     let server: ServerConnection
     let window: WindowInfo
     let theme: TermTheme
+    var showsProgress = false
     var body: some View {
-        StatusBadge(status: server.windowStatus(window), theme: theme)
+        WindowStatusBadge(server: server, window: window, theme: theme, showsProgress: showsProgress)
     }
 }
 

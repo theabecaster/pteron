@@ -249,6 +249,22 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var pendingMeta: [String: BlockMeta] = [:]
     @ObservationIgnored var statusShownAt: [String: Date] = [:]
     @ObservationIgnored var flushTask: Task<Void, Never>?
+    /// Each pane's progress bar (OSC 9;4). Its own table and flush, never `meta`: a report
+    /// re-renders only the rings that read the pane, and the meta flush keeps its pace.
+    @ObservationIgnored let progress = BlockBoxTable<TermProgress>()
+    /// Reports since the last progress flush, newest per block; `.value` nil is a removal.
+    @ObservationIgnored var pendingProgress: [String: PendingProgress] = [:]
+    /// When each block last reported progress, equal reports included. A bar with no report for
+    /// `progressStale` goes, as Ghostty's does.
+    @ObservationIgnored var progressSeen: [String: ContinuousClock.Instant] = [:]
+    @ObservationIgnored var progressFlushTask: Task<Void, Never>?
+    @ObservationIgnored var progressSweepTask: Task<Void, Never>?
+    /// When each block last lost an OSC 7501 record: its notices count as an agent's a while longer.
+    @ObservationIgnored var statusRemovedAt: [String: ContinuousClock.Instant] = [:]
+    /// Each block's latest notice text and when it came, so a repeat is dropped before it waits.
+    @ObservationIgnored var noticeTexts: [String: NoticeText] = [:]
+    /// How many of each block's notices wait out `noticeWait` now.
+    @ObservationIgnored var noticesInWait: [String: Int] = [:]
 
     static let phaseGrace: Double = 1.0
     /// "Trying…" stays up at least this long, so a fast failure still reads as an attempt.
@@ -285,6 +301,11 @@ final class ServerConnection: Identifiable {
         return keys
     }
 
+    /// A block's newest metadata, buffered or applied, without making it a box.
+    func currentMeta(_ id: String) -> BlockMeta? {
+        pendingMeta[id] ?? metaBoxes[id]?.value
+    }
+
     fileprivate func metaBox(_ id: String) -> BlockMetaBox {
         if let b = metaBoxes[id] { return b }
         let b = BlockMetaBox()
@@ -311,6 +332,8 @@ final class ServerConnection: Identifiable {
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)
         }
+        // No method reads a progress bar back: a dropped report clears it until the next one.
+        router.on(blockEvent: "progress_report") { [weak self] _, bid in self?.dropProgress(bid) }
     }
 
     // MARK: Connection
@@ -321,6 +344,8 @@ final class ServerConnection: Identifiable {
         switch st {
         case .connected:
             connectionSerial += 1
+            // Nothing reads the bars back, and reports from before may be stale.
+            resetProgress()
             capabilities.connected(serial: connectionSerial, revision: control.negotiatedRevision,
                                    serverRevision: control.serverRevision, features: control.features)
             #if DEBUG
@@ -593,6 +618,8 @@ final class ServerConnection: Identifiable {
         if syncing { syncAgain = true; return }
         syncing = true
         let stale = agentsStale
+        // Bars reported from here on are as new as anything this sync reads.
+        let progressMark = ContinuousClock.now
         touchedBlocks = []
         touchedSessions = []
         defer {
@@ -626,6 +653,9 @@ final class ServerConnection: Identifiable {
             // Replace, don't merge. Sessions changed by events during the sync get one more read.
             sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
             views = fresh
+            // A sync means events may have been missed, a bar's removal among them: bars with
+            // no report since the sync began go. A bar reported during the sync is live and stays.
+            clearProgressBoxes(notSeenSince: progressMark)
             // Sessions and tabs are in: the app can show them while metadata loads.
             if !synced, control.state == .connected {
                 synced = true

@@ -100,6 +100,11 @@ builds.
   keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
+- `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
+  ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`) and how many
+  progress values were written (`progressWrites`), to check that progress reports re-render only
+  the status leaf: `xcrun simctl spawn <id> log show --last 1m --predicate 'eventMessage CONTAINS
+  "RENDER_COUNT"'`.
 - `-sidebarFoldBench <cycles>`: 8 s after launch, fold and open every machine and session that many
   times, as a tap does, and log one `SIDEBAR_FOLD_BENCH` line (rows, frames, late frames, worst
   frame, and the worst frame of each fold and each open, sorted). `-sidebarFoldBenchScope session`
