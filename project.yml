@@ -103,6 +103,8 @@ targets:
     platform: iOS
     sources:
       - path: RexDuoTests
+      # The control server the protocol tests run against, shared with the app's tests.
+      - path: Packages/RexKit/Tests/RexKitTests/FakeRexServer.swift
     dependencies:
       - target: RexDuo
     settings:

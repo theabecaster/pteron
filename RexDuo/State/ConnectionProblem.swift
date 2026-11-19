@@ -29,6 +29,11 @@ struct ConnectionProblem: Equatable, Sendable {
         case notAllowed
         /// TLS failed: the certificate couldn't be verified, or the address isn't https.
         case insecure
+        /// The server closed with "no common API revision" and named itself: its Rex is too old
+        /// for this app. Retrying can't help until Rex is updated there.
+        case updateServer
+        /// The same close, naming the client: this app is too old for the server's Rex.
+        case updateApp
         /// The configured address isn't a server address; retrying can't help.
         case badAddress
         case unknown
@@ -36,7 +41,7 @@ struct ConnectionProblem: Equatable, Sendable {
         /// Shown at once, without waiting for a second failure of the same kind.
         var isDecisive: Bool {
             switch self {
-            case .noInternet, .notAllowed, .insecure, .badAddress: return true
+            case .noInternet, .notAllowed, .insecure, .badAddress, .updateServer, .updateApp: return true
             default: return false
             }
         }
@@ -63,6 +68,12 @@ struct ConnectionProblem: Equatable, Sendable {
             case 404, 426, 500...599: return .notAnswering
             default: break
             }
+        }
+        // The two sides share no API revision. A reason that names neither side reads as before.
+        switch f.revisionRefusal {
+        case .updateServer: return .updateServer
+        case .updateClient: return .updateApp
+        case .unclear, nil: break
         }
         // Closed with a policy or auth code after the upgrade.
         if let c = f.closeCode, [1008, 4001, 4003, 4401, 4403].contains(c) { return .notAllowed }

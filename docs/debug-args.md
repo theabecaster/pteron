@@ -10,13 +10,18 @@ builds.
   ones. A missing `.ts.net` host, a closed port or a 403 shows the real offline screens.
 - `-simulateOffline <kind>`: every server shows that offline screen and none connects. Kinds:
   `noInternet`, `offPrivateNetwork`, `hostNotFound`, `notAnswering`, `notAllowed`, `insecure`,
-  `badAddress`, `unknown`. `-simulateRetrying YES` holds Try Again in "Trying…".
+  `updateServer`, `updateApp`, `badAddress`, `unknown`. `-simulateRetrying YES` holds Try Again in "Trying…".
 - `-simulateNetwork offline|offPrivate|onPrivate`: pretend the phone has no path, is off the
   tailnet, or on it, so real errors classify as they would there.
 - `-wakeTest drop|unreachable`: as the app goes to the background, drop the control connection, as
   iOS does a suspended app's sockets on a device (a simulator keeps them). `drop` reconnects on
   the return, inside the wake's grace: no offline screen. `unreachable` fails every attempt from
   then on, so the offline screen shows when the grace runs out (`ForegroundWake`).
+- No argument: a Debug build logs one `CONTROL_API negotiated=<n> server=<n>` line for each
+  control connection it makes, the API revision the server gave it and the newest the server
+  speaks, and one `CONTROL_SYNC creators=read|kept` line for each full sync, which says whether
+  that sync read `block_creator.list`: `xcrun simctl spawn <id> log show --last 1m --predicate
+  'eventMessage CONTAINS "CONTROL_"'`.
 - `-simulateDuo <posture>[,<posture>…]`: lay the root out at that window size with its size classes,
   rough insets and a fake fold (red dashed line). Postures: `unfolded`, `book`, `unfoldedPortrait`,
   `tabletop`, `folded`, `foldedLandscape`, `halfWindow`, `iPhone`, `iPhoneLandscape`,

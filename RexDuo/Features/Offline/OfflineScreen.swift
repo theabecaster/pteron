@@ -38,6 +38,14 @@ struct OfflineCopy: Equatable {
             return OfflineCopy(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify \(server)",
                                message: "The secure connection failed, so Rex DUO stopped there.",
                                hint: "Use the Mac's full https:// address in Settings.")
+        case .updateServer:
+            return OfflineCopy(symbol: "arrow.down.circle", title: "Update Rex on \(server)",
+                               message: "Rex there is too old for this version of Rex DUO.",
+                               hint: "Update Rex on the Mac, then try again.")
+        case .updateApp:
+            return OfflineCopy(symbol: "arrow.down.circle", title: "Update Rex DUO",
+                               message: "\(Server) runs a newer Rex than this version of Rex DUO works with.",
+                               hint: "Update Rex DUO, then try again.")
         case .badAddress:
             return OfflineCopy(symbol: "link", title: "That address won't work",
                                message: "“\(address)” isn't a server address.",
@@ -57,6 +65,8 @@ struct OfflineCopy: Equatable {
         case .notAnswering: return "Not answering"
         case .notAllowed: return "Not allowed in"
         case .insecure: return "Can't verify"
+        case .updateServer: return "Needs a Rex update"
+        case .updateApp: return "Needs an app update"
         case .badAddress: return "Address won't work"
         case .unknown: return "Can't connect"
         }
@@ -82,7 +92,7 @@ enum OfflineAction: Equatable {
         switch kind {
         case .noInternet, .offPrivateNetwork: return .openSettings
         case .hostNotFound, .insecure: return .serverSettings
-        case .badAddress, .notAllowed, .notAnswering, .unknown: return nil
+        case .badAddress, .notAllowed, .notAnswering, .updateServer, .updateApp, .unknown: return nil
         }
     }
 }

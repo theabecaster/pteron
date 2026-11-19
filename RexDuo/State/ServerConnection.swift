@@ -13,6 +13,24 @@ final class BlockMetaBox {
     var value: BlockMeta?
 }
 
+/// The parts of a block's metadata that both a read and a live event can set.
+struct MetaFields: OptionSet {
+    let rawValue: Int
+    static let statuses = MetaFields(rawValue: 1)
+    static let title = MetaFields(rawValue: 2)
+    static let foreground = MetaFields(rawValue: 4)
+
+    /// What a block event of this name sets.
+    static func set(byBlockEvent name: String) -> MetaFields {
+        switch name {
+        case "title_changed": return .title
+        case "process_changed": return .foreground
+        case "program_status_changed", "program_status_removed": return .statuses
+        default: return []
+        }
+    }
+}
+
 /// `server.meta[blockID]` reads and writes a block's metadata through its own observable box.
 @MainActor
 struct MetaTable {
@@ -116,7 +134,7 @@ final class ServerConnection: Identifiable {
     /// In-app agent alerts and haptics; shared by every server.
     @ObservationIgnored let notifier: AgentNotifier
     /// Push registration with this server's Rex DUO Helper.
-    @ObservationIgnored private weak var push: PushRegistrar?
+    @ObservationIgnored weak var push: PushRegistrar?
     @ObservationIgnored let prefs: Prefs
     /// Counts successful connections, so per-connection work (push registration) can tell a new
     /// connection from a resync.
@@ -124,6 +142,12 @@ final class ServerConnection: Identifiable {
     /// Whether this server takes files (`upload_begin`, `download_begin`), asked once per
     /// connection by the first pane that needs it (`PaneFiles.checkSupport`).
     @ObservationIgnored var fileSupport: (serial: Int, supported: Bool)?
+    /// What this server can do: its API revision, its creators, and what probes found.
+    @ObservationIgnored let capabilities = ServerCapabilities()
+    /// What to read again when the server drops an oversized event (`recover(dropped:)`).
+    @ObservationIgnored let router = EventRouter()
+    /// Who answers the server's questions; by default nobody, and each is declined.
+    @ObservationIgnored let prompts = PromptHook()
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
@@ -195,16 +219,27 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored private var refreshScheduled: Set<String> = []
     @ObservationIgnored private var started = false
     // Resync bookkeeping.
-    @ObservationIgnored private var lastSeq = 0
+    @ObservationIgnored var lastSeq = 0
     @ObservationIgnored private var resyncTask: Task<Void, Never>?
-    @ObservationIgnored private var syncing = false
+    @ObservationIgnored var syncing = false
     @ObservationIgnored private var syncAgain = false
-    @ObservationIgnored private var touchedBlocks: Set<String> = []
-    @ObservationIgnored private var touchedSessions: Set<String> = []
+    @ObservationIgnored var touchedBlocks: Set<String> = []
+    @ObservationIgnored var touchedSessions: Set<String> = []
+    @ObservationIgnored var creatorsTask: Task<Void, Never>?
+    /// Counts creator reads, so only the newest one's answer is used.
+    @ObservationIgnored private var creatorsRead = 0
+    /// Blocks whose dropped event waits for one metadata read (`recover(dropped:)`), with their session.
+    @ObservationIgnored var droppedBlocks: [String: String] = [:]
+    @ObservationIgnored var droppedBlocksTask: Task<Void, Never>?
+    /// What live events changed in each block while a metadata read is out, per read, so the
+    /// read's older answer doesn't replace it.
+    @ObservationIgnored var metaReads: [Int: [String: MetaFields]] = [:]
+    @ObservationIgnored private var nextMetaRead = 0
+    @ObservationIgnored var sessionListTask: Task<Void, Never>?
     // Coalescing and status hold.
-    @ObservationIgnored private var pendingMeta: [String: BlockMeta] = [:]
-    @ObservationIgnored private var statusShownAt: [String: Date] = [:]
-    @ObservationIgnored private var flushTask: Task<Void, Never>?
+    @ObservationIgnored var pendingMeta: [String: BlockMeta] = [:]
+    @ObservationIgnored var statusShownAt: [String: Date] = [:]
+    @ObservationIgnored var flushTask: Task<Void, Never>?
 
     static let phaseGrace: Double = 1.0
     /// "Trying…" stays up at least this long, so a fast failure still reads as an attempt.
@@ -277,6 +312,12 @@ final class ServerConnection: Identifiable {
         switch st {
         case .connected:
             connectionSerial += 1
+            capabilities.connected(serial: connectionSerial, revision: control.negotiatedRevision,
+                                   serverRevision: control.serverRevision, features: control.features)
+            #if DEBUG
+            // To check on a device or simulator which revision a server gave this connection.
+            NSLog("CONTROL_API negotiated=%d server=%d", control.negotiatedRevision, control.serverRevision)
+            #endif
             show(.online)
             endRetry()
         case .connecting:
@@ -443,7 +484,8 @@ final class ServerConnection: Identifiable {
             endWake()
         }
         gate.networkChanged()
-        guard started, control.state != .connected else { return }
+        // A server that refused this app's API revision says the same on any network.
+        guard started, control.state != .connected, !control.retryStopped else { return }
         control.kick()
     }
 
@@ -532,6 +574,16 @@ final class ServerConnection: Identifiable {
             if let st = r.obj("server_status"), let ts = st.obj("tailscale") {
                 hostName = ts.str("dns_name")
             }
+            capabilities.status(instance: r.obj("server_status")?.str("instance_id"),
+                                hostID: r.obj("server_status")?.str("host_id"))
+            // Once per server process and revision, not on every sync: the list is about 70 KB.
+            // Not awaited: what the sync shows doesn't wait for a list only entry points read.
+            let readsCreators = capabilities.needsCreatorRead
+            if readsCreators { loadCreators() }
+            #if DEBUG
+            // One line per sync, to count syncs and creator reads on a device or simulator.
+            NSLog("CONTROL_SYNC creators=%@", readsCreators ? "read" : "kept")
+            #endif
             let hidden = hiddenSessions()
             let list = (r.obj("attach_all")?.arr("sessions") ?? []).map {
                 SessionEntry(id: $0.str("session_id") ?? "", label: $0.str("label") ?? "")
@@ -574,6 +626,28 @@ final class ServerConnection: Identifiable {
     private func fetchView(_ sessionID: String) async -> SessionView? {
         guard let r = try? await control.call("session.attach", ["session_id": sessionID]), let v = r.obj("view") else { return nil }
         return SessionView(v)
+    }
+
+    /// Reads `block_creator.list` into `capabilities`: on the first sync with a server process at
+    /// a revision, and when the server says the creators or the hosts changed. Of a burst of
+    /// calls only the newest one's answer is used.
+    func loadCreators() {
+        let serial = connectionSerial
+        creatorsRead += 1
+        let read = creatorsRead
+        creatorsTask = Task { [weak self] in
+            guard let self else { return }
+            let r = try? await self.control.call("block_creator.list")
+            guard read == self.creatorsRead else { return }
+            self.creatorsTask = nil
+            // A read the connection dropped under says nothing about the server: what is known
+            // stays, and the next sync asks again.
+            guard serial == self.connectionSerial, self.control.state == .connected else {
+                self.capabilities.creatorReadLost()
+                return
+            }
+            self.capabilities.creatorsLoaded(r, serial: serial)
+        }
     }
 
     func loadHosts() async {
@@ -652,17 +726,23 @@ final class ServerConnection: Identifiable {
         return .some(r.obj("foreground").map(Self.processLabel))
     }
 
-    /// Reads status, title and process for the blocks and replaces what we had for them.
-    private func loadMeta(_ blocks: [(session: String, block: String)]) async {
+    /// Reads status, title and process for the blocks and replaces what we had for them. What a
+    /// live event changed while the read was out is newer than the read's answer and is kept.
+    func loadMeta(_ blocks: [(session: String, block: String)]) async {
+        nextMetaRead += 1
+        let read = nextMetaRead
+        metaReads[read] = [:]
+        defer { metaReads[read] = nil }
         await withTaskGroup(of: (String, BlockMeta?, String??, String??).self) { g in
             for (sid, bid) in blocks {
                 g.addTask { await self.readMeta(sid, bid) }
             }
             for await (bid, statuses, title, fg) in g where !touchedBlocks.contains(bid) {
+                let live = metaReads[read]?[bid] ?? []
                 var cur = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
-                if let statuses { cur.statuses = statuses.statuses }
-                if let title { cur.title = title }
-                if let fg { cur.foreground = fg }
+                if let statuses, !live.contains(.statuses) { cur.statuses = statuses.statuses }
+                if let title, !live.contains(.title) { cur.title = title }
+                if let fg, !live.contains(.foreground) { cur.foreground = fg }
                 pendingMeta[bid] = nil
                 statusShownAt[bid] = Date()
                 meta[bid] = cur
@@ -676,181 +756,6 @@ final class ServerConnection: Identifiable {
             return (a.trimmingCharacters(in: CharacterSet(charactersIn: "-")) as NSString).lastPathComponent
         }
         return fg.str("name") ?? ""
-    }
-
-    // MARK: Events
-
-    private func receive(seq: Int, event: JSONObject) {
-        if seq > 0 {
-            // seq counts events on this connection from 1, with no gaps. A jump means we missed some.
-            if seq > 1, lastSeq > 0, seq > lastSeq + 1 { scheduleResync() }
-            lastSeq = seq
-        }
-        handle(event: event)
-    }
-
-    private func handle(event: JSONObject) {
-        let type = event.str("type") ?? ""
-        let p = event.obj("payload") ?? [:]
-        switch type {
-        case "session_created":
-            if let s = p.obj("session"), let id = s.str("session_id"), !hiddenSessions().contains(id) {
-                if !sessions.contains(where: { $0.id == id }) { sessions.append(SessionEntry(id: id, label: s.str("label") ?? "")) }
-                touchedSessions.insert(id)
-                Task { await attach(id) }
-            }
-        case "session_destroyed":
-            let id = p.str("session_id") ?? p.obj("session")?.str("session_id") ?? ""
-            sessions.removeAll { $0.id == id }
-            views[id] = nil
-        case "session_moved":
-            Task {
-                if let r = try? await control.call("session.list") {
-                    let order = r.arr("sessions").compactMap { $0.str("session_id") }
-                    sessions.sort { (order.firstIndex(of: $0.id) ?? 0) < (order.firstIndex(of: $1.id) ?? 0) }
-                }
-            }
-        case "hosts_changed":
-            Task { await loadHosts() }
-        case "keymap_changed":
-            keymap.configChanged(hash: p.str("hash"))
-        case "client_joined":
-            if p.obj("client")?.obj("info")?.str("name") == RelayLookup.clientName { push?.relayChanged(self) }
-        case "client_left":
-            if let id = p.str("client_id"), push?.isRelay(id, on: self) == true { push?.relayChanged(self) }
-        case "session_event":
-            guard let sid = p.str("session_id"), let ev = p.obj("event") else { return }
-            handle(sessionID: sid, event: ev)
-        default:
-            break
-        }
-    }
-
-    private func handle(sessionID sid: String, event ev: JSONObject) {
-        let type = ev.str("type") ?? ""
-        let p = ev.obj("payload") ?? [:]
-        if type == "block_event", let bid = p.str("block_id") {
-            setupSignals?(.block(session: sid, block: bid, name: p.str("name") ?? "", payload: p.obj("payload") ?? [:]))
-        }
-        // The installer's session has no row, no badge and no toast.
-        guard !hiddenSessions().contains(sid) else { return }
-        switch type {
-        case "session_view_changed":
-            let rev = p.int("revision") ?? Int.max
-            if rev > (views[sid]?.revision ?? -1) { touchedSessions.insert(sid); refreshView(sid) }
-        case "session_label_changed":
-            if let l = p.str("label") {
-                views[sid]?.label = l
-                if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].label = l }
-            }
-        case "block_created":
-            touchedSessions.insert(sid)
-            refreshView(sid)
-            if let bid = p.str("block_id") {
-                Task { try? await Task.sleep(nanoseconds: 300_000_000); await loadMeta([(sid, bid)]) }
-            }
-        case "block_event":
-            handleBlockEvent(sessionID: sid, p)
-        case "window_created", "window_closed", "window_label_changed", "active_window_changed", "block_closed", "block_owner_changed":
-            touchedSessions.insert(sid)
-            refreshView(sid)
-        default:
-            break
-        }
-    }
-
-    private func handleBlockEvent(sessionID sid: String, _ p: JSONObject) {
-        guard let bid = p.str("block_id") else { return }
-        let name = p.str("name") ?? ""
-        let e = p.obj("payload") ?? [:]
-        var m = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
-        switch name {
-        case "title_changed":
-            m.title = e.str("title")
-        case "pwd_changed":
-            m.pwd = e.str("pwd")
-        case "process_changed":
-            if let fg = e.obj("foreground") { m.foreground = Self.processLabel(fg) } else { m.foreground = nil }
-        case "program_status_changed":
-            let id = e.str("id") ?? ""
-            let prev = m.statuses[id]?.state
-            if let rec = e.obj("record") {
-                let st = ProgramStatus(rec)
-                m.statuses[id] = st
-                if st.state == "blocked", prev != "blocked" { notifyBlocked(sid, bid, st, m) }
-            }
-        case "program_status_removed":
-            for id in (e["ids"] as? [String]) ?? [] { m.statuses[id] = nil }
-        case "bell":
-            m.bellAt = Date()
-        case "child_exited":
-            m.exited = true
-        case "desktop_notification":
-            // No banner in the app; the helper pushes these while the app is in the background.
-            return
-        default:
-            return
-        }
-        if syncing { touchedBlocks.insert(bid) }
-        pendingMeta[bid] = m
-        scheduleFlush(after: Self.coalesce)
-    }
-
-    // MARK: Coalescing
-
-    private func scheduleFlush(after delay: Double) {
-        guard flushTask == nil else { return }
-        flushTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.01) * 1_000_000_000))
-            self?.flush()
-        }
-    }
-
-    /// Applies the buffered block updates in one go. A status that changed less than `minStatusHold`
-    /// ago stays on screen a little longer, so badges don't flicker; a new "blocked" shows at once.
-    private func flush() {
-        flushTask = nil
-        let now = Date()
-        var wait: Double?
-        for (bid, m) in pendingMeta {
-            let old = meta[bid]?.topStatus?.state
-            let new = m.topStatus?.state
-            if old != new {
-                let age = now.timeIntervalSince(statusShownAt[bid] ?? .distantPast)
-                if new != "blocked", age < Self.minStatusHold {
-                    let rest = Self.minStatusHold - age
-                    wait = min(wait ?? rest, rest)
-                    continue
-                }
-                statusShownAt[bid] = now
-            }
-            meta[bid] = m
-            pendingMeta[bid] = nil
-        }
-        if let wait { scheduleFlush(after: wait) }
-    }
-
-    private func notifyBlocked(_ sid: String, _ bid: String, _ st: ProgramStatus, _ m: BlockMeta) {
-        let who = m.agentKind?.displayName ?? st.app ?? "A program"
-        let why: String
-        switch st.waitingFor {
-        case "permission": why = "needs permission"
-        case "question": why = "has a question"
-        case "auth": why = "needs a password"
-        default: why = "is waiting for you"
-        }
-        let place = label(for: sid, block: bid)
-        notifier.post(AgentAlert(serverID: id, sessionID: sid, windowID: views[sid]?.windowContaining(block: bid)?.id,
-                                 blockID: bid, title: "\(who) \(why)",
-                                 body: [place.isEmpty ? nil : place, st.text].compactMap { $0 }.joined(separator: " — "),
-                                 date: Date()))
-        notifier.waitingHaptic()
-    }
-
-    func label(for sid: String, block bid: String) -> String {
-        let s = views[sid]
-        let w = s?.windowContaining(block: bid)
-        return [s?.label, w?.label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " › ")
     }
 
     // MARK: Actions

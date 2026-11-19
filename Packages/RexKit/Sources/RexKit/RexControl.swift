@@ -29,7 +29,10 @@ public final class RexControl {
         case failed(ConnectionFailure)
     }
 
-    public static let apiRevision = 13
+    /// The newest API revision this client speaks. The hello sends it with no `api_min_revision`,
+    /// so a server on any revision from 0 up to this one connects, and a newer server translates
+    /// down to it.
+    public nonisolated static let apiRevision = 18
 
     /// The server address as configured.
     public let address: String
@@ -44,6 +47,18 @@ public final class RexControl {
     }
     public private(set) var clientID: String?
     public private(set) var maxMessageBytes = 65536
+    /// The API revision this connection uses, from the latest welcome (`api_revision`; a server
+    /// that leaves it out speaks revision 0). 0 before the first welcome.
+    public private(set) var negotiatedRevision = 0
+    /// The newest revision the server speaks (`api_server_revision`; left out means 0).
+    public private(set) var serverRevision = 0
+    /// Optional behaviors the server lists in its welcome. Names this build doesn't know are
+    /// kept and never looked at.
+    public private(set) var features: Set<String> = []
+    /// The server refused the connection because the two sides share no API revision, and retries
+    /// have stopped: nothing changes until Rex or the app is updated. `kick()` and `wake()` (the
+    /// user asked, or the app came back) still try once.
+    public private(set) var retryStopped = false
 
     public var onEvent: ((_ seq: Int, _ event: JSONObject) -> Void)?
     public var onStateChange: ((State) -> Void)?
@@ -149,6 +164,7 @@ public final class RexControl {
     /// records it and schedules the next attempt; the throw only tells the caller.
     private func openSocket() async throws {
         guard let wsBase else { throw ConnectionFailure.invalidAddress(address) }
+        retryStopped = false
         // An attempt still waiting for its welcome is superseded by this one.
         resumeWelcome(throwing: RexError.local("superseded"))
         task?.cancel()
@@ -168,19 +184,7 @@ public final class RexControl {
         task = t
         t.resume()
 
-        var hello: JSONObject = [
-            "type": "hello",
-            "api_revision": Self.apiRevision,
-            "client": [
-                "kind": client.kind,
-                "platform": client.platform,
-                "name": client.name,
-                "version": client.version,
-                "label": client.label,
-            ] as JSONObject,
-        ]
-        if let tok = reconnectToken { hello["reconnect_token"] = tok }
-        let helloText = JSONCodec.encode(hello)
+        let helloText = JSONCodec.encode(Self.hello(client: client, reconnectToken: reconnectToken))
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             welcomeWaiter = c
             receiveLoop(t, gen: gen)
@@ -197,17 +201,38 @@ public final class RexControl {
         startPings(gen: gen)
     }
 
+    /// The hello: the newest revision this client speaks and no minimum, so the server picks the
+    /// newest one both sides have.
+    nonisolated static func hello(client: ClientInfo, reconnectToken: String?) -> JSONObject {
+        var hello: JSONObject = [
+            "type": "hello",
+            "api_revision": apiRevision,
+            "client": [
+                "kind": client.kind,
+                "platform": client.platform,
+                "name": client.name,
+                "version": client.version,
+                "label": client.label,
+            ] as JSONObject,
+        ]
+        if let reconnectToken { hello["reconnect_token"] = reconnectToken }
+        return hello
+    }
+
     private func resumeWelcome(throwing error: Error) {
         guard let w = welcomeWaiter else { return }
         welcomeWaiter = nil
         w.resume(throwing: error)
     }
 
-    /// The failure plus what the socket task knows: the upgrade's HTTP status and the close code.
+    /// The failure plus what the socket task knows: the upgrade's HTTP status, the close code and
+    /// the reason sent with it.
     private func failure(_ error: Error, _ t: URLSessionWebSocketTask?) -> ConnectionFailure {
         let status = (t?.response as? HTTPURLResponse)?.statusCode
         let close = t.flatMap { $0.closeCode == .invalid ? nil : $0.closeCode.rawValue }
-        return ConnectionFailure(error, httpStatus: status == 101 ? nil : status, closeCode: close)
+        let reason = close == nil ? nil : t?.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+        return ConnectionFailure(error, httpStatus: status == 101 ? nil : status, closeCode: close,
+                                 closeReason: reason?.isEmpty == true ? nil : reason)
     }
 
     private func startPings(gen: Int) {
@@ -261,6 +286,14 @@ public final class RexControl {
         resumeWelcome(throwing: failure)
         state = .failed(failure)
         guard wantConnected else { return }
+        // No common API revision: the next attempt would be refused the same way, so stop here.
+        // Only that reason stops; any other close, 1008 `event backlog exceeded` included, retries.
+        if failure.revisionRefusal != nil {
+            retryStopped = true
+            retryTask?.cancel()
+            retryTask = nil
+            return
+        }
         if Date() < retryAtOnceUntil {
             retryAtOnceUntil = .distantPast
             scheduleRetry(after: 0)
@@ -382,6 +415,11 @@ public final class RexControl {
                 reconnectToken = c.str("reconnect_token")
             }
             if let lim = m.obj("limits"), let mx = lim.int("max_message_bytes") { maxMessageBytes = mx }
+            // Every welcome, a resumed one included: the server may have been updated or
+            // downgraded since the last. Set before `state`, whose observers read them.
+            negotiatedRevision = m.int("api_revision") ?? 0
+            serverRevision = m.int("api_server_revision") ?? 0
+            features = Set((m["features"] as? [Any])?.compactMap { $0 as? String } ?? [])
             state = .connected
             welcomeWaiter?.resume()
             welcomeWaiter = nil
@@ -410,6 +448,13 @@ public final class RexControl {
     public func callAny(_ method: String, _ payload: JSONObject? = nil) async throws -> Any {
         // `neverSent`: a caller that must not repeat a request (typed input) may send this one again.
         guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
+        // A method newer than this connection's revision: the answer is known, so don't ask.
+        let needs = RexAPI.minimum(for: method)
+        if negotiatedRevision < needs {
+            var e = RexError(code: "revision_too_low", message: "\(method) needs API revision \(needs).", status: 400)
+            e.neverSent = true
+            throw e
+        }
         nextID += 1
         let id = String(nextID)
         var req: JSONObject = ["type": "request", "id": id, "method": method]
@@ -430,6 +475,19 @@ public final class RexControl {
             }
         }
         return reply.value
+    }
+
+    /// Sends a request and doesn't wait for its answer, which is dropped when it comes. The
+    /// message is handed to the socket before this returns, in the caller's turn of the main
+    /// actor. For answers the server asked for (`client.reply`), where nothing can be done about
+    /// a failure. Returns false when there is no connection to send on.
+    @discardableResult
+    public func post(_ method: String, _ payload: JSONObject) -> Bool {
+        guard let t = task, state == .connected else { return false }
+        nextID += 1
+        let req: JSONObject = ["type": "request", "id": String(nextID), "method": method, "payload": payload]
+        t.send(.string(JSONCodec.encode(req))) { _ in }
+        return true
     }
 
     /// Calls a block method: payload is `{session_id, block_id, args}`.

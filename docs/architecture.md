@@ -17,10 +17,12 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 ## Data flow
 
 1. `RexDuoApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
-2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl` and a `KeymapStore`.
+2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions).
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
-   loads block metadata (program status, title, process), hosts and the keymap.
-4. Server events update `ServerConnection`. Block events are coalesced (about 150 ms) and a status
+   loads block metadata (program status, title, process), hosts and the keymap. The first
+   sync with a server process also reads the creator list.
+4. Server events update `ServerConnection` (`ServerConnection+Events.swift`). For an event the
+   server had to drop, only what it would have changed is read again. Block events are coalesced (about 150 ms) and a status
    stays on screen at least a second, except a new "blocked", which shows at once. Each block's
    metadata sits in its own observable box, so one pane's change re-renders only its readers.
 5. User actions call `ServerConnection` methods, then re-read the session's view. The server's

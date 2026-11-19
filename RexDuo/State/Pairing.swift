@@ -130,6 +130,14 @@ struct PairingProblem: Equatable {
             return PairingProblem(symbol: "lock", title: "Not allowed in",
                                   message: "That computer didn't let this iPhone in. It may belong to a different account.",
                                   actions: [])
+        case .updateServer:
+            return PairingProblem(symbol: "arrow.down.circle", title: "Update Rex on that computer",
+                                  message: "Rex there is too old for this version of Rex DUO. Update Rex on that computer, then try again.",
+                                  actions: [.tryAgain])
+        case .updateApp:
+            return PairingProblem(symbol: "arrow.down.circle", title: "Update Rex DUO",
+                                  message: "That computer runs a newer Rex than this version of Rex DUO works with. Update Rex DUO, then try again.",
+                                  actions: [.tryAgain])
         case .insecure:
             return PairingProblem(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify that computer",
                                   message: "The secure connection to that computer failed, so Rex DUO stopped there.",
