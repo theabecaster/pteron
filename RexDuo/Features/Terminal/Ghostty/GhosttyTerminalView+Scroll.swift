@@ -31,6 +31,11 @@ extension GhosttyTerminalView {
     /// reach it.
     var scrollPanRecognizer: UIPanGestureRecognizer { scroller.surface.panGestureRecognizer }
 
+    /// A touch at `now` would catch a scroll that is moving or has just stopped.
+    func touchStopsScroll(now: CFTimeInterval) -> Bool {
+        TerminalScrollTouch.stopsScroll(now: now, moving: scroller.userMoving, lastMoved: scroller.lastUserMove)
+    }
+
     /// Scrolls the scrollback a page. On an alternate screen there is none, so the program gets
     /// Page Up or Page Down instead. The screen and the key's bytes come from
     /// the input mirror, so a key press never waits for the terminal lock.

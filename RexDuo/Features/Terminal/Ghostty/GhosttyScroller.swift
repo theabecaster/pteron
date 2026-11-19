@@ -59,6 +59,10 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// The surface size the content size and offset were last set for.
     private var contentLaidOutFor = CGSize.zero
     private var animating = false
+    /// When a finger or the scroll's momentum last moved the scrollback (`TerminalScrollTouch`).
+    private(set) var lastUserMove: CFTimeInterval?
+    /// The scrollback is moving under a finger or by its momentum.
+    var userMoving: Bool { surface.isDragging || surface.isDecelerating }
 
     private var dragAccumulator = GhosttyWheelAccumulator()
     private var pointerAccumulator = GhosttyWheelAccumulator()
@@ -179,6 +183,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         // sent on, it would leave a taller view scrolled into history. `layoutChanged` puts the
         // offset where the terminal is.
         guard !applying, surface.bounds.size == contentLaidOutFor else { return }
+        if userMoving { lastUserMove = CACurrentMediaTime() }
         if measures {
             let start = CACurrentMediaTime()
             sendOffset()

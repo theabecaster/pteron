@@ -15,6 +15,9 @@ struct TerminalTapFacts: Equatable {
     var shift = false
     /// The edit menu (Copy, Paste) was on screen.
     var menuVisible = false
+    /// The finger came down on scrollback that was moving or had just stopped
+    /// (`TerminalScrollTouch`): the touch stops or ends a scroll.
+    var stopsScroll = false
 }
 
 /// The one thing a single-finger tap on a pane does.
@@ -44,6 +47,8 @@ enum TerminalTapOutcome: Equatable {
 /// only that:
 ///
 /// 1. On a selection handle: the handle's.
+/// 1a. The touch stopped a scroll: nothing. Someone reading catches a flick with a tap, and that
+///    tap must not raise the keyboard, open a link, show Paste or click in the program.
 /// 2. The second or third tap of a run: select the word or the line. (The first tap already did
 ///    what a single tap does.)
 /// 3. The keyboard was not up on this pane: focus it. Never a click, a link or a menu, so the
@@ -62,6 +67,7 @@ enum TerminalTapDecision {
     static func outcome(_ facts: TerminalTapFacts, engineUses: () -> Bool, tracksMouse: () -> Bool,
                         nearCursor: () -> Bool) -> TerminalTapOutcome {
         if facts.onHandle { return .handle }
+        if facts.stopsScroll { return .nothing }
         if facts.tapCount == 2 { return .select(line: false) }
         if facts.tapCount >= 3 { return .select(line: true) }
         if !facts.keyboardUp { return .focus(clearsSelection: facts.hadSelection) }
@@ -71,5 +77,31 @@ enum TerminalTapDecision {
         if tracksMouse() { return .programClick }
         if !facts.menuVisible, nearCursor() { return .pasteMenu }
         return .nothing
+    }
+}
+
+/// Touch rules that keep reading undisturbed: a tap that catches a scroll, and a drag that is
+/// only a little sideways.
+enum TerminalScrollTouch {
+    /// How long after the scrollback last moved under a finger or by its own momentum a new touch
+    /// still counts as catching it.
+    static let settle: CFTimeInterval = 0.3
+
+    /// True when a touch at `now` stops or ends a scroll: the scrollback is still moving
+    /// (`moving`), or it moved less than `settle` ago (`lastMoved`, the time of its last
+    /// user-driven move).
+    static func stopsScroll(now: CFTimeInterval, moving: Bool, lastMoved: CFTimeInterval?) -> Bool {
+        if moving { return true }
+        guard let lastMoved else { return false }
+        return now - lastMoved < settle
+    }
+
+    /// How much more sideways than up or down a drag must be to swipe panes (or pan the canvas)
+    /// instead of scrolling: about 27° from horizontal. A thumb's reading flick arcs, and a looser
+    /// ratio turned some of them into pane swipes.
+    static let horizontalRatio: CGFloat = 2
+
+    static func isHorizontal(dx: CGFloat, dy: CGFloat) -> Bool {
+        abs(dx) > abs(dy) * horizontalRatio
     }
 }

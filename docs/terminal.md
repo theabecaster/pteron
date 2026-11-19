@@ -111,10 +111,14 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 - Tap: focus the pane, clear a selection, raise the keyboard on the first tap. On a focused pane:
   open the link under the finger, or move the shell's cursor on its prompt
   (`Ghostty/GhosttyTap.swift`).
+  A tap that catches moving scrollback, or lands within 0.3 s of it stopping, only stops it: no
+  keyboard, link, Paste menu or click (`TerminalScrollTouch`). Reading with flicks stays reading.
 - Vertical drag: scrolls the scrollback (a native scroll view). On the alternate screen or when
   the program tracks the mouse it sends wheel reports instead, and arrow keys on the alternate
   screen with mode 1007 and no tracking.
-- Horizontal swipe: next or previous pane. Swipe on the title bar: next or previous tab.
+- Horizontal swipe: next or previous pane, only when the drag is at least twice as sideways as up or
+  down and doesn't catch moving scrollback; anything less scrolls. Swipe on the title bar: next or
+  previous tab.
 - Two-finger tap: zoom the pane (phone-only zoom, see `PhoneState`).
 - Long press: select a word (haptic, loupe), drag to extend; on release copy (copy-on-select, with a
   shimmer and a confirming haptic), show handles to adjust with, and Copy / Paste / Select All.

@@ -152,4 +152,38 @@ final class TerminalTapTests: XCTestCase {
         XCTAssertEqual(host.tap(at: CGPoint(x: 20, y: 20), shift: true, keyboardUp: true, hadSelection: false), .nothing)
         XCTAssertEqual(spy.sent, [])
     }
+
+    /// A tap that catches a scroll does nothing at all, even where it would focus, open a link,
+    /// click in a mouse program or show Paste. Only a handle comes before it.
+    func testATapThatStopsAScrollDoesNothing() {
+        let stops = [
+            Facts(keyboardUp: false, stopsScroll: true),
+            Facts(hadSelection: true, stopsScroll: true),
+            Facts(tapCount: 2, stopsScroll: true),
+            Facts(stopsScroll: true),
+        ]
+        for facts in stops {
+            let (outcome, asked) = decide(facts, engine: true, mouse: true, cursor: true)
+            XCTAssertEqual(outcome, .nothing, "\(facts)")
+            XCTAssertEqual(asked, [], "a tap that stops a scroll asks the engine nothing")
+        }
+        XCTAssertEqual(decide(Facts(onHandle: true, stopsScroll: true)).outcome, .handle)
+    }
+
+    func testATapCatchesAScrollWhileItMovesAndJustAfter() {
+        typealias Rule = TerminalScrollTouch
+        XCTAssertTrue(Rule.stopsScroll(now: 10, moving: true, lastMoved: nil))
+        XCTAssertTrue(Rule.stopsScroll(now: 10, moving: false, lastMoved: 10 - Rule.settle + 0.01))
+        XCTAssertFalse(Rule.stopsScroll(now: 10, moving: false, lastMoved: 10 - Rule.settle - 0.01))
+        XCTAssertFalse(Rule.stopsScroll(now: 10, moving: false, lastMoved: nil))
+    }
+
+    /// A reading flick arcs sideways; only a clearly sideways drag swipes panes.
+    func testOnlyAClearlySidewaysDragIsHorizontal() {
+        typealias Rule = TerminalScrollTouch
+        XCTAssertTrue(Rule.isHorizontal(dx: 100, dy: 0))
+        XCTAssertTrue(Rule.isHorizontal(dx: -100, dy: 40))
+        XCTAssertFalse(Rule.isHorizontal(dx: 100, dy: 60), "about 31 degrees off horizontal scrolls")
+        XCTAssertFalse(Rule.isHorizontal(dx: 30, dy: -100))
+    }
 }

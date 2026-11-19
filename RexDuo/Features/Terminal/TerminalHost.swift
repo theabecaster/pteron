@@ -115,7 +115,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var pinchBase: CGFloat = 0
     /// What the pane knew when the latest touch went down: a tap is decided on this, not on
     /// what the tap itself has changed by the time it is recognized.
-    private var touch = (keyboardUp: false, hadSelection: false)
+    private var touch = (keyboardUp: false, hadSelection: false, stopsScroll: false)
     /// Copy and Paste at the selection, after a long press.
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
     private var menuTarget: CGRect?
@@ -310,7 +310,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func isHorizontal(_ pan: UIPanGestureRecognizer) -> Bool {
         var d = pan.translation(in: self)
         if abs(d.x) + abs(d.y) < 1 { d = pan.velocity(in: self) }
-        return abs(d.x) > abs(d.y) * 1.2
+        return TerminalScrollTouch.isHorizontal(dx: d.x, dy: d.y)
     }
 
     private var canvasOverflowsX: Bool { zoomer.contentSize.width > zoomer.bounds.width + 1 }
@@ -339,6 +339,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     private func swipeShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
         guard onSwipe != nil, !selecting, isHorizontal(pan) else { return false }
+        // A drag that catches moving scrollback goes on scrolling it.
+        if term.touchStopsScroll(now: CACurrentMediaTime()) { return false }
         if !fitted && canvasOverflowsX { return false }
         // Leave the screen's left edge to the system's swipe back.
         if let w = window {
@@ -358,7 +360,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
         if g === tapGR {
-            self.touch = (keyboardUp, term.hasActiveSelection)
+            self.touch = (keyboardUp, term.hasActiveSelection, term.touchStopsScroll(now: CACurrentMediaTime()))
             touchIsPointer = touch.type == .indirectPointer
             // SELECTION UI: a long press may follow; wake the haptics now so its start has no lag.
             if !touchIsPointer { selectionUI.touchDown() }
@@ -375,16 +377,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// from what the pane knew when the finger went down.
     @objc private func tapped() {
         tap(at: tapGR.location(in: term), shift: tapGR.modifierFlags.contains(.shift),
-            keyboardUp: touch.keyboardUp, hadSelection: touch.hadSelection)
+            keyboardUp: touch.keyboardUp, hadSelection: touch.hadSelection, stopsScroll: touch.stopsScroll)
     }
 
     /// Decides a tap at `point` (engine view coordinates) and does the one thing it means.
     @discardableResult
-    func tap(at point: CGPoint, shift: Bool, keyboardUp: Bool, hadSelection: Bool) -> TerminalTapOutcome {
+    func tap(at point: CGPoint, shift: Bool, keyboardUp: Bool, hadSelection: Bool,
+             stopsScroll: Bool = false) -> TerminalTapOutcome {
         // SELECTION UI: handles, and which tap of a double or triple tap this is.
         let counted = selectionUI.countTap(at: point)
         let facts = TerminalTapFacts(onHandle: counted.onHandle, tapCount: counted.count, keyboardUp: keyboardUp,
-                                     hadSelection: hadSelection, shift: shift, menuVisible: selectionUI.menuVisible)
+                                     hadSelection: hadSelection, shift: shift, menuVisible: selectionUI.menuVisible,
+                                     stopsScroll: stopsScroll)
         let outcome = TerminalTapDecision.outcome(
             facts,
             // TAP HOOK (links, prompts): the engine opens the link or moves the shell's cursor.
