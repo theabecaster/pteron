@@ -15,6 +15,7 @@ use crate::config::default_state_dir;
 use crate::devices::{read_json, write_json};
 use crate::net::{Exchange, Url};
 use crate::util::{base64, base64_decode, iso8601, now, now_iso, parse_iso8601, sha256_hex, Json};
+use crate::brand::BEACON;
 use crate::{gateway, info, service};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -51,14 +52,24 @@ const LOCK_MAX_AGE: Duration = Duration::from_secs(30 * 60);
 const UPDATE_KEY_FILE: &str = include_str!("../update-key.pub");
 
 /// The Mac app's folder, and the name an installed app waits under while its replacement starts.
-pub const APP_NAME: &str = "Rex DUO Beacon.app";
-const PREVIOUS_APP: &str = "Rex DUO Beacon.previous.app";
-/// The same two under the app's earlier name, Rex DUO Helper. An app installed under them is
-/// the installed app; it moves to the names above (src/rename.rs).
-pub const OLD_APP_NAME: &str = "Rex DUO Helper.app";
-pub const OLD_PREVIOUS_APP: &str = "Rex DUO Helper.previous.app";
+pub const APP_NAME: &str = crate::brand::APP_FOLDER;
+const PREVIOUS_APP: &str = crate::brand::PREVIOUS_FOLDER;
+/// The same two under the app's earlier names, newest first. An app installed under one of
+/// them is the installed app; it moves to the names above (src/rename.rs). Updaters that
+/// shipped look for these folders, so a release keeps a zip for each (Relay/release.sh).
+pub const EARLIER_APP_NAMES: [&str; 2] = ["Rex DUO Beacon.app", "Rex DUO Helper.app"];
+pub const EARLIER_PREVIOUS_APPS: [&str; 2] = ["Rex DUO Beacon.previous.app", "Rex DUO Helper.previous.app"];
+
+/// True for a folder name the Mac app may have, in a download or where it is installed: its
+/// name or one of the earlier ones. The one list of them; Relay/setup.sh has the same.
+pub fn allowed_app_name(name: &std::ffi::OsStr) -> bool {
+    name == APP_NAME || EARLIER_APP_NAMES.iter().any(|earlier| name == *earlier)
+}
 pub(crate) const BUNDLE_ID: &str = "dev.abrahamgonzalez.rexduo.helper";
 const TEAM_ID: &str = "R2PVQ496X7";
+/// How the folder starts in which a new version that did not start waits to be deleted, beside
+/// the app. The process id and `.app` follow. It names no product, so it stays as it is.
+pub(crate) const FAILED_PREFIX: &str = ".beacon-failed-";
 const LOCK_FILE: &str = "update.lock";
 const RESULT_FILE: &str = "update_result.json";
 /// How the last check from the command line ended, in the state folder, for the service.
@@ -148,17 +159,17 @@ impl Problem {
     pub fn sentence(self) -> &'static str {
         match self {
             Problem::NotSetUp => "Updates are not set up in this build.",
-            Problem::CannotUpdate => "This copy of Rex DUO Beacon can't update itself.",
+            Problem::CannotUpdate => concat!("This copy of ", crate::beacon_name!(), " can't update itself."),
             Problem::Unreachable => "The release list could not be downloaded.",
             Problem::Rejected => "The release list was not accepted.",
             Problem::Expired => "The release list is out of date.",
-            Problem::Replayed => "The release list is older than one Rex DUO Beacon has already seen.",
+            Problem::Replayed => concat!("The release list is older than one ", crate::beacon_name!(), " has already seen."),
             Problem::NoBuild => "The newest version has no build for this computer.",
             Problem::Download => "The update could not be downloaded.",
             Problem::Checks => "The downloaded update did not pass its checks.",
             Problem::Install => "The update could not be installed.",
             Problem::RolledBack => "The new version did not start, so the previous version was put back.",
-            Problem::NotRestarted => "Rex DUO Beacon could not restart into the new version, so the previous version was kept.",
+            Problem::NotRestarted => concat!(crate::beacon_name!(), " could not restart into the new version, so the previous version was kept."),
             Problem::Busy => "Another update is running.",
         }
     }
@@ -257,12 +268,17 @@ impl Manifest {
     }
 }
 
-/// The manifest's entry for a Mac: a zip that holds the app as `Rex DUO Helper.app`, the
-/// folder the updater of version 0.3.0 looks for.
+/// The manifest's first entry for a Mac: a zip that holds the app under the oldest of its
+/// earlier folder names, which the updater of version 0.3.0 looks for.
 pub const MAC_KEY: &str = "macos-universal";
-/// The entry for the same app in a zip that holds it as `Rex DUO Beacon.app`. A Mac takes this
-/// one when the list has it, and the one above when it does not.
+/// The entry for the same app in a zip that holds it under the newer of its earlier folder
+/// names, which the updater of version 0.3.1 looks for.
 pub const MAC_BEACON_KEY: &str = "macos-universal-beacon";
+/// The entry for the same app in a zip that holds it under its name. The entry's name and its
+/// file's name say nothing of what the app is called, so they stay when that changes.
+pub const MAC_APP_KEY: &str = "macos-app";
+/// The entries a Mac takes its file from: the first of these that a list has.
+pub(crate) const MAC_KEYS: [&str; 3] = [MAC_APP_KEY, MAC_BEACON_KEY, MAC_KEY];
 
 /// The manifest's name for the file this computer runs (`std::env::consts::{OS, ARCH}`).
 pub fn platform_key(os: &str, arch: &str) -> Option<&'static str> {
@@ -285,8 +301,12 @@ pub fn plan(m: &Manifest, current: &str, platform: Option<&str>) -> Result<Plan,
     if !is_newer(&m.version, current)? {
         return Ok(Plan::UpToDate);
     }
-    let preferred = platform.filter(|p| *p == MAC_KEY).and_then(|_| m.assets.get(MAC_BEACON_KEY));
-    let asset = preferred.or_else(|| platform.and_then(|p| m.assets.get(p))).ok_or_else(|| format!("Version {} has no build for this computer.", m.version))?;
+    let asset = match platform {
+        Some(MAC_KEY) => MAC_KEYS.iter().find_map(|key| m.assets.get(*key)),
+        Some(other) => m.assets.get(other),
+        None => None,
+    }
+    .ok_or_else(|| format!("Version {} has no build for this computer.", m.version))?;
     Ok(Plan::Update { version: m.version.clone(), asset: asset.clone() })
 }
 
@@ -488,7 +508,7 @@ impl<W: std::io::Write> Checked<W> {
 /// The thing an update replaces.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Place {
-    /// `…/Rex DUO Beacon.app`
+    /// The app's folder, under its name or an earlier one.
     MacApp(PathBuf),
     /// `~/.local/bin/rex-duo-helper`
     LinuxBinary(PathBuf),
@@ -507,10 +527,10 @@ impl Place {
                     .parent()
                     .filter(|macos| macos.ends_with("Contents/MacOS"))
                     .and_then(|macos| macos.parent()?.parent())
-                    .filter(|app| app.file_name().is_some_and(|n| n == APP_NAME || n == OLD_APP_NAME))
-                    .ok_or("Rex DUO Beacon is not running from its app.")?;
+                    .filter(|app| app.file_name().is_some_and(allowed_app_name))
+                    .ok_or(concat!(crate::beacon_name!(), " is not running from its app."))?;
                 if app.to_string_lossy().contains("/AppTranslocation/") {
-                    return Err("Move Rex DUO Beacon to the Applications folder and open it again.".into());
+                    return Err(concat!("Move ", crate::beacon_name!(), " to the Applications folder and open it again.").into());
                 }
                 Ok(Place::MacApp(app.to_path_buf()))
             }
@@ -540,7 +560,7 @@ impl Place {
     }
 
     /// Where a new version goes. A Mac app always goes under `APP_NAME`, beside the installed
-    /// one, whichever of the two names that one has.
+    /// one, whichever of its names that one has.
     pub fn target(&self) -> PathBuf {
         match self {
             Place::MacApp(_) => self.dir().join(APP_NAME),
@@ -610,10 +630,10 @@ pub fn blocker(e: &Env) -> Option<String> {
         Err(why) => return Some(why.clone()),
     };
     if !e.service {
-        return Some("Rex DUO Beacon is not installed as a background service.".into());
+        return Some(concat!(crate::beacon_name!(), " is not installed as a background service.").into());
     }
     if !e.writable {
-        return Some(format!("Rex DUO Beacon can't write to {}.", place.dir().display()));
+        return Some(format!("{BEACON} can't write to {}.", place.dir().display()));
     }
     None
 }
@@ -838,19 +858,36 @@ pub(crate) fn tool(program: &str, args: &[OsString]) -> Result<(bool, String), S
     Ok((o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
 }
 
+/// The app in an unzipped download: the folder holds one entry and no more, and that entry is
+/// a real folder, not a link, whose name is on the list of allowed names (so it ends in
+/// `.app` and starts with no dot) and which holds this program where an app has it, as a real
+/// file. Anything else is refused before any other check looks at it.
+fn sole_app(unpacked: &Path) -> Result<PathBuf, String> {
+    let refused = || format!("The download does not hold {BEACON} alone.");
+    let mut entries = std::fs::read_dir(unpacked).map_err(|_| refused())?;
+    let (Some(Ok(entry)), None) = (entries.next(), entries.next()) else { return Err(refused()) };
+    let name = entry.file_name();
+    let plain = name.to_str().is_some_and(|n| n.ends_with(".app") && !n.starts_with('.'));
+    let app = entry.path();
+    let real = |path: &Path, wanted: fn(&std::fs::Metadata) -> bool| std::fs::symlink_metadata(path).is_ok_and(|m| wanted(&m));
+    if !plain || !allowed_app_name(&name) || !real(&app, std::fs::Metadata::is_dir) {
+        return Err(refused());
+    }
+    if !real(&app.join("Contents/MacOS").join(service::NAME), std::fs::Metadata::is_file) {
+        return Err(format!("The download does not hold {BEACON}."));
+    }
+    Ok(app)
+}
+
 /// Unzips the download and checks the app in it. Returns the app, still in the scratch folder.
 fn unpack_and_check_mac(zip: &Path, into: &Path, version: &str) -> Result<PathBuf, String> {
     let (ok, _) = tool("/usr/bin/ditto", &[os("-x"), os("-k"), os(zip), os(into)])?;
     if !ok {
         return Err("The download could not be unzipped.".into());
     }
-    let is_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
-    // The zip of `MAC_BEACON_KEY` holds the app under its name, the zip of `MAC_KEY` under
-    // the earlier one. The app is the same, and `swap_mac` gives it its name.
-    let app = [APP_NAME, OLD_APP_NAME].map(|name| into.join(name)).into_iter().find(|app| is_dir(app)).unwrap_or_else(|| into.join(APP_NAME));
-    if !is_dir(&app) || !std::fs::symlink_metadata(app.join("Contents/MacOS").join(service::NAME)).is_ok_and(|m| m.is_file()) {
-        return Err("The download does not hold Rex DUO Beacon.".into());
-    }
+    // Each of a release's zips holds the app under one of its names. The app is the same in
+    // all of them, and `swap_mac` gives it its name.
+    let app = sole_app(into)?;
     if !mac_signature_ok(&app)? {
         return Err("The downloaded app's code signature was not accepted.".into());
     }
@@ -884,12 +921,12 @@ fn swap_linux(new: &Path, place: &Place) -> Result<(), String> {
     std::fs::rename(new, installed).map_err(|e| format!("could not install the new version: {e}"))
 }
 
-/// Puts a checked app in as `Rex DUO Beacon.app`. The installed one, under either name, moves
-/// to `Rex DUO Beacon.previous.app` beside it until the new one is confirmed. Both moves are
-/// renames on one volume. A copy set aside under either name by an earlier update goes first.
+/// Puts a checked app in under its name, `APP_NAME`. The installed one, under any of its
+/// names, moves to `PREVIOUS_APP` beside it until the new one is confirmed. Both moves are
+/// renames on one volume. A copy set aside under any name by an earlier update goes first.
 fn swap_mac(new_app: &Path, place: &Place) -> Result<(), String> {
     let (installed, previous, target) = (place.path(), place.previous(), place.target());
-    for old in [previous.clone(), place.dir().join(OLD_PREVIOUS_APP)] {
+    for old in std::iter::once(previous.clone()).chain(EARLIER_PREVIOUS_APPS.map(|name| place.dir().join(name))) {
         if old.exists() {
             std::fs::remove_dir_all(&old).map_err(|e| format!("could not remove {}: {e}", old.display()))?;
         }
@@ -912,7 +949,7 @@ fn roll_back(place: &Place) -> Result<(), String> {
     match place {
         Place::LinuxBinary(_) => std::fs::rename(&previous, installed).map_err(|e| e.to_string()),
         Place::MacApp(_) => {
-            let failed = place.dir().join(format!(".Rex DUO Beacon.failed-{}.app", std::process::id()));
+            let failed = place.dir().join(format!("{FAILED_PREFIX}{}.app", std::process::id()));
             let _ = std::fs::remove_dir_all(&failed);
             let target = place.target();
             std::fs::rename(&target, &failed).map_err(|e| e.to_string())?;
@@ -933,8 +970,8 @@ fn remove_previous(place: &Place) -> std::io::Result<()> {
     let gone = |removed: std::io::Result<()>| removed.or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) });
     match place {
         Place::LinuxBinary(_) => gone(std::fs::remove_file(&previous)),
-        // Under either name.
-        Place::MacApp(_) => gone(std::fs::remove_dir_all(&previous)).and(gone(std::fs::remove_dir_all(place.dir().join(OLD_PREVIOUS_APP)))),
+        // Under every name.
+        Place::MacApp(_) => EARLIER_PREVIOUS_APPS.iter().fold(gone(std::fs::remove_dir_all(&previous)), |so_far, name| so_far.and(gone(std::fs::remove_dir_all(place.dir().join(name))))),
     }
 }
 
@@ -1219,7 +1256,7 @@ pub(crate) fn forget_job(state_dir: &Path) {
 pub fn finish_command(args: &[String]) -> i32 {
     let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let (Some(version), Some(path)) = (value("--version").filter(|v| Version::parse(v).is_some()), value("--place")) else {
-        eprintln!("finish-update is run by Rex DUO Beacon itself");
+        eprintln!("finish-update is run by {BEACON} itself");
         return 2;
     };
     let state_dir = value("--state-dir").map(PathBuf::from).unwrap_or_else(default_state_dir);
@@ -1235,7 +1272,7 @@ pub fn finish_command(args: &[String]) -> i32 {
     let result = real_finish(&place, &version, old_pid);
     record_result(&state_dir, &version, &result);
     match &result {
-        Ok(()) => info!("update: Rex DUO Beacon {version} is running"),
+        Ok(()) => info!("update: {BEACON} {version} is running"),
         Err(e) => info!("update: {e}"),
     }
     i32::from(result.is_err())
@@ -1495,7 +1532,7 @@ impl Updater {
         let install = crate::config::home().join(".local/bin").join(service::NAME);
         let place = std::env::current_exe()
             .and_then(|p| p.canonicalize())
-            .map_err(|e| format!("Rex DUO Beacon can't tell where it runs from ({e})."))
+            .map_err(|e| format!("{BEACON} can't tell where it runs from ({e})."))
             .and_then(|exe| Place::detect(std::env::consts::OS, &exe, &install.canonicalize().unwrap_or(install)));
         let mut env = Env { dry_run, debug_build: cfg!(debug_assertions), keys: update_keys(UPDATE_KEY_FILE), place, service: true, writable: true };
         // The service and the folder are only looked at when nothing else rules an update out.
@@ -1645,7 +1682,7 @@ impl Updater {
             return Err(why);
         }
         let builtin = self.keys.clone().map_err(|why| Fault::new(Problem::NotSetUp, why))?;
-        let Some(place) = self.place.clone() else { return Err(Fault::new(Problem::CannotUpdate, "Rex DUO Beacon can't tell where it is installed.")) };
+        let Some(place) = self.place.clone() else { return Err(Fault::new(Problem::CannotUpdate, concat!(crate::beacon_name!(), " can't tell where it is installed."))) };
         {
             let mut s = self.state.lock().unwrap();
             if s.updating {
@@ -1654,14 +1691,14 @@ impl Updater {
             s.updating = true;
         }
         self.change(|_| {});
-        info!("update: installing Rex DUO Beacon {version}");
+        info!("update: installing {BEACON} {version}");
         let mut result = self.install_locked(&place, builtin, version, asset, restart).await;
         if result.is_ok() && restart == Restart::Detached {
             // The old program restarts this service within seconds. Still here much later: it
             // didn't. If it never even took over the lock, it never ran, and the new version
             // sits where the service would start it unwatched. Put the old one back.
             tokio::time::sleep(Duration::from_secs(90)).await;
-            let mut detail = format!("Version {version} was swapped in, but Rex DUO Beacon was not restarted into it.");
+            let mut detail = format!("Version {version} was swapped in, but {BEACON} was not restarted into it.");
             if UpdateLock::take_back(&self.state_dir) {
                 match roll_back(&place) {
                     Ok(()) => detail += " The previous version was put back.",
@@ -1753,7 +1790,7 @@ impl Updater {
 /// `rex-duo-helper update [--check]`.
 pub async fn cli(check_only: bool) -> i32 {
     let updater = Updater::new(false, false, &default_state_dir());
-    println!("Rex DUO Beacon {VERSION}");
+    println!("{BEACON} {VERSION}");
     let checked = updater.check().await;
     // The running service takes the result from here (see "A check from the command line").
     updater.report_check();
@@ -1779,7 +1816,7 @@ pub async fn cli(check_only: bool) -> i32 {
     println!("Downloading and checking version {version}...");
     match updater.install(&version, &asset, Restart::Inline).await {
         Ok(()) => {
-            println!("Rex DUO Beacon {version} is running. The previous version was removed.");
+            println!("{BEACON} {version} is running. The previous version was removed.");
             0
         }
         Err(e) => {
@@ -2222,7 +2259,7 @@ mod tests {
             dry_run: false,
             debug_build: false,
             keys: Ok(vec![public]),
-            place: Ok(Place::MacApp("/Applications/Rex DUO Beacon.app".into())),
+            place: Ok(Place::MacApp(concat!("/Applications/", crate::beacon_name!(), ".app").into())),
             service: true,
             writable: true,
         };
@@ -2232,28 +2269,28 @@ mod tests {
         assert!(blocker(&Env { keys: Err("update-key.pub is not 32 bytes of base64".into()), ..env() }).unwrap().contains("not set up"));
         assert_eq!(blocker(&Env { place: Err("This copy runs from a cargo target folder.".into()), ..env() }).unwrap(), "This copy runs from a cargo target folder.");
         assert!(blocker(&Env { service: false, ..env() }).unwrap().contains("background service"));
-        assert_eq!(blocker(&Env { writable: false, ..env() }).unwrap(), "Rex DUO Beacon can't write to /Applications.");
+        assert_eq!(blocker(&Env { writable: false, ..env() }).unwrap(), concat!(crate::beacon_name!(), " can't write to /Applications."));
     }
 
     #[test]
     fn where_the_helper_is_installed() {
         let install = Path::new("/home/u/.local/bin/rex-duo-helper");
         let mac = |p: &str| Place::detect("macos", Path::new(p), install);
-        assert_eq!(mac("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Ok(Place::MacApp("/Applications/Rex DUO Beacon.app".into())));
+        assert_eq!(mac(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")), Ok(Place::MacApp(concat!("/Applications/", crate::beacon_name!(), ".app").into())));
         assert!(mac("/Users/u/.local/bin/rex-duo-helper").is_err());
         assert!(mac("/Applications/Other.app/Contents/MacOS/rex-duo-helper").is_err());
-        assert!(mac("/Applications/Rex DUO Beacon.previous.app/Contents/MacOS/rex-duo-helper").is_err());
-        assert!(mac("/private/var/folders/x/AppTranslocation/ABC/d/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper").unwrap_err().contains("Applications"));
+        assert!(mac(concat!("/Applications/", crate::beacon_name!(), ".previous.app/Contents/MacOS/rex-duo-helper")).is_err());
+        assert!(mac(concat!("/private/var/folders/x/AppTranslocation/ABC/d/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")).unwrap_err().contains("Applications"));
         assert!(mac("/Users/u/rexduo/Relay/target/release/rex-duo-helper").unwrap_err().contains("cargo target"));
-        assert!(mac("/Users/u/target/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper").unwrap_err().contains("cargo target"));
+        assert!(mac(concat!("/Users/u/target/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")).unwrap_err().contains("cargo target"));
         assert_eq!(Place::detect("linux", install, install), Ok(Place::LinuxBinary(install.into())));
         assert!(Place::detect("linux", Path::new("/tmp/rex-duo-helper-linux-x86_64"), install).is_err());
         assert!(Place::detect("linux", Path::new("/home/u/src/target/release/rex-duo-helper"), install).is_err());
         assert!(Place::detect("freebsd", install, install).is_err());
 
-        let app = Place::MacApp("/Applications/Rex DUO Beacon.app".into());
-        assert_eq!(app.previous(), Path::new("/Applications/Rex DUO Beacon.previous.app"));
-        assert_eq!(app.previous_binary(), Path::new("/Applications/Rex DUO Beacon.previous.app/Contents/MacOS/rex-duo-helper"));
+        let app = Place::MacApp(concat!("/Applications/", crate::beacon_name!(), ".app").into());
+        assert_eq!(app.previous(), Path::new(concat!("/Applications/", crate::beacon_name!(), ".previous.app")));
+        assert_eq!(app.previous_binary(), Path::new(concat!("/Applications/", crate::beacon_name!(), ".previous.app/Contents/MacOS/rex-duo-helper")));
         let bin = Place::LinuxBinary(install.into());
         assert_eq!(bin.previous(), Path::new("/home/u/.local/bin/rex-duo-helper.previous"));
         assert_eq!(bin.previous_binary(), bin.previous());
@@ -2704,12 +2741,12 @@ mod tests {
 
     #[test]
     fn the_finisher_runs_outside_the_service() {
-        let place = Place::MacApp("/Applications/Rex DUO Beacon.app".into());
-        let state = Path::new("/Users/u/Library/Application Support/Rex DUO Beacon");
+        let place = Place::MacApp(concat!("/Applications/", crate::beacon_name!(), ".app").into());
+        let state = Path::new("/home/u/state");
         let args = finisher_args("0.3.1", &place, state, 4242);
         assert_eq!(
             args,
-            ["finish-update", "--version", "0.3.1", "--place", "/Applications/Rex DUO Beacon.app", "--state-dir", "/Users/u/Library/Application Support/Rex DUO Beacon", "--old-pid", "4242"].map(os)
+            ["finish-update", "--version", "0.3.1", "--place", concat!("/Applications/", crate::beacon_name!(), ".app"), "--state-dir", "/home/u/state", "--old-pid", "4242"].map(os)
         );
         let program = place.previous_binary();
 
@@ -2733,10 +2770,10 @@ mod tests {
 
         let plist = finisher_plist(&program, &args);
         assert!(plist.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.helper.update</string>"));
-        assert!(plist.contains(
-            "<array><string>/Applications/Rex DUO Beacon.previous.app/Contents/MacOS/rex-duo-helper</string><string>finish-update</string>\
-             <string>--version</string><string>0.3.1</string><string>--place</string><string>/Applications/Rex DUO Beacon.app</string>"
-        ));
+        assert!(plist.contains(&format!(
+            "<array><string>/Applications/{PREVIOUS_APP}/Contents/MacOS/rex-duo-helper</string><string>finish-update</string>\
+             <string>--version</string><string>0.3.1</string><string>--place</string><string>/Applications/{APP_NAME}</string>"
+        )));
         assert!(plist.contains("<string>--old-pid</string><string>4242</string></array>"));
         assert!(plist.contains("<key>RunAtLoad</key><true/>"));
         // It runs once. launchd must not start it again after a roll back.
@@ -2762,7 +2799,7 @@ mod tests {
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
 <key>CFBundleExecutable</key><string>{}</string>
-<key>CFBundleName</key><string>Rex DUO Beacon</string>
+<key>CFBundleName</key><string>{BEACON}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>9.9.9</string>
 <key>CFBundleVersion</key><string>1</string>
@@ -2815,139 +2852,235 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// An app installed under the earlier name is the installed app. An update puts the new
+    /// An app installed under an earlier name is the installed app. An update puts the new
     /// version beside it under the app's name, and a roll back puts the old one back under the
     /// name it had.
     #[test]
-    fn an_update_of_an_app_under_the_earlier_name_ends_under_the_new_name() {
+    fn an_update_of_an_app_under_an_earlier_name_ends_under_the_new_name() {
         let install = Path::new("/home/u/.local/bin/rex-duo-helper");
-        let old = Place::detect("macos", Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"), install).unwrap();
-        assert_eq!(old, Place::MacApp("/Applications/Rex DUO Helper.app".into()));
-        assert_eq!(old.target(), Path::new("/Applications/Rex DUO Beacon.app"));
-        assert_eq!(old.previous(), Path::new("/Applications/Rex DUO Beacon.previous.app"));
-        let named = Place::MacApp("/Applications/Rex DUO Beacon.app".into());
+        let named = Place::MacApp(format!("/Applications/{APP_NAME}").into());
         assert_eq!(named.target(), named.path());
         assert_eq!(Place::LinuxBinary(install.into()).target(), install);
+        for (earlier, earlier_previous) in EARLIER_APP_NAMES.into_iter().zip(EARLIER_PREVIOUS_APPS) {
+            let old = Place::detect("macos", Path::new(&format!("/Applications/{earlier}/Contents/MacOS/rex-duo-helper")), install).unwrap();
+            assert_eq!(old, Place::MacApp(format!("/Applications/{earlier}").into()));
+            assert_eq!(old.target(), named.path());
+            assert_eq!(old.previous(), Path::new(&format!("/Applications/{PREVIOUS_APP}")));
 
-        let dir = temp("swapold");
-        let place = Place::MacApp(dir.join(OLD_APP_NAME));
-        let apps = || {
-            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".app")).collect();
-            names.sort();
-            names
-        };
-        let stage = |version: &str, folder: &str| {
-            let new = dir.join(".rex-duo-helper-update-1/unpacked").join(folder);
-            fake_app(&new, version);
-            swap_mac(&new, &place).unwrap();
-        };
-        let programs = std::cell::RefCell::new(vec![]);
-        let restart = || {
-            programs.borrow_mut().push(place.program());
-            true
-        };
-        let (new_runs, old_runs) = (|| Some("0.3.2".to_string()), || Some("0.3.1".to_string()));
-        let fx = |running_version| Effects { restart: &restart, old_gone: &|| true, running_version, exit_wait: Duration::from_millis(20), wait: Duration::from_millis(40), poll: Duration::from_millis(5) };
+            let dir = temp("swapold");
+            let place = Place::MacApp(dir.join(earlier));
+            let apps = || {
+                let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".app")).collect();
+                names.sort();
+                names
+            };
+            let stage = |version: &str, folder: &str| {
+                let new = dir.join(".rex-duo-helper-update-1/unpacked").join(folder);
+                fake_app(&new, version);
+                swap_mac(&new, &place).unwrap();
+            };
+            let programs = std::cell::RefCell::new(vec![]);
+            let restart = || {
+                programs.borrow_mut().push(place.program());
+                true
+            };
+            let (new_runs, old_runs) = (|| Some("0.3.2".to_string()), || Some("0.3.1".to_string()));
+            let fx = |running_version| Effects { restart: &restart, old_gone: &|| true, running_version, exit_wait: Duration::from_millis(20), wait: Duration::from_millis(40), poll: Duration::from_millis(5) };
 
-        // The new version does not start: the old app is back under the earlier name, alone,
-        // and the service was started from the new place and then from the old one. A copy
-        // set aside under either name by an earlier update is gone.
-        fake_app(place.path(), "0.3.1");
-        fake_app(&dir.join(OLD_PREVIOUS_APP), "0.3.0");
-        fake_app(&place.previous(), "0.2.0");
-        stage("0.3.2", OLD_APP_NAME);
-        assert_eq!(apps(), [APP_NAME, PREVIOUS_APP]);
-        assert_eq!((marker(&place.target()).as_str(), marker(&place.previous()).as_str()), ("0.3.2", "0.3.1"));
-        assert!(finish(&place, "0.3.2", &fx(&old_runs)).is_err());
-        assert_eq!(apps(), [OLD_APP_NAME]);
-        assert_eq!(marker(place.path()), "0.3.1");
-        assert_eq!(*programs.borrow(), [place.target().join("Contents/MacOS/rex-duo-helper"), place.path().join("Contents/MacOS/rex-duo-helper")]);
-
-        // It starts: one app, under the new name, whichever folder name the zip gave it.
-        for folder in [OLD_APP_NAME, APP_NAME] {
+            // The new version does not start: the old app is back under the earlier name, alone,
+            // and the service was started from the new place and then from the old one. A copy
+            // set aside under any name by an earlier update is gone, and so is the folder the
+            // version that did not start waited in.
             fake_app(place.path(), "0.3.1");
-            fake_app(&dir.join(OLD_PREVIOUS_APP), "0.3.0");
-            let _ = std::fs::remove_dir_all(place.target());
-            stage("0.3.2", folder);
-            assert_eq!(finish(&place, "0.3.2", &fx(&new_runs)), Ok(()), "{folder}");
-            assert_eq!(apps(), [APP_NAME], "{folder}");
-            assert_eq!(marker(&place.target()), "0.3.2");
-        }
+            for previous in EARLIER_PREVIOUS_APPS {
+                fake_app(&dir.join(previous), "0.3.0");
+            }
+            fake_app(&place.previous(), "0.2.0");
+            stage("0.3.2", earlier);
+            assert_eq!(apps(), [APP_NAME, PREVIOUS_APP]);
+            assert_eq!((marker(&place.target()).as_str(), marker(&place.previous()).as_str()), ("0.3.2", "0.3.1"));
+            assert!(finish(&place, "0.3.2", &fx(&old_runs)).is_err());
+            assert_eq!(apps(), [earlier]);
+            assert_eq!(marker(place.path()), "0.3.1");
+            assert_eq!(*programs.borrow(), [place.target().join("Contents/MacOS/rex-duo-helper"), place.path().join("Contents/MacOS/rex-duo-helper")]);
 
-        // An app already under the new name beside it is not written over.
-        fake_app(place.path(), "0.3.1");
-        let new = dir.join(".rex-duo-helper-update-1/unpacked").join(APP_NAME);
-        fake_app(&new, "0.3.3");
-        assert!(swap_mac(&new, &place).is_err());
-        assert_eq!((marker(place.path()).as_str(), marker(&place.target()).as_str()), ("0.3.1", "0.3.2"));
-        assert_eq!(apps(), [APP_NAME, OLD_APP_NAME]);
+            // It starts: one app, under the new name, whichever folder name the zip gave it.
+            for folder in EARLIER_APP_NAMES.into_iter().chain([APP_NAME]) {
+                fake_app(place.path(), "0.3.1");
+                fake_app(&dir.join(earlier_previous), "0.3.0");
+                let _ = std::fs::remove_dir_all(place.target());
+                stage("0.3.2", folder);
+                assert_eq!(finish(&place, "0.3.2", &fx(&new_runs)), Ok(()), "{folder}");
+                assert_eq!(apps(), [APP_NAME], "{folder}");
+                assert_eq!(marker(&place.target()), "0.3.2");
+            }
+
+            // An app already under the new name beside it is not written over.
+            fake_app(place.path(), "0.3.1");
+            let new = dir.join(".rex-duo-helper-update-1/unpacked").join(APP_NAME);
+            fake_app(&new, "0.3.3");
+            assert!(swap_mac(&new, &place).is_err());
+            assert_eq!((marker(place.path()).as_str(), marker(&place.target()).as_str()), ("0.3.1", "0.3.2"));
+            let mut both = vec![APP_NAME.to_string(), earlier.to_string()];
+            both.sort();
+            assert_eq!(apps(), both);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// The folder a version that did not start waits in before it is deleted has a name of
+    /// its own, which says nothing of what the app is called.
+    #[test]
+    fn a_version_that_did_not_start_waits_under_a_name_that_is_no_app_name() {
+        assert_eq!(FAILED_PREFIX, ".beacon-failed-");
+        let name = format!("{FAILED_PREFIX}{}.app", 4242);
+        assert!(!allowed_app_name(std::ffi::OsStr::new(&name)) && !name.contains(BEACON));
+    }
+
+    /// The one list of folder names the Mac app may have.
+    #[test]
+    fn the_allowed_folder_names() {
+        let allowed = |name: &str| allowed_app_name(std::ffi::OsStr::new(name));
+        assert!(allowed(APP_NAME));
+        assert_eq!(APP_NAME, format!("{BEACON}.app"));
+        for earlier in EARLIER_APP_NAMES {
+            assert!(allowed(earlier), "{earlier}");
+        }
+        for other in [PREVIOUS_APP, EARLIER_PREVIOUS_APPS[0], "Other.app", "", ".app", &format!(".{APP_NAME}"), &format!("{APP_NAME} "), &APP_NAME.to_lowercase(), BEACON] {
+            assert!(!allowed(other), "{other}");
+        }
+    }
+
+    /// What an unzipped download must look like before any other check looks at it.
+    #[test]
+    fn a_download_holds_the_app_alone_as_a_real_folder_of_an_allowed_name() {
+        let dir = temp("sole");
+        let unpacked = dir.join("unpacked");
+        let fresh = || {
+            let _ = std::fs::remove_dir_all(&unpacked);
+            std::fs::create_dir_all(&unpacked).unwrap();
+        };
+        let alone = format!("The download does not hold {BEACON} alone.");
+
+        // Under its name, and under each earlier one.
+        for name in [APP_NAME].into_iter().chain(EARLIER_APP_NAMES) {
+            fresh();
+            fake_app(&unpacked.join(name), "0.4.0");
+            assert_eq!(sole_app(&unpacked), Ok(unpacked.join(name)), "{name}");
+        }
+        // Nothing at all, and no folder to look in.
+        fresh();
+        assert_eq!(sole_app(&unpacked).unwrap_err(), alone);
+        assert_eq!(sole_app(&dir.join("missing")).unwrap_err(), alone);
+        // Two apps, of allowed names both.
+        fresh();
+        fake_app(&unpacked.join(APP_NAME), "0.4.0");
+        fake_app(&unpacked.join(EARLIER_APP_NAMES[0]), "0.4.0");
+        assert_eq!(sole_app(&unpacked).unwrap_err(), alone);
+        // The app and a file beside it, seen or hidden.
+        for extra in ["README", ".hidden"] {
+            fresh();
+            fake_app(&unpacked.join(APP_NAME), "0.4.0");
+            std::fs::write(unpacked.join(extra), "x").unwrap();
+            assert_eq!(sole_app(&unpacked).unwrap_err(), alone, "{extra}");
+        }
+        // A link of the app's name, to an app that is whole.
+        fresh();
+        fake_app(&dir.join("real.app"), "0.4.0");
+        std::os::unix::fs::symlink(dir.join("real.app"), unpacked.join(APP_NAME)).unwrap();
+        assert_eq!(sole_app(&unpacked).unwrap_err(), alone);
+        // A name that starts with a dot, one that is not on the list, one that is no app, and
+        // the name of a copy an update sets aside.
+        for name in [format!(".{APP_NAME}"), "Other.app".to_string(), BEACON.to_string(), PREVIOUS_APP.to_string(), format!("{FAILED_PREFIX}1.app")] {
+            fresh();
+            fake_app(&unpacked.join(&name), "0.4.0");
+            assert_eq!(sole_app(&unpacked).unwrap_err(), alone, "{name}");
+        }
+        // A file of the app's name.
+        fresh();
+        std::fs::write(unpacked.join(APP_NAME), "x").unwrap();
+        assert_eq!(sole_app(&unpacked).unwrap_err(), alone);
+        // A folder of the app's name without this program in it, or with a link where it is.
+        let missing = format!("The download does not hold {BEACON}.");
+        fresh();
+        std::fs::create_dir_all(unpacked.join(APP_NAME).join("Contents/MacOS")).unwrap();
+        assert_eq!(sole_app(&unpacked).unwrap_err(), missing);
+        std::os::unix::fs::symlink("/usr/bin/true", unpacked.join(APP_NAME).join("Contents/MacOS").join(service::NAME)).unwrap();
+        assert_eq!(sole_app(&unpacked).unwrap_err(), missing);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// A release list names the Mac app twice: under `macos-universal` in a zip that holds
-    /// `Rex DUO Helper.app`, and under `macos-universal-beacon` in one that holds
-    /// `Rex DUO Beacon.app`.
+    /// A release list names the Mac app three times, once for each folder name a zip holds
+    /// it under: `macos-app` (its name), `macos-universal-beacon` and `macos-universal` (the
+    /// earlier ones, which the updaters of versions 0.3.1 and 0.3.0 read).
     #[test]
-    fn a_mac_takes_the_beacon_entry_and_falls_back_to_the_first_one() {
+    fn a_mac_takes_the_newest_entry_a_list_has() {
         let base = format!("{RELEASE_PREFIX}helper-v0.3.1");
         let mut list: Value = serde_json::from_str(&manifest_json("0.3.1")).unwrap();
         list["assets"]["macos-universal"]["url"] = json!(format!("{base}/Rex-DUO-Helper.zip"));
         let mac = platform_key("macos", "aarch64");
         assert_eq!(mac, Some(MAC_KEY));
+        assert_eq!((MAC_APP_KEY, MAC_BEACON_KEY, MAC_KEY), ("macos-app", "macos-universal-beacon", "macos-universal"));
         let url = |list: &Value, platform: Option<&str>| match plan(&Manifest::parse(list.to_string().as_bytes()).unwrap(), "0.3.0", platform) {
             Ok(Plan::Update { asset, .. }) => asset.url,
             other => panic!("{other:?}"),
         };
 
-        // A list without the entry, as version 0.3.0 was published: the one entry is taken.
+        // A list with the first entry alone, as version 0.3.0 was published: it is taken.
         assert_eq!(url(&list, mac), format!("{base}/Rex-DUO-Helper.zip"));
 
-        // With it: a Mac takes it, and Linux is as before.
+        // With the second, as version 0.3.1 was published: a Mac takes that, and Linux is as before.
         list["assets"][MAC_BEACON_KEY] = json!({"url": format!("{base}/Rex-DUO-Beacon.zip"), "sha256": "12".repeat(32), "size": 124});
         assert_eq!(url(&list, mac), format!("{base}/Rex-DUO-Beacon.zip"));
         assert_eq!(url(&list, Some("linux-x86_64")), format!("{base}/rex-duo-helper-linux-x86_64"));
+
+        // With all three: the zip that holds the app under its name.
+        list["assets"][MAC_APP_KEY] = json!({"url": format!("{base}/Beacon-macOS.zip"), "sha256": "34".repeat(32), "size": 125});
+        assert_eq!(url(&list, mac), format!("{base}/Beacon-macOS.zip"));
+        assert_eq!(url(&list, Some("linux-x86_64")), format!("{base}/rex-duo-helper-linux-x86_64"));
         let m = Manifest::parse(list.to_string().as_bytes()).unwrap();
-        assert_eq!(m.assets.len(), 4);
-        // The entry an updater of version 0.3.0 reads is still there, and every entry has
-        // the three fields in the form that updater requires of each entry it finds.
+        assert_eq!(m.assets.len(), 5);
+        // The entries the earlier updaters read are still there, and every entry has the three
+        // fields in the form those updaters require of each entry they find.
         assert_eq!(m.assets[MAC_KEY].url, format!("{base}/Rex-DUO-Helper.zip"));
+        assert_eq!(m.assets[MAC_BEACON_KEY].url, format!("{base}/Rex-DUO-Beacon.zip"));
         for (name, asset) in &m.assets {
             assert!(release_url_ok(&asset.url) && asset.sha256.len() == 64 && (1..=MAX_ASSET).contains(&asset.size), "{name}");
         }
-        // A list with the new entry alone has a build for a Mac too.
+        // Whichever entries are left, the newest of them is taken.
         list["assets"].as_object_mut().unwrap().remove(MAC_KEY);
+        assert_eq!(url(&list, mac), format!("{base}/Beacon-macOS.zip"));
+        list["assets"].as_object_mut().unwrap().remove(MAC_APP_KEY);
         assert_eq!(url(&list, mac), format!("{base}/Rex-DUO-Beacon.zip"));
-        // No Mac entry at all: no build.
+        // No Mac entry at all: no build. A Linux computer never takes a Mac's entry.
         list["assets"].as_object_mut().unwrap().remove(MAC_BEACON_KEY);
         assert!(plan(&Manifest::parse(list.to_string().as_bytes()).unwrap(), "0.3.0", mac).is_err());
+        list["assets"][MAC_APP_KEY] = json!({"url": format!("{base}/Beacon-macOS.zip"), "sha256": "34".repeat(32), "size": 125});
+        list["assets"].as_object_mut().unwrap().remove("linux-aarch64");
+        assert!(plan(&Manifest::parse(list.to_string().as_bytes()).unwrap(), "0.3.0", Some("linux-aarch64")).is_err());
+        assert!(plan(&Manifest::parse(list.to_string().as_bytes()).unwrap(), "0.3.0", None).is_err());
     }
 
-    /// What a person reads names the program Rex DUO Beacon. The earlier name stays in the
-    /// sources only where it names a thing that keeps it: the app folder an old install has,
-    /// the state folder, the log.
+    /// What a person reads takes the names from src/brand.rs. An earlier name is in quotes
+    /// only on a line that says `EARLIER`: the folder names an old install has, and the name
+    /// the state folder and the log keep.
     #[test]
-    fn no_sentence_names_the_program_by_its_earlier_name() {
-        let needle = concat!("Rex DUO ", "Helper");
-        let kept = [".app", ".previous.app", ".log", ".old.log"].map(|end| format!("{needle}{end}"));
+    fn no_sentence_names_the_program_by_an_earlier_name() {
+        let needle = concat!("Rex ", "DUO");
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut seen = 0;
         for entry in std::fs::read_dir(&src).unwrap() {
             let path = entry.unwrap().path();
             let text = std::fs::read_to_string(&path).unwrap();
             for (n, line) in text.lines().enumerate() {
-                // Comments may name the earlier app. Only what is in quotes can reach a person.
+                // Comments may name an earlier app. Only what is in quotes can reach a person.
                 let code = line.trim_start();
                 if code.starts_with("//") {
                     continue;
                 }
                 for (i, _) in code.match_indices(needle) {
-                    let rest = &code[i..];
                     let in_quotes = code[..i].matches('"').count() % 2 == 1;
-                    let a_name = kept.iter().any(|k| rest.starts_with(k.as_str()))
-                        || code[..i].ends_with("Application Support/")
-                        || code[..i].ends_with("state_dir(\"")
-                        || code[..i].ends_with("Library/Logs/");
-                    assert!(!in_quotes || a_name, "{}:{}: {line}", path.display(), n + 1);
+                    assert!(!in_quotes || code.contains("EARLIER_"), "{}:{}: {line}", path.display(), n + 1);
                     seen += 1;
                 }
             }
@@ -3027,19 +3160,20 @@ mod tests {
             assert!(verify_signatures(&keys, binary_message("0.0.1", platform, &asset.sha256).as_bytes(), &sig).is_err());
             assert!(verify_signatures(&keys, &file, &sig).is_err());
         }
-        // The Mac app twice: the entry the updater of version 0.3.0 reads, and the one a Mac
-        // takes now. Each names its zip, and the zips are two files.
+        // The Mac app three times: the entries the updaters of versions 0.3.0 and 0.3.1 read,
+        // and the one a Mac takes now. Each names its zip, and the zips are three files.
         let mac = platform_key("macos", "aarch64");
-        let (first, second) = (&m.assets[MAC_KEY], &m.assets[MAC_BEACON_KEY]);
+        let (first, second, third) = (&m.assets[MAC_KEY], &m.assets[MAC_BEACON_KEY], &m.assets[MAC_APP_KEY]);
         assert!(first.url.ends_with(&format!("/helper-v{}/Rex-DUO-Helper.zip", m.version)), "{}", first.url);
         assert!(second.url.ends_with(&format!("/helper-v{}/Rex-DUO-Beacon.zip", m.version)), "{}", second.url);
-        assert_ne!(first.sha256, second.sha256);
-        for asset in [first, second] {
+        assert!(third.url.ends_with(&format!("/helper-v{}/Beacon-macOS.zip", m.version)), "{}", third.url);
+        assert!(first.sha256 != second.sha256 && second.sha256 != third.sha256 && first.sha256 != third.sha256);
+        for asset in [first, second, third] {
             let file = read(asset.url.rsplit('/').next().unwrap());
             assert_eq!((file.len() as u64, sha256(&file)), (asset.size, asset.sha256.clone()), "{}", asset.url);
         }
-        assert_eq!(m.assets.len(), 4);
-        assert_eq!(plan(&m, "0.0.1", mac), Ok(Plan::Update { version: m.version.clone(), asset: second.clone() }));
+        assert_eq!(m.assets.len(), 5);
+        assert_eq!(plan(&m, "0.0.1", mac), Ok(Plan::Update { version: m.version.clone(), asset: third.clone() }));
     }
 
     #[test]
@@ -3058,7 +3192,7 @@ mod tests {
 
     #[test]
     fn mac_checks_are_argument_lists_with_absolute_tools() {
-        let app = Path::new("/Applications/.rex-duo-helper-update-1/unpacked/Rex DUO Beacon.app");
+        let app = Path::new(concat!("/Applications/.rex-duo-helper-update-1/unpacked/", crate::beacon_name!(), ".app"));
         let checks = mac_checks(app);
         assert_eq!(checks[0].0, "/usr/bin/codesign");
         assert_eq!(checks[0].1, [os("--verify"), os("--deep"), os("--strict"), os(app)]);
@@ -3079,7 +3213,7 @@ mod tests {
 
     #[test]
     fn gatekeeper_must_say_notarized() {
-        let accepted = "/Applications/Rex DUO Beacon.app: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: A (R2PVQ496X7)\n";
+        let accepted = concat!("/Applications/", crate::beacon_name!(), ".app: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: A (R2PVQ496X7)\n");
         assert!(gatekeeper_ok(true, accepted));
         assert!(!gatekeeper_ok(false, accepted));
         assert!(!gatekeeper_ok(true, "x.app: accepted\nsource=Developer ID\n"));
@@ -3469,7 +3603,7 @@ mod tests {
 
         // A version that was rolled back is remembered by the helper that starts next. The
         // details stay in update_result.json and the log.
-        record_result(&dir, "999.0.0", &Err("Version 999.0.0 did not start: /Applications/Rex DUO Beacon.app is damaged.".into()));
+        record_result(&dir, "999.0.0", &Err(concat!("Version 999.0.0 did not start: /Applications/", crate::beacon_name!(), ".app is damaged.").into()));
         let next = Updater::with_env(env(), true, &dir);
         assert_eq!(next.state.lock().unwrap().failed_version.as_deref(), Some("999.0.0"));
         assert_eq!(next.status()["last_error"], "The new version did not start, so the previous version was put back.");

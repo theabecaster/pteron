@@ -1,4 +1,5 @@
-//! The desktop notice for a phone's first registration: "Rex DUO connected".
+//! The desktop notice for a phone's first registration, whose title is the phone app's name
+//! and " connected" (`TITLE`).
 //! Which phone is new and what the notice says are pure and unit-tested; `post` is the effect.
 
 use crate::{debug, info};
@@ -7,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-pub const TITLE: &str = "Rex DUO connected";
-/// The program in the Mac app, next to the helper, that posts as Rex DUO Beacon
+pub const TITLE: &str = concat!(crate::app_name!(), " connected");
+/// The program in the Mac app, next to the helper, that posts as Beacon
 /// (Packaging/notify.swift). macOS names the app a notification comes from by its bundle, so a
 /// script runner would show under its own name.
 #[cfg(target_os = "macos")]
@@ -112,7 +113,7 @@ pub fn body(device_name: Option<&str>) -> String {
 pub fn command(os: &str, notifier: Option<&Path>, title: &str, body: &str) -> Option<(String, Vec<String>)> {
     let (program, fixed, markup): (String, &[&str], bool) = match os {
         "macos" => (notifier?.display().to_string(), &["post"], false),
-        "linux" => ("notify-send".into(), &["--app-name", "Rex DUO"], true),
+        "linux" => ("notify-send".into(), &["--app-name", crate::app_name!()], true),
         _ => return None,
     };
     let text = |s: &str| if markup { escape_markup(s) } else { s.to_string() };
@@ -137,7 +138,7 @@ fn notifier() -> Option<PathBuf> {
     None
 }
 
-/// Asks macOS, once, whether Rex DUO Beacon may show notifications. Called when the app is
+/// Asks macOS, once, whether Beacon may show notifications. Called when the app is
 /// opened, so the question comes with the welcome and not out of nowhere later. It doesn't
 /// wait for the answer, and a "no" only means the notice is never shown.
 #[cfg(target_os = "macos")]
@@ -157,7 +158,7 @@ pub fn parse_status(printed: &str) -> Option<&'static str> {
     ["allowed", "denied", "undetermined"].into_iter().find(|word| printed.trim() == *word)
 }
 
-/// Whether Rex DUO Beacon may show notifications on this Mac: `allowed`, `denied` or
+/// Whether Beacon may show notifications on this Mac: `allowed`, `denied` or
 /// `undetermined`, as its notifier reports it. It never asks. None anywhere else, and when the
 /// notifier can't say (the helper isn't running from its app, or it took too long).
 pub async fn status() -> Option<&'static str> {
@@ -285,7 +286,7 @@ mod tests {
 
     #[test]
     fn linux_texts_are_escaped_as_markup_and_mac_texts_are_not() {
-        let notifier = Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-notify");
+        let notifier = Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-notify"));
         let name = "<b>x</b> & <a href=\"http://x\">y</a> &lt;";
         let text = body(Some(name));
         let (_, args) = command("linux", None, "a & b", &text).unwrap();
@@ -293,7 +294,7 @@ mod tests {
             args,
             [
                 "--app-name",
-                "Rex DUO",
+                crate::app_name!(),
                 "--",
                 "a &amp; b",
                 "&lt;b&gt;x&lt;/b&gt; &amp; &lt;a href=\"http://x\"&gt;y&lt;/a&gt; &amp;lt; can now open your sessions on this computer.",
@@ -328,7 +329,7 @@ mod tests {
         for name in ["\"; do shell script \"touch /tmp/x\" --\"", "back\\slash \\\" quote", "-e", "--icon=x", "$(id) `id` 'q'"] {
             let text = body(Some(name));
             assert!(text.starts_with(name));
-            let notifier = Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-notify");
+            let notifier = Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-notify"));
             for os in ["macos", "linux"] {
                 let (_, args) = command(os, Some(notifier), TITLE, &text).unwrap();
                 let n = args.len();
@@ -341,13 +342,13 @@ mod tests {
 
     #[test]
     fn command_per_platform() {
-        let notifier = Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-notify");
+        let notifier = Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-notify"));
         let (program, args) = command("macos", Some(notifier), "T", "B").unwrap();
-        assert_eq!(program, "/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-notify");
+        assert_eq!(program, concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-notify"));
         assert_eq!(args, ["post", "--", "T", "B"]);
         let (program, args) = command("linux", None, "T", "B").unwrap();
         assert_eq!(program, "notify-send");
-        assert_eq!(args, ["--app-name", "Rex DUO", "--", "T", "B"]);
+        assert_eq!(args, ["--app-name", crate::app_name!(), "--", "T", "B"]);
         assert!(command("windows", None, "T", "B").is_none());
     }
 

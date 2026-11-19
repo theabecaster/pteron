@@ -1,54 +1,87 @@
-# Rex DUO Beacon: install and update
+# Pteron Beacon: install and update
 
-Rex DUO Beacon sends your phone a notification while the Rex DUO app is closed: when an agent
+Pteron Beacon sends your phone a notification while the Pteron app is closed: when an agent
 needs you, finishes, or a terminal asks for attention. Install it on each computer that runs a Rex
 server. It needs no account and no key, and it keeps itself up to date.
 
+Works with Rex by Superlogical. Not affiliated.
+
 ## From the phone
 
-After you add a computer, Rex DUO offers to install Beacon on it: tap **Install**. The same
-offer is in Settings → Notifications. Rex DUO opens a tab on the computer, which downloads the
+After you add a computer, Pteron offers to install Beacon on it: tap **Install**. The same
+offer is in Settings → Notifications. Pteron opens a tab on the computer, which downloads the
 Beacon, checks it and starts it; nothing runs as an administrator. It needs a Mac or Linux
 computer you own with a recent Rex. To install by hand instead:
 
 ## Mac
 
-1. Download `Rex-DUO-Beacon.zip` from the newest "Rex DUO Beacon" release at
+1. Download `Beacon-macOS.zip` (`Rex-DUO-Beacon.zip` in a release before 0.4.0) from the
+   newest "Pteron Beacon" release at
    <https://github.com/theabecaster/rexduo/releases>.
-2. Unzip it and drag **Rex DUO Beacon** to Applications.
-3. Open it once. It asks to send notifications (for the one "Rex DUO connected" notice per phone),
+2. Unzip it and drag **Pteron Beacon** to Applications.
+3. Open it once. It asks to send notifications (for the one "Pteron connected" notice per phone),
    then runs in the background and starts again at login.
 
-Rex DUO Beacon was called Rex DUO Helper before. A Mac that has `Rex DUO Helper.app` keeps
-everything it allowed and every registered phone: the next update or install leaves one app,
-`Rex DUO Beacon.app`, in the same Applications folder. The command-line program is still
-`rex-duo-helper`, and the state folder and the log keep their names.
+Pteron Beacon had two names before: Rex DUO Helper (version 0.3.0) and Rex DUO Beacon (version
+0.3.1). A Mac that has `Rex DUO Helper.app` or `Rex DUO Beacon.app` keeps everything it allowed
+and every registered phone: the next update or install leaves one app, `Pteron Beacon.app`, in
+the same Applications folder. Nobody has to do anything for it. The command-line program is
+still `rex-duo-helper`, and the state folder and the log keep the names they have
+(`Rex DUO Helper`), as do the bundle identifier and the address releases come from.
+
+An installed Beacon gets the new version from its own updater, which looks for the folder name
+it knows, so the new version first sits in a folder of the earlier name. About 30 seconds after
+it starts there, it renames that folder to `Pteron Beacon.app` and moves its background job,
+in one step with one restart.
 
 macOS keeps the app's path in its Launch Services record too, and the move takes it along:
-Launch Services is told to forget `Rex DUO Helper.app` and to record `Rex DUO Beacon.app`
+Launch Services is told to forget the earlier path and to record `Pteron Beacon.app`
 (`lsregister -u`, then `-f`). After that the LaunchAgent is written for the new path and loaded.
 If `lsregister` is missing or fails, the move goes on without it.
 
-The background job is the LaunchAgent `dev.abrahamgonzalez.rexduo.beacon`
-(`~/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.beacon.plist`). Its label was
-`dev.abrahamgonzalez.rexduo.helper` before, and macOS names a job in System Settings → General →
-Login Items after the app it found when the job's file first appeared, for as long as that
-file exists. So the label moves once, in this order: the file of the new label is written for
-the program where it is now, the earlier job is booted out and the new one loaded, Beacon
-reports in `status.json` that it runs under the new label, and only then is the earlier file
-deleted. One of the two files exists at every moment. If Beacon does not report in within 20 s,
-the new job is booted out, its file removed, the earlier job loaded again from its file, and
-one line goes to the log; the next start tries again. An install, a repair, opening the app
-and the app's move to its name all make this move, and so does a Beacon that finds itself
-running under the earlier label, about 30 s after it started. With both files there at a start
-(a move that was cut short), the Beacon under the new label boots the earlier job out and
-deletes its file, and one under the earlier label gives way to it. `rex-duo-helper status`
-names the label in use.
+The background job is the LaunchAgent `dev.abrahamgonzalez.rexduo.agent`
+(`~/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.agent.plist`). Its label was
+`dev.abrahamgonzalez.rexduo.helper` in version 0.3.0 and `dev.abrahamgonzalez.rexduo.beacon` in
+version 0.3.1. macOS names and draws a job in System Settings → General → Login Items after the
+app it found when the job's file first appeared, for as long as that file exists, so the label
+moves when the app's name does. The order: the file of the new label is written for the
+program where it is now, the earlier jobs are booted out and the new one loaded, Beacon
+reports in `status.json` that it runs under the new label, and only then are the earlier files
+deleted, every one that is there. A file exists at every moment. If Beacon does not report in
+within 20 s, the new job is booted out, its file removed, the earlier job loaded again from its
+file, and one line goes to the log; the next start tries again. An install, a repair, opening
+the app and the app's move to its name all make this move, and so does a Beacon that finds
+itself running under an earlier label, about 30 s after it started. With the new file and an
+earlier one both there at a start (a move that was cut short), the Beacon under the new label
+boots the earlier jobs out and deletes their files, and one under an earlier label gives way
+to it. `rex-duo-helper status` names the label in use.
 
-In Login Items the person sees a new entry named **Rex DUO Beacon** once the new file is
-written. The entry of the earlier label, and the one of the app's earlier path, stay beside it
-until about 70 seconds after the earlier file is deleted (measured on macOS 26); then macOS
-drops them, and one entry is left.
+In Login Items the person sees a new entry named **Pteron Beacon**, with its icon, once the new
+file is written, and macOS shows its "Background Items Added" notice once. Nothing has to be
+allowed again. The entry of the earlier label, and the one of the app's earlier path, stay
+beside it until about 70 seconds after the earlier file is deleted (measured on macOS 26 for
+the move of version 0.3.1); then macOS drops them, and one entry is left. Someone who switched
+Beacon off in Login Items keeps it off: nothing runs there, so nothing moves, until they
+install or open it again.
+
+### Older copies of the app
+
+The Pteron app carries the installer, so a copy of the app from before the name carries an
+installer that knows the two earlier names alone. Against a release that has the name, it
+behaves as follows (`Relay/test-install.sh` runs that installer and holds these outcomes):
+
+- **A new install** works and pushes reach the phone. Beacon takes its name as it starts, and
+  the installer goes on with the path it put the app at: the Mac is not asked whether Beacon
+  may show its own notice, and the installer's last sentence names a path that is gone.
+- **An install over a Beacon that has its name** downloads the app once more; the copy it
+  places gives way to the one that is there. The outcome is the same.
+- **Remove** does not find the app or its background job. It deletes the state folder, so the
+  phones registered on that computer are forgotten, while Beacon stays installed and running
+  under `dev.abrahamgonzalez.rexduo.agent`. The app says Beacon was removed. Removing it from
+  a current copy of the app, or by hand with the current script, finishes the job.
+
+Those copies of the app are withdrawn (their TestFlight builds expired) once a release with
+the name is out; until then, update the app before removing Beacon from it.
 
 ## Linux
 
@@ -103,14 +136,14 @@ If the new version doesn't start, Beacon puts the previous one back.
 ## What it sends, and where
 
 Beacon never holds an Apple key or your phone's notification token. Your phone registers with
-the Rex DUO push gateway (`Gateway/`), gets a secret and hands that to your Beacons through Rex.
+the Pteron push gateway (`Gateway/`), gets a secret and hands that to your Beacons through Rex.
 A Beacon sends the notification's text to the gateway with that secret, and the gateway passes it
 to Apple. The secret can notify your phone and nothing else. Turning notifications off in the app
 deletes it.
 
 ## Removing Beacon
 
-From the phone: Settings → Notifications, the computer's menu, **Remove Beacon**. Rex DUO opens a
+From the phone: Settings → Notifications, the computer's menu, **Remove Beacon**. Pteron opens a
 tab on the computer that stops Beacon and deletes it. By hand, on a Mac or on Linux, the
 same script does it when it gets the two arguments `3 -`:
 
@@ -124,10 +157,10 @@ the app stops its own service, and it is run only after its code signature was c
 Linux nothing that is installed is run: `systemctl --user disable --now rex-duo-helper` stops
 the service.
 
-- Mac: `Rex DUO Beacon.app` in `/Applications` and `~/Applications` (and a copy an update set
-  aside, and the same under the earlier name `Rex DUO Helper.app`),
+- Mac: `Pteron Beacon.app` in `/Applications` and `~/Applications` (and a copy an update set
+  aside, and the same under the earlier names `Rex DUO Beacon.app` and `Rex DUO Helper.app`),
   `~/Library/Application Support/Rex DUO Helper` and Beacon's log in
-  `~/Library/Logs`;
+  `~/Library/Logs` (both keep the name the program first had);
 - Linux: `~/.local/bin/rex-duo-helper` (and a copy an update set aside) and
   `~/.local/state/rex-duo-helper`.
 
@@ -137,6 +170,6 @@ only after it passes the code signature check; one that does not pass stays wher
 something can't be stopped or deleted, or stays, the script names it and ends with code 15.
 
 Without the script: on a Mac run
-`"/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper" uninstall`, then move the app
+`"/Applications/Pteron Beacon.app/Contents/MacOS/rex-duo-helper" uninstall`, then move the app
 to the Trash; on Linux run `rex-duo-helper uninstall`, which also deletes
 `~/.local/bin/rex-duo-helper`. Both leave the state folder.

@@ -1,40 +1,43 @@
-//! The label of the Mac's LaunchAgent, `dev.abrahamgonzalez.rexduo.beacon`, and the move to
-//! it from the earlier label, `dev.abrahamgonzalez.rexduo.helper`.
+//! The label of the Mac's LaunchAgent, `dev.abrahamgonzalez.rexduo.agent`, and the move to
+//! it from the labels it had before, `….rexduo.beacon` and `….rexduo.helper`
+//! (`service::EARLIER_LABELS`).
 //!
 //! macOS lists a background job in System Settings → Login Items under the app it found when
-//! the job's file first appeared, and keeps that for as long as the file exists. A file under
-//! a new label that names the program in `Rex DUO Beacon.app` gets an entry of that name, and
-//! the entry of the earlier file goes about a minute after that file is deleted. So the label
-//! changes once, and at every moment of the change one of the two files exists.
+//! the job's file first appeared, and keeps that name and icon for as long as the file
+//! exists. A file under a new label that names the program in the app as it is called now
+//! gets an entry of that name, and the entry of an earlier file goes about a minute after that
+//! file is deleted. So the label changes when the app's name does, and at every moment of the
+//! change at least one file exists.
 //!
-//! The move, wherever the earlier label's file is found (`Agents::migrate`):
+//! The move, wherever a file of an earlier label is found (`Agents::migrate`):
 //!
 //! 1. the new label's file is written for the program's current path;
-//! 2. the earlier job is booted out and the new one loaded;
+//! 2. the earlier jobs are booted out and the new one loaded;
 //! 3. the helper reports in status.json that it runs under the new label;
-//! 4. the earlier label's file is deleted.
+//! 4. the earlier labels' files are deleted, every one that is there.
 //!
 //! A helper that does not report in is booted out, its file removed, and the earlier job
-//! loaded again from its file, which was never touched.
+//! loaded again from its file, which was never touched: the newest of the earlier labels
+//! that has one.
 //!
-//! A helper that starts while both files exist (a move that was cut short) settles that
-//! (`Agents::at_start`). Under the new label it boots the earlier job out and deletes the
-//! earlier file. Under the earlier label it has the move go on from step 2, with the new
-//! file as it is (`Agents::resume`), and does not serve when the new job is loaded already.
-//! The lock on helper.lock in the state folder stays the last guard: of two helpers that
-//! launchd starts at a login, one gets it and the other ends.
+//! A helper that starts while the new label and an earlier one both have a file (a move that
+//! was cut short) settles that (`Agents::at_start`). Under the new label it boots the earlier
+//! jobs out and deletes their files. Under an earlier label it has the move go on from step 2,
+//! with the new file as it is (`Agents::resume`), and does not serve when the new job is
+//! loaded already. The lock on helper.lock in the state folder stays the last guard: of the
+//! helpers that launchd starts at a login, one gets it and the others end.
 //!
 //! A job cannot boot itself out and live, so the service has the move done by the separate
 //! launchd job that also finishes an update (src/rename.rs). `install` and opening the app
 //! are not the service and do the steps themselves.
 //!
 //! A helper knows its label from `REXDUO_LABEL`, which every file written here sets for its
-//! job. A file written by a version from before the new label sets no such variable; there
-//! launchd's own `XPC_SERVICE_NAME`, the label of the job a process belongs to, tells.
+//! job. A file written by a version from before that sets no such variable; there launchd's
+//! own `XPC_SERVICE_NAME`, the label of the job a process belongs to, tells.
 //!
 //! Everything here is tested with a stand-in for launchd.
 
-use crate::service::{point_agent, program_of, EARLIER_LABEL, LABEL};
+use crate::service::{point_agent, program_of, EARLIER_LABELS, LABEL};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -78,18 +81,18 @@ impl Confirm<'_> {
     }
 }
 
-/// What a helper that starts does about the two labels.
+/// What a helper that starts does about the labels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtStart {
     /// Nothing: it is not a launchd job of ours, or only its own label's file exists.
     Serve,
-    /// It runs under the new label and the earlier label's file is still there: the earlier
-    /// job is booted out and its file deleted, by this process, before it serves.
+    /// It runs under the new label and a file of an earlier label is still there: the
+    /// earlier jobs are booted out and their files deleted, by this process, before it serves.
     DropEarlier,
-    /// It runs under the earlier label while the new label's job is loaded: it does not
-    /// serve, and has the earlier job booted out and its file deleted (`Agents::resume`).
+    /// It runs under an earlier label while the new label's job is loaded: it does not
+    /// serve, and has the earlier jobs booted out and their files deleted (`Agents::resume`).
     StepAside,
-    /// It runs under the earlier label and no job of the new one is loaded: it serves, and
+    /// It runs under an earlier label and no job of the new one is loaded: it serves, and
     /// has the move done: all of it, or from its second step when the new file is there.
     Migrate,
 }
@@ -97,8 +100,18 @@ pub enum AtStart {
 /// The label a process runs under: what its job's file set (`ours`), else the label of the
 /// launchd job it belongs to (`launchd`). None for a process that is no job of the helper's.
 pub fn own(ours: Option<&str>, launchd: Option<&str>) -> Option<&'static str> {
-    let known = |name: &str| [LABEL, EARLIER_LABEL].into_iter().find(|label| *label == name);
+    let known = |name: &str| all_labels().find(|label| *label == name);
     ours.and_then(known).or_else(|| launchd.and_then(known))
+}
+
+/// The new label, then the earlier ones, newest first.
+fn all_labels() -> impl Iterator<Item = &'static str> {
+    std::iter::once(LABEL).chain(EARLIER_LABELS)
+}
+
+/// True for one of the labels the job had before.
+pub fn is_earlier(label: &str) -> bool {
+    EARLIER_LABELS.contains(&label)
 }
 
 /// The LaunchAgent files in one folder (`~/Library/LaunchAgents`) and their jobs.
@@ -116,13 +129,30 @@ impl Agents<'_> {
         self.file(label).exists()
     }
 
-    /// The label to restart, stop, check and print: the new one, or the earlier one while
-    /// only its file exists.
+    /// The newest of the earlier labels that has a file.
+    fn earlier(&self) -> Option<&'static str> {
+        EARLIER_LABELS.into_iter().find(|label| self.has(label))
+    }
+
+    /// True while a file of an earlier label exists.
+    pub fn has_earlier(&self) -> bool {
+        self.earlier().is_some()
+    }
+
+    /// The label to restart, stop, check and print: the new one, or while it has no file,
+    /// the newest earlier one that has.
     pub fn in_use(&self) -> &'static str {
-        if !self.has(LABEL) && self.has(EARLIER_LABEL) {
-            EARLIER_LABEL
-        } else {
+        if self.has(LABEL) {
             LABEL
+        } else {
+            self.earlier().unwrap_or(LABEL)
+        }
+    }
+
+    /// Boots out the job of every earlier label but `keep`.
+    fn boot_out_earlier(&self, keep: Option<&str>) {
+        for label in EARLIER_LABELS.into_iter().filter(|label| Some(*label) != keep) {
+            self.launchd.boot_out(label);
         }
     }
 
@@ -150,31 +180,34 @@ impl Agents<'_> {
         Ok(changed)
     }
 
-    /// Steps 1 and 2 of the move: the new label's file is written while the earlier one still
-    /// exists, then the earlier job is booted out and the new one loaded. False when the file
+    /// Steps 1 and 2 of the move: the new label's file is written while the earlier ones still
+    /// exist, then the earlier jobs are booted out and the new one loaded. False when the file
     /// could not be written or launchd refused the job.
     pub fn begin(&self, program: &Path) -> bool {
         if self.write(LABEL, program).is_err() {
             return false;
         }
-        self.launchd.boot_out(EARLIER_LABEL);
+        self.boot_out_earlier(None);
         self.load(LABEL)
     }
 
-    /// Step 4, once the helper runs under the new label: the earlier label's file goes.
+    /// Step 4, once the helper runs under the new label: the earlier labels' files go.
     pub fn settle(&self) {
-        self.remove(EARLIER_LABEL);
+        for label in EARLIER_LABELS {
+            self.remove(label);
+        }
     }
 
     /// The way back: the new job is booted out, its file removed, and the earlier job loaded
-    /// again from its file. Without that file the new one stays, so a file is always there.
+    /// again from its file (the newest earlier label that has one). Without such a file the
+    /// new one stays, so a file is always there.
     pub fn back_out(&self) -> bool {
-        if !self.has(EARLIER_LABEL) {
+        let Some(earlier) = self.earlier() else {
             return self.load(LABEL);
-        }
+        };
         self.launchd.boot_out(LABEL);
         self.remove(LABEL);
-        self.load(EARLIER_LABEL)
+        self.load(earlier)
     }
 
     /// The whole move, for a caller that is not the job it boots out.
@@ -198,7 +231,7 @@ impl Agents<'_> {
         let Some(program) = self.program(LABEL) else {
             return Err(format!("the file of the label {LABEL} names no program"));
         };
-        self.launchd.boot_out(EARLIER_LABEL);
+        self.boot_out_earlier(None);
         if self.load(LABEL) && confirm.reached(&program) {
             self.settle();
             return Ok(());
@@ -209,13 +242,11 @@ impl Agents<'_> {
 
     /// Restarts the background job as `program`, under the label in use. While its file
     /// names that program the job is restarted as it is. When it names another, the file is
-    /// written for this one and the job loaded again. A job of the earlier label beside a
-    /// file of the new one is booted out first: one helper runs.
+    /// written for this one and the job loaded again. A job of another, earlier label is
+    /// booted out first: one helper runs.
     pub fn restart_into(&self, program: &Path) -> bool {
         let label = self.in_use();
-        if label == LABEL && self.has(EARLIER_LABEL) {
-            self.launchd.boot_out(EARLIER_LABEL);
-        }
+        self.boot_out_earlier(Some(label));
         let file = self.file(label);
         match point_agent(&file, label, program, &|| self.launchd.boot_out(label)) {
             Err(_) => false,
@@ -228,13 +259,13 @@ impl Agents<'_> {
     }
 
     /// What `install` and opening the app do: the job runs `program` now and at every login.
-    /// A new install writes and loads the new label alone. With the earlier label's file
+    /// A new install writes and loads the new label alone. With a file of an earlier label
     /// there, the move is done first (`may_move` is false while an update holds its lock);
-    /// a move that did not hold leaves the job under the earlier label, and its reason is
+    /// a move that did not hold leaves the job under its earlier label, and its reason is
     /// returned. A job that already runs is restarted when `again` says it should be.
     pub fn start(&self, program: &Path, may_move: bool, again: &dyn Fn() -> bool, confirm: &Confirm) -> Result<Option<String>, String> {
         let mut kept = None;
-        if may_move && self.has(EARLIER_LABEL) {
+        if may_move && self.has_earlier() {
             let fresh = !self.launchd.loaded(LABEL);
             match self.migrate(program, confirm) {
                 // Loaded just now, from this program: nothing is left to restart.
@@ -254,23 +285,24 @@ impl Agents<'_> {
         Ok(kept)
     }
 
-    /// What `uninstall` does: the jobs of both labels are booted out and their files deleted.
+    /// What `uninstall` does: the jobs of every label are booted out and their files deleted.
     pub fn stop_all(&self) {
-        for label in [LABEL, EARLIER_LABEL] {
+        for label in all_labels() {
             self.launchd.boot_out(label);
             self.remove(label);
         }
     }
 
     /// What a helper that starts under `own` does. `moving` is true while an update or a
-    /// move holds its lock: whoever holds it deletes the earlier file itself, or needs it to
-    /// go back to.
+    /// move holds its lock: whoever holds it deletes the earlier files itself, or needs one
+    /// to go back to.
     pub fn at_start(&self, own: Option<&str>, moving: bool) -> AtStart {
-        if own == Some(LABEL) && self.has(EARLIER_LABEL) && !moving {
+        let earlier = own.is_some_and(is_earlier);
+        if own == Some(LABEL) && self.has_earlier() && !moving {
             AtStart::DropEarlier
-        } else if own == Some(EARLIER_LABEL) && self.has(LABEL) && self.launchd.loaded(LABEL) {
+        } else if earlier && self.has(LABEL) && self.launchd.loaded(LABEL) {
             AtStart::StepAside
-        } else if own == Some(EARLIER_LABEL) {
+        } else if earlier {
             AtStart::Migrate
         } else {
             AtStart::Serve
@@ -279,8 +311,8 @@ impl Agents<'_> {
 
     /// `AtStart::DropEarlier`, done.
     pub fn drop_earlier(&self) {
-        self.launchd.boot_out(EARLIER_LABEL);
-        self.remove(EARLIER_LABEL);
+        self.boot_out_earlier(None);
+        self.settle();
     }
 }
 
@@ -339,7 +371,7 @@ pub mod fake {
 
         /// The label files that exist, by their short names.
         pub fn files(&self) -> Vec<String> {
-            [LABEL, EARLIER_LABEL].into_iter().filter(|l| self.dir.join(format!("{l}.plist")).exists()).map(|l| short(l).to_string()).collect()
+            all_labels().filter(|l| self.dir.join(format!("{l}.plist")).exists()).map(|l| short(l).to_string()).collect()
         }
 
         pub fn loaded_now(&self) -> Vec<String> {
@@ -418,11 +450,11 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::fake::FakeLaunchd;
+    use super::fake::{short, FakeLaunchd};
     use super::*;
 
-    const NEW: &str = "/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper";
-    const OLD: &str = "/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper";
+    const NEW: &str = "/Applications/New.app/Contents/MacOS/rex-duo-helper";
+    const OLD: &str = "/Applications/Old.app/Contents/MacOS/rex-duo-helper";
 
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("label-{tag}-{}-{}", std::process::id(), crate::util::now()));
@@ -435,79 +467,114 @@ mod tests {
         Confirm { runs, wait: Duration::from_millis(40), poll: Duration::from_millis(5) }
     }
 
+    /// Each test below runs once for each earlier label. What launchd was asked, and the
+    /// files and jobs that are left, name that label `earlier`, so one set of expectations
+    /// holds for all of them.
+    fn plain(names: Vec<String>, earlier: &str) -> Vec<String> {
+        names.into_iter().map(|name| name.replace(short(earlier), "earlier")).collect()
+    }
+
+    fn told(launchd: &FakeLaunchd, earlier: &str) -> Vec<String> {
+        plain(launchd.events(), earlier)
+    }
+
+    /// The label files that exist, and the jobs that are loaded.
+    fn left(launchd: &FakeLaunchd, earlier: &str) -> (Vec<String>, Vec<String>) {
+        (plain(launchd.files(), earlier), plain(launchd.loaded_now(), earlier))
+    }
+
+    fn only(name: &str) -> (Vec<String>, Vec<String>) {
+        (vec![name.to_string()], vec![name.to_string()])
+    }
+
+    #[test]
+    fn the_labels() {
+        assert_eq!(short(LABEL), "agent");
+        assert_eq!(EARLIER_LABELS.map(short), ["beacon", "helper"]);
+        // One prefix, and the job that finishes an update is none of them.
+        for label in all_labels() {
+            assert!(label.starts_with("dev.abrahamgonzalez.rexduo.") && label != "dev.abrahamgonzalez.rexduo.helper.update");
+        }
+    }
+
     #[test]
     fn the_move_writes_the_new_file_swaps_the_jobs_confirms_and_then_deletes_the_earlier_file() {
-        let dir = temp("order");
-        let launchd = FakeLaunchd::new(&dir);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        launchd.seed(EARLIER_LABEL, Path::new(NEW));
-        let earlier_before = std::fs::read_to_string(agents.file(EARLIER_LABEL)).unwrap();
+        for earlier in EARLIER_LABELS {
+            let dir = temp("order");
+            let launchd = FakeLaunchd::new(&dir);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            launchd.seed(earlier, Path::new(NEW));
+            let earlier_before = std::fs::read_to_string(agents.file(earlier)).unwrap();
 
-        // The helper is asked for only after the jobs were swapped, and the earlier label's
-        // file is still there, as it was, each time.
-        let asked = std::cell::Cell::new(0);
-        let runs = |program: &Path| {
-            asked.set(asked.get() + 1);
-            assert_eq!(launchd.files(), ["beacon", "helper"]);
-            assert_eq!(std::fs::read_to_string(agents.file(EARLIER_LABEL)).unwrap(), earlier_before);
-            assert_eq!(launchd.loaded_now(), ["beacon"]);
-            asked.get() > 2 && launchd.runs_new(program)
-        };
-        assert_eq!(agents.migrate(Path::new(NEW), &confirm(&runs)), Ok(()));
-        // Both files exist when the earlier job is booted out and when the new one is loaded.
-        assert_eq!(launchd.events(), ["boot out helper [beacon helper]", "bootstrap beacon [beacon helper]"]);
-        assert_eq!(asked.get(), 3);
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        assert_eq!(launchd.program(LABEL).as_deref(), Some(Path::new(NEW)));
-        assert_eq!(agents.in_use(), LABEL);
-        std::fs::remove_dir_all(dir).unwrap();
+            // The helper is asked for only after the jobs were swapped, and the earlier label's
+            // file is still there, as it was, each time.
+            let asked = std::cell::Cell::new(0);
+            let runs = |program: &Path| {
+                asked.set(asked.get() + 1);
+                assert_eq!(left(&launchd, earlier), (vec!["agent".to_string(), "earlier".to_string()], vec!["agent".to_string()]));
+                assert_eq!(std::fs::read_to_string(agents.file(earlier)).unwrap(), earlier_before);
+                asked.get() > 2 && launchd.runs_new(program)
+            };
+            assert_eq!(agents.migrate(Path::new(NEW), &confirm(&runs)), Ok(()));
+            // Both files exist when the earlier job is booted out and when the new one is loaded.
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [agent earlier]", "bootstrap agent [agent earlier]"]);
+            assert_eq!(asked.get(), 3);
+            assert_eq!(left(&launchd, earlier), only("agent"));
+            assert_eq!(launchd.program(LABEL).as_deref(), Some(Path::new(NEW)));
+            assert_eq!(agents.in_use(), LABEL);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
     fn a_new_job_that_does_not_come_up_restores_the_earlier_job_and_removes_the_new_file() {
-        let dir = temp("back");
-        let mut launchd = FakeLaunchd::new(&dir);
-        launchd.comes_up = Box::new(|label, _| label == EARLIER_LABEL);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        launchd.seed(EARLIER_LABEL, Path::new(OLD));
-        let earlier_before = std::fs::read_to_string(agents.file(EARLIER_LABEL)).unwrap();
+        for earlier in EARLIER_LABELS {
+            let dir = temp("back");
+            let mut launchd = FakeLaunchd::new(&dir);
+            launchd.comes_up = Box::new(|label, _| label != LABEL);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            launchd.seed(earlier, Path::new(OLD));
+            let earlier_before = std::fs::read_to_string(agents.file(earlier)).unwrap();
 
-        let runs = |program: &Path| launchd.runs_new(program);
-        assert_eq!(agents.migrate(Path::new(OLD), &confirm(&runs)).unwrap_err(), format!("it did not start under the label {LABEL}"));
-        assert_eq!(
-            launchd.events(),
-            ["boot out helper [beacon helper]", "bootstrap beacon [beacon helper]", "boot out beacon [beacon helper]", "bootstrap helper [helper]"]
-        );
-        // As before: the earlier label's file, untouched, its job loaded, the helper running.
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["helper".to_string()], vec!["helper".to_string()]));
-        assert_eq!(std::fs::read_to_string(agents.file(EARLIER_LABEL)).unwrap(), earlier_before);
-        assert_eq!(*launchd.running.borrow(), Some((EARLIER_LABEL.to_string(), PathBuf::from(OLD))));
-        assert_eq!(agents.in_use(), EARLIER_LABEL);
+            let runs = |program: &Path| launchd.runs_new(program);
+            assert_eq!(agents.migrate(Path::new(OLD), &confirm(&runs)).unwrap_err(), format!("it did not start under the label {LABEL}"));
+            assert_eq!(
+                told(&launchd, earlier),
+                ["boot out earlier [agent earlier]", "bootstrap agent [agent earlier]", "boot out agent [agent earlier]", "bootstrap earlier [earlier]"]
+            );
+            // As before: the earlier label's file, untouched, its job loaded, the helper running.
+            assert_eq!(left(&launchd, earlier), only("earlier"));
+            assert_eq!(std::fs::read_to_string(agents.file(earlier)).unwrap(), earlier_before);
+            assert_eq!(*launchd.running.borrow(), Some((earlier.to_string(), PathBuf::from(OLD))));
+            assert_eq!(agents.in_use(), earlier);
 
-        // A job launchd refuses to load: the same.
-        launchd.refused.borrow_mut().insert(LABEL.into());
-        assert!(agents.migrate(Path::new(OLD), &confirm(&|_| panic!("nothing was loaded"))).is_err());
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["helper".to_string()], vec!["helper".to_string()]));
-        // A file that can't be written: the earlier job is never booted out.
-        launchd.events();
-        std::fs::create_dir_all(agents.file(LABEL)).unwrap();
-        assert!(!agents.begin(Path::new(OLD)));
-        assert!(launchd.events().is_empty() && launchd.loaded(EARLIER_LABEL));
-        std::fs::remove_dir_all(dir).unwrap();
+            // A job launchd refuses to load: the same.
+            launchd.refused.borrow_mut().insert(LABEL.into());
+            assert!(agents.migrate(Path::new(OLD), &confirm(&|_| panic!("nothing was loaded"))).is_err());
+            assert_eq!(left(&launchd, earlier), only("earlier"));
+            // A file that can't be written: the earlier job is never booted out.
+            launchd.events();
+            std::fs::create_dir_all(agents.file(LABEL)).unwrap();
+            assert!(!agents.begin(Path::new(OLD)));
+            assert!(launchd.events().is_empty() && launchd.loaded(earlier));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
     fn the_way_back_never_leaves_the_mac_without_a_file() {
-        let dir = temp("file");
-        let launchd = FakeLaunchd::new(&dir);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        launchd.seed(EARLIER_LABEL, Path::new(NEW));
-        assert!(agents.begin(Path::new(NEW)));
-        // The earlier file went meanwhile: the new one stays, loaded.
-        std::fs::remove_file(agents.file(EARLIER_LABEL)).unwrap();
-        assert!(agents.back_out());
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        std::fs::remove_dir_all(dir).unwrap();
+        for earlier in EARLIER_LABELS {
+            let dir = temp("file");
+            let launchd = FakeLaunchd::new(&dir);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            launchd.seed(earlier, Path::new(NEW));
+            assert!(agents.begin(Path::new(NEW)));
+            // The earlier file went meanwhile: the new one stays, loaded.
+            std::fs::remove_file(agents.file(earlier)).unwrap();
+            assert!(agents.back_out());
+            assert_eq!(left(&launchd, earlier), only("agent"));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -518,156 +585,236 @@ mod tests {
         let agents = Agents { dir: dir.join("LaunchAgents"), launchd: &launchd };
         let nobody = confirm(&|_| panic!("nothing to move"));
         assert_eq!(agents.start(Path::new(NEW), true, &|| false, &nobody), Ok(None));
-        assert_eq!(launchd.events(), ["bootstrap beacon [beacon]"]);
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
+        assert_eq!(launchd.events(), ["bootstrap agent [agent]"]);
+        assert_eq!((launchd.files(), launchd.loaded_now()), only("agent"));
         assert_eq!(std::fs::read_dir(&agents.dir).unwrap().count(), 1);
         let text = std::fs::read_to_string(agents.file(LABEL)).unwrap();
-        assert!(text.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.beacon</string>"));
+        assert!(text.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.agent</string>"));
         // Again, with the job loaded: left alone, or restarted when asked.
         assert_eq!(agents.start(Path::new(NEW), true, &|| false, &nobody), Ok(None));
         assert!(launchd.events().is_empty());
         assert_eq!(agents.start(Path::new(NEW), true, &|| true, &nobody), Ok(None));
-        assert_eq!(launchd.events(), ["kickstart -k beacon [beacon]"]);
+        assert_eq!(launchd.events(), ["kickstart -k agent [agent]"]);
         // From another program: the job is loaded again, under the same label.
         assert_eq!(agents.start(Path::new(OLD), true, &|| false, &nobody), Ok(None));
-        assert_eq!(launchd.events(), ["boot out beacon [beacon]", "bootstrap beacon [beacon]"]);
+        assert_eq!(launchd.events(), ["boot out agent [agent]", "bootstrap agent [agent]"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn an_install_over_the_earlier_label_moves_it_with_one_restart() {
-        let dir = temp("over");
-        let launchd = FakeLaunchd::new(&dir);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        launchd.seed(EARLIER_LABEL, Path::new(OLD));
-        let runs = |program: &Path| launchd.runs_new(program);
-        assert_eq!(agents.start(Path::new(NEW), true, &|| true, &confirm(&runs)), Ok(None));
-        assert_eq!(launchd.events(), ["boot out helper [beacon helper]", "bootstrap beacon [beacon helper]"]);
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        assert!(launchd.runs_new(Path::new(NEW)));
+        for earlier in EARLIER_LABELS {
+            let dir = temp("over");
+            let launchd = FakeLaunchd::new(&dir);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            launchd.seed(earlier, Path::new(OLD));
+            let runs = |program: &Path| launchd.runs_new(program);
+            assert_eq!(agents.start(Path::new(NEW), true, &|| true, &confirm(&runs)), Ok(None));
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [agent earlier]", "bootstrap agent [agent earlier]"]);
+            assert_eq!(left(&launchd, earlier), only("agent"));
+            assert!(launchd.runs_new(Path::new(NEW)));
 
-        // While an update holds its lock nothing is moved: the job stays under its label.
-        let launchd = FakeLaunchd::new(&dir);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        std::fs::remove_file(agents.file(LABEL)).unwrap();
-        launchd.seed(EARLIER_LABEL, Path::new(NEW));
-        assert_eq!(agents.start(Path::new(NEW), false, &|| false, &confirm(&|_| panic!("nothing to move"))), Ok(None));
-        assert_eq!(launchd.files(), ["helper"]);
-        assert!(!launchd.events().iter().any(|e| e.contains("beacon")));
+            // While an update holds its lock nothing is moved: the job stays under its label.
+            let launchd = FakeLaunchd::new(&dir);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            std::fs::remove_file(agents.file(LABEL)).unwrap();
+            launchd.seed(earlier, Path::new(NEW));
+            assert_eq!(agents.start(Path::new(NEW), false, &|| false, &confirm(&|_| panic!("nothing to move"))), Ok(None));
+            assert_eq!(plain(launchd.files(), earlier), ["earlier"]);
+            assert!(!launchd.events().iter().any(|e| e.contains("agent")));
 
-        // A move that does not hold: the helper runs on under the earlier label, and the
-        // reason is handed back.
-        let mut launchd = FakeLaunchd::new(&dir);
-        launchd.comes_up = Box::new(|label, _| label == EARLIER_LABEL);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        launchd.seed(EARLIER_LABEL, Path::new(NEW));
-        let runs = |program: &Path| launchd.runs_new(program);
-        let kept = agents.start(Path::new(NEW), true, &|| false, &confirm(&runs)).unwrap();
-        assert!(kept.is_some_and(|why| why.contains("did not start under the label")));
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["helper".to_string()], vec!["helper".to_string()]));
-        assert!(launchd.running.borrow().is_some());
-        std::fs::remove_dir_all(dir).unwrap();
+            // A move that does not hold: the helper runs on under the earlier label, and the
+            // reason is handed back.
+            let mut launchd = FakeLaunchd::new(&dir);
+            launchd.comes_up = Box::new(|label, _| label != LABEL);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            launchd.seed(earlier, Path::new(NEW));
+            let runs = |program: &Path| launchd.runs_new(program);
+            let kept = agents.start(Path::new(NEW), true, &|| false, &confirm(&runs)).unwrap();
+            assert!(kept.is_some_and(|why| why.contains("did not start under the label")));
+            assert_eq!(left(&launchd, earlier), only("earlier"));
+            assert!(launchd.running.borrow().is_some());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
     fn with_both_files_at_a_start_one_helper_is_left_under_the_new_label() {
-        let dir = temp("both");
+        for earlier in EARLIER_LABELS {
+            let dir = temp("both");
+            let launchd = FakeLaunchd::new(&dir);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            // A login with both files: launchd loads both jobs, and one of the two helpers runs.
+            launchd.seed(LABEL, Path::new(NEW));
+            launchd.seed(earlier, Path::new(NEW));
+            assert_eq!(agents.in_use(), LABEL);
+
+            // Under the new label: the earlier job is booted out and its file deleted, by the
+            // process itself. Not while a move or an update is at work.
+            assert_eq!(agents.at_start(Some(LABEL), true), AtStart::Serve);
+            assert_eq!(agents.at_start(Some(LABEL), false), AtStart::DropEarlier);
+            // Under the earlier label, with the new job loaded: it steps aside.
+            assert_eq!(agents.at_start(Some(earlier), false), AtStart::StepAside);
+            assert_eq!(agents.at_start(Some(earlier), true), AtStart::StepAside);
+            // Not a job of ours: nothing.
+            assert_eq!(agents.at_start(None, false), AtStart::Serve);
+
+            agents.drop_earlier();
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [agent earlier]"]);
+            assert_eq!(left(&launchd, earlier), only("agent"));
+            assert_eq!(agents.at_start(Some(LABEL), false), AtStart::Serve);
+
+            // Stepping aside is the move from its second step, done by the separate job. The new
+            // file stays as it is, whatever program the earlier one names; its job is loaded and
+            // runs, so only the earlier one goes.
+            launchd.seed(earlier, Path::new(OLD));
+            *launchd.running.borrow_mut() = Some((LABEL.into(), PathBuf::from(NEW)));
+            let new_before = std::fs::read_to_string(agents.file(LABEL)).unwrap();
+            let runs = |program: &Path| launchd.runs_new(program);
+            assert_eq!(agents.resume(&confirm(&runs)), Ok(()));
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [agent earlier]", "kickstart agent [agent earlier]"]);
+            assert_eq!(left(&launchd, earlier), only("agent"));
+            assert_eq!(std::fs::read_to_string(agents.file(LABEL)).unwrap(), new_before);
+
+            // Both files, and only the earlier job loaded: the same steps, and the new job is loaded.
+            launchd.seed(earlier, Path::new(OLD));
+            launchd.loaded.borrow_mut().remove(LABEL);
+            assert_eq!(agents.at_start(Some(earlier), false), AtStart::Migrate);
+            assert_eq!(agents.resume(&confirm(&runs)), Ok(()));
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [agent earlier]", "bootstrap agent [agent earlier]"]);
+            assert_eq!(left(&launchd, earlier), only("agent"));
+            assert!(launchd.runs_new(Path::new(NEW)));
+            // A new job that does not come up there: back to the earlier one, as in the whole move.
+            launchd.seed(earlier, Path::new(OLD));
+            launchd.loaded.borrow_mut().remove(LABEL);
+            assert!(agents.resume(&confirm(&|_| false)).is_err());
+            assert_eq!(left(&launchd, earlier), only("earlier"));
+            assert_eq!(*launchd.running.borrow(), Some((earlier.to_string(), PathBuf::from(OLD))));
+            launchd.events();
+            launchd.seed(LABEL, Path::new(NEW));
+            agents.drop_earlier();
+            launchd.events();
+
+            // Only the earlier file: the whole move. Only the new one: nothing.
+            std::fs::rename(agents.file(LABEL), agents.file(earlier)).unwrap();
+            assert_eq!(agents.at_start(Some(earlier), false), AtStart::Migrate);
+            std::fs::rename(agents.file(earlier), agents.file(LABEL)).unwrap();
+            assert_eq!(agents.at_start(Some(LABEL), false), AtStart::Serve);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// A Mac that was two names behind, or whose last move was cut short: files of both
+    /// earlier labels, with or without the new one.
+    #[test]
+    fn every_earlier_file_goes_in_the_one_move() {
+        let [beacon, helper] = EARLIER_LABELS;
+        let names = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+
+        // Two files: the newer of them is the one in use, and one move ends with the new label alone.
+        let dir = temp("two");
         let launchd = FakeLaunchd::new(&dir);
         let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        // A login with both files: launchd loads both jobs, and one of the two helpers runs.
-        launchd.seed(LABEL, Path::new(NEW));
-        launchd.seed(EARLIER_LABEL, Path::new(NEW));
+        launchd.seed(helper, Path::new(OLD));
+        launchd.seed(beacon, Path::new(OLD));
+        *launchd.running.borrow_mut() = Some((beacon.into(), PathBuf::from(OLD)));
+        assert_eq!(agents.in_use(), beacon);
+        // Under either of them: the move. No job of the new label is loaded, so none steps aside.
+        assert_eq!((agents.at_start(Some(beacon), false), agents.at_start(Some(helper), false)), (AtStart::Migrate, AtStart::Migrate));
+        let runs = |program: &Path| launchd.runs_new(program);
+        assert_eq!(agents.migrate(Path::new(NEW), &confirm(&runs)), Ok(()));
+        assert_eq!(launchd.events(), ["boot out beacon [agent beacon helper]", "boot out helper [agent beacon helper]", "bootstrap agent [agent beacon helper]"]);
+        assert_eq!((launchd.files(), launchd.loaded_now()), only("agent"));
+        assert!(launchd.runs_new(Path::new(NEW)));
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // The new job does not come up: back to the newer of the two, and both files stay.
+        let dir = temp("two-back");
+        let mut launchd = FakeLaunchd::new(&dir);
+        launchd.comes_up = Box::new(|label, _| label != LABEL);
+        let agents = Agents { dir: dir.clone(), launchd: &launchd };
+        launchd.seed(helper, Path::new(OLD));
+        launchd.loaded.borrow_mut().remove(helper);
+        launchd.seed(beacon, Path::new(OLD));
+        assert!(agents.migrate(Path::new(NEW), &confirm(&|_| false)).is_err());
+        assert_eq!((launchd.files(), launchd.loaded_now()), (names(&["beacon", "helper"]), names(&["beacon"])));
+        assert_eq!(*launchd.running.borrow(), Some((beacon.to_string(), PathBuf::from(OLD))));
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // Three files, as a move that was cut short after its first step leaves them.
+        let dir = temp("three");
+        let launchd = FakeLaunchd::new(&dir);
+        let agents = Agents { dir: dir.clone(), launchd: &launchd };
+        for label in [helper, beacon, LABEL] {
+            launchd.seed(label, Path::new(NEW));
+        }
         assert_eq!(agents.in_use(), LABEL);
-
-        // Under the new label: the earlier job is booted out and its file deleted, by the
-        // process itself. Not while a move or an update is at work.
-        assert_eq!(agents.at_start(Some(LABEL), true), AtStart::Serve);
+        // Under the new label, both earlier jobs and files go before it serves.
         assert_eq!(agents.at_start(Some(LABEL), false), AtStart::DropEarlier);
-        // Under the earlier label, with the new job loaded: it steps aside.
-        assert_eq!(agents.at_start(Some(EARLIER_LABEL), false), AtStart::StepAside);
-        assert_eq!(agents.at_start(Some(EARLIER_LABEL), true), AtStart::StepAside);
-        // Not a job of ours: nothing.
-        assert_eq!(agents.at_start(None, false), AtStart::Serve);
-
+        assert_eq!((agents.at_start(Some(beacon), false), agents.at_start(Some(helper), false)), (AtStart::StepAside, AtStart::StepAside));
         agents.drop_earlier();
-        assert_eq!(launchd.events(), ["boot out helper [beacon helper]"]);
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        assert_eq!(agents.at_start(Some(LABEL), false), AtStart::Serve);
-
-        // Stepping aside is the move from its second step, done by the separate job. The new
-        // file stays as it is, whatever program the earlier one names; its job is loaded and
-        // runs, so only the earlier one goes.
-        launchd.seed(EARLIER_LABEL, Path::new(OLD));
-        *launchd.running.borrow_mut() = Some((LABEL.into(), PathBuf::from(NEW)));
-        let new_before = std::fs::read_to_string(agents.file(LABEL)).unwrap();
+        assert_eq!(launchd.events(), ["boot out beacon [agent beacon helper]", "boot out helper [agent beacon helper]"]);
+        assert_eq!((launchd.files(), launchd.loaded_now()), only("agent"));
+        // Under an earlier one, the move goes on from its second step, and ends the same.
+        for label in [helper, beacon] {
+            launchd.seed(label, Path::new(OLD));
+        }
+        launchd.loaded.borrow_mut().remove(LABEL);
+        *launchd.running.borrow_mut() = Some((beacon.into(), PathBuf::from(OLD)));
+        assert_eq!(agents.at_start(Some(beacon), false), AtStart::Migrate);
         let runs = |program: &Path| launchd.runs_new(program);
         assert_eq!(agents.resume(&confirm(&runs)), Ok(()));
-        assert_eq!(launchd.events(), ["boot out helper [beacon helper]", "kickstart beacon [beacon helper]"]);
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        assert_eq!(std::fs::read_to_string(agents.file(LABEL)).unwrap(), new_before);
-
-        // Both files, and only the earlier job loaded: the same steps, and the new job is loaded.
-        launchd.seed(EARLIER_LABEL, Path::new(OLD));
-        launchd.loaded.borrow_mut().remove(LABEL);
-        assert_eq!(agents.at_start(Some(EARLIER_LABEL), false), AtStart::Migrate);
-        assert_eq!(agents.resume(&confirm(&runs)), Ok(()));
-        assert_eq!(launchd.events(), ["boot out helper [beacon helper]", "bootstrap beacon [beacon helper]"]);
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        assert!(launchd.runs_new(Path::new(NEW)));
-        // A new job that does not come up there: back to the earlier one, as in the whole move.
-        launchd.seed(EARLIER_LABEL, Path::new(OLD));
-        launchd.loaded.borrow_mut().remove(LABEL);
-        assert!(agents.resume(&confirm(&|_| false)).is_err());
-        assert_eq!((launchd.files(), launchd.loaded_now()), (vec!["helper".to_string()], vec!["helper".to_string()]));
-        assert_eq!(*launchd.running.borrow(), Some((EARLIER_LABEL.to_string(), PathBuf::from(OLD))));
+        assert_eq!((launchd.files(), launchd.loaded_now()), only("agent"));
+        // A restart, and an uninstall, with all three there.
+        for label in [helper, beacon] {
+            launchd.seed(label, Path::new(NEW));
+        }
         launchd.events();
-        launchd.seed(LABEL, Path::new(NEW));
-        agents.drop_earlier();
-        launchd.events();
-
-        // Only the earlier file: the whole move. Only the new one: nothing.
-        std::fs::rename(agents.file(LABEL), agents.file(EARLIER_LABEL)).unwrap();
-        assert_eq!(agents.at_start(Some(EARLIER_LABEL), false), AtStart::Migrate);
-        std::fs::rename(agents.file(EARLIER_LABEL), agents.file(LABEL)).unwrap();
-        assert_eq!(agents.at_start(Some(LABEL), false), AtStart::Serve);
+        assert!(agents.restart_into(Path::new(NEW)));
+        assert_eq!(launchd.loaded_now(), ["agent"]);
+        agents.stop_all();
+        assert!(launchd.files().is_empty() && launchd.loaded_now().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn a_restart_uses_the_new_label_and_the_earlier_one_while_only_that_exists() {
-        let dir = temp("restart");
-        let launchd = FakeLaunchd::new(&dir);
-        let agents = Agents { dir: dir.clone(), launchd: &launchd };
-        // Nothing yet: the new label.
-        assert_eq!(agents.in_use(), LABEL);
-        // Only the earlier file, as an update by a version from before the new label finds
-        // it: restarted as it is, or loaded again for another program, under that label.
-        launchd.seed(EARLIER_LABEL, Path::new(OLD));
-        assert_eq!(agents.in_use(), EARLIER_LABEL);
-        assert!(agents.restart_into(Path::new(OLD)));
-        assert_eq!(launchd.events(), ["kickstart -k helper [helper]"]);
-        assert!(agents.restart_into(Path::new(NEW)));
-        assert_eq!(launchd.events(), ["boot out helper [helper]", "bootstrap helper [helper]"]);
-        assert_eq!(launchd.files(), ["helper"]);
-        // Only the new file.
-        std::fs::remove_file(agents.file(EARLIER_LABEL)).unwrap();
-        launchd.loaded.borrow_mut().clear();
-        launchd.seed(LABEL, Path::new(NEW));
-        assert!(agents.restart_into(Path::new(NEW)));
-        assert_eq!(launchd.events(), ["kickstart -k beacon [beacon]"]);
-        // Both, with the earlier job loaded: it is booted out, and the new one runs alone.
-        launchd.seed(EARLIER_LABEL, Path::new(NEW));
-        launchd.loaded.borrow_mut().remove(LABEL);
-        assert!(agents.restart_into(Path::new(NEW)));
-        assert_eq!(launchd.events(), ["boot out helper [beacon helper]", "bootstrap beacon [beacon helper]"]);
-        assert_eq!(launchd.loaded_now(), ["beacon"]);
-        std::fs::remove_dir_all(dir).unwrap();
+        for earlier in EARLIER_LABELS {
+            let dir = temp("restart");
+            let launchd = FakeLaunchd::new(&dir);
+            let agents = Agents { dir: dir.clone(), launchd: &launchd };
+            // Nothing yet: the new label.
+            assert_eq!(agents.in_use(), LABEL);
+            // Only the earlier file, as an update by a version from before the new label finds
+            // it: restarted as it is, or loaded again for another program, under that label.
+            launchd.seed(earlier, Path::new(OLD));
+            assert_eq!(agents.in_use(), earlier);
+            assert!(agents.restart_into(Path::new(OLD)));
+            assert_eq!(told(&launchd, earlier), ["kickstart -k earlier [earlier]"]);
+            assert!(agents.restart_into(Path::new(NEW)));
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [earlier]", "bootstrap earlier [earlier]"]);
+            assert_eq!(plain(launchd.files(), earlier), ["earlier"]);
+            // Only the new file.
+            std::fs::remove_file(agents.file(earlier)).unwrap();
+            launchd.loaded.borrow_mut().clear();
+            launchd.seed(LABEL, Path::new(NEW));
+            assert!(agents.restart_into(Path::new(NEW)));
+            assert_eq!(launchd.events(), ["kickstart -k agent [agent]"]);
+            // Both, with the earlier job loaded: it is booted out, and the new one runs alone.
+            launchd.seed(earlier, Path::new(NEW));
+            launchd.loaded.borrow_mut().remove(LABEL);
+            assert!(agents.restart_into(Path::new(NEW)));
+            assert_eq!(told(&launchd, earlier), ["boot out earlier [agent earlier]", "bootstrap agent [agent earlier]"]);
+            assert_eq!(launchd.loaded_now(), ["agent"]);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
-    fn uninstall_removes_the_jobs_and_files_of_both_labels() {
+    fn uninstall_removes_the_jobs_and_files_of_every_label() {
         let dir = temp("uninstall");
-        for labels in [&[LABEL][..], &[EARLIER_LABEL][..], &[LABEL, EARLIER_LABEL][..], &[][..]] {
+        let [beacon, helper] = EARLIER_LABELS;
+        for labels in [&[LABEL][..], &[beacon][..], &[helper][..], &[LABEL, helper][..], &[LABEL, beacon, helper][..], &[][..]] {
             let launchd = FakeLaunchd::new(&dir);
             let agents = Agents { dir: dir.clone(), launchd: &launchd };
             for label in labels {
@@ -686,9 +833,14 @@ mod tests {
     fn a_process_knows_its_label_from_its_file_or_from_launchd() {
         assert_eq!(own(Some(LABEL), None), Some(LABEL));
         assert_eq!(own(Some(LABEL), Some(LABEL)), Some(LABEL));
-        // A file from before the new label sets no variable: launchd's name for the job tells.
-        assert_eq!(own(None, Some(EARLIER_LABEL)), Some(EARLIER_LABEL));
         assert_eq!(own(None, Some(LABEL)), Some(LABEL));
+        for earlier in EARLIER_LABELS {
+            // A file from before the variable sets none: launchd's name for the job tells.
+            assert_eq!(own(None, Some(earlier)), Some(earlier));
+            assert_eq!(own(Some(earlier), None), Some(earlier));
+            assert!(is_earlier(earlier));
+        }
+        assert!(!is_earlier(LABEL));
         // Started from a terminal, by an app, or as the job that finishes an update.
         for other in [None, Some("0"), Some("application.com.apple.Terminal.1.2"), Some("dev.abrahamgonzalez.rexduo.helper.update"), Some("")] {
             assert_eq!(own(None, other), None, "{other:?}");

@@ -1,6 +1,6 @@
-# Rex DUO Beacon
+# Pteron Beacon
 
-Sends Rex DUO push notifications for the Rex server on the same machine. Rex has no push
+Sends Pteron push notifications for the Rex server on the same machine. Rex has no push
 support of its own, so Beacon connects to Rex as an ordinary client (named `rex-push-relay`,
 which is what the iOS app looks for), watches every session, and sends a push when:
 
@@ -10,7 +10,7 @@ which is what the iOS app looks for), watches every session, and sends a push wh
 | An agent reports `done` or `error` | `AGENT_DONE` | `passive`, no sound |
 | A terminal raises a desktop notification (OSC 9 / OSC 777) | `NOTICE` | `active`, sound |
 
-It skips a phone while Rex DUO is open on it, since the app shows its own toasts then.
+It skips a phone while Pteron is open on it, since the app shows its own toasts then.
 Phones register through Rex itself (client actions), so Beacon opens no ports. Every
 machine that runs a Rex server needs its own helper.
 
@@ -33,11 +33,11 @@ Any client of the Rex server can call Beacon's actions, so two things guard them
   identity that made it; "What the app must do" lists what each action allows.
 
 One Rust program, `rex-duo-helper`, runs on macOS and Linux. On a Mac it ships inside
-**Rex DUO Beacon.app**, whose only executable is that same binary.
+**Pteron Beacon.app**, whose only executable is that same binary.
 
 ## Install
 
-**From Rex DUO.** After a computer is added, the app offers to install Beacon on it. The app
+**From Pteron.** After a computer is added, the app offers to install Beacon on it. The app
 checks the signed release list on the phone, then runs `Relay/setup.sh`, which it carries, in a
 tab on the computer, with 12 arguments: `2`, the version, the oldest version it accepts, the
 SHA-256 and size of the Mac file and of each of the two Linux files, the keys it trusts (1 to 6,
@@ -73,19 +73,26 @@ Either way `setup.sh` does the same steps, and nothing runs as an administrator:
 3. It copies the file beside its place (`~/.local/bin/rex-duo-helper`; `/Applications`, or
    `~/Applications` when that can't be written), checks the copy again and renames it. The same
    version already there is not downloaded again, and a newer one stays. An older Mac app is
-   asked to update itself. One that can't is renamed to `Rex DUO Beacon.previous.app` beside
+   asked to update itself. One that can't is renamed to `Pteron Beacon.previous.app` beside
    the new one, and removed once the new Beacon runs (step 4). If anything after that rename
    fails, or the terminal closes, the new app is removed, the previous one gets its name back
    and is started again, and the exit code is the failure's.
-   The Mac app is always placed as `Rex DUO Beacon.app`. An app under its earlier name,
-   `Rex DUO Helper.app`, is the installed app in all of this: it is the one asked to update
-   itself, set aside and put back (under the name it had). Once Beacon runs from
-   `Rex DUO Beacon.app`, what the earlier name left in the two Applications folders is
-   deleted: the app, `Rex DUO Helper.previous.app` and `.Rex DUO Helper.app.new-*`. With both
-   names there, the app under `Rex DUO Beacon.app` is the installed one. A release has the
-   Mac app in two zips ([Releases](#releases)); the script takes `Rex-DUO-Beacon.zip`, and
-   `Rex-DUO-Helper.zip` when the release has no other or when the app's arguments describe
-   that one, and installs the app in either under its name.
+   **The Mac app's folder names.** The app is `Pteron Beacon.app`. It was
+   `Rex DUO Beacon.app` in version 0.3.1 and `Rex DUO Helper.app` in version 0.3.0, and those
+   three are the one list of folder names the script accepts, in a download and where the app
+   is installed (`APP_NAMES` in `setup.sh`; the updater has the same list). A release has the
+   Mac app in three zips, one for each name ([Releases](#releases)). The script asks for them
+   newest first (`Beacon-macOS.zip`, `Rex-DUO-Beacon.zip`, `Rex-DUO-Helper.zip`) until one has
+   the size and SHA-256 it was given. The unzipped download must hold one entry and no more,
+   a real folder (not a link) whose name is on the list; then come the checks of step 2. The
+   app is placed under the folder name it came in: a version from before a name looks for
+   itself under the name it knows, and a version that knows a newer name renames its own
+   folder when it is started (`src/rename.rs`), after which the script finds the app again
+   under the allowed names. An app under any of the names is the installed app in all of
+   this: it is the one asked to update itself, set aside and put back (under the name it
+   had), and with several names there the newest is the installed one. Once Beacon runs from
+   `Pteron Beacon.app`, what the earlier names left in the two Applications folders is
+   deleted: the app, its `….previous.app` and `.….app.new-*`.
 4. It runs `rex-duo-helper install --server <the tab's Rex server>`, from the app with
    `--setup-nonce-file <path>` too, and waits up to 20 s for `status.json` to name a running
    Beacon of that version or newer.
@@ -100,31 +107,32 @@ It prints plain sentences and an OSC 7501 record (`id` and `app` `rexduo-setup`;
 21 `E_OLD_MACOS`. One install runs at a time per account (`setup.lock` in the state folder).
 
 **Removing it.** The same script with exactly the two arguments `3` and `-` removes the helper.
-Rex DUO runs it so in a tab for "Remove Helper"; by hand it is
+Pteron runs it so in a tab for "Remove Helper"; by hand it is
 `curl -fsSL …/helper-latest/install.sh | sh -s -- 3 -`. It reads no setup code and downloads
 nothing. Any other arguments after `3` end with 10. The steps:
 
 1. It takes the lock an install takes (16 when another run holds it). While Beacon updates
    itself (`update.lock` in the state folder names a live process) it waits up to 30 s, then
    ends with 16.
-2. On a Mac it looks for the app only where an install puts it: `Rex DUO Beacon.app`, then
-   `Rex DUO Helper.app` (its earlier name), in `/Applications`, then `~/Applications`: a real
-   folder that passes the code signature check an install makes of an app that is already
-   there (bundle id and team). On Linux nothing that is installed is run.
+2. On a Mac it looks for the app only where an install puts it: `Pteron Beacon.app`, then
+   its earlier names (`Rex DUO Beacon.app`, `Rex DUO Helper.app`), in `/Applications`, then
+   `~/Applications`: a real folder that passes the code signature check an install makes of
+   an app that is already there (bundle id and team). On Linux nothing that is installed is run.
 3. `stop`: on a Mac it runs that app's `uninstall`, with no other argument, which stops the
-   service and removes its launchd entry, under the label `dev.abrahamgonzalez.rexduo.beacon`
-   and the earlier one, `dev.abrahamgonzalez.rexduo.helper`. With no app that passes step 2,
-   when `uninstall` fails, or when a LaunchAgent file of either label is left afterwards (an
-   app from before the new label knows the earlier one alone), the script does it with
-   `launchctl bootout gui/<uid>/<label>` for both labels and deletes both plists. On Linux it runs
+   service and removes its launchd entry, under the label `dev.abrahamgonzalez.rexduo.agent`
+   and the earlier ones, `….rexduo.beacon` and `….rexduo.helper`. With no app that passes
+   step 2, when `uninstall` fails, or when a LaunchAgent file of any of the labels is left
+   afterwards (an app from before a label knows the earlier ones alone), the script does it
+   with `launchctl bootout gui/<uid>/<label>` for all three labels and deletes the plists. On Linux it runs
    `systemctl --user disable --now rex-duo-helper`, deletes
    `~/.config/systemd/user/rex-duo-helper.service` and runs `systemctl --user daemon-reload`.
    It then waits up to 20 s for launchd or
    systemd to have no such service; one that still runs ends with 15 and no file is deleted.
 4. `remove`: it deletes, each by its full name and one at a time: on a Mac the app,
-   `Rex DUO Beacon.previous.app` and `.Rex DUO Beacon.app.new-*` in both Applications folders,
-   the same three under the earlier name (`Rex DUO Helper.app`, …),
-   `~/Library/Logs/Rex DUO Helper.log` and `Rex DUO Helper.old.log`; on Linux the binary,
+   `Pteron Beacon.previous.app`, `.Pteron Beacon.app.new-*` and `.beacon-failed-*` (a version
+   an update could not start) in both Applications folders, the same under the two earlier
+   names, `~/Library/Logs/Rex DUO Helper.log` and `Rex DUO Helper.old.log` (the log and the
+   state folder keep the name the program first had); on Linux the binary,
    `rex-duo-helper.previous` and `.rex-duo-helper.new*` in `~/.local/bin`; then the state folder
    (registered phones, the identity key, the lock and status files). A link is deleted as a
    link and what it points to stays. A state folder that is itself a link is left: the script
@@ -134,9 +142,9 @@ nothing. Any other arguments after `3` end with 10. The steps:
 
 **By hand, Mac**
 
-1. Unzip `Rex-DUO-Beacon.zip` and drag **Rex DUO Beacon** to Applications.
+1. Unzip `Beacon-macOS.zip` (`Rex-DUO-Beacon.zip` in a release before 0.4.0) and drag **Pteron Beacon** to Applications.
 2. Open it once. A small dialog says it's on. It keeps running and starts at every login.
-3. Open Rex DUO on the iPhone and turn on notifications.
+3. Open Pteron on the iPhone and turn on notifications.
 
 Open the app again to see whether it's connected, or click **Turn Off** to stop it. Then drag the
 app to the Trash to remove it. macOS lists it under System Settings > General > Login Items.
@@ -150,12 +158,12 @@ chmod +x rex-duo-helper-linux-x86_64     # or -aarch64
 
 `install` copies itself to `~/.local/bin/rex-duo-helper`, adds a systemd user service, starts
 it, turns on lingering so it survives logout (or says how, if it can't), and prints one line such
-as `Rex DUO Beacon 0.3.0 is running and connected to Rex at https://….` Without systemd it
+as `Pteron Beacon 0.3.0 is running and connected to Rex at https://….` Without systemd it
 says how to start it by hand. Then `rex-duo-helper status` and `rex-duo-helper uninstall`.
 Logs: `journalctl --user -u rex-duo-helper`.
 
 The same three commands work on a Mac (from
-`/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper`).
+`/Applications/Pteron Beacon.app/Contents/MacOS/rex-duo-helper`).
 
 ## How it finds Rex
 
@@ -169,17 +177,17 @@ Before each connection attempt, in order:
    its Tailscale HTTPS URL (over TLS).
 
 Pushes name the server by its Tailscale HTTPS URL, read from `session.bootstrap`, because that's
-how Rex DUO knows it.
+how Pteron knows it.
 
 ## Running in the background
 
-- **Mac:** opening the app writes `~/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.beacon.plist`
+- **Mac:** opening the app writes `~/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.agent.plist`
   (runs the binary in the app with `run --log-file`, `KeepAlive` on crash, tied to the app in
   Login Items) and loads it with `launchctl`. If the app was updated, opening it restarts the
-  helper. A LaunchAgent under the earlier label, `dev.abrahamgonzalez.rexduo.helper`, is moved
+  helper. A LaunchAgent under an earlier label, `….rexduo.beacon` or `….rexduo.helper`, is moved
   to this one (`src/label.rs`; docs/helper.md, Mac). Log: `~/Library/Logs/Rex DUO Helper.log` (rotated at 1 MB).
 - **Linux:** `~/.config/systemd/user/rex-duo-helper.service`, `Restart=on-failure`, `Nice=5`.
-- **From Rex DUO's setup** the Mac app is opened with `open -g -a "Rex DUO Beacon" --args
+- **From Pteron's setup** the Mac app is opened with `open -g -a "Pteron Beacon" --args
   phone-setup`. That starts Beacon as above and asks for the notification permission, and
   shows no dialog of its own: the person is at their phone.
 - Beacon starts every other program by its full path. System tools (`systemctl`,
@@ -258,31 +266,37 @@ as it was:
    (`major.minor.patch`; anything else is refused), and every address in it is under the
    releases prefix.
 5. Download this platform's file (`linux-x86_64`, `linux-aarch64`; on a Mac
-   `macos-universal-beacon`, or `macos-universal` in a list without it) into
+   `macos-app`, else `macos-universal-beacon`, else `macos-universal`: the newest entry the list has) into
    the folder of the installed helper. The transfer stops at the size the manifest gives (and
    at 64 MB whatever it says); the file is kept only if its size and SHA-256 match.
 6. The platform's own check:
    - **Linux:** the detached signature `<file>.sig`, from a trusted key, over the text
      `rex-duo-helper|<version>|<platform>|<sha256>`. It names the version and the platform, so a
      signed file can't be served as another version or for another architecture.
-   - **Mac:** unzip with `ditto`, which gives `Rex DUO Beacon.app` or, from the
-     `macos-universal` zip, the same app as `Rex DUO Helper.app`; then `codesign --verify --deep --strict`; a designated
+   - **Mac:** unzip with `ditto` into a scratch folder only this account can open. That folder
+     must then hold one entry and no more, a real folder (not a link) whose name is on the
+     list of allowed names (`Pteron Beacon.app`, `Rex DUO Beacon.app`, `Rex DUO Helper.app`:
+     the one list, `allowed_app_name` in `src/update.rs`), with this program inside as a real
+     file; anything else is refused before another check looks at it. Then
+     `codesign --verify --deep --strict`; a designated
      requirement that pins the bundle id `dev.abrahamgonzalez.rexduo.helper` and the team
      `R2PVQ496X7` on a Developer ID certificate; `spctl --assess --type execute`, which must
      accept the app as a notarized Developer ID; and the bundle's version must be the
      manifest's. Each tool is called by its absolute path with an argument list.
 7. Swap. Linux: the current binary stays as `rex-duo-helper.previous` and the new one is
-   renamed into place. Mac: the current app, under either name, moves to
-   `Rex DUO Beacon.previous.app` beside it and the new one becomes `Rex DUO Beacon.app`. The
+   renamed into place. Mac: the current app, under any of its names, moves to
+   `Pteron Beacon.previous.app` beside it and the new one becomes `Pteron Beacon.app`,
+   whatever folder name the zip gave it. The
    previous version stays there until step 8 has
    confirmed the new one. Nothing downloaded has run up to here.
 8. Restart the background service (`systemctl --user restart`, `launchctl kickstart -k`; when
    the app's path changed, the LaunchAgent is written for the new path and loaded again), wait
    up to 15 s for the old Beacon to exit, then up to 20 s for the new version to report itself
    in `status.json`. When it does, remove the previous version (`rex-duo-helper.previous`,
-   `Rex DUO Beacon.previous.app`, and `Rex DUO Helper.previous.app` if one is there), so one
+   `Pteron Beacon.previous.app`, and a `….previous.app` of an earlier name if one is there), so one
    copy is installed. If it doesn't, put the previous
-   version back, under the name it had, and restart again. The old
+   version back, under the name it had, and restart again (the version that did not start
+   waits as `.beacon-failed-<pid>.app` for the moment that takes, then is deleted). The old
    program does this step from outside the service, so the restart doesn't stop it: as a
    transient systemd unit (`systemd-run --user`), or on a Mac as a launchd job of its own
    (`dev.abrahamgonzalez.rexduo.helper.update`, loaded from a one-shot plist in the state
@@ -292,30 +306,35 @@ One update runs at a time (`update.lock` in the state folder holds the pid; a lo
 process is gone is taken over). An update that failed or timed out leaves no lock behind, so
 the next attempt is not held up.
 
-**The Mac app's name.** The app was `Rex DUO Helper.app` before it was `Rex DUO Beacon.app`.
-The bundle id, the state folder, the log and the binary's name are the same as before, so
-macOS keeps what the user allowed and nothing is set up again. The LaunchAgent's label moves
-with the app, from `dev.abrahamgonzalez.rexduo.helper` to `dev.abrahamgonzalez.rexduo.beacon`,
-so that Login Items names the job after the app (`src/label.rs`). The
-updater of version 0.3.0 reads the manifest's `macos-universal` entry and looks for a folder
-named `Rex DUO Helper.app` in the zip, so a release has that zip too, and a Mac that updates
-with it ends with the new version in `Rex DUO Helper.app`. From there the program moves
-itself (`src/rename.rs`): about 30 s after the background service started, and once no update
-or installer run holds a lock, it starts the updater's launchd job as `finish-move`. That job
-renames the bundle to `Rex DUO Beacon.app` where it sits, writes the new label's LaunchAgent
-for the new path, boots the earlier job out, loads the new one, and waits up to 20 s for
-`status.json` to name a Beacon whose `exe` is in the new bundle and whose `label` is the new
-one; then it deletes the earlier label's file and removes `Rex DUO Helper.previous.app` if one
-is there. If the Beacon does not come up there, the bundle gets its earlier name back, the new
-job is booted out and its file removed, and the earlier job is loaded again from its file,
-which was not changed. `install` and opening the app do the
-same steps themselves before they set up the LaunchAgent. The bundle is moved only when it is
-a real folder directly in `/Applications` or `~/Applications`. When `Rex DUO Beacon.app` is
-already there, whole, ours and of the same version or a newer one, nothing is renamed: Beacon
-is started from that app and `Rex DUO Helper.app` is removed. Anything else at that name
-leaves everything as it is. A move that did not happen writes one line to the log. The start
-that the way back causes leaves it at that (`move.failed` in the state folder), and the start
-after it tries again.
+**The Mac app's name.** The app is `Pteron Beacon.app`. It was `Rex DUO Helper.app` in
+version 0.3.0 and `Rex DUO Beacon.app` in version 0.3.1 (`EARLIER_APP_NAMES` in
+`src/update.rs`). The name people read is in one place, `src/brand.rs`. The bundle id, the
+state folder, the log and the binary's name are the same as before, so macOS keeps what the
+user allowed and nothing is set up again. The LaunchAgent's label moves with the app, to
+`dev.abrahamgonzalez.rexduo.agent` from `….rexduo.beacon` (0.3.1) or `….rexduo.helper`
+(0.3.0), because Login Items names and draws a job after the app it found when the job's file
+first appeared (`src/label.rs`). An updater that shipped looks for the folder name it knows:
+version 0.3.0 reads the manifest's `macos-universal` entry and wants `Rex DUO Helper.app` in
+the zip, version 0.3.1 prefers `macos-universal-beacon` and wants `Rex DUO Beacon.app`. So a
+release has a zip for each, and a Mac that updates with one ends with the new version in a
+folder of the earlier name, restarted by the old program under the earlier label. From there
+the program moves itself (`src/rename.rs`): about 30 s after the background service started,
+and once no update or installer run holds a lock, it starts the updater's launchd job as
+`finish-move`. That job renames the bundle to `Pteron Beacon.app` where it sits, tells Launch
+Services, writes the new label's LaunchAgent for the new path, boots the earlier jobs out,
+loads the new one, and waits up to 20 s for `status.json` to name a Beacon whose `exe` is in
+the new bundle and whose `label` is the new one; then it deletes the earlier labels' files,
+every one that is there, and removes a `….previous.app` of an earlier name if one is there.
+It is one restart, from either earlier version. If the Beacon does not come up there, the
+bundle gets its earlier name back, the new job is booted out and its file removed, and the
+earlier job is loaded again from its file, which was not changed. `install` and opening the
+app do the same steps themselves before they set up the LaunchAgent. The bundle is moved only
+when it is a real folder directly in `/Applications` or `~/Applications`. When
+`Pteron Beacon.app` is already there, whole, ours and of the same version or a newer one,
+nothing is renamed: Beacon is started from that app and the folder of the earlier name is
+removed. Anything else at that name leaves everything as it is. A move that did not happen
+writes one line to the log. The start that the way back causes leaves it at that
+(`move.failed` in the state folder), and the start after it tries again.
 
 **The manifest** also carries `min_version` and `next_key`:
 
@@ -324,9 +343,15 @@ after it tries again.
  "expires_at": "2027-11-17T12:00:00Z", "next_key": null, "assets": {"linux-x86_64": {"url": "…", "sha256": "…", "size": 1}}}
 ```
 
-`assets` has four entries: `linux-x86_64`, `linux-aarch64`, `macos-universal`
-(`Rex-DUO-Helper.zip`, the app as `Rex DUO Helper.app`, for the updater of version 0.3.0) and
-`macos-universal-beacon` (`Rex-DUO-Beacon.zip`, the same app as `Rex DUO Beacon.app`). Every
+`assets` has five entries: `linux-x86_64`, `linux-aarch64`, and the Mac app three times, the
+same bundle under each folder name it has had: `macos-universal` (`Rex-DUO-Helper.zip`, as
+`Rex DUO Helper.app`, for the updater of version 0.3.0), `macos-universal-beacon`
+(`Rex-DUO-Beacon.zip`, as `Rex DUO Beacon.app`, for the updater of version 0.3.1) and
+`macos-app` (`Beacon-macOS.zip`, as `Pteron Beacon.app`, which everything newer takes). The
+three entry names and the three file names are fixed for good: installed copies and the phone
+app ask for them by name, and the phone app checks each listed address to the letter. Neither
+`macos-app` nor `Beacon-macOS.zip` says what the app is called, so they stay when that
+changes; a new folder name is then added to the list of allowed names. Every
 reader takes each entry of `assets` that has a `url` under the releases prefix, a `sha256` and
 a `size`, whatever its name, and picks its own by name.
 
@@ -341,7 +366,7 @@ a `size`, whatever its name, and picks its own by name.
 
 Beacon doesn't update itself when it can't do so safely, and says why (`rex-duo-helper
 status`, Beacon's log): a `--dry-run`, a debug build or one run from a cargo `target`
-folder, a Mac Beacon that isn't running from `Rex DUO Beacon.app` (or `Rex DUO Helper.app`) or that macOS runs from a
+folder, a Mac Beacon that isn't running from `Pteron Beacon.app` (or a folder of one of its earlier names) or that macOS runs from a
 translocated copy, a Linux binary that isn't the installed `~/.local/bin/rex-duo-helper`, no
 background service, a folder it can't write to, or a build whose `update-key.pub` holds only
 placeholders (32 zero bytes). With placeholders Beacon never asks GitHub for anything.
@@ -378,7 +403,10 @@ tests-setup/make-fixtures.sh       # write Relay/fixtures again (test data for t
 
 `release.sh` signs with `UPDATE_KEY`, which must be the primary or the recovery key of
 `update-key.pub`; `MIN_VERSION`, `NEXT_KEY` and `EXPIRES_DAYS` (default 180) set the manifest's
-`min_version` (default: the release), `next_key` and `expires_at`. Only `--publish` uploads. It
+`min_version` (default: the release; docs/release.md says when to set it), `next_key` and
+`expires_at`. Only `--publish` uploads. It makes the three Mac zips from the one in `dist`,
+and refuses an app that is not alone in that zip, that is not in a folder of the name its own
+binary gives (`brand`), or whose Info.plist or `setup.sh`'s `BEACON=` line say another name. It
 refuses when the keys in `setup.sh` differ from `update-key.pub`, and publishes `setup.sh` as the
 `install.sh` of `helper-latest` with two lines filled in: `MANUAL_MAC_FLOOR` (the release's
 version) and `MANUAL_MAC_EXPIRES` (the manifest's `expires_at`). It only reads `setup.sh`, so
@@ -407,13 +435,18 @@ The copies for a run by hand on a Mac come from the `install.sh` its copy of `re
 wrote. `setup.sh` itself has no setting that moves a
 download, skips a check or changes a key, and the tests check that.
 
-Output in `Relay/dist/` (gitignored): `Rex DUO Beacon.zip` (universal; `release.sh` makes the two release zips from it) and
+Output in `Relay/dist/` (gitignored): `Beacon-macOS.zip` (universal, the app as `Pteron Beacon.app`; `release.sh` makes the two other release zips from it) and
 `rex-duo-helper-linux-x86_64` / `-aarch64` (static musl, cross-compiled with `cargo zigbuild`;
 set `ZIG=/path/to/zig` if zig isn't on PATH). The script:
 
+- asks the binary it built what the app is called (`rex-duo-helper brand`, which prints
+  `brand::BEACON` from `src/brand.rs`) and names the bundle, `CFBundleName` and
+  `CFBundleDisplayName` so;
 - wraps the universal Mac binary in a bundle (`LSUIElement`, bundle id
-  `dev.abrahamgonzalez.rexduo.helper`, icon made from the iOS app icon by
-  `Packaging/make-iconset.swift`);
+  `dev.abrahamgonzalez.rexduo.helper`), with the icon compiled by `xcrun actool` from
+  `Brand/BeaconIcon.icon`, an Icon Composer document: `Assets.car` (the layered icon and its
+  flattened sizes) and `AppIcon.icns` in `Contents/Resources`, `CFBundleIconName` in the
+  Info.plist;
 - signs with the Developer ID Application identity (`IDENTITY`), hardened runtime, no
   entitlements, and notarizes with `xcrun notarytool` and an App Store Connect API key
   (`ASC_KEY`, `ASC_KEY_ID`, `ASC_ISS`), staples, then checks `spctl`.
@@ -424,8 +457,9 @@ set `ZIG=/path/to/zig` if zig isn't on PATH). The script:
 | --- | --- |
 | `install` / `status` / `uninstall` | Run in the background, report, or stop and remove it. |
 | `install --server <addr>` | Also adds that Rex server to `config.json`'s `servers` (Config). It takes the `unix://` address of a socket that is there and belongs to this user, or an `https://` address; anything else is refused before anything changes, with exit status 2. |
-| `install --setup-nonce-file <path>` | For Rex DUO's setup: reads the setup code from that file, removes the file, and keeps the code for 30 minutes to answer `setup_challenge` ("What the app must do", 2). The file is a regular file of this user that no one else can open (no group or other permissions), at most 128 bytes: 64 lowercase hex digits, with or without one newline after them. Any other file is removed too, and the command is refused with exit status 2 before anything else changes. The code is never an argument. |
-| `version` | Print the version. `version --json` prints `{"version":"x.y.z"}` and nothing else. |
+| `install --setup-nonce-file <path>` | For Pteron's setup: reads the setup code from that file, removes the file, and keeps the code for 30 minutes to answer `setup_challenge` ("What the app must do", 2). The file is a regular file of this user that no one else can open (no group or other permissions), at most 128 bytes: 64 lowercase hex digits, with or without one newline after them. Any other file is removed too, and the command is refused with exit status 2 before anything else changes. The code is never an argument. |
+| `version` | Print the version. `version --json` prints `{"version":"x.y.z"}` and nothing else. Every installer that shipped reads that by its exact shape, so it never gains a field. |
+| `brand` | Print what the program is called, on one line (`brand::BEACON` in `src/brand.rs`). `package.sh` and `release.sh` name the Mac app and the release from it. |
 | `run` | Run in the foreground (what the service runs). |
 | `update` | Look for a newer version and install it. `update --check` only looks. See Updates. |
 | `forget <device id>` | Remove a phone's registration, whoever registered it. Alone, `forget` lists the phones. The running Beacon notices. |
@@ -493,7 +527,7 @@ secret again fails with `secret_dropped`, so the app mints a new secret and regi
 Neither a secret nor the text of a push is written to the log, and no action's result or
 error carries any part of a secret.
 
-The first time a phone registers, the computer shows one desktop notification: "Rex DUO
+The first time a phone registers, the computer shows one desktop notification: "Pteron
 connected", "<device name> can now open your sessions on this computer." It shows once per
 `device_id`: `seen_devices.json` in the same folder keeps the ids that have registered, so
 a new secret, a reconnect, a Beacon restart or an unregister followed by a register shows nothing.
@@ -502,7 +536,7 @@ is not registered now, and a phone pushed out gets a notice again if it comes ba
 At most 3 notices show in any 60 seconds; a new phone past that is still registered and
 remembered, and the log says its notice was held back.
 Phones already in `devices.json` when Beacon is upgraded count as seen, old entries
-included. On a Mac it comes from Rex DUO Beacon itself: `rex-duo-notify`
+included. On a Mac it comes from Pteron Beacon itself: `rex-duo-notify`
 (`Packaging/notify.swift`), a small program beside Beacon in the app, posts it, and macOS
 asks once, when the app is first opened, whether Beacon may show notifications. Answer no,
 or run Beacon outside its app, and no notice is shown. On Linux it goes through `notify-send`, and only if it is installed and a desktop session is there
@@ -520,7 +554,7 @@ Pick a stable per-install id of 8 lowercase hex characters, e.g. the first 8 hex
 
 ```json
 {"type": "hello", "api_revision": 13,
- "client": {"kind": "app", "platform": "ios", "name": "Rex DUO", "version": "1.0",
+ "client": {"kind": "app", "platform": "ios", "name": "Pteron", "version": "1.0",
             "label": "Alex's iPhone #a1b2c3d4"}}
 ```
 
@@ -561,7 +595,7 @@ client ids are signed so that a client in between can't pass your challenge on t
 helper. A challenge that isn't 32 bytes of base64url, or a `device_id` that isn't 8 lowercase
 hex digits, fails with `bad_request`. `not_supported` means a Beacon too old for this.
 
-A phone that installed this Beacon through Rex DUO's setup adds `"setup_challenge":
+A phone that installed this Beacon through Pteron's setup adds `"setup_challenge":
 "<base64url of 32 random bytes>"` to the args. While Beacon holds the setup code that
 setup gave `install --setup-nonce-file`, the result also has
 
@@ -642,8 +676,8 @@ Errors arrive as normal `client.perform` errors:
 | `bad_request` | A gateway that is not on the allowlist, a malformed secret, environment or device id, or a device id that is not the one at the end of the caller's label. |
 | `not_your_device` | That device id is registered to another identity. On the computer: `rex-duo-helper forget <device id>`. |
 | `secret_dropped` | The gateway already refused that secret. Mint a new one. |
-| `not_saved` | The registration could not be written to `devices.json`: `Rex DUO Beacon couldn't save that. Try again.` Nothing changed, in the file or in memory. `set_push_paused` and `unregister_push` answer the same way. |
-| `not_supported` | An app that predates the gateway (a `token`, no `push_secret`): `This Rex DUO Beacon needs a newer Rex DUO app.` |
+| `not_saved` | The registration could not be written to `devices.json`: `Pteron Beacon couldn't save that. Try again.` Nothing changed, in the file or in memory. `set_push_paused` and `unregister_push` answer the same way. |
+| `not_supported` | An app that predates the gateway (a `token`, no `push_secret`): `This Pteron Beacon needs a newer Pteron app.` |
 
 `not_found` or `client_unavailable` mean the relay left; `timeout` that it didn't answer.
 
@@ -709,7 +743,7 @@ caller's phone is paused here (step 5); false when it has no registration.
 
 `manifest_expires_at` is when the release list Beacon last accepted stops being valid
 (null until it has checked since it started). Within 30 days of that time Beacon also logs
-one line at every check. `notices` is whether macOS lets Beacon show its "Rex DUO
+one line at every check. `notices` is whether macOS lets Beacon show its "Pteron
 connected" notice: `"allowed"`, `"denied"` or `"undetermined"`, read from `rex-duo-notify
 status`, which never asks; null on Linux, and when Beacon can't tell. `linger` is whether
 the Linux service keeps running after logout (`loginctl show-user <user> -p Linger --value`):
@@ -735,7 +769,7 @@ such check runs per 10 minutes, whoever asks: a second answers `update_cooldown`
 message says how many seconds are left. Beacon's own timer is separate.
 
 `action: "send_test"`, no args. Beacon sends one notification to the caller's own phone
-through the gateway, whether or not Rex DUO is open on it. Only the identity that registered
+through the gateway, whether or not Pteron is open on it. Only the identity that registered
 the phone may ask, as in `push_presence`. Result `{"sent": true}`. Errors, each with a plain
 sentence as `message`:
 
@@ -748,7 +782,7 @@ sentence as `message`:
 | `limit_reached` | The gateway answered `429`. |
 | `no_connection` | The gateway could not be reached, or gave any other answer. |
 
-The notification: title `Rex DUO`, body `Test notification from <first part of the host in server>`, sound
+The notification: title `Pteron`, body `Test notification from <first part of the host in server>`, sound
 `default`, category `NOTICE`, thread id `rexduo-test`, level `active`, and `server` as in
 every push. It has no `session_id`, `window_id` or `block_id`, and no collapse id.
 
@@ -794,14 +828,14 @@ Stop the background Beacon (only one runs per user), run a dry run in the foregr
 throwaway session from another terminal:
 
 ```sh
-# Mac: launchctl kill TERM gui/$(id -u)/dev.abrahamgonzalez.rexduo.beacon
+# Mac: launchctl kill TERM gui/$(id -u)/dev.abrahamgonzalez.rexduo.agent
 # Linux: systemctl --user stop rex-duo-helper
 rex-duo-helper run --dry-run
 rex new zz-push-test -- sh -c 'sleep 2
   printf "\033]7501;state=blocked:app=claude:msg=%s\033\\\\" "$(printf "Ready?" | base64)"
   printf "\033]9;Build finished\a"; sleep 30'
 rex kill zz-push-test
-# Mac: launchctl kickstart gui/$(id -u)/dev.abrahamgonzalez.rexduo.beacon
+# Mac: launchctl kickstart gui/$(id -u)/dev.abrahamgonzalez.rexduo.agent
 # Linux: systemctl --user start rex-duo-helper
 ```
 

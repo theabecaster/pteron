@@ -9,7 +9,7 @@
 #   - downloads come from tests-setup/mirror.py on 127.0.0.1, which serves that folder;
 #   - the helper is tests-setup/fake-helper.sh, which starts nothing;
 #   - a run as the app starts it happens in a pseudo-terminal of tests-setup/pty-run.py, which
-#     types the setup code when the installer asks for it, as Rex DUO does;
+#     types the setup code when the installer asks for it, as the app does;
 #   - launchctl, lsregister, systemctl, loginctl and open are stand-ins that only write down how
 #     they were called, and every home folder is a folder made for one test. The stand-in for
 #     launchctl also keeps which jobs it was told to load, as files in that home folder.
@@ -31,6 +31,10 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 setup="$here/setup.sh"
+# What the program is called, from the one line of setup.sh that says so. The names it had
+# before are written out below: they are what the tests of the moves start from.
+beacon="$(sed -n 's/^BEACON="\(.*\)"$/\1/p' "$setup")"
+[[ "$beacon" == ?*" Beacon" && "$beacon" != *$'\n'* ]] || { echo "test-install: setup.sh must have one BEACON=\"<name> Beacon\" line" >&2; exit 1; }
 OPENSSL="${OPENSSL:-}"
 if [[ -z "$OPENSSL" ]]; then
   for candidate in /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl openssl; do
@@ -53,7 +57,7 @@ finish() {
 trap finish EXIT
 relay="$box/Relay"
 mirror="$box/mirror"
-mkdir -p "$relay/dist" "$box/bin" "$mirror" "$box/h" "$box/saved"
+mkdir -p "$relay/dist" "$box/bin" "$mirror" "$box/h/release" "$box/saved"
 
 # release.sh calls `openssl`; it must never reach GitHub from here.
 ln -s "$OPENSSL" "$box/bin/openssl"
@@ -151,21 +155,21 @@ cat > "$relay/third-party-licenses.py" <<PY
 import os, sys
 if os.path.exists("$box/bad-licence"):
     sys.exit("a crate's licence is not on the list")
-open(sys.argv[1], "w").write("notices\\n")
+open(sys.argv[1], "w").write("notices for %s\\n" % sys.argv[2])
 PY
 
 # fake_helper <version> <out> [<note>]: the stand-in helper at that version.
 fake_helper() {
-  sed "s/@VERSION@/$1/g" "$here/tests-setup/fake-helper.sh" > "$2"
+  sed -e "s/@VERSION@/$1/g" -e "s/@BEACON@/$beacon/g" "$here/tests-setup/fake-helper.sh" > "$2"
   [[ -z "${3:-}" ]] || printf '# %s\n' "$3" >> "$2"
   chmod 0755 "$2"
 }
-# fake_app <folder> <version> [true] [<app folder>] [<bundle name>]: Rex DUO Beacon.app in that
+# fake_app <folder> <version> [true] [<app folder>] [<bundle name>]: Beacon.app in that
 # folder. Its program is the stand-in helper, or with `true` a copy of /usr/bin/true (something
 # codesign can sign). The last two make an app in a folder of another name, or a build that
 # calls itself by another name.
 fake_app() {
-  local app="$1/${4:-Rex DUO Beacon.app}"
+  local app="$1/${4:-$beacon.app}"
   mkdir -p "$app/Contents/MacOS"
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -173,7 +177,7 @@ fake_app() {
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>rex-duo-helper</string>
 <key>CFBundleIdentifier</key><string>dev.abrahamgonzalez.rexduo.helper</string>
-<key>CFBundleName</key><string>${5:-Rex DUO Beacon}</string>
+<key>CFBundleName</key><string>${5:-$beacon}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$2</string>
 </dict></plist>
@@ -184,20 +188,20 @@ PLIST
     fake_helper "$2" "$app/Contents/MacOS/rex-duo-helper"
   fi
 }
-zip_app() { /usr/bin/ditto -c -k --keepParent "$1/Rex DUO Beacon.app" "$2"; }
+zip_app() { /usr/bin/ditto -c -k --keepParent "$1/$beacon.app" "$2"; }
 
 # Stand-ins for what package.sh builds.
 fake_helper 9.8.7 "$relay/dist/rex-duo-helper-linux-x86_64" "for x86_64"
 fake_helper 9.8.7 "$relay/dist/rex-duo-helper-linux-aarch64" "for aarch64, a little longer"
 fake_app "$box/app" 9.8.7
-zip_app "$box/app" "$relay/dist/Rex DUO Beacon.zip"
+zip_app "$box/app" "$relay/dist/Beacon-macOS.zip"
 
 # A setting for one run is exported in a subshell around the call: placed before the call
 # itself it would stay set afterwards when sh runs this file.
 release() { # release <key name> [options]: runs the copy of release.sh; other settings come from the caller's environment
   local key="$1"
   shift
-  (cd "$relay" && UPDATE_KEY="$box/$key.key" ./release.sh "$@")
+  (cd "$relay" && REXDUO_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" ./release.sh "$@")
 }
 sign_with() { # sign_with <key name> <file> <signature file>
   "$OPENSSL" pkeyutl -sign -inkey "$box/$1.key" -rawin -in "$2" | "$OPENSSL" base64 -A > "$3"
@@ -216,7 +220,7 @@ verifies() { # verifies <base64 key> <file> <signature file>: the first line of 
 release primary --skip-build > "$box/release.log" 2>&1 || { cat "$box/release.log" >&2; fail "release.sh --skip-build"; }
 grep -q "Nothing was published" "$box/release.log" || fail "release.sh did not say it published nothing"
 out="$relay/dist/release"
-for f in manifest.json manifest.json.sig install.sh THIRD_PARTY_LICENSES.txt Rex-DUO-Beacon.zip Rex-DUO-Helper.zip rex-duo-helper-linux-x86_64 rex-duo-helper-linux-x86_64.sig rex-duo-helper-linux-aarch64 rex-duo-helper-linux-aarch64.sig; do
+for f in manifest.json manifest.json.sig install.sh THIRD_PARTY_LICENSES.txt Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip rex-duo-helper-linux-x86_64 rex-duo-helper-linux-x86_64.sig rex-duo-helper-linux-aarch64 rex-duo-helper-linux-aarch64.sig; do
   [[ -s "$out/$f" ]] || fail "release.sh did not write $f"
 done
 # install.sh is setup.sh with the two values for a run by hand on a Mac, and nothing else.
@@ -257,31 +261,39 @@ assert m["version"] == "9.8.7" and m["min_version"] == "9.8.7" and m["next_key"]
 stamp = "%Y-%m-%dT%H:%M:%SZ"
 life = datetime.datetime.strptime(m["expires_at"], stamp) - datetime.datetime.strptime(m["released_at"], stamp)
 assert datetime.timedelta(days=days - 1, hours=23) < life <= datetime.timedelta(days=days, minutes=5), life
-assert set(m["assets"]) == {"macos-universal", "macos-universal-beacon", "linux-x86_64", "linux-aarch64"}
+assert set(m["assets"]) == {"macos-universal", "macos-universal-beacon", "macos-app", "linux-x86_64", "linux-aarch64"}
 for a in m["assets"].values():
     assert set(a) == {"url", "sha256", "size"} and re.fullmatch(r"[0-9a-f]{64}", a["sha256"]) and a["size"] > 0, a
-# The entry the updater of version 0.3.0 reads names the zip with the folder it looks for.
+# The entries the updaters of versions 0.3.0 and 0.3.1 read name the zips with the folders they
+# look for, and the entry everything newer takes names the zip whose name is fixed for good.
 assert m["assets"]["macos-universal"]["url"].endswith("/helper-v9.8.7/Rex-DUO-Helper.zip"), m["assets"]
 assert m["assets"]["macos-universal-beacon"]["url"].endswith("/helper-v9.8.7/Rex-DUO-Beacon.zip"), m["assets"]
+assert m["assets"]["macos-app"]["url"].endswith("/helper-v9.8.7/Beacon-macOS.zip"), m["assets"]
+assert len({a["sha256"] for a in m["assets"].values()}) == 5, m["assets"]
 PY
 }
 manifest_check 180 || fail "the manifest does not have the agreed fields"
-ok "release.sh: manifest has version, min_version, expires_at (180 days), next_key and four assets, the Mac app under both entries"
-# The two zips hold one app, each alone, under the folder name its entry stands for.
+ok "release.sh: manifest has version, min_version, expires_at (180 days), next_key and five assets, the Mac app under its three entries"
+# The three zips hold one app, each alone, under the folder name its entry stands for.
 zips_check() {
-  local name folder
+  local zip folder
   rm -rf "$box/zips"
-  for name in Beacon Helper; do
-    folder="Rex DUO $name.app"
-    /usr/bin/ditto -x -k "$out/Rex-DUO-$name.zip" "$box/zips/$name"
-    [[ "$(ls -A "$box/zips/$name")" == "$folder" ]] || return 1
-    grep -q "\"sha256\": \"$(sha "$out/Rex-DUO-$name.zip")\"" "$out/manifest.json" || return 1
-  done
-  diff -r "$box/zips/Beacon/Rex DUO Beacon.app" "$box/zips/Helper/Rex DUO Helper.app" >/dev/null || return 1
-  diff -r "$box/zips/Beacon/Rex DUO Beacon.app" "$box/app/Rex DUO Beacon.app" >/dev/null
+  while IFS='|' read -r zip folder; do
+    /usr/bin/ditto -x -k "$out/$zip" "$box/zips/$zip"
+    [[ "$(ls -A "$box/zips/$zip")" == "$folder" ]] || return 1
+    grep -q "\"sha256\": \"$(sha "$out/$zip")\"" "$out/manifest.json" || return 1
+    diff -r "$box/zips/$zip/$folder" "$box/app/$beacon.app" >/dev/null || return 1
+  done <<EOF
+Beacon-macOS.zip|$beacon.app
+Rex-DUO-Beacon.zip|Rex DUO Beacon.app
+Rex-DUO-Helper.zip|Rex DUO Helper.app
+EOF
 }
-zips_check || fail "release.sh did not write the app as Rex DUO Beacon.app and as Rex DUO Helper.app, the same in both zips"
-ok "release.sh: Rex-DUO-Beacon.zip and Rex-DUO-Helper.zip hold the same app under the two folder names, and the manifest names both"
+zips_check || fail "release.sh did not write the app as $beacon.app, Rex DUO Beacon.app and Rex DUO Helper.app, the same in all three zips"
+ok "release.sh: Beacon-macOS.zip, Rex-DUO-Beacon.zip and Rex-DUO-Helper.zip hold the same app under the three folder names, and the manifest names all three"
+grep -qxF "brand" "$box/h/release/helper.log" || fail "release.sh did not ask the app in the zip what it is called: $(cat "$box/h/release/helper.log" 2>&1)"
+grep -qxF "notices for $beacon" "$out/THIRD_PARTY_LICENSES.txt" || fail "release.sh did not hand the name to the notices: $(cat "$out/THIRD_PARTY_LICENSES.txt")"
+ok "release.sh: asks the app in the zip for its name, and the notices carry it"
 
 # What the Linux signature covers is the text, not the file.
 x86="$out/rex-duo-helper-linux-x86_64"
@@ -362,6 +374,30 @@ grep -q '^  "min_version": "9.0.0",$' "$out/manifest.json" || fail "MIN_VERSION 
 sed -i '' 's/"min_version": "9.0.0"/"min_version": "9.8.7"/' "$out/manifest.json"
 manifest_check 45 || fail "EXPIRES_DAYS did not set the expiry"
 ok "release.sh: MIN_VERSION sets min_version and EXPIRES_DAYS the expiry"
+# The app in the zip must be in a folder of the name it gives itself, which its Info.plist
+# and setup.sh give it too, and the zip must hold it alone.
+cp "$relay/dist/Beacon-macOS.zip" "$box/dist.zip"
+refuses_zip() { # refuses_zip <what> <words>: the zip in dist as it is now is not released
+  if release primary --skip-build > "$box/refused.log" 2>&1; then fail "release.sh released $1"; fi
+  grep -qF -- "$2" "$box/refused.log" || fail "release.sh refused $1 for another reason: $(cat "$box/refused.log")"
+}
+fake_app "$box/app-misnamed" 9.8.7 "" "Rex DUO Beacon.app"
+/usr/bin/ditto -c -k --keepParent "$box/app-misnamed/Rex DUO Beacon.app" "$relay/dist/Beacon-macOS.zip"
+refuses_zip "an app in a folder of an earlier name" "holds Rex DUO Beacon.app, and the app in it calls itself $beacon"
+fake_app "$box/app-other-name" 9.8.7 "" "$beacon.app" "Rex DUO Beacon"
+/usr/bin/ditto -c -k --keepParent "$box/app-other-name/$beacon.app" "$relay/dist/Beacon-macOS.zip"
+refuses_zip "an app whose Info.plist has another name" "is not named $beacon"
+mkdir -p "$box/app-two"
+cp -R "$box/app/$beacon.app" "$box/app-two/"
+echo extra > "$box/app-two/README"
+rm -f "$relay/dist/Beacon-macOS.zip"
+(cd "$box/app-two" && /usr/bin/zip -qr "$relay/dist/Beacon-macOS.zip" .)
+refuses_zip "a zip that holds more than the app" "must hold the app alone"
+cp "$box/dist.zip" "$relay/dist/Beacon-macOS.zip"
+sed 's/^BEACON=.*/BEACON="Another Beacon"/' "$relay/setup.sh" > "$box/setup.other" && cp "$box/setup.other" "$relay/setup.sh"
+refuses_zip "a setup.sh with another name than the build" "setup.sh names the program differently"
+cp "$box/setup.before" "$relay/setup.sh"
+ok "release.sh: refuses an app that is not alone in its zip, or not called what its binary, its Info.plist and setup.sh say"
 sed "s|^RECOVERY_KEY=.*|RECOVERY_KEY=\"$NEXT\"|" "$relay/setup.sh" > "$box/setup.other" && cp "$box/setup.other" "$relay/setup.sh"
 if release primary --skip-build > "$box/refused.log" 2>&1; then fail "release.sh released a setup.sh with other keys than update-key.pub"; fi
 grep -q "setup.sh carries a different recovery key" "$box/refused.log" || fail "release.sh refused setup.sh for another reason: $(cat "$box/refused.log")"
@@ -409,7 +445,7 @@ mkdir -p "$mirror/helper-latest" "$mirror/helper-v9.8.7"
 saved="$box/saved/release"
 restore_mirror() {
   cp "$saved/manifest.json" "$saved/manifest.json.sig" "$mirror/helper-latest/"
-  cp "$saved/Rex-DUO-Beacon.zip" "$saved/Rex-DUO-Helper.zip" "$saved"/rex-duo-helper-linux-* "$mirror/helper-v9.8.7/"
+  cp "$saved/Beacon-macOS.zip" "$saved/Rex-DUO-Beacon.zip" "$saved/Rex-DUO-Helper.zip" "$saved"/rex-duo-helper-linux-* "$mirror/helper-v9.8.7/"
   rm -f "$mirror/.delay"
 }
 restore_mirror
@@ -425,8 +461,10 @@ PORT="$(cat "$box/port")"
 asked() { grep -c "${1:-helper-v}" "$requests" || true; } # how many requests named that so far
 
 uid="$(id -u)"
-# The name of the helper's service on a Mac, the name it had before, and the app's bundle id.
-service="dev.abrahamgonzalez.rexduo.beacon"
+# The name of the helper's service on a Mac, the two names it had before (version 0.3.1 and
+# version 0.3.0), and the app's bundle id.
+service="dev.abrahamgonzalez.rexduo.agent"
+middle="dev.abrahamgonzalez.rexduo.beacon"
 earlier="dev.abrahamgonzalez.rexduo.helper"
 bundle_id="dev.abrahamgonzalez.rexduo.helper"
 # stand_in <folder> <name> <what it does>: a tool that writes down how it was called. A call
@@ -491,7 +529,7 @@ stand_in "$mac" spctl 'echo "source=Notarized Developer ID" >&2'
 # lsregister, which is called by its own path and is in no tool folder. A call made while the
 # LaunchAgent's file under the service's name is there is also written to `lsregister-late`;
 # `no-lsregister` makes it fail.
-stand_in "$box/tools-ls" lsregister 'if [ -e "$REXDUO_TEST_HOME/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.beacon.plist" ]; then echo "$*" >> "$REXDUO_TEST_HOME/lsregister-late"; fi
+stand_in "$box/tools-ls" lsregister 'if [ -e "$REXDUO_TEST_HOME/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.agent.plist" ]; then echo "$*" >> "$REXDUO_TEST_HOME/lsregister-late"; fi
 if [ -f "$REXDUO_TEST_HOME/no-lsregister" ]; then exit 1; fi'
 stand_in "$mac" sw_vers 'if [ -f "$REXDUO_TEST_HOME/old-macos" ]; then echo 13.6.1; else exec /usr/bin/sw_vers "$@"; fi'
 
@@ -499,7 +537,11 @@ stand_in "$mac" sw_vers 'if [ -f "$REXDUO_TEST_HOME/old-macos" ]; then echo 13.6
 # a copy of setup.sh for tests. Fails when a line it replaces is not there any more.
 # baked <out> …: the same from the install.sh of the release, which has two more lines changed.
 COPY_FROM="$setup"
+COPY_OF="$setup"
 baked() { COPY_FROM="$saved/install.sh" copy "$@"; }
+# shipped <out> …: the same from the setup.sh of version 0.3.1, as the phone apps of that time
+# carry it.
+shipped() { COPY_FROM="$box/setup-0.3.1.sh" COPY_OF="$box/setup-0.3.1.sh" copy "$@"; }
 copy() {
   local to="$1" tools="$2" want=$((11 + $3))
   shift 3
@@ -525,8 +567,8 @@ copy() {
     want=$((want + 1))
   fi
   sed "${edits[@]}" "$@" "$COPY_FROM" > "$to"
-  [[ "$(awk 'NR == FNR { line[FNR] = $0; next } line[FNR] != $0 { n++ } END { print n + 0 }' "$setup" "$to")" == "$want" ]] \
-    || fail "copy: sed changed other lines of setup.sh than the $want expected: $(diff "$setup" "$to" | grep '^>')"
+  [[ "$(awk 'NR == FNR { line[FNR] = $0; next } line[FNR] != $0 { n++ } END { print n + 0 }' "$COPY_OF" "$to")" == "$want" ]] \
+    || fail "copy: sed changed other lines of setup.sh than the $want expected: $(diff "$COPY_OF" "$to" | grep '^>')"
 }
 copy "$box/linux.sh" "$box/tools-linux" 0
 copy "$box/linux-plain.sh" "$box/tools-linux-plain" 0
@@ -539,6 +581,13 @@ copy "$box/mac-real.sh" "" 0
 baked "$box/mac-baked.sh" "$mac" 2
 baked "$box/mac-baked-floor.sh" "$mac" 2 -e 's|^MANUAL_MAC_FLOOR=.*|MANUAL_MAC_FLOOR="9.9.0"|'
 baked "$box/mac-real-baked.sh" "" 2
+# The installer as version 0.3.1 shipped it, when this checkout has that tag.
+shipped_setup=0
+if git -C "$here" show helper-v0.3.1:Relay/setup.sh > "$box/setup-0.3.1.sh" 2>/dev/null && [[ -s "$box/setup-0.3.1.sh" ]]; then
+  shipped_setup=1
+  shipped "$box/mac-0.3.1.sh" "$mac" 0
+  if grep -qF "$beacon" "$box/mac-0.3.1.sh"; then fail "the setup.sh of version 0.3.1 already knows the name $beacon"; fi
+fi
 grep -qx 'MANUAL_MAC_FLOOR="9.8.7"' "$box/mac-baked.sh" && grep -qx "MANUAL_MAC_EXPIRES=\"$(sed -n 's/^  "expires_at": "\(.*\)",$/\1/p' "$saved/manifest.json")\"" "$box/mac-baked.sh" \
   || fail "copy: the copy made from install.sh does not carry the release's two values"
 # The tool folders with one a user owns in front, and the check of who owns a tool as shipped.
@@ -604,7 +653,7 @@ family() {
 args() {
   local d="$mirror/helper-v$1"
   ARGS=(2 "$1" "${FLOOR:-9.0.0}"
-    "$(sha "$d/Rex-DUO-Beacon.zip")" "$(size "$d/Rex-DUO-Beacon.zip")"
+    "$(sha "$d/Beacon-macOS.zip")" "$(size "$d/Beacon-macOS.zip")"
     "$(sha "$d/rex-duo-helper-linux-x86_64")" "$(size "$d/rex-duo-helper-linux-x86_64")"
     "$(sha "$d/rex-duo-helper-linux-aarch64")" "$(size "$d/rex-duo-helper-linux-aarch64")"
     "${KEYS_ARG:-$PRIMARY,$RECOVERY}" "${LINGER_ARG:-skip}" -)
@@ -621,7 +670,7 @@ records() { python3 -I "$here/tests-setup/osc.py" "$H.out" | tr '\n' ';'; }
 tidy() {
   [[ ! -e "$H/.local/state/rex-duo-helper/setup.lock" && ! -e "$H/Library/Application Support/Rex DUO Helper/setup.lock" ]] || fail "$1: the lock is still there"
   [[ -z "$(ls -A "$H/tmp")" ]] || fail "$1: the staging folder is still there: $(ls -A "$H/tmp")"
-  [[ -z "$(find "$H" -name '.rex-duo-helper.new.*' -o -name '.Rex DUO Beacon.app.new-*' -o -name '.Rex DUO Helper.app.new-*')" ]] || fail "$1: a half-placed copy is still there"
+  [[ -z "$(find "$H" -name '.rex-duo-helper.new.*' -o -name ".$beacon.app.new-*" -o -name '.Rex DUO Beacon.app.new-*' -o -name '.Rex DUO Helper.app.new-*')" ]] || fail "$1: a half-placed copy is still there"
 }
 installed() { echo "$H/.local/bin/rex-duo-helper"; }
 # The setup code, or any 12 characters in a row of it, in a file.
@@ -911,7 +960,7 @@ EOF
   chmod 555 "$H/.local/bin"
   run "$box/linux.sh" "${good[@]}"
   ends 15 "a folder that can't be written"
-  says "couldn't save Rex DUO Beacon in ~/.local/bin" "an unwritable folder"
+  says "couldn't save $beacon in ~/.local/bin" "an unwritable folder"
   chmod 755 "$H/.local/bin"
   tidy "an unwritable folder"
   new_home
@@ -1207,35 +1256,35 @@ PY
 on_mirror() {
   mkdir -p "$mirror/helper-v$1"
   cp "$saved"/rex-duo-helper-linux-* "$mirror/helper-v$1/"
-  cp "$2" "$mirror/helper-v$1/Rex-DUO-Beacon.zip"
+  cp "$2" "$mirror/helper-v$1/Beacon-macOS.zip"
 }
 fake_app "$box/app-next" 9.8.9
 zip_app "$box/app-next" "$box/next.zip"
 on_mirror 9.8.9 "$box/next.zip"
 adhoc=0
 fake_app "$box/app-adhoc" 9.7.1 true
-if /usr/bin/codesign --force -s - "$box/app-adhoc/Rex DUO Beacon.app" >/dev/null 2>&1; then
+if /usr/bin/codesign --force -s - "$box/app-adhoc/$beacon.app" >/dev/null 2>&1; then
   adhoc=1
   zip_app "$box/app-adhoc" "$box/adhoc.zip"
   on_mirror 9.7.1 "$box/adhoc.zip"
 fi
 # Two things in one zip.
 mkdir -p "$box/two"
-cp -R "$box/app/Rex DUO Beacon.app" "$box/two/"
+cp -R "$box/app/$beacon.app" "$box/two/"
 echo extra > "$box/two/README"
 (cd "$box/two" && /usr/bin/zip -qr "$box/two.zip" .)
 on_mirror 9.6.2 "$box/two.zip"
 # A Developer ID build of the real helper, when package.sh left one. Only its checks run.
-real_zip="$here/dist/release/Rex-DUO-Beacon.zip"
+real_zip="$here/dist/release/Beacon-macOS.zip"
 real_version=""
 if [[ -f "$real_zip" ]]; then
   mkdir -p "$box/real"
   /usr/bin/ditto -x -k "$real_zip" "$box/real"
-  real_version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$box/real/Rex DUO Beacon.app/Contents/Info.plist")"
+  real_version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$box/real/$beacon.app/Contents/Info.plist")"
   on_mirror "$real_version" "$real_zip"
 fi
 
-mac_app() { echo "$H/SystemApplications/Rex DUO Beacon.app"; }
+mac_app() { echo "$H/SystemApplications/$beacon.app"; }
 # only_label <what> <name>: the service has one file, under that name, and launchd one job, of
 # that name.
 only_label() {
@@ -1277,7 +1326,7 @@ mac_tests() {
   new_home
   run "$box/mac-real.sh" "${ARGS[@]}"
   ends 14 "Mac: a zip that holds more than the app"
-  says "does not hold Rex DUO Beacon alone" "two things in the zip"
+  says "does not hold $beacon alone" "two things in the zip"
   mac_untouched "two things in the zip"
   if [[ -n "$real_version" ]]; then
     FLOOR=0.0.1 args "$real_version"
@@ -1289,14 +1338,14 @@ mac_tests() {
     elif [[ "$RC" == 99 ]] && grep -q TRIPWIRE "$H.out"; then
       # A notarized build passes every check and is put in the test's home folder. The copy
       # under test stops there, before anything of it runs.
-      [[ -d "$H/Applications/Rex DUO Beacon.app" && ! -e "$H/helper.log" && ! -e "$H/tools.log" ]] || fail "Mac: the notarized build was not placed, or something was started"
+      [[ -d "$H/Applications/$beacon.app" && ! -e "$H/helper.log" && ! -e "$H/tools.log" ]] || fail "Mac: the notarized build was not placed, or something was started"
       [[ "$(records)" == "${C}working download 10 -;working verify 50 -;working install 70 -;" ]] || fail "Mac: the notarized build reported $(records)"
       ok "Mac: the notarized Developer ID build in dist/release passes the system's own codesign and spctl"
     else
       fail "Mac: the Developer ID build in dist/release: ended with $RC: $(cat "$H.out")"
     fi
   else
-    echo "skip  ${label}Mac: a Developer ID build that is not notarized (no dist/release/Rex-DUO-Beacon.zip here)"
+    echo "skip  ${label}Mac: a Developer ID build that is not notarized (no dist/release/Beacon-macOS.zip here)"
   fi
 
   # A PATH with other tools in front, and a tool folder that is not root's.
@@ -1329,13 +1378,13 @@ mac_tests() {
   [[ "$(grep -c '^launchctl ' "$H/tools.log")" == 1 ]] && grep -qxF "launchctl print gui/$uid" "$H/tools.log" || fail "Mac: launchctl was called for more than the login check"
   # The helper loads its service under the service's name, and nothing has the earlier one.
   only_label "Mac: a new install" "$service"
-  [[ "$(launchd_did)" == "bootstrap beacon.plist | beacon.plist ;" ]] || fail "Mac: a new install asked launchd for $(launchd_did)"
+  [[ "$(launchd_did)" == "bootstrap agent.plist | agent.plist ;" ]] || fail "Mac: a new install asked launchd for $(launchd_did)"
   if grep -rqF "$earlier.plist" "$H/tools.log" "$H/launchd.log"; then fail "Mac: a new install touched the service's earlier name"; fi
   ok "Mac: a new install writes and loads the service under its name alone"
   grep -q -- "-R=identifier \"dev.abrahamgonzalez.rexduo.helper\" and anchor apple generic and certificate 1\[field.1.2.840.113635.100.6.2.6\] exists and certificate leaf\[field.1.2.840.113635.100.6.1.13\] exists and certificate leaf\[subject.OU\] = \"R2PVQ496X7\" " "$H/tools.log" \
     || fail "Mac: codesign was not given the requirement of update.rs"
   grep -qF "codesign --verify --deep --strict $H/tmp/" "$H/tools.log" && grep -qF "spctl --assess --type execute -vv $H/tmp/" "$H/tools.log" || fail "Mac: the download was not checked as update.rs checks it"
-  grep -qF "codesign --verify --deep --strict $H/SystemApplications/.Rex DUO Beacon.app.new-" "$H/tools.log" || fail "Mac: the copy was not checked again where it was placed"
+  grep -qF "codesign --verify --deep --strict $H/SystemApplications/.$beacon.app.new-" "$H/tools.log" || fail "Mac: the copy was not checked again where it was placed"
   if leaks "$H.out" || leaks "$H/tools.log" || leaks "$H/helper.log"; then fail "Mac: the setup code is in the output or in a program's arguments"; fi
   if grep -qF -e "$H" "$H.out"; then fail "Mac: the output holds a full path: $(cat "$H.out")"; fi
   ok "Mac: codesign and spctl get the arguments of update.rs, before and after the app is placed"
@@ -1350,17 +1399,17 @@ mac_tests() {
   new_home
   run "$box/mac.sh" "${ARGS[@]}"
   ends 0 "Mac: installs into ~/Applications when the system folder can't be written"
-  [[ -x "$H/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper" ]] || fail "Mac: the app is not in ~/Applications"
-  says "~/Applications/Rex DUO Beacon.app" "Mac: ~/Applications"
+  [[ -x "$H/Applications/$beacon.app/Contents/MacOS/rex-duo-helper" ]] || fail "Mac: the app is not in ~/Applications"
+  says "~/Applications/$beacon.app" "Mac: ~/Applications"
 
   # An older app is there: it updates itself, or waits beside the new one until that one runs.
   local apps previous
   old_app() { # a fresh home with version 9.8.7 installed
     new_home
     apps="$H/SystemApplications"
-    previous="$apps/Rex DUO Beacon.previous.app"
+    previous="$apps/$beacon.previous.app"
     mkdir "$apps"
-    cp -R "$box/app/Rex DUO Beacon.app" "$apps/"
+    cp -R "$box/app/$beacon.app" "$apps/"
   }
   app_is() { [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$(mac_app)/Contents/Info.plist")" == "$1" ]]; }
   runs() { tr '\n' ';' < "$H/helper-runs.log"; } # which version of the helper was called, and how
@@ -1378,7 +1427,7 @@ mac_tests() {
   run "$box/mac.sh" "${ARGS[@]}"
   ends 0 "Mac: an older app that can't update itself is replaced"
   app_is 9.8.9 || fail "Mac: the new app is not in place"
-  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" && ! -e "$H/.Trash" ]] || fail "Mac: the app that was replaced is still there, or in the Trash: $(ls -A "$apps")"
+  [[ "$(ls -A "$apps")" == "$beacon.app" && ! -e "$H/.Trash" ]] || fail "Mac: the app that was replaced is still there, or in the Trash: $(ls -A "$apps")"
   [[ "$(runs)" == "9.8.7 update;9.8.9 install;" ]] || fail "Mac: replacing an app called the helper as $(runs)"
   got_code "Mac: a replaced app"
   tidy "Mac: a replaced app"
@@ -1389,7 +1438,7 @@ mac_tests() {
   run "$box/mac.sh" "${ARGS[@]}"
   ends 17 "Mac: the new app does not start, so the old one is put back"
   app_is 9.8.7 || fail "Mac: the old app is not back in place"
-  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" ]] || fail "Mac: after putting the old app back the folder holds $(ls -A "$apps")"
+  [[ "$(ls -A "$apps")" == "$beacon.app" ]] || fail "Mac: after putting the old app back the folder holds $(ls -A "$apps")"
   [[ "$(runs)" == "9.8.7 update;9.8.9 install;9.8.7 install;" ]] || fail "Mac: putting the old app back called the helper as $(runs)"
   [[ "$(tail -n 1 "$H/helper.log")" == "install --server $SERVER" ]] || fail "Mac: the old app was started again as $(tail -n 1 "$H/helper.log")"
   says "installed before is back in its place" "Mac: the old app is put back"
@@ -1402,7 +1451,7 @@ mac_tests() {
   run "$box/mac.sh" "${ARGS[@]}"
   ends 15 "Mac: the new app can't be put in place, so the old one is put back"
   app_is 9.8.7 || fail "Mac: the old app is not back in place"
-  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" ]] || fail "Mac: after a failed rename the folder holds $(ls -A "$apps")"
+  [[ "$(ls -A "$apps")" == "$beacon.app" ]] || fail "Mac: after a failed rename the folder holds $(ls -A "$apps")"
   [[ "$(runs)" == "9.8.7 update;9.8.7 install;" ]] || fail "Mac: after a failed rename the helper was called as $(runs)"
   tidy "Mac: a failed rename"
   # Closing the terminal while the new one starts.
@@ -1418,7 +1467,7 @@ mac_tests() {
   RC=0
   wait "$pid" 2>/dev/null || RC=$?
   ends 129 "Mac: closing the terminal while the new app starts puts the old one back"
-  app_is 9.8.7 && [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" ]] || fail "Mac: after a hangup the folder holds $(ls -A "$apps")"
+  app_is 9.8.7 && [[ "$(ls -A "$apps")" == "$beacon.app" ]] || fail "Mac: after a hangup the folder holds $(ls -A "$apps")"
   pkill -f "$H/SystemApplications" 2>/dev/null || true
   tidy "Mac: a hangup while starting"
   # macOS does not let the old app be renamed: it stays, and nothing else changed.
@@ -1427,36 +1476,36 @@ mac_tests() {
   run "$box/mac.sh" "${ARGS[@]}"
   ends 20 "Mac: an old app that can't be set aside stays"
   app_is 9.8.7 || fail "Mac: the old app is gone though nothing replaced it"
-  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" && "$(runs)" == "9.8.7 update;" ]] || fail "Mac: an old app that can't be set aside: $(ls -A "$apps"), $(runs)"
+  [[ "$(ls -A "$apps")" == "$beacon.app" && "$(runs)" == "9.8.7 update;" ]] || fail "Mac: an old app that can't be set aside: $(ls -A "$apps"), $(runs)"
   tidy "Mac: an old app that can't be set aside"
   # An update that stopped between its two moves.
   args 9.8.7
   new_home
   mkdir "$H/SystemApplications"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/SystemApplications/Rex DUO Beacon.previous.app"
-  mkdir "$H/SystemApplications/.Rex DUO Beacon.app.new-4242"
+  cp -R "$box/app/$beacon.app" "$H/SystemApplications/$beacon.previous.app"
+  mkdir "$H/SystemApplications/.$beacon.app.new-4242"
   before="$(asked)"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 0 "Mac: an app that an update set aside is put back"
-  [[ "$(asked)" == "$before" && -d "$(mac_app)" && ! -e "$H/SystemApplications/Rex DUO Beacon.previous.app" ]] || fail "Mac: the set-aside app was not put back"
+  [[ "$(asked)" == "$before" && -d "$(mac_app)" && ! -e "$H/SystemApplications/$beacon.previous.app" ]] || fail "Mac: the set-aside app was not put back"
   tidy "Mac: leftovers"
   # A set-aside copy beside an app that is whole.
   args 9.8.7
   new_home
   mkdir "$H/SystemApplications"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/SystemApplications/Rex DUO Beacon.app"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/SystemApplications/Rex DUO Beacon.previous.app"
+  cp -R "$box/app/$beacon.app" "$H/SystemApplications/$beacon.app"
+  cp -R "$box/app/$beacon.app" "$H/SystemApplications/$beacon.previous.app"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 0 "Mac: a set-aside copy beside a whole app is removed"
-  [[ "$(ls -A "$H/SystemApplications")" == "Rex DUO Beacon.app" ]] || fail "Mac: the set-aside copy stayed: $(ls -A "$H/SystemApplications")"
+  [[ "$(ls -A "$H/SystemApplications")" == "$beacon.app" ]] || fail "Mac: the set-aside copy stayed: $(ls -A "$H/SystemApplications")"
   # While the helper is updating itself, it stays.
   new_home
   mkdir -p "$H/SystemApplications" "$H/Library/Application Support/Rex DUO Helper"
   : > "$H/Library/Application Support/Rex DUO Helper/update.lock"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/SystemApplications/Rex DUO Beacon.app"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/SystemApplications/Rex DUO Beacon.previous.app"
+  cp -R "$box/app/$beacon.app" "$H/SystemApplications/$beacon.app"
+  cp -R "$box/app/$beacon.app" "$H/SystemApplications/$beacon.previous.app"
   run "$box/mac.sh" "${ARGS[@]}"
-  [[ -d "$H/SystemApplications/Rex DUO Beacon.previous.app" ]] || fail "Mac: the set-aside copy was removed during the helper's own update"
+  [[ -d "$H/SystemApplications/$beacon.previous.app" ]] || fail "Mac: the set-aside copy was removed during the helper's own update"
   tidy "Mac: a set-aside copy"
 
   new_home
@@ -1474,10 +1523,10 @@ mac_tests() {
   : > "$H/no-start"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 17 "Mac: the helper does not start"
-  [[ -d "$H/Applications/Rex DUO Beacon.app" ]] || fail "Mac: a first install that did not start was removed"
+  [[ -d "$H/Applications/$beacon.app" ]] || fail "Mac: a first install that did not start was removed"
   new_home
   mkdir "$H/SystemApplications"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/SystemApplications/"
+  cp -R "$box/app/$beacon.app" "$H/SystemApplications/"
   : > "$H/bad-signature"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 14 "Mac: with a failing code signature nothing is run or replaced"
@@ -1485,7 +1534,7 @@ mac_tests() {
   # A folder of the app's name, or of the earlier one, that does not pass the code signature
   # check: the install stops, and the folder is as it was.
   local name was
-  for name in "Rex DUO Beacon.app" "Rex DUO Helper.app"; do
+  for name in "$beacon.app" "Rex DUO Helper.app"; do
     new_home
     unsigned_folder "$H/SystemApplications/$name"
     was="$(as_it_was "$H/SystemApplications/$name")"
@@ -1510,7 +1559,7 @@ mac_tests() {
   run "$box/mac.sh"
   ends 14 "Mac, by hand: a copy without the two values of a release installs nothing"
   says "is not the install.sh of a release" "Mac, by hand: no values"
-  says "Download Rex DUO Beacon from " "Mac, by hand: no values"
+  says "Download $beacon from " "Mac, by hand: no values"
   mac_untouched "Mac, by hand: no values"
   new_home
   RUN_ENV=("REXDUO_TEST_NOW=$expires")
@@ -1537,7 +1586,7 @@ mac_tests() {
   [[ "$(grep -cF "$notice" "$H.out")" == 1 ]] || fail "Mac, by hand: the notice about the signature was not printed once: $(cat "$H.out")"
   says "Apple's code signature and notarization checks of the app are." "Mac, by hand: the notice"
   grep -qxF "install --server $SERVER" "$H/helper.log" || fail "Mac, by hand: the helper's install got $(cat "$H/helper.log")"
-  [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$H/Applications/Rex DUO Beacon.app/Contents/Info.plist")" == 9.8.7 ]] || fail "Mac, by hand: the app is not in place"
+  [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$H/Applications/$beacon.app/Contents/Info.plist")" == 9.8.7 ]] || fail "Mac, by hand: the app is not in place"
   only_label "Mac, by hand" "$service"
   ok "Mac, by hand: says that Apple's checks decide, not the list's signature"
   new_home
@@ -1548,7 +1597,7 @@ mac_tests() {
 
 # MARK: A Mac that has the app under its earlier name, Rex DUO Helper.app
 
-# An app as versions before the name left it, and one that calls itself Rex DUO Beacon in a
+# An app as versions before the name left it, and one that calls itself Beacon in a
 # folder of the earlier name, as an update by the updater of version 0.3.0 leaves it.
 fake_app "$box/app-helper" 9.8.7 "" "Rex DUO Helper.app" "Rex DUO Helper"
 fake_app "$box/app-carried" 9.8.9 "" "Rex DUO Helper.app"
@@ -1573,11 +1622,11 @@ rename_tests() {
   }
   # What the helper asks of launchd to move the service to its name: the earlier job is booted
   # out with both files there, the new one loaded, and the earlier file is deleted after that.
-  moved="bootout helper | beacon.plist helper.plist ;bootstrap beacon.plist | beacon.plist helper.plist ;"
+  moved="bootout helper | agent.plist helper.plist ;bootstrap agent.plist | agent.plist helper.plist ;"
   empty_mac() { # a fresh home with an empty system Applications folder
     new_home
     apps="$H/SystemApplications"
-    new="$apps/Rex DUO Beacon.app"
+    new="$apps/$beacon.app"
     old="$apps/Rex DUO Helper.app"
     agent="$H/Library/LaunchAgents/$service.plist"
     earlier_agent="$H/Library/LaunchAgents/$earlier.plist"
@@ -1589,11 +1638,11 @@ rename_tests() {
   # one_app <what> <version>: one app, under its name, at that version, and one LaunchAgent,
   # under the service's name, runs it.
   one_app() {
-    [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" ]] || fail "$1: the Applications folder holds $(ls -A "$apps" | tr '\n' ' ')"
+    [[ "$(ls -A "$apps")" == "$beacon.app" ]] || fail "$1: the Applications folder holds $(ls -A "$apps" | tr '\n' ' ')"
     [[ "$(version_of "$new")" == "$2" ]] || fail "$1: the app is version $(version_of "$new"), expected $2"
     [[ "$(cat "$agent")" == "$new/Contents/MacOS/rex-duo-helper" ]] || fail "$1: the LaunchAgent runs $(cat "$agent")"
     only_label "$1" "$service"
-    says "(~/SystemApplications/Rex DUO Beacon.app)" "$1"
+    says "(~/SystemApplications/$beacon.app)" "$1"
     grep -qxF "open -g -a $new --args phone-setup" "$H/tools.log" || fail "$1: open was not called for the app under its name: $(grep '^open' "$H/tools.log")"
     tidy "$1"
   }
@@ -1602,9 +1651,9 @@ rename_tests() {
   args 9.8.9
   helper_home
   cp -R "$box/app-helper/Rex DUO Helper.app" "$apps/Rex DUO Helper.previous.app"
-  mkdir "$apps/.Rex DUO Helper.app.new-4242" "$apps/.Rex DUO Beacon.app.new-7"
+  mkdir "$apps/.Rex DUO Helper.app.new-4242" "$apps/.$beacon.app.new-7"
   run "$box/mac.sh" "${ARGS[@]}"
-  ends 0 "earlier name: an app that can't update itself is replaced by Rex DUO Beacon.app"
+  ends 0 "earlier name: an app that can't update itself is replaced by $beacon.app"
   one_app "earlier name: replaced" 9.8.9
   [[ "$(runs)" == "9.8.7 update;9.8.9 install;" ]] || fail "earlier name: replacing called the helper as $(runs)"
   got_code "earlier name: replaced"
@@ -1648,7 +1697,7 @@ rename_tests() {
   tidy "earlier name: put back"
   # The service is back under its earlier name, file and job, and the new file is gone.
   only_label "earlier name: put back" "$earlier"
-  [[ "$(launchd_did)" == "${moved}bootout beacon | beacon.plist helper.plist ;bootstrap helper.plist | helper.plist ;" ]] || fail "earlier name: put back: launchd was asked for $(launchd_did)"
+  [[ "$(launchd_did)" == "${moved}bootout agent | agent.plist helper.plist ;bootstrap helper.plist | helper.plist ;" ]] || fail "earlier name: put back: launchd was asked for $(launchd_did)"
   ok "earlier name: after a failed start the service has its earlier name again, file and job, and the new file is gone"
   # The new helper moved the service and then never said that it runs: the installer stops
   # the service under its name, deletes that file and puts the earlier file back as it was,
@@ -1661,7 +1710,7 @@ rename_tests() {
   [[ "$(cat "$earlier_agent")" == "$old/Contents/MacOS/rex-duo-helper" ]] || fail "earlier name: no report: the LaunchAgent runs $(cat "$earlier_agent")"
   only_label "earlier name: no report" "$earlier"
   [[ "$(grep '^launchctl bootout' "$H/tools.log")" == "launchctl bootout gui/$uid/$service" ]] || fail "earlier name: no report: the installer called launchctl as $(grep '^launchctl' "$H/tools.log")"
-  [[ "$(launchd_did)" == "${moved}bootout beacon | beacon.plist ;bootstrap helper.plist | helper.plist ;" ]] || fail "earlier name: no report: launchd was asked for $(launchd_did)"
+  [[ "$(launchd_did)" == "${moved}bootout agent | agent.plist ;bootstrap helper.plist | helper.plist ;" ]] || fail "earlier name: no report: launchd was asked for $(launchd_did)"
   tidy "earlier name: no report"
   # It can't be put in place, or the old one can't be set aside: the old one stays as it was.
   helper_home
@@ -1703,12 +1752,12 @@ rename_tests() {
   grep -qxF "open -g -a $old --args phone-setup" "$H/tools.log" || fail "earlier name: open was not called for the app where it is"
 
   # The wanted version is there already. A build from before the name is replaced; one that
-  # calls itself Rex DUO Beacon is started, and renames its folder.
+  # calls itself Beacon is started, and renames its folder.
   args 9.8.7
   helper_home
   before="$(asked)"
   run "$box/mac.sh" "${ARGS[@]}"
-  ends 0 "earlier name: the same version from before the name is replaced by Rex DUO Beacon.app"
+  ends 0 "earlier name: the same version from before the name is replaced by $beacon.app"
   [[ "$(asked)" != "$before" ]] || fail "earlier name: the same version was not downloaded again"
   one_app "earlier name: the same version" 9.8.7
   args 9.8.9
@@ -1729,29 +1778,29 @@ rename_tests() {
   # Both names. The app under its name is the installed one, wherever the other is.
   args 9.8.9
   helper_home
-  cp -R "$box/app/Rex DUO Beacon.app" "$apps/"
+  cp -R "$box/app/$beacon.app" "$apps/"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 0 "both names in one folder: the app under its name is replaced, the other is removed"
   one_app "both names in one folder" 9.8.9
   [[ "$(runs)" == "9.8.7 update;9.8.9 install;" ]] || fail "both names in one folder: the helper was called as $(runs)"
   helper_home
   mkdir "$H/Applications"
-  cp -R "$box/app-next/Rex DUO Beacon.app" "$H/Applications/"
+  cp -R "$box/app-next/$beacon.app" "$H/Applications/"
   cp -R "$box/app-helper/Rex DUO Helper.app" "$H/Applications/Rex DUO Helper.previous.app"
   before="$(asked)"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 0 "both names in two folders: the app under its name is the installed one"
-  [[ "$(asked)" == "$before" && -z "$(ls -A "$apps")" && "$(ls -A "$H/Applications")" == "Rex DUO Beacon.app" ]] \
+  [[ "$(asked)" == "$before" && -z "$(ls -A "$apps")" && "$(ls -A "$H/Applications")" == "$beacon.app" ]] \
     || fail "both names in two folders: $(ls -A "$apps" "$H/Applications" | tr '\n' ' ')"
-  [[ "$(cat "$agent")" == "$H/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper" ]] || fail "both names in two folders: the LaunchAgent runs $(cat "$agent")"
+  [[ "$(cat "$agent")" == "$H/Applications/$beacon.app/Contents/MacOS/rex-duo-helper" ]] || fail "both names in two folders: the LaunchAgent runs $(cat "$agent")"
   ok "both names: one app is left, under its name"
   # A failed start leaves both where they were.
   helper_home
-  cp -R "$box/app/Rex DUO Beacon.app" "$apps/"
+  cp -R "$box/app/$beacon.app" "$apps/"
   : > "$H/no-start"
   run "$box/mac.sh" "${ARGS[@]}"
   ends 17 "both names: the new app does not start, so both stay"
-  [[ "$(ls -A "$apps" | tr '\n' ' ')" == "Rex DUO Beacon.app Rex DUO Helper.app " && "$(version_of "$new")" == 9.8.7 ]] || fail "both names after a failed start: $(ls -A "$apps" | tr '\n' ' ')"
+  [[ "$(ls -A "$apps" | tr '\n' ' ')" == "$beacon.app Rex DUO Helper.app " && "$(version_of "$new")" == 9.8.7 ]] || fail "both names after a failed start: $(ls -A "$apps" | tr '\n' ' ')"
 
   # An update of version 0.3.0 that stopped between its two moves left the app set aside.
   args 9.8.7
@@ -1777,14 +1826,14 @@ rename_tests() {
   ARGS=(2 9.8.8 9.0.0 "$(sha "$box/before.zip")" "$(size "$box/before.zip")" "${ARGS[@]:5}")
   empty_mac
   run "$box/mac.sh" "${ARGS[@]}"
-  ends 0 "a release with the one zip of the earlier name is installed as Rex DUO Beacon.app"
+  ends 0 "a release with the one zip of the earlier name is installed as $beacon.app"
   one_app "a release with one zip" 9.8.8
   [[ "$(tail -n +"$((before + 1))" "$requests" | grep -c 'helper-v9.8.8/Rex-DUO-Helper.zip')" == 1 ]] || fail "a release with one zip: asked for $(tail -n +"$((before + 1))" "$requests")"
   # A release with both, and arguments that describe the zip of the earlier name.
   ARGS=(2 9.8.7 9.0.0 "$(sha "$saved/Rex-DUO-Helper.zip")" "$(size "$saved/Rex-DUO-Helper.zip")" "${ARGS[@]:5}")
   empty_mac
   run "$box/mac.sh" "${ARGS[@]}"
-  ends 0 "arguments that describe the zip of the earlier name install the same app as Rex DUO Beacon.app"
+  ends 0 "arguments that describe the zip of the earlier name install the same app as $beacon.app"
   one_app "arguments for the zip of the earlier name" 9.8.7
   # Neither zip is the file the arguments describe.
   ARGS[3]="$(printf '%064d' 0)"
@@ -1793,30 +1842,340 @@ rename_tests() {
   ends 14 "a Mac file that is neither of the two zips"
   mac_untouched "neither zip"
 
-  # By hand: the list's second Mac entry names the zip to get, and a list without it the first.
+  # By hand: the list's newest Mac entry names the zip to get, and that zip is the first one
+  # asked for. A list from before an entry names an older zip, which is found by its SHA-256.
+  zips_asked() { tail -n +"$(($1 + 1))" "$requests" | sed -n 's|.*/helper-v[0-9.]*/\(.*\.zip\)$|\1|p' | tr '\n' ' '; }
   before="$(wc -l < "$requests")"
   new_home
   run "$box/mac-baked.sh"
-  ends 0 "by hand on a Mac: the list's entry for Rex DUO Beacon is the one that is downloaded"
-  [[ "$(tail -n +"$((before + 1))" "$requests" | grep -c 'Rex-DUO-Beacon.zip')" == 1 && "$(tail -n +"$((before + 1))" "$requests" | grep -c 'Rex-DUO-Helper.zip')" == 0 ]] \
-    || fail "by hand on a Mac: asked for $(tail -n +"$((before + 1))" "$requests")"
-  [[ -d "$H/Applications/Rex DUO Beacon.app" ]] || fail "by hand on a Mac: the app is not in place"
-  python3 - "$saved/manifest.json" "$mirror/helper-latest/manifest.json" <<'PY'
+  ends 0 "by hand on a Mac: the list's entry for $beacon is the one that is downloaded"
+  [[ "$(zips_asked "$before")" == "Beacon-macOS.zip " ]] || fail "by hand on a Mac: asked for $(zips_asked "$before")"
+  [[ "$(ls -A "$H/Applications")" == "$beacon.app" ]] || fail "by hand on a Mac: the app is not in place"
+  local entries
+  for entries in "macos-app" "macos-app macos-universal-beacon"; do
+    python3 - "$saved/manifest.json" "$mirror/helper-latest/manifest.json" $entries <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
-del m["assets"]["macos-universal-beacon"]
+for entry in sys.argv[3:]:
+    del m["assets"][entry]
 with open(sys.argv[2], "w") as f:
     json.dump(m, f, indent=2)
     f.write("\n")
 PY
-  before="$(wc -l < "$requests")"
-  new_home
-  run "$box/mac-baked.sh"
-  ends 0 "by hand on a Mac: a list with the one Mac entry installs its zip as Rex DUO Beacon.app"
-  [[ "$(tail -n +"$((before + 1))" "$requests" | grep -c 'Rex-DUO-Beacon.zip')" == 0 && "$(tail -n +"$((before + 1))" "$requests" | grep -c 'Rex-DUO-Helper.zip')" == 1 ]] \
-    || fail "by hand on a Mac, one entry: asked for $(tail -n +"$((before + 1))" "$requests")"
-  [[ "$(ls -A "$H/Applications")" == "Rex DUO Beacon.app" ]] || fail "by hand on a Mac, one entry: ~/Applications holds $(ls -A "$H/Applications")"
+    before="$(wc -l < "$requests")"
+    new_home
+    run "$box/mac-baked.sh"
+    ends 0 "by hand on a Mac: a list without the entries $entries installs the zip of its newest entry, and the app takes its name"
+    case "$entries" in
+      macos-app) [[ "$(zips_asked "$before")" == "Beacon-macOS.zip Rex-DUO-Beacon.zip " ]] || fail "by hand on a Mac, without $entries: asked for $(zips_asked "$before")" ;;
+      *) [[ "$(zips_asked "$before")" == "Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip " ]] || fail "by hand on a Mac, without $entries: asked for $(zips_asked "$before")" ;;
+    esac
+    [[ "$(ls -A "$H/Applications")" == "$beacon.app" ]] || fail "by hand on a Mac, without $entries: ~/Applications holds $(ls -A "$H/Applications")"
+    only_label "by hand on a Mac, without $entries" "$service"
+  done
   restore_mirror
+}
+
+# MARK: The three names: what a release holds for each, and the moves between them
+
+# An app as version 0.3.1 left it, which calls itself by the name of that time, and a release
+# as that version was published: two zips for a Mac, each with the folder of an earlier name.
+fake_app "$box/app-middle" 9.8.7 "" "Rex DUO Beacon.app" "Rex DUO Beacon"
+fake_app "$box/app-middle-release" 9.8.6 "" "Rex DUO Beacon.app" "Rex DUO Beacon"
+mkdir -p "$mirror/helper-v9.8.6" "$box/app-middle-release/as-helper"
+cp "$saved"/rex-duo-helper-linux-* "$mirror/helper-v9.8.6/"
+/usr/bin/ditto -c -k --keepParent "$box/app-middle-release/Rex DUO Beacon.app" "$mirror/helper-v9.8.6/Rex-DUO-Beacon.zip"
+cp -R "$box/app-middle-release/Rex DUO Beacon.app" "$box/app-middle-release/as-helper/Rex DUO Helper.app"
+/usr/bin/ditto -c -k --keepParent "$box/app-middle-release/as-helper/Rex DUO Helper.app" "$mirror/helper-v9.8.6/Rex-DUO-Helper.zip"
+# Zips that do not hold the app alone, as a real folder of an allowed name. guard_zip <name>
+# <version>: what the folder $box/guard/<name> holds, as the Mac file of that version.
+guard_zip() {
+  rm -f "$box/guard/$1.zip"
+  (cd "$box/guard/$1" && /usr/bin/zip -qry "$box/guard/$1.zip" .)
+  on_mirror "$2" "$box/guard/$1.zip"
+}
+mkdir -p "$box/guard/two-apps" "$box/guard/link" "$box/guard/dot-name" "$box/guard/other-name" "$box/guard/set-aside" "$box/guard/nested/Folder"
+cp -R "$box/app/$beacon.app" "$box/guard/two-apps/"
+cp -R "$box/app/$beacon.app" "$box/guard/two-apps/Rex DUO Beacon.app"
+ln -s "$box/app/$beacon.app" "$box/guard/link/$beacon.app"
+cp -R "$box/app/$beacon.app" "$box/guard/dot-name/.$beacon.app"
+cp -R "$box/app/$beacon.app" "$box/guard/other-name/Other.app"
+cp -R "$box/app/$beacon.app" "$box/guard/set-aside/$beacon.previous.app"
+cp -R "$box/app/$beacon.app" "$box/guard/nested/Folder/"
+guard_zip two-apps 9.6.3
+guard_zip link 9.6.4
+guard_zip dot-name 9.6.5
+guard_zip other-name 9.6.6
+guard_zip set-aside 9.6.7
+guard_zip nested 9.6.8
+
+name_tests() {
+  local apps before new old agent earlier_agent zip want mid mid_agent kind folder
+  # middle_home: a fresh home with the app as version 0.3.1 left it, and its service as that
+  # version has it: under the name of that time, loaded.
+  middle_home() {
+    empty_mac
+    mid="$apps/Rex DUO Beacon.app"
+    mid_agent="$H/Library/LaunchAgents/$middle.plist"
+    cp -R "$box/app-middle/Rex DUO Beacon.app" "$apps/"
+    mkdir -p "$H/Library/LaunchAgents" "$H/loaded"
+    echo "$mid/Contents/MacOS/rex-duo-helper" > "$mid_agent"
+    : > "$H/loaded/$middle"
+  }
+
+  # A new install: the arguments describe one of the release's three zips, and the zips are
+  # asked for newest first until one is that file. The app in each is the same, and ends
+  # under its name, with its service under the service's name alone.
+  for zip in Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip; do
+    args 9.8.7
+    ARGS[3]="$(sha "$saved/$zip")"
+    ARGS[4]="$(size "$saved/$zip")"
+    case "$zip" in
+      Beacon-macOS.zip) want="Beacon-macOS.zip " ;;
+      Rex-DUO-Beacon.zip) want="Beacon-macOS.zip Rex-DUO-Beacon.zip " ;;
+      *) want="Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip " ;;
+    esac
+    empty_mac
+    before="$(wc -l < "$requests")"
+    run "$box/mac.sh" "${ARGS[@]}"
+    ends 0 "three zips: arguments that describe $zip install the app, and it has its name"
+    [[ "$(zips_asked "$before")" == "$want" ]] || fail "three zips, $zip: asked for $(zips_asked "$before"), expected $want"
+    one_app "three zips, $zip" 9.8.7
+    [[ "$(launchd_did)" == "bootstrap agent.plist | agent.plist ;" ]] || fail "three zips, $zip: launchd was asked for $(launchd_did)"
+    got_code "three zips, $zip"
+  done
+  ok "three zips: they are asked for in the order Beacon-macOS.zip, Rex-DUO-Beacon.zip, Rex-DUO-Helper.zip, and the first that has the SHA-256 is installed"
+  # None of the three is the file: the first two are there and are other files, and the code
+  # is the one for a check that failed even where the last is missing.
+  args 9.8.7
+  ARGS[3]="$(printf '%064d' 1)"
+  rm -f "$mirror/helper-v9.8.7/Rex-DUO-Helper.zip"
+  new_home
+  before="$(wc -l < "$requests")"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 14 "three zips: none of them is the file the arguments describe"
+  [[ "$(zips_asked "$before")" == "Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip " ]] || fail "three zips, none: asked for $(zips_asked "$before")"
+  says "not the file the release list names" "three zips, none"
+  mac_untouched "three zips, none"
+  restore_mirror
+
+  # A release from before the name, as version 0.3.1 was published. Its app lands under the
+  # folder name it came in, which is the one its own updater looks for, with its service
+  # under the name that version knows, and a second run finds it whole.
+  args 9.8.7
+  ARGS[1]=9.8.6
+  ARGS[3]="$(sha "$mirror/helper-v9.8.6/Rex-DUO-Beacon.zip")"
+  ARGS[4]="$(size "$mirror/helper-v9.8.6/Rex-DUO-Beacon.zip")"
+  empty_mac
+  before="$(wc -l < "$requests")"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 0 "a release from before the name: its app keeps the folder name it came in"
+  [[ "$(zips_asked "$before")" == "Beacon-macOS.zip Rex-DUO-Beacon.zip " ]] || fail "a release from before the name: asked for $(zips_asked "$before")"
+  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" && "$(version_of "$apps/Rex DUO Beacon.app")" == 9.8.6 ]] || fail "a release from before the name: the Applications folder holds $(ls -A "$apps")"
+  only_label "a release from before the name" "$middle"
+  says "(~/SystemApplications/Rex DUO Beacon.app)" "a release from before the name"
+  grep -qxF "open -g -a $apps/Rex DUO Beacon.app --args phone-setup" "$H/tools.log" || fail "a release from before the name: open was called as $(grep '^open' "$H/tools.log")"
+  tidy "a release from before the name"
+  before="$(asked)"
+  rm -f "$H/Library/Application Support/Rex DUO Helper/status.json"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 0 "a release from before the name: a second run repairs the service and downloads nothing"
+  [[ "$(asked)" == "$before" && "$(ls -A "$apps")" == "Rex DUO Beacon.app" ]] || fail "a release from before the name: a second run downloaded again, or moved the app"
+  # The same release through its other zip: the app of that time takes the name of that time.
+  ARGS[3]="$(sha "$mirror/helper-v9.8.6/Rex-DUO-Helper.zip")"
+  ARGS[4]="$(size "$mirror/helper-v9.8.6/Rex-DUO-Helper.zip")"
+  empty_mac
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 0 "a release from before the name, through its oldest zip: the app is found again where it moved itself"
+  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" ]] || fail "a release from before the name, oldest zip: the Applications folder holds $(ls -A "$apps")"
+  says "(~/SystemApplications/Rex DUO Beacon.app)" "a release from before the name, oldest zip"
+  grep -qxF "open -g -a $apps/Rex DUO Beacon.app --args phone-setup" "$H/tools.log" || fail "a release from before the name, oldest zip: open was called as $(grep '^open' "$H/tools.log")"
+
+  # An upgrade from version 0.3.1: Rex DUO Beacon.app, service under the name of that time.
+  # Replaced: one app under its name, one service under its name, with one restart.
+  args 9.8.9
+  middle_home
+  cp -R "$box/app-middle/Rex DUO Beacon.app" "$apps/Rex DUO Beacon.previous.app"
+  mkdir "$apps/.Rex DUO Beacon.app.new-4242"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 0 "from version 0.3.1: an app that can't update itself is replaced by $beacon.app"
+  one_app "from version 0.3.1: replaced" 9.8.9
+  [[ "$(runs)" == "9.8.7 update;9.8.9 install;" ]] || fail "from version 0.3.1: replacing called the helper as $(runs)"
+  [[ "$(told)" == "lsregister -u $apps/Rex DUO Beacon.previous.app;lsregister -u $mid;lsregister -f $new;" ]] || fail "from version 0.3.1: lsregister was called as $(told)"
+  [[ ! -e "$H/lsregister-late" ]] || fail "from version 0.3.1: lsregister was called after the LaunchAgent was written"
+  [[ "$(launchd_did)" == "bootout beacon | agent.plist beacon.plist ;bootstrap agent.plist | agent.plist beacon.plist ;" ]] || fail "from version 0.3.1: launchd was asked for $(launchd_did)"
+  ok "from version 0.3.1: the service's new file is written before the earlier job is booted out, and one app and one service are left"
+  # It updates itself: the new version sits in the folder of the earlier name, and takes its
+  # name when it is started.
+  middle_home
+  echo 9.8.9 > "$H/update-to"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 0 "from version 0.3.1: an app that updates itself takes its name when it is started"
+  one_app "from version 0.3.1: self-update" 9.8.9
+  [[ "$(runs)" == "9.8.7 update;9.8.9 install;" && "$(launchd_did)" == "bootout beacon | agent.plist beacon.plist ;bootstrap agent.plist | agent.plist beacon.plist ;" ]] \
+    || fail "from version 0.3.1: self-update: $(runs), $(launchd_did)"
+  # The new one does not start, or never reports: everything is back as version 0.3.1 had it.
+  for kind in no-start no-report; do
+    middle_home
+    : > "$H/$kind"
+    run "$box/mac.sh" "${ARGS[@]}"
+    ends 17 "from version 0.3.1: a new app with $kind is replaced by the old one, service and all"
+    [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" && "$(version_of "$mid")" == 9.8.7 ]] || fail "from version 0.3.1, $kind: the Applications folder holds $(ls -A "$apps")"
+    [[ "$(cat "$mid_agent")" == "$mid/Contents/MacOS/rex-duo-helper" ]] || fail "from version 0.3.1, $kind: the LaunchAgent runs $(cat "$mid_agent")"
+    only_label "from version 0.3.1, $kind" "$middle"
+    [[ "$(runs)" == "9.8.7 update;9.8.9 install;9.8.7 install;" ]] || fail "from version 0.3.1, $kind: the helper was called as $(runs)"
+    [[ "$(told)" == "lsregister -u $mid;lsregister -f $new;lsregister -u $new;lsregister -f $mid;" ]] || fail "from version 0.3.1, $kind: lsregister was called as $(told)"
+    tidy "from version 0.3.1, $kind"
+  done
+  # A new app that took its name and then did not start goes from under that name too.
+  args 9.8.7
+  ARGS[3]="$(sha "$saved/Rex-DUO-Helper.zip")"
+  ARGS[4]="$(size "$saved/Rex-DUO-Helper.zip")"
+  middle_home
+  /usr/bin/plutil -replace CFBundleShortVersionString -string 9.8.5 "$mid/Contents/Info.plist"
+  : > "$H/no-start"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 17 "a new app that renamed itself and did not start is removed, and the old one is back"
+  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" && "$(version_of "$mid")" == 9.8.5 ]] || fail "a new app that renamed itself: the Applications folder holds $(ls -A "$apps")"
+  only_label "a new app that renamed itself" "$middle"
+  tidy "a new app that renamed itself"
+
+  # A move of the service that was cut short: files of two names, or of all three. The app is
+  # whole and of the wanted version, so nothing is downloaded, and one service is left.
+  args 9.8.9
+  for kind in two three; do
+    empty_mac
+    cp -R "$box/app-next/$beacon.app" "$apps/"
+    mkdir -p "$H/Library/LaunchAgents" "$H/loaded"
+    echo "$new/Contents/MacOS/rex-duo-helper" > "$H/Library/LaunchAgents/$middle.plist"
+    echo "$new/Contents/MacOS/rex-duo-helper" > "$earlier_agent"
+    : > "$H/loaded/$middle"
+    : > "$H/loaded/$earlier"
+    want="bootout beacon | agent.plist beacon.plist helper.plist ;bootout helper | agent.plist beacon.plist helper.plist ;bootstrap agent.plist | agent.plist beacon.plist helper.plist ;"
+    if [[ "$kind" == three ]]; then
+      echo "$new/Contents/MacOS/rex-duo-helper" > "$agent"
+      : > "$H/loaded/$service"
+      want="bootout beacon | agent.plist beacon.plist helper.plist ;bootout helper | agent.plist beacon.plist helper.plist ;"
+    fi
+    before="$(asked)"
+    run "$box/mac.sh" "${ARGS[@]}"
+    ends 0 "a cut-short move with $kind files of the service ends with the one under its name"
+    [[ "$(asked)" == "$before" && "$(runs)" == "9.8.9 install;" ]] || fail "a cut-short move, $kind files: downloaded, or called the helper as $(runs)"
+    one_app "a cut-short move, $kind files" 9.8.9
+    [[ "$(launchd_did)" == "$want" ]] || fail "a cut-short move, $kind files: launchd was asked for $(launchd_did)"
+  done
+  # With files of both earlier names and none of the new one, a new app that never reports is
+  # replaced by the old one. The installer stops the service under its name alone and puts
+  # both files back; the old app, started again, then makes the move its own version knows.
+  middle_home
+  echo "other program" > "$earlier_agent"
+  : > "$H/no-report"
+  run "$box/mac.sh" "${ARGS[@]}"
+  ends 17 "two earlier files of the service: the old app gets them back when the new one never reports"
+  [[ "$(ls -A "$apps")" == "Rex DUO Beacon.app" && "$(cat "$mid_agent")" == "$mid/Contents/MacOS/rex-duo-helper" ]] || fail "two earlier files: $(ls -A "$apps"), the LaunchAgent runs $(cat "$mid_agent")"
+  only_label "two earlier files" "$middle"
+  [[ "$(grep '^launchctl bootout' "$H/tools.log")" == "launchctl bootout gui/$uid/$service" ]] || fail "two earlier files: the installer called launchctl as $(grep '^launchctl' "$H/tools.log")"
+  # The old app found the oldest file there again, as it was, and booted that name out.
+  [[ "$(launchd_did)" == *"bootout agent | agent.plist ;bootstrap beacon.plist | beacon.plist helper.plist ;" ]] || fail "two earlier files: launchd was asked for $(launchd_did)"
+
+  # What an unzipped download must be: the app alone, as a real folder of an allowed name.
+  # codesign and spctl are stand-ins here that accept everything, so it is this check alone
+  # that refuses.
+  while read -r want kind; do
+    args "$want"
+    new_home
+    run "$box/mac.sh" "${ARGS[@]}"
+    ends 14 "unzip guard: a zip with $kind is refused"
+    says "The download does not hold $beacon alone." "unzip guard: $kind"
+    mac_untouched "unzip guard: $kind"
+    [[ ! -e "$H/Library/LaunchAgents" && ! -e "$H/launchd.log" ]] || fail "unzip guard: $kind: a launch agent was written or launchd asked"
+    [[ "$(records)" == "${C}working download 10 -;working verify 50 -;error fail:E_VERIFY - -;" ]] || fail "unzip guard: $kind reported $(records)"
+    if grep -qE '^(codesign|spctl) ' "$H/tools.log" 2>/dev/null; then fail "unzip guard: $kind: the code signature was looked at before the zip's contents were refused"; fi
+  done <<EOF
+9.6.2 a file beside the app
+9.6.3 two apps of allowed names
+9.6.4 a link in place of the app
+9.6.5 a name that starts with a dot
+9.6.6 a name that is not on the list
+9.6.7 the name of a copy an update sets aside
+9.6.8 the app inside another folder
+EOF
+  ok "unzip guard: seven zips that are not the app alone under an allowed name are refused before codesign is asked"
+
+  # What an update of the helper's own left of a version that did not start: gone at the next
+  # install, under the name such a folder has now and the one it had in version 0.3.1, unless
+  # the helper is in the middle of an update. A removal deletes them too.
+  args 9.8.9
+  for kind in quiet updating; do
+    empty_mac
+    cp -R "$box/app-next/$beacon.app" "$apps/"
+    cp -R "$box/app-next/$beacon.app" "$apps/.beacon-failed-4242.app"
+    cp -R "$box/app-next/$beacon.app" "$apps/.Rex DUO Beacon.failed-7.app"
+    unsigned_folder "$apps/.beacon-failed-1.app"
+    if [[ "$kind" == updating ]]; then
+      mkdir -p "$H/Library/Application Support/Rex DUO Helper"
+      : > "$H/Library/Application Support/Rex DUO Helper/update.lock"
+    fi
+    run "$box/mac.sh" "${ARGS[@]}"
+    [[ "$RC" == 0 ]] || fail "failed folders ($kind): the install ended with $RC: $(cat "$H.out")"
+    case "$kind" in
+      quiet) want=".beacon-failed-1.app $beacon.app " ;;
+      *) want=".Rex DUO Beacon.failed-7.app .beacon-failed-1.app .beacon-failed-4242.app $beacon.app " ;;
+    esac
+    [[ "$(ls -A "$apps" | LC_ALL=C sort | tr '\n' ' ')" == "$want" ]] || fail "failed folders ($kind): the Applications folder holds $(ls -A "$apps" | LC_ALL=C sort | tr '\n' ' ')"
+  done
+  ok "a version that did not start: its folder goes at the next install under both of its names, stays during an update, and one that is not ours stays"
+  rm -f "$H/Library/Application Support/Rex DUO Helper/update.lock"
+  rm -rf "$apps/.beacon-failed-1.app"
+  removal "$box/mac.sh"
+  ends 0 "remove: the folders of versions that did not start are deleted with the app"
+  [[ -z "$(ls -A "$apps")" ]] || fail "remove with failed folders: the Applications folder holds $(ls -A "$apps")"
+
+  # The installer as the phone apps of version 0.3.1's time carry it, against a release that
+  # has the name. It knows the two earlier names alone. These are the outcomes the docs
+  # describe (docs/helper.md, "Older copies of the app"): they are why those builds of the
+  # app are withdrawn once a release with the name is out.
+  if [[ $shipped_setup == 1 ]]; then
+    args 9.8.7
+    ARGS[3]="$(sha "$saved/Rex-DUO-Beacon.zip")"
+    ARGS[4]="$(size "$saved/Rex-DUO-Beacon.zip")"
+    local -a shipped_args=("${ARGS[@]}")
+    empty_mac
+    run "$box/mac-0.3.1.sh" "${shipped_args[@]}"
+    ends 0 "the installer of version 0.3.1: a new install works, and the app takes its name"
+    [[ "$(ls -A "$apps")" == "$beacon.app" && "$(cat "$agent")" == "$new/Contents/MacOS/rex-duo-helper" ]] || fail "the installer of version 0.3.1: the Applications folder holds $(ls -A "$apps")"
+    only_label "the installer of version 0.3.1" "$service"
+    # It goes on with the path it put the app at, where nothing is any more: the Mac is not
+    # asked about notifications, and the last sentence names that path.
+    grep -qxF "open -g -a $apps/Rex DUO Beacon.app --args phone-setup" "$H/tools.log" || fail "the installer of version 0.3.1: open was called as $(grep '^open' "$H/tools.log")"
+    says "(~/SystemApplications/Rex DUO Beacon.app)" "the installer of version 0.3.1"
+    ok "the installer of version 0.3.1: it asks for the notification question at a path the app has left"
+    # Again, over the app that has its name: it does not find it, downloads again, and the
+    # copy it places gives way to the one that is there.
+    before="$(asked Rex-DUO-Beacon.zip)"
+    : > "$H/helper-runs.log"
+    run "$box/mac-0.3.1.sh" "${shipped_args[@]}"
+    ends 0 "the installer of version 0.3.1: over an app that has its name, one more download and the same outcome"
+    [[ "$(asked Rex-DUO-Beacon.zip)" == "$((before + 1))" && "$(ls -A "$apps")" == "$beacon.app" && "$(runs)" == "9.8.7 install;" ]] \
+      || fail "the installer of version 0.3.1, again: $(ls -A "$apps"), $(runs)"
+    only_label "the installer of version 0.3.1, again" "$service"
+    # Its removal does not find the app or its service: the state folder with the registered
+    # phones is deleted, and the helper stays installed and loaded under the service's name.
+    echo '[]' > "$H/Library/Application Support/Rex DUO Helper/devices.json"
+    removal "$box/mac-0.3.1.sh"
+    ends 0 "the installer of version 0.3.1: its removal reports success over an app that has its name"
+    [[ ! -e "$H/Library/Application Support/Rex DUO Helper" ]] || fail "the removal of version 0.3.1 left the state folder"
+    [[ "$(ls -A "$apps")" == "$beacon.app" && "$(uninstalls)" == 0 ]] || fail "the removal of version 0.3.1 found the app: $(ls -A "$apps")"
+    only_label "the removal of version 0.3.1" "$service"
+    [[ "$(grep '^launchctl bootout' "$H/tools.log" | tr '\n' ';')" == "launchctl bootout gui/$uid/$middle;launchctl bootout gui/$uid/$earlier;" ]] || fail "the removal of version 0.3.1 called launchctl as $(grep '^launchctl' "$H/tools.log")"
+    ok "the installer of version 0.3.1: its removal deletes the state folder and leaves the app and its service, which it does not know by name"
+    # The installer of this version then removes what is left.
+    removal "$box/mac.sh"
+    ends 0 "remove: what the removal of version 0.3.1 left is removed by this version's"
+    [[ -z "$(ls -A "$apps")" && -z "$(ls -A "$H/Library/LaunchAgents")" && -z "$(ls "$H/loaded")" ]] || fail "remove after the removal of version 0.3.1: something is left"
+  else
+    echo "skip  ${label}the installer of version 0.3.1 (this checkout has no tag helper-v0.3.1; get it with: git fetch --tags)"
+  fi
 }
 
 # MARK: Removing the helper (the two arguments `3 -`)
@@ -2018,9 +2377,9 @@ remove_tests() {
     plist="$H/Library/LaunchAgents/$service.plist"
     earlier_plist="$H/Library/LaunchAgents/$earlier.plist"
     mkdir -p "$apps" "$H/Applications" "$state" "$logs" "$H/Library/LaunchAgents" "$H/Library/Application Support/Other"
-    cp -R "$box/app/Rex DUO Beacon.app" "$apps/Rex DUO Beacon.previous.app"
+    cp -R "$box/app/$beacon.app" "$apps/$beacon.previous.app"
     cp -R "$box/app-helper/Rex DUO Helper.app" "$H/Applications/Rex DUO Helper.previous.app"
-    mkdir "$apps/.Rex DUO Beacon.app.new-4242" "$H/Applications/.Rex DUO Beacon.app.new-7" "$apps/.Rex DUO Helper.app.new-9"
+    mkdir "$apps/.$beacon.app.new-4242" "$H/Applications/.$beacon.app.new-7" "$apps/.Rex DUO Helper.app.new-9"
     echo plist > "$plist"
     echo log > "$logs/Rex DUO Helper.log"
     echo log > "$logs/Rex DUO Helper.old.log"
@@ -2037,13 +2396,13 @@ remove_tests() {
     unlocked "$1"
   }
   mac_home
-  rm -rf "$apps/Rex DUO Beacon.previous.app" "$H/Applications/Rex DUO Helper.previous.app"
+  rm -rf "$apps/$beacon.previous.app" "$H/Applications/Rex DUO Helper.previous.app"
   run "$box/mac.sh" "${good[@]}"
   [[ "$RC" == 0 && -d "$(mac_app)" ]] || fail "Mac: remove: the install before it ended with $RC: $(cat "$H.out")"
-  cp -R "$box/app/Rex DUO Beacon.app" "$apps/Rex DUO Beacon.previous.app"
+  cp -R "$box/app/$beacon.app" "$apps/$beacon.previous.app"
   cp -R "$box/app-helper/Rex DUO Helper.app" "$H/Applications/Rex DUO Helper.previous.app"
-  mkdir -p "$apps/.Rex DUO Beacon.app.new-4242" "$H/Applications/.Rex DUO Beacon.app.new-7" "$apps/.Rex DUO Helper.app.new-9"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H/Applications/"
+  mkdir -p "$apps/.$beacon.app.new-4242" "$H/Applications/.$beacon.app.new-7" "$apps/.Rex DUO Helper.app.new-9"
+  cp -R "$box/app/$beacon.app" "$H/Applications/"
   removal "$box/mac.sh"
   ends 0 "Mac: remove: an app the installer put there"
   [[ "$(uninstalls)" == 1 && "$(tail -n 1 "$H/helper.log")" == uninstall ]] || fail "Mac: remove: the helper's uninstall was not run once, alone: $(cat "$H/helper.log")"
@@ -2065,10 +2424,10 @@ remove_tests() {
   [[ "$(called "^launchctl bootout")" == 0 ]] || fail "Mac: remove, earlier name: launchctl bootout was called"
   mac_gone "Mac: remove, earlier name"
   # The service under both of its names, files and jobs.
-  both="launchctl bootout gui/$uid/$service;launchctl bootout gui/$uid/$earlier;"
+  both="launchctl bootout gui/$uid/$service;launchctl bootout gui/$uid/$middle;launchctl bootout gui/$uid/$earlier;"
   mac_home
   cp -R "$box/app-helper/Rex DUO Helper.app" "$apps/"
-  cp -R "$box/app-next/Rex DUO Beacon.app" "$H/Applications/"
+  cp -R "$box/app-next/$beacon.app" "$H/Applications/"
   echo plist > "$earlier_plist"
   mkdir "$H/loaded"
   : > "$H/loaded/$service"
@@ -2078,8 +2437,8 @@ remove_tests() {
   [[ "$(runs)" == "9.8.9 uninstall;" ]] || fail "Mac: remove, both names: the helper was called as $(runs)"
   [[ "$(called "^launchctl bootout")" == 0 && -z "$(ls "$H/loaded")" ]] || fail "Mac: remove, both names: the installer called launchctl bootout, or a job is left: $(ls "$H/loaded")"
   mac_gone "Mac: remove, both names"
-  # Launch Services forgets both names in both folders, and the set-aside copy of the earlier name.
-  [[ "$(grep '^lsregister ' "$H/tools.log" | tr '\n' ';')" == "lsregister -u $apps/Rex DUO Beacon.app;lsregister -u $apps/Rex DUO Helper.app;lsregister -u $H/Applications/Rex DUO Beacon.app;lsregister -u $H/Applications/Rex DUO Helper.app;lsregister -u $H/Applications/Rex DUO Helper.previous.app;" ]] \
+  # Launch Services forgets every name in both folders, and the set-aside copy of an earlier name.
+  [[ "$(grep '^lsregister ' "$H/tools.log" | tr '\n' ';')" == "lsregister -u $apps/$beacon.app;lsregister -u $apps/Rex DUO Beacon.app;lsregister -u $apps/Rex DUO Helper.app;lsregister -u $H/Applications/$beacon.app;lsregister -u $H/Applications/Rex DUO Beacon.app;lsregister -u $H/Applications/Rex DUO Helper.app;lsregister -u $H/Applications/Rex DUO Helper.previous.app;" ]] \
     || fail "Mac: remove, both names: lsregister was called as $(grep '^lsregister ' "$H/tools.log")"
   ok "Mac: remove: the app under its earlier name, its set-aside copy and its half-placed copies are gone too"
 
@@ -2103,8 +2462,8 @@ remove_tests() {
   local have was place
   for have in both new earlier; do
     mac_home
-    unsigned_folder "$apps/Rex DUO Beacon.app"
-    was="$(as_it_was "$apps/Rex DUO Beacon.app")"
+    unsigned_folder "$apps/$beacon.app"
+    was="$(as_it_was "$apps/$beacon.app")"
     mkdir "$H/loaded"
     case "$have" in
       both) echo plist > "$earlier_plist"; : > "$H/loaded/$service"; : > "$H/loaded/$earlier" ;;
@@ -2115,20 +2474,20 @@ remove_tests() {
     [[ "$RC" == 15 ]] || fail "Mac: remove with a failing signature ($have): ended with $RC: $(cat "$H.out")"
     never_run "Mac: remove with a failing signature ($have)"
     [[ "$(grep '^launchctl bootout' "$H/tools.log" | tr '\n' ';')" == "$both" && -z "$(ls "$H/loaded")" ]] || fail "Mac: remove with a failing signature ($have): launchctl was called as $(cat "$H/tools.log")"
-    says "~/SystemApplications/Rex DUO Beacon.app did not pass the code signature check, so it stays where it is." "Mac: remove with a failing signature ($have)"
-    says "could not be deleted: ~/SystemApplications/Rex DUO Beacon.app." "Mac: remove with a failing signature ($have)"
+    says "~/SystemApplications/$beacon.app did not pass the code signature check, so it stays where it is." "Mac: remove with a failing signature ($have)"
+    says "could not be deleted: ~/SystemApplications/$beacon.app." "Mac: remove with a failing signature ($have)"
     [[ "$(records)" == "${R}error fail:E_WRITE - -;" ]] || fail "Mac: remove with a failing signature ($have) reported $(records)"
-    [[ "$(as_it_was "$apps/Rex DUO Beacon.app")" == "$was" ]] || fail "Mac: remove with a failing signature ($have): the folder changed"
-    rm -rf "$apps/Rex DUO Beacon.app"
+    [[ "$(as_it_was "$apps/$beacon.app")" == "$was" ]] || fail "Mac: remove with a failing signature ($have): the folder changed"
+    rm -rf "$apps/$beacon.app"
     mac_gone "Mac: remove with a failing signature ($have)"
   done
   ok "Mac: remove: an app whose code signature fails is not run"
   ok "Mac: remove: launchctl bootout stops the service under both of its names, and the launch agents are deleted"
   # The same for a folder under either name, a set-aside copy or a half-placed copy, beside
   # an app that passes: the app stops its service and is deleted with the rest.
-  for place in "Rex DUO Beacon.app" "Rex DUO Helper.app" "Rex DUO Beacon.previous.app" "Rex DUO Helper.previous.app" ".Rex DUO Beacon.app.new-7" ".Rex DUO Helper.app.new-7"; do
+  for place in "$beacon.app" "Rex DUO Helper.app" "$beacon.previous.app" "Rex DUO Helper.previous.app" ".$beacon.app.new-7" ".Rex DUO Helper.app.new-7"; do
     mac_home
-    cp -R "$box/app/Rex DUO Beacon.app" "$apps/"
+    cp -R "$box/app/$beacon.app" "$apps/"
     unsigned_folder "$H/Applications/$place"
     was="$(as_it_was "$H/Applications/$place")"
     removal "$box/mac.sh"
@@ -2144,12 +2503,12 @@ remove_tests() {
   # An app that is a link: the same, and what it points to stays.
   mac_home
   mkdir "$H.apps"
-  cp -R "$box/app/Rex DUO Beacon.app" "$H.apps/"
-  ln -s "$H.apps/Rex DUO Beacon.app" "$apps/Rex DUO Beacon.app"
+  cp -R "$box/app/$beacon.app" "$H.apps/"
+  ln -s "$H.apps/$beacon.app" "$apps/$beacon.app"
   removal "$box/mac.sh"
   ends 0 "Mac: remove: an app that is a link is not run"
   never_run "Mac: remove with a link"
-  [[ -x "$H.apps/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper" && "$(called "^launchctl bootout gui/$uid/$service\$")" == 1 ]] || fail "Mac: remove with a link: the link's target was deleted, or launchctl was not called"
+  [[ -x "$H.apps/$beacon.app/Contents/MacOS/rex-duo-helper" && "$(called "^launchctl bootout gui/$uid/$service\$")" == 1 ]] || fail "Mac: remove with a link: the link's target was deleted, or launchctl was not called"
   mac_gone "Mac: remove with a link"
   # No app.
   mac_home
@@ -2159,7 +2518,7 @@ remove_tests() {
   mac_gone "Mac: remove with no app"
   # A state folder that is a link.
   mac_home
-  cp -R "$box/app/Rex DUO Beacon.app" "$apps/"
+  cp -R "$box/app/$beacon.app" "$apps/"
   mv "$state" "$H.elsewhere"
   ln -s "$H.elsewhere" "$state"
   removal "$box/mac.sh"
@@ -2168,7 +2527,7 @@ remove_tests() {
   [[ -L "$state" && "$(ls -A "$H.elsewhere")" == devices.json && -d "$(mac_app)" && -f "$plist" && "$(called "^launchctl ")" == 0 ]] || fail "Mac: remove with a linked state folder: something changed"
   # The service does not stop.
   mac_home
-  cp -R "$box/app/Rex DUO Beacon.app" "$apps/"
+  cp -R "$box/app/$beacon.app" "$apps/"
   : > "$H/still-running"
   removal "$box/mac.sh"
   ends 15 "Mac: remove: a service that does not stop"
@@ -2189,6 +2548,7 @@ for shell in "bash --posix" /bin/sh /bin/dash; do
   by_hand_tests
   mac_tests
   rename_tests
+  name_tests
   remove_tests
   counts="$counts; $shell $group"
 done
@@ -2199,3 +2559,6 @@ wait "$mirror_pid" 2>/dev/null || true
 mirror_pid=""
 ! pgrep -f "$box" >/dev/null || fail "a process of the tests is still running: $(pgrep -fl "$box")"
 printf '%s checks passed (release.sh and the files as committed %s%s).\n' "$passed" "$general" "$counts"
+if [[ $shipped_setup == 0 ]]; then
+  echo "NOT RUN: the installer of version 0.3.1 against a release with the new name (no tag helper-v0.3.1 in this checkout)."
+fi

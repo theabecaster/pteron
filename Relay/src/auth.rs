@@ -8,14 +8,14 @@ use crate::net::Url;
 use crate::util::Json;
 use serde_json::Value;
 
-/// The gateway every Rex DUO app registers with unless its user set up another one.
+/// The gateway every copy of the phone app registers with unless its user set up another one.
 pub const DEFAULT_GATEWAY: &str = "https://rexduo-push.keptday.workers.dev";
 
 /// The client that sent a `client.perform`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Requester {
     pub client_id: String,
-    /// What the client calls itself. Rex DUO ends it with ` #<device_id>`.
+    /// What the client calls itself. The phone app ends it with ` #<device_id>`.
     pub label: String,
     /// Who the server says it is, or None when the server couldn't tell (`anonymous`, a kind
     /// this helper doesn't know, or a principal without its identifying field).
@@ -59,7 +59,7 @@ impl Requester {
     }
 }
 
-/// A Rex DUO install id: eight lowercase hex digits.
+/// An install id of the phone app: eight lowercase hex digits.
 pub fn is_device_id(s: &str) -> bool {
     s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }

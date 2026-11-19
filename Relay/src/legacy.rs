@@ -1,4 +1,5 @@
-//! The helper's names before the rename to Rex DUO Helper, and the one-time move off them.
+//! The helper's names before the one its state folder keeps (`config::EARLIER_NAME`), and the
+//! one-time move off them.
 //!
 //! An install of the old name keeps the registered phones in its own state folder. On first
 //! run the new helper stops the old background service (service::stop_legacy) and moves that

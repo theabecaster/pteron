@@ -74,7 +74,7 @@ impl PushMessage {
     pub fn test(server: &str) -> PushMessage {
         PushMessage {
             category: PushCategory::Notice,
-            title: "Rex DUO".into(),
+            title: crate::app_name!().into(),
             subtitle: None,
             body: clip(&format!("Test notification from {}", computer_name(server)), 1000),
             interruption_level: "active",
@@ -300,7 +300,7 @@ mod tests {
             m.payload(),
             json!({
                 "aps": {
-                    "alert": {"title": "Rex DUO", "body": "Test notification from rex"},
+                    "alert": {"title": crate::app_name!(), "body": "Test notification from rex"},
                     "sound": "default",
                     "category": "NOTICE",
                     "thread-id": "rexduo-test",

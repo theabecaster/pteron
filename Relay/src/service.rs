@@ -1,6 +1,7 @@
 //! Running in the background: `install`, `status`, `uninstall`, and the Mac app's
 //! open-once flow. Linux uses a systemd user service; macOS a per-user LaunchAgent.
 
+use crate::brand::{APP, BEACON};
 use crate::config::{default_state_dir, home};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -18,11 +19,11 @@ macro_rules! say {
 pub const NAME: &str = "rex-duo-helper";
 /// The label of the Mac's LaunchAgent, which names its file.
 #[cfg(any(target_os = "macos", test))]
-pub const LABEL: &str = "dev.abrahamgonzalez.rexduo.beacon";
-/// The label it had before. A Mac that still has that label's file is moved to `LABEL`
-/// (src/label.rs).
+pub const LABEL: &str = "dev.abrahamgonzalez.rexduo.agent";
+/// The labels it had before, newest first. A Mac that still has a file of one of them is
+/// moved to `LABEL` (src/label.rs).
 #[cfg(any(target_os = "macos", test))]
-pub const EARLIER_LABEL: &str = "dev.abrahamgonzalez.rexduo.helper";
+pub const EARLIER_LABELS: [&str; 2] = ["dev.abrahamgonzalez.rexduo.beacon", "dev.abrahamgonzalez.rexduo.helper"];
 /// The variable a LaunchAgent's file sets for its job: the file's label.
 #[cfg(any(target_os = "macos", test))]
 pub const LABEL_VARIABLE: &str = "REXDUO_LABEL";
@@ -120,13 +121,13 @@ fn wait_for_start(limit: Duration) -> Option<Running> {
 /// One plain sentence about the running helper.
 pub fn describe(r: &Option<Running>) -> String {
     match r {
-        None => "Rex DUO Beacon is not running.".into(),
+        None => concat!(crate::beacon_name!(), " is not running.").into(),
         Some(r) => {
             let mode = if r.dry_run { " (dry run: pushes are logged, not sent)" } else { "" };
             if r.connected {
-                format!("Rex DUO Beacon {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
+                format!("{BEACON} {} is running and connected to Rex at {}{mode}.", r.version, r.servers.join(", "))
             } else {
-                format!("Rex DUO Beacon {} is running and waiting for Rex to start{mode}.", r.version)
+                format!("{BEACON} {} is running and waiting for Rex to start{mode}.", r.version)
             }
         }
     }
@@ -295,7 +296,7 @@ fn unit_word(path: &Path) -> Option<String> {
 fn unit_text(bin: &Path) -> Option<String> {
     Some(format!(
         "[Unit]\n\
-         Description=Rex DUO Beacon (push notifications from Rex to the Rex DUO iPhone app)\n\n\
+         Description={BEACON} (push notifications from Rex to the {APP} iPhone app)\n\n\
          [Service]\n\
          ExecStart={} run\n\
          Restart=on-failure\n\
@@ -386,7 +387,7 @@ pub fn uninstall() -> i32 {
     systemctl(&["daemon-reload"]);
     let _ = std::fs::remove_file(home().join(".local/bin").join(NAME));
     say!(
-        "Rex DUO Beacon is stopped and removed. Registered phones stay in {}; delete that folder to forget them.",
+        "{BEACON} is stopped and removed. Registered phones stay in {}; delete that folder to forget them.",
         tilde(&default_state_dir())
     );
     0
@@ -620,7 +621,7 @@ fn agent_plist(label: &str, program: &Path) -> String {
 
 /// Writes the LaunchAgent and (re)starts the helper. Quiet; returns an error to show. A helper
 /// that already runs this version is left running unless `restart` says its config changed.
-/// A LaunchAgent under the earlier label is moved to the new one here (src/label.rs).
+/// A LaunchAgent under an earlier label is moved to the new one here (src/label.rs).
 #[cfg(target_os = "macos")]
 fn start_agent(restart: bool) -> Result<(), String> {
     // From the app, run the binary inside it; otherwise install a copy to ~/.local/bin. An
@@ -644,7 +645,7 @@ fn start_agent(restart: bool) -> Result<(), String> {
     let agents = agents();
     let state_dir = default_state_dir();
     // The label is moved while no update is at work on the job.
-    let lock = if agents.has(EARLIER_LABEL) {
+    let lock = if agents.has_earlier() {
         let _ = std::fs::create_dir_all(&state_dir);
         crate::update::UpdateLock::acquire(&state_dir, pid_alive).ok()
     } else {
@@ -653,7 +654,7 @@ fn start_agent(restart: bool) -> Result<(), String> {
     let confirm = crate::label::Confirm { runs: &runs_new, wait: LABEL_WAIT, poll: Duration::from_millis(250) };
     if let Some(why) = agents.start(&program, lock.is_some(), &again, &confirm)? {
         crate::label::put_off(&state_dir);
-        crate::info!("the background job keeps the label {EARLIER_LABEL} for now: {why}");
+        crate::info!("the background job keeps its earlier label for now: {why}");
     }
     Ok(())
 }
@@ -673,7 +674,7 @@ pub fn install(config_changed: bool) -> i32 {
         say!("Moving from the old name: {note}");
     }
     if let Err(e) = start_agent(config_changed) {
-        eprintln!("Could not start Rex DUO Beacon: {e}");
+        eprintln!("Could not start {BEACON}: {e}");
         return 1;
     }
     let r = wait_for_start(Duration::from_secs(6));
@@ -690,7 +691,7 @@ pub fn status() -> i32 {
     if agents.has(label) {
         say!("{}", login_line(label, loaded_label(label), &tilde(&crate::config::default_log_file())));
     } else {
-        say!("Not set up to start at login. Open Rex DUO Beacon.app, or run: {NAME} install");
+        say!("Not set up to start at login. Open {BEACON}.app, or run: {NAME} install");
     }
     say!("{}.", plural(phones()));
     if let Some(note) = update_note(&r) {
@@ -708,7 +709,7 @@ fn login_line(label: &str, loaded: bool, log: &str) -> String {
 #[cfg(target_os = "macos")]
 pub fn uninstall() -> i32 {
     stop_agent();
-    say!("Rex DUO Beacon is stopped and won't start at login. To remove it, drag the app to the Trash.");
+    say!("{BEACON} is stopped and won't start at login. To remove it, drag the app to the Trash.");
     0
 }
 
@@ -723,7 +724,7 @@ fn dialog(text: &str, buttons: &[&str]) -> String {
         .map(|p| format!(" with icon (POSIX file \"{}\")", esc(&p.display().to_string())))
         .unwrap_or_default();
     let script = format!(
-        "display dialog \"{}\" with title \"Rex DUO Beacon\" buttons {{{list}}} default button \"{}\"{icon}",
+        "display dialog \"{}\" with title \"{BEACON}\" buttons {{{list}}} default button \"{}\"{icon}",
         esc(text),
         esc(buttons.last().unwrap())
     );
@@ -737,7 +738,7 @@ fn dialog(text: &str, buttons: &[&str]) -> String {
 pub enum Opening {
     /// Opened by the person, from Finder or the Dock: start the helper and say so in a dialog.
     ByHand,
-    /// Opened by Rex DUO's setup (`open -g -a … --args phone-setup`) while the person is at
+    /// Opened by the phone app's setup (`open -g -a … --args phone-setup`) while the person is at
     /// their phone: start the helper and ask for the notification permission. No dialog.
     PhoneSetup,
 }
@@ -759,8 +760,8 @@ trait AppHost {
     fn dialog(&mut self, text: &str, buttons: &[&str]) -> String;
 }
 
-/// Opening Rex DUO Beacon.app: start the background helper (and at every login). Opened by
-/// hand it then says so in one small dialog; opened by Rex DUO's setup it only asks for the
+/// Opening the app: start the background helper (and at every login). Opened by
+/// hand it then says so in one small dialog; opened by the phone app's setup it only asks for the
 /// notification permission, and shows nothing of its own whatever happens. The process
 /// exits; only the helper keeps running.
 #[cfg(any(target_os = "macos", test))]
@@ -773,14 +774,15 @@ fn open_flow(opening: Opening, host: &mut dyn AppHost) -> i32 {
         return 0;
     }
     if !host.in_place() {
-        host.dialog("Move Rex DUO Beacon to your Applications folder, then open it again.", &["OK"]);
+        host.dialog(concat!("Move ", crate::beacon_name!(), " to your Applications folder, then open it again."), &["OK"]);
         return 0;
     }
     if let Err(e) = host.start() {
-        host.dialog(&format!("Rex DUO Beacon couldn't start.\n\n{e}"), &["OK"]);
+        host.dialog(&format!("{BEACON} couldn't start.\n\n{e}"), &["OK"]);
         return 1;
     }
-    // The permission question for the "Rex DUO connected" notice, next to the welcome.
+    // The permission question for the notice of a phone's first registration (`notice::TITLE`),
+    // next to the welcome.
     host.authorize();
     let r = host.started();
     let state = match &r {
@@ -789,12 +791,12 @@ fn open_flow(opening: Opening, host: &mut dyn AppHost) -> i32 {
         None => "It's starting",
     };
     let text = format!(
-        "Rex DUO Beacon is on.\n\n{state}, and it starts by itself when you log in.\n\n\
-         On your iPhone, open Rex DUO and turn on notifications. You'll get a push when an agent needs you or finishes."
+        "{BEACON} is on.\n\n{state}, and it starts by itself when you log in.\n\n\
+         On your iPhone, open {APP} and turn on notifications. You'll get a push when an agent needs you or finishes."
     );
     if host.dialog(&text, &["Turn Off", "Done"]) == "Turn Off" {
         host.stop();
-        host.dialog("Rex DUO Beacon is off. Open it again to turn it back on.", &["OK"]);
+        host.dialog(concat!(crate::beacon_name!(), " is off. Open it again to turn it back on."), &["OK"]);
     }
     0
 }
@@ -851,19 +853,19 @@ mod tests {
 
     #[test]
     fn status_sentences() {
-        assert_eq!(describe(&None), "Rex DUO Beacon is not running.");
-        assert_eq!(describe(&running(None, None)), "Rex DUO Beacon 0.3.0 is running and connected to Rex at https://rex.example.ts.net.");
+        assert_eq!(describe(&None), concat!(crate::beacon_name!(), " is not running."));
+        assert_eq!(describe(&running(None, None)), concat!(crate::beacon_name!(), " 0.3.0 is running and connected to Rex at https://rex.example.ts.net."));
         let mut dry = running(None, None);
         dry.as_mut().unwrap().dry_run = true;
         dry.as_mut().unwrap().connected = false;
-        assert_eq!(describe(&dry), "Rex DUO Beacon 0.3.0 is running and waiting for Rex to start (dry run: pushes are logged, not sent).");
+        assert_eq!(describe(&dry), concat!(crate::beacon_name!(), " 0.3.0 is running and waiting for Rex to start (dry run: pushes are logged, not sent)."));
     }
 
     #[test]
     fn status_reports_the_label_the_helper_runs_under() {
-        let v = serde_json::json!({"pid": 4242, "version": "0.3.1", "connected": true, "label": LABEL, "exe": "/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"});
+        let v = serde_json::json!({"pid": 4242, "version": "0.3.1", "connected": true, "label": LABEL, "exe": concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")});
         let r = read_status(&v).unwrap();
-        assert_eq!((r.pid, r.label.as_deref()), (4242, Some("dev.abrahamgonzalez.rexduo.beacon")));
+        assert_eq!((r.pid, r.label.as_deref()), (4242, Some(LABEL)));
         // A helper from before the label was written down, and one that is no launchd job.
         let (mut unnamed, mut null) = (v.clone(), v.clone());
         unnamed.as_object_mut().unwrap().remove("label");
@@ -871,8 +873,8 @@ mod tests {
         assert_eq!((read_status(&unnamed).unwrap().label, read_status(&null).unwrap().label), (None, None));
         assert!(read_status(&serde_json::json!({"version": "0.3.1"})).is_none());
         // `status` names the label in use and whether launchd has its job.
-        assert_eq!(login_line(LABEL, true, "~/Library/Logs/x.log"), "Starts at login (dev.abrahamgonzalez.rexduo.beacon, loaded). Log: ~/Library/Logs/x.log");
-        assert_eq!(login_line(EARLIER_LABEL, false, "x"), "Starts at login (dev.abrahamgonzalez.rexduo.helper, not loaded). Log: x");
+        assert_eq!(login_line(LABEL, true, "~/Library/Logs/x.log"), "Starts at login (dev.abrahamgonzalez.rexduo.agent, loaded). Log: ~/Library/Logs/x.log");
+        assert_eq!(login_line(EARLIER_LABELS[1], false, "x"), "Starts at login (dev.abrahamgonzalez.rexduo.helper, not loaded). Log: x");
     }
 
     #[test]
@@ -914,19 +916,21 @@ mod tests {
 
     #[test]
     fn the_launch_agent_names_the_helper_as_text() {
-        let plain = agent_plist(LABEL, Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"));
+        let plain = agent_plist(LABEL, Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")));
         assert!(plain.contains(
-            "<array><string>/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper</string><string>run</string><string>--log-file</string></array>"
+            concat!("<array><string>/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper</string><string>run</string><string>--log-file</string></array>")
         ));
         // The label names the job and is handed to it; the app is named by its bundle identifier.
-        assert!(plain.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.beacon</string>"));
-        assert!(plain.contains("<key>EnvironmentVariables</key><dict><key>REXDUO_LABEL</key><string>dev.abrahamgonzalez.rexduo.beacon</string></dict>"));
+        assert!(plain.contains("<key>Label</key><string>dev.abrahamgonzalez.rexduo.agent</string>"));
+        assert!(plain.contains("<key>EnvironmentVariables</key><dict><key>REXDUO_LABEL</key><string>dev.abrahamgonzalez.rexduo.agent</string></dict>"));
         assert!(plain.contains("<key>AssociatedBundleIdentifiers</key><string>dev.abrahamgonzalez.rexduo.helper</string>"));
-        let earlier = agent_plist(EARLIER_LABEL, Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"));
-        assert_eq!(earlier, plain.replace(LABEL, EARLIER_LABEL));
-        assert_ne!(LABEL, EARLIER_LABEL);
+        for earlier in EARLIER_LABELS {
+            let file = agent_plist(earlier, Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")));
+            assert_eq!(file, plain.replace(LABEL, earlier));
+            assert_ne!(LABEL, earlier);
+        }
         // The file names its program, and no other.
-        let (new, old) = (Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        let (new, old) = (Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")), Path::new("/Applications/Old.app/Contents/MacOS/rex-duo-helper"));
         assert!(names_program(&plain, new) && !names_program(&plain, old));
         assert!(names_program(&agent_plist(LABEL, old), old) && !names_program(&agent_plist(LABEL, old), new));
         assert!(!names_program(&plain, Path::new("run")));
@@ -952,7 +956,7 @@ mod tests {
 
     #[test]
     fn a_launch_agent_for_another_program_is_unloaded_and_written_over() {
-        let (new, old) = (Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        let (new, old) = (Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")), Path::new("/Applications/Old.app/Contents/MacOS/rex-duo-helper"));
         let dir = std::env::temp_dir().join(format!("agent-point-{}-{}", std::process::id(), crate::util::now()));
         let file = dir.join("LaunchAgents/agent.plist");
         let seen = std::cell::RefCell::new(vec![]);
@@ -976,7 +980,7 @@ mod tests {
     #[test]
     fn the_launch_agent_is_written_beside_its_place_and_renamed_into_it() {
         use std::os::unix::fs::PermissionsExt;
-        let (new, old) = (Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper"), Path::new("/Applications/Rex DUO Helper.app/Contents/MacOS/rex-duo-helper"));
+        let (new, old) = (Path::new(concat!("/Applications/", crate::beacon_name!(), ".app/Contents/MacOS/rex-duo-helper")), Path::new("/Applications/Old.app/Contents/MacOS/rex-duo-helper"));
         let dir = std::env::temp_dir().join(format!("agent-atomic-{}-{}", std::process::id(), crate::util::now()));
         let folder = dir.join("LaunchAgents");
         let (file, tmp) = (folder.join("agent.plist"), folder.join("agent.plist.tmp"));
@@ -1084,20 +1088,20 @@ mod tests {
     fn opening_the_app_by_hand_shows_its_dialogs() {
         let mut app = FakeApp::new(true);
         assert_eq!(open_flow(Opening::ByHand, &mut app), 0);
-        assert_eq!(app.did, ["start", "authorize", "started", "dialog: Rex DUO Beacon is on."]);
+        assert_eq!(app.did, ["start", "authorize", "started", concat!("dialog: ", crate::beacon_name!(), " is on.")]);
 
         let mut off = FakeApp::new(true);
         off.click = "Turn Off";
         assert_eq!(open_flow(Opening::ByHand, &mut off), 0);
-        assert_eq!(off.did[3..], ["dialog: Rex DUO Beacon is on.", "stop", "dialog: Rex DUO Beacon is off. Open it again to turn it back on."]);
+        assert_eq!(off.did[3..], [concat!("dialog: ", crate::beacon_name!(), " is on."), "stop", concat!("dialog: ", crate::beacon_name!(), " is off. Open it again to turn it back on.")]);
 
         let mut failing = FakeApp::new(true);
         failing.start = Err("no".into());
         assert_eq!(open_flow(Opening::ByHand, &mut failing), 1);
-        assert_eq!(failing.did, ["start", "dialog: Rex DUO Beacon couldn't start."]);
+        assert_eq!(failing.did, ["start", concat!("dialog: ", crate::beacon_name!(), " couldn't start.")]);
         let mut moved = FakeApp::new(true);
         moved.in_place = false;
         assert_eq!(open_flow(Opening::ByHand, &mut moved), 0);
-        assert_eq!(moved.did, ["dialog: Move Rex DUO Beacon to your Applications folder, then open it again."]);
+        assert_eq!(moved.did, [concat!("dialog: Move ", crate::beacon_name!(), " to your Applications folder, then open it again.")]);
     }
 }

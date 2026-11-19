@@ -65,10 +65,14 @@ pub fn expand(p: &str) -> PathBuf {
 }
 
 /// Where config.json, devices.json, identity.key and status.json live.
-/// macOS: `~/Library/Application Support/Rex DUO Helper`.
+/// What a Mac's state folder and log are called: the name the program first had. They keep
+/// it whatever the program is called, so an update finds the phones that registered before.
+pub(crate) const EARLIER_NAME: &str = "Rex DUO Helper";
+
+/// macOS: `~/Library/Application Support/<EARLIER_NAME>`.
 /// Linux: `$XDG_STATE_HOME/rex-duo-helper`, else `~/.local/state/rex-duo-helper`.
 pub fn default_state_dir() -> PathBuf {
-    state_dir("Rex DUO Helper", "rex-duo-helper")
+    state_dir(EARLIER_NAME, "rex-duo-helper")
 }
 
 /// The state folder for an app name (macOS) or a binary name (Linux).
@@ -87,7 +91,7 @@ pub fn state_dir(mac_name: &str, linux_name: &str) -> PathBuf {
 /// The log file for `run --log-file` (the Mac's background job; Linux uses the journal).
 pub fn default_log_file() -> PathBuf {
     if cfg!(target_os = "macos") {
-        home().join("Library/Logs/Rex DUO Helper.log")
+        home().join("Library/Logs").join(format!("{EARLIER_NAME}.log"))
     } else {
         default_state_dir().join("helper.log")
     }

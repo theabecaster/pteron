@@ -56,7 +56,7 @@ expect() {
 
 # A notice as the helper sends one: the gateway passes on that shape only. Kept in single
 # quotes on its own line, because macOS's bash 3.2 misreads escaped quotes inside "$( … )".
-PUSH_BODY='{"payload":{"aps":{"alert":{"title":"Rex DUO","body":"Gateway smoke test"},"interruption-level":"active","thread-id":"block:smoke","category":"NOTICE","sound":"default"},"server":"https://rex.example.ts.net","session_id":"session:smoke","block_id":"block:smoke"},"push_type":"alert","priority":10}'
+PUSH_BODY='{"payload":{"aps":{"alert":{"title":"Pteron","body":"Gateway smoke test"},"interruption-level":"active","thread-id":"block:smoke","category":"NOTICE","sound":"default"},"server":"https://rex.example.ts.net","session_id":"session:smoke","block_id":"block:smoke"},"push_type":"alert","priority":10}'
 
 push() {
   call POST /v1/push --header "authorization: Bearer $1" --header 'content-type: application/json' \

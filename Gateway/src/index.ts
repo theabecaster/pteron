@@ -1,5 +1,5 @@
 /**
- * Rex DUO push gateway. It holds the APNs key and the phones' APNs tokens, so the helper on
+ * Pteron push gateway. It holds the APNs key and the phones' APNs tokens, so the helper on
  * each computer needs neither: a phone registers its token here, mints one secret per helper
  * and hands it over. A secret can push to that phone and do nothing else.
  */

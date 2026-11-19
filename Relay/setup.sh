@@ -1,10 +1,11 @@
 #!/bin/sh
-# Installs Rex DUO Beacon on a Mac or a Linux computer and starts it in the background, or
-# removes it again.
+# Installs Beacon, the program that sends the phone app's push notifications, on a Mac or a
+# Linux computer and starts it in the background, or removes it again. What the two are called
+# is on the line `BEACON=` below.
 #
 # One file, three ways to run it:
 #
-#   From Rex DUO on the phone. The app keeps this file inside itself and starts it in a tab on the
+#   From the app on the phone. The app keeps this file inside itself and starts it in a tab on the
 #   computer as `/bin/sh -c <this file> rexduo-setup <12 arguments>`. The app has already checked
 #   the signed release list, and the arguments carry what it learned: the version, the size and
 #   SHA-256 of the file for each kind of computer, and the keys it trusts. The app's one-time
@@ -16,14 +17,15 @@
 #   own openssl does not check such a signature, Apple's checks of the app decide, within the
 #   version and the date Relay/release.sh writes into the published copy.
 #
-#   To remove the helper, with the two arguments `3 -`. Rex DUO starts it so in a tab
+#   To remove the helper, with the two arguments `3 -`. The app starts it so in a tab
 #   (`/bin/sh -c <this file> rexduo-setup 3 -`), and by hand it is:
 #     curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh -s -- 3 -
 #   It downloads nothing and asks for no setup code. It stops the helper's background service
 #   and deletes what an install put on this computer, each under its fixed name: on a Mac
-#   Rex DUO Beacon.app (and Rex DUO Helper.app, its earlier name) in /Applications and
-#   ~/Applications, ~/Library/Application Support/Rex DUO Helper and the helper's log in
-#   ~/Library/Logs; on Linux ~/.local/bin/rex-duo-helper and ~/.local/state/rex-duo-helper.
+#   the app, under its name and its earlier ones (APP_NAMES), in /Applications and
+#   ~/Applications, the state folder in ~/Library/Application Support and the helper's log in
+#   ~/Library/Logs (both still named as the program first was, EARLIER_NAME); on Linux
+#   ~/.local/bin/rex-duo-helper and ~/.local/state/rex-duo-helper.
 #   The state folder holds the registered phones, so they are forgotten. A link is never
 #   followed, and lingering on Linux stays as it is. On a Mac the app stops its own service,
 #   once its code signature is accepted. On Linux nothing that is installed is run: systemctl
@@ -58,7 +60,7 @@ BASE="https://github.com/theabecaster/rexduo/releases/download"
 PRIMARY_KEY="Yn851QvA2ZzvkX/TkpqQcsiIOqUd2wi0jAFRbh+0OP0="
 RECOVERY_KEY="p6Uwh2Qc232RxSymb4uFSkx/A/4Czn+/+QTz16RbLGE="
 # For a run by hand on a Mac: the oldest version this copy installs and the time it stops
-# installing (YYYY-MM-DDTHH:MM:SSZ). Both are empty here and in the copy Rex DUO carries.
+# installing (YYYY-MM-DDTHH:MM:SSZ). Both are empty here and in the copy the app carries.
 # Relay/release.sh fills them in, in the copy it publishes as install.sh and nowhere else.
 MANUAL_MAC_FLOOR=""
 MANUAL_MAC_EXPIRES=""
@@ -75,22 +77,43 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 WAIT_SECONDS=20
 # How long a removal waits for an update the helper is in the middle of.
 UPDATE_SECONDS=30
-# How long Rex DUO has to type its setup code.
+# How long the app has to type its setup code.
 CODE_SECONDS=60
 
-APP_NAME="Rex DUO Beacon.app"
+# What this program is called, on one line. Relay/src/brand.rs and the tests of the app
+# that carries this file read the line, so the three change together.
+BEACON="Pteron Beacon"
+# The phone app, whose name this program's starts with.
+PHONE_APP="${BEACON% Beacon}"
+APP_NAME="$BEACON.app"
 # The name an installed app waits under while the one that replaces it starts.
-PREVIOUS_NAME="Rex DUO Beacon.previous.app"
-# The same two under the app's earlier name. An app installed under them is the installed
-# app: the new one takes its place under the name above, and then they are gone.
-OLD_APP_NAME="Rex DUO Helper.app"
-OLD_PREVIOUS_NAME="Rex DUO Helper.previous.app"
+PREVIOUS_NAME="$BEACON.previous.app"
+# The folder names the app had before, newest first, with a colon between them (they hold
+# spaces). An app installed under one of them is the installed app, and takes its name by
+# itself when it is started (Relay/src/rename.rs). A copy it set aside had the same name
+# with `.previous` before `.app`.
+EARLIER_APP_NAMES="Rex DUO Beacon.app:Rex DUO Helper.app"
+# Every folder name the app may have, in a download and where it is installed. This is the
+# one list; Relay/src/update.rs has the same.
+APP_NAMES="$APP_NAME:$EARLIER_APP_NAMES"
+# What the program called itself in its Info.plist when it first renamed its own folder.
+EARLIER_BEACON="Rex DUO Beacon"
+# What a Mac's state folder and log are called: the name the program first had.
+EARLIER_NAME="Rex DUO Helper"
+# How a folder starts in which a version that did not start waits to be deleted.
+FAILED_PREFIX=".beacon-failed-"
 BIN_NAME="rex-duo-helper"
 # The name of the helper's background service on a Mac, which also names its file in
-# ~/Library/LaunchAgents, and the name it had before. The helper moves its service from the
-# earlier name to this one when it is started (Relay/src/label.rs).
-LABEL="dev.abrahamgonzalez.rexduo.beacon"
-EARLIER_LABEL="dev.abrahamgonzalez.rexduo.helper"
+# ~/Library/LaunchAgents, and the names it had before, newest first. The helper moves its
+# service from an earlier name to this one when it is started (Relay/src/label.rs).
+LABEL="dev.abrahamgonzalez.rexduo.agent"
+EARLIER_LABELS="dev.abrahamgonzalez.rexduo.beacon dev.abrahamgonzalez.rexduo.helper"
+LABELS="$LABEL $EARLIER_LABELS"
+# A release's files for a Mac and the release list's entries for them, newest first. Each zip
+# holds the same app under one of its folder names. The file names are fixed for good: the
+# copies of this script and of the app that shipped ask for them by name.
+MAC_ASSETS="Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip"
+MAC_ENTRIES="macos-app macos-universal-beacon macos-universal"
 # What the Mac app's code signature must say: our bundle id, a Developer ID certificate of our
 # team, on Apple's chain. The same text as Relay/src/update.rs.
 REQUIREMENT='identifier "dev.abrahamgonzalez.rexduo.helper" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "R2PVQ496X7"'
@@ -105,8 +128,10 @@ LOCK_MINE=0
 NEW_TMP=""
 PREV_APP=""
 PREV_HOME=""
+PLACED=""
 OLD_APP=""
-OLD_ASSET=""
+ASSETS=""
+ENTRIES=""
 OLD_OK=0
 EARLIER_AGENT=0
 TTY_STATE=""
@@ -183,27 +208,39 @@ launch_services() {
 
 # The app that was set aside goes back where it was, under the name it had, in place of a new
 # one that did not get as far as running, and is started again if its code signature was
-# accepted. Under its earlier name, Launch Services records it there again first. An app whose
-# service had the earlier name gets that back as it was: what the new one left under the
-# service's name is stopped and deleted, and the earlier file is there again before the app
-# is started.
+# accepted. The new one goes from where it was put, and from under the app's name if it took
+# that when it was started. Where the two had different names, Launch Services forgets the new
+# path and records the old one again first. An app whose service had an earlier name gets
+# that back as it was: what the new one left under other names of the service is stopped and
+# deleted, and the earlier files are there again before the app is started.
 put_back() {
-  rm -rf "${PREV_APP%/*}/$APP_NAME" 2>/dev/null
+  pb_moved=0
+  if [ -n "$PLACED" ]; then
+    for pb_new in "$PLACED" "${PLACED%/*}/$APP_NAME"; do
+      if [ ! -d "$pb_new" ] || [ -L "$pb_new" ]; then continue; fi
+      # Under the app's name it is the new one, unless the old one was there or it is not ours.
+      if [ "$pb_new" != "$PLACED" ] && { [ "$pb_new" = "$PREV_HOME" ] || not_ours "$pb_new"; }; then continue; fi
+      rm -rf "$pb_new" 2>/dev/null || :
+      if [ "$pb_new" != "$PREV_HOME" ]; then
+        launch_services -u "$pb_new"
+        pb_moved=1
+      fi
+    done
+  fi
   if [ ! -e "$PREV_HOME" ] && mv "$PREV_APP" "$PREV_HOME" 2>/dev/null; then
     say "The app that was installed before is back in its place."
     if [ "$EARLIER_AGENT" = 1 ]; then
-      pb_new="$HOME/Library/LaunchAgents/$LABEL.plist"
-      pb_old="$HOME/Library/LaunchAgents/$EARLIER_LABEL.plist"
-      if [ -e "$pb_new" ] || [ -L "$pb_new" ]; then
-        "$LAUNCHCTL" bootout "gui/$USER_ID/$LABEL" >/dev/null 2>&1 || :
-        rm -f "$pb_new" 2>/dev/null || :
-      fi
-      if [ ! -e "$pb_old" ] && [ -f "$STAGE/earlier-agent" ]; then cp "$STAGE/earlier-agent" "$pb_old" 2>/dev/null || :; fi
+      for pb_label in $LABELS; do
+        pb_file="$HOME/Library/LaunchAgents/$pb_label.plist"
+        if [ -f "$STAGE/agent.$pb_label" ]; then
+          if [ ! -e "$pb_file" ]; then cp "$STAGE/agent.$pb_label" "$pb_file" 2>/dev/null || :; fi
+        elif [ -e "$pb_file" ] || [ -L "$pb_file" ]; then
+          "$LAUNCHCTL" bootout "gui/$USER_ID/$pb_label" >/dev/null 2>&1 || :
+          rm -f "$pb_file" 2>/dev/null || :
+        fi
+      done
     fi
-    if [ "${PREV_HOME##*/}" != "$APP_NAME" ]; then
-      launch_services -u "${PREV_HOME%/*}/$APP_NAME"
-      launch_services -f "$PREV_HOME"
-    fi
+    if [ "$pb_moved" = 1 ]; then launch_services -f "$PREV_HOME"; fi
     if [ "$OLD_OK" = 1 ]; then
       set -- "$PREV_HOME/Contents/MacOS/$BIN_NAME" install
       if [ -n "$SERVER" ]; then set -- "$@" --server "$SERVER"; fi
@@ -416,7 +453,7 @@ check_args() {
   LINGER="${11}"
 }
 
-# The setup code: 64 hex digits that Rex DUO types into this tab, followed by Return, once the
+# The setup code: 64 hex digits that the app types into this tab, followed by Return, once the
 # `code` record says the installer waits for it. The echo is off by then, and the code is
 # never printed and never part of a command line: the shell's own `read` takes it, and the
 # shell's own `printf` later writes it to a file for the helper.
@@ -426,7 +463,7 @@ check_args() {
 # ends `read` without a line. The loop counts those seconds and keeps what came so far, so a
 # code that arrives in pieces is still one line. No other process is started while it waits.
 read_code() {
-  rc_none="Rex DUO did not send its setup code. Nothing was installed."
+  rc_none="$PHONE_APP did not send its setup code. Nothing was installed."
   [ "$(command -v printf)" = printf ] || fail ARCH "The installer needs a shell with its own printf."
   [ -n "$TTY_STATE" ] || fail ARGS "$rc_none"
   rc_quiet="$(stty -g <&3 2>/dev/null)" || fail ARGS "$rc_none"
@@ -434,7 +471,7 @@ read_code() {
   stty -icanon icrnl min 0 time 0 <&3 2>/dev/null || fail ARGS "$rc_none"
   cat <&3 >/dev/null 2>&1 || :
   stty min 0 time 10 <&3 2>/dev/null || fail ARGS "$rc_none"
-  step code 5 "Waiting for the setup code from Rex DUO…"
+  step code 5 "Waiting for the setup code from $PHONE_APP…"
   rc_left="$CODE_SECONDS"
   rc_code=""
   rc_line=0
@@ -447,7 +484,7 @@ read_code() {
   done
   stty "$rc_quiet" <&3 2>/dev/null || :
   [ "$rc_line" = 1 ] || fail ARGS "$rc_none"
-  is_hex64 "$rc_code" || fail ARGS "What arrived is not a setup code of Rex DUO. Nothing was installed."
+  is_hex64 "$rc_code" || fail ARGS "What arrived is not a setup code of $PHONE_APP. Nothing was installed."
   NONCE="$rc_code"
   rc_code=""
   rc_part=""
@@ -461,15 +498,13 @@ platform() {
   case "$OS" in
     Darwin)
       PLATFORM=macos-universal
-      # The app in a zip under its name, and the zip a release also has for the updater of
-      # version 0.3.0, which holds the same app as Rex DUO Helper.app.
-      ASSET="Rex-DUO-Beacon.zip"
-      OLD_ASSET="Rex-DUO-Helper.zip"
+      ASSETS="$MAC_ASSETS"
+      ENTRIES="$MAC_ENTRIES"
       SW_VERS="$(tool sw_vers)" || fail ARCH "This Mac has no sw_vers, so the installer can't tell its macOS version."
       p_major="$("$SW_VERS" -productVersion)" || p_major=""
       p_major="${p_major%%.*}"
       case "$p_major" in "" | *[!0-9]* | ?????*) fail ARCH "The installer can't tell this Mac's macOS version." ;; esac
-      [ "$p_major" -ge 14 ] || fail OLD_MACOS "Rex DUO Beacon needs macOS 14 or later."
+      [ "$p_major" -ge 14 ] || fail OLD_MACOS "$BEACON needs macOS 14 or later."
       for p_name in ditto codesign spctl plutil launchctl; do
         tool "$p_name" >/dev/null || fail ARCH "This Mac has no $p_name, which the installer needs."
       done
@@ -483,13 +518,15 @@ platform() {
       case "$p_cpu" in
         x86_64 | amd64) PLATFORM=linux-x86_64 ;;
         aarch64 | arm64) PLATFORM=linux-aarch64 ;;
-        *) fail ARCH "Rex DUO Beacon has no build for this kind of computer yet." ;;
+        *) fail ARCH "$BEACON has no build for this kind of computer yet." ;;
       esac
       ASSET="$BIN_NAME-$PLATFORM"
+      ASSETS="$ASSET"
+      ENTRIES="$PLATFORM"
       SYSTEMCTL="$(tool systemctl)" || SYSTEMCTL=""
       LOGINCTL="$(tool loginctl)" || LOGINCTL=""
       ;;
-    *) fail ARCH "Rex DUO Beacon runs on macOS and Linux only." ;;
+    *) fail ARCH "$BEACON runs on macOS and Linux only." ;;
   esac
   say "This computer: $PLATFORM."
 }
@@ -533,7 +570,7 @@ account() {
   if [ -z "$HOME" ] || [ ! -d "$HOME" ]; then fail WRITE "The installer can't find this account's home folder."; fi
   export HOME
   case "$OS" in
-    Darwin) STATE="$HOME/Library/Application Support/Rex DUO Helper" ;;
+    Darwin) STATE="$HOME/Library/Application Support/$EARLIER_NAME" ;;
     *)
       # What the helper's service needs to reach systemd when the tab's environment lacks it.
       if [ -z "${XDG_RUNTIME_DIR:-}" ] && private_dir "/run/user/$USER_ID"; then
@@ -592,9 +629,9 @@ take_lock() {
   LOCK="$STATE/setup.lock"
   if ! mkdir "$LOCK" 2>/dev/null; then
     [ -d "$LOCK" ] || fail WRITE "The installer couldn't write to $(tilde "$STATE")."
-    lock_stale || fail BUSY "Another install of Rex DUO Beacon is already running on this computer."
+    lock_stale || fail BUSY "Another install of $BEACON is already running on this computer."
     rm -rf "$LOCK"
-    mkdir "$LOCK" 2>/dev/null || fail BUSY "Another install of Rex DUO Beacon is already running on this computer."
+    mkdir "$LOCK" 2>/dev/null || fail BUSY "Another install of $BEACON is already running on this computer."
   fi
   LOCK_MINE=1
   printf '%s %s\n' "$$" "$(date +%s)" >"$LOCK/owner" || fail WRITE "The installer couldn't write to $(tilde "$STATE")."
@@ -674,7 +711,7 @@ fetch() {
       "$WGET" -q -T 20 -O "$2" "$1" 2>/dev/null || return 1
     fi
   else
-    fail NO_DOWNLOADER "This computer needs curl or wget to download Rex DUO Beacon. Install curl, then try again."
+    fail NO_DOWNLOADER "This computer needs curl or wget to download $BEACON. Install curl, then try again."
   fi
   [ -f "$2" ] || return 1
   [ "$(size_of "$2")" -le "$3" ] || return 2
@@ -754,10 +791,10 @@ asset_field() {
 manual_mac() {
   mm_page="${BASE%/download}"
   if ! is_version "$MANUAL_MAC_FLOOR" || ! is_stamp "$MANUAL_MAC_EXPIRES"; then
-    fail VERIFY "This copy of the installer is not the install.sh of a release, so by hand it installs nothing on a Mac. Download Rex DUO Beacon from $mm_page instead."
+    fail VERIFY "This copy of the installer is not the install.sh of a release, so by hand it installs nothing on a Mac. Download $BEACON from $mm_page instead."
   fi
   if past "$MANUAL_MAC_EXPIRES"; then
-    fail VERIFY "This installer is out of date (it expired at $MANUAL_MAC_EXPIRES). Download the current one, or Rex DUO Beacon itself, from $mm_page."
+    fail VERIFY "This installer is out of date (it expired at $MANUAL_MAC_EXPIRES). Download the current one, or $BEACON itself, from $mm_page."
   fi
 }
 
@@ -779,7 +816,7 @@ read_release() {
   done
   rr_list="$STAGE/manifest.json"
   if [ "$SIGNED" = 1 ]; then
-    say "Releases of Rex DUO Beacon are signed with one of these keys (SHA-256 of the key):"
+    say "Releases of $BEACON are signed with one of these keys (SHA-256 of the key):"
     say "  primary   $(fingerprint "$PRIMARY_KEY")"
     say "  recovery  $(fingerprint "$RECOVERY_KEY")"
     verify_sig "$rr_list" "$rr_list.sig" "$PRIMARY_KEY,$RECOVERY_KEY" || fail VERIFY "The release list's signature doesn't match. $rr_none"
@@ -801,18 +838,16 @@ read_release() {
   rr_expires="$(top_field "$rr_list" expires_at)"
   is_stamp "$rr_expires" || fail VERIFY "The release list doesn't say when it expires. $rr_none"
   if past "$rr_expires"; then fail VERIFY "The release list is out of date (it expired at $rr_expires). $rr_none"; fi
+  # The newest entry the list has for this computer. Which file it names is found by its
+  # SHA-256 (download).
   WANT_SHA=""
-  if [ -n "$OLD_ASSET" ]; then
-    WANT_SHA="$(asset_field "$rr_list" "$PLATFORM-beacon" sha256)"
-    WANT_SIZE="$(asset_field "$rr_list" "$PLATFORM-beacon" size)"
-  fi
-  if [ -z "$WANT_SHA" ]; then
-    # A list with one entry for a Mac names the zip of the earlier name.
-    if [ -n "$OLD_ASSET" ]; then ASSET="$OLD_ASSET"; fi
-    OLD_ASSET=""
-    WANT_SHA="$(asset_field "$rr_list" "$PLATFORM" sha256)"
-    WANT_SIZE="$(asset_field "$rr_list" "$PLATFORM" size)"
-  fi
+  WANT_SIZE=""
+  for rr_entry in $ENTRIES; do
+    if [ -z "$WANT_SHA" ]; then
+      WANT_SHA="$(asset_field "$rr_list" "$rr_entry" sha256)"
+      WANT_SIZE="$(asset_field "$rr_list" "$rr_entry" size)"
+    fi
+  done
   is_hex64 "$WANT_SHA" || fail VERIFY "The release list names no file for $PLATFORM. $rr_none"
   is_size "$WANT_SIZE" || fail VERIFY "The release list names no size for $PLATFORM. $rr_none"
   KEYS="$PRIMARY_KEY,$RECOVERY_KEY"
@@ -865,11 +900,30 @@ app_version() {
   printf '%s' "$av"
 }
 
-# named <app>: it is Rex DUO Beacon, by its folder or by what its Info.plist calls it. Such an
-# app in a folder of the earlier name renames that folder itself when it starts. An app that
-# is neither is replaced by one under the name.
+# allowed_name <name>: a folder name the app may have. It is on the list (APP_NAMES), so it
+# ends in .app, starts with no dot and is one name, not a path.
+allowed_name() {
+  case "$1" in
+    "" | .* | */*) return 1 ;;
+    *.app) ;;
+    *) return 1 ;;
+  esac
+  IFS=:
+  for an_name in $APP_NAMES; do
+    unset IFS
+    if [ "$1" = "$an_name" ]; then return 0; fi
+  done
+  unset IFS
+  return 1
+}
+
+# named <app>: it is this program as it is called now, by its folder or by what its Info.plist
+# calls it, or a build from since it renames its own folder. Such an app in a folder of an
+# earlier name renames that folder itself when it starts. An app that is neither is replaced.
 named() {
-  [ "${1##*/}" = "$APP_NAME" ] || [ "$("$PLUTIL" -extract CFBundleName raw -o - "$1/Contents/Info.plist" 2>/dev/null)" = "${APP_NAME%.app}" ]
+  [ "${1##*/}" = "$APP_NAME" ] && return 0
+  nm="$("$PLUTIL" -extract CFBundleName raw -o - "$1/Contents/Info.plist" 2>/dev/null)" || return 1
+  [ "$nm" = "$BEACON" ] || [ "$nm" = "$EARLIER_BEACON" ]
 }
 
 # helper_version <binary>: what an installed Linux helper says its version is.
@@ -897,42 +951,65 @@ look() {
     Darwin)
       for lk_dir in "$SYSTEM_APPS" "$HOME/Applications"; do
         [ -d "$lk_dir" ] || continue
-        set +f
-        for lk_old in "$lk_dir"/".$APP_NAME.new-"* "$lk_dir"/".$OLD_APP_NAME.new-"*; do
-          if [ -d "$lk_old" ] && [ ! -L "$lk_old" ] && sig_ok "$lk_old"; then rm -rf "$lk_old" 2>/dev/null || :; fi
+        lk_any=0
+        IFS=:
+        for lk_name in $APP_NAMES; do
+          unset IFS
+          if [ -e "$lk_dir/$lk_name" ]; then lk_any=1; fi
+          set +f
+          for lk_old in "$lk_dir"/".$lk_name.new-"*; do
+            set -f
+            if [ -d "$lk_old" ] && [ ! -L "$lk_old" ] && sig_ok "$lk_old"; then rm -rf "$lk_old" 2>/dev/null || :; fi
+          done
+          # What an update of the helper's own left of a version that did not start, under
+          # the name such a folder has now and the one it had before.
+          set +f
+          for lk_old in "$lk_dir"/".${lk_name%.app}.failed-"* "$lk_dir"/"$FAILED_PREFIX"*; do
+            set -f
+            if [ -d "$lk_old" ] && [ ! -L "$lk_old" ] && [ ! -e "$STATE/update.lock" ] && sig_ok "$lk_old"; then rm -rf "$lk_old" 2>/dev/null || :; fi
+          done
+          set -f
         done
-        set -f
+        unset IFS
         # An update that stopped between its two moves: the app it set aside goes back.
-        if [ ! -e "$lk_dir/$APP_NAME" ] && [ ! -e "$lk_dir/$OLD_APP_NAME" ]; then
-          if [ -d "$lk_dir/$PREVIOUS_NAME" ] && sig_ok "$lk_dir/$PREVIOUS_NAME"; then
-            mv "$lk_dir/$PREVIOUS_NAME" "$lk_dir/$APP_NAME" 2>/dev/null || :
-          elif [ -d "$lk_dir/$OLD_PREVIOUS_NAME" ] && sig_ok "$lk_dir/$OLD_PREVIOUS_NAME"; then
-            mv "$lk_dir/$OLD_PREVIOUS_NAME" "$lk_dir/$OLD_APP_NAME" 2>/dev/null || :
-          fi
-        fi
+        IFS=:
+        for lk_name in $APP_NAMES; do
+          unset IFS
+          lk_old="$lk_dir/${lk_name%.app}.previous.app"
+          if [ "$lk_any" = 0 ] && [ -d "$lk_old" ] && sig_ok "$lk_old" && mv "$lk_old" "$lk_dir/$lk_name" 2>/dev/null; then lk_any=1; fi
+        done
+        unset IFS
       done
-      # A service under its earlier name, as the installed app has it: a copy of its file is
-      # kept for the way back (put_back).
-      lk_agent="$HOME/Library/LaunchAgents/$EARLIER_LABEL.plist"
-      if [ -f "$lk_agent" ] && [ ! -L "$lk_agent" ] && [ ! -e "$HOME/Library/LaunchAgents/$LABEL.plist" ]; then
-        if cp "$lk_agent" "$STAGE/earlier-agent" 2>/dev/null; then EARLIER_AGENT=1; fi
+      # A service under an earlier name, as the installed app has it: a copy of each such
+      # file is kept for the way back (put_back).
+      if [ ! -e "$HOME/Library/LaunchAgents/$LABEL.plist" ]; then
+        for lk_label in $EARLIER_LABELS; do
+          lk_agent="$HOME/Library/LaunchAgents/$lk_label.plist"
+          if [ -f "$lk_agent" ] && [ ! -L "$lk_agent" ] && cp "$lk_agent" "$STAGE/agent.$lk_label" 2>/dev/null; then EARLIER_AGENT=1; fi
+        done
       fi
-      # The installed app: one under its name, else one under the earlier name.
-      for lk_name in "$APP_NAME" "$OLD_APP_NAME"; do
+      # The installed app: one under its name, else one under an earlier name, newest first.
+      IFS=:
+      for lk_name in $APP_NAMES; do
+        unset IFS
         for lk_dir in "$SYSTEM_APPS" "$HOME/Applications"; do
           if [ -z "$OLD_APP" ] && [ -d "$lk_dir/$lk_name" ] && [ ! -L "$lk_dir/$lk_name" ]; then OLD_APP="$lk_dir/$lk_name"; fi
         done
       done
+      unset IFS
       if [ -n "$OLD_APP" ] && sig_ok "$OLD_APP"; then
         # The app is whole, so a copy set aside beside it has no further use. It stays while the
         # helper is in the middle of an update of its own, which still needs it to go back to.
-        for lk_name in "$PREVIOUS_NAME" "$OLD_PREVIOUS_NAME"; do
-          lk_old="${OLD_APP%/*}/$lk_name"
+        IFS=:
+        for lk_name in $APP_NAMES; do
+          unset IFS
+          lk_old="${OLD_APP%/*}/${lk_name%.app}.previous.app"
           if [ -d "$lk_old" ] && [ ! -L "$lk_old" ] && [ ! -e "$STATE/update.lock" ] && sig_ok "$lk_old"; then
             rm -rf "$lk_old" 2>/dev/null || :
-            if [ "$lk_name" = "$OLD_PREVIOUS_NAME" ] && [ ! -e "$lk_old" ]; then launch_services -u "$lk_old"; fi
+            if [ "$lk_name" != "$APP_NAME" ] && [ ! -e "$lk_old" ]; then launch_services -u "$lk_old"; fi
           fi
         done
+        unset IFS
         HAVE="$(app_version "$OLD_APP")" || HAVE=""
         if [ -n "$HAVE" ]; then
           if ver_lt "$VERSION" "$HAVE"; then
@@ -967,47 +1044,55 @@ look() {
       ;;
   esac
   case "$PLAN" in
-    keep) say "Rex DUO Beacon $HAVE is already installed, newer than $VERSION. It stays." ;;
-    same) say "Rex DUO Beacon $VERSION is already installed and intact." ;;
+    keep) say "$BEACON $HAVE is already installed, newer than $VERSION. It stays." ;;
+    same) say "$BEACON $VERSION is already installed and intact." ;;
   esac
 }
 
 # MARK: Download, check, put in place
 
+# Gets this computer's file. A release has one for Linux and three for a Mac, and which of
+# the three the wanted SHA-256 describes depends on the release and on who read its list: they
+# are tried newest first until one is that file. Nothing is believed of a file but its size
+# and its SHA-256, which verify checks again.
 download() {
-  step download 10 "Downloading Rex DUO Beacon $VERSION…"
-  d_rc=0
-  fetch "$BASE/helper-v$VERSION/$ASSET" "$STAGE/asset" "$WANT_SIZE" || d_rc=$?
-  # The app's arguments describe one Mac file: the zip under the app's name when the release
-  # has it, else the zip under the earlier name. So does a release from before the name.
-  if [ -n "$OLD_ASSET" ] && { [ "$d_rc" != 0 ] || [ "$(size_of "$STAGE/asset")" != "$WANT_SIZE" ] || [ "$(sha256_of "$STAGE/asset")" != "$WANT_SHA" ]; }; then
+  step download 10 "Downloading $BEACON $VERSION…"
+  d_rc=1
+  d_other=0
+  for d_name in $ASSETS; do
     d_rc=0
-    fetch "$BASE/helper-v$VERSION/$OLD_ASSET" "$STAGE/asset" "$WANT_SIZE" || d_rc=$?
-  fi
+    fetch "$BASE/helper-v$VERSION/$d_name" "$STAGE/asset" "$WANT_SIZE" || d_rc=$?
+    if [ "$d_rc" = 0 ] && [ "$(size_of "$STAGE/asset")" = "$WANT_SIZE" ] && [ "$(sha256_of "$STAGE/asset")" = "$WANT_SHA" ]; then break; fi
+    if [ "$d_rc" != 1 ]; then d_other=1; fi
+  done
   case "$d_rc" in
     0) ;;
     2) fail VERIFY "The download is not the size the release list names. Nothing was installed." ;;
-    *) fail NET "This computer couldn't download Rex DUO Beacon. Check its internet connection and try again." ;;
+    *)
+      # A file was there under another of the names, and it was not the one.
+      if [ "$d_other" = 1 ]; then fail VERIFY "The download is not the file the release list names. Nothing was installed."; fi
+      fail NET "This computer couldn't download $BEACON. Check its internet connection and try again."
+      ;;
   esac
 }
 
 verify() {
-  step verify 50 "Checking it's the real Rex DUO Beacon (SHA-256 ${WANT_SHA%"${WANT_SHA#????????????}"}…)…"
+  step verify 50 "Checking it's the real $BEACON (SHA-256 ${WANT_SHA%"${WANT_SHA#????????????}"}…)…"
   v_none="Nothing was installed."
   [ "$(size_of "$STAGE/asset")" = "$WANT_SIZE" ] || fail VERIFY "The download is not the size the release list names. $v_none"
   [ "$(sha256_of "$STAGE/asset")" = "$WANT_SHA" ] || fail VERIFY "The download is not the file the release list names. $v_none"
   case "$OS" in
     Darwin)
       "$DITTO" -x -k "$STAGE/asset" "$STAGE/x" >/dev/null 2>&1 || fail VERIFY "The download could not be unzipped. $v_none"
-      # The zip holds the app alone, as a folder of its name or of the earlier one.
+      # The zip holds one thing and no more: the app, as a real folder, not a link, whose
+      # name is on the list of the names it may have. Two entries are two lines, and no name.
       ZIP_APP="$("$LS" -A "$STAGE/x")"
-      case "$ZIP_APP" in
-        "$APP_NAME" | "$OLD_APP_NAME") ;;
-        *) fail VERIFY "The download does not hold Rex DUO Beacon alone. $v_none" ;;
-      esac
       v_app="$STAGE/x/$ZIP_APP"
-      if [ ! -d "$v_app" ] || [ -L "$v_app" ] || [ ! -f "$v_app/Contents/MacOS/$BIN_NAME" ] || [ -L "$v_app/Contents/MacOS/$BIN_NAME" ]; then
-        fail VERIFY "The download does not hold Rex DUO Beacon. $v_none"
+      if ! allowed_name "$ZIP_APP" || [ -L "$v_app" ] || [ ! -d "$v_app" ]; then
+        fail VERIFY "The download does not hold $BEACON alone. $v_none"
+      fi
+      if [ ! -f "$v_app/Contents/MacOS/$BIN_NAME" ] || [ -L "$v_app/Contents/MacOS/$BIN_NAME" ]; then
+        fail VERIFY "The download does not hold $BEACON. $v_none"
       fi
       sig_ok "$v_app" || fail VERIFY "The downloaded app's code signature was not accepted. $v_none"
       notarized "$v_app" || fail VERIFY "macOS did not accept the downloaded app as notarized. $v_none"
@@ -1025,7 +1110,7 @@ verify() {
         case "$v_rc" in
           0) ;;
           2) fail VERIFY "The download's signature is not a signature. $v_none" ;;
-          *) fail NET "This computer couldn't download the signature of Rex DUO Beacon. Check its internet connection and try again." ;;
+          *) fail NET "This computer couldn't download the signature of $BEACON. Check its internet connection and try again." ;;
         esac
         rm -f "$STAGE/signed.txt"
         printf 'rex-duo-helper|%s|%s|%s' "$VERSION" "$PLATFORM" "$WANT_SHA" >"$STAGE/signed.txt"
@@ -1036,39 +1121,49 @@ verify() {
 }
 
 # Puts the checked app beside its place under another name, checks that copy, and renames it
-# to Rex DUO Beacon.app. An app that is there already, under that name or the earlier one, is
-# renamed to Rex DUO Beacon.previous.app first and stays beside the new one until the new
-# one runs. From that rename on, any way the script ends other than with the new helper
-# running puts it back (cleanup). A folder beside it that is not the app (not_ours) is never
-# cleared out of the way: the install stops, or leaves it where it is.
+# to the folder name it came under, which is on the list of allowed names: a version from
+# before a name looks for itself under the name it knows, and a newer one takes its name
+# itself when it is started. An app that is there already, under any of the names, is renamed
+# to PREVIOUS_NAME first and stays beside the new one until the new one runs. From that rename
+# on, any way the script ends other than with the new helper running puts it back (cleanup).
+# A folder beside it that is not the app (not_ours) is never cleared out of the way: the
+# install stops, or leaves it where it is.
 #
-# In place of an app under the earlier name, Launch Services forgets that path and records
-# the new one here, before the helper is started: the helper then writes the LaunchAgent for
-# the new path and loads it again.
+# In place of an app under another name, Launch Services forgets that path and records the
+# new one here, before the helper is started: the helper then writes the LaunchAgent for the
+# new path and loads it again.
 place_app() {
-  pa_full="This Mac couldn't save Rex DUO Beacon in $(tilde "$DEST"). Check it has free space, then try again."
-  if not_ours "$DEST/.$APP_NAME.new-$$"; then fail WRITE "$pa_full"; fi
-  NEW_TMP="$DEST/.$APP_NAME.new-$$"
+  pa_full="This Mac couldn't save $BEACON in $(tilde "$DEST"). Check it has free space, then try again."
+  if not_ours "$DEST/.$ZIP_APP.new-$$"; then fail WRITE "$pa_full"; fi
+  NEW_TMP="$DEST/.$ZIP_APP.new-$$"
   rm -rf "$NEW_TMP"
   "$DITTO" "$STAGE/x/$ZIP_APP" "$NEW_TMP" >/dev/null 2>&1 || fail WRITE "$pa_full"
   sig_ok "$NEW_TMP" || fail VERIFY "The copy of the app in $(tilde "$DEST") did not pass its check. Nothing was installed."
   pa_kept="This Mac didn't let the installed ${OLD_APP##*/} be replaced. Drag it from Applications to the Trash, then try again."
   if [ -n "$OLD_APP" ]; then
     pa_prev="$DEST/$PREVIOUS_NAME"
-    pa_old=0
-    if [ -d "$DEST/$OLD_PREVIOUS_NAME" ]; then pa_old=1; fi
     if not_ours "$pa_prev"; then in_the_way "$pa_prev"; fi
     rm -rf "$pa_prev" 2>/dev/null || :
-    if ! not_ours "$DEST/$OLD_PREVIOUS_NAME"; then rm -rf "$DEST/$OLD_PREVIOUS_NAME" 2>/dev/null || :; fi
-    if [ "$pa_old" = 1 ] && [ ! -e "$DEST/$OLD_PREVIOUS_NAME" ]; then launch_services -u "$DEST/$OLD_PREVIOUS_NAME"; fi
+    # A copy an earlier update set aside under an earlier name goes too.
+    IFS=:
+    for pa_name in $EARLIER_APP_NAMES; do
+      unset IFS
+      pa_old="$DEST/${pa_name%.app}.previous.app"
+      if [ -d "$pa_old" ] && ! not_ours "$pa_old"; then
+        rm -rf "$pa_old" 2>/dev/null || :
+        if [ ! -e "$pa_old" ]; then launch_services -u "$pa_old"; fi
+      fi
+    done
+    unset IFS
     if [ -e "$pa_prev" ] || ! mv "$OLD_APP" "$pa_prev" 2>/dev/null; then fail APP_MGMT "$pa_kept"; fi
     PREV_HOME="$OLD_APP"
     PREV_APP="$pa_prev"
   fi
-  if [ -e "$DEST/$APP_NAME" ]; then fail APP_MGMT "$pa_kept"; fi
-  mv "$NEW_TMP" "$DEST/$APP_NAME" 2>/dev/null || fail WRITE "This Mac couldn't put Rex DUO Beacon in $(tilde "$DEST")."
+  if [ -e "$DEST/$ZIP_APP" ]; then fail APP_MGMT "$pa_kept"; fi
+  mv "$NEW_TMP" "$DEST/$ZIP_APP" 2>/dev/null || fail WRITE "This Mac couldn't put $BEACON in $(tilde "$DEST")."
   NEW_TMP=""
-  APP="$DEST/$APP_NAME"
+  APP="$DEST/$ZIP_APP"
+  PLACED="$APP"
   if pa_xattr="$(tool xattr)"; then "$pa_xattr" -dr com.apple.quarantine "$APP" >/dev/null 2>&1 || :; fi
   if [ -n "$PREV_HOME" ] && [ "$PREV_HOME" != "$APP" ]; then
     launch_services -u "$PREV_HOME"
@@ -1085,7 +1180,7 @@ install_mac() {
     # installed.
     if sig_ok "$OLD_APP"; then
       OLD_OK=1
-      say "An older Rex DUO Beacon is installed. Asking it to update itself…"
+      say "An older $BEACON is installed. Asking it to update itself…"
       "$OLD_APP/Contents/MacOS/$BIN_NAME" update </dev/null >/dev/null 2>&1 3<&- || :
       im_now="$(app_version "$OLD_APP")" || im_now=""
       if [ -n "$im_now" ] && ! ver_lt "$im_now" "$VERSION" && named "$OLD_APP" && sig_ok "$OLD_APP" && notarized "$OLD_APP"; then
@@ -1107,7 +1202,7 @@ install_mac() {
 }
 
 install_linux() {
-  il_full="This computer couldn't save Rex DUO Beacon in $(tilde "$BIN_DIR"). Check it has free space, then try again."
+  il_full="This computer couldn't save $BEACON in $(tilde "$BIN_DIR"). Check it has free space, then try again."
   (umask 022 && mkdir -p "$BIN_DIR") 2>/dev/null || fail WRITE "$il_full"
   NEW_TMP="$BIN_DIR/.$BIN_NAME.new.$$"
   rm -f "$NEW_TMP" 2>/dev/null || :
@@ -1158,8 +1253,8 @@ wait_running() {
 }
 
 start() {
-  step start 85 "Starting Rex DUO Beacon…"
-  s_stuck="Rex DUO Beacon is installed but didn't start."
+  step start 85 "Starting $BEACON…"
+  s_stuck="$BEACON is installed but didn't start."
   case "$OS" in
     Darwin)
       "$LAUNCHCTL" print "gui/$USER_ID" >/dev/null 2>&1 || fail NO_GUI "Nobody is logged in on this Mac. Log in on it, then try again."
@@ -1171,7 +1266,7 @@ start() {
       if [ -n "$SYSTEMCTL" ] && "$SYSTEMCTL" --user show-environment >/dev/null 2>&1; then
         wait_running || fail SERVICE "$s_stuck"
       elif ! status_ok; then
-        fail NO_SYSTEMD "This computer doesn't start background services for your account with systemd. Start Rex DUO Beacon yourself and keep it running: $(tilde "$BIN") run"
+        fail NO_SYSTEMD "This computer doesn't start background services for your account with systemd. Start $BEACON yourself and keep it running: $(tilde "$BIN") run"
       fi
       ;;
   esac
@@ -1180,7 +1275,7 @@ start() {
 # The Mac asks whether the helper may show its own short notices. Not waited for.
 notify() {
   n_open="$(tool open)" || return 0
-  step notify 95 "This Mac may ask whether Rex DUO Beacon can show notifications."
+  step notify 95 "This Mac may ask whether $BEACON can show notifications."
   "$n_open" -g -a "$APP" --args phone-setup </dev/null >/dev/null 2>&1 3<&- || :
 }
 
@@ -1195,7 +1290,7 @@ linger() {
   [ -n "$LOGINCTL" ] || return 0
   [ "$(linger_state)" = no ] || return 0
   if [ "$LINGER" = ask ]; then
-    l_ask="Keeping Rex DUO Beacon running after you log out may need the password for $USER_NAME."
+    l_ask="Keeping $BEACON running after you log out may need the password for $USER_NAME."
     say "$l_ask"
     record blocked linger "$l_ask" kind=auth
     # Ctrl-C at the password question skips the question, not the install.
@@ -1215,9 +1310,9 @@ linger() {
     trap 'stop 130' INT
   fi
   if [ "$(linger_state)" = no ]; then
-    step linger 97 "linger=off: Rex DUO Beacon stops when you log out of this computer."
+    step linger 97 "linger=off: $BEACON stops when you log out of this computer."
   else
-    step linger 97 "linger=on: Rex DUO Beacon keeps running after you log out."
+    step linger 97 "linger=on: $BEACON keeps running after you log out."
   fi
 }
 
@@ -1236,13 +1331,15 @@ updating() {
 }
 
 # Sets HELPER to the helper that may be run to stop its own service. On a Mac it is the app,
-# under its name or the earlier one, looked for only where an install puts it: a real folder
+# under its name or an earlier one, looked for only where an install puts it: a real folder
 # that passes the check an install makes of an app that is already there. On Linux nothing
 # that is installed is run, so it is empty there, as it is on a Mac without such an app.
 find_helper() {
   HELPER=""
   [ "$OS" = Darwin ] || return 0
-  for fh_name in "$APP_NAME" "$OLD_APP_NAME"; do
+  IFS=:
+  for fh_name in $APP_NAMES; do
+    unset IFS
     for fh_dir in "$SYSTEM_APPS" "$HOME/Applications"; do
       fh_app="$fh_dir/$fh_name"
       fh_bin="$fh_app/Contents/MacOS/$BIN_NAME"
@@ -1252,13 +1349,36 @@ find_helper() {
       fi
     done
   done
+  unset IFS
+}
+
+# The app, looked for again once it was started: one that was put under an earlier name has
+# taken its name by then. It is the first of the allowed names beside where it was put that is
+# a real folder and passes the code signature check.
+find_app() {
+  [ ! -e "$APP" ] || return 0
+  IFS=:
+  for fa_name in $APP_NAMES; do
+    unset IFS
+    fa_app="${APP%/*}/$fa_name"
+    if [ -d "$fa_app" ] && [ ! -L "$fa_app" ] && sig_ok "$fa_app"; then
+      APP="$fa_app"
+      return 0
+    fi
+  done
+  unset IFS
 }
 
 # True while launchd or systemd still has the helper's service. On a Mac that is its service
-# under either name.
+# under any of its names.
 service_up() {
   case "$OS" in
-    Darwin) "$LAUNCHCTL" print "gui/$USER_ID/$LABEL" >/dev/null 2>&1 || "$LAUNCHCTL" print "gui/$USER_ID/$EARLIER_LABEL" >/dev/null 2>&1 ;;
+    Darwin)
+      for su_label in $LABELS; do
+        if "$LAUNCHCTL" print "gui/$USER_ID/$su_label" >/dev/null 2>&1; then return 0; fi
+      done
+      return 1
+      ;;
     *) [ -n "$SYSTEMCTL" ] && "$SYSTEMCTL" --user is-active --quiet "$BIN_NAME" >/dev/null 2>&1 ;;
   esac
 }
@@ -1305,16 +1425,16 @@ erase_app() {
 }
 
 # On a Mac the app's own `uninstall` stops its service and removes the launchd entry, under
-# both names of the service. With no app that may be run, when that fails, or when a file of
-# the service is left afterwards (an app from before the service's name knows the earlier one
-# alone), launchctl does the same for both names. On Linux systemctl stops and disables the
+# every name of the service it knows. With no app that may be run, when that fails, or when a
+# file of the service is left afterwards (an app from before a name of the service knows the
+# earlier ones alone), launchctl does the same for every name. On Linux systemctl stops and disables the
 # service, and its unit file is deleted.
 stop_helper() {
-  step stop 20 "Stopping Rex DUO Beacon…"
+  step stop 20 "Stopping $BEACON…"
   sh_done=0
   if [ -n "$HELPER" ] && "$HELPER" uninstall </dev/null >/dev/null 2>&1 3<&-; then sh_done=1; fi
   if [ "$OS" = Darwin ]; then
-    for sh_label in "$LABEL" "$EARLIER_LABEL"; do
+    for sh_label in $LABELS; do
       sh_file="$HOME/Library/LaunchAgents/$sh_label.plist"
       if [ -e "$sh_file" ] || [ -L "$sh_file" ]; then sh_done=0; fi
     done
@@ -1322,7 +1442,7 @@ stop_helper() {
   if [ "$sh_done" = 0 ]; then
     case "$OS" in
       Darwin)
-        for sh_label in "$LABEL" "$EARLIER_LABEL"; do
+        for sh_label in $LABELS; do
           "$LAUNCHCTL" bootout "gui/$USER_ID/$sh_label" >/dev/null 2>&1 || :
           erase "$HOME/Library/LaunchAgents/$sh_label.plist"
         done
@@ -1336,40 +1456,51 @@ stop_helper() {
   fi
   sh_left="$WAIT_SECONDS"
   while service_up; do
-    [ "$sh_left" -gt 0 ] || fail WRITE "Rex DUO Beacon is still running and could not be stopped. Its files were left as they are."
+    [ "$sh_left" -gt 0 ] || fail WRITE "$BEACON is still running and could not be stopped. Its files were left as they are."
     sleep 1
     sh_left=$((sh_left - 1))
   done
 }
 
-# old_name_gone <Applications folder>: deletes what the app's earlier name left there, and
+# old_name_gone <Applications folder>: deletes what the app's earlier names left there, and
 # Launch Services forgets the apps that were deleted.
 old_name_gone() {
-  for og in "$1/$OLD_APP_NAME" "$1/$OLD_PREVIOUS_NAME"; do
-    if [ -e "$og" ] || [ -L "$og" ]; then
-      erase_app "$og"
-      if [ ! -e "$og" ] && [ ! -L "$og" ]; then launch_services -u "$og"; fi
-    fi
+  IFS=:
+  for og_name in $EARLIER_APP_NAMES; do
+    unset IFS
+    for og in "$1/$og_name" "$1/${og_name%.app}.previous.app"; do
+      if [ -e "$og" ] || [ -L "$og" ]; then
+        erase_app "$og"
+        if [ ! -e "$og" ] && [ ! -L "$og" ]; then launch_services -u "$og"; fi
+      fi
+    done
+    erase_like "$1" ".$og_name.new-" erase_app
   done
-  erase_like "$1" ".$OLD_APP_NAME.new-" erase_app
+  unset IFS
 }
 
 remove_files() {
-  step remove 60 "Removing Rex DUO Beacon…"
+  step remove 60 "Removing $BEACON…"
   case "$OS" in
     Darwin)
       for rf_dir in "$SYSTEM_APPS" "$HOME/Applications"; do
-        # Launch Services forgets the app under both names, also where none was left to delete.
-        for rf_name in "$APP_NAME" "$OLD_APP_NAME"; do
+        # Launch Services forgets the app under every name, also where none was left to delete.
+        IFS=:
+        for rf_name in $APP_NAMES; do
+          unset IFS
           erase_app "$rf_dir/$rf_name"
           if [ ! -e "$rf_dir/$rf_name" ] && [ ! -L "$rf_dir/$rf_name" ]; then launch_services -u "$rf_dir/$rf_name"; fi
+          # A version that did not start, as an update before FAILED_PREFIX named its folder.
+          erase_like "$rf_dir" ".${rf_name%.app}.failed-" erase_app
         done
+        unset IFS
         erase_app "$rf_dir/$PREVIOUS_NAME"
         erase_like "$rf_dir" ".$APP_NAME.new-" erase_app
+        erase_like "$rf_dir" "$FAILED_PREFIX" erase_app
         old_name_gone "$rf_dir"
       done
-      erase "$HOME/Library/Logs/Rex DUO Helper.log"
-      erase "$HOME/Library/Logs/Rex DUO Helper.old.log"
+      erase "$HOME/Library/Logs/$EARLIER_NAME.log"
+      erase "$HOME/Library/Logs/$EARLIER_NAME.old.log"
       ;;
     *)
       erase "$HOME/.local/bin/$BIN_NAME"
@@ -1394,7 +1525,7 @@ remove() {
   take_lock
   r_left="$UPDATE_SECONDS"
   while updating; do
-    [ "$r_left" -gt 0 ] || fail BUSY "Rex DUO Beacon is updating itself. Try again in a minute."
+    [ "$r_left" -gt 0 ] || fail BUSY "$BEACON is updating itself. Try again in a minute."
     sleep 1
     r_left=$((r_left - 1))
   done
@@ -1403,9 +1534,9 @@ remove() {
   remove_files
   if [ ! -e "$STATE" ]; then LOCK_MINE=0; fi
   if [ -n "$STAYED" ]; then
-    fail WRITE "Rex DUO Beacon is stopped, but this could not be deleted: $STAYED."
+    fail WRITE "$BEACON is stopped, but this could not be deleted: $STAYED."
   fi
-  r_done="Rex DUO Beacon is removed from this computer."
+  r_done="$BEACON is removed from this computer."
   say "$r_done"
   record "done" "done" "$r_done"
   exit 0
@@ -1440,7 +1571,7 @@ main() {
   if [ "$PLAN" = fetch ]; then
     download
     verify
-    step install 70 "Installing Rex DUO Beacon $VERSION…"
+    step install 70 "Installing $BEACON $VERSION…"
     case "$OS" in
       Darwin) install_mac ;;
       *) install_linux ;;
@@ -1454,9 +1585,9 @@ main() {
     rm -rf "$m_prev" 2>/dev/null || :
   fi
   if [ "$OS" = Darwin ]; then
-    # An app that kept the earlier name takes its name when it starts.
-    if [ ! -e "$APP" ] && [ -d "${APP%/*}/$APP_NAME" ]; then APP="${APP%/*}/$APP_NAME"; fi
-    # The helper runs from the app under its name, so what the earlier name left goes.
+    # An app that was put or left under an earlier name takes its name when it starts.
+    find_app
+    # The helper runs from the app under its name, so what the earlier names left goes.
     if [ "${APP##*/}" = "$APP_NAME" ]; then
       for m_dir in "$SYSTEM_APPS" "$HOME/Applications"; do old_name_gone "$m_dir"; done
     fi
@@ -1465,10 +1596,10 @@ main() {
     linger
   fi
   if [ "$OS" = Darwin ]; then d_where="$(tilde "$APP")"; else d_where="$(tilde "$BIN")"; fi
-  d_done="Rex DUO Beacon is installed and running ($d_where)."
+  d_done="$BEACON is installed and running ($d_where)."
   say "$d_done"
   record "done" "done" "$d_done"
-  if [ "$MODE" = manual ]; then say "In Rex DUO on your phone, turn on Settings → Notifications."; fi
+  if [ "$MODE" = manual ]; then say "In $PHONE_APP on your phone, turn on Settings → Notifications."; fi
   exit 0
 }
 

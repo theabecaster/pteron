@@ -1,7 +1,7 @@
-# Rex DUO push gateway
+# Pteron push gateway
 
-A Cloudflare Worker that sends Rex DUO's push notifications to Apple (APNs). It holds the APNs
-key and each phone's APNs token, so Rex DUO Helper holds neither. A phone registers its token
+A Cloudflare Worker that sends Pteron's push notifications to Apple (APNs). It holds the APNs
+key and each phone's APNs token, so Pteron Beacon (the helper) holds neither. A phone registers its token
 here, mints one `push_secret` for each helper and hands it over. A secret can push to that one
 phone through this app's topic and do nothing else, and the phone can take it back at any time
 without touching its other helpers.

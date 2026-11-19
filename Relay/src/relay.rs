@@ -7,6 +7,7 @@
 //! says the caller is (`auth::Requester`) and what that identity may do.
 
 use crate::auth::{is_device_id, Gateways, Requester};
+use crate::brand::{APP, BEACON};
 use crate::devices::{is_app_open, secret_hash, ClientSnapshot, Device, DeviceStore, Strikes};
 use crate::discovery::{self, Endpoint};
 use crate::gateway::{describe, SendResult, Sender};
@@ -30,7 +31,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What a phone that still registers with an APNs token is told.
-pub const NEEDS_NEWER_APP: &str = "This Rex DUO Beacon needs a newer Rex DUO app.";
+pub const NEEDS_NEWER_APP: &str = concat!("This ", crate::beacon_name!(), " needs a newer ", crate::app_name!(), " app.");
 
 /// The least time between two updates asked for through `update_helper`, whoever asks. Each
 /// one makes the helper download from GitHub, so a client must not be able to make it do that
@@ -55,7 +56,7 @@ fn error(code: &str, message: &str) -> Value {
 
 /// The answer to a request whose change could not be written to devices.json. Nothing changed.
 fn not_saved() -> Value {
-    error("not_saved", "Rex DUO Beacon couldn't save that. Try again.")
+    error("not_saved", concat!(crate::beacon_name!(), " couldn't save that. Try again."))
 }
 
 /// Actions the relay offers to other Rex clients (declared with `client.keymap`).
@@ -65,8 +66,8 @@ fn not_saved() -> Value {
 pub fn actions() -> Value {
     json!([
         {
-            "name": "register_push", "kind": "client", "category": "Rex DUO",
-            "title": "Register for Rex DUO Pushes",
+            "name": "register_push", "kind": "client", "category": BEACON,
+            "title": concat!("Register for ", crate::app_name!(), " Pushes"),
             "description": "Send push notifications for this server's agents to an iPhone.",
             "args": {
                 "type": "object",
@@ -77,24 +78,24 @@ pub fn actions() -> Value {
                     "device_name": {"type": "string"},
                     "device_id": {"type": "string", "description": "Short id the app also puts in its client label as \"#<id>\"."},
                     "paused": {"type": "boolean", "description": "Pause (true) or resume (false) notifications to this phone with this registration. Left out, a registration with the secret the helper already holds keeps its value and any other starts resumed."},
-                    "setup_seal": {"type": "string", "description": "From the Rex DUO setup that installed this helper: base64 of 32 bytes, made from its setup code for this registration."},
+                    "setup_seal": {"type": "string", "description": concat!("From the ", crate::app_name!(), " setup that installed this helper: base64 of 32 bytes, made from its setup code for this registration.")},
                     "token": {"type": "string", "description": "No longer used."}
                 }
             }
         },
         {
-            "name": "helper_identity", "kind": "client", "category": "Rex DUO",
-            "title": "Rex DUO Beacon Identity",
+            "name": "helper_identity", "kind": "client", "category": BEACON,
+            "title": concat!(crate::beacon_name!(), " Identity"),
             "description": "Prove which helper this is: its public key, and a signature over the caller's challenge.",
             "args": {"type": "object", "properties": {
                 "challenge": {"type": "string", "description": "32 random bytes, base64url."},
                 "device_id": {"type": "string"},
-                "setup_challenge": {"type": "string", "description": "32 random bytes, base64url, from the Rex DUO setup that installed this helper."}
+                "setup_challenge": {"type": "string", "description": concat!("32 random bytes, base64url, from the ", crate::app_name!(), " setup that installed this helper.")}
             }}
         },
         {
-            "name": "unregister_push", "kind": "client", "category": "Rex DUO",
-            "title": "Unregister from Rex DUO Pushes",
+            "name": "unregister_push", "kind": "client", "category": BEACON,
+            "title": concat!("Unregister from ", crate::app_name!(), " Pushes"),
             "description": "Stop sending pushes to an iPhone.",
             "args": {"type": "object", "properties": {
                 "device_id": {"type": "string"},
@@ -102,31 +103,31 @@ pub fn actions() -> Value {
             }}
         },
         {
-            "name": "push_presence", "kind": "client", "category": "Rex DUO",
-            "title": "Rex DUO Presence",
-            "description": "Tell the relay whether the calling Rex DUO app is in the foreground.",
+            "name": "push_presence", "kind": "client", "category": BEACON,
+            "title": concat!(crate::app_name!(), " Presence"),
+            "description": concat!("Tell the relay whether the calling ", crate::app_name!(), " app is in the foreground."),
             "args": {"type": "object", "properties": {"active": {"type": "boolean"}}, "required": ["active"]}
         },
         {
-            "name": "set_push_paused", "kind": "client", "category": "Rex DUO",
+            "name": "set_push_paused", "kind": "client", "category": BEACON,
             "title": "Pause or Resume Notifications",
             "description": "Pause or resume notifications from this computer to the calling iPhone. Its registration stays as it is.",
             "args": {"type": "object", "properties": {"paused": {"type": "boolean"}}, "required": ["paused"]}
         },
         {
-            "name": "helper_status", "kind": "client", "category": "Rex DUO",
-            "title": "Rex DUO Beacon Status",
+            "name": "helper_status", "kind": "client", "category": BEACON,
+            "title": concat!(crate::beacon_name!(), " Status"),
             "description": "The helper's version, whether a newer one is available, and what this computer still asks of its user.",
             "args": {"type": "object", "properties": {}}
         },
         {
-            "name": "update_helper", "kind": "client", "category": "Rex DUO",
-            "title": "Update Rex DUO Beacon",
+            "name": "update_helper", "kind": "client", "category": BEACON,
+            "title": concat!("Update ", crate::beacon_name!()),
             "description": "Look for a newer helper now and install it.",
             "args": {"type": "object", "properties": {}}
         },
         {
-            "name": "send_test", "kind": "client", "category": "Rex DUO",
+            "name": "send_test", "kind": "client", "category": BEACON,
             "title": "Send a Test Notification",
             "description": "Send one notification to the calling iPhone, to show that notifications from this computer arrive.",
             "args": {"type": "object", "properties": {}}
@@ -299,7 +300,7 @@ impl Relay {
     pub fn start(self: &Arc<Self>) {
         let n = self.store().devices.len();
         let mode = if self.dry_run { "dry run, no pushes are sent" } else { "pushes go through the gateway" };
-        info!("Rex DUO Beacon {VERSION} starting; {n} registered device(s); {mode}");
+        info!("{BEACON} {VERSION} starting; {n} registered device(s); {mode}");
         // status.json follows what the updater learns. Weak, so the two don't keep each other alive.
         let relay = Arc::downgrade(self);
         self.updater.set_on_change(move || {
@@ -453,7 +454,7 @@ impl Relay {
 
     async fn set_up(&self, s: &Server) -> Result<(), rex::RexError> {
         let boot = s.conn.call("session.bootstrap", json!({"event_scope": "all", "attach_session_ids": []})).await?;
-        // Payloads name the server by its Tailscale URL, which is how Rex DUO knows it.
+        // Payloads name the server by its Tailscale URL, which is how the phone app knows it.
         let url = boot
             .obj("server_status")
             .and_then(|v| v.obj("tailscale"))
@@ -478,7 +479,7 @@ impl Relay {
         let live: HashSet<String> = app_clients(s).await?.into_iter().map(|c| c.client_id).collect();
         let st = &mut *s.st.lock().unwrap();
         st.backgrounded.retain(|c| live.contains(c));
-        info!("[{}] watching {} session(s) as {}; offering its actions to Rex DUO", st.host, st.sessions.len(), st.name);
+        info!("[{}] watching {} session(s) as {}; offering its actions to {APP}", st.host, st.sessions.len(), st.name);
         Ok(())
     }
 
@@ -672,7 +673,7 @@ impl Relay {
                 continue;
             }
             if is_app_open(&d, clients, background) {
-                info!("skip {who}: Rex DUO is open");
+                info!("skip {who}: {APP} is open");
                 continue;
             }
             if !self.limiter.lock().unwrap().allow(&d.device_id, t) {
@@ -766,7 +767,7 @@ impl Relay {
             // The action's name is the caller's text: only a name the helper knows is repeated.
             let known = KNOWN_ACTIONS.contains(&action);
             info!("refused {} from {who}: the Rex server did not identify it", if known { action } else { "an unknown action" });
-            return (Err(error("refused", "Rex DUO Beacon only answers clients the Rex server has identified.")), None);
+            return (Err(error("refused", concat!(crate::beacon_name!(), " only answers clients the Rex server has identified."))), None);
         };
         let mut after = None;
         let outcome = match action {
@@ -775,7 +776,7 @@ impl Relay {
                 // its code has done its work. Any other registration is only a registration.
                 let (secret, device_id) = (args.str("push_secret").unwrap_or(""), args.str("device_id").unwrap_or(""));
                 if crate::setup::registered(&self.state_dir, identity, secret, device_id, args.str("setup_seal"), now() as i64) {
-                    info!("the Rex DUO setup that installed this helper is complete, for {who}");
+                    info!("the {APP} setup that installed this helper is complete, for {who}");
                 }
             }),
             "unregister_push" => self.unregister(args, requester, identity),
@@ -819,7 +820,7 @@ impl Relay {
                 after = start;
                 result
             }),
-            _ => Err(error("not_supported", "Rex DUO Beacon has no such action.")),
+            _ => Err(error("not_supported", concat!(crate::beacon_name!(), " has no such action."))),
         };
         (outcome, after)
     }
@@ -880,7 +881,7 @@ impl Relay {
 
     /// `send_test`: one notification to the requester's own phone, through the gateway, now.
     /// Only for the identity that registered that phone, as `push_presence` tells them
-    /// apart. Whether Rex DUO is open on the phone plays no part, and neither does the
+    /// apart. Whether the phone app is open on the phone plays no part, and neither does the
     /// allowance of agent pushes: a test has its own, one per phone every `TEST_INTERVAL`,
     /// which an attempt uses up whatever comes of it. A paused phone gets no test: the
     /// answer is `paused`, and neither the gateway nor the phone's test allowance is touched.
@@ -930,9 +931,9 @@ impl Relay {
     /// read from the state folder on each call, so a helper that was running before `install`
     /// stored it answers too.
     fn identify(&self, s: &Server, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
-        let Some(key) = &self.key else { return Err(error("internal", "This Rex DUO Beacon has no identity key.")) };
+        let Some(key) = &self.key else { return Err(error("internal", concat!("This ", crate::beacon_name!(), " has no identity key."))) };
         let Some(own) = s.st.lock().unwrap().client_id.clone() else {
-            return Err(error("internal", "This Rex DUO Beacon does not know its own client id on this server."));
+            return Err(error("internal", concat!("This ", crate::beacon_name!(), " does not know its own client id on this server.")));
         };
         let setup_challenge = match args.get("setup_challenge") {
             None | Some(Value::Null) => None,
@@ -942,7 +943,7 @@ impl Relay {
             key.answer(args.str("challenge").unwrap_or(""), &own, &requester.client_id, args.str("device_id").unwrap_or("")).map_err(|m| error("bad_request", m))?;
         if let Some(challenge) = setup_challenge {
             if let Some(proof) = crate::setup::take_proof(&self.state_dir, challenge, &own, &requester.client_id, identity, now() as i64) {
-                info!("answered the Rex DUO setup that installed this helper, for {}", requester.who());
+                info!("answered the {APP} setup that installed this helper, for {}", requester.who());
                 answer["setup_proof"] = json!(proof);
             }
         }
@@ -959,7 +960,7 @@ impl Relay {
         let bad = |m: &str| Err(error("bad_request", m));
         let secret = args.str("push_secret").unwrap_or("");
         if secret.is_empty() && args.get("token").is_some() {
-            info!("{who} registered the old way (an APNs token); it needs a newer Rex DUO");
+            info!("{who} registered the old way (an APNs token); it needs a newer {APP}");
             return Err(error("not_supported", NEEDS_NEWER_APP));
         }
         let env = args.str("environment").unwrap_or("");
@@ -968,7 +969,7 @@ impl Relay {
         // already knows, not one the caller picked.
         let Some(gateway) = args.str("gateway").and_then(|g| self.gateways.accept(g)) else {
             info!("refused a registration from {who}: its gateway is not one this helper pushes through");
-            return bad("gateway is not one this Rex DUO Beacon pushes through (the built-in one, or one listed in its config.json)");
+            return bad(concat!("gateway is not one this ", crate::beacon_name!(), " pushes through (the built-in one, or one listed in its config.json)"));
         };
         if !Device::is_valid_secret(secret) {
             return bad("push_secret must be the secret the gateway gave this phone");
@@ -1064,7 +1065,7 @@ impl Relay {
     async fn begin_update(&self, who: &str, identity: &str) -> Result<(Value, Option<(String, Asset)>), Value> {
         if !self.store().owns_any(identity) {
             info!("refused an update asked for by {who}: no phone of theirs is registered here");
-            return Err(error("refused", "Only someone with a phone registered on this Rex DUO Beacon can update it."));
+            return Err(error("refused", concat!("Only someone with a phone registered on this ", crate::beacon_name!(), " can update it.")));
         }
         info!("update asked for by {who}");
         if let Some(version) = self.updater.updating() {
@@ -1167,10 +1168,10 @@ mod tests {
         let a = actions();
         let names: Vec<&str> = a.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["register_push", "helper_identity", "unregister_push", "push_presence", "set_push_paused", "helper_status", "update_helper", "send_test"]);
-        assert_eq!(a[4], json!({"name": "set_push_paused", "kind": "client", "category": "Rex DUO", "title": "Pause or Resume Notifications",
+        assert_eq!(a[4], json!({"name": "set_push_paused", "kind": "client", "category": BEACON, "title": "Pause or Resume Notifications",
             "description": "Pause or resume notifications from this computer to the calling iPhone. Its registration stays as it is.",
             "args": {"type": "object", "properties": {"paused": {"type": "boolean"}}, "required": ["paused"]}}));
-        assert_eq!(a[7], json!({"name": "send_test", "kind": "client", "category": "Rex DUO", "title": "Send a Test Notification",
+        assert_eq!(a[7], json!({"name": "send_test", "kind": "client", "category": BEACON, "title": "Send a Test Notification",
             "description": "Send one notification to the calling iPhone, to show that notifications from this computer arrive.",
             "args": {"type": "object", "properties": {}}}));
         // Every declared action is one the helper answers, and the other way round.
@@ -1250,7 +1251,7 @@ mod tests {
         Server { conn: Conn::default(), fixed: None, st: Mutex::new(ServerState { client_id: Some("client:helper".into()), ..Default::default() }) }
     }
 
-    /// Rex DUO on a phone with this device id, as the server reports the caller.
+    /// The phone app on a phone with this device id, as the server reports the caller.
     fn app(device_id: &str, identity: Option<&str>) -> Requester {
         Requester { client_id: format!("client:{device_id}"), label: format!("Alex's iPhone #{device_id}"), identity: identity.map(String::from) }
     }
@@ -1375,7 +1376,7 @@ mod tests {
         let r = relay(&dir, true);
         let old = json!({"token": "ab".repeat(32), "environment": "sandbox", "device_name": "iPhone", "device_id": "a1b2c3d4"});
         let e = register(&r, &old, ALEX).unwrap_err();
-        assert_eq!(e["message"], "This Rex DUO Beacon needs a newer Rex DUO app.");
+        assert_eq!(e["message"], concat!("This ", crate::beacon_name!(), " needs a newer ", crate::app_name!(), " app."));
         assert!(devices(&r).is_empty());
         // A token beside a secret is ignored: that is a new app.
         let mut both = register_args();
@@ -1544,7 +1545,7 @@ mod tests {
         // The owner may. This helper can't update (a dry run), and says so in a fixed
         // sentence: the reason with its paths is for the log.
         let (outcome, after) = r.act(&s, "update_helper", &json!({}), &alex).await;
-        assert_eq!(outcome.unwrap_err(), json!({"code": "update_failed", "message": "This copy of Rex DUO Beacon can't update itself."}));
+        assert_eq!(outcome.unwrap_err(), json!({"code": "update_failed", "message": concat!("This copy of ", crate::beacon_name!(), " can't update itself.")}));
         assert!(after.is_none());
         // Refusals use up no slot.
         assert!(r.asked_update.lock().unwrap().is_none());
@@ -1721,7 +1722,7 @@ mod tests {
         r.write_status();
         let status = std::fs::read_to_string(dir.join("status.json")).unwrap();
         let log = captured_log();
-        assert!(log.contains("answered the Rex DUO setup"));
+        assert!(log.contains(concat!("answered the ", crate::app_name!(), " setup")));
         assert!(log.contains("setup that installed this helper is complete"));
         assert_eq!(log.matches("setup that installed this helper is complete").count(), 1);
         let sams_proof = sams_proof.as_str().unwrap();
@@ -2239,7 +2240,7 @@ mod tests {
             json!({
                 "payload": {
                     "aps": {
-                        "alert": {"title": "Rex DUO", "body": "Test notification from rex"},
+                        "alert": {"title": crate::app_name!(), "body": "Test notification from rex"},
                         "sound": "default",
                         "category": "NOTICE",
                         "thread-id": "rexduo-test",
@@ -2762,7 +2763,7 @@ mod tests {
         let on_disk = || std::fs::read(&file).unwrap();
         let before = on_disk();
         let lock = |mode: u32| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
-        let not_saved = json!({"code": "not_saved", "message": "Rex DUO Beacon couldn't save that. Try again."});
+        let not_saved = json!({"code": "not_saved", "message": concat!(crate::beacon_name!(), " couldn't save that. Try again.")});
 
         lock(0o500);
         // A pause.

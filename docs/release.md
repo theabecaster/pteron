@@ -91,7 +91,7 @@ requires to match the app's.
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;
 the file is gitignored) and reads the key from `~/.appstoreconnect/private_keys/` (`ASC_KEY_ID` picks it).
 
-## Rex DUO Beacon (Mac and Linux)
+## Pteron Beacon (Mac and Linux)
 
 ```sh
 Relay/release.sh --no-notarize   # build and sign everything into Relay/dist/release: a local check
@@ -105,21 +105,61 @@ Relay/release.sh --publish       # also publish to GitHub Releases (add --skip-b
 - `Relay/release.sh` then signs the Linux binaries and `manifest.json` with the release key
   (`~/.config/rexduo/helper-update.key`, ed25519; public half in `Relay/update-key.pub`) and
   checks every signature against the committed public key before anything goes up.
-- The Mac app goes out in two zips made from the one notarized bundle: `Rex-DUO-Beacon.zip`
-  holds it as `Rex DUO Beacon.app` (the manifest's `macos-universal-beacon` entry) and
-  `Rex-DUO-Helper.zip` as `Rex DUO Helper.app`, the app's earlier name (the `macos-universal`
-  entry, which the updater of version 0.3.0 reads). `release.sh` checks that both hold the same
-  app and that the manifest names both (Relay/README.md, Updates).
-- The Mac's background job is the LaunchAgent `dev.abrahamgonzalez.rexduo.beacon`. A Mac that
-  version 0.3.0 updates gets the new version in `Rex DUO Helper.app`, restarted under the
-  earlier label, `dev.abrahamgonzalez.rexduo.helper`. That Beacon then moves the app to its name
-  and the job to its label in one sequence with one restart: the bundle is renamed, Launch
-  Services is told, the new label's file is written, the earlier job is booted out and the new
-  one loaded, and the earlier file is deleted once Beacon reports in under the new label
-  (docs/helper.md, Mac). In System Settings → Login Items an entry named Rex DUO Beacon
-  appears, and the earlier entries go about 70 seconds later. The bundle identifier, the code
-  signature's identifier, the update job's label (`dev.abrahamgonzalez.rexduo.helper.update`),
-  the state folder and the log keep their names, so a release needs no other change for this.
+- What the program is called is in one place, `Relay/src/brand.rs`, and `Relay/setup.sh` has
+  it on its one `BEACON=` line (a test holds the two together). `package.sh` and `release.sh`
+  ask the built binary (`rex-duo-helper brand`). The Mac icon is `Brand/BeaconIcon.icon`.
+- The Mac app goes out in three zips made from the one notarized bundle, one for each folder
+  name it has had, and `release.sh` checks that all three hold the same app, that it calls
+  itself by the name, and that the manifest names all three (Relay/README.md, Updates):
+
+  | File | Folder in it | Manifest entry | Who takes it |
+  |---|---|---|---|
+  | `Beacon-macOS.zip` | `Pteron Beacon.app` | `macos-app` | the installer, the phone app, updaters from 0.4.0 |
+  | `Rex-DUO-Beacon.zip` | `Rex DUO Beacon.app` | `macos-universal-beacon` | the updater of 0.3.1 |
+  | `Rex-DUO-Helper.zip` | `Rex DUO Helper.app` | `macos-universal` | the updater of 0.3.0 |
+
+  The three file names and the three entries stay for good. Shipped copies of the phone app
+  check each listed address to the letter and refuse the whole list on a mismatch, so a file
+  behind an entry can never be renamed. `macos-app` and `Beacon-macOS.zip` say nothing of
+  what the app is called: after another rename they hold the app under its new folder name,
+  which is then added to the list of allowed folder names (`Relay/src/update.rs`,
+  `Relay/setup.sh`), and older copies reach it through the zip of a name they accept and the
+  rename the new version makes when it starts.
+- **`MIN_VERSION`.** `release.sh` writes the release's own version as `min_version` unless
+  `MIN_VERSION` says otherwise, and a phone says "Beacon needs an update" of every Beacon
+  older than that, for the up to 12 hours each takes to update itself. A release that still
+  works with the one before it is made with that version: the release that brings the name,
+  0.4.0, changes no protocol, so it is `MIN_VERSION=0.3.1 Relay/release.sh` (and the same
+  with `--publish --skip-build`).
+- The Mac's background job is the LaunchAgent `dev.abrahamgonzalez.rexduo.agent`. A Mac that
+  version 0.3.0 or 0.3.1 updates gets the new version in the folder that version knows
+  (`Rex DUO Helper.app`, `Rex DUO Beacon.app`), restarted by the old program under its label
+  (`….rexduo.helper`, `….rexduo.beacon`). That Beacon then moves the app to its name and the
+  job to its label in one sequence with one restart: the bundle is renamed, Launch Services
+  is told, the new label's file is written, the earlier jobs are booted out and the new one
+  loaded, and the earlier files are deleted once Beacon reports in under the new label
+  (docs/helper.md, Mac). In System Settings → Login Items an entry named Pteron Beacon
+  appears with its icon, macOS shows "Background Items Added" once, and the earlier entries go
+  about 70 seconds later. The bundle identifier, the code signature's identifier, the update
+  job's label (`dev.abrahamgonzalez.rexduo.helper.update`), the binary's name, the state
+  folder, the log, the release addresses and `version --json`'s output keep what they have, so
+  a release needs no other change for this.
+- On Linux the binary and the unit keep their names. The unit's `Description` is written by
+  `install` alone, so a Beacon that updated itself shows the earlier description in
+  `systemctl --user status` until the next install; `rex-duo-helper status` says the name.
+- Copies of the phone app from before the name carry an installer that knows the earlier
+  names alone (docs/helper.md, "Older copies of the app"): its Remove deletes a renamed
+  Beacon's state folder and leaves Beacon running. Once the release with the name is out and
+  the app build with the name has passed Beta App Review, the earlier builds are expired in
+  App Store Connect (`GET /v1/builds?filter[app]=<id>&filter[expired]=false`, then
+  `PATCH /v1/builds/<id>` with `{"data":{"type":"builds","id":"<id>","attributes":{"expired":true}}}`
+  for each), with the owner's go-ahead, since it reaches outside testers.
+- After a release with a new name, on a Mac that had the version before: Login Items shows the
+  new name and icon; `launchctl print gui/$UID/dev.abrahamgonzalez.rexduo.agent` finds the
+  job; `status.json`'s `label` is the new one; `~/Library/LaunchAgents` holds no
+  `….rexduo.beacon.plist` or `….rexduo.helper.plist`; `/Applications` holds `Pteron Beacon.app`
+  alone. On Linux: `rex-duo-helper version` is the new version and `rex-duo-helper status`
+  says the new name.
 - `--publish` creates the release `helper-v<version>` with the downloads, then updates the release
   `helper-latest`, which holds only `manifest.json`, its signature and `install.sh` (a copy of `Relay/setup.sh`). Installed
   Beacons read the manifest from there and update themselves within 12 hours, so publishing is

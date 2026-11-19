@@ -1,24 +1,25 @@
-//! The Mac app takes its name, `Rex DUO Beacon.app`.
+//! The Mac app takes its name, `brand::APP_FOLDER`.
 //!
-//! The app was `Rex DUO Helper.app` before, and a release still carries a zip that holds it
-//! under that folder name, for the updater of version 0.3.0, which looks for exactly that
-//! folder. So this program can start from a bundle of either name. Started from the earlier
-//! one, it renames its bundle where it sits, has the LaunchAgent run it from the new path,
-//! restarts there, and confirms that the helper runs from there. The bundle id, the state
-//! folder and the log keep their names, so macOS keeps what the user allowed.
+//! The app had other names before (`update::EARLIER_APP_NAMES`), and a release still carries
+//! a zip for each of them that holds the app under that folder name, for the updaters of the
+//! versions that look for exactly that folder. So this program can start from a bundle of any
+//! of those names. Started from an earlier one, it renames its bundle where it sits, has the
+//! LaunchAgent run it from the new path, restarts there, and confirms that the helper runs
+//! from there. The bundle id, the state folder and the log keep their names, so macOS keeps
+//! what the user allowed.
 //!
 //! macOS keeps the app's path in its Launch Services record too. `lsregister` forgets the
 //! earlier path and records the new one, and after that the LaunchAgent is written for the
 //! new path and loaded. `lsregister` is best effort: one that is missing or fails changes
 //! nothing about the move.
 //!
-//! The LaunchAgent has a label of its own to move to (src/label.rs). An app that the updater
-//! of version 0.3.0 installed runs under the earlier name and the earlier label, and makes
+//! The LaunchAgent has a label of its own to move to (src/label.rs). An app that an earlier
+//! version's updater installed runs under an earlier name and an earlier label, and makes
 //! both moves as one, with one restart (`carry_out_with`): the bundle is renamed, Launch
-//! Services is told, the new label's file is written for the new path, the earlier job is
+//! Services is told, the new label's file is written for the new path, the earlier jobs are
 //! booted out and the new one loaded, and once the helper reports in from there the earlier
-//! label's file is deleted. An app that has its name and still runs under the earlier label
-//! makes the label's move alone.
+//! labels' files are deleted. So the entry in Login Items is made for the app under its name.
+//! An app that has its name and still runs under an earlier label makes the label's move alone.
 //!
 //! Two things start a move:
 //!
@@ -28,8 +29,8 @@
 //! - `install` and opening the app (`on_install`), which are not the service and do the steps
 //!   themselves.
 //!
-//! A service that starts while both labels have a file settles that before it serves
-//! (`before_start`).
+//! A service that starts while the new label and an earlier one both have a file settles that
+//! before it serves (`before_start`).
 //!
 //! What to do is decided by `plan` and done by `carry_out`, both tested below with stand-ins
 //! for launchd and codesign. A step that fails leaves the app where it was, running, with one
@@ -37,8 +38,8 @@
 //! it tries again.
 
 use crate::label::Agents;
-use crate::service::{EARLIER_LABEL, NAME};
-use crate::update::{Version, APP_NAME, OLD_APP_NAME, OLD_PREVIOUS_APP};
+use crate::service::NAME;
+use crate::update::{Version, APP_NAME, EARLIER_APP_NAMES, EARLIER_PREVIOUS_APPS};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -53,9 +54,9 @@ pub struct Look<'a> {
 /// One move, decided.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {
-    /// The bundle under the earlier name.
+    /// The bundle under an earlier name.
     pub from: PathBuf,
-    /// `Rex DUO Beacon.app` beside it.
+    /// The app's name, beside it.
     pub to: PathBuf,
     /// True when `to` is already there, whole and at least as new: then nothing is renamed,
     /// the helper starts from `to`, and `from` is removed.
@@ -68,7 +69,7 @@ pub struct Step {
 /// The bundle is only touched when it is a real folder, not a link, directly in one of
 /// `homes` (`/Applications` and `~/Applications`).
 pub fn plan(bundle: &Path, homes: &[PathBuf], own_version: &str, look: &Look) -> Result<Option<Step>, String> {
-    if bundle.file_name().is_none_or(|n| n != OLD_APP_NAME) {
+    if !bundle.file_name().is_some_and(is_earlier_name) {
         return Ok(None);
     }
     let Some(home) = bundle.parent().filter(|dir| homes.iter().any(|h| h == dir)) else {
@@ -90,6 +91,11 @@ pub fn plan(bundle: &Path, homes: &[PathBuf], own_version: &str, look: &Look) ->
             }
         }
     }
+}
+
+/// True for one of the folder names the app had before.
+fn is_earlier_name(name: &std::ffi::OsStr) -> bool {
+    EARLIER_APP_NAMES.iter().any(|earlier| name == *earlier)
 }
 
 /// The outside world `carry_out` needs, so tests can stand in for launchd.
@@ -117,9 +123,9 @@ pub struct Effects<'a> {
 
 /// Does one move: renames the bundle (unless the new one is already there), has Launch
 /// Services forget the earlier path and record the new one, starts the helper from the new
-/// place, and waits until it reports in from there. Then the earlier name's leftovers go, and
+/// place, and waits until it reports in from there. Then the earlier names' leftovers go, and
 /// Launch Services forgets them: the bundle itself when it was not renamed, and a copy an
-/// update set aside.
+/// update set aside under any earlier name.
 ///
 /// When the helper does not come up there, everything goes back: the bundle to its earlier
 /// name, Launch Services to the earlier path, the LaunchAgent to its earlier path, and the
@@ -179,7 +185,7 @@ pub struct World<'a> {
     pub poll: Duration,
 }
 
-/// One move, `carry_out`, with the LaunchAgent as it is found. Under the earlier label, the
+/// One move, `carry_out`, with the LaunchAgent as it is found. Under an earlier label, the
 /// label moves in the same steps (src/label.rs): the helper is started at the new place by
 /// writing the new label's file for it, booting the earlier job out and loading the new one,
 /// and the earlier label's file is deleted once the helper reports in. On the way back the
@@ -195,7 +201,7 @@ pub fn carry_out_with(step: &Step, agents: &Agents, world: &World) -> Result<(),
             signature_ok: world.signature_ok,
             start_at: &|app| {
                 let program = program_in(app);
-                if app == step.to && agents.has(EARLIER_LABEL) {
+                if app == step.to && agents.has_earlier() {
                     relabels.set(true);
                     agents.begin(&program)
                 } else if relabels.get() {
@@ -218,18 +224,21 @@ pub fn carry_out_with(step: &Step, agents: &Agents, world: &World) -> Result<(),
     )
 }
 
-/// Removes `Rex DUO Helper.previous.app` beside `app` and has Launch Services forget it: a
-/// real folder of that name whose code signature is intact and ours. Another folder of that
-/// name stays where it is, with one line in the log.
+/// Removes the copies an update set aside beside `app` under an earlier name
+/// (`EARLIER_PREVIOUS_APPS`) and has Launch Services forget them: a real folder of such a name
+/// whose code signature is intact and ours. Another folder of that name stays where it is,
+/// with one line in the log.
 fn remove_old_previous(app: &Path, signature_ok: &dyn Fn(&Path) -> bool, launch_services: &dyn Fn(&str, &Path)) {
-    let Some(previous) = app.parent().map(|dir| dir.join(OLD_PREVIOUS_APP)) else { return };
-    if !std::fs::symlink_metadata(&previous).is_ok_and(|m| m.is_dir()) {
-        return;
-    }
-    if !signature_ok(&previous) {
-        crate::info!("{} stays where it is: it did not pass the code signature check", previous.display());
-    } else if std::fs::remove_dir_all(&previous).is_ok() {
-        launch_services("-u", &previous);
+    let Some(dir) = app.parent() else { return };
+    for previous in EARLIER_PREVIOUS_APPS.map(|name| dir.join(name)) {
+        if !std::fs::symlink_metadata(&previous).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        if !signature_ok(&previous) {
+            crate::info!("{} stays where it is: it did not pass the code signature check", previous.display());
+        } else if std::fs::remove_dir_all(&previous).is_ok() {
+            launch_services("-u", &previous);
+        }
     }
 }
 
@@ -309,6 +318,7 @@ pub fn installer_busy(state_dir: &Path, now: u64, alive: impl Fn(u64) -> bool) -
 mod mac {
     use super::*;
     use crate::label::{self, AtStart, Confirm};
+    use crate::brand::BEACON;
     use crate::service::LABEL;
     use crate::update::{forget_job, mac_signature_ok, os, spawn_job, tool, UpdateLock, VERSION};
     use crate::{info, service};
@@ -360,11 +370,11 @@ mod mac {
     }
 
     fn stays(why: &str) {
-        info!("the app keeps the name {OLD_APP_NAME} for now: {why}");
+        info!("the app keeps its earlier name for now: {why}");
     }
 
     fn keeps_label(why: &str) {
-        info!("the background job keeps the label {EARLIER_LABEL} for now: {why}");
+        info!("the background job keeps its earlier label for now: {why}");
     }
 
     /// This program, as a real path.
@@ -390,10 +400,10 @@ mod mac {
     }
 
     /// Called by the background service before it takes its place as the one helper, for a
-    /// Mac where both labels have a file (src/label.rs). Under the new label the earlier job
-    /// is booted out and its file deleted. Under the earlier label, with the new job loaded,
-    /// this process does not serve: true is returned, after the separate job was started to
-    /// boot the earlier job out and delete its file.
+    /// Mac where the new label and an earlier one have a file (src/label.rs). Under the new
+    /// label the earlier jobs are booted out and their files deleted. Under an earlier label,
+    /// with the new job loaded, this process does not serve: true is returned, after the
+    /// separate job was started to boot the earlier jobs out and delete their files.
     pub fn before_start(state_dir: &Path, dry_run: bool) -> bool {
         if dry_run || cfg!(debug_assertions) || state_dir != crate::config::default_state_dir() {
             return false;
@@ -427,8 +437,8 @@ mod mac {
     }
 
     /// Called by the background service when it starts. From the app under its name, a copy
-    /// an update set aside under the earlier name goes. From the app under the earlier name,
-    /// or as a job under the earlier label, the move is started in the background, once: a
+    /// an update set aside under an earlier name goes. From the app under an earlier name,
+    /// or as a job under an earlier label, the move is started in the background, once: a
     /// move that does not happen is tried again at the next start.
     pub fn at_start(state_dir: &Path, dry_run: bool) {
         if dry_run || cfg!(debug_assertions) || state_dir != crate::config::default_state_dir() {
@@ -440,7 +450,7 @@ mod mac {
             remove_old_previous(app, &signature_ok, &launch_services);
         }
         // Only the helper the LaunchAgent runs moves: it is the one a restart brings back.
-        let moves = app.filter(|app| app.file_name().is_some_and(|n| n == OLD_APP_NAME) && service::agent_runs(&exe));
+        let moves = app.filter(|app| app.file_name().is_some_and(is_earlier_name) && service::agent_runs(&exe));
         let relabels = service::agents().at_start(service::own_label(), false) == AtStart::Migrate;
         // A move that did not hold started this helper again: this start leaves it at that.
         if (moves.is_none() && !relabels) || label::was_put_off(state_dir) {
@@ -493,7 +503,7 @@ mod mac {
         let from = value("--from").map(PathBuf::from);
         let old_pid = value("--old-pid").and_then(|p| p.parse::<u64>().ok());
         let (Some(exe), true) = (own_exe(), from.is_some() || old_pid.is_some()) else {
-            eprintln!("finish-move is run by Rex DUO Beacon itself");
+            eprintln!("finish-move is run by {BEACON} itself");
             return 2;
         };
         let state_dir = value("--state-dir").map(PathBuf::from).unwrap_or_else(crate::config::default_state_dir);
@@ -509,7 +519,7 @@ mod mac {
                 _ => Err("it is not the app that asked".into()),
             },
             // With the new label's file there, the move goes on from its second step.
-            None if agents.has(EARLIER_LABEL) => {
+            None if agents.has_earlier() => {
                 let confirm = Confirm { runs: &service::runs_new, wait: service::LABEL_WAIT, poll: Duration::from_millis(250) };
                 if agents.has(LABEL) {
                     agents.resume(&confirm)
@@ -532,7 +542,7 @@ mod mac {
     }
 
     /// Called by `install` and by opening the app, before they set up the LaunchAgent. When
-    /// this program runs from the app under its earlier name, the move is done here and now.
+    /// this program runs from the app under an earlier name, the move is done here and now.
     /// Returns the app the helper then runs from, or None when nothing was moved.
     pub fn on_install() -> Option<PathBuf> {
         let (_, app) = own_app()?;
@@ -566,8 +576,28 @@ pub use mac::{at_start, before_start, finish_command, on_install};
 mod tests {
     use super::*;
     use crate::label::fake::{self, FakeLaunchd};
-    use crate::service::LABEL;
+    use crate::service::{EARLIER_LABELS, LABEL};
     use std::cell::Cell;
+
+    /// One of the names the app had before, with the name a copy an update set aside had
+    /// then and the label its job had. Each test below runs once for each of them.
+    #[derive(Clone, Copy)]
+    struct Earlier {
+        app: &'static str,
+        previous: &'static str,
+        label: &'static str,
+    }
+
+    fn generations() -> [Earlier; 2] {
+        [0, 1].map(|i| Earlier { app: EARLIER_APP_NAMES[i], previous: EARLIER_PREVIOUS_APPS[i], label: EARLIER_LABELS[i] })
+    }
+
+    /// What was asked of lsregister and launchd, with the names of one earlier generation
+    /// written as `Earlier.app`, `Earlier.previous.app` and `earlier`, and the app's own name
+    /// as `New.app`, so one set of expectations holds for every generation.
+    fn plain(text: &str, was: Earlier) -> String {
+        text.replace(was.previous, "Earlier.previous.app").replace(was.app, "Earlier.app").replace(APP_NAME, "New.app").replace(fake::short(was.label), "earlier")
+    }
 
     /// A folder that stands in for /Applications, and beside it the LaunchAgent files and a
     /// stand-in for launchd, whose events also hold the calls of lsregister, in order.
@@ -623,9 +653,14 @@ mod tests {
             path.strip_prefix(&self.apps).unwrap_or(path).display().to_string()
         }
 
-        /// The events since the last call.
-        fn events(&self) -> Vec<String> {
-            self.launchd.events()
+        /// The events since the last call, in the words of `plain`.
+        fn events(&self, was: Earlier) -> Vec<String> {
+            self.launchd.events().iter().map(|event| plain(event, was)).collect()
+        }
+
+        /// The label files that exist, and the app and label the helper runs from and under.
+        fn left(&self, was: Earlier) -> (Vec<String>, Option<(String, PathBuf)>) {
+            (self.launchd.files().iter().map(|name| plain(name, was)).collect(), self.running().map(|(label, app)| (plain(&label, was), app)))
         }
 
         /// The move as this Mac does it, with the stand-ins for lsregister and launchd.
@@ -659,262 +694,307 @@ mod tests {
     const NOBODY: Look<'static> = Look { signature_ok: &|_| panic!("no app to check"), version: &|_| panic!("no app to read") };
 
     #[test]
-    fn an_app_under_the_earlier_name_and_label_moves_to_both_in_one_sequence() {
-        let mac = Mac::new("moves");
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
-        mac.app(OLD_PREVIOUS_APP, "0.3.0");
-        // As the updater of version 0.3.0 leaves it: the earlier label's job runs the app.
-        mac.seed(EARLIER_LABEL, &from);
-        assert_eq!(mac.agent_app(EARLIER_LABEL).as_deref(), Some(from.as_path()));
-
-        let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
-        assert_eq!(step, Step { from: from.clone(), to: mac.apps.join(APP_NAME), leftover: false });
-        assert_eq!(mac.carry_out(&step), Ok(()));
-        // Launch Services forgets the earlier path and records the new one. Only then is the
-        // new label's file written, beside the earlier one, and the jobs swapped: the helper
-        // is restarted once. The earlier label's file is gone before the leftovers go, and
-        // the copy that was set aside is forgotten when it is gone.
-        assert_eq!(
-            mac.events(),
-            [
-                "lsregister -u Rex DUO Helper.app [helper]",
-                "lsregister -f Rex DUO Beacon.app [helper]",
-                "boot out helper [beacon helper]",
-                "bootstrap beacon [beacon helper]",
-                "lsregister -u Rex DUO Helper.previous.app [beacon]",
-            ]
-        );
-        // One app, under its name, with the same contents; one LaunchAgent, under its label,
-        // names it and runs it; the copy an update had set aside under the earlier name is gone.
-        assert_eq!(mac.build(APP_NAME).as_deref(), Some("0.3.1"));
-        assert_eq!(mac.agent_app(LABEL).as_deref(), Some(step.to.as_path()));
-        assert_eq!((mac.launchd.files(), mac.launchd.loaded_now()), (vec!["beacon".to_string()], vec!["beacon".to_string()]));
-        assert_eq!(mac.running(), Some(("beacon".to_string(), step.to.clone())));
-        let left: Vec<_> = std::fs::read_dir(&mac.apps).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(left, [APP_NAME]);
-        // From there, nothing is left to do.
-        assert_eq!(plan(&step.to, &mac.homes(), "0.3.1", &NOBODY), Ok(None));
+    fn the_names() {
+        assert_eq!(APP_NAME, crate::brand::APP_FOLDER);
+        // Every earlier name has the name its set-aside copy had, and none is the app's own.
+        for was in generations() {
+            assert_eq!(was.previous, was.app.replace(".app", ".previous.app"));
+            assert!(was.app != APP_NAME && was.app.ends_with(".app") && !was.app.starts_with('.'));
+        }
     }
 
     #[test]
-    fn a_copy_set_aside_under_the_earlier_name_goes_only_when_its_signature_is_ours() {
-        let mac = Mac::new("previous");
-        let app = mac.app(APP_NAME, "0.3.1");
-        let previous = mac.app(OLD_PREVIOUS_APP, "0.3.0");
-        let forgot = Cell::new(0);
-        let forget = |flag: &str, path: &Path| {
-            assert_eq!((flag, path), ("-u", previous.as_path()));
-            forgot.set(forgot.get() + 1);
-        };
-        // A folder of that name that does not pass the check stays, with what it holds, and
-        // Launch Services is told nothing.
-        remove_old_previous(&app, &|path| path != previous, &forget);
-        assert_eq!((mac.build(OLD_PREVIOUS_APP).as_deref(), forgot.get()), (Some("0.3.0"), 0));
-        // One that passes goes, and Launch Services forgets it.
-        remove_old_previous(&app, &|path| path == previous, &forget);
-        assert_eq!((previous.exists(), forgot.get()), (false, 1));
-        // With none there, and with a link of that name, nothing is checked or removed.
-        let nothing: &dyn Fn(&Path) -> bool = &|_| panic!("nothing to check");
-        remove_old_previous(&app, nothing, &forget);
-        std::os::unix::fs::symlink(&app, &previous).unwrap();
-        remove_old_previous(&app, nothing, &forget);
-        assert!(previous.is_symlink() && app.is_dir());
-        assert_eq!(forgot.get(), 1);
+    fn an_app_under_an_earlier_name_and_label_moves_to_both_in_one_sequence() {
+        for was in generations() {
+            let mac = Mac::new("moves");
+            let from = mac.app(was.app, "0.3.1");
+            mac.app(was.previous, "0.3.0");
+            // As the updater of an earlier version leaves it: the earlier label's job runs the app.
+            mac.seed(was.label, &from);
+            assert_eq!(mac.agent_app(was.label).as_deref(), Some(from.as_path()));
 
-        // After a move: the same rule, and the move holds either way.
-        std::fs::remove_file(&previous).unwrap();
-        std::fs::remove_dir_all(&app).unwrap();
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
-        mac.app(OLD_PREVIOUS_APP, "not ours");
-        mac.seed(EARLIER_LABEL, &from);
-        let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
-        assert_eq!(mac.carry_out(&step), Ok(()));
-        assert_eq!((mac.build(APP_NAME).as_deref(), mac.build(OLD_PREVIOUS_APP).as_deref()), (Some("0.3.1"), Some("not ours")));
-        assert!(!mac.events().iter().any(|event| event.contains(OLD_PREVIOUS_APP)));
+            let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
+            assert_eq!(step, Step { from: from.clone(), to: mac.apps.join(APP_NAME), leftover: false });
+            assert_eq!(mac.carry_out(&step), Ok(()));
+            // Launch Services forgets the earlier path and records the new one. Only then is the
+            // new label's file written, beside the earlier one, and the jobs swapped: the helper
+            // is restarted once. The earlier label's file is gone before the leftovers go, and
+            // the copy that was set aside is forgotten when it is gone.
+            assert_eq!(
+                mac.events(was),
+                [
+                    "lsregister -u Earlier.app [earlier]",
+                    "lsregister -f New.app [earlier]",
+                    "boot out earlier [agent earlier]",
+                    "bootstrap agent [agent earlier]",
+                    "lsregister -u Earlier.previous.app [agent]",
+                ]
+            );
+            // One app, under its name, with the same contents; one LaunchAgent, under its label,
+            // names it and runs it; the copy an update had set aside under the earlier name is gone.
+            assert_eq!(mac.build(APP_NAME).as_deref(), Some("0.3.1"));
+            assert_eq!(mac.agent_app(LABEL).as_deref(), Some(step.to.as_path()));
+            assert_eq!(mac.launchd.loaded_now(), ["agent"]);
+            assert_eq!(mac.left(was), (vec!["agent".to_string()], Some(("agent".to_string(), step.to.clone()))));
+            let left: Vec<_> = std::fs::read_dir(&mac.apps).unwrap().map(|e| e.unwrap().file_name()).collect();
+            assert_eq!(left, [APP_NAME]);
+            // From there, nothing is left to do.
+            assert_eq!(plan(&step.to, &mac.homes(), "0.3.1", &NOBODY), Ok(None));
+        }
+    }
+
+    /// A Mac two names behind whose job already moved one label on, and one with files of both
+    /// earlier labels: one move, and one app, one file and one job are left.
+    #[test]
+    fn the_oldest_name_moves_whatever_earlier_labels_have_a_file() {
+        let [newer, oldest] = generations();
+        for labels in [&[newer.label][..], &[oldest.label, newer.label][..]] {
+            let mac = Mac::new("mixed");
+            let from = mac.app(oldest.app, "0.4.0");
+            mac.app(newer.previous, "0.3.1");
+            mac.app(oldest.previous, "0.3.0");
+            for label in labels {
+                mac.seed(label, &from);
+            }
+            let step = plan(&from, &mac.homes(), "0.4.0", &NOBODY).unwrap().unwrap();
+            assert_eq!(mac.carry_out(&step), Ok(()), "{labels:?}");
+            assert_eq!((mac.launchd.files(), mac.launchd.loaded_now()), (vec!["agent".to_string()], vec!["agent".to_string()]), "{labels:?}");
+            assert_eq!(mac.running(), Some(("agent".to_string(), step.to.clone())));
+            let left: Vec<_> = std::fs::read_dir(&mac.apps).unwrap().map(|e| e.unwrap().file_name()).collect();
+            assert_eq!(left, [APP_NAME], "{labels:?}");
+            // Each earlier path that held an app is forgotten once.
+            let forgot = |name: &str| mac.launchd.events.borrow().iter().filter(|event| event.starts_with(&format!("lsregister -u {name} "))).count();
+            assert_eq!((forgot(oldest.app), forgot(newer.previous), forgot(oldest.previous)), (1, 1, 1));
+        }
+    }
+
+    #[test]
+    fn a_copy_set_aside_under_an_earlier_name_goes_only_when_its_signature_is_ours() {
+        for was in generations() {
+            let mac = Mac::new("previous");
+            let app = mac.app(APP_NAME, "0.3.1");
+            let previous = mac.app(was.previous, "0.3.0");
+            let forgot = Cell::new(0);
+            let forget = |flag: &str, path: &Path| {
+                assert_eq!((flag, path), ("-u", previous.as_path()));
+                forgot.set(forgot.get() + 1);
+            };
+            // A folder of that name that does not pass the check stays, with what it holds, and
+            // Launch Services is told nothing.
+            remove_old_previous(&app, &|path| path != previous, &forget);
+            assert_eq!((mac.build(was.previous).as_deref(), forgot.get()), (Some("0.3.0"), 0));
+            // One that passes goes, and Launch Services forgets it.
+            remove_old_previous(&app, &|path| path == previous, &forget);
+            assert_eq!((previous.exists(), forgot.get()), (false, 1));
+            // With none there, and with a link of that name, nothing is checked or removed.
+            let nothing: &dyn Fn(&Path) -> bool = &|_| panic!("nothing to check");
+            remove_old_previous(&app, nothing, &forget);
+            std::os::unix::fs::symlink(&app, &previous).unwrap();
+            remove_old_previous(&app, nothing, &forget);
+            assert!(previous.is_symlink() && app.is_dir());
+            assert_eq!(forgot.get(), 1);
+
+            // After a move: the same rule, and the move holds either way.
+            std::fs::remove_file(&previous).unwrap();
+            std::fs::remove_dir_all(&app).unwrap();
+            let from = mac.app(was.app, "0.3.1");
+            mac.app(was.previous, "not ours");
+            mac.seed(was.label, &from);
+            let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
+            assert_eq!(mac.carry_out(&step), Ok(()));
+            assert_eq!((mac.build(APP_NAME).as_deref(), mac.build(was.previous).as_deref()), (Some("0.3.1"), Some("not ours")));
+            assert!(!mac.events(was).iter().any(|event| event.contains("Earlier.previous.app")));
+        }
     }
 
     #[test]
     fn an_app_whose_job_has_the_new_label_moves_and_the_launch_agent_follows() {
-        let mac = Mac::new("follows");
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
-        mac.seed(LABEL, &from);
-        let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
-        assert_eq!(mac.carry_out(&step), Ok(()));
-        // The job is booted out, its file written for the new path, and loaded again.
-        assert_eq!(
-            mac.events(),
-            ["lsregister -u Rex DUO Helper.app [beacon]", "lsregister -f Rex DUO Beacon.app [beacon]", "boot out beacon [beacon]", "bootstrap beacon [beacon]"]
-        );
-        assert_eq!(mac.agent_app(LABEL).as_deref(), Some(step.to.as_path()));
-        assert_eq!(mac.running(), Some(("beacon".to_string(), step.to.clone())));
+        for was in generations() {
+            let mac = Mac::new("follows");
+            let from = mac.app(was.app, "0.3.1");
+            mac.seed(LABEL, &from);
+            let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
+            assert_eq!(mac.carry_out(&step), Ok(()));
+            // The job is booted out, its file written for the new path, and loaded again.
+            assert_eq!(mac.events(was), ["lsregister -u Earlier.app [agent]", "lsregister -f New.app [agent]", "boot out agent [agent]", "bootstrap agent [agent]"]);
+            assert_eq!(mac.agent_app(LABEL).as_deref(), Some(step.to.as_path()));
+            assert_eq!(mac.running(), Some(("agent".to_string(), step.to.clone())));
+        }
     }
 
     #[test]
     fn an_app_that_does_not_start_under_its_new_name_goes_back() {
-        let mut mac = Mac::new("back");
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
-        mac.app(OLD_PREVIOUS_APP, "0.3.0");
-        mac.seed(EARLIER_LABEL, &from);
-        let before = std::fs::read_to_string(mac.launchd.dir.join(format!("{EARLIER_LABEL}.plist"))).unwrap();
-        let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
+        for was in generations() {
+            let mut mac = Mac::new("back");
+            let from = mac.app(was.app, "0.3.1");
+            mac.app(was.previous, "0.3.0");
+            mac.seed(was.label, &from);
+            let before = std::fs::read_to_string(mac.launchd.dir.join(format!("{}.plist", was.label))).unwrap();
+            let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
 
-        let earlier_place = program_in(&from);
-        mac.launchd.comes_up = Box::new(move |_, program| program == earlier_place);
-        assert_eq!(mac.carry_out(&step).unwrap_err(), "it did not start under its new name");
-        // Started at the new place under the new label, then again at the earlier one, where
-        // everything is as it was. Launch Services is told about the way back too: the new
-        // path is forgotten and the earlier one recorded again, before the earlier job is
-        // loaded again. The earlier label's file was there throughout.
-        assert_eq!(
-            mac.events(),
-            [
-                "lsregister -u Rex DUO Helper.app [helper]",
-                "lsregister -f Rex DUO Beacon.app [helper]",
-                "boot out helper [beacon helper]",
-                "bootstrap beacon [beacon helper]",
-                "lsregister -u Rex DUO Beacon.app [beacon helper]",
-                "lsregister -f Rex DUO Helper.app [beacon helper]",
-                "boot out beacon [beacon helper]",
-                "bootstrap helper [helper]",
-            ]
-        );
-        assert_eq!(mac.build(OLD_APP_NAME).as_deref(), Some("0.3.1"));
-        assert_eq!(mac.build(OLD_PREVIOUS_APP).as_deref(), Some("0.3.0"));
-        assert!(!step.to.exists());
-        assert_eq!(std::fs::read_to_string(mac.launchd.dir.join(format!("{EARLIER_LABEL}.plist"))).unwrap(), before);
-        assert_eq!((mac.launchd.files(), mac.launchd.loaded_now()), (vec!["helper".to_string()], vec!["helper".to_string()]));
-        assert_eq!(mac.running(), Some(("helper".to_string(), from.clone())));
+            let earlier_place = program_in(&from);
+            mac.launchd.comes_up = Box::new(move |_, program| program == earlier_place);
+            assert_eq!(mac.carry_out(&step).unwrap_err(), "it did not start under its new name");
+            // Started at the new place under the new label, then again at the earlier one, where
+            // everything is as it was. Launch Services is told about the way back too: the new
+            // path is forgotten and the earlier one recorded again, before the earlier job is
+            // loaded again. The earlier label's file was there throughout.
+            assert_eq!(
+                mac.events(was),
+                [
+                    "lsregister -u Earlier.app [earlier]",
+                    "lsregister -f New.app [earlier]",
+                    "boot out earlier [agent earlier]",
+                    "bootstrap agent [agent earlier]",
+                    "lsregister -u New.app [agent earlier]",
+                    "lsregister -f Earlier.app [agent earlier]",
+                    "boot out agent [agent earlier]",
+                    "bootstrap earlier [earlier]",
+                ]
+            );
+            assert_eq!(mac.build(was.app).as_deref(), Some("0.3.1"));
+            assert_eq!(mac.build(was.previous).as_deref(), Some("0.3.0"));
+            assert!(!step.to.exists());
+            assert_eq!(std::fs::read_to_string(mac.launchd.dir.join(format!("{}.plist", was.label))).unwrap(), before);
+            assert_eq!(mac.launchd.loaded_now(), [fake::short(was.label)]);
+            assert_eq!(mac.left(was), (vec!["earlier".to_string()], Some(("earlier".to_string(), from.clone()))));
 
-        // A LaunchAgent that could not be pointed at the new place: the same.
-        let refused = Effects {
-            launch_services: &|_, _| {},
-            signature_ok: &|_| true,
-            start_at: &|app| app == from,
-            settled: &|| panic!("nothing was started"),
-            old_gone: &|| true,
-            running_from: &|| panic!("nothing was started"),
-            exit_wait: Duration::ZERO,
-            wait: Duration::ZERO,
-            poll: Duration::from_millis(1),
-        };
-        assert_eq!(carry_out(&step, &refused).unwrap_err(), "its background job could not be pointed at the new name");
-        assert!(from.is_dir() && !step.to.exists());
+            // A LaunchAgent that could not be pointed at the new place: the same.
+            let refused = Effects {
+                launch_services: &|_, _| {},
+                signature_ok: &|_| true,
+                start_at: &|app| app == from,
+                settled: &|| panic!("nothing was started"),
+                old_gone: &|| true,
+                running_from: &|| panic!("nothing was started"),
+                exit_wait: Duration::ZERO,
+                wait: Duration::ZERO,
+                poll: Duration::from_millis(1),
+            };
+            assert_eq!(carry_out(&step, &refused).unwrap_err(), "its background job could not be pointed at the new name");
+            assert!(from.is_dir() && !step.to.exists());
 
-        // A bundle that can't be renamed: nothing is started at all, and Launch Services is
-        // told nothing.
-        std::fs::remove_dir_all(&from).unwrap();
-        let untouched = Effects { launch_services: &|_, _| panic!("nothing was renamed"), start_at: &|_| panic!("nothing to start"), ..refused };
-        assert!(carry_out(&step, &untouched).unwrap_err().starts_with("it could not be renamed"));
+            // A bundle that can't be renamed: nothing is started at all, and Launch Services is
+            // told nothing.
+            std::fs::remove_dir_all(&from).unwrap();
+            let untouched = Effects { launch_services: &|_, _| panic!("nothing was renamed"), start_at: &|_| panic!("nothing to start"), ..refused };
+            assert!(carry_out(&step, &untouched).unwrap_err().starts_with("it could not be renamed"));
+        }
     }
 
     #[test]
     fn only_a_real_folder_in_an_applications_folder_is_moved() {
-        let mac = Mac::new("guards");
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
-        // Somewhere else: a download folder, a translocated copy.
-        let elsewhere = mac.dir.join("Downloads");
-        std::fs::create_dir_all(elsewhere.join(OLD_APP_NAME)).unwrap();
-        assert_eq!(plan(&elsewhere.join(OLD_APP_NAME), &mac.homes(), "0.3.1", &NOBODY).unwrap_err(), "it is not in an Applications folder");
-        // A folder inside an Applications folder is not that Applications folder.
-        std::fs::create_dir_all(mac.apps.join("Tools").join(OLD_APP_NAME)).unwrap();
-        assert!(plan(&mac.apps.join("Tools").join(OLD_APP_NAME), &mac.homes(), "0.3.1", &NOBODY).is_err());
-        // A link to the app.
-        std::fs::rename(&from, mac.dir.join("real.app")).unwrap();
-        std::os::unix::fs::symlink(mac.dir.join("real.app"), &from).unwrap();
-        assert_eq!(plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap_err(), "it is a link, not a folder");
-        // An app of another name is none of this module's business.
-        for other in [APP_NAME, "Rex DUO Helper.previous.app", "Other.app"] {
-            assert_eq!(plan(&mac.apps.join(other), &mac.homes(), "0.3.1", &NOBODY), Ok(None), "{other}");
+        for was in generations() {
+            let mac = Mac::new("guards");
+            let from = mac.app(was.app, "0.3.1");
+            // Somewhere else: a download folder, a translocated copy.
+            let elsewhere = mac.dir.join("Downloads");
+            std::fs::create_dir_all(elsewhere.join(was.app)).unwrap();
+            assert_eq!(plan(&elsewhere.join(was.app), &mac.homes(), "0.3.1", &NOBODY).unwrap_err(), "it is not in an Applications folder");
+            // A folder inside an Applications folder is not that Applications folder.
+            std::fs::create_dir_all(mac.apps.join("Tools").join(was.app)).unwrap();
+            assert!(plan(&mac.apps.join("Tools").join(was.app), &mac.homes(), "0.3.1", &NOBODY).is_err());
+            // A link to the app.
+            std::fs::rename(&from, mac.dir.join("real.app")).unwrap();
+            std::os::unix::fs::symlink(mac.dir.join("real.app"), &from).unwrap();
+            assert_eq!(plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap_err(), "it is a link, not a folder");
+            // An app of another name is none of this module's business.
+            for other in [APP_NAME, was.previous, "Other.app"] {
+                assert_eq!(plan(&mac.apps.join(other), &mac.homes(), "0.3.1", &NOBODY), Ok(None), "{other}");
+            }
+            assert!(!mac.apps.join(APP_NAME).exists());
         }
-        assert!(!mac.apps.join(APP_NAME).exists());
     }
 
     #[test]
     fn an_app_already_under_the_new_name_decides_which_one_stays() {
-        let mut mac = Mac::new("both");
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
-        let to = mac.app(APP_NAME, "0.3.2");
-        mac.seed(EARLIER_LABEL, &from);
-        let yes: &dyn Fn(&Path) -> bool = &|_| true;
-        let no: &dyn Fn(&Path) -> bool = &|_| false;
-        let at = |v: &'static str| move |_: &Path| Some(v.to_string());
+        for was in generations() {
+            let mut mac = Mac::new("both");
+            let from = mac.app(was.app, "0.3.1");
+            let to = mac.app(APP_NAME, "0.3.2");
+            mac.seed(was.label, &from);
+            let yes: &dyn Fn(&Path) -> bool = &|_| true;
+            let no: &dyn Fn(&Path) -> bool = &|_| false;
+            let at = |v: &'static str| move |_: &Path| Some(v.to_string());
 
-        // In the way: an older one, one whose signature is not accepted, one without a
-        // version, a link, a file. Nothing is planned and nothing changes.
-        let blocked = format!("something else is at {}", to.display());
-        assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(yes, &at("0.3.0"))).unwrap_err(), blocked);
-        assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(no, &at("0.3.2"))).unwrap_err(), blocked);
-        assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(yes, &|_| None)).unwrap_err(), blocked);
-        std::fs::rename(&to, mac.dir.join("aside.app")).unwrap();
-        for kind in ["link", "file"] {
-            if kind == "link" {
-                std::os::unix::fs::symlink(mac.dir.join("aside.app"), &to).unwrap();
-            } else {
-                std::fs::write(&to, "").unwrap();
+            // In the way: an older one, one whose signature is not accepted, one without a
+            // version, a link, a file. Nothing is planned and nothing changes.
+            let blocked = format!("something else is at {}", to.display());
+            assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(yes, &at("0.3.0"))).unwrap_err(), blocked);
+            assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(no, &at("0.3.2"))).unwrap_err(), blocked);
+            assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(yes, &|_| None)).unwrap_err(), blocked);
+            std::fs::rename(&to, mac.dir.join("aside.app")).unwrap();
+            for kind in ["link", "file"] {
+                if kind == "link" {
+                    std::os::unix::fs::symlink(mac.dir.join("aside.app"), &to).unwrap();
+                } else {
+                    std::fs::write(&to, "").unwrap();
+                }
+                assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(yes, &at("0.3.2"))).unwrap_err(), blocked, "{kind}");
+                std::fs::remove_file(&to).unwrap();
             }
-            assert_eq!(plan(&from, &mac.homes(), "0.3.1", &look(yes, &at("0.3.2"))).unwrap_err(), blocked, "{kind}");
-            std::fs::remove_file(&to).unwrap();
+            std::fs::rename(mac.dir.join("aside.app"), &to).unwrap();
+            assert_eq!((mac.build(was.app).as_deref(), mac.build(APP_NAME).as_deref()), (Some("0.3.1"), Some("0.3.2")));
+
+            // Whole, ours, and the same version or a newer one: the earlier name is the leftover.
+            for version in ["0.3.1", "0.3.2"] {
+                let step = plan(&from, &mac.homes(), "0.3.1", &look(yes, &at(version))).unwrap().unwrap();
+                assert_eq!(step, Step { from: from.clone(), to: to.clone(), leftover: true }, "{version}");
+            }
+            let step = Step { from: from.clone(), to: to.clone(), leftover: true };
+
+            // The new one does not start: the earlier one is started again and both stay.
+            let earlier_place = program_in(&from);
+            mac.launchd.comes_up = Box::new(move |_, program| program == earlier_place);
+            assert!(mac.carry_out(&step).is_err());
+            assert_eq!(mac.agent_app(was.label).as_deref(), Some(from.as_path()));
+            assert_eq!(mac.left(was), (vec!["earlier".to_string()], Some(("earlier".to_string(), from.clone()))));
+            // The app under the new name is still there, so it is not forgotten.
+            assert_eq!(
+                mac.events(was),
+                [
+                    "lsregister -u Earlier.app [earlier]",
+                    "lsregister -f New.app [earlier]",
+                    "boot out earlier [agent earlier]",
+                    "bootstrap agent [agent earlier]",
+                    "lsregister -f Earlier.app [agent earlier]",
+                    "boot out agent [agent earlier]",
+                    "bootstrap earlier [earlier]",
+                ]
+            );
+            assert_eq!((mac.build(was.app).as_deref(), mac.build(APP_NAME).as_deref()), (Some("0.3.1"), Some("0.3.2")));
+
+            // It starts: the LaunchAgent names it, under the new label, and the earlier one is
+            // removed. Nothing was renamed.
+            mac.launchd.comes_up = Box::new(|_, _| true);
+            assert_eq!(mac.carry_out(&step), Ok(()));
+            assert_eq!(mac.agent_app(LABEL).as_deref(), Some(to.as_path()));
+            assert_eq!(mac.left(was), (vec!["agent".to_string()], Some(("agent".to_string(), to.clone()))));
+            assert_eq!((mac.build(was.app), mac.build(APP_NAME).as_deref()), (None, Some("0.3.2")));
+            // The earlier path is forgotten again once its folder is deleted.
+            assert_eq!(
+                mac.events(was),
+                [
+                    "lsregister -u Earlier.app [earlier]",
+                    "lsregister -f New.app [earlier]",
+                    "boot out earlier [agent earlier]",
+                    "bootstrap agent [agent earlier]",
+                    "lsregister -u Earlier.app [agent]",
+                ]
+            );
         }
-        std::fs::rename(mac.dir.join("aside.app"), &to).unwrap();
-        assert_eq!((mac.build(OLD_APP_NAME).as_deref(), mac.build(APP_NAME).as_deref()), (Some("0.3.1"), Some("0.3.2")));
-
-        // Whole, ours, and the same version or a newer one: the earlier name is the leftover.
-        for version in ["0.3.1", "0.3.2"] {
-            let step = plan(&from, &mac.homes(), "0.3.1", &look(yes, &at(version))).unwrap().unwrap();
-            assert_eq!(step, Step { from: from.clone(), to: to.clone(), leftover: true }, "{version}");
-        }
-        let step = Step { from: from.clone(), to: to.clone(), leftover: true };
-
-        // The new one does not start: the earlier one is started again and both stay.
-        let earlier_place = program_in(&from);
-        mac.launchd.comes_up = Box::new(move |_, program| program == earlier_place);
-        assert!(mac.carry_out(&step).is_err());
-        assert_eq!(mac.agent_app(EARLIER_LABEL).as_deref(), Some(from.as_path()));
-        assert_eq!((mac.launchd.files(), mac.running()), (vec!["helper".to_string()], Some(("helper".to_string(), from.clone()))));
-        // The app under the new name is still there, so it is not forgotten.
-        assert_eq!(
-            mac.events(),
-            [
-                "lsregister -u Rex DUO Helper.app [helper]",
-                "lsregister -f Rex DUO Beacon.app [helper]",
-                "boot out helper [beacon helper]",
-                "bootstrap beacon [beacon helper]",
-                "lsregister -f Rex DUO Helper.app [beacon helper]",
-                "boot out beacon [beacon helper]",
-                "bootstrap helper [helper]",
-            ]
-        );
-        assert_eq!((mac.build(OLD_APP_NAME).as_deref(), mac.build(APP_NAME).as_deref()), (Some("0.3.1"), Some("0.3.2")));
-
-        // It starts: the LaunchAgent names it, under the new label, and the earlier one is
-        // removed. Nothing was renamed.
-        mac.launchd.comes_up = Box::new(|_, _| true);
-        assert_eq!(mac.carry_out(&step), Ok(()));
-        assert_eq!(mac.agent_app(LABEL).as_deref(), Some(to.as_path()));
-        assert_eq!((mac.launchd.files(), mac.running()), (vec!["beacon".to_string()], Some(("beacon".to_string(), to.clone()))));
-        assert_eq!((mac.build(OLD_APP_NAME), mac.build(APP_NAME).as_deref()), (None, Some("0.3.2")));
-        // The earlier path is forgotten again once its folder is deleted.
-        assert_eq!(
-            mac.events(),
-            [
-                "lsregister -u Rex DUO Helper.app [helper]",
-                "lsregister -f Rex DUO Beacon.app [helper]",
-                "boot out helper [beacon helper]",
-                "bootstrap beacon [beacon helper]",
-                "lsregister -u Rex DUO Helper.app [beacon]",
-            ]
-        );
     }
 
     #[test]
     fn a_move_does_not_depend_on_lsregister() {
         assert!(Path::new(LSREGISTER).is_absolute() && LSREGISTER.ends_with("/Support/lsregister"));
+        let was = generations()[0];
         let mac = Mac::new("lsregister");
         // A tool that is not there, one that is no program, and one that fails.
         let no_program = mac.dir.join("lsregister");
         std::fs::write(&no_program, "").unwrap();
         for tool in [mac.dir.join("missing"), no_program, PathBuf::from("/usr/bin/false")] {
-            let from = mac.app(OLD_APP_NAME, "0.3.1");
+            let from = mac.app(was.app, "0.3.1");
             let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
             let asked = Cell::new(0);
             let fx = Effects {
@@ -948,8 +1028,10 @@ mod tests {
         assert_eq!(run("sleep 30", 100).unwrap_err(), "took too long");
         assert!(began.elapsed() < Duration::from_secs(10));
         // Its arguments reach it as they are, spaces and all.
-        assert_eq!(run("[ \"$1 $2\" = \"-u /Applications/Rex DUO Helper.app\" ]", 5000).map_err(|_| ()), Err(()));
-        let args = ["-c".into(), "[ \"$1 $2\" = \"-u /Applications/Rex DUO Helper.app\" ]".into(), "sh".into(), "-u".into(), "/Applications/Rex DUO Helper.app".into()];
+        let app = format!("/Applications/{APP_NAME}");
+        let script = format!("[ \"$1 $2\" = \"-u {app}\" ]");
+        assert_eq!(run(&script, 5000).map_err(|_| ()), Err(()));
+        let args = ["-c".into(), script.into(), "sh".into(), "-u".into(), app.into()];
         assert_eq!(bounded(sh, &args, Duration::from_secs(5)), Ok(()));
         // A bare name is never looked up.
         assert_eq!(bounded(Path::new("bin/sh"), &[], Duration::from_secs(5)).unwrap_err(), "is not named by a full path");
@@ -959,7 +1041,7 @@ mod tests {
     #[test]
     fn the_move_waits_for_the_helper_that_ran_before_to_exit() {
         let mac = Mac::new("waits");
-        let from = mac.app(OLD_APP_NAME, "0.3.1");
+        let from = mac.app(generations()[0].app, "0.3.1");
         let step = plan(&from, &mac.homes(), "0.3.1", &NOBODY).unwrap().unwrap();
         // The helper reports in only after the old one took a while to go: the time it has
         // to report in starts then.
@@ -1003,8 +1085,9 @@ mod tests {
 
     #[test]
     fn a_program_names_its_app() {
-        assert_eq!(app_of(Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-helper")), Some("/Applications/Rex DUO Beacon.app".into()));
-        assert_eq!(app_of(Path::new("/Applications/Rex DUO Beacon.app/Contents/MacOS/rex-duo-notify")), None);
-        assert_eq!(app_of(Path::new("/Users/u/.local/bin/rex-duo-helper")), None);
+        let app = format!("/Applications/{APP_NAME}");
+        assert_eq!(app_of(Path::new(&format!("{app}/Contents/MacOS/rex-duo-helper"))), Some(PathBuf::from(&app)));
+        assert_eq!(app_of(Path::new(&format!("{app}/Contents/MacOS/rex-duo-notify"))), None);
+        assert_eq!(app_of(Path::new("/home/u/.local/bin/rex-duo-helper")), None);
     }
 }

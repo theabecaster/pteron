@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """The licences of the crates the helper is built from.
 
-    third-party-licenses.py --check        # every crate in Cargo.lock has a licence from the list below
-    third-party-licenses.py <output file>  # the same check, then the notices of the crates that are
-                                           # linked into the helper, as one text file
+    third-party-licenses.py --check                # every crate in Cargo.lock has a licence from the list below
+    third-party-licenses.py <output file> <name>   # the same check, then the notices of the crates that
+                                                   # are linked into the helper, as one text file whose
+                                                   # first line calls the helper by that name
+                                                   # (`rex-duo-helper brand` prints it)
 
 The helper is AGPL-3.0-only and its binaries carry these crates, so each release ships their
 notices (package.sh puts the file in the Mac app, release.sh uploads it), and a crate whose terms
@@ -112,11 +114,11 @@ def linked():
     return ids
 
 
-def notices(meta, path):
+def notices(meta, path, name):
     ids = linked()
     crates = sorted((p for p in third_party(meta) if p["id"] in ids), key=lambda p: (p["name"], p["version"]))
     out = [
-        "Rex DUO Beacon is licensed under the GNU Affero General Public License, version 3 only.",
+        "%s is licensed under the GNU Affero General Public License, version 3 only." % name,
         "It is built with the %d open-source crates below. Each keeps its own licence." % len(crates),
         "",
     ]
@@ -139,13 +141,13 @@ def notices(meta, path):
 
 
 def main(argv):
-    if len(argv) != 2:
+    if argv[1:] != ["--check"] and (len(argv) != 3 or not argv[2].strip()):
         sys.exit(__doc__)
     meta = metadata()
     if not check(meta):
         sys.exit(1)
     if argv[1] != "--check":
-        notices(meta, argv[1])
+        notices(meta, argv[1], argv[2])
 
 
 if __name__ == "__main__":

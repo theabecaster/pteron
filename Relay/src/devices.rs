@@ -1,4 +1,4 @@
-//! Registered phones (devices.json) and "is Rex DUO open on this phone right now?".
+//! Registered phones (devices.json) and whether the phone app is open on a phone right now.
 
 use crate::auth::is_device_id;
 use crate::debug;
@@ -477,7 +477,7 @@ mod tests {
             client_id: id.into(),
             kind: Some("app".into()),
             platform: Some(platform.into()),
-            name: Some("Rex DUO".into()),
+            name: Some(crate::app_name!().into()),
             label: Some(label.into()),
             connection_state: Some(state.into()),
         }

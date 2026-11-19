@@ -1,5 +1,5 @@
 """Runs a command in a pseudo-terminal the way a Rex tab does, for Relay/test-install.sh, and
-plays Rex DUO's part: when the command reports that it waits for the setup code, types it.
+plays the phone app's part: when the command reports that it waits for the setup code, types it.
 
     python3 -I pty-run.py <output file> <code file or -> <command> [arguments…]
 

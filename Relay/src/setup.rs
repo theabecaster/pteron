@@ -1,4 +1,4 @@
-//! What `install` takes when Rex DUO's setup runs it on this computer:
+//! What `install` takes when the phone app's setup runs it on this computer:
 //!
 //! - `--server <addr>`: the Rex server the setup ran in, added to config.json's `servers` so
 //!   the background helper watches it too.

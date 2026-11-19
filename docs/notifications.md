@@ -32,9 +32,9 @@ One master switch, "Notifications", in a group of its own with its line and the 
 footer. Under it, while the switch is on, the group "Computers": one cell per computer, with
 its name as the cell's title, a switch, and directly under the name one status line. This section is the only place
 that shows a computer's Beacon: its version, its state, its one button and its menu. In the
-app's words the program on the computer is "Rex DUO Beacon" where a screen first names it and
+app's words the program on the computer is "Pteron Beacon" where a screen first names it and
 "Beacon" after that, which is also the name it has on the computer (the Mac's prompts, Login
-Items, `Rex DUO Beacon.app`). The code, the actions and this document's prose call it the
+Items, `Pteron Beacon.app`). The code, the actions and this document's prose call it the
 helper, and its command-line program keeps the file name `rex-duo-helper`, which the app shows
 only inside the command to run. A test reads every sentence of the feature for the name
 (`noSentenceCallsTheProgramAnAddOnOrAHelper`).
@@ -224,13 +224,13 @@ is on its way;
   entry and `helperSeen`, and the computer's switch goes off. Any other exit leaves the phone
   unregistered and the row at "Couldn't remove Beacon" with Retry.
 
-## While the app is closed: Rex DUO Beacon
+## While the app is closed: Pteron Beacon
 
-Rex has no push support, so `Relay/` builds **Rex DUO Beacon**, one Rust program
+Rex has no push support, so `Relay/` builds **Pteron Beacon**, one Rust program
 (`rex-duo-helper`) for macOS and Linux that connects to the local Rex as a client named
 `rex-push-relay`, watches every session and sends pushes to registered phones through the push
 gateway (below). Each machine
-with a Rex server runs its own. On a Mac it ships as `Rex DUO Beacon.app` (bundle id
+with a Rex server runs its own. On a Mac it ships as `Pteron Beacon.app` (bundle id
 `dev.abrahamgonzalez.rexduo.helper`; open once, it runs as a LaunchAgent); on Linux
 `rex-duo-helper install` sets up a systemd user service. It is event driven: no polling
 while connected. It updates itself from this repository's GitHub releases (docs/helper.md).
@@ -249,7 +249,7 @@ code.
 
 ## Installing the helper from the app
 
-The app can install Rex DUO Beacon on the user's own Mac or Linux computer. `State/HelperRelease.swift`,
+The app can install Pteron Beacon on the user's own Mac or Linux computer. `State/HelperRelease.swift`,
 `HelperSetup.swift` and `HelperSetupRunner.swift` hold it; `Features/HelperSetup` is the sheet.
 
 **When it is offered** (`HelperOffer`): the server's platform is `darwin_*` or `linux_*`, no
@@ -568,8 +568,8 @@ their Rex identity. Phones signed in to Rex as the same user are that user's own
 computer, each can pause, test and re-register the others.
 
 The first `register_push` from a `device_id` the helper has never seen posts one desktop
-notification on the computer, "Rex DUO connected" with the phone's name (`Relay/src/notice.rs`;
-on a Mac from the app's own `rex-duo-notify`, so it shows as Rex DUO Beacon and needs the
+notification on the computer, "Pteron connected" with the phone's name (`Relay/src/notice.rs`;
+on a Mac from the app's own `rex-duo-notify`, so it shows as Pteron Beacon and needs the
 permission macOS asks for when the app is first opened; `notify-send` on Linux when it is installed). Seen ids are kept in
 `seen_devices.json`, so it is once per phone, not per connect or per helper start.
 

@@ -20,7 +20,7 @@ use tokio_tungstenite::WebSocketStream;
 
 pub const API_REVISION: i64 = 14;
 
-/// How the relay introduces itself. Rex DUO finds it by `name` in `client.list`.
+/// How the relay introduces itself. The phone app finds it by `name` in `client.list`.
 #[derive(Clone, Debug)]
 pub struct Identity {
     pub kind: String,

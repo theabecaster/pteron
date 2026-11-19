@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds a Rex DUO Beacon release and, with --publish, puts it on GitHub.
+# Builds a Beacon release and, with --publish, puts it on GitHub.
 #
 #   Relay/release.sh                 # build, sign, notarize, write Relay/dist/release. Publishes nothing.
 #   Relay/release.sh --skip-build    # reuse what Relay/package.sh already left in Relay/dist
@@ -7,15 +7,20 @@
 #   Relay/release.sh --resign        # sign the current release list again with a new expiry date.
 #                                    # Builds nothing. With --publish, uploads the list and install.sh.
 #
-# What a release is (the helper's updater, the Rex DUO app and setup.sh rely on every part):
-#   - a GitHub release tagged helper-v<version> with the Mac app (zipped, twice), the two Linux
-#     binaries and a signature beside each Linux binary. The Mac app is one signed, notarized
-#     bundle in two zips: Rex-DUO-Beacon.zip holds it as "Rex DUO Beacon.app", the manifest's
-#     macos-universal-beacon entry, which the installer, the app and the helper's updater take.
-#     Rex-DUO-Helper.zip holds it as "Rex DUO Helper.app", the manifest's macos-universal
-#     entry: the updater of version 0.3.0 reads that entry and looks for that folder. A
-#     bundle's folder name is no part of its code signature, and the app gives itself its
-#     name once it runs (src/rename.rs);
+# What a release is (the helper's updater, the phone app and setup.sh rely on every part):
+#   - a GitHub release tagged helper-v<version> with the Mac app (zipped, three times), the two
+#     Linux binaries and a signature beside each Linux binary. The Mac app is one signed,
+#     notarized bundle in three zips, one for each folder name it has had:
+#       Beacon-macOS.zip    holds it as "<name>.app", the manifest's macos-app entry, which the
+#                           installer, the phone app and the helper's updater take;
+#       Rex-DUO-Beacon.zip  holds it under the folder name of version 0.3.1, the manifest's
+#                           macos-universal-beacon entry, which that version's updater reads;
+#       Rex-DUO-Helper.zip  holds it under the folder name of version 0.3.0, the manifest's
+#                           macos-universal entry, which that version's updater reads.
+#     The three file names and the three entries stay for good: copies that shipped ask for
+#     them by name. A bundle's folder name is no part of its code signature, and the app gives
+#     itself its name once it runs (src/rename.rs). What it is called is asked of the bundle's
+#     own binary (`rex-duo-helper brand`), which runs nothing else;
 #   - the release tagged helper-latest, which only ever holds manifest.json, manifest.json.sig and
 #     install.sh, so their addresses never change. install.sh is Relay/setup.sh under the name
 #     people run it by, with two values written in: the release's version and the list's expiry
@@ -33,7 +38,9 @@
 #
 # The manifest also says:
 #   min_version  helpers older than this are told they must update. Default: this release.
-#                Set MIN_VERSION to an older version when this release still works with it.
+#                Set MIN_VERSION to an older version when this release still works with it:
+#                until an installed helper has updated itself, which takes up to 12 hours,
+#                every phone says of it that it needs an update.
 #   expires_at   EXPIRES_DAYS from now (default 180). The helper, the app and setup.sh refuse
 #                the list after that, so a list must be signed again (--resign) before then even
 #                when nothing is released.
@@ -257,45 +264,62 @@ if [[ $BUILD -eq 1 ]]; then
   ./package.sh ${PACKAGE_ARGS[@]+"${PACKAGE_ARGS[@]}"}
 fi
 
-ZIP_SRC="dist/Rex DUO Beacon.zip"
+ZIP_SRC="dist/Beacon-macOS.zip"
 LINUX=(rex-duo-helper-linux-x86_64 rex-duo-helper-linux-aarch64)
 [[ -f "$ZIP_SRC" ]] || die "missing $ZIP_SRC (run without --skip-build)"
 for f in "${LINUX[@]}"; do [[ -f "dist/$f" ]] || die "missing dist/$f"; done
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
-# No spaces in a release file's name: GitHub would rewrite them.
-ZIP="Rex-DUO-Beacon.zip"
-OLD_ZIP="Rex-DUO-Helper.zip"
-APP_DIR="Rex DUO Beacon.app"
-OLD_APP_DIR="Rex DUO Helper.app"
+# No spaces in a release file's name: GitHub would rewrite them. The three names are fixed.
+ZIP="Beacon-macOS.zip"
+EARLIER_ZIPS=("Rex-DUO-Beacon.zip" "Rex-DUO-Helper.zip")
+EARLIER_APP_DIRS=("Rex DUO Beacon.app" "Rex DUO Helper.app")
 cp "$ZIP_SRC" "$OUT/$ZIP"
-# The second zip: the same bundle, file for file, in a folder of the earlier name.
 /usr/bin/ditto -x -k "$OUT/$ZIP" "$work/app"
-[[ "$(ls -A "$work/app")" == "$APP_DIR" ]] || die "$ZIP_SRC must hold $APP_DIR alone"
-mkdir "$work/old"
-/usr/bin/ditto "$work/app/$APP_DIR" "$work/old/$OLD_APP_DIR"
-/usr/bin/ditto -c -k --keepParent "$work/old/$OLD_APP_DIR" "$OUT/$OLD_ZIP"
+# The zip holds one thing: the app, in a folder of the name its own binary gives.
+APP_DIR="$(ls -A "$work/app")"
+[[ "$APP_DIR" == *.app && "$APP_DIR" != .* && "$APP_DIR" != *$'\n'* && -d "$work/app/$APP_DIR" && ! -L "$work/app/$APP_DIR" ]] || die "$ZIP_SRC must hold the app alone"
+[[ -f "$work/app/$APP_DIR/Contents/MacOS/rex-duo-helper" && ! -L "$work/app/$APP_DIR/Contents/MacOS/rex-duo-helper" ]] || die "$ZIP_SRC does not hold the helper"
+BEACON="$("$work/app/$APP_DIR/Contents/MacOS/rex-duo-helper" brand)" || die "the app in $ZIP_SRC did not say what it is called"
+[[ "$BEACON" == *" Beacon" && "$BEACON" != *$'\n'* ]] || die "the app in $ZIP_SRC calls itself \"$BEACON\""
+[[ "$APP_DIR" == "$BEACON.app" ]] || die "$ZIP_SRC holds $APP_DIR, and the app in it calls itself $BEACON"
+grep -qxF "BEACON=\"$BEACON\"" setup.sh || die "setup.sh names the program differently than the build ($BEACON)"
+for name in "${EARLIER_APP_DIRS[@]}"; do
+  [[ "$name" != "$APP_DIR" ]] || die "the app is called by one of its earlier names, $name"
+done
+# The other zips: the same bundle, file for file, in a folder of each earlier name.
+for i in "${!EARLIER_ZIPS[@]}"; do
+  mkdir "$work/old-$i"
+  /usr/bin/ditto "$work/app/$APP_DIR" "$work/old-$i/${EARLIER_APP_DIRS[$i]}"
+  /usr/bin/ditto -c -k --keepParent "$work/old-$i/${EARLIER_APP_DIRS[$i]}" "$OUT/${EARLIER_ZIPS[$i]}"
+done
 for f in "${LINUX[@]}"; do cp "dist/$f" "$OUT/$f"; done
 # The notices of the crates in the binaries, and a stop for a crate whose terms are not listed.
 NOTICES="THIRD_PARTY_LICENSES.txt"
-python3 ./third-party-licenses.py "$OUT/$NOTICES" || die "the crate licences could not be listed"
+python3 ./third-party-licenses.py "$OUT/$NOTICES" "$BEACON" || die "the crate licences could not be listed"
 # The installer goes out under the name people run it by.
 write_installer "$VERSION" "$EXPIRES_AT"
 
-# The app in each zip must be this version, or every helper would refuse it, and the two zips
-# must hold the same bundle, each alone under its folder name.
-/usr/bin/ditto -x -k "$OUT/$OLD_ZIP" "$work/app-old"
-[[ "$(ls -A "$work/app-old")" == "$OLD_APP_DIR" ]] || die "$OLD_ZIP must hold $OLD_APP_DIR alone"
-for app in "$work/app/$APP_DIR" "$work/app-old/$OLD_APP_DIR"; do
+# The app in each zip must be this version and call itself by the name, or every helper would
+# refuse it, and the three zips must hold the same bundle, each alone under its folder name.
+APPS=("$work/app/$APP_DIR")
+for i in "${!EARLIER_ZIPS[@]}"; do
+  /usr/bin/ditto -x -k "$OUT/${EARLIER_ZIPS[$i]}" "$work/app-old-$i"
+  [[ "$(ls -A "$work/app-old-$i")" == "${EARLIER_APP_DIRS[$i]}" ]] || die "${EARLIER_ZIPS[$i]} must hold ${EARLIER_APP_DIRS[$i]} alone"
+  APPS+=("$work/app-old-$i/${EARLIER_APP_DIRS[$i]}")
+done
+for app in "${APPS[@]}"; do
   found="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")"
   [[ "$found" == "$VERSION" ]] || die "the app in ${app##*/} is version $found, not $VERSION"
-  [[ "$(/usr/bin/plutil -extract CFBundleName raw -o - "$app/Contents/Info.plist")" == "Rex DUO Beacon" ]] || die "the app in ${app##*/} is not named Rex DUO Beacon"
+  [[ "$(/usr/bin/plutil -extract CFBundleName raw -o - "$app/Contents/Info.plist")" == "$BEACON" ]] || die "the app in ${app##*/} is not named $BEACON"
+  diff -r "${APPS[0]}" "$app" >/dev/null || die "the zips hold different apps (${app##*/})"
 done
-diff -r "$work/app/$APP_DIR" "$work/app-old/$OLD_APP_DIR" >/dev/null || die "the two zips hold different apps"
-# A signed build keeps its code signature under either folder name.
-if /usr/bin/codesign --verify --deep --strict "$work/app/$APP_DIR" >/dev/null 2>&1; then
-  /usr/bin/codesign --verify --deep --strict "$work/app-old/$OLD_APP_DIR" >/dev/null 2>&1 || die "the app in $OLD_ZIP lost its code signature"
+# A signed build keeps its code signature under every folder name.
+if /usr/bin/codesign --verify --deep --strict "${APPS[0]}" >/dev/null 2>&1; then
+  for app in "${APPS[@]}"; do
+    /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 || die "the app in ${app##*/} lost its code signature"
+  done
 fi
 
 for f in "${LINUX[@]}"; do
@@ -304,9 +328,9 @@ for f in "${LINUX[@]}"; do
 done
 
 # One field per line (indent=2): setup.sh reads this file with sed and awk.
-python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "$OLD_ZIP" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "${LINUX[@]}" <<'PY'
+python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "${LINUX[@]}" <<'PY'
 import datetime, hashlib, json, os, sys
-out, version, base, zip_name, old_zip_name, min_version, expires_at, next_key, *linux = sys.argv[1:]
+out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, *linux = sys.argv[1:]
 
 def number(v):
     return tuple(int(part) for part in v.split("."))
@@ -320,10 +344,11 @@ def asset(name):
         digest = hashlib.sha256(f.read()).hexdigest()
     return {"url": f"{base}/{name}", "sha256": digest, "size": os.path.getsize(path)}
 
-# macos-universal is the entry the updater of version 0.3.0 reads: the zip with the folder it
-# looks for. It takes every entry of "assets" that has these three fields, so the second Mac
-# entry sits beside the first.
-assets = {"macos-universal": asset(old_zip_name), "macos-universal-beacon": asset(zip_name)}
+# macos-universal is the entry the updater of version 0.3.0 reads, and macos-universal-beacon
+# the one the updater of version 0.3.1 prefers: each names the zip with the folder that
+# updater looks for. Both take every entry of "assets" that has these three fields, so the
+# entries sit side by side. macos-app is the one everything newer takes.
+assets = {"macos-universal": asset(helper_zip_name), "macos-universal-beacon": asset(beacon_zip_name), "macos-app": asset(zip_name)}
 for name in linux:
     assets[name.removeprefix("rex-duo-helper-")] = asset(name)
 manifest = {
@@ -347,7 +372,7 @@ for f in "${LINUX[@]}"; do
   verify "$work/$f.check" "$OUT/$f.sig" || die "the signature of $f does not verify"
   grep -q "\"sha256\": \"$(sha256_of "$OUT/$f")\"" "$OUT/manifest.json" || die "manifest.json does not name the hash of $f"
 done
-for f in "$ZIP" "$OLD_ZIP"; do
+for f in "$ZIP" "${EARLIER_ZIPS[@]}"; do
   grep -q "\"sha256\": \"$(sha256_of "$OUT/$f")\"" "$OUT/manifest.json" || die "manifest.json does not name the hash of $f"
 done
 write_fixtures
@@ -363,7 +388,7 @@ fi
 
 command -v gh >/dev/null 2>&1 || die "gh is needed to publish"
 # The app must be notarized and stapled, or no Mac would take the update.
-for app in "$work/app/$APP_DIR" "$work/app-old/$OLD_APP_DIR"; do
+for app in "${APPS[@]}"; do
   xcrun stapler validate "$app" >/dev/null 2>&1 || die "the Mac app in ${app##*/} is not notarized and stapled"
 done
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
@@ -372,13 +397,13 @@ fi
 
 echo "==> Publishing $TAG to $REPO"
 # The files first. Helpers only learn of them from the manifest, which goes up last.
-gh release create "$TAG" --repo "$REPO" --title "Rex DUO Beacon $VERSION" --latest \
-  --notes "Rex DUO Beacon $VERSION. Install steps: https://github.com/$REPO/blob/main/docs/helper.md" \
-  "$OUT/$ZIP" "$OUT/$OLD_ZIP" "$OUT/${LINUX[0]}" "$OUT/${LINUX[0]}.sig" "$OUT/${LINUX[1]}" "$OUT/${LINUX[1]}.sig" "$OUT/$NOTICES"
+gh release create "$TAG" --repo "$REPO" --title "$BEACON $VERSION" --latest \
+  --notes "$BEACON $VERSION. Install steps: https://github.com/$REPO/blob/main/docs/helper.md" \
+  "$OUT/$ZIP" "$OUT/${EARLIER_ZIPS[0]}" "$OUT/${EARLIER_ZIPS[1]}" "$OUT/${LINUX[0]}" "$OUT/${LINUX[0]}.sig" "$OUT/${LINUX[1]}" "$OUT/${LINUX[1]}.sig" "$OUT/$NOTICES"
 
 if ! gh release view helper-latest --repo "$REPO" >/dev/null 2>&1; then
-  gh release create helper-latest --repo "$REPO" --title "Rex DUO Beacon: latest version" --latest=false \
-    --notes "Holds only the list of the current Rex DUO Beacon release and the installer. Installed copies, the Rex DUO app and install.sh read them from here. Downloads are in the newest helper-v release."
+  gh release create helper-latest --repo "$REPO" --title "$BEACON: latest version" --latest=false \
+    --notes "Holds only the list of the current $BEACON release and the installer. Installed copies, the ${BEACON% Beacon} app and install.sh read them from here. Downloads are in the newest helper-v release."
 fi
 gh release upload helper-latest --repo "$REPO" --clobber "$OUT/install.sh"
 # The signature before the manifest: a helper that reads the new manifest finds its signature.

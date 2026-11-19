@@ -4,7 +4,7 @@ version = "0.3.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 publish = false
-description = "Sends Rex DUO push notifications for the Rex server on this machine."
+description = "Sends push notifications for the Rex server on this machine to the phone app."
 
 [dependencies]
 # One thread, no polling: everything waits on sockets, signals or the debounce timer.

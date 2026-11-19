@@ -1,8 +1,9 @@
 #!/bin/bash
-# Builds Rex DUO Beacon for macOS and Linux into Relay/dist:
+# Builds Beacon for macOS and Linux into Relay/dist:
 #
-#   Rex DUO Beacon.zip                 the Mac app: the Rust binary in a signed, notarized bundle,
-#                                      with rex-duo-notify (Packaging/notify.swift) beside it
+#   Beacon-macOS.zip                   the Mac app: the Rust binary in a signed, notarized bundle,
+#                                      with rex-duo-notify (Packaging/notify.swift) beside it.
+#                                      The zip holds it as "<name>.app"
 #   rex-duo-helper-linux-x86_64        static Linux binaries (musl)
 #   rex-duo-helper-linux-aarch64
 #
@@ -15,13 +16,16 @@
 # identity, and an App Store Connect API key for notarytool. Every path and id below can be
 # overridden from the environment.
 #
+# What the app is called is asked of the binary that was just built (`rex-duo-helper brand`,
+# Relay/src/brand.rs): its folder, its Info.plist and its icon's title take the name from
+# there. The icon is Brand/BeaconIcon.icon, an Icon Composer document that actool compiles.
+#
 # The binaries hold no key: pushes go through the push gateway (src/gateway.rs). The only key
 # material compiled in is the public update key, Relay/update-key.pub. Relay/.stage is deleted
 # when the script exits.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="Rex DUO Beacon"
 BIN=rex-duo-helper
 NOTIFIER=rex-duo-notify
 BUNDLE_ID="dev.abrahamgonzalez.rexduo.helper"
@@ -34,11 +38,11 @@ ASC_KEY_ID="${ASC_KEY_ID:-DWSFK499HH}"
 ASC_KEY="${ASC_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8}"
 ASC_ENV="${ASC_ENV:-$HOME/rexduo/.asc.env}"
 
-ICON_SRC="$HERE/../RexDuo/Resources/Assets.xcassets/AppIcon.appiconset/icon.png"
+ICON_SRC="$HERE/../Brand/BeaconIcon.icon"
 STAGE="$HERE/.stage"
 DIST="$HERE/dist"
-APP="$STAGE/$APP_NAME.app"
-ZIP="$DIST/$APP_NAME.zip"
+# The zip's name says nothing of what the app is called, so it stays when that changes.
+ZIP="$DIST/Beacon-macOS.zip"
 
 NOTARIZE=1 MAC=1 LINUX=1
 for a in "$@"; do
@@ -83,16 +87,23 @@ if [[ $LINUX == 1 ]]; then
 fi
 
 if [[ $MAC == 1 ]]; then
-  echo "==> Building $APP_NAME $VERSION ($BUILD_NUMBER), universal"
+  echo "==> Building the Mac app $VERSION ($BUILD_NUMBER), universal"
   # The minimum macOS goes to the two target links only. Set for the whole build
   # (MACOSX_DEPLOYMENT_TARGET), it also reaches the proc-macro crates cargo builds for this Mac,
   # and rustc then fails to find them ("can't find crate for tokio_macros").
   MIN_MACOS="-C link-arg=-mmacosx-version-min=14.0"
   CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS $REMAP" CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="$MIN_MACOS $REMAP" \
     cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+  # The name, from the build for this Mac's own processor. Nothing else of it is run.
+  case "$(uname -m)" in arm64) HOST=aarch64 ;; *) HOST=x86_64 ;; esac
+  APP_NAME="$("target/$HOST-apple-darwin/release/$BIN" brand)"
+  [[ "$APP_NAME" == *" Beacon" && "$APP_NAME" != *$'\n'* ]] || die "the build did not say what it is called: $APP_NAME"
+  PHONE_APP="${APP_NAME% Beacon}"
+  APP="$STAGE/$APP_NAME.app"
+  echo "    $APP_NAME"
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   # The notices of the crates in the binary go with it.
-  python3 "$HERE/third-party-licenses.py" "$APP/Contents/Resources/THIRD_PARTY_LICENSES.txt"
+  python3 "$HERE/third-party-licenses.py" "$APP/Contents/Resources/THIRD_PARTY_LICENSES.txt" "$APP_NAME"
   lipo -create -output "$APP/Contents/MacOS/$BIN" \
     "target/aarch64-apple-darwin/release/$BIN" "target/x86_64-apple-darwin/release/$BIN"
 
@@ -120,17 +131,27 @@ if [[ $MAC == 1 ]]; then
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>NSHumanReadableCopyright</key><string>Sends Rex DUO notifications from Rex on this Mac.</string>
+  <key>NSHumanReadableCopyright</key><string>Sends $PHONE_APP notifications from Rex on this Mac.</string>
 </dict>
 </plist>
 EOF
   plutil -lint "$APP/Contents/Info.plist" >/dev/null
   printf 'APPL????' > "$APP/Contents/PkgInfo"
-  swift "$HERE/Packaging/make-iconset.swift" "$ICON_SRC" "$STAGE/AppIcon.iconset"
-  iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$STAGE/AppIcon.iconset"
+  # The icon: Assets.car (the layered icon and its flattened sizes) and AppIcon.icns. actool
+  # names what it writes after the document, so it compiles a copy named AppIcon.icon.
+  [[ -f "$ICON_SRC/icon.json" ]] || die "no icon at $ICON_SRC"
+  cp -R "$ICON_SRC" "$STAGE/AppIcon.icon"
+  xcrun actool "$STAGE/AppIcon.icon" --compile "$APP/Contents/Resources" --platform macosx \
+    --minimum-deployment-target 14.0 --app-icon AppIcon \
+    --output-partial-info-plist "$STAGE/icon-info.plist" >"$STAGE/actool.log" 2>&1 || { cat "$STAGE/actool.log" >&2; die "actool could not compile the icon"; }
+  for made in Assets.car AppIcon.icns; do
+    [[ -s "$APP/Contents/Resources/$made" ]] || { cat "$STAGE/actool.log" >&2; die "actool did not write $made"; }
+  done
+  [[ "$(plutil -extract CFBundleIconName raw -o - "$STAGE/icon-info.plist")" == AppIcon ]] || die "actool named the icon something else than AppIcon"
 
   echo "==> Signing with $IDENTITY (hardened runtime, no entitlements)"
   # Code inside the bundle is signed before the bundle that seals it.

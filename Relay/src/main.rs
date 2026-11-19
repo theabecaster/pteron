@@ -1,7 +1,8 @@
-//! Rex DUO Beacon: sends Rex DUO push notifications for the Rex server on this
+//! Beacon: sends the phone app's push notifications for the Rex server on this
 //! machine. One binary for macOS and Linux; see Relay/README.md.
 
 mod auth;
+mod brand;
 mod config;
 mod devices;
 mod discovery;
@@ -25,19 +26,25 @@ mod tools;
 mod update;
 mod util;
 
+use brand::BEACON;
 use config::{default_log_file, default_state_dir, expand, Config};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const USAGE: &str = "\
+const USAGE: &str = concat!(
+    "\
 usage: rex-duo-helper <command> [options]
 
-Sends Rex DUO push notifications when an agent in this machine's Rex needs you or
+Sends ",
+    app_name!(),
+    " push notifications when an agent in this machine's Rex needs you or
 finishes, or a terminal raises a desktop notification.
 
 Commands:
   install      install and start it in the background; it also starts at login
-               (--server ADDR also watches that Rex server; --setup-nonce-file is for Rex DUO)
+               (--server ADDR also watches that Rex server; --setup-nonce-file is for ",
+    app_name!(),
+    ")
   status       say whether it's running and connected to Rex
   uninstall    stop it and remove the background service
   run          run in the foreground (what the background service runs)
@@ -54,7 +61,8 @@ Options for run:
   --state-dir DIR    where config.json, devices.json and identity.key live
   --config FILE      config file (default <state-dir>/config.json)
   --log-file         log to the default log file instead of stdout
-";
+"
+);
 
 struct RunOptions {
     dry_run: bool,
@@ -68,20 +76,25 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // The Mac app opened without a command: by hand (start in the background, one dialog), or
-    // by Rex DUO's setup (the same without a dialog).
+    // by the phone app's setup (the same without a dialog).
     #[cfg(target_os = "macos")]
     if let Some(opening) = opening(&args, service::bundle().is_some()) {
         std::process::exit(service::open_app(opening));
     }
     #[cfg(not(target_os = "macos"))]
     if opening(&args, false).is_some() {
-        eprintln!("phone-setup is how Rex DUO Beacon.app is opened on a Mac");
+        eprintln!("phone-setup is how {BEACON}.app is opened on a Mac");
         std::process::exit(2);
     }
 
     let (cmd, rest) = match args.first().map(String::as_str) {
         None | Some("help" | "--help" | "-h") => {
             let _ = std::io::Write::write_all(&mut std::io::stdout(), USAGE.as_bytes());
+            return;
+        }
+        // The name, for the scripts that package and release this program (Relay/package.sh).
+        Some("brand") if args.len() == 1 => {
+            println!("{}", brand::line());
             return;
         }
         Some("version" | "--version") => match version_line(&args[1..]) {
@@ -143,7 +156,9 @@ fn opening(args: &[String], in_app: bool) -> Option<service::Opening> {
     }
 }
 
-/// What `version` prints: the version, or with `--json` an object a script can read.
+/// What `version` prints: the version, or with `--json` an object a script can read. Every
+/// installer that shipped reads that object by its exact shape, `{"version":"…"}`, so it
+/// never gains a field: what else a script needs gets a command of its own (`brand`).
 fn version_line(args: &[String]) -> Option<String> {
     match args {
         [] => Some(relay::VERSION.to_string()),
@@ -303,7 +318,7 @@ async fn run(o: RunOptions) -> i32 {
     let _lock = match lock {
         Ok(f) if f.try_lock().is_ok() => f,
         _ => {
-            info!("Rex DUO Beacon is already running for this user (see: rex-duo-helper status). Stop it first.");
+            info!("{BEACON} is already running for this user (see: rex-duo-helper status). Stop it first.");
             return 1;
         }
     };
@@ -400,6 +415,12 @@ mod tests {
         let json = version_line(&args(&["--json"])).unwrap();
         assert_eq!(json, format!("{{\"version\":\"{}\"}}", relay::VERSION));
         assert!(!json.contains(char::is_whitespace));
+        // The one field, and nothing of the name: installers in the field strip the two ends
+        // and take what is left for the version.
+        let inner = json.strip_prefix("{\"version\":\"").and_then(|rest| rest.strip_suffix("\"}")).unwrap();
+        assert_eq!(inner, relay::VERSION);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap().as_object().unwrap().len(), 1);
+        assert!(!json.contains(brand::APP));
         assert_eq!(version_line(&args(&["--yaml"])), None);
         assert_eq!(version_line(&args(&["--json", "--json"])), None);
     }
