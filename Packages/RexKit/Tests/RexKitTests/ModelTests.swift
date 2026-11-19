@@ -88,7 +88,7 @@ struct StatusTests {
 
     @Test func agentKindFromStatusThenProcessThenTitle() {
         var m = BlockMeta()
-        m.title = "gemini"
+        m.title = "Gemini - api"
         #expect(m.agentKind == .gemini)
         m.foreground = "codex"
         #expect(m.agentKind == .codex)
@@ -97,16 +97,54 @@ struct StatusTests {
     }
 
     @Test(arguments: [
-        ("Claude Code", AgentKind.claude), ("amp", .amp), ("amp --resume", .amp), ("cursor-agent", .cursor),
-        ("aider", .aider), ("opencode", .opencode),
+        ("claude", AgentKind.claude), ("claude-code", .claude), ("codex", .codex), ("gemini", .gemini),
+        ("gemini.js", .gemini), ("gemini-cli", .gemini), ("opencode", .opencode), ("amp", .amp),
+        ("aider", .aider), ("cursor-agent", .cursor),
     ])
-    func detectsAgents(name: String, kind: AgentKind) {
-        #expect(AgentKind.detect(name) == kind)
+    func programsByTheirWholeName(name: String, kind: AgentKind) {
+        #expect(AgentKind.fromProgram(name) == kind)
     }
 
-    @Test(arguments: ["sample", "campaign", "cursor", "zsh", ""])
-    func ignoresLookalikes(name: String) {
-        #expect(AgentKind.detect(name) == nil)
+    @Test(arguments: [
+        ("claude-code", AgentKind.claude), ("Claude Code", .claude), ("codex", .codex), ("gemini-cli", .gemini),
+        ("opencode", .opencode), ("cursor-agent", .cursor),
+    ])
+    func appsAsAgentsNameThemselves(app: String, kind: AgentKind) {
+        #expect(AgentKind.fromApp(app) == kind)
+    }
+
+    @Test(arguments: [
+        ("Claude Code", AgentKind.claude), ("Claude Code — fix tests", .claude), ("✳ Claude Code", .claude),
+        ("✶ Fix the tests", .claude), ("⠋ Claude Code", .claude), ("OpenCode", .opencode), ("Gemini - api", .gemini),
+        ("Gemini CLI", .gemini),
+    ])
+    func titlesInTheAgentsOwnFormats(title: String, kind: AgentKind) {
+        #expect(AgentKind.fromTitle(title) == kind)
+    }
+
+    /// A shell titles the pane with the command it runs; over ssh that title is all there is.
+    @Test(arguments: [
+        ("claude", AgentKind.claude), ("claude --resume", .claude), ("codex", .codex), ("codex resume --last", .codex),
+        ("amp --resume", .amp), ("aider --model sonnet", .aider), ("aider", .aider), ("gemini", .gemini),
+        ("opencode", .opencode), ("cursor-agent", .cursor),
+    ])
+    func commandLinesThatRunAnAgent(title: String, kind: AgentKind) {
+        #expect(AgentKind.fromTitle(title) == kind)
+    }
+
+    @Test(arguments: ["sample", "campaign", "cursor", "zsh", "", "claude-notes", "codex-fork", "amp-config", "index.js"])
+    func programsThatOnlyContainAnAgentsName(name: String) {
+        #expect(AgentKind.fromProgram(name) == nil)
+    }
+
+    @Test(arguments: [
+        "theabecaster@mac:~/claude-notes", "~/code/codex-fork", "/private/tmp/claude-501/scratchpad", "vim claude.md",
+        "clear; cursor-agent", "Sleep command test", "⠙ theabecaster", "⠙ build tools", "notes about Claude Code",
+        "vim CLAUDE.md", "vim claude.md", "cat codex.log", "Codex review notes", "Claude's plan", "claude-notes",
+        "~/.local/bin/claude", "/usr/local/bin/codex --resume", "",
+    ])
+    func titlesThatAreNotAnAgentsOwn(title: String) {
+        #expect(AgentKind.fromTitle(title) == nil)
     }
 }
 

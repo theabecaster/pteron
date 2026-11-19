@@ -176,10 +176,13 @@ public struct BlockMeta: Equatable, Sendable {
         return statuses.values.max { (rank[$0.state] ?? 0) < (rank[$1.state] ?? 0) }
     }
 
+    /// The agent in this pane: by the OSC 7501 app it reports, then by its foreground program,
+    /// then by a title in an agent's own format. A word in a path or a shell's title
+    /// ("~/claude-notes") is never an agent.
     public var agentKind: AgentKind? {
-        if let app = topStatus?.app, let k = AgentKind.detect(app) { return k }
-        if let fg = foreground, let k = AgentKind.detect(fg) { return k }
-        if let t = title, let k = AgentKind.detect(t) { return k }
+        if let app = topStatus?.app, let k = AgentKind.fromApp(app) { return k }
+        if let fg = foreground, let k = AgentKind.fromProgram(fg) { return k }
+        if let t = title, let k = AgentKind.fromTitle(t) { return k }
         return nil
     }
 }
@@ -187,16 +190,69 @@ public struct BlockMeta: Equatable, Sendable {
 public enum AgentKind: String, Sendable {
     case claude, codex, gemini, opencode, amp, aider, cursor
 
-    public static func detect(_ s: String) -> AgentKind? {
-        let l = s.lowercased()
-        if l.contains("claude") { return .claude }
-        if l.contains("codex") { return .codex }
-        if l.contains("gemini") { return .gemini }
-        if l.contains("opencode") { return .opencode }
-        if l == "amp" || l.hasPrefix("amp ") { return .amp }
-        if l.contains("aider") { return .aider }
-        if l.contains("cursor-agent") { return .cursor }
+    /// Programs by their whole name, as the foreground process or an OSC 7501 app gives it.
+    static let programs: [String: AgentKind] = [
+        "claude": .claude, "claude-code": .claude, "codex": .codex, "codex-cli": .codex,
+        "gemini": .gemini, "gemini-cli": .gemini, "opencode": .opencode, "amp": .amp,
+        "aider": .aider, "aider-chat": .aider, "cursor-agent": .cursor,
+    ]
+
+    /// The agent a program is, by its whole name, without a script extension: "claude" and
+    /// "cli.js" of `claude-code` are Claude, "claude-notes" is not.
+    public static func fromProgram(_ name: String) -> AgentKind? {
+        var l = name.trimmingCharacters(in: .whitespaces).lowercased()
+        for ext in [".js", ".mjs", ".cjs", ".py", ".exe"] where l.hasSuffix(ext) {
+            l.removeLast(ext.count)
+        }
+        return programs[l]
+    }
+
+    /// The agent an OSC 7501 app names. Agents name themselves there, so their own longer names
+    /// count too ("claude-code", "Claude Code", "gemini-cli").
+    public static func fromApp(_ app: String) -> AgentKind? {
+        if let k = fromProgram(app) { return k }
+        let l = app.trimmingCharacters(in: .whitespaces).lowercased()
+        for (id, kind) in [("claude", AgentKind.claude), ("codex", .codex), ("gemini", .gemini),
+                           ("opencode", .opencode), ("aider", .aider), ("cursor-agent", .cursor), ("amp", .amp)]
+        where l.hasPrefix(id + "-") || l.hasPrefix(id + " ") {
+            return kind
+        }
         return nil
+    }
+
+    /// Glyphs Claude Code puts before its title while it works ("✳ Claude Code", "✶ Fix tests").
+    static let claudeTitleGlyphs: Set<Character> = ["✳", "✶", "✻", "✽", "✢"]
+
+    /// The agent a title names: in a format the agent sets itself (checked in a pane with each
+    /// one; docs/sidebar.md, Agents mode), or a command line that starts with the agent's own
+    /// program, as a shell titles the pane while it runs one (`claude --resume`, `aider --model
+    /// x`), which over ssh is all there is. A path, a shell's `user@host:path` title or a command
+    /// that only mentions an agent (`vim CLAUDE.md`) never names one.
+    public static func fromTitle(_ title: String) -> AgentKind? {
+        let s = title.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty, !isPathLike(s) else { return nil }
+        if s == "Claude Code" || s.hasPrefix("Claude Code ") { return .claude }
+        if let first = s.first, claudeTitleGlyphs.contains(first), s.dropFirst().first == " " { return .claude }
+        // A braille spinner before "Claude Code" while it works.
+        if let u = s.unicodeScalars.first, (0x2800...0x28FF).contains(u.value), s.contains("Claude Code") { return .claude }
+        if s == "OpenCode" || s.hasPrefix("OpenCode ") || s.hasPrefix("OpenCode:") { return .opencode }
+        if s == "Gemini CLI" || s.hasPrefix("Gemini CLI ") || s.hasPrefix("Gemini - ") { return .gemini }
+        return fromCommandLine(s)
+    }
+
+    /// A command line whose first word is an agent's program, as typed: lowercase, no path.
+    /// "Codex review notes" or "Claude's plan" are prose, not a command.
+    static func fromCommandLine(_ s: String) -> AgentKind? {
+        guard let first = s.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init),
+              first == first.lowercased(), !first.contains("/") else { return nil }
+        return fromProgram(first)
+    }
+
+    /// A path, or a shell's "user@host:path" title.
+    static func isPathLike(_ s: String) -> Bool {
+        if s.hasPrefix("/") || s.hasPrefix("~") || s.hasPrefix("./") { return true }
+        guard let at = s.firstIndex(of: "@"), let colon = s[at...].firstIndex(of: ":") else { return false }
+        return !s[..<at].contains(" ") && !s[at..<colon].contains(" ")
     }
 
     public var displayName: String {

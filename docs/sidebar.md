@@ -75,6 +75,19 @@ Sessions are what people look for, so their names are full contrast and semibold
 - The sidebar's top has a two-segment switch: **Sessions | Agents**. The Agents segment carries
   a waiting count in the blocked color when any agent waits. The mode is saved
   (`Prefs.sidebarMode`), as the Mac's sidebar keeps its mode.
+- A pane runs an agent when it has an OSC 7501 record, or `BlockMeta.agentKind` names one: by
+  the record's app ("claude-code", "codex"), then by the foreground program's whole name
+  (`claude`, `codex`, `opencode`, `cursor-agent`, `aider`, `amp`, `gemini`; a generic entry script
+  such as `index.js` or Python's `__main__.py` takes its package's name,
+  `ServerConnection.processLabel`), then by the title: an agent's own format ("Claude Code…",
+  "✳ …", a braille spinner before "Claude Code", "OpenCode", "Gemini - …"), or a command line
+  whose first word is the agent's program, as a shell titles the pane (`claude --resume`, `aider
+  --model x`), which over ssh is all there is. A path, a `user@host:path` title or a command that
+  only mentions an agent (`vim CLAUDE.md`) never counts, so a shell in `~/claude-notes` is no
+  agent. Checked against real panes in `AgentDetectTests` (Claude Code 2.1.329 titles itself
+  "Claude Code", then the task's name, with no spinner; Codex titles itself with the folder;
+  cursor-agent sets none). Claude on Linux, reported by its version number alone, is found only
+  once its OSC 7501 record or "Claude Code" title is in.
 - Agents mode lists agents grouped by machine. Machines keep their order. Inside a machine, the
   order is waiting (oldest first), error, working, done, idle. Machine headers here don't fold:
   a waiting agent is never hidden.
