@@ -184,6 +184,32 @@ final class ServerEventsTests: XCTestCase {
 
     // MARK: Capabilities
 
+    /// `agentsCurrent` is what a "Jump to Waiting" link waits for: true once the states have
+    /// been read, false again while a trip to the background or a resync leaves them unknown.
+    func testAgentStatesAreCurrentOnlyAfterAFullRead() async throws {
+        let rig = try await Rig(revision: 18)
+        defer { rig.stop() }
+        XCTAssertFalse(rig.server.agentsCurrent)
+        await rig.connect()
+        XCTAssertTrue(rig.server.agentsCurrent)
+        XCTAssertEqual(rig.server.currentAgentKeys().first?.state, "working")
+
+        rig.server.enteredBackground()
+        XCTAssertFalse(rig.server.agentsCurrent)
+        rig.server.resume(fromBackground: true)
+        XCTAssertFalse(rig.server.agentsCurrent)
+        await rig.settle(keymapLoads: 2)
+        XCTAssertTrue(rig.server.agentsCurrent)
+
+        rig.server.scheduleResync(after: 0)
+        XCTAssertFalse(rig.server.agentsCurrent)
+        await rig.settle(keymapLoads: 3)
+        XCTAssertTrue(rig.server.agentsCurrent)
+
+        rig.server.stop()
+        XCTAssertFalse(rig.server.agentsCurrent)
+    }
+
     func testCapabilitiesFollowTheServer() async throws {
         let rig = try await Rig(revision: 18)
         defer { rig.stop() }

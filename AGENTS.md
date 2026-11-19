@@ -36,6 +36,11 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
   `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`). Foundation only,
   so it tests on macOS.
+- `Packages/RexGlance`: what the app shares with its extensions. `GlanceModel` holds `DeepLink`
+  (the `rexduo:` links that open the app; docs/glance.md). Foundation only, so it tests on macOS.
+- `RexDuoWidgets`: the app extension with the controls ("Open Rex DUO", "Jump to Waiting") for
+  Control Center, the Lock Screen and the Action button. It only opens the app with a link;
+  `OpenLinkIntent.swift` there is compiled into the app as well, where the system runs it.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`.
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
@@ -72,6 +77,7 @@ xcrun simctl list devices available       # pick a simulator id
 xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<sim-id> \
   -derivedDataPath build/dd build         # `test` instead of `build` runs RexDuoTests (~1 min)
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS, ~15 s
+swift test --package-path Packages/RexGlance      # links shared with the extension, on macOS
 cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payloads, gateway client, updates
 (cd Gateway && npm ci && npx vitest run)          # gateway: API, limits, the APNs call (mocked)
 ```
@@ -93,8 +99,8 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
   `scripts/bench/run.sh <sim-id>` (about 5 minutes, no server). It fails when a number passes its
   budget (docs/ghostty-engine.md, Measurements).
 - Releases (device installs, TestFlight, Beacon's packaging): [docs/release.md](docs/release.md).
-- CI (`.github/workflows/ci.yml`): job `build` runs RexKit and app tests on a self-hosted Mac
-  runner on the latest Xcode, for pushes to main and manual runs (pull requests get RexKit tests on
+- CI (`.github/workflows/ci.yml`): job `build` runs RexKit, RexGlance and app tests on a self-hosted Mac
+  runner on the latest Xcode, for pushes to main and manual runs (pull requests get RexKit and RexGlance tests on
   GitHub's macOS runner and never touch the self-hosted one); job `helper` runs `cargo test` on
   GitHub's Linux runners. `build` is required for merging into main for outside contributors;
   their fork pull requests only run after the owner approves them. The owner and their agents may merge straight to main (admin bypass)
@@ -172,5 +178,6 @@ is for users. Read the one for the area you touch:
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.
 - [docs/sidebar.md](docs/sidebar.md): the sidebar's levels, folding, Agents mode, not-added hosts.
 - [docs/notifications.md](docs/notifications.md): toasts, permission, push through the helper.
+- [docs/glance.md](docs/glance.md): the controls, the `rexduo:` links and what each does.
 - [docs/release.md](docs/release.md): device installs, TestFlight via a build Mac, Beacon releases.
 - [docs/helper.md](docs/helper.md): installing Beacon, how it updates and what it checks.

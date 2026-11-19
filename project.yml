@@ -17,15 +17,24 @@ settings:
 packages:
   RexKit:
     path: Packages/RexKit
+  # What the app shares with its extensions (Foundation only): the links that open the app.
+  RexGlance:
+    path: Packages/RexGlance
 targets:
   RexDuo:
     type: application
     platform: iOS
     sources:
       - path: RexDuo
+      # The intent the controls run. The system runs it in the app, so the app compiles it too.
+      - path: RexDuoWidgets/OpenLinkIntent.swift
     dependencies:
       - package: RexKit
         product: RexKit
+      - package: RexGlance
+        product: GlanceModel
+      # The controls. Embedded in the app (PlugIns), so every build and test of the app builds it.
+      - target: RexDuoWidgets
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
@@ -96,6 +105,27 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         # libghostty-vt's simdutf and highway are C++.
         OTHER_LDFLAGS: "-lc++"
+  # The controls for Control Center, the Lock Screen and the Action button. They only open the
+  # app with a link (RexDuoWidgets/OpenLinkIntent.swift), so the extension links neither RexKit
+  # nor GhosttyVt, and the Ghostty check stays on the app.
+  RexDuoWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: RexDuoWidgets
+    dependencies:
+      - package: RexGlance
+        product: GlanceModel
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.widgets
+        PRODUCT_NAME: RexDuoWidgets
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_FILE: RexDuoWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
   # Pure app logic (keymap, key encoding, layout math, prefs). Runs inside the app, which doesn't
   # connect while it hosts tests. Protocol tests live in Packages/RexKit (`swift test`).
   RexDuoTests:

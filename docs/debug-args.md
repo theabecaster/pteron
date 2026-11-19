@@ -53,6 +53,11 @@ builds.
   "Reconnecting…", not "All quiet"), `states` (every state), `long` (long names, messages and places), `churn` (states
   that change every 0.3 s, for the once-a-second reorder). Use it with `-simulateDuo folded` or
   `foldedLandscape`, in Light and Dark Mode.
+- Links: `xcrun simctl openurl <id> rexduo://waiting` (or `rexduo://open`) fires a control's link.
+  A Debug build logs `OPEN_LINK <link> run|queued` for each link and `OPEN_WAITING <step>` when a
+  jump ends, and `OPEN_LINK <link> refused` when a control's intent could not open its URL. With `-autoOpen <label>` a link jumps only to agents in that session. `openurl`
+  starts a stopped app without launch arguments; [glance.md](glance.md), Testing, has the safe
+  way to test a cold launch.
 - `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
   keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",

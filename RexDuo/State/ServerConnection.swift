@@ -174,6 +174,14 @@ final class ServerConnection: Identifiable {
     /// The first full sync since the latest connect has finished, so sessions are loaded. The offline
     /// screen stays up until then, instead of flashing an empty sidebar.
     var synced = false
+    /// Every agent's state has been read since the latest thing that could have made it stale: a
+    /// connect, a resync that was asked for, a trip to the background. `synced` comes earlier, when
+    /// the tabs are in and the states are not. Until this is true, "no agent is waiting here" is
+    /// not known. Read by `AppModel.openWaiting`, which polls it; no view observes it.
+    @ObservationIgnored private(set) var agentsCurrent = false
+    /// Counts what makes the agent states stale, so a sync that began before the latest one
+    /// doesn't call them current.
+    @ObservationIgnored private var agentsStale = 0
     /// Offline was shown and the sessions haven't reloaded since. The offline screen stays up for
     /// this, saying the signal is back, so it hands over to the app in one step.
     var recovering = false
@@ -358,7 +366,10 @@ final class ServerConnection: Identifiable {
             wakeTask = nil
         }
         if waking { waking = false }
-        if p != .online { synced = false }
+        if p != .online {
+            synced = false
+            agentsWentStale()
+        }
         if p.problem != nil, !recovering { recovering = true }
         if p == .idle, recovering { recovering = false }
         if phase != p { phase = p }
@@ -388,6 +399,8 @@ final class ServerConnection: Identifiable {
     /// The app went to the background: a drop from here on is held until the return.
     func enteredBackground() {
         wake.enteredBackground(online: phase == .online && control.state == .connected)
+        // No events arrive while the app is suspended.
+        agentsWentStale()
         #if DEBUG
         // `-wakeTest drop|unreachable` (testing): lose the connection as the app goes, as iOS does.
         if let t = UserDefaults.standard.string(forKey: "wakeTest") {
@@ -551,6 +564,7 @@ final class ServerConnection: Identifiable {
     // MARK: Full sync
 
     func scheduleResync(after delay: Double = 0.25) {
+        agentsWentStale()
         resyncTask?.cancel()
         resyncTask = Task { [weak self] in
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
@@ -559,10 +573,25 @@ final class ServerConnection: Identifiable {
         }
     }
 
+    /// The agent states may be out of date until the next full read ends.
+    func agentsWentStale() {
+        agentsStale += 1
+        agentsCurrent = false
+    }
+
+    /// Every agent's state has been read. `agentKeys` is brought up to date now, not a turn
+    /// later, so whoever sees `agentsCurrent` can read it at once instead of walking the tabs.
+    func agentsWereRead() {
+        let keys = currentAgentKeys()
+        if keys != agentKeys { agentKeys = keys }
+        agentsCurrent = true
+    }
+
     /// Reads the whole server state and replaces the local copy with it.
     func bootstrap() async {
         if syncing { syncAgain = true; return }
         syncing = true
+        let stale = agentsStale
         touchedBlocks = []
         touchedSessions = []
         defer {
@@ -606,6 +635,7 @@ final class ServerConnection: Identifiable {
                 v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (v.sessionID, $0.id) }
             }
             await loadMeta(blocks)
+            if stale == agentsStale, !syncAgain, control.state == .connected { agentsWereRead() }
             await loadHosts()
             if platform == nil, let v = try? await control.call("server.version") { platform = v.str("platform") }
             if identity == nil, let who = try? await control.call("server.whoami") {

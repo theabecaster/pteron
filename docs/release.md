@@ -80,6 +80,14 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
   the patch has been uploaded yet, so Apple's own check has not seen it.
 - Third-party licence notices ship in the bundle as `Acknowledgements.txt`.
 
+The app embeds one extension, `RexDuoWidgets.appex` (the controls; [glance.md](glance.md)), with
+its own App ID, `dev.abrahamgonzalez.rexduo.widgets`. It needs no capability and no App Group.
+Automatic signing with `-allowProvisioningUpdates` registers the App ID and makes its profile at
+the first device build or archive, if the signing account may; otherwise register the identifier
+in the developer portal first. No device build or archive with the extension has been made yet.
+The build number given on the command line applies to the extension too, which App Store Connect
+requires to match the app's.
+
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;
 the file is gitignored) and reads the key from `~/.appstoreconnect/private_keys/` (`ASC_KEY_ID` picks it).
 

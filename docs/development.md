@@ -44,6 +44,7 @@ xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<simulator i
 xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<simulator id> \
   -derivedDataPath build/dd test                  # app tests in the simulator, about 1 minute
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS
+swift test --package-path Packages/RexGlance      # the links shared with the extension, on macOS
 cargo test --manifest-path Relay/Cargo.toml       # the helper
 (cd Gateway && npm ci && npx vitest run)          # the gateway
 ```
@@ -81,7 +82,7 @@ covers the layers, the data flow and where new code goes. The other documents:
 
 `.github/workflows/ci.yml` runs two jobs:
 
-- `build`: RexKit tests on every pull request, on GitHub's macOS runner. Pushes to main and
+- `build`: RexKit and RexGlance tests on every pull request, on GitHub's macOS runner. Pushes to main and
   manual runs also build the engine and run the app tests, on a self-hosted Mac runner.
 - `helper`: `cargo test` on GitHub's Linux runner.
 

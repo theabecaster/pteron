@@ -1,4 +1,5 @@
 import CryptoKit
+import GlanceModel
 import SwiftUI
 import RexKit
 
@@ -418,6 +419,114 @@ final class AppModel {
         return true
     }
 
+    // MARK: Links (controls)
+
+    /// A `rexduo:` link from a control: `DeepLink` lists them. Links only navigate, and a URL of
+    /// another scheme does nothing. A link that arrives before the app's first screen is up
+    /// waits for `releaseLinks()`, as a tapped push waits in `AppDelegate`.
+    func openLink(_ url: URL) {
+        guard let link = DeepLink(url) else { return }
+        #if DEBUG
+        // To check on a simulator that a link reached the app: `eventMessage CONTAINS "OPEN_LINK"`.
+        NSLog("OPEN_LINK %@ %@", link.rawValue, linksReleased ? "run" : "queued")
+        #endif
+        guard linksReleased else {
+            // `open` asks for nothing, so it never replaces a jump that is waiting.
+            if link != .open { pendingLink = link }
+            return
+        }
+        run(link)
+    }
+
+    /// The app's first screen is up (`AppDelegate.attach`): run the link that waited, if any.
+    func releaseLinks() {
+        linksReleased = true
+        guard let link = pendingLink else { return }
+        pendingLink = nil
+        run(link)
+    }
+
+    private func run(_ link: DeepLink) {
+        switch link {
+        case .open:
+            // The app is in front, which is all it asks. The tab, a sheet and the agent board stay.
+            break
+        case .waiting:
+            // One jump at a time; a new one replaces it.
+            jump?.cancel()
+            jump = Task { [weak self] in
+                guard let self else { return }
+                let step = await self.openWaiting()
+                #if DEBUG
+                NSLog("OPEN_WAITING %@", String(describing: step))
+                #else
+                _ = step
+                #endif
+            }
+        }
+    }
+
+    @ObservationIgnored private var linksReleased = false
+    @ObservationIgnored private var pendingLink: DeepLink?
+    @ObservationIgnored private var jump: Task<Void, Never>?
+    /// The tab `autoSelect()` last put on screen, and how many times it has put one there. A
+    /// wait that gives up when the person opens something tells the two apart by them: only a
+    /// landing made after the link arrived excuses a changed tab. An older one doesn't, or a tap
+    /// on that same tab during the wait would pass for the launch's own move.
+    @ObservationIgnored private(set) var autoSelected: Selection? {
+        didSet { autoSelects += 1 }
+    }
+    @ObservationIgnored private var autoSelects = 0
+    /// When the phone first saw each waiting agent, by block. Tests pass their own.
+    @ObservationIgnored var firstSeenWaiting: @MainActor () -> [String: Date] = { PhoneState.shared.waitingSince }
+
+    /// Opens the agent that has waited longest, on any server, as a tapped push for it would: its
+    /// pane is focused on the server and its tab is requested, which puts sheets and the agent
+    /// board away. After a cold launch the servers are still syncing, so this waits for them;
+    /// `OpenWaiting` holds the rules. With nobody waiting, no servers, or the wait run out, it
+    /// does nothing at all: no notice and no haptic, unlike the pill and the shortcut.
+    /// Returns the step that ended the wait.
+    @discardableResult
+    func openWaiting(clock: OpenWaiting.Clock = .system, poll: TimeInterval = 0.1) async -> OpenWaiting.Step {
+        var wait = OpenWaiting(began: clock.now(), arrived: Date(), before: selection)
+        let landings = autoSelects
+        while true {
+            let since = firstSeenWaiting()
+            // `agentKeys` is exact when a server turns current (`agentsWereRead`) and follows
+            // the states a turn behind after that, as it does for the waiting pill.
+            let waiting = servers.map { s in
+                s.agentsCurrent ? s.agentKeys.filter { $0.state == "blocked" && Self.mayJump(to: $0, on: s) } : []
+            }
+            let states = servers.indices.map { i in
+                OpenWaiting.Server(known: servers[i].agentsCurrent, problem: servers[i].phase.problem != nil,
+                                   waiting: waiting[i].map { OpenWaiting.Waiter(block: $0.blockID, since: since[$0.blockID]) })
+            }
+            let step = wait.step(servers: states, now: clock.now(), selection: selection,
+                                 autoSelected: autoSelects > landings ? autoSelected : nil)
+            switch step {
+            case .wait:
+                await clock.sleep(poll)
+                if Task.isCancelled { return .nothing(.replaced) }
+            case .open(let target):
+                // No suspension since the lists were read, so the target is still in them.
+                guard let key = waiting[target.server].first(where: { $0.blockID == target.block }) else {
+                    return .nothing(.noneWaiting)
+                }
+                openRequest = OpenRequest(selection: Waiting.prepare(self, Waiting.Item(server: servers[target.server], key: key)))
+                return step
+            case .nothing:
+                return step
+            }
+        }
+    }
+
+    /// In a test launch (`-autoOpen <label>`) a link jumps only to agents in the session with that
+    /// label, so a test never opens, focuses or resizes a pane in anyone's real session.
+    private static func mayJump(to key: AgentKey, on server: ServerConnection) -> Bool {
+        guard let label = UserDefaults.standard.string(forKey: "autoOpen") else { return true }
+        return server.sessions.contains { $0.id == key.sessionID && $0.label == label }
+    }
+
     /// `-autoOpen <session label>` launch argument (testing): open that session's first tab.
     func autoOpenTarget() -> Selection? {
         guard let label = UserDefaults.standard.string(forKey: "autoOpen") else { return nil }
@@ -434,6 +543,7 @@ final class AppModel {
     /// Picks something to show on launch.
     func autoSelect() {
         if let t = autoOpenTarget() {
+            autoSelected = t
             if selection != t { selection = t }
             return
         }
@@ -441,13 +551,16 @@ final class AppModel {
         guard selection == nil else { return }
         // The tab open when the app last ran, while it still exists.
         if let last = prefs.lastSelection, server(last.serverID)?.views[last.sessionID]?.window(last.windowID) != nil {
+            autoSelected = last
             selection = last
             return
         }
         for s in servers {
             for e in s.sessions {
                 if let v = s.views[e.id], let w = v.activeWindow {
-                    selection = Selection(serverID: s.id, sessionID: e.id, windowID: w.id)
+                    let first = Selection(serverID: s.id, sessionID: e.id, windowID: w.id)
+                    autoSelected = first
+                    selection = first
                     return
                 }
             }

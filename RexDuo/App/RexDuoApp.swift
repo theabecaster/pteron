@@ -66,6 +66,9 @@ struct RexDuoApp: App {
                     .environment(model)
                     .environment(prefs)
                     .onAppear { appDelegate.attach(model) }
+                    // Links from the controls (`rexduo:`, navigation only). The test host and
+                    // the offline screens take none.
+                    .onOpenURL { model.openLink($0) }
             }
         }
         .commands {

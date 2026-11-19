@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: RexKit tests
         run: swift test --package-path Packages/RexKit
+      - name: RexGlance tests
+        run: swift test --package-path Packages/RexGlance
       - name: Ghostty framework
         if: github.event_name != 'pull_request'
         run: |

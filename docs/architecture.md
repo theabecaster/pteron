@@ -3,6 +3,7 @@
 ## Layers
 
 App → Features → State → RexKit. Features also use DesignSystem. Nothing points back up.
+The app and its extension both use `GlanceModel`, which uses nothing of ours.
 
 | Layer | Owns | Doesn't |
 |---|---|---|
@@ -10,6 +11,8 @@ App → Features → State → RexKit. Features also use DesignSystem. Nothing p
 | `RexDuo/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` and its `PushReconciler` | build views |
 | `RexDuo/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
 | `RexDuo/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
+| `Packages/RexGlance` (`GlanceModel`) | what the app shares with its extensions: `DeepLink`, the links that open the app | import anything but Foundation (no RexKit, no SwiftUI) |
+| `RexDuoWidgets` (app extension) | the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; run app logic (a control only opens the app with a link) |
 
 `Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
 the app; it speaks the same control protocol over Rex's Unix socket.
@@ -30,6 +33,19 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 6. Each visible pane is `PaneView` → `TerminalHost` (UIKit) → `TerminalStream` (RexKit).
    Settings and theme are pushed into the host from `updateUIView`.
 7. Reconnects, returning to the foreground and an event `seq` gap all trigger a full resync.
+
+Three things from outside put a tab on screen, and all end in `AppModel.openRequest`, which
+`RootView` shows:
+
+- a tapped push: `AppDelegate` → `AppModel.open(_ route:)` (docs/notifications.md);
+- a tapped toast: `AppModel.openPane`;
+- a link from a control: `OpenLinkIntent` (run in the app) opens the URL → `RexDuoApp`'s
+  `onOpenURL` → `AppModel.openLink` → `openWaiting()`,
+  with the rules in `OpenWaiting` ([glance.md](glance.md)). `rexduo://open` only brings the app
+  forward.
+
+Targets (`project.yml`): `RexDuo` (the app; it embeds `RexDuoWidgets`, so every build and test
+of the app builds the extension), `RexDuoWidgets`, `RexDuoTests`.
 
 ## Offline
 
@@ -109,3 +125,5 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
   value and add it to "Fixed choices" in `Prefs`. A setting is a property on `Prefs` (saved in
   `didSet`), read with `@Environment(Prefs.self)`; clear a removed one's key in `Prefs.migrate`.
 - Pure logic: its own type, with tests in `RexDuoTests` or `Packages/RexKit/Tests`.
+- Something an extension needs too (a link, later the snapshot widgets read): `GlanceModel` in
+  `Packages/RexGlance`, Foundation only, with tests in `Packages/RexGlance/Tests`.

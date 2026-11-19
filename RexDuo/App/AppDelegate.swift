@@ -27,7 +27,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
-    /// The app is on screen: start push registration and open a pane a push asked for.
+    /// The app is on screen: start push registration, open a pane a push asked for, and let a
+    /// link that arrived first run.
     func attach(_ model: AppModel) {
         guard self.model !== model else { return }
         self.model = model
@@ -36,6 +37,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             pendingRoute = nil
             open(r)
         }
+        model.releaseLinks()
     }
 
     private func open(_ route: PushRoute) {
