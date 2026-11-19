@@ -196,6 +196,109 @@ struct KeyBarCommandTests {
         #expect(host.keyBar.alt == .off)
     }
 
+    // MARK: The pinned Return
+
+    @Test func returnIsPinnedOnceOutsideTheScrollingKeys() {
+        let (host, _, _) = makeHost()
+        func caps(_ v: UIView) -> [KeyCap] { v.subviews.flatMap { ($0 as? KeyCap).map { [$0] } ?? caps($0) } }
+        let returns = caps(host.keyBar).filter { $0.key == "enter" }
+        #expect(returns.count == 1)
+        var v: UIView? = returns.first
+        while let s = v?.superview, s !== host.keyBar {
+            #expect(!(s is UIScrollView), "Return scrolls")
+            v = s
+        }
+        #expect(returns.first?.accessibilityLabel == "Return")
+        #expect(returns.first?.accessibilityCustomActions?.map(\.name) == ["Shift-Return"])
+        // It never repeats: a held Return is Shift-Return, once.
+        #expect(KeyBar.kind(of: "enter") == .normal)
+        #expect(returns.first?.onHold != nil)
+    }
+
+    @Test func returnSendsReturnWithTheBarsModifiers() {
+        let (host, spy, unbound) = makeHost()
+        host.keyBar.fire("enter")
+        #expect(spy.sent.last == [0x0d])
+        // ctrl+Return is Return (ctrl-M), as before; the one-shot ends.
+        host.keyBar.fire("ctrl")
+        host.keyBar.fire("enter")
+        #expect(spy.sent.last == [0x0d])
+        #expect(host.keyBar.ctrl == .off)
+        // alt+Return: ESC CR. Locked alt stays locked.
+        host.keyBar.fire("alt")
+        host.keyBar.fire("alt")
+        #expect(host.keyBar.alt == .locked)
+        host.keyBar.fire("enter")
+        host.keyBar.fire("enter")
+        #expect(spy.sent.suffix(2) == [[0x1b, 0x0d], [0x1b, 0x0d]])
+        #expect(host.keyBar.alt == .locked)
+        #expect(unbound.n == 0)
+    }
+
+    @Test func cmdReturnRunsItsShortcutAndHeldIsShiftCmdReturn() {
+        let (host, spy, unbound) = makeHost()
+        var commands: [RexCommand] = []
+        host.onCommand = { commands.append($0) }
+        host.keyBar.fire("cmd")
+        host.keyBar.fire("enter")
+        host.keyBar.fire("cmd")
+        host.keyBar.hold("enter")
+        // cmd+enter splits along the longer side; shift+cmd+enter zooms the pane.
+        #expect(commands.count == 2)
+        #expect(commands.last == .toggleZoom)
+        #expect(host.keyBar.cmd == .off)
+        #expect(spy.sent.isEmpty)
+        #expect(unbound.n == 0)
+    }
+
+    @Test func heldReturnIsShiftReturnAsTheHardwareKeyboardSendsIt() {
+        let (host, spy, _) = makeHost()
+        host.keyBar.hold("enter")
+        #expect(spy.sent.last == Array("\u{1b}[27;2;13~".utf8))
+        host.keyBar.fire("alt")
+        host.keyBar.hold("enter")
+        #expect(spy.sent.last == Array("\u{1b}[27;4;13~".utf8))
+        #expect(host.keyBar.alt == .off)
+        // Under the Kitty protocol, as agents ask for it.
+        host.term.feed(text: "\u{1b}[>1u")
+        host.term.core.sync()
+        host.keyBar.hold("enter")
+        #expect(spy.sent.last == Array("\u{1b}[13;2u".utf8))
+        // Only Return holds.
+        let n = spy.sent.count
+        host.keyBar.hold("esc")
+        #expect(spy.sent.count == n)
+    }
+
+    @Test func theAgentBoardBlocksReturn() {
+        let (host, spy, _) = makeHost()
+        host.setCovered(true)
+        host.keyBar.fire("enter")
+        host.keyBar.hold("enter")
+        host.keyBar.fire("esc")
+        #expect(spy.sent.isEmpty)
+        host.setCovered(false)
+        host.keyBar.fire("enter")
+        #expect(spy.sent == [[0x0d]])
+    }
+
+    @Test func returnWhileComposingCommitsTheComposition() {
+        let (host, spy, _) = makeHost()
+        host.term.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0))
+        #expect(host.term.isComposing)
+        #expect(spy.sent.isEmpty, "composing sends nothing")
+        host.keyBar.fire("enter")
+        #expect(!host.term.isComposing)
+        #expect(spy.sent.flatMap { $0 } == Array("か".utf8), "committed, not sent")
+        host.keyBar.fire("enter")
+        #expect(spy.sent.last == [0x0d])
+        // Held, the same: the composition first.
+        host.term.setMarkedText("き", selectedRange: NSRange(location: 1, length: 0))
+        host.keyBar.hold("enter")
+        #expect(!host.term.isComposing)
+        #expect(spy.sent.last == Array("き".utf8))
+    }
+
     @Test func ctrlAndAltWithoutCmdStillType() {
         let (host, spy, unbound) = makeHost()
         host.keyBar.fire("ctrl")

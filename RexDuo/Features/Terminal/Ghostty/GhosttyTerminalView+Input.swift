@@ -73,6 +73,22 @@ extension GhosttyTerminalView {
     func sendKeyHome() { sendKey(GHOSTTY_KEY_HOME) }
     func sendKeyEnd() { sendKey(GHOSTTY_KEY_END) }
 
+    /// The key bar's held Return: Shift-Return with its ctrl and alt, encoded under the program's
+    /// modes as a hardware Shift-Return is, so a program can tell it from Return.
+    func sendShiftReturn(ctrl: Bool, alt: Bool) {
+        var mods = GhosttyInputKey.shift
+        if ctrl { mods |= GhosttyInputKey.ctrl }
+        if alt { mods |= GhosttyInputKey.alt }
+        resetInputDocument()
+        sendTyped([GhosttyInputKey(GHOSTTY_KEY_ENTER, mods: mods)])
+    }
+
+    /// An input method is composing: marked text the program hasn't got yet.
+    var isComposing: Bool { inputState.document.isComposing }
+
+    /// Types the composition as it stands and ends it, as the system keyboard's return does.
+    func commitComposition() { unmarkText() }
+
     /// Bytes someone else encoded (the key bar's keys, key bindings).
     func send(data: ArraySlice<UInt8>) {
         resetInputDocument()

@@ -9,6 +9,12 @@ enum SizingMode: String {
 /// The key bar's layouts. "arrows" is the drag-to-move trackpad key.
 enum KeyBarLayout: String, CaseIterable, Identifiable {
     case agents, shell, vim
+
+    /// Keys that never scroll, in every layout: they sit at the end of the keys' capsule, next to
+    /// the hide key. Return runs a shell's line and sends an agent's message, so it never scrolls
+    /// out of reach. No layout's `keys` lists them.
+    static let pinned = ["enter"]
+
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -20,8 +26,8 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
     var keys: [String] {
         switch self {
         case .agents:
-            return ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl",
-                    "cmd", "paste", "attach"]
+            return ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "ctrl-c", "1", "2", "3", "ctrl", "cmd",
+                    "paste", "attach"]
         case .shell:
             return ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left", "right", "ctrl-r",
                     "ctrl-c", "|", "~", "/", "-", "paste", "attach"]
@@ -46,9 +52,11 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The layout a key list saved by the removed editor stands for, nil for an edited one.
+    /// The layout a key list saved by the removed editor stands for, nil for an edited one. A list
+    /// saved as `keys` were before Return was pinned has Return among them: it is left out.
     static func matching(stored keys: [String]) -> KeyBarLayout? {
-        allCases.first { $0.storedKeys == keys || $0.keys == keys }
+        let scrolling = keys.filter { !pinned.contains($0) }
+        return allCases.first { $0.storedKeys == keys || $0.keys == scrolling }
     }
 }
 

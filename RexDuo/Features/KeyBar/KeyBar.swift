@@ -9,6 +9,11 @@ import UIKit
 ///   runs through Rex's keymap as that key pressed with ⌘ on a hardware keyboard does
 ///   (`onShortcut`), with ctrl and alt if they are on. A key nothing is bound to does nothing.
 /// - The "arrows" key is a trackpad: press and drag to send arrow keys.
+/// - Return (`KeyBarLayout.pinned`) never scrolls: it closes the keys' capsule, past a divider,
+///   next to the hide key. It sends as any bar key does, modifiers and cmd included, and never
+///   repeats. Held for `KeyCap.holdDelay` it sends Shift-Return instead, as a hardware keyboard
+///   encodes it: a new line without sending in an agent. While an input method composes, Return
+///   commits the composition, as the system keyboard's return does, and sends nothing.
 /// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key moves into
 ///   its column and the keys get the bar's width. Keys stay off a vertical crease (`KeyBarPlacement`).
 /// - Since iOS 26 the keyboard is a glass panel with rounded top corners. The bar draws no
@@ -67,6 +72,13 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private let scroll = KeyScroll()
     private let stack = UIStackView()
     private let hideKey = GlassHideKey()
+    /// The pinned keys, at the capsule's trailing end. Their own stack, so whatever takes the
+    /// scrolling keys' place keeps them.
+    private let pinnedStack = UIStackView()
+    private var pinnedCaps: [KeyCap] = []
+    /// A hairline between the scrolling keys and the pinned ones: keys scroll under it.
+    private let divider = UIView()
+    private var dividerWidth: NSLayoutConstraint?
     private var placement = KeyBarPlacement.HideKey.inBar
     private var stackLeading: NSLayoutConstraint?
     private var creaseGap: (index: Int, extra: CGFloat)?
@@ -101,21 +113,39 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         stack.alignment = .center
         stack.spacing = Self.spacing
         stack.translatesAutoresizingMaskIntoConstraints = false
+        pinnedStack.axis = .horizontal
+        pinnedStack.alignment = .center
+        pinnedStack.spacing = Self.spacing
+        pinnedStack.translatesAutoresizingMaskIntoConstraints = false
+        divider.isUserInteractionEnabled = false
+        divider.translatesAutoresizingMaskIntoConstraints = false
         hideKey.onTouchDown = { [weak self] in self?.touchDown("hide") }
         hideKey.onFire = { [weak self] in self?.fire("hide") }
         addSubview(capsule)
         addSubview(hideKey)
         capsule.contentView.addSubview(scroll)
+        capsule.contentView.addSubview(divider)
+        capsule.contentView.addSubview(pinnedStack)
         scroll.addSubview(stack)
         let barHeight = heightAnchor.constraint(equalToConstant: Self.barHeight)
         barHeightConstraint = barHeight
         let leading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: Self.ring)
         stackLeading = leading
+        let dividerWidth = divider.widthAnchor.constraint(equalToConstant: 1)
+        self.dividerWidth = dividerWidth
         let content = capsule.contentView
         NSLayoutConstraint.activate([
             barHeight,
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            // Scrolling keys | divider | pinned keys, the last one concentric with the capsule's end.
+            divider.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: Self.spacing / 2),
+            dividerWidth,
+            divider.heightAnchor.constraint(equalTo: content.heightAnchor, multiplier: 0.4),
+            divider.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            pinnedStack.leadingAnchor.constraint(equalTo: divider.trailingAnchor, constant: Self.spacing / 2),
+            pinnedStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.ring),
+            pinnedStack.topAnchor.constraint(equalTo: content.topAnchor),
+            pinnedStack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             scroll.topAnchor.constraint(equalTo: content.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             leading,
@@ -126,13 +156,14 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         ])
         rebuild()
         NotificationCenter.default.addObserver(self, selector: #selector(prefsChanged), name: .keyBarChanged, object: nil)
-        registerForTraitChanges([UITraitVerticalSizeClass.self]) { (bar: KeyBar, _) in bar.applySize() }
+        registerForTraitChanges([UITraitVerticalSizeClass.self, UITraitDisplayScale.self]) { (bar: KeyBar, _) in bar.applySize() }
     }
 
     /// Thinner bar and keys under a short window.
     private func applySize() {
         barHeightConstraint?.constant = compact ? Self.compactBarHeight : Self.barHeight
-        for cap in caps { cap.heightConstraint?.constant = keyHeight }
+        for cap in caps + pinnedCaps { cap.heightConstraint?.constant = keyHeight }
+        dividerWidth?.constant = 1 / max(traitCollection.displayScale, 1)
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }
@@ -183,7 +214,10 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         }
         capsule.frame = CGRect(x: lo, y: ((rowHeight - h) / 2).rounded(), width: max(hi - lo, h), height: h)
         Glass.round(capsule, radius: h / 2)
+        // Keys slip under the capsule's round leading end, and stop straight at the divider.
         scroll.layer.cornerRadius = h / 2
+        scroll.layer.maskedCorners = effectiveUserInterfaceLayoutDirection == .rightToLeft
+            ? [.layerMaxXMinYCorner, .layerMaxXMaxYCorner] : [.layerMinXMinYCorner, .layerMinXMaxYCorner]
     }
 
     /// Adds space before the key that would sit on a vertical crease with the bar at its start, so
@@ -223,24 +257,44 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         capsule.overrideUserInterfaceStyle = style
         hideKey.overrideUserInterfaceStyle = style
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        pinnedStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         caps = []
         creaseGap = nil
         stackLeading?.constant = Self.ring
         setNeedsLayout()
         for key in Prefs.shared.keyBar where key != "attach" || attachAvailable {
-            let cap = KeyCap(key: key, kind: Self.kind(of: key))
-            cap.theme = theme
-            cap.onTouchDown = { [weak self] in self?.touchDown(key) }
-            cap.onFire = { [weak self] in self?.fire(key) }
-            cap.onRepeat = { [weak self] in self?.emit(key) }
-            cap.onRepeatEnd = { [weak self] in self?.usedModifiers() }
-            cap.onDrag = { [weak self] dx, dy in self?.trackpad(dx: dx, dy: dy) }
+            let cap = makeCap(key)
             if key == "attach" { addMenu(to: cap) }
             stack.addArrangedSubview(cap)
             caps.append(cap)
         }
+        pinnedCaps = KeyBarLayout.pinned.map { key in
+            let cap = makeCap(key)
+            if key == "enter" {
+                cap.onHold = { [weak self] in self?.hold(key) }
+                cap.accessibilityHint = "Hold for Shift-Return, a new line in an agent"
+                cap.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "Shift-Return") { [weak self] _ in
+                    self?.hold(key)
+                    return true
+                }]
+            }
+            pinnedStack.addArrangedSubview(cap)
+            return cap
+        }
+        divider.backgroundColor = theme.uiFG.withAlphaComponent(theme.isDark ? 0.28 : 0.22)
         refreshModifiers()
         applySize()
+    }
+
+    private func makeCap(_ key: String) -> KeyCap {
+        let cap = KeyCap(key: key, kind: Self.kind(of: key))
+        cap.theme = theme
+        cap.onTouchDown = { [weak self] in self?.touchDown(key) }
+        cap.onFire = { [weak self] in self?.fire(key) }
+        cap.onRepeat = { [weak self] in self?.emit(key) }
+        cap.onRepeatEnd = { [weak self] in self?.usedModifiers() }
+        cap.onDrag = { [weak self] dx, dy in self?.trackpad(dx: dx, dy: dy) }
+        return cap
     }
 
     private weak var attachButton: UIButton?
@@ -392,15 +446,48 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         UIDevice.current.playInputClick()
     }
 
+    /// Under the agent board (`GhosttyTerminalView.covered`) the pane takes no key, from the bar
+    /// either. The bar is put away with the keyboard then; this catches a key already under a finger.
+    private var blocked: Bool { terminal?.covered ?? false }
+
     /// A key's tap. Internal for tests.
     func fire(_ key: String) {
+        guard key == "hide" || !blocked else { return }
         switch key {
         case "ctrl", "alt", "cmd": tapModifier(key)
         case "paste": onPaste?(); usedModifiers()
         case "hide": onHideKeyboard?()
         case "arrows": usedModifiers()  // after a drag
+        case "enter" where commitComposition(): break
         default: send(key)
         }
+    }
+
+    /// A key held for `KeyCap.holdDelay`: Return becomes Shift-Return, with the bar's modifiers,
+    /// encoded as a hardware Shift-Return is (`CSI 27;2;13~`, or `CSI 13;2u` under the Kitty
+    /// protocol), so an agent starts a new line instead of sending. With cmd it is the shift+cmd
+    /// chord. Internal for tests.
+    func hold(_ key: String) {
+        guard key == "enter", !blocked else { return }
+        lockImpact.impactOccurred()
+        guard !commitComposition() else { return }
+        if cmd != .off {
+            let press = KeyInput.press(barKey: key, mods: shortcutMods.union(.shift))
+            if !(press.map { onShortcut?($0, false) ?? false } ?? false) { onUnbound() }
+        } else {
+            terminal?.sendShiftReturn(ctrl: ctrl != .off, alt: alt != .off)
+        }
+        usedModifiers()
+    }
+
+    /// Return while an input method composes types the composition as it stands, as the system
+    /// keyboard's return does, and sends nothing more; the next Return sends. Composed text hasn't
+    /// reached the program yet (`GhosttyInputDocument.marked`), so sending Return would drop it.
+    /// True when it did.
+    private func commitComposition() -> Bool {
+        guard let t = terminal, t.isComposing else { return false }
+        t.commitComposition()
+        return true
     }
 
     private func trackpad(dx: Int, dy: Int) {
@@ -421,6 +508,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     /// One key of the bar: typed with ctrl / alt, or with cmd run as a shortcut and never typed.
     /// A held key or a trackpad drag runs its shortcut once, then as repeats.
     private func emit(_ key: String) {
+        guard !blocked else { return }
         guard cmd != .off else { return sendRaw(key) }
         let isRepeat = shortcutRan
         shortcutRan = true
@@ -654,6 +742,9 @@ final class KeyCap: UIControl {
     var onRepeatEnd: (() -> Void)?
     /// Trackpad steps since the last call: +x = right, +y = down.
     var onDrag: ((Int, Int) -> Void)?
+    /// Runs once when the key is held for `holdDelay` with the finger on it; the release then
+    /// sends nothing. Nil: holding is a slow tap. Only for a key that doesn't repeat.
+    var onHold: (() -> Void)?
     var theme: TermTheme = ThemeStore.fallback { didSet { configure() } }
     var modState: KeyBar.ModState = .off { didSet { if modState != oldValue { restyle() } } }
     /// The key's height; the bar sets it (thinner under a short window).
@@ -665,12 +756,15 @@ final class KeyCap: UIControl {
     private let lockBar = UIView()
     private var repeatTimer: Timer?
     private var repeated = false
+    private var held = false
     private var anchor: CGPoint = .zero
     private var dragged = false
 
     /// Points of finger travel per arrow key on the trackpad.
     static let stepX: CGFloat = 14
     static let stepY: CGFloat = 18
+    /// How long a press lasts before it is a hold (`onHold`): the system's long press.
+    static let holdDelay: TimeInterval = 0.5
 
     init(key: String, kind: Kind) {
         self.key = key
@@ -801,10 +895,11 @@ final class KeyCap: UIControl {
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
         isHighlighted = true
         repeated = false
+        held = false
         dragged = false
         anchor = touch.location(in: self)
         onTouchDown?()
-        if kind == .repeating { scheduleRepeat(after: 0.4) }
+        if kind == .repeating { scheduleRepeat(after: 0.4) } else if onHold != nil { scheduleHold() }
         return true
     }
 
@@ -833,7 +928,7 @@ final class KeyCap: UIControl {
             if dragged { onFire?() }
         } else if repeated {
             onRepeatEnd?()
-        } else if inside {
+        } else if inside, !held {
             onFire?()
         }
     }
@@ -852,6 +947,24 @@ final class KeyCap: UIControl {
         }
         RunLoop.main.add(t, forMode: .common)
         repeatTimer = t
+    }
+
+    /// The hold shares the repeat's timer: a key that holds never repeats.
+    private func scheduleHold() {
+        repeatTimer?.invalidate()
+        let t = Timer(timeInterval: Self.holdDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.holdTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        repeatTimer = t
+    }
+
+    /// Held long enough, with the finger still on the key (`isHighlighted`, as for a tap).
+    private func holdTick() {
+        repeatTimer = nil
+        guard isTracking, isHighlighted else { return }
+        held = true
+        onHold?()
     }
 
     private var repeatCount = 0

@@ -89,9 +89,12 @@ path. Tap near the cursor for a Paste button.
 ### The key bar
 
 The key bar above the keyboard holds the keys a phone keyboard lacks. Settings → Key Bar offers
-three layouts: **Agents** (Escape, Shift-Tab, Tab, `/` for slash commands, arrows, Enter, Ctrl-C,
-and 1, 2, 3 for an agent's choices), **Shell** and **Vim**. Each has ctrl and cmd; Shell also has
-alt and Shift-Tab.
+three layouts: **Agents** (Escape, Shift-Tab, Tab, `/` for slash commands, arrows, Ctrl-C, and 1,
+2, 3 for an agent's choices), **Shell** and **Vim**. Each has ctrl and cmd; Shell also has alt and
+Shift-Tab.
+
+- **Return** stays at the end of the bar in every layout, next to the hide key; the other keys
+  scroll. Hold it for Shift-Return: a new line in an agent's message without sending it.
 
 - Tap **ctrl** or **alt** to apply it to the next key; double-tap to lock it on.
 - **cmd** is the Mac's ⌘: tap it, then a key, to run that Rex shortcut (cmd then `t` opens a tab,

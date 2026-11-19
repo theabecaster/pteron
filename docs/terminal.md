@@ -201,6 +201,17 @@ Around that:
 - Paste goes through the engine's `pasteText`, so programs that asked for bracketed paste get it.
 - Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt/cmd tap for one key, double-tap to lock; the
   "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`.
+- Key bar Return: pinned in every layout (`KeyBarLayout.pinned`), at the end of the keys' capsule
+  past a hairline, next to the hide key, so it never scrolls away. A tap sends what the bar's
+  Enter always sent: CR, ESC CR with alt, CR with ctrl (as Ctrl-M), and with cmd the
+  `cmd+enter` binding. It never repeats. Held for half a second (`KeyCap.holdDelay`, with a
+  medium haptic) it sends Shift-Return through the engine's encoder, as a hardware Shift-Return:
+  `CSI 27;2;13~`, or `CSI 13;2u` under the Kitty protocol, which agents such as Claude Code take
+  as a new line without sending; with cmd it runs `shift+cmd+enter`. VoiceOver offers it as the
+  "Shift-Return" action. While an input method composes, Return (tap or hold) types the
+  composition as it stands and sends nothing else, as the system keyboard's return does: composed
+  text hasn't reached the program, and sending Return would drop it. Under the agent board no bar
+  key sends.
 - Key bar cmd: ⌘ for the next key, as on a Mac keyboard. That key is never typed. A bar key
   (`KeyInput.press(barKey:mods:)`) or a key typed on the system keyboard (the engine view's
   `commandModifier` hands it to `commandKeyHook`; `KeyInput.press(typing:mods:)`) becomes the

@@ -153,7 +153,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
 - **Key bar.** The keyboard runs under the vertical bar, so the key bar has a safe-area inset there.
   Where the bar sits beside it, the hide key moves into that column as a glass circle in line with
   the bar's items (the whole column takes the tap), and the keys scroll across the full width
-  (`KeyBarPlacement`). Elsewhere the hide key stays at the bar's end. With a vertical crease, the key
+  (`KeyBarPlacement`). Elsewhere the hide key stays at the bar's end. Either way the pinned Return
+  closes the keys' capsule on the hide key's side, so it sits next to the keyboard's own return. With a vertical crease, the key
   that would sit on it moves 12 pt past it, with the bar scrolled to its start.
 - **Key bar look.** The iOS 26 keyboard is a glass panel with rounded top corners, so the bar has no
   background of its own. The keys sit bare in a glass capsule tinted with the keyboard's color, 6 pt

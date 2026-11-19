@@ -93,11 +93,11 @@ struct SettingsView: View {
                     SettingsHeader("Key Bar", theme)
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(p.keyBar.map(Self.keyLabel).joined(separator: "  "))
+                        Text((p.keyBar + KeyBarLayout.pinned).map(Self.keyLabel).joined(separator: "  "))
                             .font(Font(RexFont.ui(12)))
                             .foregroundStyle(theme.chrome.secondary)
                             .accessibilityHidden(true)
-                        SettingsFooter("Hold an arrow to repeat it. Drag ✥ to move through menus and history. Tap ctrl, alt or cmd for the next key; double-tap to lock it. cmd runs Rex's shortcuts: cmd then t opens a tab.", theme)
+                        SettingsFooter("⏎ stays at the end of the bar; hold it for a new line in an agent. Hold an arrow to repeat it. Drag ✥ to move through menus and history. Tap ctrl, alt or cmd for the next key; double-tap to lock it. cmd runs Rex's shortcuts: cmd then t opens a tab.", theme)
                     }
                 }
                 .settingsRows(theme)
