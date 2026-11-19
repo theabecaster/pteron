@@ -20,14 +20,35 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
     var keys: [String] {
         switch self {
         case .agents:
-            return ["esc", "shift-tab", "tab", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl", "paste", "attach"]
+            return ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl",
+                    "cmd", "paste", "attach"]
         case .shell:
-            return ["esc", "tab", "ctrl", "alt", "arrows", "up", "down", "left", "right", "ctrl-r", "ctrl-c",
-                    "|", "~", "/", "-", "paste", "attach"]
+            return ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left", "right", "ctrl-r",
+                    "ctrl-c", "|", "~", "/", "-", "paste", "attach"]
         case .vim:
-            return ["esc", ":", "ctrl", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
+            return ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
                     "$", "~", "paste", "attach"]
         }
+    }
+
+    /// The keys the removed key bar editor saved for this layout (before the attach and cmd keys).
+    /// `Prefs.migrate` matches a stored key list against them.
+    var storedKeys: [String] {
+        switch self {
+        case .agents:
+            return ["esc", "shift-tab", "tab", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl", "paste"]
+        case .shell:
+            return ["esc", "tab", "ctrl", "alt", "arrows", "up", "down", "left", "right", "ctrl-r", "ctrl-c",
+                    "|", "~", "/", "-", "paste"]
+        case .vim:
+            return ["esc", ":", "ctrl", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
+                    "$", "~", "paste"]
+        }
+    }
+
+    /// The layout a key list saved by the removed editor stands for, nil for an edited one.
+    static func matching(stored keys: [String]) -> KeyBarLayout? {
+        allCases.first { $0.storedKeys == keys || $0.keys == keys }
     }
 }
 
@@ -192,7 +213,7 @@ final class Prefs {
         }
         // An edited key bar becomes the layout it matches, or the default.
         if let keys = d.stringArray(forKey: "keyBar"), d.string(forKey: "keyBarLayout") == nil {
-            d.set((KeyBarLayout.allCases.first { $0.keys == keys } ?? defaultKeyBar).rawValue, forKey: "keyBarLayout")
+            d.set((KeyBarLayout.matching(stored: keys) ?? defaultKeyBar).rawValue, forKey: "keyBarLayout")
         }
         // Servers saved by host name join the server list, under the ids they had.
         if let hosts = d.dictionary(forKey: "hostURLs") as? [String: String], !hosts.isEmpty {

@@ -35,7 +35,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     let term: GhosttyTerminalView
     private let zoomer = ZoomScrollView()
     private let statusLabel = UILabel()
-    private let keyBar: KeyBar
+    let keyBar: KeyBar
     /// Back to the newest line. It shows only while the view is well into the scrollback
     /// (`JumpToBottomRule`).
     let jumpButton = JumpToBottomButton()
@@ -183,6 +183,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyBar.terminal = term
         keyBar.onPaste = { [weak self] in self?.pasteFromClipboard() }
         keyBar.onHideKeyboard = { [weak self] in self?.hideKeyboard() }
+        keyBar.onShortcut = { [weak self] press, isRepeat in self?.keyBarShortcut(press, isRepeat: isRepeat) ?? false }
         term.inputAccessoryView = keyBar
 
         zoomer.delegate = self
@@ -687,12 +688,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     @objc private func keyCommandFired(_ sender: UIKeyCommand) {
         guard let payload = sender.propertyList as? String else { return }
         switch payload {
-        case "edit:copy": perform(.copy, key: nil)
-        case "edit:paste": perform(.paste, key: nil)
-        case "edit:selectAll": perform(.selectAll, key: nil)
+        case "edit:copy": perform(.copy, press: nil)
+        case "edit:paste": perform(.paste, press: nil)
+        case "edit:selectAll": perform(.selectAll, press: nil)
         default:
             guard let chord = KeyChord(spelling: payload), let (_, action) = keymap?.resolve([chord]) else { return }
-            perform(action, key: nil)
+            perform(action, press: nil)
         }
     }
 
@@ -707,13 +708,23 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             return true
         }
         guard let keymap, !KeyInput.isModifierKey(key.keyCode) else { return false }
-        guard let (binding, action) = keymap.resolve(tiers: KeyInput.chordTiers(for: key)) else { return false }
-        perform(action, key: key)
+        let press = KeyInput.Press(key)
+        guard let (binding, action) = keymap.resolve(press: press) else { return false }
+        perform(action, press: press)
         if KeyActions.repeats(binding.action) {
             keyRepeat.start(usage: key.keyCode.rawValue, timing: .command, while: { [weak self] in self?.mayRepeatKeys ?? false }) {
-                [weak self] in self?.perform(action, key: key)
+                [weak self] in self?.perform(action, press: press)
             }
         }
+        return true
+    }
+
+    /// The key bar's ⌘ with the next key: the press a hardware keyboard would report for it runs
+    /// through the same lookup and the same actions as `handleKey`. False when nothing is bound
+    /// (nothing is sent). A held bar key (`isRepeat`) runs again only where a held hardware key would.
+    func keyBarShortcut(_ press: KeyInput.Press, isRepeat: Bool) -> Bool {
+        guard let keymap, let (binding, action) = keymap.resolve(press: press) else { return false }
+        if !isRepeat || KeyActions.repeats(binding.action) { perform(action, press: press) }
         return true
     }
 
@@ -729,7 +740,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term.stopKeyRepeat()
     }
 
-    private func perform(_ action: AppAction, key: UIKey?) {
+    private func perform(_ action: AppAction, press: KeyInput.Press?) {
         switch action {
         case .command(let c):
             onCommand?(c)
@@ -759,11 +770,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 for q in queued {
                     guard let n = q.str("action"), let a = AppAction.resolve(n, q.obj("args")) else { continue }
                     if case .server = a { continue }
-                    self?.perform(a, key: nil)
+                    self?.perform(a, press: nil)
                 }
             }
         case .forwardKey:
-            if let key { stream.forward(key: KeyInput.clientKeyEvent(key)) }
+            if let press { stream.forward(key: KeyInput.clientKeyEvent(press)) }
         }
     }
 

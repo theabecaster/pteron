@@ -71,10 +71,7 @@ enum KeyInput {
     /// The spellings a press can match: by what the key types (following the layout), then by position.
     @MainActor static func chords(for key: UIKey) -> [KeyChord] { chordTiers(for: key)[0] }
 
-    @MainActor static func chordTiers(for key: UIKey) -> [[KeyChord]] {
-        chordTiers(Press(usage: key.keyCode.rawValue, flags: key.modifierFlags, characters: key.characters,
-                         charactersIgnoringModifiers: key.charactersIgnoringModifiers))
-    }
+    @MainActor static func chordTiers(for key: UIKey) -> [[KeyChord]] { chordTiers(Press(key)) }
 
     /// The spellings a press can match, in tiers: a later tier is tried only when no binding matches
     /// an earlier one, so it can never take a key from a binding that names it.
@@ -115,6 +112,62 @@ enum KeyInput {
             if !first.contains(c) { tiers.append([c]) }
         }
         return tiers
+    }
+
+    // MARK: Presses the key bar makes
+
+    /// Keys that type no character, by the key bar's and Rex's names: their HID usage.
+    private static let namedUsages: [String: Int] = {
+        var u: [String: Int] = [
+            "esc": 41, "escape": 41, "enter": 40, "tab": 43, "backspace": 42, "space": 44, "delete": 76,
+            "home": 74, "end": 77, "pgup": 75, "pageup": 75, "pgdn": 78, "pagedown": 78,
+            "right": 79, "left": 80, "down": 81, "up": 82,
+        ]
+        for i in 0..<12 { u["f\(i + 1)"] = 58 + i }
+        return u
+    }()
+
+    /// What the system keyboard types for keys without a character: Return, Tab, Escape, Space, Delete.
+    private static let typedNames: [String: String] = [
+        "\r": "enter", "\n": "enter", "\r\n": "enter", "\t": "tab", "\u{1b}": "escape", " ": "space",
+        "\u{7f}": "backspace", "\u{8}": "backspace",
+    ]
+
+    /// The press a hardware keyboard reports for `text` typed on a US layout with `mods` held: the
+    /// key that types it, with shift added where that key needs shift (`D` is shift+d, `?` is
+    /// shift+/), as `chordTiers` expects it. A character no US key types has no position (`ñ`).
+    /// Nil for more than one character.
+    static func press(typing text: String, mods: KeyMods) -> Press? {
+        guard text.count == 1 else { return nil }
+        if let name = typedNames[text] { return press(named: name, mods: mods) }
+        let f = flags(mods)
+        if let (usage, _) = table.first(where: { $0.value.shifted != nil && $0.value.name == text }) {
+            return Press(usage: usage, flags: f, characters: text, charactersIgnoringModifiers: text)
+        }
+        if let (usage, info) = table.first(where: { $0.value.shifted == text }) {
+            return Press(usage: usage, flags: f.union(.shift), characters: text, charactersIgnoringModifiers: info.name)
+        }
+        return Press(usage: 0, flags: f, characters: text, charactersIgnoringModifiers: text)
+    }
+
+    /// The press for a key bar key (`tab`, `shift-tab`, `ctrl-c`, `up`, `|`) with `mods` held, as a
+    /// hardware keyboard reports that key. Nil for keys that aren't one key (`paste`, `arrows`, the
+    /// modifiers).
+    static func press(barKey key: String, mods: KeyMods) -> Press? {
+        switch key {
+        case "shift-tab": return press(named: "tab", mods: mods.union(.shift))
+        case "ctrl", "alt", "cmd", "arrows", "paste", "hide", "attach": return nil
+        default:
+            if namedUsages[key] != nil { return press(named: key, mods: mods) }
+            if key.hasPrefix("ctrl-"), key.count == 6 { return press(typing: String(key.suffix(1)), mods: mods.union(.ctrl)) }
+            return press(typing: key, mods: mods)
+        }
+    }
+
+    /// A key that types no character. What it types doesn't matter: bindings name it.
+    private static func press(named name: String, mods: KeyMods) -> Press? {
+        guard let usage = namedUsages[name] else { return nil }
+        return Press(usage: usage, flags: flags(mods), characters: "", charactersIgnoringModifiers: "")
     }
 
     /// One printable ASCII character that is neither a letter nor a digit nor a space.
@@ -246,15 +299,15 @@ enum KeyInput {
     // MARK: client.key
 
     /// A key event for `client.key` (keys bound to a Lua function).
-    @MainActor static func clientKeyEvent(_ key: UIKey, action: String = "press") -> JSONObject {
-        let f = key.modifierFlags
+    static func clientKeyEvent(_ key: Press, action: String = "press") -> JSONObject {
+        let f = key.flags
         var mods: [String] = []
         if f.contains(.shift) { mods.append("shift") }
         if f.contains(.control) { mods.append("ctrl") }
         if f.contains(.alternate) { mods.append("alt") }
         if f.contains(.command) { mods.append("super") }
         if f.contains(.alphaShift) { mods.append("caps_lock") }
-        let info = info(key.keyCode)
+        let info = table[key.usage]
         let unshifted = info.flatMap { $0.shifted == nil ? nil : $0.name.unicodeScalars.first?.value } ?? 0
         let text = f.contains(.command) || f.contains(.control) ? "" : key.characters
         return [
@@ -278,5 +331,13 @@ enum KeyInput {
             prev = ch
         }
         return out
+    }
+}
+
+extension KeyInput.Press {
+    /// What a hardware key press reports.
+    @MainActor init(_ key: UIKey) {
+        self.init(usage: key.keyCode.rawValue, flags: key.modifierFlags, characters: key.characters,
+                  charactersIgnoringModifiers: key.charactersIgnoringModifiers)
     }
 }

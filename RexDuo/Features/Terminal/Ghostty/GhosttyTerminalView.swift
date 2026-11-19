@@ -48,6 +48,11 @@ final class GhosttyTerminalView: UIView {
     /// `.terminalEngineMetaModifierReset` posted (object: this view).
     var controlModifier = false
     var metaModifier = false
+    /// The key bar's ⌘ is on: the next key typed on the system keyboard is not typed. It goes to
+    /// `commandKeyHook` (the key bar, which runs it through the keymap) as the text it would have
+    /// typed, DEL for Delete. The key bar clears the flag.
+    var commandModifier = false
+    var commandKeyHook: ((String) -> Void)?
     var keyboardAppearance: UIKeyboardAppearance = .dark
     let inputState = GhosttyInputState()
     weak var inputDelegate: (any UITextInputDelegate)?

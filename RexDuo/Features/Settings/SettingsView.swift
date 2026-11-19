@@ -97,7 +97,7 @@ struct SettingsView: View {
                             .font(Font(RexFont.ui(12)))
                             .foregroundStyle(theme.chrome.secondary)
                             .accessibilityHidden(true)
-                        SettingsFooter("Hold an arrow to repeat it. Drag ✥ to move through menus and history. Tap ctrl or alt for the next key; double-tap to lock it.", theme)
+                        SettingsFooter("Hold an arrow to repeat it. Drag ✥ to move through menus and history. Tap ctrl, alt or cmd for the next key; double-tap to lock it. cmd runs Rex's shortcuts: cmd then t opens a tab.", theme)
                     }
                 }
                 .settingsRows(theme)
@@ -199,7 +199,7 @@ struct SettingsView: View {
 
     static func keyLabel(_ k: String) -> String {
         let names = ["left": "←", "right": "→", "up": "↑", "down": "↓", "paste": "Paste", "attach": "Attach", "enter": "⏎",
-                     "tab": "⇥", "shift-tab": "⇤", "arrows": "✥"]
+                     "tab": "⇥", "shift-tab": "⇧⇥", "arrows": "✥"]
         return names[k] ?? KeyBar.titles[k] ?? k
     }
 

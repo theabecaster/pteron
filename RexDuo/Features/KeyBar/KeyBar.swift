@@ -4,7 +4,10 @@ import UIKit
 ///
 /// - Keys send on release; a horizontal drag scrolls the bar instead.
 /// - Arrows and PgUp/PgDn auto-repeat while held.
-/// - ctrl / alt: tap = next key only, double-tap = locked until tapped again.
+/// - ctrl / alt / cmd: tap = next key only, double-tap = locked until tapped again.
+/// - With cmd on, the next key (a bar key or a key typed on the system keyboard) is never typed: it
+///   runs through Rex's keymap as that key pressed with ⌘ on a hardware keyboard does
+///   (`onShortcut`), with ctrl and alt if they are on. A key nothing is bound to does nothing.
 /// - The "arrows" key is a trackpad: press and drag to send arrow keys.
 /// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key moves into
 ///   its column and the keys get the bar's width. Keys stay off a vertical crease (`KeyBarPlacement`).
@@ -14,9 +17,19 @@ import UIKit
 @MainActor
 final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     weak var terminal: GhosttyTerminalView? {
-        didSet { observe(terminal, old: oldValue); syncModifiers() }
+        didSet {
+            observe(terminal, old: oldValue)
+            oldValue?.commandKeyHook = nil
+            terminal?.commandKeyHook = { [weak self] text in self?.typedWithCommand(text) }
+            syncModifiers()
+        }
     }
     var onPaste: (() -> Void)?
+    /// Runs a key pressed with the bar's cmd through the keymap, as the hardware keyboard's press
+    /// (`TerminalHost.keyBarShortcut`). `isRepeat`: a held key's repeat. True when a binding was found.
+    var onShortcut: ((KeyInput.Press, _ isRepeat: Bool) -> Bool)?
+    /// Played when a cmd chord has no binding. iOS mutes it when System Haptics is off.
+    var onUnbound: @MainActor () -> Void = { UINotificationFeedbackGenerator().notificationOccurred(.error) }
     var onHideKeyboard: (() -> Void)?
     /// The attach key's menu, built each time it opens.
     var attachMenu: (() -> UIMenu)?
@@ -60,8 +73,11 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private static let spacing: CGFloat = 6
     private var caps: [KeyCap] = []
     private var theme: TermTheme = ThemeStore.fallback
-    private var ctrl: ModState = .off { didSet { syncModifiers() } }
-    private var alt: ModState = .off { didSet { syncModifiers() } }
+    private(set) var ctrl: ModState = .off { didSet { syncModifiers() } }
+    private(set) var alt: ModState = .off { didSet { syncModifiers() } }
+    private(set) var cmd: ModState = .off { didSet { syncModifiers() } }
+    /// The key held now has run a cmd chord: its next run is a repeat.
+    private var shortcutRan = false
     private var lastModTap: [String: CFTimeInterval] = [:]
     private let impact = UIImpactFeedbackGenerator(style: .light)
     private let lockImpact = UIImpactFeedbackGenerator(style: .medium)
@@ -216,7 +232,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             cap.theme = theme
             cap.onTouchDown = { [weak self] in self?.touchDown(key) }
             cap.onFire = { [weak self] in self?.fire(key) }
-            cap.onRepeat = { [weak self] in self?.sendRaw(key) }
+            cap.onRepeat = { [weak self] in self?.emit(key) }
             cap.onRepeatEnd = { [weak self] in self?.usedModifiers() }
             cap.onDrag = { [weak self] dx, dy in self?.trackpad(dx: dx, dy: dy) }
             if key == "attach" { addMenu(to: cap) }
@@ -268,7 +284,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     static func kind(of key: String) -> KeyCap.Kind {
         switch key {
-        case "ctrl", "alt": return .modifier
+        case "ctrl", "alt", "cmd": return .modifier
         case "arrows": return .trackpad
         case "up", "down", "left", "right", "pgup", "pgdn": return .repeating
         case "paste", "hide", "attach": return .action
@@ -282,6 +298,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private func syncModifiers() {
         terminal?.controlModifier = ctrl != .off
         terminal?.metaModifier = alt != .off
+        terminal?.commandModifier = cmd != .off
         refreshModifiers()
     }
 
@@ -289,6 +306,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         for cap in caps {
             if cap.key == "ctrl" { cap.modState = ctrl }
             if cap.key == "alt" { cap.modState = alt }
+            if cap.key == "cmd" { cap.modState = cmd }
         }
     }
 
@@ -331,36 +349,53 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         if alt == .locked, !t.metaModifier { t.metaModifier = true }
     }
 
-    /// Bar keys apply the modifiers themselves; one-shot ones end here.
+    /// Bar keys apply the modifiers themselves; one-shot ones end here, as does the key's press.
     private func usedModifiers() {
+        shortcutRan = false
         if ctrl == .once { ctrl = .off }
         if alt == .once { alt = .off }
+        if cmd == .once { cmd = .off }
     }
 
     private func tapModifier(_ key: String) {
         let now = CACurrentMediaTime()
         let quick = now - (lastModTap[key] ?? 0) < 0.35
         lastModTap[key] = now
-        var s = key == "ctrl" ? ctrl : alt
-        switch s {
-        case .off: s = .once
-        case .once: s = quick ? .locked : .off
-        case .locked: s = .off
+        let s: ModState
+        switch key {
+        case "ctrl": s = Self.next(ctrl, quick: quick)
+        case "alt": s = Self.next(alt, quick: quick)
+        default: s = Self.next(cmd, quick: quick)
         }
         if s == .locked { lockImpact.impactOccurred() }
-        if key == "ctrl" { ctrl = s } else { alt = s }
+        switch key {
+        case "ctrl": ctrl = s
+        case "alt": alt = s
+        default: cmd = s
+        }
+    }
+
+    /// A modifier key's tap: off becomes once; a quick second tap locks it; any other tap turns it off.
+    static func next(_ s: ModState, quick: Bool) -> ModState {
+        switch s {
+        case .off: return .once
+        case .once: return quick ? .locked : .off
+        case .locked: return .off
+        }
     }
 
     // MARK: Input
 
     private func touchDown(_ key: String) {
+        shortcutRan = false
         if Self.kind(of: key) == .trackpad { tick.prepare() } else { impact.impactOccurred(intensity: 0.7) }
         UIDevice.current.playInputClick()
     }
 
-    private func fire(_ key: String) {
+    /// A key's tap. Internal for tests.
+    func fire(_ key: String) {
         switch key {
-        case "ctrl", "alt": tapModifier(key)
+        case "ctrl", "alt", "cmd": tapModifier(key)
         case "paste": onPaste?(); usedModifiers()
         case "hide": onHideKeyboard?()
         case "arrows": usedModifiers()  // after a drag
@@ -372,15 +407,40 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         let steps: [(Int, String, String)] = [(dx, "right", "left"), (dy, "down", "up")]
         var sent = false
         for (n, pos, neg) in steps where n != 0 {
-            for _ in 0..<abs(n) { sendRaw(n > 0 ? pos : neg); sent = true }
+            for _ in 0..<abs(n) { emit(n > 0 ? pos : neg); sent = true }
         }
         if sent { tick.selectionChanged(); tick.prepare() }
     }
 
     /// Sends one key with the bar's modifiers, then ends one-shot modifiers.
     private func send(_ key: String) {
-        sendRaw(key)
+        emit(key)
         usedModifiers()
+    }
+
+    /// One key of the bar: typed with ctrl / alt, or with cmd run as a shortcut and never typed.
+    /// A held key or a trackpad drag runs its shortcut once, then as repeats.
+    private func emit(_ key: String) {
+        guard cmd != .off else { return sendRaw(key) }
+        let isRepeat = shortcutRan
+        shortcutRan = true
+        let ran = KeyInput.press(barKey: key, mods: shortcutMods).map { onShortcut?($0, isRepeat) ?? false } ?? false
+        if !ran, !isRepeat { onUnbound() }
+    }
+
+    /// A key typed on the system keyboard while cmd is on (`GhosttyTerminalView.commandKeyHook`).
+    private func typedWithCommand(_ text: String) {
+        let ran = KeyInput.press(typing: text, mods: shortcutMods).map { onShortcut?($0, false) ?? false } ?? false
+        if !ran { onUnbound() }
+        usedModifiers()
+    }
+
+    /// cmd with the bar's ctrl and alt.
+    private var shortcutMods: KeyMods {
+        var m: KeyMods = .cmd
+        if ctrl != .off { m.insert(.ctrl) }
+        if alt != .off { m.insert(.alt) }
+        return m
     }
 
     private func sendRaw(_ key: String) {
@@ -459,7 +519,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         case "f10": return csi("21~")
         case "f11": return csi("23~")
         case "f12": return csi("24~")
-        case "arrows", "ctrl", "alt", "paste", "hide", "attach": return nil
+        case "arrows", "ctrl", "alt", "cmd", "paste", "hide", "attach": return nil
         default:
             // "ctrl-x" sends that control character; anything else is literal text.
             if key.hasPrefix("ctrl-"), key.count == 6, let b = key.utf8.last, let c = control(b) { return [c] }
@@ -470,11 +530,11 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     static let symbols: [String: String] = [
         "left": "arrow.left", "right": "arrow.right", "up": "arrow.up", "down": "arrow.down",
         "paste": "doc.on.clipboard", "attach": "paperclip", "hide": "keyboard.chevron.compact.down", "enter": "return",
-        "tab": "arrow.right.to.line", "shift-tab": "arrow.left.to.line",
+        "tab": "arrow.right.to.line",
         "arrows": "arrow.up.and.down.and.arrow.left.and.right",
     ]
     static let titles: [String: String] = [
-        "esc": "esc", "ctrl": "ctrl", "alt": "alt", "ctrl-c": "^C", "ctrl-d": "^D", "ctrl-z": "^Z", "ctrl-r": "^R",
+        "esc": "esc", "ctrl": "ctrl", "alt": "alt", "cmd": "cmd", "ctrl-c": "^C", "ctrl-d": "^D", "ctrl-z": "^Z", "ctrl-r": "^R",
         "ctrl-l": "^L", "ctrl-a": "^A", "ctrl-e": "^E", "ctrl-u": "^U", "ctrl-w": "^W", "ctrl-o": "^O",
         "pgup": "PgUp", "pgdn": "PgDn", "home": "Home", "end": "End",
     ]
@@ -482,8 +542,30 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     static let names: [String: String] = [
         "left": "Left", "right": "Right", "up": "Up", "down": "Down", "paste": "Paste", "attach": "Attach File", "hide": "Hide Keyboard",
         "enter": "Return", "tab": "Tab", "shift-tab": "Shift-Tab", "arrows": "Arrow Trackpad", "esc": "Escape",
-        "ctrl": "Control", "alt": "Alt",
+        "ctrl": "Control", "alt": "Alt", "cmd": "Command",
     ]
+    /// Keys shown as two symbols side by side: shift-tab as ⇧⇥, as macOS menus spell it.
+    static let symbolPairs: [String: [String]] = ["shift-tab": ["shift", "arrow.right.to.line"]]
+
+    /// A key's symbol image, nil for a key shown as text. A pair is drawn into one template image,
+    /// so the cap tints it like any other symbol.
+    static func symbolImage(_ key: String, pointSize: CGFloat) -> UIImage? {
+        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+        if let sym = symbols[key] { return UIImage(systemName: sym, withConfiguration: config) }
+        guard let pair = symbolPairs[key] else { return nil }
+        let images = pair.compactMap { UIImage(systemName: $0, withConfiguration: config) }
+        guard images.count == pair.count else { return nil }
+        let gap: CGFloat = 1
+        let size = CGSize(width: images.reduce(0) { $0 + $1.size.width } + gap * CGFloat(images.count - 1),
+                          height: images.map(\.size.height).max() ?? 0)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            var x: CGFloat = 0
+            for image in images {
+                image.draw(at: CGPoint(x: x, y: (size.height - image.size.height) / 2))
+                x += image.size.width + gap
+            }
+        }.withRenderingMode(.alwaysTemplate)
+    }
 }
 
 /// The hide key: a glass circle with a tinted symbol, at the bar's end or in the vertical bar's
@@ -622,6 +704,8 @@ final class KeyCap: UIControl {
             label.centerYAnchor.constraint(equalTo: face.centerYAnchor),
             icon.centerXAnchor.constraint(equalTo: face.centerXAnchor),
             icon.centerYAnchor.constraint(equalTo: face.centerYAnchor),
+            // A wide symbol (a pair) widens the key, with the label's margins.
+            icon.leadingAnchor.constraint(greaterThanOrEqualTo: face.leadingAnchor, constant: 11),
             lockBar.centerXAnchor.constraint(equalTo: face.centerXAnchor),
             lockBar.bottomAnchor.constraint(equalTo: face.bottomAnchor, constant: -5),
             lockBar.widthAnchor.constraint(equalToConstant: 16),
@@ -640,8 +724,8 @@ final class KeyCap: UIControl {
     required init?(coder: NSCoder) { fatalError() }
 
     private func configure() {
-        if let sym = KeyBar.symbols[key] {
-            icon.image = UIImage(systemName: sym, withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium))
+        if let image = KeyBar.symbolImage(key, pointSize: 16) {
+            icon.image = image
             icon.isHidden = false
             label.isHidden = true
             label.text = nil

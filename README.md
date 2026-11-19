@@ -89,10 +89,14 @@ path. Tap near the cursor for a Paste button.
 ### The key bar
 
 The key bar above the keyboard holds the keys a phone keyboard lacks. Settings → Key Bar offers
-three layouts: **Agents** (Escape, Shift-Tab, arrows, Enter, Ctrl-C, and 1, 2, 3 for an agent's
-choices), **Shell** and **Vim**.
+three layouts: **Agents** (Escape, Shift-Tab, Tab, `/` for slash commands, arrows, Enter, Ctrl-C,
+and 1, 2, 3 for an agent's choices), **Shell** and **Vim**. Each has ctrl and cmd; Shell also has
+alt and Shift-Tab.
 
 - Tap **ctrl** or **alt** to apply it to the next key; double-tap to lock it on.
+- **cmd** is the Mac's ⌘: tap it, then a key, to run that Rex shortcut (cmd then `t` opens a tab,
+  cmd then `d` splits, cmd then `1` goes to the first tab). Double-tap to lock it. The key is never
+  typed; a key with no shortcut does nothing.
 - Hold an arrow to repeat it.
 - Drag the ✥ key like a trackpad to move through menus and history.
 - The paperclip sends a photo or a file to the pane's computer and types its path into the pane,

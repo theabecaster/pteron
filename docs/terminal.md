@@ -198,8 +198,17 @@ the first call's response before you send the second").
 Around that:
 
 - Paste goes through the engine's `pasteText`, so programs that asked for bracketed paste get it.
-- Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt tap for one key, double-tap to lock; the
+- Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt/cmd tap for one key, double-tap to lock; the
   "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`.
+- Key bar cmd: ⌘ for the next key, as on a Mac keyboard. That key is never typed. A bar key
+  (`KeyInput.press(barKey:mods:)`) or a key typed on the system keyboard (the engine view's
+  `commandModifier` hands it to `commandKeyHook`; `KeyInput.press(typing:mods:)`) becomes the
+  press a hardware keyboard reports for it, with ⌘, the bar's ctrl and alt, and shift where the
+  US key needs it (`D`, `?`, `|`). `TerminalHost.keyBarShortcut` runs it through the same lookup
+  as a hardware press (`KeymapStore.resolve(press:)`) and the same `perform`, so app commands,
+  `pane.send_key`, `perform(action:)` and `forward(key:)` behave as they do for ⌘ on a keyboard.
+  A chord nothing is bound to sends nothing and plays an error haptic. A held arrow or a
+  trackpad drag runs the binding once, then again only if it repeats on a hardware keyboard.
 - Hardware keyboard: the engine view's `keyHook` sees each press first. `KeymapStore` matches it
   against Rex's keymap (`KeyChord` spellings like `shift+cmd+d` or `cmd+[Digit1]`), and
   `AppAction` turns the binding into an app command, a key to send (`KeyInput.bytes`), a server

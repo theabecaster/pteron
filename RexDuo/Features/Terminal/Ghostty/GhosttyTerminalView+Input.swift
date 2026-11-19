@@ -164,6 +164,7 @@ extension GhosttyTerminalView {
     /// Text from the system keyboard, an input method's commit, dictation, or a hardware key
     /// that went through the text system.
     func insertText(_ text: String) {
+        if takeCommandKey(text) { return }
         // Return ends the line: nothing on it is edited any more.
         if text == "\n" { resetInputDocument() }
         let edit = text == "\n" ? GhosttyInputEdit(text: text) : editInputDocument { $0.insert(text) }
@@ -205,6 +206,7 @@ extension GhosttyTerminalView {
     }
 
     func deleteBackward() {
+        if takeCommandKey("\u{7f}") { return }
         let edit = editInputDocument { $0.deleteBackward() }
         guard edit.move == 0, edit.text.isEmpty else {
             // Not at the program's cursor: go there, delete, and type again what stood behind.
@@ -220,6 +222,16 @@ extension GhosttyTerminalView {
         }
         key.mods |= takeOneShotModifiers()
         sendTyped([key], backspaces: backspaces - 1)
+    }
+
+    /// With the key bar's ⌘ on, a key is a shortcut, never text: nothing is typed, the shadow
+    /// document stays as it is, and the key bar gets the key. True when it took the key. An input
+    /// method's composition is left to finish as usual: its commit and edits are text, not a key.
+    private func takeCommandKey(_ text: String) -> Bool {
+        guard commandModifier, !inputState.document.isComposing else { return false }
+        inputState.pending = nil
+        commandKeyHook?(text)
+        return true
     }
 
     /// The hardware key waiting for this text, if it is the one that typed it.

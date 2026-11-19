@@ -359,6 +359,12 @@ final class KeymapStore {
         return nil
     }
 
+    /// The binding a key press runs, from a hardware keyboard (`TerminalHost.handleKey`) or the key
+    /// bar's ⌘ (`KeyInput.press(barKey:mods:)`, `press(typing:mods:)`): one lookup for both.
+    func resolve(press: KeyInput.Press) -> (KeyBinding, AppAction)? {
+        resolve(tiers: KeyInput.chordTiers(press))
+    }
+
     /// `keymap_changed`: re-read unless the file is the one we already have.
     func configChanged(hash newHash: String?) {
         guard newHash == nil || newHash != hash else { return }

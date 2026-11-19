@@ -132,6 +132,35 @@ struct PrefsTests {
         #expect(Prefs(defaults: d).keyBarLayout == .agents)
     }
 
+    @Test(arguments: KeyBarLayout.allCases)
+    func aSavedKeyBarKeepsItsLayoutAfterKeysWereAdded(layout: KeyBarLayout) {
+        // The removed editor saved the layout's keys as they were then (no attach, no cmd), or as
+        // they are now.
+        for saved in [layout.storedKeys, layout.keys] {
+            let (_, d) = fresh()
+            d.set(saved, forKey: "keyBar")
+            #expect(Prefs(defaults: d).keyBarLayout == layout, "\(saved)")
+        }
+    }
+
+    @Test func layoutsHaveCmdAndShiftTab() {
+        #expect(KeyBarLayout.agents.keys == ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "enter", "ctrl-c",
+                                             "1", "2", "3", "ctrl", "cmd", "paste", "attach"])
+        #expect(KeyBarLayout.shell.keys == ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left",
+                                            "right", "ctrl-r", "ctrl-c", "|", "~", "/", "-", "paste", "attach"])
+        #expect(KeyBarLayout.vim.keys == ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w",
+                                          "pgup", "pgdn", "$", "~", "paste", "attach"])
+        // Every key has a cap: a symbol, a pair of symbols or a title, and the Settings preview spells it.
+        for layout in KeyBarLayout.allCases {
+            for key in layout.keys where key.count > 1 {
+                #expect(KeyBar.symbolImage(key, pointSize: 16) != nil || KeyBar.titles[key] != nil, "\(key)")
+            }
+        }
+        #expect(SettingsView.keyLabel("shift-tab") == "⇧⇥")
+        #expect(SettingsView.keyLabel("cmd") == "cmd")
+        #expect(KeyBar.names["shift-tab"] == "Shift-Tab")
+    }
+
     @Test func serverAddresses() {
         #expect(ServerConfig.url(from: " studio.tail1.ts.net ")?.absoluteString == "https://studio.tail1.ts.net")
         #expect(ServerConfig.url(from: "http://127.0.0.1:8765")?.absoluteString == "http://127.0.0.1:8765")
