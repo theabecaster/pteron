@@ -269,10 +269,13 @@ struct BookSplitTests {
         for leaf in n.leaves() {
             let r = book.rect(leaf.rect)
             let rest = try #require(PaneLayout.splitRest(r, canvas: canvas))
-            // The keyboard is up: the area is shorter, its width the same.
+            // The keyboard is up: the area is shorter, its width the same. The terminal sits
+            // inside the pane's corner clearance.
             let frame = PaneLayout.split(r, in: CGSize(width: area.width, height: 300))
-            #expect(abs(rest.width - frame.width) < 1e-9)
-            #expect(TerminalLayout.fitSize(bounds: frame.size, rest: rest, alternateScreen: false) == rest)
+            let inset = PaneLayout.clearance(radius: PaneLayout.splitRadius) * 2
+            let terminal = CGSize(width: frame.width - inset, height: frame.height - inset)
+            #expect(abs(rest.width - terminal.width) < 1e-9)
+            #expect(TerminalLayout.fitSize(bounds: terminal, rest: rest, alternateScreen: false) == rest)
         }
     }
 }

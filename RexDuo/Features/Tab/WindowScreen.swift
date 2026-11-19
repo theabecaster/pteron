@@ -459,14 +459,17 @@ struct WindowScreen: View {
         if !useSplits(w) {
             if let b = activeBlock(w) {
                 let rounded = mode != .narrow
+                let radius = rounded ? PaneLayout.singleRadius : 0
                 ZStack {
                     PaneView(server: server, sessionID: sessionID, blockID: b, active: true, onFocus: {},
                              onSwipe: { dir in switchPane(w, by: dir) },
                              restSize: PaneLayout.single(canvas: canvasSize, rounded: rounded))
                         .id(b)
+                        .padding(PaneLayout.clearance(radius: radius))
                         .transition(slide)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: rounded ? 10 : 0))
+                .background(rounded ? theme.bg : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: radius))
                 .padding(rounded ? PaneLayout.roundedPadding : 0)
             }
         } else if let layout = w.layout {
@@ -488,8 +491,10 @@ struct WindowScreen: View {
                                  },
                                  restSize: PaneLayout.splitRest(r, canvas: canvasSize))
                         .id(leaf.id)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8)
+                        .padding(PaneLayout.clearance(radius: PaneLayout.splitRadius))
+                        .background(theme.bg)
+                        .clipShape(RoundedRectangle(cornerRadius: PaneLayout.splitRadius))
+                        .overlay(RoundedRectangle(cornerRadius: PaneLayout.splitRadius)
                             .stroke(leaf.id == active ? theme.chrome.activeBorder : theme.chrome.divider, lineWidth: leaf.id == active ? 1.5 : 1))
                         .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
@@ -515,6 +520,18 @@ enum PaneLayout {
     static let roundedPadding: CGFloat = 6
     /// Around the splits, and around each pane inside its share.
     static let splitPadding: CGFloat = 3
+    /// The corners a single rounded pane and a split pane are clipped to.
+    static let singleRadius: CGFloat = 10
+    static let splitRadius: CGFloat = 8
+
+    /// How far the terminal sits inside a pane clipped to corners of `radius`, on the terminal's
+    /// background. The grid starts at the pane's corner and can end at its far edge (a pane an
+    /// exact number of rows tall), and a corner's curve cuts `radius · (1 − 1/√2)` into its
+    /// diagonal: without this the corner cells, a cursor on the last row among them, lose their
+    /// outer edges.
+    static func clearance(radius: CGFloat) -> CGFloat {
+        (radius * (1 - 0.5.squareRoot())).rounded(.up)
+    }
 
     /// A split pane's frame inside the splits' area `size`, from its normalized rect.
     static func split(_ r: CGRect, in size: CGSize) -> CGRect {
@@ -523,18 +540,19 @@ enum PaneLayout {
         return CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, 10), height: max(frame.height, 10))
     }
 
-    /// A single pane's size in a canvas of size `canvas`; nil for a canvas not measured yet.
+    /// A single pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.
     static func single(canvas: CGSize, rounded: Bool) -> CGSize? {
         guard canvas.width > 0, canvas.height > 0 else { return nil }
-        let pad = rounded ? roundedPadding * 2 : 0
+        let pad = rounded ? (roundedPadding + clearance(radius: singleRadius)) * 2 : 0
         return CGSize(width: max(canvas.width - pad, 0), height: max(canvas.height - pad, 0))
     }
 
-    /// A split pane's size in a canvas of size `canvas`; nil for a canvas not measured yet.
+    /// A split pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.
     static func splitRest(_ r: CGRect, canvas: CGSize) -> CGSize? {
         guard canvas.width > 0, canvas.height > 0 else { return nil }
         let area = CGSize(width: max(canvas.width - splitPadding * 2, 0), height: max(canvas.height - splitPadding * 2, 0))
-        return split(r, in: area).size
+        let pane = split(r, in: area).size, inset = clearance(radius: splitRadius) * 2
+        return CGSize(width: max(pane.width - inset, 0), height: max(pane.height - inset, 0))
     }
 }
 

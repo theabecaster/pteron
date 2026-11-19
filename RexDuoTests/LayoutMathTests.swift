@@ -104,13 +104,41 @@ struct KeyboardCoverLayoutTests {
     @Test func paneSizesWithTheKeyboardDown() {
         let canvas = CGSize(width: 800, height: 600)
         #expect(PaneLayout.single(canvas: canvas, rounded: false) == canvas)
-        #expect(PaneLayout.single(canvas: canvas, rounded: true) == CGSize(width: 788, height: 588))
+        // 6 pt around the pane, then 3 pt inside its rounded corners.
+        #expect(PaneLayout.single(canvas: canvas, rounded: true) == CGSize(width: 782, height: 582))
         #expect(PaneLayout.single(canvas: .zero, rounded: false) == nil)
         // The lower half of a split is laid out and measured the same way.
         let lower = CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
         let area = CGSize(width: 794, height: 594)
-        #expect(PaneLayout.splitRest(lower, canvas: canvas) == PaneLayout.split(lower, in: area).size)
-        #expect(PaneLayout.splitRest(lower, canvas: canvas) == CGSize(width: 788, height: 291))
+        let pane = PaneLayout.split(lower, in: area).size
+        let clear = PaneLayout.clearance(radius: PaneLayout.splitRadius)
+        #expect(PaneLayout.splitRest(lower, canvas: canvas) == CGSize(width: pane.width - 2 * clear, height: pane.height - 2 * clear))
+        #expect(PaneLayout.splitRest(lower, canvas: canvas) == CGSize(width: 782, height: 285))
         #expect(PaneLayout.splitRest(lower, canvas: .zero) == nil)
+    }
+
+    @Test func cornerCellsClearARoundedPanesCurve() {
+        for radius in [PaneLayout.singleRadius, PaneLayout.splitRadius] {
+            let c = PaneLayout.clearance(radius: radius)
+            // The grid's corner lies inside the corner's curve: no cell loses a corner.
+            #expect(hypot(radius - c, radius - c) <= radius)
+            #expect(c == 3)
+        }
+        #expect(PaneLayout.clearance(radius: 0) == 0)
+    }
+
+    /// iPhone 17 in landscape (insets 0, 62, 20, 62; a 34 pt title bar): the canvas is 750×348 and
+    /// the rounded pane 738×336, exactly 24 rows of 14 pt. The last row lay on the pane's bottom
+    /// edge, where the 10 pt corner cut a cursor there down to its top and right sides.
+    @Test func theLastRowOfAnExactFitClearsTheBottomCorners() {
+        let cell = CGSize(width: 7, height: 14)
+        let canvas = CGSize(width: 750, height: 348)
+        let pane = canvas.height - 2 * PaneLayout.roundedPadding
+        let terminal = PaneLayout.single(canvas: canvas, rounded: true)!
+        let rows = TerminalLayout.fitGrid(in: terminal, cell: cell).rows
+        let clear = PaneLayout.clearance(radius: PaneLayout.singleRadius)
+        // The grid starts `clear` down the pane and ends at least `clear` above its bottom.
+        #expect(clear + CGFloat(rows) * cell.height <= pane - clear)
+        #expect(rows == 23)
     }
 }
