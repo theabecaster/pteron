@@ -102,6 +102,21 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
   tap to fit here". Until then it shows the server's grid as mirror does. A pinch there fits the
   pane here too (Gestures).
+- The software keyboard covers a fitted pane; it doesn't resize it. The grid stays the one that
+  fits the pane with the keyboard down (`TerminalLayout.fitSize`, from the tab's canvas as
+  measured with the keyboard down, `PaneLayout`), so a program on the main screen gets no
+  resize when the keyboard shows or hides and has nothing to redraw. The engine view keeps the
+  grid's height, the pane shows its top part, and the engine draws the rows shifted up so the
+  last row with content sits above the key bar (`GhosttyScrollState`, "The cover"). The scroll
+  view has that much more room at the bottom: dragging down brings the covered rows into view,
+  then the scrollback, in one motion. Typing returns to the bottom. A view in the scrollback
+  doesn't move when the keyboard shows or hides.
+  - On the alternate screen (an editor, a pager) the grid fits above the keyboard, as its rows
+    can't be scrolled: one resize when the program enters or leaves that screen with the
+    keyboard up, and one when the keyboard shows or hides while it is there.
+  - The key bar alone (hardware keyboard) takes room from the layout and the grid fits above it.
+  - With no measured size for the pane's width (a rotation or a fold while the keyboard is up)
+    the grid fits what shows, until the keyboard has been down once.
 - Mirror: never claims or resizes. Shows the server's grid scaled to the view's width; drag pans.
   Users always get fit; mirror is only for the `-sizing mirror` launch argument.
 - Fit really resizes panes on the Mac. Test it only in `zz-` sessions you created.
@@ -116,6 +131,9 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 - Vertical drag: scrolls the scrollback (a native scroll view). On the alternate screen or when
   the program tracks the mouse it sends wheel reports instead, and arrow keys on the alternate
   screen with mode 1007 and no tracking.
+- Dragging into the scrollback while the software keyboard is up puts the keyboard away, as the
+  key bar's hide key does: reading gets the whole pane. Nothing moves under the finger; the rows
+  the keyboard covered come into view below. A tap brings the keyboard back.
 - Horizontal swipe: next or previous pane, only when the drag is at least twice as sideways as up or
   down and doesn't catch moving scrollback; anything less scrolls. Swipe on the title bar: next or
   previous tab.

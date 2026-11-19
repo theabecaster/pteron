@@ -885,3 +885,157 @@ final class GhosttyScrollViewTests: XCTestCase {
         XCTAssertEqual(scroller.surface.contentOffset.y, 291 * cell, accuracy: 0.01, "still pinned to the bottom")
     }
 }
+
+extension GhosttyScrollTests {
+    // MARK: The cover (the keyboard over a grid that keeps its rows)
+
+    func testPinKeepsTheLastRowWithContentAboveTheCover() {
+        // A full screen: shifted by the whole cover.
+        XCTAssertEqual(GhosttyScrollMath.pin(cover: 300, rows: 40, contentRows: 40, cellHeight: 30), 300)
+        // Four blank rows at the bottom are covered first.
+        XCTAssertEqual(GhosttyScrollMath.pin(cover: 300, rows: 40, contentRows: 36, cellHeight: 30), 180)
+        // A screen whose content ends above the cover isn't shifted.
+        XCTAssertEqual(GhosttyScrollMath.pin(cover: 300, rows: 40, contentRows: 5, cellHeight: 30), 0)
+        XCTAssertEqual(GhosttyScrollMath.pin(cover: 0, rows: 40, contentRows: 40, cellHeight: 30), 0)
+    }
+
+    func testACoveredFullScreenIsShiftedByTheCoverAndBack() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        let before = core.scroll.snapshot
+        core.scroll.setCover(px: 4 * cell)
+        XCTAssertTrue(core.scroll.hasPending, "a new cover needs a frame")
+        XCTAssertTrue(frame.update(core: core))
+        var s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertEqual(s.offset, before.offset, "the viewport stays on the same rows")
+        XCTAssertEqual(s.bounce, 4 * cell)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell, "the grid is drawn shifted up by the cover")
+        XCTAssertEqual(s.rebase, before.rebase + 4 * cell, "the scroll view is told, as for any move it didn't make")
+        XCTAssertEqual(core.gridSize.rows, 10, "the grid keeps its rows")
+
+        core.scroll.setCover(px: 0)
+        XCTAssertTrue(frame.update(core: core))
+        s = core.scroll.snapshot
+        XCTAssertEqual(s.bounce, 0)
+        XCTAssertEqual(frame.scrollOffset, 0)
+        XCTAssertEqual(s.rebase, before.rebase)
+    }
+
+    func testAShortScreenIsShiftedOnlyAsItFills() {
+        // Three lines and the cursor's row on a screen of ten: six blank rows at the bottom.
+        let (core, frame) = make(3)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        XCTAssertEqual(core.scroll.snapshot.bounce, 0, "the content ends above the cover")
+        // Four more lines: eight rows with content, two blank, so two rows' worth of shift.
+        core.feed(lines(4...7))
+        core.sync()
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(core.scroll.snapshot.bounce, 2 * cell)
+        core.feed(lines(8...30))
+        core.sync()
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(core.scroll.snapshot.bounce, 4 * cell, "never more than the cover")
+    }
+
+    func testTheCoveredRowsScrollIntoViewAndStayUntilInput() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        let end = s.maxRow * cell
+        // The scroll view, having applied the rebase, is at the last position plus the cover.
+        // A drag down by two rows shows two of the covered rows; the viewport stays at the bottom.
+        core.scrollViewport(.position(px: end + 2 * cell, rebaseSeen: s.rebase))
+        XCTAssertTrue(frame.update(core: core))
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertEqual(s.bounce, 2 * cell)
+        XCTAssertFalse(s.following)
+        // Output doesn't pull the view back.
+        core.feed(lines(101...105))
+        core.sync()
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertEqual(s.bounce, 2 * cell)
+        // On into the scrollback: no shift there.
+        core.scrollViewport(.position(px: 50 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertFalse(s.active)
+        XCTAssertEqual(s.bounce, 0)
+        // Input jumps to the bottom, which is the pin again.
+        core.scrollViewport(.bottom)
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertTrue(s.following)
+        XCTAssertEqual(s.bounce, 4 * cell)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+    }
+
+    func testACoverChangesNothingForAViewInTheScrollback() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scrollViewport(.position(px: 50 * cell + 7, rebaseSeen: core.scroll.snapshot.rebase))
+        _ = frame.update(core: core)
+        let before = core.scroll.snapshot
+        for cover in [4 * cell, 0, 6 * cell, 0] {
+            core.scroll.setCover(px: cover)
+            _ = frame.update(core: core)
+            let s = core.scroll.snapshot
+            XCTAssertEqual(s.offset, before.offset)
+            XCTAssertEqual(s.fraction, before.fraction)
+            XCTAssertEqual(s.bounce, 0)
+            XCTAssertEqual(s.rebase, before.rebase, "the reading position doesn't move")
+        }
+    }
+
+    func testLinesGoThroughTheCoveredRows() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 3 * cell)
+        _ = frame.update(core: core)
+        let bottom = core.scroll.snapshot.offset
+        // Up two lines: two covered rows come into view, the viewport stays.
+        core.scrollViewport(.lines(-2))
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        XCTAssertEqual(s.bounce, cell)
+        XCTAssertEqual(s.offset, bottom)
+        // Up three more: the last covered row, then the scrollback.
+        core.scrollViewport(.lines(-1))
+        _ = frame.update(core: core)
+        core.scrollViewport(.lines(-2))
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertEqual(s.bounce, 0)
+        XCTAssertEqual(s.offset, bottom - 2)
+        // And down again to the pin.
+        core.scrollViewport(.lines(2))
+        _ = frame.update(core: core)
+        core.scrollViewport(.lines(3))
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertEqual(s.bounce, 3 * cell)
+        XCTAssertTrue(s.following)
+    }
+
+    func testTheSnapshotSaysWhichScreenTheProgramIsOn() {
+        let (core, frame) = make(20)
+        XCTAssertFalse(core.scroll.snapshot.alternateScreen)
+        core.feed(Array("\u{1b}[?1049h".utf8))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertTrue(core.scroll.snapshot.alternateScreen)
+        core.feed(Array("\u{1b}[?1049l".utf8))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertFalse(core.scroll.snapshot.alternateScreen)
+    }
+}

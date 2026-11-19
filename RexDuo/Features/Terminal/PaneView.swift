@@ -14,12 +14,15 @@ struct PaneView: View {
     /// App-level commands from this pane (hardware keyboard shortcuts, two-finger tap).
     /// Defaults to the environment's `AppModel.perform(_:)`.
     var onCommand: ((RexCommand) -> Void)? = nil
+    /// The pane's size with the software keyboard down, when the layout knows it
+    /// (`TerminalHost.setRestSize`).
+    var restSize: CGSize? = nil
 
     @Environment(Prefs.self) private var prefs
 
     var body: some View {
         PaneHostView(server: server, sessionID: sessionID, blockID: blockID, active: active,
-                     onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand)
+                     onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand, restSize: restSize)
     }
 }
 
@@ -32,6 +35,7 @@ struct PaneHostView: UIViewRepresentable {
     let onFocus: () -> Void
     var onSwipe: ((Int) -> Void)?
     var onCommand: ((RexCommand) -> Void)?
+    var restSize: CGSize?
 
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
@@ -85,6 +89,7 @@ struct PaneHostView: UIViewRepresentable {
         if host.theme != theme { host.applyTheme(theme) }
         host.setFontSize(p.fontSize)
         host.setSizing(p.sizing)
+        host.setRestSize(restSize)
         host.onCommand = commandHandler
         host.isActive = active
         host.onFocus = onFocus

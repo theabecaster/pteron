@@ -38,6 +38,15 @@ enum GhosttyScrollMath {
     static func position(offset: Int, fraction: Int, cellHeight: Int) -> Int {
         offset * max(1, cellHeight) + fraction
     }
+
+    /// How far the grid is drawn shifted up while the bottom `cover` pixels of the view are
+    /// covered (the keyboard) and the viewport follows the active area: far enough that the last
+    /// row with content sits above the cover, and no further. `contentRows` counts the screen's
+    /// rows from the top through the last one with content or the cursor.
+    static func pin(cover: Int, rows: Int, contentRows: Int, cellHeight: Int) -> Int {
+        let blank = max(0, rows - contentRows)
+        return min(max(cover - blank * max(1, cellHeight), 0), max(cover, 0))
+    }
 }
 
 /// The scroll position of one terminal, shared by the main thread (which owns the gesture) and
@@ -54,6 +63,15 @@ enum GhosttyScrollMath {
 /// `ghostty_terminal_scroll_viewport`). `rebase` is the running sum of those moves: truth =
 /// main's offset + rebase. Each position request says which rebase it was computed with, so it
 /// is read correctly even if the terminal moved after it was sent.
+///
+/// The cover. The view may be taller than what shows of it: the keyboard covers its bottom
+/// `cover` pixels and the grid keeps its rows. The scroll view then has that much more room to
+/// scroll past the last row position, and a position in that room draws the grid shifted up by
+/// the difference (`bounce`, the same shift a rubber band at the bottom uses). While the
+/// viewport follows the active area and the user has not scrolled the covered rows back into
+/// view, the render thread holds that shift at the pin (`GhosttyScrollMath.pin`), so the row the
+/// program writes on stays above the keyboard as the screen fills. Those moves count in `rebase`
+/// like any other move the terminal makes by itself.
 ///
 /// `@unchecked Sendable`: `lock` guards the block marked so. The render-side block is only
 /// touched inside `GhosttyCore.lockFrame` (terminal and render state locks held), which only one
@@ -89,6 +107,10 @@ final class GhosttyScrollState: @unchecked Sendable {
         var appliedSequence = 0
         /// The program gets one-finger drags (mouse tracking or alternate screen).
         var programScroll = false
+        /// The program is on the alternate screen.
+        var alternateScreen = false
+        /// At the bottom, the grid's shift stays at the pin as the screen fills (see "The cover").
+        var following = true
 
         var maxRow: Int { GhosttyScrollMath.maxRow(total: total, len: len) }
     }
@@ -102,6 +124,9 @@ final class GhosttyScrollState: @unchecked Sendable {
     private let lock = GhosttyLock()
     private var pending: Request?
     private var sequence = 0
+    private var coverWanted = 0
+    /// The cover the render side has taken over.
+    private var coverTaken = 0
     private var latest = Snapshot()
     private var sent = Snapshot()
     private var publishScheduled = false
@@ -117,6 +142,18 @@ final class GhosttyScrollState: @unchecked Sendable {
     private var cellHeight = 0
     private var appliedSequence = 0
     private var overscanGeneration = -1
+    /// Pixels of the view's bottom that are covered, as of this frame.
+    private var cover = 0
+    /// The cover changed and `finishFrame` has not seen it yet.
+    private var coverChanged = false
+    /// The shift that keeps the last row with content above the cover (last frame's).
+    private var pin = 0
+    private var following = true
+    private var frameActive = true
+    private var frameRows = 0
+    /// This frame's request was a position from the scroll view: its shift is the user's.
+    private var positioned = false
+    private var frameSnapshot = Snapshot()
     /// Pixels the grid is drawn shifted up this frame: sub-row offset plus rubber band.
     private(set) var renderFraction = 0
     private(set) var renderBounce = 0
@@ -148,8 +185,19 @@ final class GhosttyScrollState: @unchecked Sendable {
     var hasPending: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return pending != nil
+        return pending != nil || coverWanted != coverTaken
     }
+
+    /// How many pixels of the view's bottom are covered, from the next frame on. Doesn't ask for
+    /// a frame.
+    func setCover(px: Int) {
+        lock.lock()
+        coverWanted = max(0, px)
+        lock.unlock()
+    }
+
+    /// The frame builder counts the screen's rows with content only while it matters.
+    var needsContentRows: Bool { cover > 0 || coverChanged }
 
     /// The last frame's scroll state.
     var snapshot: Snapshot {
@@ -198,11 +246,22 @@ final class GhosttyScrollState: @unchecked Sendable {
         let request = pending
         pending = nil
         let seq = sequence
+        let wanted = coverWanted
+        coverTaken = wanted
         lock.unlock()
+        if wanted != cover {
+            cover = wanted
+            coverChanged = true
+            if cover == 0 { pin = 0 }
+        }
 
         movedViewport = false
+        positioned = false
         if let request {
             let before = (bar.offset, active)
+            // What the scroll view's offset stands for: the row position plus the shift.
+            let shown = position + bounce
+            var keepsShift = false
             switch request {
             case .position(let px, let rebaseSeen):
                 let r = GhosttyScrollMath.resolve(px: px + rebase - rebaseSeen, maxRow: bar.maxRow, cellHeight: cell)
@@ -213,8 +272,19 @@ final class GhosttyScrollState: @unchecked Sendable {
                 }
                 fraction = r.fraction
                 bounce = r.bounce
+                positioned = true
+                // At the pin or past it the shift follows the screen again; short of it, the
+                // user is looking at the covered rows and it stays where they left it.
+                following = r.bottom && bounce >= pin - 1
             case .lines(let n):
-                if n != 0 { scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA) { $0.delta = n } }
+                if active, cover > 0, n > 0 || bounce > 0 {
+                    // At the bottom, lines go through the covered rows first.
+                    bounce = min(max(bounce + n * cell, 0), cover)
+                    following = bounce >= pin - 1
+                    keepsShift = true
+                } else if n != 0 {
+                    scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA) { $0.delta = n }
+                }
             case .pages(let n):
                 if n != 0 { scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA) { $0.delta = n * max(1, bar.len) } }
             case .prompts(let n):
@@ -232,16 +302,22 @@ final class GhosttyScrollState: @unchecked Sendable {
             if case .position = request {
                 // The sender's offset already says this; nothing to rebase.
             } else {
-                // A jump the scroll view knows nothing about: whole rows, no rubber band.
+                // A jump the scroll view knows nothing about: whole rows, no rubber band. One
+                // that ends at the bottom follows the screen (`finishFrame` sets the shift).
                 fraction = active ? 0 : fraction
-                bounce = 0
-                rebase += truth - position
+                if !keepsShift {
+                    bounce = 0
+                    if active { following = true }
+                }
+                rebase += truth + bounce - shown
             }
             position = truth
             appliedSequence = seq
         }
         renderFraction = fraction
         renderBounce = bounce
+        frameActive = active
+        frameRows = bar.len
 
         var tracking = false
         ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
@@ -261,7 +337,31 @@ final class GhosttyScrollState: @unchecked Sendable {
         snap.appliedSequence = appliedSequence
         snap.programScroll = GhosttyScrollRouting.captures(mouseTracking: tracking,
                                                            alternateScreen: screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
+        snap.alternateScreen = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+        snap.following = following
+        frameSnapshot = snap
         publish(snap)
+    }
+
+    /// The second half of a frame, once its rows are known: holds the shift at the pin while the
+    /// viewport follows the screen, and keeps it inside a cover that became smaller. Runs where
+    /// `prepareFrame` does (render side), before the frame builder reads `renderBounce`.
+    /// `contentRows`: the screen's rows from the top through the last one with content or the
+    /// cursor.
+    func finishFrame(contentRows: Int) {
+        guard cover > 0 || coverChanged else { return }
+        coverChanged = false
+        guard frameActive else { return }
+        pin = GhosttyScrollMath.pin(cover: cover, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
+        guard !positioned else { return }
+        let shift = following ? pin : min(bounce, cover)
+        guard shift != bounce else { return }
+        rebase += shift - bounce
+        bounce = shift
+        renderBounce = shift
+        frameSnapshot.bounce = shift
+        frameSnapshot.rebase = rebase
+        publish(frameSnapshot)
     }
 
     /// The fraction can only show while a row below the viewport was captured.
@@ -297,6 +397,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         latest = snap
         let news = snap.total != sent.total || snap.len != sent.len || snap.rebase != sent.rebase
             || snap.cellHeight != sent.cellHeight || snap.programScroll != sent.programScroll
+            || snap.alternateScreen != sent.alternateScreen
         guard news, !publishScheduled, publishHandler != nil else {
             lock.unlock()
             return

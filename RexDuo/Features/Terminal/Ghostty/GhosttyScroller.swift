@@ -63,6 +63,11 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     private(set) var lastUserMove: CFTimeInterval?
     /// The scrollback is moving under a finger or by its momentum.
     var userMoving: Bool { surface.isDragging || surface.isDecelerating }
+    /// Points of the view's bottom that the keyboard covers (`setCover`).
+    private(set) var cover: CGFloat = 0
+    /// This drag has already said that it went into the scrollback.
+    private var toldReading = false
+    private var alternateScreen = false
 
     private var dragAccumulator = GhosttyWheelAccumulator()
     private var pointerAccumulator = GhosttyWheelAccumulator()
@@ -155,8 +160,16 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         appliedRebase = snapshot.rebase
         var y = surface.contentOffset.y + CGFloat(moved) / scale
         // At rest, and with nothing of ours still on its way, the terminal is simply right.
-        if !interacting, snapshot.appliedSequence >= lastRequest { y = CGFloat(snapshot.position) / scale }
+        var settle = false
+        if !interacting, snapshot.appliedSequence >= lastRequest {
+            // The shift at rest is inside the cover; anything else is a rubber band that nothing
+            // brought back (an offset set past an edge without a finger), and is put right.
+            let shift = min(max(snapshot.bounce, 0), Int((cover * scale).rounded()))
+            settle = shift != snapshot.bounce
+            y = CGFloat(snapshot.position + shift) / scale
+        }
         if abs(y - surface.contentOffset.y) > 0.01 { surface.contentOffset = CGPoint(x: 0, y: y) }
+        if settle { sendOffset() }
 
         // While the program takes one-finger drags, scrollback needs two.
         let pan = surface.panGestureRecognizer
@@ -164,6 +177,25 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         if pan.minimumNumberOfTouches != fingers { pan.minimumNumberOfTouches = fingers }
         if programPan.isEnabled != snapshot.programScroll { programPan.isEnabled = snapshot.programScroll }
         updateIndicator()
+        if snapshot.alternateScreen != alternateScreen {
+            alternateScreen = snapshot.alternateScreen
+            view?.alternateScreenHook?(alternateScreen)
+        }
+    }
+
+    /// The keyboard covers the bottom `points` of the view, whose grid keeps its rows. The scroll
+    /// view gets that much more room at the bottom, so the last rows can sit above the keyboard
+    /// and the covered ones can be scrolled into view (`GhosttyScrollState`, "The cover").
+    func setCover(_ points: CGFloat) {
+        let c = max(0, points)
+        guard abs(c - cover) > 0.01 else { return }
+        cover = c
+        applying = true
+        surface.contentInset.bottom = c
+        surface.verticalScrollIndicatorInsets.bottom = c
+        applying = false
+        core.scroll.setCover(px: Int((c * scale).rounded()))
+        core.onDirty?()
     }
 
     func layoutChanged() {
@@ -184,6 +216,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         // offset where the terminal is.
         guard !applying, surface.bounds.size == contentLaidOutFor else { return }
         if userMoving { lastUserMove = CACurrentMediaTime() }
+        noteReading()
         if measures {
             let start = CACurrentMediaTime()
             sendOffset()
@@ -199,7 +232,20 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         lastRequest = core.scrollViewport(.position(px: px, rebaseSeen: appliedRebase))
     }
 
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { updateIndicator() }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        toldReading = false
+        updateIndicator()
+    }
+
+    /// A finger took the view a row or more into the scrollback while the keyboard covers it:
+    /// the user is reading, and the view says so once for the drag (`readingHook`).
+    private func noteReading() {
+        guard cover > 0, !toldReading, userMoving, let view else { return }
+        let end = CGFloat(state.maxRow * state.cellHeight) / scale
+        guard surface.contentOffset.y < end - view.cellSize.height else { return }
+        toldReading = true
+        view.readingHook?()
+    }
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { animating = false }
 
     /// Scrolls like a finger would, for the demo and tests. `y` is a scroll view offset in points.
@@ -386,7 +432,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// (the program can't be told about those).
     func mousePosition(_ point: CGPoint) -> CGPoint? {
         let s = core.scroll.snapshot
-        let y = point.y * scale + CGFloat(s.fraction + (s.offset - s.maxRow) * s.cellHeight)
+        let y = point.y * scale + CGFloat(s.fraction + s.bounce + (s.offset - s.maxRow) * s.cellHeight)
         guard y >= 0 else { return nil }
         return CGPoint(x: point.x * scale, y: y)
     }
@@ -417,7 +463,10 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// bottom.
     /// Output, mouse reports and focus reports never move the view.
     func scrollToBottomForInput() {
-        let bottom = surface.contentSize.height - surface.bounds.height
-        if !core.scroll.snapshot.active || surface.contentOffset.y < bottom - 0.5 { jump(.bottom) }
+        let s = core.scroll.snapshot
+        // The bottom is the last row position, plus the shift that keeps the last rows above
+        // the keyboard while it covers the view.
+        let bottom = CGFloat(s.position + s.bounce) / scale
+        if !s.active || !s.following || surface.contentOffset.y < bottom - 0.5 { jump(.bottom) }
     }
 }

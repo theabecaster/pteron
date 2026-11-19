@@ -72,6 +72,7 @@ How a row is verified:
 | 43 | Fit-mode claim | `FitClaimTests`; live (the pane took the phone's grid and this client as owner; the owner was gone once the app was terminated) | Host code. |
 | 44 | "Resized elsewhere · tap to fit here", status chip | hand | Host code. Not run since the audit. |
 | 45 | Keyboard show / hide, any new view size | `GhosttyIntegrationTests.testResizingTheViewNeverScrollsTheTerminal`; hand | A view that grew (keyboard gone, unfold) stays at the bottom. (Before: UIKit's offset fix-up for the new size was sent on as a scroll, and the terminal was left scrolled into history.) |
+| 45a | The software keyboard covers a fitted pane | `GhosttyScrollTests` (the cover), `KeyboardCoverLayoutTests`; live (`-keyboardTest` over a real `claude` in a `zz-` session: the pane's tty size logged while the keyboard cycled through a streamed reply) | The grid keeps its rows on the main screen; the alternate screen fits above the keyboard. Reading mode (a drag into the scrollback hides the keyboard) needs a finger: hand. |
 | 46 | Fold / unfold: the pool moves a live pane | `GhosttyIntegrationTests.testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached`, `testSelectionAndCursorSurviveTheMove`; live (`-simulateDuo folded,unfolded,folded` on an iPad simulator) | Draws at once on return, at the new size and scale, without new output. Draws nothing and wakes nothing while detached. |
 | 47 | Reconnect and resume | RexKit `Stream*` tests | Host and stream code. A fresh connection brings a snapshot; a resume carries none. Not run live. |
 | 48 | Background and foreground | `GhosttyIntegrationTests` (visibility), `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread`; hand | No Metal work and no display-link wake in the background; one frame on return. After more than 30 s the host opens a fresh stream. A fitted pane is given back in the background and stays the Mac's until the app returns (live: `rex block call size` shows `owner: null` 4 s after backgrounding, the phone's client again on return). |
@@ -178,8 +179,10 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
 5. **Gestures (26).** Flick horizontally: the pane swipes (with two panes) and the terminal doesn't
    scroll. Two-finger tap: the pane zooms. Pinch: the text scales, and on release the font and
    grid change without the screen being reloaded (18).
-6. **Keyboard (45, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
-   stays at the bottom both times. Hold the space bar and slide: the cursor moves along the line.
+6. **Keyboard (45, 45a, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
+   stays at the bottom both times, and `stty size` says the same before and after. With the
+   keyboard up, drag down: the covered rows, then the scrollback, and the keyboard goes away
+   without the text jumping; a tap brings it back. Hold the space bar and slide: the cursor moves along the line.
 7. **Mouse program (39).** Run `vim` (or `less` on a long file). One-finger drag: the file scrolls
    (arrows or wheel), not the scrollback. Two-finger drag: nothing to scroll on the alternate
    screen. In vim with `:set mouse=a`, tap a line: the cursor goes there. Long press a word: it is

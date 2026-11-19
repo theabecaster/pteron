@@ -43,8 +43,9 @@ struct WindowScreen: View {
     @State private var keyboardUp = false
     @State private var showOverview = false
     @State private var confirm: Confirm?
-    /// The panes' area with the keyboard down, for the folded legibility check: typing must not
-    /// flip splits to one pane.
+    /// The panes' area with the keyboard down. For the folded legibility check: typing must not
+    /// flip splits to one pane. And for each pane's grid, which stays the one that fits it with
+    /// the keyboard down while the keyboard covers it (`PaneLayout`).
     @State private var canvasSize: CGSize = .zero
 
     private var view: SessionView? { server.views[sessionID] }
@@ -437,12 +438,13 @@ struct WindowScreen: View {
                 let rounded = mode != .narrow
                 ZStack {
                     PaneView(server: server, sessionID: sessionID, blockID: b, active: true, onFocus: {},
-                             onSwipe: { dir in switchPane(w, by: dir) })
+                             onSwipe: { dir in switchPane(w, by: dir) },
+                             restSize: PaneLayout.single(canvas: canvasSize, rounded: rounded))
                         .id(b)
                         .transition(slide)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: rounded ? 10 : 0))
-                .padding(rounded ? 6 : 0)
+                .padding(rounded ? PaneLayout.roundedPadding : 0)
             }
         } else if let layout = w.layout {
             let active = activeBlock(w)
@@ -451,18 +453,18 @@ struct WindowScreen: View {
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.leaves, id: \.id) { leaf in
                         let r = leaf.rect
-                        let frame = CGRect(x: r.minX * size.width, y: r.minY * size.height,
-                                           width: r.width * size.width, height: r.height * size.height)
-                            .insetBy(dx: 3, dy: 3)
-                        PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active) {
-                            model.focusedPane[w.id] = leaf.id
-                            Task { await server.focus(sessionID, block: leaf.id) }
-                        }
+                        let frame = PaneLayout.split(r, in: size)
+                        PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
+                                 onFocus: {
+                                     model.focusedPane[w.id] = leaf.id
+                                     Task { await server.focus(sessionID, block: leaf.id) }
+                                 },
+                                 restSize: PaneLayout.splitRest(r, canvas: canvasSize))
                         .id(leaf.id)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8)
                             .stroke(leaf.id == active ? theme.chrome.activeBorder : theme.chrome.divider, lineWidth: leaf.id == active ? 1.5 : 1))
-                        .frame(width: max(frame.width, 10), height: max(frame.height, 10))
+                        .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
                     }
                     ForEach(layout.splits, id: \.id) { sp in
@@ -472,8 +474,37 @@ struct WindowScreen: View {
                     }
                 }
             }
-            .padding(3)
+            .padding(PaneLayout.splitPadding)
         }
+    }
+}
+
+/// Where the panes sit in the tab's canvas, and so how large each one is with the keyboard down.
+enum PaneLayout {
+    /// Around a single pane with rounded corners (wide windows).
+    static let roundedPadding: CGFloat = 6
+    /// Around the splits, and around each pane inside its share.
+    static let splitPadding: CGFloat = 3
+
+    /// A split pane's frame inside the splits' area `size`, from its normalized rect.
+    static func split(_ r: CGRect, in size: CGSize) -> CGRect {
+        let frame = CGRect(x: r.minX * size.width, y: r.minY * size.height, width: r.width * size.width, height: r.height * size.height)
+            .insetBy(dx: splitPadding, dy: splitPadding)
+        return CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, 10), height: max(frame.height, 10))
+    }
+
+    /// A single pane's size in a canvas of size `canvas`; nil for a canvas not measured yet.
+    static func single(canvas: CGSize, rounded: Bool) -> CGSize? {
+        guard canvas.width > 0, canvas.height > 0 else { return nil }
+        let pad = rounded ? roundedPadding * 2 : 0
+        return CGSize(width: max(canvas.width - pad, 0), height: max(canvas.height - pad, 0))
+    }
+
+    /// A split pane's size in a canvas of size `canvas`; nil for a canvas not measured yet.
+    static func splitRest(_ r: CGRect, canvas: CGSize) -> CGSize? {
+        guard canvas.width > 0, canvas.height > 0 else { return nil }
+        let area = CGSize(width: max(canvas.width - splitPadding * 2, 0), height: max(canvas.height - splitPadding * 2, 0))
+        return split(r, in: area).size
     }
 }
 

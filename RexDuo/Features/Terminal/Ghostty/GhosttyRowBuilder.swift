@@ -783,22 +783,16 @@ final class GhosttyFrameBuilder {
             }
         }
 
-        // Upstream: don't shift the grid toward a side where nothing was captured.
-        var captured = GhosttyRenderStateOverscan()
-        ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_OVERSCAN, &captured)
-        overscanBelow = Int(captured.below)
-        if captured.below == 0 { core.scroll.clearRenderFraction() }
-        let offset = core.scroll.renderFraction + core.scroll.renderBounce
-        if offset != scrollOffset {
-            scrollOffset = offset
-            changed = true
-        }
-
         var info = GhosttyRenderStateCursor()
         info.size = MemoryLayout<GhosttyRenderStateCursor>.size
         var next = GhosttyCursorState()
+        // Where the cursor is on the screen, shown or hidden.
+        var cursorRow = -1
         if ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR, &info) == GHOSTTY_SUCCESS,
-           info.visible, info.viewport_has_value {
+           info.viewport_has_value {
+            cursorRow = Int(info.viewport_y)
+        }
+        if cursorRow >= 0, info.visible {
             next.visible = true
             next.y = Int(info.viewport_y)
             next.x = Int(info.viewport_x)
@@ -815,11 +809,35 @@ final class GhosttyFrameBuilder {
             next.color = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR, &color) == GHOSTTY_SUCCESS
                 ? GhosttyRowBuilder.pack(color) : builder.foreground
         }
+        // Upstream: don't shift the grid toward a side where nothing was captured.
+        var captured = GhosttyRenderStateOverscan()
+        ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_OVERSCAN, &captured)
+        overscanBelow = Int(captured.below)
+        if captured.below == 0 { core.scroll.clearRenderFraction() }
+        if core.scroll.needsContentRows { core.scroll.finishFrame(contentRows: contentRows(cursorRow: cursorRow)) }
+        let offset = core.scroll.renderFraction + core.scroll.renderBounce
+        if offset != scrollOffset {
+            scrollOffset = offset
+            changed = true
+        }
+
         if next != cursor {
             cursor = next
             changed = true
         }
         return changed
+    }
+
+    /// The screen's rows from the top through the last one that draws something or holds the
+    /// cursor (`GhosttyScrollState.finishFrame`).
+    private func contentRows(cursorRow: Int) -> Int {
+        var i = min(rowCount, rows.count) - 1
+        while i > cursorRow {
+            let row = rows[i]
+            if row.glyphs.count > 0 || row.backgrounds.count > 0 || row.underlines.count > 0 || row.underGlyphs.count > 0 { break }
+            i -= 1
+        }
+        return i + 1
     }
 
     private func rebuild(_ state: GhosttyRenderState, iterator: GhosttyRenderStateRowIterator, cells: GhosttyRenderStateRowCells,

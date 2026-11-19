@@ -16,6 +16,13 @@ final class ZoomScrollView: UIScrollView {
 /// A UIKit view that shows one Rex terminal block in a `GhosttyTerminalView`.
 /// Fit mode: claims the block and resizes it to this view. Mirror mode: keeps the server's size, scaled and panned.
 ///
+/// The software keyboard covers a fitted pane instead of resizing it: the grid stays the one
+/// that fits the pane with the keyboard down (`restSize`), so the program is not told to redraw
+/// each time the keyboard shows or hides. The engine view keeps that height, the pane shows its
+/// top part, and the engine shifts the rows so the last ones sit above the key bar and the rest
+/// scroll into view (`GhosttyTerminalView.setCover`). On the alternate screen (an editor, a
+/// pager) the grid fits above the keyboard instead: those rows can't be scrolled.
+///
 /// The local grid always follows the server: it changes only when the stream says the server's
 /// size changed, at that point in the stream. Fit mode asks the server for the size that fits and
 /// keeps the stream open; the program redraws itself.
@@ -72,6 +79,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
     }
 
+    /// The pane's size with the software keyboard down, from the layout around it; nil when
+    /// that isn't known. The grid is fitted to its height while the keyboard covers the pane.
+    private var restSize: CGSize?
+    /// The program is on the alternate screen (`alternateScreenHook`).
+    private var alternateScreen = false
     /// The size the server confirmed for this pane in fit mode.
     private var claimedSize: (Int, Int)?
     /// Own, resize, give back: every fit-mode call to the server goes through here, in order.
@@ -205,6 +217,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         term.keyHook = { [weak self] key in self?.handleKey(key) ?? false }
         term.keyboardFocusHook = { [weak self] focused in self?.keyboardFocusChanged(focused) }
+        term.alternateScreenHook = { [weak self] alternate in self?.alternateScreenChanged(alternate) }
+        term.readingHook = { [weak self] in self?.readingBegan() }
         // A program may write the pasteboard (OSC 52) only from the pane the user works in.
         term.setProgramClipboardGate { [weak self] in self?.isFrontPane ?? false }
         // The pane shows its own focus (cursor, border): no system focus halo on top of it.
@@ -863,6 +877,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
     }
 
+    /// A drag took the view into the scrollback while the software keyboard covers it: the user
+    /// is reading, so the keyboard goes away as with the hide key, and a tap brings it back.
+    /// Nothing on screen moves: the rows the keyboard covered come into view below.
+    private func readingBegan() {
+        guard keyboardUp, !selecting else { return }
+        hideKeyboard()
+    }
+
     // MARK: App state
 
     /// Hand fitted panes back to the Mac while the app is in the background.
@@ -943,6 +965,22 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term.setFont(size: s)
         applyLocalGrid(serverSize.0, serverSize.1, force: true)
         positionTerm()
+        lastBounds = .zero
+        setNeedsLayout()
+    }
+
+    /// The pane's size with the software keyboard down (`restSize`).
+    func setRestSize(_ size: CGSize?) {
+        guard size != restSize else { return }
+        restSize = size
+        lastBounds = .zero
+        setNeedsLayout()
+    }
+
+    /// The grid that fits depends on the screen the program is on (`fitSize`).
+    private func alternateScreenChanged(_ alternate: Bool) {
+        guard alternate != alternateScreen else { return }
+        alternateScreen = alternate
         lastBounds = .zero
         setNeedsLayout()
     }
@@ -1063,9 +1101,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// One cell's size in points at the current font.
     private func cellSize() -> CGSize { term.cellSize }
 
-    /// Largest grid that fits the view at the current font.
+    /// Largest grid that fits the pane at the current font: the pane as it is with the keyboard
+    /// down, unless the program is on the alternate screen.
     private func fitGrid() -> (Int, Int) {
-        let g = TerminalLayout.fitGrid(in: bounds.size, cell: cellSize())
+        let size = TerminalLayout.fitSize(bounds: bounds.size, rest: restSize, alternateScreen: alternateScreen)
+        let g = TerminalLayout.fitGrid(in: size, cell: cellSize())
         return (g.cols, g.rows)
     }
 
@@ -1075,8 +1115,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term.setGrid(cols: cols, rows: rows, force: force)
     }
 
-    /// Places the terminal for the current grid. Fit: 1:1, bottom rows kept in view while the server
-    /// catches up with a smaller size (keyboard opening). Mirror: zoomed to fit the width.
+    /// Places the terminal for the current grid. Fit: 1:1 from the top; where the grid is taller
+    /// than the pane (the keyboard covers it), the engine keeps the last rows in view and scrolls
+    /// through the rest. Mirror: zoomed to fit the width.
     private func positionTerm() {
         guard bounds.width > 1, bounds.height > 1 else { return }
         let cell = cellSize()
@@ -1086,10 +1127,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             zoomer.minimumZoomScale = 1
             zoomer.maximumZoomScale = 1
             zoomer.zoomScale = 1
-            term.frame = CGRect(x: 0, y: min(0, bounds.height - size.height), width: size.width, height: size.height)
+            term.frame = CGRect(origin: .zero, size: size)
             zoomer.contentSize = bounds.size
             zoomer.contentOffset = .zero
+            term.setCover(TerminalLayout.cover(terminal: size.height, pane: bounds.height))
         } else {
+            term.setCover(0)
             zoomer.minimumZoomScale = min(zoomer.minimumZoomScale, 1)
             zoomer.maximumZoomScale = max(zoomer.maximumZoomScale, 1)
             zoomer.zoomScale = 1
@@ -1198,6 +1241,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             #if DEBUG
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
             if isActive { FilesTest.run(on: self) }  // `-filesTest` (testing, FilesTest.swift)
+            if isActive { KeyboardTest.run(on: self) }  // `-keyboardTest` (testing, KeyboardTest.swift)
             // `-typeTest <text>` (Debug builds, testing): types into the live shell.
             if isActive, let t = UserDefaults.standard.string(forKey: "typeTest"), !typedTest {
                 typedTest = true

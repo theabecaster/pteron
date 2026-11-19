@@ -80,6 +80,11 @@ final class GhosttyTerminalView: UIView {
     // Scroll: stored state for GhosttyTerminalView+Scroll.swift. Created on first use
     // (`didMoveToSuperview`, or any scroll member).
     lazy var scroller = GhosttyScroller(view: self)
+
+    /// Called when the program enters (true) or leaves (false) the alternate screen.
+    var alternateScreenHook: ((Bool) -> Void)?
+    /// Called once for a drag that goes into the scrollback while the keyboard covers the view.
+    var readingHook: (() -> Void)?
     // END scroll
 
     // Taps: links and prompt clicks (GhosttyTap.swift).

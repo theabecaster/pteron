@@ -64,3 +64,53 @@ struct SplitGeometryTests {
         #expect(g.ratio(after: 2000) == 0.95)
     }
 }
+
+struct KeyboardCoverLayoutTests {
+    private let rest = CGSize(width: 400, height: 600)
+
+    @Test func theGridFitsThePaneAsItIsWithTheKeyboardDown() {
+        // The keyboard took 300 pt of the pane: the grid still fits the 600.
+        let s = TerminalLayout.fitSize(bounds: CGSize(width: 400, height: 300), rest: rest, alternateScreen: false)
+        #expect(s == rest)
+        let cell = CGSize(width: 7, height: 15)
+        #expect(TerminalLayout.fitGrid(in: s, cell: cell) == TerminalLayout.fitGrid(in: rest, cell: cell))
+    }
+
+    @Test func theAlternateScreenFitsWhatShows() {
+        let bounds = CGSize(width: 400, height: 300)
+        #expect(TerminalLayout.fitSize(bounds: bounds, rest: rest, alternateScreen: true) == bounds)
+    }
+
+    @Test func aRestSizeOfAnotherWidthOrNoneIsNotUsed() {
+        // After a rotation or a fold the remembered size is another pane's.
+        let bounds = CGSize(width: 700, height: 200)
+        #expect(TerminalLayout.fitSize(bounds: bounds, rest: rest, alternateScreen: false) == bounds)
+        #expect(TerminalLayout.fitSize(bounds: bounds, rest: nil, alternateScreen: false) == bounds)
+    }
+
+    @Test func aPaneTallerThanItsRestSizeFitsItself() {
+        // The title bar stepped aside: the pane has more room than with the keyboard down.
+        let bounds = CGSize(width: 400, height: 640)
+        #expect(TerminalLayout.fitSize(bounds: bounds, rest: rest, alternateScreen: false) == bounds)
+    }
+
+    @Test func coverIsWhatThePaneHidesOfTheTerminal() {
+        #expect(TerminalLayout.cover(terminal: 574, pane: 291) == 283)
+        // A grid that fits its pane can be a point taller than it.
+        #expect(TerminalLayout.cover(terminal: 574.5, pane: 573.3) == 0)
+        #expect(TerminalLayout.cover(terminal: 300, pane: 576) == 0)
+    }
+
+    @Test func paneSizesWithTheKeyboardDown() {
+        let canvas = CGSize(width: 800, height: 600)
+        #expect(PaneLayout.single(canvas: canvas, rounded: false) == canvas)
+        #expect(PaneLayout.single(canvas: canvas, rounded: true) == CGSize(width: 788, height: 588))
+        #expect(PaneLayout.single(canvas: .zero, rounded: false) == nil)
+        // The lower half of a split is laid out and measured the same way.
+        let lower = CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
+        let area = CGSize(width: 794, height: 594)
+        #expect(PaneLayout.splitRest(lower, canvas: canvas) == PaneLayout.split(lower, in: area).size)
+        #expect(PaneLayout.splitRest(lower, canvas: canvas) == CGSize(width: 788, height: 291))
+        #expect(PaneLayout.splitRest(lower, canvas: .zero) == nil)
+    }
+}
