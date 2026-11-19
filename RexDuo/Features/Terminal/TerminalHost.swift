@@ -177,6 +177,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     static let statusDelay: TimeInterval = 1.0
     private var statusWork: DispatchWorkItem?
     private static let lostText = "Resized elsewhere · tap to fit here"
+    #if DEBUG
+    /// `-forceStatus <text>` (Debug builds, testing): every pane shows this chip once it opens and
+    /// again each time it is live, to look at the chip over any output.
+    private static let forcedStatus = UserDefaults.standard.string(forKey: "forceStatus").flatMap { $0.isEmpty ? nil : $0 }
+    #endif
 
     init(stream: TerminalStream, sizing: SizingMode, fontSize: CGFloat, theme: TermTheme, claim: FitClaim? = nil) {
         PerfProbe.active?.paneOpening()  // PERF: pane open, before the engine view is made
@@ -246,6 +251,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // Over the selection handles (it hides while there is a selection), under the status chip.
         jumpButton.onFire = { [weak self] in self?.jumpToBottom() }
         insertSubview(jumpButton, belowSubview: statusLabel)
+        #if DEBUG
+        if let s = Self.forcedStatus { showStatus(s) }  // `-forceStatus` (testing)
+        #endif
         PerfProbe.active?.paneOpened(self)  // PERF
     }
 
@@ -1052,8 +1060,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         term.apply(theme: t)
         // Native scroll indicators that stay visible on both light and dark themes.
         zoomer.indicatorStyle = t.isDark ? .white : .black
-        statusLabel.backgroundColor = t.uiFG.withAlphaComponent(0.15)
-        statusLabel.textColor = t.uiFG
+        let chip = StatusChipStyle(theme: t)
+        statusLabel.backgroundColor = chip.fill
+        statusLabel.textColor = chip.text
+        statusLabel.layer.borderColor = chip.rim.cgColor
         keyBar.apply(theme: t)
         jumpButton.apply(tint: t.uiFG, accent: t.uiCursor)
         selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
@@ -1395,6 +1405,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .live:
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
             #if DEBUG
+            if let s = Self.forcedStatus { showStatus(s) }  // `-forceStatus` (testing)
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
             if isActive { FilesTest.run(on: self) }  // `-filesTest` (testing, FilesTest.swift)
             if isActive { KeyboardTest.run(on: self) }  // `-keyboardTest` (testing, KeyboardTest.swift)
@@ -1463,6 +1474,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         let w = min(fit.width + 20, bounds.width - 24)
         statusLabel.frame = CGRect(x: (bounds.width - w) / 2, y: 8, width: w, height: 22)
         statusLabel.layer.cornerRadius = 11
+        statusLabel.layer.borderWidth = 1 / max(1, traitCollection.displayScale)  // one pixel
     }
 
     // MARK: TerminalEngineDelegate
