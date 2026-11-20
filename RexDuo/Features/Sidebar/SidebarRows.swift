@@ -478,7 +478,7 @@ struct TabRowLabel: View {
         let agent = server.windowAgent(window)
         HStack(spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 5).fill(Self.tint(agent, theme).opacity(0.9))
+                Self.tile(agent).fill(Self.tint(agent, theme).opacity(0.9))
                 Image(systemName: agent?.symbol ?? "terminal")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(theme.bg)
@@ -507,6 +507,13 @@ struct TabRowLabel: View {
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
         .contentShape(Rectangle())
+    }
+
+    /// The tile behind the glyph: a circle for an agent, a rounded square for a shell, so the
+    /// two read apart at a glance. One shape type (half of the 18 pt tile is a circle), so rows
+    /// need no type erasure.
+    static func tile(_ a: AgentKind?) -> RoundedRectangle {
+        RoundedRectangle(cornerRadius: a == nil ? 5 : 9)
     }
 
     static func tint(_ a: AgentKind?, _ theme: TermTheme) -> Color {

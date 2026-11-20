@@ -448,3 +448,14 @@ struct AgentRowOrderTests {
         #expect(sorted.map(\.blockID) == ["old", "new", "err", "work", "idle", "none"])
     }
 }
+
+/// An agent's tile is a circle (half the 18 pt tile), a shell's a rounded square.
+@MainActor
+struct SidebarTileShapeTests {
+    @Test func agentsGetACircleAndShellsASquare() {
+        for kind in [AgentKind.claude, .codex, .gemini] {
+            #expect(TabRowLabel.tile(kind).cornerSize == CGSize(width: 9, height: 9))
+        }
+        #expect(TabRowLabel.tile(nil).cornerSize == CGSize(width: 5, height: 5))
+    }
+}

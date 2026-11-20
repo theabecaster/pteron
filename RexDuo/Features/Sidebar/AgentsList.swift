@@ -128,7 +128,7 @@ struct AgentRowLabel: View {
         let kind = meta?.agentKind ?? key.kind
         HStack(alignment: .top, spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 5).fill(TabRowLabel.tint(kind, theme).opacity(0.9))
+                TabRowLabel.tile(kind).fill(TabRowLabel.tint(kind, theme).opacity(0.9))
                 Image(systemName: kind?.symbol ?? "cpu")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(theme.bg)
