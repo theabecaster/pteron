@@ -1,0 +1,45 @@
+import Foundation
+
+/// How many panes that left the screen are kept ready to come back, and for how long.
+struct ParkLimits: Equatable {
+    /// Parked panes at most; the panes on screen don't count.
+    var count = 4
+    /// Their terminals' memory together, by the engine's own figure (`GhosttyCore.memoryBytes`).
+    var bytes = 96 << 20
+    /// Parked panes are let go when the app comes back after this long in the background.
+    var backgroundLife: TimeInterval = 600
+}
+
+/// Which parked panes go. Pure: the pool (`TerminalHostPool`) asks and acts.
+enum ParkPolicy {
+    /// The panes to let go so that the rest fit `limits`: the oldest first. `parked` is in the
+    /// order the panes were parked, oldest first, each with its terminal's memory.
+    static func evictions<Key>(_ parked: [(key: Key, bytes: Int)], limits: ParkLimits) -> [Key] {
+        var keep = parked.count
+        var total = parked.reduce(0) { $0 + $1.bytes }
+        var out: [Key] = []
+        for p in parked {
+            guard keep > max(limits.count, 0) || total > limits.bytes else { break }
+            out.append(p.key)
+            keep -= 1
+            total -= p.bytes
+        }
+        return out
+    }
+
+    /// Whether a parked pane has nowhere to come back to: its server is not the one on screen
+    /// (the user left it) or is gone, or its session closed. `sessions` holds the session ids of
+    /// each server that is online; a server that is not online says nothing about its sessions.
+    static func isStale(server: UUID, session: String, selected: UUID?, servers: Set<UUID>,
+                        sessions: [UUID: Set<String>]) -> Bool {
+        if !servers.contains(server) { return true }
+        if let selected, selected != server { return true }
+        if let open = sessions[server], !open.contains(session) { return true }
+        return false
+    }
+
+    /// Whether the time away ends the park.
+    static func expired(awayFor seconds: TimeInterval, limits: ParkLimits) -> Bool {
+        seconds >= limits.backgroundLife
+    }
+}

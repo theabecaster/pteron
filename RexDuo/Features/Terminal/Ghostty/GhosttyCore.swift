@@ -740,6 +740,18 @@ final class GhosttyCore: @unchecked Sendable {
         }
     }
 
+    /// The physical memory the terminal's pages hold, both screens: the figure the library
+    /// says to budget against. It looks at every page, so it is read only when a pane is
+    /// parked, never per write.
+    var memoryBytes: Int {
+        withTerminal { t in
+            var usage = GhosttyTerminalMemoryUsage()
+            usage.size = MemoryLayout<GhosttyTerminalMemoryUsage>.size
+            guard ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, &usage) == GHOSTTY_SUCCESS else { return 0 }
+            return Int(clamping: usage.primary_resident_bytes &+ usage.alternate_resident_bytes)
+        } ?? 0
+    }
+
     // MARK: The catch-up hold
 
     /// Holds the screen on show while the pane's stream catches up, and shows what arrived

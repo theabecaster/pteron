@@ -1,0 +1,224 @@
+import XCTest
+@testable import RexKit
+
+/// Parking: a stream set aside for a pane that left the screen, and what its return costs.
+@MainActor
+final class StreamParkTests: XCTestCase {
+    typealias Sink = StreamFenceTests.Sink
+    private static let write = "com.superlogical.terminal.write"
+
+    private var notices: [String] = []
+    private var streams: [TerminalStream] = []
+
+    private func current(_ link: FakeLink) async -> (TerminalStream, Sink, SleepLog) {
+        let sink = Sink()
+        let (s, log) = makeStream(link: link, sink: sink)
+        s.onActionFailed = { [weak self] in self?.notices.append($0) }
+        streams.append(s)
+        s.start()
+        await catchUp(s, link)
+        return (s, sink, log)
+    }
+
+    func testParkingDropsTheSocketWithoutEndingTheStream() async {
+        let link = FakeLink()
+        let (s, sink, _) = await current(link)
+        s.park()
+        XCTAssertTrue(s.isParked)
+        XCTAssertTrue(link.sockets[0].aborted, "no status 1000: the server keeps the stream")
+        XCTAssertFalse(link.sockets[0].closed)
+        await settle()
+        // Nothing follows: no RESUME, no ticket, no status.
+        XCTAssertEqual(link.sockets.count, 1)
+        XCTAssertEqual(link.count("data.connect"), 1)
+        XCTAssertEqual(sink.statuses, [.connecting, .live])
+        XCTAssertFalse(s.isFenced)
+    }
+
+    func testAParkedStreamDoesNothingOnAWakeOrAReconnect() async {
+        let link = FakeLink()
+        let (s, _, log) = await current(link)
+        s.park()
+        let asked = log.asked.count
+        s.wake()
+        link.disconnect()
+        link.connect()
+        await settle()
+        XCTAssertEqual(link.sockets.count, 1)
+        XCTAssertEqual(link.sockets[0].pings, 0)
+        XCTAssertEqual(log.asked.count, asked, "no wait was started")
+    }
+
+    func testParkingDropsQueuedInputAndTakesNoMore() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        s.send(text: "b")
+        s.park()
+        XCTAssertFalse(s.hasPendingInput)
+        XCTAssertFalse(s.send(text: "typed at a pane that is not on screen"))
+        link.held = []
+        link.release()
+        await settle()
+        s.unpark()
+        _ = await eventually { !s.isFenced }
+        await settle()
+        XCTAssertEqual(link.written, ["a"], "what had left is not sent again, what had not is gone")
+        XCTAssertEqual(notices, [])
+    }
+
+    func testTheReturnResumesAtOnceWithTheBytesTaken() async {
+        let link = FakeLink()
+        let (s, sink, log) = await current(link)
+        link.sockets[0].push(Array("hello".utf8))
+        _ = await eventually { sink.fed == 5 }
+        s.park()
+        let waits = log.asked.count
+        link.plans = [.silent]
+        s.unpark()
+        XCTAssertTrue(s.isFenced, "up from the first moment")
+        XCTAssertFalse(s.isParked)
+        let resumed = await eventually { link.sockets.count == 2 && link.sockets[1].sent.count == 1 }
+        XCTAssertTrue(resumed)
+        XCTAssertTrue(link.sockets[1].isResume)
+        XCTAssertEqual(link.sockets[1].resumeCount, UInt64(Wire.opening.count + 5))
+        XCTAssertEqual(link.count("data.connect"), 1, "a resume needs no ticket")
+        XCTAssertFalse(log.asked[waits...].contains(.milliseconds(400)), "and no pause before it")
+        link.sockets[1].push(FakeLink.welcome())
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        XCTAssertEqual(sink.statuses.last, .live)
+    }
+
+    func testTheReturnNeedsNoControlConnection() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        s.park()
+        link.disconnect()
+        s.unpark()
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        XCTAssertTrue(link.sockets[1].isResume)
+    }
+
+    func testKeysTypedOnAnIdleReturnArriveInOrderOnce() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        s.park()
+        link.plans = [.silent]
+        s.unpark()
+        s.send(text: "l")
+        s.send(text: "s\r")
+        _ = await eventually { link.sockets.count == 2 && link.sockets[1].sent.count == 1 }
+        XCTAssertEqual(link.written, [])
+        link.sockets[1].push(FakeLink.welcome())
+        let sent = await eventually { link.written == ["ls\r"] }
+        XCTAssertTrue(sent)
+        await settle()
+        XCTAssertEqual(link.written, ["ls\r"])
+        XCTAssertEqual(notices, [])
+    }
+
+    func testKeysTypedOnABusyReturnAreDroppedWithTheNotice() async {
+        let link = FakeLink()
+        let (s, sink, _) = await current(link)
+        s.park()
+        link.plans = [.silent]
+        s.unpark()
+        s.send(text: "y\r")
+        _ = await eventually { link.sockets.count == 2 && link.sockets[1].sent.count == 1 }
+        link.sockets[1].push(FakeLink.welcome())
+        link.sockets[1].push(Array("output the user never saw".utf8))
+        let down = await eventually { !s.isFenced && sink.fed > 0 }
+        XCTAssertTrue(down)
+        await settle()
+        XCTAssertEqual(link.written, [])
+        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+    }
+
+    // Hazard 9.
+    func testAReturnAfterTheResumeWindowStartsFreshAndStaysFenced() async {
+        let link = FakeLink()
+        link.defaultPlan = .welcome(keepMs: 0)
+        let (s, sink, _) = await current(link)
+        s.park()
+        s.unpark()
+        s.send(text: "typed at the old screen")
+        let fresh = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
+        XCTAssertTrue(fresh)
+        XCTAssertTrue(link.sockets[1].isHello)
+        XCTAssertEqual(link.count("data.connect"), 2)
+        await settle()
+        XCTAssertTrue(s.isFenced, "until the new snapshot is in")
+        await catchUp(s, link)
+        await settle()
+        XCTAssertEqual(link.written, [])
+        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+    }
+
+    // Hazard 9.
+    func testARefusedResumeOnReturnStartsFresh() async {
+        let link = FakeLink()
+        let (s, sink, _) = await current(link)
+        s.park()
+        link.plans = [.reject(0x01)]
+        s.unpark()
+        let fresh = await eventually { link.sockets.count == 3 && link.sockets[2].isHello && sink.statuses.last == .live }
+        XCTAssertTrue(fresh)
+        XCTAssertTrue(link.sockets[1].isResume)
+        XCTAssertTrue(s.isFenced)
+        XCTAssertEqual(sink.fence, [true, false, true], "one fence from the return to the new snapshot")
+        await catchUp(s, link)
+    }
+
+    func testStopAfterParkingEndsTheStreamForGood() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        s.park()
+        s.stop()
+        XCTAssertFalse(s.isParked)
+        s.unpark()
+        await settle()
+        XCTAssertEqual(link.sockets.count, 1, "a stopped stream does not come back by itself")
+        XCTAssertFalse(s.isFenced)
+    }
+
+    func testParkingTwiceAndUnparkingALiveStreamChangeNothing() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        s.unpark()
+        await settle()
+        XCTAssertEqual(link.sockets.count, 1)
+        s.park()
+        s.park()
+        s.unpark()
+        s.unpark()
+        let down = await eventually { !s.isFenced && link.sockets.count == 2 }
+        XCTAssertTrue(down)
+        await settle()
+        XCTAssertEqual(link.sockets.count, 2)
+    }
+
+    func testAStreamParkedInTheMiddleOfItsSnapshotGoesOnWithIt() async {
+        let link = FakeLink()
+        let sink = Sink()
+        let (s, _) = makeStream(link: link, sink: sink)
+        streams.append(s)
+        s.start()
+        _ = await eventually { sink.statuses.last == .live }
+        let half = Wire.opening.count / 2
+        link.sockets[0].push(Array(Wire.opening[..<half]))
+        await settle()
+        s.park()
+        link.plans = [.silent]
+        s.unpark()
+        _ = await eventually { link.sockets.count == 2 && link.sockets[1].sent.count == 1 }
+        XCTAssertEqual(link.sockets[1].resumeCount, UInt64(half))
+        link.sockets[1].push(FakeLink.welcome())
+        link.sockets[1].push(Array(Wire.opening[half...]))
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down, "the snapshot's end arrives over the resumed stream")
+    }
+}

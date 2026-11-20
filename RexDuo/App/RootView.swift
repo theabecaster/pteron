@@ -53,6 +53,7 @@ struct RootView: View {
                 if barEdge != e { barEdge = e }
                 if barColumn != column { barColumn = column }
             })
+            .background(ParkWatcher(pool: hostPool))
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)

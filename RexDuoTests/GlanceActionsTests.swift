@@ -1,6 +1,6 @@
 import Foundation
 import GlanceModel
-import RexKit
+@testable import RexKit
 import Testing
 @testable import RexDuo
 
@@ -514,6 +514,9 @@ import Testing
         let stream = TerminalStream(control: w.server.control, sessionID: "session:1", blockID: "block:1a")
         stream.start()
         defer { stream.stop() }
+        // This world serves no data socket, so the stream would stay behind its catch-up fence,
+        // where nothing is typed. The pane here is one whose screen is current.
+        stream.fence.reset()
         w.fake.delay(Self.write, seconds: 0.15)
         stream.send(text: "typed first")
         let result = await w.actions().handle(w.action(.interrupt))

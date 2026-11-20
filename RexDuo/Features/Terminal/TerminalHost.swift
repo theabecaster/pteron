@@ -158,6 +158,26 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var hardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
+    /// How long a pane off screen waits before it lets go, and how long it keeps its fit claim.
+    struct LeaveTiming {
+        /// Off screen this long, the pane stops or parks (`scheduleStop`). A fold is back sooner.
+        var settle: TimeInterval = 0.5
+        /// A parked pane keeps its size on the Mac this long after it left the screen, so going
+        /// back and forth between two panes resizes neither.
+        var claimGrace: TimeInterval = 10
+    }
+    /// Tests shorten it.
+    var leaveTiming = LeaveTiming()
+    /// The pool keeps this pane when it leaves the screen (`TerminalHostPool`): it parks
+    /// instead of stopping.
+    var canPark = false
+    /// Parked: off screen with its screen, scrollback and place in the stream kept, and no
+    /// socket, no drawables and no timers (`park`).
+    private(set) var isParked = false
+    /// The pane parked itself; and it is back on screen.
+    var onParked: (() -> Void)?
+    var onUnparked: (() -> Void)?
+    private var graceWork: DispatchWorkItem?
     /// The agent board lies over the pane (`setCovered`).
     private(set) var covered = false
     /// The cover took the keyboard from a pane that showed only its key bar; it gets it back.
@@ -1314,7 +1334,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         } else {
             stopWork?.cancel()
             stopWork = nil
+            graceWork?.cancel()
+            graceWork = nil
             if !started { PerfProbe.active?.mounted(self, kind: .cold) }  // PERF
+            if isParked { unpark() }
             // Claim again what was paused, if the size still isn't the one that fits.
             lastBounds = .zero
             setNeedsLayout()
@@ -1328,17 +1351,73 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Off screen: let go of the stream, unless the view is back on screen in a moment. A fold or an
     /// unfold rebuilds the layout around the pane and `PaneView` moves this view to its new place
     /// (`TerminalHostPool`), keeping the screen, the scrollback and the keyboard.
+    ///
+    /// A pane the pool keeps (`canPark`) parks instead of stopping, and keeps its fit claim for
+    /// `claimGrace` from now.
     func scheduleStop() {
         stopWork?.cancel()
         // Strong capture: the pool may be the only owner, and the stream must be stopped either way.
         let work = DispatchWorkItem { [self] in
             stopWork = nil
             guard window == nil else { return }
-            stop()
-            onStopped?()
+            if canPark, started {
+                park()
+            } else {
+                stop()
+                onStopped?()
+            }
         }
         stopWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + leaveTiming.settle, execute: work)
+        guard canPark, graceWork == nil else { return }
+        let grace = DispatchWorkItem { [self] in
+            graceWork = nil
+            guard window == nil else { return }
+            // The Mac gets its size back; the pane claims again if it returns.
+            claimedSize = nil
+            releaseClaim()
+        }
+        graceWork = grace
+        DispatchQueue.main.asyncAfter(deadline: .now() + leaveTiming.claimGrace, execute: grace)
+    }
+
+    /// Sets the pane aside for a quick return: the screen, the scrollback and the stream's place
+    /// stay; the data socket, the input queue, the drawables and every timer go. A parked pane
+    /// uses no CPU and no network. The fit claim stays until its grace runs out (`scheduleStop`).
+    func park() {
+        guard !isParked else { return }
+        isParked = true
+        stopKeyRepeats()
+        // Find closes with the pane, as when it stops.
+        closeFind(giveBack: false)
+        fenceStatusWork?.cancel()
+        fenceStatusWork = nil
+        if transientStatus != nil { hideStatus() }
+        stoppingStream = true
+        stream.park()
+        stoppingStream = false
+        term.releaseDrawables()
+        files?.close()
+        ports?.unwatch()
+        onParked?()
+    }
+
+    /// The parked pane is on screen again: its last screen is drawn in its first frame, and its
+    /// stream resumes behind the fence.
+    private func unpark() {
+        isParked = false
+        onUnparked?()
+        term.restoreDrawables()
+        PerfProbe.active?.mounted(self, kind: .parked)  // PERF
+        stream.unpark()
+    }
+
+    /// The pool lets the pane go for good.
+    func evict() {
+        stopWork?.cancel()
+        stopWork = nil
+        stop()
+        onStopped?()
     }
 
     /// iOS 26 swipes back from anywhere in the content. Over the terminal a horizontal flick
@@ -1363,6 +1442,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
 
     func stop() {
+        isParked = false
+        graceWork?.cancel()
+        graceWork = nil
         stopKeyRepeats()
         // Find closes with the pane: its handle and tints go, and any hold.
         closeFind(giveBack: false)

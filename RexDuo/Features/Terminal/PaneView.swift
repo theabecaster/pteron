@@ -156,12 +156,20 @@ struct PaneHostView: UIViewRepresentable {
     }
 }
 
-/// The live terminal hosts, one per pane on screen. A fold or an unfold swaps the layout's view tree
-/// (navigation stack, pages); the new `PaneView` takes the pane's host from here, so the stream, the
-/// screen, the scroll position and the keyboard carry over instead of reconnecting. The newest
-/// container shows the host; when it goes, the host moves back to the newest one left, and with none
-/// left it lets go of its stream once it has been off screen for half a second
-/// (`TerminalHost.scheduleStop`). Owned by `RootView`.
+/// The terminal hosts: one per pane on screen, and the few that left it last. A fold or an unfold
+/// swaps the layout's view tree (navigation stack, pages); the new `PaneView` takes the pane's host
+/// from here, so the stream, the screen, the scroll position and the keyboard carry over instead
+/// of reconnecting. The newest container shows the host; when it goes, the host moves back to the
+/// newest one left, and with none left it parks once it has been off screen for half a second
+/// (`TerminalHost.scheduleStop`).
+///
+/// **The park.** A parked host keeps its screen and its place in the stream, and nothing that
+/// costs: no socket, no drawables, no timer (`TerminalHost.park`). A pane the user comes back to
+/// is then on screen in its first frame, and its stream resumes with only what it missed. The
+/// pool keeps the `limits.count` panes parked last, within `limits.bytes` of terminal memory,
+/// and lets the oldest go first (`ParkPolicy`). All of them go on a memory warning, when the app
+/// comes back after `limits.backgroundLife`, and when their server is left or their session
+/// closes (`keep`). Owned by `RootView`.
 @MainActor
 @Observable
 final class TerminalHostPool {
@@ -178,6 +186,53 @@ final class TerminalHostPool {
 
     @ObservationIgnored private var hosts: [Key: TerminalHost] = [:]
     @ObservationIgnored private var containers: [Key: [Weak]] = [:]
+    /// The parked panes, oldest first.
+    @ObservationIgnored private(set) var parked: [Key] = []
+    @ObservationIgnored var limits = ParkLimits()
+    /// The clock the time in the background is read from. Tests put their own here.
+    @ObservationIgnored var now: () -> CFTimeInterval = { CACurrentMediaTime() }
+    @ObservationIgnored private var backgroundedAt: CFTimeInterval?
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        func observe(_ name: Notification.Name, _ body: @escaping @MainActor (TerminalHostPool) -> Void) {
+            // Never removed: the pool lives as long as the app's root, and the closure holds it weakly.
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { if let self { body(self) } }
+            })
+        }
+        observe(UIApplication.didReceiveMemoryWarningNotification) { $0.evictParked() }
+        observe(UIApplication.didEnterBackgroundNotification) { $0.backgroundedAt = $0.now() }
+        observe(UIApplication.willEnterForegroundNotification) { $0.cameBack() }
+    }
+
+    /// Back in the foreground: after long enough away, the parked panes are let go.
+    func cameBack() {
+        guard let since = backgroundedAt else { return }
+        backgroundedAt = nil
+        if ParkPolicy.expired(awayFor: now() - since, limits: limits) { evictParked() }
+    }
+
+    /// Lets parked panes go: all of them, or those `stale` says have nowhere to come back to.
+    func evictParked(where stale: (Key) -> Bool = { _ in true }) {
+        for key in parked where stale(key) { hosts[key]?.evict() }
+    }
+
+    /// What the app shows changed: parked panes of a server the user left, of a server that is
+    /// gone, and of a session that closed are let go (`ParkPolicy.isStale`).
+    func keep(selected: UUID?, servers: Set<UUID>, sessions: [UUID: Set<String>]) {
+        evictParked { key in
+            ParkPolicy.isStale(server: key.server, session: key.session, selected: selected, servers: servers, sessions: sessions)
+        }
+    }
+
+    private func didPark(_ key: Key) {
+        parked.removeAll { $0 == key }
+        parked.append(key)
+        let sized = parked.map { (key: $0, bytes: hosts[$0]?.term.core.memoryBytes ?? 0) }
+        for old in ParkPolicy.evictions(sized, limits: limits) { hosts[old]?.evict() }
+    }
 
     func host(for key: Key) -> TerminalHost? { hosts[key] }
 
@@ -244,12 +299,22 @@ final class TerminalHostPool {
         host.takeOwedKeyboard = { [weak self] in self?.takeOwed(key) }
         host.onBarHidesKeyboard = { [weak self] shown in self?.hideKeyboard.set(key, shown: shown) }
         if host.barHidesKeyboard { hideKeyboard.set(key, shown: true) }
+        host.canPark = true
+        host.onParked = { [weak self, weak host] in
+            guard let self, let host, self.hosts[key] === host else { return }
+            self.didPark(key)
+        }
+        host.onUnparked = { [weak self, weak host] in
+            guard let self, let host, self.hosts[key] === host else { return }
+            self.parked.removeAll { $0 == key }
+        }
         host.onStopped = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
             self.hosts[key] = nil
             self.hostsChanged &+= 1
             self.containers[key] = nil
             self.hideKeyboard.set(key, shown: false)
+            self.parked.removeAll { $0 == key }
         }
     }
 
@@ -295,5 +360,33 @@ final class TerminalHostPool {
             showAgain.remove(key)
             Self.target(live(key))?.adopt()
         } while showAgain.contains(key)
+    }
+}
+
+/// Tells the pool when parked panes have nowhere to come back to: the user left their server,
+/// the server is gone, or their session closed. A view of no size that reads only the selection's
+/// server and the session lists, so nothing else re-renders for it.
+struct ParkWatcher: View {
+    @Environment(AppModel.self) private var model
+    let pool: TerminalHostPool
+
+    private struct Facts: Equatable {
+        var selected: UUID?
+        var servers: Set<UUID>
+        /// The sessions of each server that is online.
+        var sessions: [UUID: Set<String>]
+    }
+
+    var body: some View {
+        let facts = Facts(selected: model.selection?.serverID, servers: Set(model.servers.map(\.id)),
+                          sessions: Dictionary(model.servers.filter { $0.phase == .online }.map { ($0.id, Set($0.sessions.map(\.id))) },
+                                               uniquingKeysWith: { a, _ in a }))
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: facts) { _, now in
+                pool.keep(selected: now.selected, servers: now.servers, sessions: now.sessions)
+            }
     }
 }

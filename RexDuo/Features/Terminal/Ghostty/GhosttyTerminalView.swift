@@ -349,6 +349,19 @@ final class GhosttyTerminalView: UIView {
         renderer.setDrawableSize(width: w, height: h)
     }
 
+    /// The pane is parked: its layer gives its drawables back (three of the pane's size in
+    /// pixels) and nothing is drawn until `restoreDrawables()`.
+    func releaseDrawables() {
+        renderer.setDrawableSize(width: 0, height: 0)
+        metalView.metalLayer.drawableSize = CGSize(width: 1, height: 1)
+    }
+
+    /// The layer's drawable size in pixels, for tests.
+    var metalLayerDrawableSize: CGSize { metalView.metalLayer.drawableSize }
+
+    /// The parked pane is back: drawables at the view's size again, made as the first frame asks.
+    func restoreDrawables() { updateDrawable() }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if let scale = window?.screen.scale, scale != displayScale {

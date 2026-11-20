@@ -409,6 +409,8 @@ public final class TerminalStream {
     private var nonce: UInt64 = 0
     private var received: UInt64 = 0
     private var stopped = false
+    /// Parked (`park()`): stopped, with what a RESUME needs kept.
+    public private(set) var isParked = false
     /// True from a WELCOME until the socket drops or the stream is stopped or restarted.
     private var live = false
     /// How long the server keeps a dropped stream for a RESUME (from the WELCOME).
@@ -538,6 +540,7 @@ public final class TerminalStream {
 
     public func start() {
         stopped = false
+        isParked = false
         failedStarts = 0
         attachRetries = 0
         control.streamStarted(self)
@@ -549,6 +552,7 @@ public final class TerminalStream {
     /// keys typed for a pane must not go out when it is opened again later.
     public func stop() {
         stopped = true
+        isParked = false
         gen += 1
         live = false
         waitingForControl = false
@@ -565,6 +569,52 @@ public final class TerminalStream {
         ws?.close()
         ws = nil
         wakeReader()
+    }
+
+    /// Sets the stream aside for a pane that left the screen and may be back: no socket, no
+    /// timer, no work until `unpark()`. Unlike `stop()` it keeps what a RESUME needs (the token,
+    /// the byte count, the filter's place in the stream), and it drops the data socket without a
+    /// status 1000 close, so the server keeps the stream for its resume window.
+    ///
+    /// Input still queued is dropped, as on `stop()`: keys typed for a pane must not go out when
+    /// it is shown again later. A request that is out ends on its own and is never sent again.
+    public func park() {
+        guard !stopped else { return }
+        stopped = true
+        isParked = true
+        gen += 1
+        waitingForControl = false
+        failedStarts = 0
+        attachRetries = 0
+        unansweredPing = nil
+        dropInput()
+        fence.reset()
+        hasPendingInput = false
+        control.inputActivity.remove(ObjectIdentifier(self))
+        control.streamStopped(self)
+        // The resume window runs from the moment the socket goes; an earlier drop keeps its time.
+        if live || droppedAt == nil { droppedAt = .now }
+        live = false
+        ws?.abort()
+        ws = nil
+        wakeReader()
+    }
+
+    /// The parked pane is on screen again. The fence goes up at once. If the server can still
+    /// have the stream, one RESUME follows right away, with no ticket and no control connection,
+    /// and only the missed bytes arrive; otherwise, or if it is refused, a fresh start, which
+    /// leaves the sink's screen as it is until the new snapshot begins.
+    public func unpark() {
+        guard isParked else { return }
+        isParked = false
+        stopped = false
+        control.streamStarted(self)
+        fence.raise(exact: hasScreen)
+        let myGen = gen
+        Task {
+            guard myGen == self.gen, !self.stopped else { return }
+            if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+        }
     }
 
     deinit {
