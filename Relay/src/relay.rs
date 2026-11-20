@@ -2783,17 +2783,35 @@ mod tests {
     }
 
     /// What a payload field may hold by the gateway's rules (`Gateway/src/validate.ts`): a
-    /// string of at most this many characters, or one of these words.
+    /// string of at most this many characters, one of these words, or a string of this form.
     enum Rule {
         Max(usize),
         OneOf(&'static [&'static str]),
+        Form(fn(&str) -> bool),
     }
 
-    const PAYLOAD_FIELDS: [(&str, Rule); 4] = [("server", Rule::Max(512)), ("session_id", Rule::Max(256)), ("window_id", Rule::Max(256)), ("block_id", Rule::Max(256))];
+    /// `record`: 1 to 128 characters, none a control character (`\p{Cc}`).
+    fn record_form(text: &str) -> bool {
+        (1..=128).contains(&text.chars().count()) && !text.chars().any(char::is_control)
+    }
+
+    /// `fp`: 16 lowercase hex characters.
+    fn fp_form(text: &str) -> bool {
+        text.len() == 16 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    const PAYLOAD_FIELDS: [(&str, Rule); 6] = [
+        ("server", Rule::Max(512)),
+        ("session_id", Rule::Max(256)),
+        ("window_id", Rule::Max(256)),
+        ("block_id", Rule::Max(256)),
+        ("record", Rule::Form(record_form)),
+        ("fp", Rule::Form(fp_form)),
+    ];
     const APS_FIELDS: [(&str, Rule); 4] = [
         ("sound", Rule::OneOf(&["default"])),
         ("thread-id", Rule::Max(256)),
-        ("category", Rule::OneOf(&["AGENT_BLOCKED", "AGENT_DONE", "NOTICE"])),
+        ("category", Rule::OneOf(&["AGENT_BLOCKED", "AGENT_BLOCKED_ACT", "AGENT_DONE", "NOTICE"])),
         ("interruption-level", Rule::OneOf(&["passive", "active", "time-sensitive"])),
     ];
     const ALERT_FIELDS: [(&str, Rule); 3] = [("title", Rule::Max(120)), ("subtitle", Rule::Max(256)), ("body", Rule::Max(1000))];
@@ -2810,6 +2828,7 @@ mod tests {
             let allowed = match rule {
                 Rule::Max(most) => text.chars().count() <= *most,
                 Rule::OneOf(words) => words.contains(&text),
+                Rule::Form(holds) => holds(text),
             };
             if !allowed {
                 return Some(format!("{key} holds a value the gateway refuses"));
@@ -2875,6 +2894,15 @@ mod tests {
         assert!(with(&["aps", "alert", "title"], json!("x".repeat(121))).is_some());
         assert!(with(&["aps", "alert", "title"], Value::Null).is_some());
         assert!(with(&["aps", "alert", "action"], json!("x")).is_some());
+        assert_eq!(with(&["aps", "category"], json!("AGENT_BLOCKED_ACT")), None);
+        assert_eq!(with(&["record"], json!("claude")), None);
+        assert_eq!(with(&["fp"], json!("d110a7daf17e741b")), None);
+        for record in [json!(""), json!("r".repeat(129)), json!("cla\nude"), json!(7)] {
+            assert!(with(&["record"], record.clone()).is_some(), "{record}");
+        }
+        for fp in [json!(""), json!("a5beb1b22ff48d5"), json!("d110a7daf17e741b0"), json!("A5BEB1B22FF48D5D"), json!("g5beb1b22ff48d5d")] {
+            assert!(with(&["fp"], fp.clone()).is_some(), "{fp}");
+        }
         let mut late = body(good.clone());
         late["expiration"] = json!(3661);
         assert!(gateway_problem(&late, 0).is_some());
@@ -3668,6 +3696,93 @@ mod tests {
         assert!(matches!(r.send_one(&d, &q, &m, SendKind::Probe, &desk_clients(), Moment::now()).await, SendResult::Sent(_)));
         assert_eq!(held(&r), 0);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A question as the policy makes it from a report: it names its wait.
+    fn desk_question(record: &str, text: &str) -> PushIntent {
+        let mut q = desk_event(PushCategory::Blocked, record);
+        q.text = Some(text.into());
+        q.fp = Some(crate::policy::fingerprint("blocked", None, Some(text)));
+        q
+    }
+
+    #[tokio::test]
+    async fn a_question_held_at_the_desk_goes_later_with_the_wait_it_is_about() {
+        let (r, _, seen, dir) = keyed_relay("desk-wait-kept", vec![canned(200, "{}")]).await;
+        let q = desk_question("claude", "Which database?");
+        desk_push_on(&r, &q, true, &[], &desk_clients(), moment(0.0)).await;
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (0, 1));
+        // The helper restarts meanwhile: the question is read back from parked.json.
+        *r.holds.lock().unwrap() = crate::hold::Holds::load(Some(&dir));
+        let due = r.holds.lock().unwrap().due(moment(HOLD_CAP_TEST), |_| false);
+        assert_eq!(due.len(), 1);
+        r.send_held(due, &[]).await;
+        let sent = bodies(&seen);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(gateway_problem(&sent[0], now() as i64), None);
+        let p = &sent[0]["payload"];
+        assert_eq!((&p["aps"]["category"], &p["record"], &p["fp"]), (&json!("AGENT_BLOCKED_ACT"), &json!("claude"), &json!(q.fp)));
+        assert_eq!(p["aps"]["alert"]["body"], "Which database?");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_question_the_gateway_held_goes_on_a_probe_with_the_wait_it_is_about() {
+        let (r, _, seen, dir) = keyed_relay("desk-wait-probe", vec![canned(202, HELD), canned(200, "{}"), canned(200, "{}")]).await;
+        let first = desk_question("claude", "Which database?");
+        let mut second = desk_question("codex", "Run it?");
+        second.block.block_id = "block:b2".into();
+        desk_push_on(&r, &first, false, &[], &desk_clients(), Moment::now()).await;
+        // The second is parked beside it without a request of its own.
+        assert!(r.holds.lock().unwrap().park_remote("a1b2c3d4", &second, Moment::now()));
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (1, 2));
+        let minute_ago = Moment { wall: now() - 61.0, mono: Some(crate::desk::mono() - 61.0) };
+        r.holds.lock().unwrap().asked("a1b2c3d4", DESK_SERVER, minute_ago);
+        // The probe goes (this server can't be asked, so it names no desk), then the other.
+        r.probe_held(&[]).await;
+        let sent = bodies(&seen);
+        assert_eq!((sent.len(), held(&r)), (3, 0));
+        let mut waits: Vec<(String, String)> = sent.iter().map(|b| (b["payload"]["record"].as_str().unwrap_or("").to_string(), b["payload"]["fp"].as_str().unwrap_or("").to_string())).collect();
+        assert_eq!(waits[0], ("claude".to_string(), first.fp.clone().unwrap()), "the first send named it too");
+        waits.remove(0);
+        waits.sort();
+        assert_eq!(waits, [("claude".to_string(), first.fp.clone().unwrap()), ("codex".to_string(), second.fp.clone().unwrap())]);
+        for b in &sent {
+            assert_eq!(b["payload"]["aps"]["category"], "AGENT_BLOCKED_ACT");
+            assert_eq!(gateway_problem(b, now() as i64), None);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Every field at the most the gateway takes, in characters of four bytes where a field
+    /// holds text: the payload stays within Apple's limit, and only the body gives way.
+    #[test]
+    fn the_largest_question_fits_the_limit_and_the_gateway_takes_it() {
+        let mut q = PushIntent::new(PushCategory::Blocked, BlockRef { server: format!("https://{}", "h".repeat(504)), session_id: format!("session:{}", "s".repeat(248)), block_id: format!("block:{}", "b".repeat(250)) });
+        q.state = Some("blocked".into());
+        q.record_id = Some("r".repeat(128));
+        q.agent = Some("🦖".repeat(200));
+        q.text = Some("🦖".repeat(5000));
+        q.fp = Some(crate::policy::fingerprint("blocked", None, q.text.as_deref()));
+        let ctx = BlockContext { window_id: Some(format!("window:{}", "w".repeat(249))), tab_label: Some("🦖".repeat(200)), block_label: None, session_label: Some("🦖".repeat(256)) };
+        let size = |m: &PushMessage| m.payload().to_string().len();
+        let mut largest = 0;
+        for body in ["🦖".repeat(5000), "\u{1}".repeat(5000), "\"".repeat(5000), "x".repeat(5000), "é".repeat(999)] {
+            q.text = Some(body);
+            for m in [PushMessage::compose(&q, &ctx), PushMessage::compose(&q, &ctx).stacked()] {
+                let p = m.payload();
+                assert!(size(&m) <= crate::push::MAX_PAYLOAD_BYTES, "{}", size(&m));
+                largest = largest.max(size(&m));
+                assert_eq!(gateway_problem(&crate::gateway::push_body(&m, 1000.0), 1000), None);
+                assert_eq!((p["server"].as_str().unwrap().len(), p["session_id"].as_str().unwrap().len(), p["window_id"].as_str().unwrap().len(), p["block_id"].as_str().unwrap().len()), (512, 256, 256, 256));
+                assert_eq!((p["aps"]["alert"]["title"].as_str().unwrap().chars().count(), p["aps"]["alert"]["subtitle"].as_str().unwrap().chars().count()), (120, 256));
+                assert_eq!((p["record"].as_str().unwrap().len(), p["fp"].as_str().unwrap().len(), &p["aps"]["category"]), (128, 16, &json!("AGENT_BLOCKED_ACT")));
+                assert!(!p["aps"]["alert"]["body"].as_str().unwrap().is_empty());
+            }
+        }
+        // The fields beside the body leave it room, and the cut uses the room there is.
+        assert!(largest > crate::push::MAX_PAYLOAD_BYTES - 8, "{largest}");
+        println!("largest payload: {largest} bytes");
     }
 
     #[tokio::test]

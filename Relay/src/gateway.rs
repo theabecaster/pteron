@@ -9,6 +9,7 @@ use crate::presence::{lease_outcome, LeaseAnswer};
 use crate::push::PushMessage;
 use crate::util::{now, Json};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub const USER_AGENT: &str = concat!("rex-duo-helper/", env!("CARGO_PKG_VERSION"));
@@ -177,10 +178,29 @@ async fn put_presence(d: &Device, tag: &str, ttl: u32) -> LeaseAnswer {
     }
 }
 
-/// One request, no retry: a push that is late is worth less than the next one.
+/// Said once per run: a gateway refused a question that names its wait.
+static PLAIN_AGAIN_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// One request, no retry: a push that is late is worth less than the next one. The one
+/// exception is a question that names its wait (`record`, `fp`, the category with actions)
+/// and gets a 400: a gateway from before those fields refuses it whole, so it goes once
+/// more as the question every gateway takes, without them. The phone then shows it with no
+/// actions, which is better than not at all. Whatever that second request brings stands.
 async fn post(m: &PushMessage, d: &Device) -> SendResult {
+    let (status, result) = post_once(m, d).await;
+    if status != Some(400) || m.wait.is_none() {
+        return result;
+    }
+    if !PLAIN_AGAIN_LOGGED.swap(true, Ordering::Relaxed) {
+        info!("the gateway refused a question that names its wait (400): sending such questions again without it");
+    }
+    post_once(&m.without_wait(), d).await.1
+}
+
+/// One request and what came of it, with the status when the gateway answered.
+async fn post_once(m: &PushMessage, d: &Device) -> (Option<u16>, SendResult) {
     let Some(url) = Url::parse(&format!("{}/v1/push", d.gateway)) else {
-        return SendResult::Failed("bad gateway address".into());
+        return (None, SendResult::Failed("bad gateway address".into()));
     };
     let body = push_body(m, now()).to_string();
     let headers = [
@@ -193,12 +213,12 @@ async fn post(m: &PushMessage, d: &Device) -> SendResult {
         let (status, retry_after) = (x.status, x.header("retry-after").map(String::from));
         // An answer that isn't the gateway's small JSON still tells the status.
         let body = x.body(16 << 10).await.unwrap_or_default();
-        Ok::<_, String>(outcome(status, &body, retry_after.as_deref()))
+        Ok::<_, String>((Some(status), outcome(status, &body, retry_after.as_deref())))
     };
     match tokio::time::timeout(TIMEOUT, exchange).await {
         Ok(Ok(r)) => r,
-        Ok(Err(e)) => SendResult::Failed(format!("could not reach the gateway: {e}")),
-        Err(_) => SendResult::Failed("the gateway did not answer in 10 s".into()),
+        Ok(Err(e)) => (None, SendResult::Failed(format!("could not reach the gateway: {e}"))),
+        Err(_) => (None, SendResult::Failed("the gateway did not answer in 10 s".into())),
     }
 }
 
@@ -322,6 +342,66 @@ mod tests {
         assert_eq!(body["collapse_id"], m.collapse_id.clone().unwrap());
         let expiration = body["expiration"].as_i64().unwrap();
         assert!((expiration - now() as i64 - 3600).abs() < 30);
+    }
+
+    /// A question that names its wait, as the policy makes one.
+    fn question() -> PushMessage {
+        let mut i = PushIntent::new(PushCategory::Blocked, BlockRef { server: "https://rex.example.ts.net".into(), session_id: "session:s1".into(), block_id: "block:01a1-b1".into() });
+        i.state = Some("blocked".into());
+        i.record_id = Some("claude".into());
+        i.text = Some("Which DB?".into());
+        i.fp = Some(crate::policy::fingerprint("blocked", None, Some("Which DB?")));
+        PushMessage::compose(&i, &BlockContext { window_id: Some("window:w1".into()), ..Default::default() }).stacked()
+    }
+
+    #[tokio::test]
+    async fn a_gateway_from_before_the_wait_gets_the_question_once_more_without_it() {
+        crate::util::testing::capture_log();
+        let (base, seen) = serve(vec![canned(400, r#"{"error":"invalid_request"}"#), canned(200, r#"{"apns_id":"11111111-2222"}"#)]).await;
+        let m = question();
+        assert_eq!(m.payload()["aps"]["category"], "AGENT_BLOCKED_ACT");
+        let r = Sender::Gateway.send(&m, &phone(&base)).await;
+        assert_eq!(r, SendResult::Sent(Some("11111111-2222".into())));
+        let bodies: Vec<Value> = seen.lock().unwrap().iter().map(|q| serde_json::from_slice(&q.body).unwrap()).collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["payload"], m.payload());
+        // The second is the same push in every other way.
+        let mut plain = m.payload();
+        plain.as_object_mut().unwrap().remove("record");
+        plain.as_object_mut().unwrap().remove("fp");
+        plain["aps"]["category"] = json!("AGENT_BLOCKED");
+        assert_eq!(bodies[1]["payload"], plain);
+        assert_eq!((&bodies[1]["collapse_id"], &bodies[1]["priority"], &bodies[1]["push_type"]), (&bodies[0]["collapse_id"], &bodies[0]["priority"], &bodies[0]["push_type"]));
+        assert!(bodies[1]["payload"].get("record").is_none() && bodies[1]["payload"].get("fp").is_none());
+
+        // Refused again: that stands, and there is no third request.
+        let (base, seen) = serve(vec![canned(400, r#"{"error":"invalid_request"}"#), canned(400, r#"{"error":"invalid_request"}"#), canned(200, "{}")]).await;
+        assert_eq!(Sender::Gateway.send(&m, &phone(&base)).await, SendResult::Failed("gateway answered 400 invalid_request".into()));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // Whatever the second brings is the answer.
+        let (base, seen) = serve(vec![canned(400, r#"{"error":"invalid_request"}"#), canned(410, r#"{"error":"unregistered","reason":"Unregistered"}"#)]).await;
+        assert_eq!(Sender::Gateway.send(&m, &phone(&base)).await, SendResult::Gone("Unregistered".into()));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // Said once, however often it happens, and without a word of the push.
+        let log = crate::util::testing::captured_log();
+        assert!(log.matches("refused a question that names its wait").count() <= 1, "{log}");
+        assert!(!log.contains("Which DB?") && !log.contains("claude"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn nothing_else_is_ever_sent_twice() {
+        // Any other answer to a question that names its wait: one request.
+        for (status, body) in [(401, r#"{"error":"unauthorized"}"#), (413, r#"{"error":"payload_too_large"}"#), (429, r#"{"error":"rate_limited"}"#), (500, "boom"), (502, r#"{"error":"apns_error"}"#)] {
+            let (base, seen) = serve(vec![canned(status, body), canned(200, "{}")]).await;
+            assert!(!matches!(Sender::Gateway.send(&question(), &phone(&base)).await, SendResult::Sent(_)), "{status}");
+            assert_eq!(seen.lock().unwrap().len(), 1, "{status}");
+        }
+        // A 400 for a push that names no wait: one request. There is nothing to leave out.
+        for m in [question().without_wait(), message(PushCategory::Done), message(PushCategory::Notice), PushMessage::test("https://rex.example.ts.net")] {
+            let (base, seen) = serve(vec![canned(400, r#"{"error":"invalid_request"}"#), canned(200, "{}")]).await;
+            assert_eq!(Sender::Gateway.send(&m, &phone(&base)).await, SendResult::Failed("gateway answered 400 invalid_request".into()));
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
     }
 
     #[tokio::test]

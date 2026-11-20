@@ -720,6 +720,33 @@ mod tests {
     }
 
     #[test]
+    fn a_held_question_keeps_the_wait_it_is_about_and_one_parked_before_reads_without_it() {
+        let dir = temp("wait-kept");
+        let mut h = Holds::load(Some(&dir));
+        let mut q = blocked("r1", "Q1");
+        q.fp = Some("d110a7daf17e741b".into());
+        h.decide(PHONE, &q, true, at(0.0));
+        // New words for the same record: the wait is the new one's.
+        let mut q2 = blocked("r1", "Q2");
+        q2.fp = Some("07d16acb842d33f1".into());
+        assert_eq!(h.decide(PHONE, &q2, true, at(1.0)), Verdict::Updated);
+        let back = Holds::load(Some(&dir));
+        assert_eq!(back.parked().len(), 1);
+        assert_eq!((back.parked()[0].record(), back.parked()[0].intent.fp.as_deref()), ("r1", Some("07d16acb842d33f1")));
+        assert_eq!(back.parked()[0].intent, q2);
+
+        // parked.json as 0.5.0 wrote it, with no `fp`: it reads, and has no wait to name.
+        let old = r#"[{"device_id":"a1b2c3d4","intent":{"category":"Blocked","block":{"server":"https://rex.example.ts.net","session_id":"session:s1","block_id":"block:b1"},"state":"blocked","record_id":"r1","blocked_kind":null,"agent":null,"headline":null,"text":"Q1"},"parked_at":1000000.0,"remote":false}]"#;
+        std::fs::write(dir.join(PARKED_FILE), old).unwrap();
+        let before = Holds::load(Some(&dir));
+        assert_eq!(before.parked().len(), 1);
+        assert_eq!(before.parked()[0].intent, blocked("r1", "Q1"));
+        assert_eq!(before.parked()[0].intent.fp, None);
+        assert!(!dir.join("parked.json.bad").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn both_files_survive_a_restart_and_a_recheck_drops_what_no_longer_waits() {
         use std::os::unix::fs::PermissionsExt;
         let dir = temp("restart");

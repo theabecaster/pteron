@@ -23,6 +23,10 @@ pub struct StatusReport {
     pub app: Option<String>,
     pub title: Option<String>,
     pub msg: Option<String>,
+    /// The wait's fingerprint (`fingerprint`), for a record whose state is exactly `blocked`.
+    /// It is made from the record's `state`, `kind` and `msg` as Rex gave them, not from the
+    /// trimmed fields above, because that is what the app compares it with.
+    pub fp: Option<String>,
 }
 
 /// The `app` of the status record `setup.sh` writes.
@@ -37,8 +41,10 @@ impl StatusReport {
         if rec.str("app") == Some(SETUP_APP) || rec.str("effective_app") == Some(SETUP_APP) {
             return None;
         }
+        let raw_state = rec.str("state")?;
         Some(StatusReport {
             record_id: e.str("id").or_else(|| rec.str("id")).unwrap_or("").to_string(),
+            fp: (raw_state == "blocked").then(|| fingerprint(raw_state, rec.str("kind"), rec.str("msg"))),
             state: rec.text("state")?,
             kind: rec.text("kind"),
             app: rec.text("effective_app").or_else(|| rec.text("app")),
@@ -46,6 +52,28 @@ impl StatusReport {
             msg: rec.text("msg"),
         })
     }
+}
+
+/// A short name for what an agent waits for: its state, kind and whole message, each as Rex
+/// gave it. The app makes the same name from the record it reads before it types an answer
+/// (`ActionGuard.fingerprint` in Packages/RexGlance), and types only when the two are equal,
+/// so this must stay that function byte for byte: FNV-1a, 64 bits, over a mark for present
+/// or missing, the text and an end mark for each part, as 16 hex characters. A missing kind
+/// or message differs from an empty one. `fixtures/fingerprints.json` holds the cases both
+/// sides are tested against.
+pub fn fingerprint(state: &str, kind: Option<&str>, message: Option<&str>) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut add = |bytes: &[u8]| {
+        for b in bytes {
+            hash = (hash ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for part in [Some(state), kind, message] {
+        add(&[u8::from(part.is_some())]);
+        add(part.unwrap_or("").as_bytes());
+        add(&[0xff]);
+    }
+    format!("{hash:016x}")
 }
 
 /// What the relay reacts to, already reduced from Rex events.
@@ -87,6 +115,10 @@ pub struct PushIntent {
     pub agent: Option<String>,
     pub headline: Option<String>,
     pub text: Option<String>,
+    /// A question's fingerprint (`StatusReport::fp`), which goes into its push with the record
+    /// id so the app can answer it. A question parked by an earlier version has none.
+    #[serde(default)]
+    pub fp: Option<String>,
 }
 
 impl PushIntent {
@@ -100,6 +132,7 @@ impl PushIntent {
             agent: None,
             headline: None,
             text: None,
+            fp: None,
         }
     }
 }
@@ -210,6 +243,7 @@ impl PushPolicy {
                     agent: rep.app,
                     headline: rep.title,
                     text: rep.msg,
+                    fp: rep.fp,
                 };
                 let pkey = format!("{bkey}|blocked");
                 if let Some(&t) = self.last_push.get(&pkey) {
@@ -245,6 +279,7 @@ impl PushPolicy {
                     agent: rep.app,
                     headline: rep.title,
                     text: rep.msg,
+                    fp: None,
                 })
             }
             _ => {
@@ -339,6 +374,7 @@ mod tests {
                 app: Some("claude".into()),
                 title: None,
                 msg: msg.map(Into::into),
+                fp: (state == "blocked").then(|| fingerprint(state, Some("question"), msg)),
             },
         )
     }
@@ -493,6 +529,71 @@ mod tests {
         assert!(r.allow("other", T0));
         assert!(!r.allow("d", at(5.0)));
         assert!(r.allow("d", at(10.0))); // 6/min refills one every 10 s
+    }
+
+    /// The cases the app's tests check `ActionGuard.fingerprint` against as well
+    /// (Packages/RexGlance, `FingerprintVectorTests`): one list, the same expected values.
+    #[test]
+    fn the_fingerprint_is_the_apps_for_every_shared_case() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!("../fixtures/fingerprints.json")).unwrap();
+        assert!(cases.len() >= 20);
+        let mut seen = std::collections::HashSet::new();
+        for c in &cases {
+            let name = c.str("name").unwrap();
+            let fp = fingerprint(c.str("state").unwrap(), c.str("kind"), c.str("message"));
+            assert_eq!(fp, c.str("fp").unwrap(), "{name}");
+            assert!(fp.len() == 16 && fp.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{name}");
+            assert!(seen.insert(fp), "{name} gives another case's fingerprint");
+        }
+        // The list has the cases that matter: missing against empty, and text that is trimmed
+        // elsewhere in this file.
+        let has = |kind: Value, message: Value| cases.iter().any(|c| c["state"] == "blocked" && c["kind"] == kind && c["message"] == message);
+        assert!(has(Value::Null, Value::Null) && has(json!(""), json!("")) && has(Value::Null, json!("")) && has(json!(""), Value::Null));
+        assert!(cases.iter().any(|c| c.str("message").is_some_and(|m| m != m.trim())));
+        assert!(cases.iter().any(|c| c.str("message").is_some_and(|m| m.len() > 1000)));
+    }
+
+    #[test]
+    fn a_report_names_its_wait_from_the_record_as_rex_gave_it() {
+        // The fields the helper shows are trimmed; the fingerprint is not.
+        let e = json!({"id": "claude", "record": {"state": "blocked", "kind": " permission ", "msg": "  Allow?\n", "app": "claude"}});
+        let r = StatusReport::from_event(&e).unwrap();
+        assert_eq!((r.kind.as_deref(), r.msg.as_deref()), (Some("permission"), Some("Allow?")));
+        assert_eq!(r.fp, Some(fingerprint("blocked", Some(" permission "), Some("  Allow?\n"))));
+        assert_ne!(r.fp, Some(fingerprint("blocked", Some("permission"), Some("Allow?"))));
+        // A blank message is no message to show, and still an empty or blank one to the app.
+        let blank = StatusReport::from_event(&json!({"id": "claude", "record": {"state": "blocked", "kind": "", "msg": "  "}})).unwrap();
+        assert_eq!((blank.kind, blank.msg), (None, None));
+        assert_eq!(blank.fp, Some(fingerprint("blocked", Some(""), Some("  "))));
+        let bare = StatusReport::from_event(&json!({"id": "claude", "record": {"state": "blocked"}})).unwrap();
+        assert_eq!(bare.fp, Some(fingerprint("blocked", None, None)));
+        // A value that is no string is a missing one, as the app reads it.
+        let odd = StatusReport::from_event(&json!({"id": "claude", "record": {"state": "blocked", "kind": 7, "msg": null}})).unwrap();
+        assert_eq!(odd.fp, bare.fp);
+        // Only a record that waits has one, and only when its state is that word exactly:
+        // the app answers no other.
+        for state in ["working", "done", "error", "idle", " blocked", "blocked ", "Blocked"] {
+            let r = StatusReport::from_event(&json!({"id": "claude", "record": {"state": state, "msg": "x"}})).unwrap();
+            assert_eq!(r.fp, None, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_question_carries_its_wait_and_a_trailing_one_its_own() {
+        let report = |msg: &str| RelayEvent::Status(block("block:b1"), StatusReport::from_event(&json!({"id": "claude", "record": {"state": "blocked", "kind": "question", "app": "claude", "msg": msg}})).unwrap());
+        let mut p = PushPolicy::new(30.0);
+        let first = intent(p.decide(report("Q1"), T0)).unwrap();
+        assert_eq!(first.record_id.as_deref(), Some("claude"));
+        assert_eq!(first.fp, Some(fingerprint("blocked", Some("question"), Some("Q1"))));
+        // Inside the window the next question waits, and goes with its own wait, not the first's.
+        p.decide(status_on("working", None, "claude", "block:b1"), at(3.0));
+        assert_eq!(p.decide(report("Q2"), at(5.0)), Decision::Deferred(at(30.0)));
+        let trailing = p.due(at(30.0));
+        assert_eq!(trailing.len(), 1);
+        assert_eq!((trailing[0].record_id.as_deref(), trailing[0].fp.clone()), (Some("claude"), Some(fingerprint("blocked", Some("question"), Some("Q2")))));
+        // A "finished" answers nothing.
+        let done = intent(p.decide(status_on("done", Some("ok"), "claude", "block:b1"), at(40.0))).unwrap();
+        assert_eq!(done.fp, None);
     }
 
     #[test]
