@@ -7,7 +7,7 @@ struct GlideLoaderTiming: Equatable {
     var fadeIn: CFTimeInterval = 0.18
     /// The cross-fade out when the pane's first frame is there.
     var fadeOut: CFTimeInterval = 0.15
-    /// One trip of the stroke along the outline, and one sway of the body.
+    /// One trip of the stroke along the outline.
     var loop: CFTimeInterval = 1.2
     /// Reduce Motion: one half of the still mark's slow breath.
     var breath: CFTimeInterval = 1.8
@@ -18,8 +18,8 @@ struct GlideLoaderTiming: Equatable {
 /// back from the park, or opens within `timing.delay`, shows none.
 ///
 /// Its motion is its own, not the launch's peel or fold: Glide's outline, faint, with a soft
-/// stroke that glides along it once per loop while the body sways a few degrees. With Reduce
-/// Motion the mark holds still and breathes slowly.
+/// stroke that glides along it once per loop. The body itself never turns or moves. With
+/// Reduce Motion the mark holds still and breathes slowly.
 ///
 /// Core Animation runs all of it in the render server: the delay, the fade and the loop are
 /// animations added once, so the main thread does nothing per frame, and a pane that opens fast
@@ -47,7 +47,6 @@ final class GlideLoader: UIView {
         } else {
             m.append(Motion(layer: "glide", keyPath: "strokeEnd", begin: timing.delay, duration: timing.loop, repeats: true))
             m.append(Motion(layer: "glide", keyPath: "strokeStart", begin: timing.delay, duration: timing.loop, repeats: true))
-            m.append(Motion(layer: "mark", keyPath: "transform.rotation.z", begin: timing.delay, duration: timing.loop, repeats: true))
         }
         return m
     }
@@ -176,15 +175,6 @@ final class GlideLoader: UIView {
             a.repeatCount = .infinity
             glide.add(a, forKey: a.keyPath)
         }
-        // The body leans into the glide and back, a few degrees.
-        let sway = CAKeyframeAnimation(keyPath: "transform.rotation.z")
-        sway.values = [-0.045, 0.06, -0.045]
-        sway.keyTimes = [0, 0.55, 1]
-        sway.timingFunctions = [CAMediaTimingFunction(name: .easeInEaseOut), CAMediaTimingFunction(name: .easeInEaseOut)]
-        sway.beginTime = now + timing.delay
-        sway.duration = timing.loop
-        sway.repeatCount = .infinity
-        mark.add(sway, forKey: "transform.rotation.z")
     }
 
     /// The pane's first frame is there: fades out from whatever it shows now and removes
@@ -208,13 +198,11 @@ final class GlideLoader: UIView {
     }
 
     /// Holds the loader in one moment of its loop, with no animation left, for a still picture:
-    /// fully faded in, the stroke between `strokeStart` and `strokeEnd` of the outline, the body
-    /// leaning by `tilt` radians.
-    func pose(strokeStart: CGFloat, strokeEnd: CGFloat, tilt: CGFloat) {
+    /// fully faded in, the stroke between `strokeStart` and `strokeEnd` of the outline.
+    func pose(strokeStart: CGFloat, strokeEnd: CGFloat) {
         for l in [layer, mark, glide] { l.removeAllAnimations() }
         layer.opacity = 1
         glide.strokeStart = strokeStart
         glide.strokeEnd = strokeEnd
-        mark.setAffineTransform(CGAffineTransform(rotationAngle: tilt))
     }
 }

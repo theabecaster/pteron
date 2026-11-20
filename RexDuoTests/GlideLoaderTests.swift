@@ -40,9 +40,10 @@ final class GlideLoaderTests: XCTestCase {
         XCTAssertEqual(t.loop, 1.2)
         let m = GlideLoader.motions(still: false, timing: t)
         XCTAssertEqual(m.first, GlideLoader.Motion(layer: "loader", keyPath: "opacity", begin: 0.4, duration: 0.18, repeats: false))
-        // The stroke's head and tail and the body's sway share one loop, and none starts before the fade.
+        // The stroke's head and tail share one loop, and none starts before the fade.
         let loops = m.filter(\.repeats)
-        XCTAssertEqual(loops.map(\.keyPath), ["strokeEnd", "strokeStart", "transform.rotation.z"])
+        XCTAssertEqual(loops.map(\.keyPath), ["strokeEnd", "strokeStart"])
+        XCTAssertFalse(m.contains { $0.layer == "mark" }, "the body never turns or moves")
         XCTAssertTrue(loops.allSatisfy { $0.duration == 1.2 && $0.begin == 0.4 })
     }
 
@@ -59,7 +60,8 @@ final class GlideLoaderTests: XCTestCase {
         let loader = GlideLoader(tint: .white, still: false)
         XCTAssertEqual(loader.addedMotions["loader"], ["show"])
         XCTAssertEqual(Set(loader.addedMotions["glide"] ?? []), ["strokeEnd", "strokeStart"])
-        XCTAssertEqual(loader.addedMotions["mark"], ["transform.rotation.z"])
+        XCTAssertEqual(loader.addedMotions["mark"], [], "the body never turns or moves")
+        XCTAssertFalse(loader.addedMotions.values.joined().contains { $0.contains("transform") || $0.contains("rotation") })
     }
 
     func testItIsAbout44PointsAndTakesNoTouches() {
@@ -209,7 +211,7 @@ final class GlideLoaderTests: XCTestCase {
         let loader = GlideLoader(tint: theme.uiFG, still: still)
         loader.center = CGPoint(x: pane.bounds.midX, y: pane.bounds.midY)
         pane.addSubview(loader)
-        loader.pose(strokeStart: 0.2, strokeEnd: 0.62, tilt: 0.03)
+        loader.pose(strokeStart: 0.2, strokeEnd: 0.62)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 2
         let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
@@ -228,7 +230,7 @@ final class GlideLoaderTests: XCTestCase {
     }
 
     /// Counts the pixels that are not the background, inside and outside the loader's box
-    /// (grown by 6 pt for the sway and the stroke's soft edge), and the strongest one's
+    /// (grown by 6 pt for the stroke's soft edge), and the strongest one's
     /// distance from the background.
     private func marks(_ p: (pixels: [UInt8], width: Int, height: Int, box: CGRect)) -> (inside: Int, outside: Int, strongest: Int) {
         let bg = Array(p.pixels[0..<3])

@@ -36,8 +36,8 @@ first layout, beside its fit claim and not after it (Fit and mirror): the claim'
 two round trips no longer come before the first request for a screen.
 
 Until the first screen can be drawn the pane shows `GlideLoader` in its center: Glide's outline,
-about 44 pt, with a soft stroke gliding along it in a 1.2 s loop while the body sways a few
-degrees (a still mark that breathes slowly with Reduce Motion), in the theme's text color. It
+about 44 pt, with a soft stroke gliding along it in a 1.2 s loop while the body holds still
+(a still mark that breathes slowly with Reduce Motion), in the theme's text color. It
 fades in over 180 ms only after 400 ms, and out over 150 ms, so a pane that opens fast shows
 nothing. "Connecting…" sits under it and waits 2.5 s. Core Animation runs all of it: no
 main-thread work per frame. A pane that has a screen never shows it.
