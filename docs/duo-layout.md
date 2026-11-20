@@ -42,6 +42,33 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   inline at 260 pt. Narrower (folded Duo, iPhone portrait, half the inner screen, and the folded
   Duo on its side, which is 594 pt inside its vertical bar) the same sidebar is a drawer over the
   tab.
+- **Tab mode** (`NavigationStyle`, `Prefs.navigation`). The other way around the app, like the
+  Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at its height,
+  the tab strip (`TabStrip`). Settings doesn't offer the choice yet
+  (`NavigationStyle.isAvailable`): the strip's parts are drawn and laid out, and what its chips
+  and its session chip do comes with the change that sets it.
+  - **A change applies at once.** `SidebarSplit` stops building the sidebar and gives the tab the
+    window's width, and the tab's header draws the strip instead of the title bar. The tab stays
+    the same view with the same panes and terminals (`NavigationSwitchTests`). On a wide window
+    the panes gain the sidebar's width, one fit resize; on a narrow one nothing changes size.
+  - **What the strip shows** is decided from its width alone (`StripLayout`), left to right: the
+    session chip, the session's tabs as chips (they scroll), the pane dots, the waiting pill,
+    Unzoom, New Tab, the pane menu. Unzoom and the pane menu are in the vertical bar where there
+    is one. The layout can keep one more 44 pt slot beside the pane menu, for a control of a
+    tab's floating windows (`hasFloatsControl`); with it the strip is compact 44 pt sooner. Parts a finger taps are 44 pt wide or more; 6 pt lie between the session chip and
+    the chips, between chips, and after them.
+  - **Compact.** Where the full strip would leave the chips less than 144 pt (the active chip
+    with its close button and one more chip), it is compact: New Tab and Unzoom are left to the
+    Pane Actions menu, the dots are a count ("2/5"), and the session chip is a glyph with its
+    waiting dot. That is under 440 pt beside a vertical bar and under 520 pt without one: every
+    iPhone in portrait, the folded Duo, half the inner screen. It is decided for the bar with
+    every part in it, so a pill or dots that come and go never move the rest.
+  - **Chips.** The active chip shows the tab's title, the status of the pane on screen, the
+    waking mark and a close button (`TabChip`); the close button goes where the chips have less
+    than 144 pt, and Close Tab stays in the pane menu. Any other chip shows its tab's status as
+    its sidebar row does, and cuts its title at 120 pt. A chip shows up to three pane icons.
+  - **Crease.** In book mode the whole strip, New Tab included, ends 3 pt short of the crease,
+    on the left page. Flat, it runs the bar's width as the title bar does.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Toggle Sidebar command and a swipe from

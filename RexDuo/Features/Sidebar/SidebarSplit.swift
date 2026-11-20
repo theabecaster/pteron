@@ -10,10 +10,15 @@ import SwiftUI
 /// frame changes once, on release, so the terminals refit and claim their size once. Opening slides
 /// the sidebar in over the tab, then the tab makes room; closing gives the tab its width at once while
 /// the sidebar slides away. Either way the terminals resize once, never per frame.
+///
+/// In tab mode (`NavigationStyle.tabs`) there is no sidebar in any posture: the tab has the whole
+/// width, and nothing of the sidebar is built. The tab stays the same view either way, so a
+/// change of mode keeps its panes and its state.
 struct SidebarSplit<Sidebar: View, Tab: View>: View {
     @Environment(Prefs.self) private var prefs
     let arrangement: Arrangement
     let theme: TermTheme
+    var navigation = NavigationStyle.sidebar
     @Binding var open: Bool
     @ViewBuilder var sidebar: Sidebar
     @ViewBuilder var tab: Tab
@@ -34,49 +39,13 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
             let inline = arrangement.inline
             let stored = width(container: cw)
             let w = live ?? stored
+            let shown = navigation == .sidebar
             ZStack(alignment: .topLeading) {
                 tab
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.leading, inline && makesRoom ? stored + 1 : 0)
-                if !inline {
-                    Color.black.opacity(open ? 0.3 : 0)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(open)
-                        .onTapGesture { open = false }
-                        .accessibilityLabel("Hide Sidebar")
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityHidden(!open)
-                        .animation(Self.slide, value: open)
-                }
-                sidebar
-                    .frame(width: w)
-                    .frame(maxHeight: .infinity)
-                    // The drawer's shadow comes from its background alone. On the whole sidebar it
-                    // would shadow every row and glyph on its own, and show through rows that fade.
-                    .background(theme.chrome.sidebar.shadow(color: .black.opacity(inline ? 0 : 0.25), radius: 12)
-                        .ignoresSafeArea())
-                    .overlay(alignment: .trailing) {
-                        Rectangle().fill(theme.chrome.divider).frame(width: 1).ignoresSafeArea()
-                    }
-                    // Dragged past the collapse point: letting go now hides it.
-                    .opacity(willCollapse ? 0.55 : 1)
-                    .offset(x: open ? 0 : SidebarWidth.hiddenOffset(width: w, leadingInset: geo.safeAreaInsets.leading))
-                    .allowsHitTesting(open)
-                    .accessibilityHidden(!open)
-                    .animation(Self.slide, value: open)
-                if open {
-                    handle(height: geo.size.height, inline: inline)
-                        .offset(x: w - Self.handleReach)
-                        .transition(.opacity)
-                        .gesture(resize(container: cw, stored: stored))
-                        .accessibilityElement()
-                        .accessibilityLabel("Sidebar Width")
-                        .accessibilityValue("\(Int(w)) points")
-                        .accessibilityAdjustableAction { d in
-                            let next = SidebarWidth.clamp(stored + (d == .increment ? 20 : -20), container: cw, inline: inline)
-                            store(next, container: cw)
-                        }
-                        .accessibilityAction(named: "Hide Sidebar") { open = false }
+                    .padding(.leading, shown && inline && makesRoom ? stored + 1 : 0)
+                if shown {
+                    sidebarLayers(geo, container: cw, stored: stored, width: w)
                 }
             }
             .onChange(of: open, initial: true) { was, isOpen in
@@ -93,6 +62,52 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
                     }
                 }
             }
+        }
+    }
+
+    /// The scrim under a drawer, the sidebar and its resize handle, over the tab.
+    @ViewBuilder
+    private func sidebarLayers(_ geo: GeometryProxy, container cw: CGFloat, stored: CGFloat, width w: CGFloat) -> some View {
+        let inline = arrangement.inline
+        if !inline {
+            Color.black.opacity(open ? 0.3 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(open)
+                .onTapGesture { open = false }
+                .accessibilityLabel("Hide Sidebar")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHidden(!open)
+                .animation(Self.slide, value: open)
+        }
+        sidebar
+            .frame(width: w)
+            .frame(maxHeight: .infinity)
+            // The drawer's shadow comes from its background alone. On the whole sidebar it
+            // would shadow every row and glyph on its own, and show through rows that fade.
+            .background(theme.chrome.sidebar.shadow(color: .black.opacity(inline ? 0 : 0.25), radius: 12)
+                .ignoresSafeArea())
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(theme.chrome.divider).frame(width: 1).ignoresSafeArea()
+            }
+            // Dragged past the collapse point: letting go now hides it.
+            .opacity(willCollapse ? 0.55 : 1)
+            .offset(x: open ? 0 : SidebarWidth.hiddenOffset(width: w, leadingInset: geo.safeAreaInsets.leading))
+            .allowsHitTesting(open)
+            .accessibilityHidden(!open)
+            .animation(Self.slide, value: open)
+        if open {
+            handle(height: geo.size.height, inline: inline)
+                .offset(x: w - Self.handleReach)
+                .transition(.opacity)
+                .gesture(resize(container: cw, stored: stored))
+                .accessibilityElement()
+                .accessibilityLabel("Sidebar Width")
+                .accessibilityValue("\(Int(w)) points")
+                .accessibilityAdjustableAction { d in
+                    let next = SidebarWidth.clamp(stored + (d == .increment ? 20 : -20), container: cw, inline: inline)
+                    store(next, container: cw)
+                }
+                .accessibilityAction(named: "Hide Sidebar") { open = false }
         }
     }
 

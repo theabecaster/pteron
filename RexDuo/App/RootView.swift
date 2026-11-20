@@ -189,7 +189,7 @@ struct RootView: View {
             // The root ignores the keyboard, so the arrangement doesn't change when it shows.
             let arr = Arrangement.decide(size: geo.size, division: division)
             NavigationStack {
-                SidebarSplit(arrangement: arr, theme: theme, open: $sidebar.open) {
+                SidebarSplit(arrangement: arr, theme: theme, navigation: prefs.navigation, open: $sidebar.open) {
                     SidebarView(mode: $sidebar.mode, onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
                         // A hidden sidebar reads no port: its Ports group catches up when it shows.
                         .environment(\.sidebarShown, sidebar.open)

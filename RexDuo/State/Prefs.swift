@@ -237,6 +237,11 @@ final class Prefs {
     // (`PathRecents.limit`); a file without an extension previews as text up to 1 MB
     // (`TextHint`). Insert Path writes a path relative to the program's folder, else `~/…`, else
     // absolute, escaped for a shell and as it is elsewhere, and never a line end (`PathInsert`).
+    // The tab strip has no settings beyond `navigation`: what it shows follows its width
+    // (`StripLayout`). Parts a finger taps are 44 pt wide or more and chips sit 6 pt apart; the
+    // strip is compact where its full form would leave the chips under 144 pt; a chip that
+    // isn't the active one cuts its title at 120 pt and shows at most 3 pane icons
+    // (`TabChip.iconLimit`); the strip ends 3 pt short of book mode's crease.
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0

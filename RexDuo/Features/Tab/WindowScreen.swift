@@ -723,14 +723,64 @@ struct WindowScreen: View {
         }
     }
 
+    /// The bar above the panes: the title bar, or in tab mode the tab strip in its place, at the
+    /// same height. Branched here, so a change of mode keeps the tab's panes and its state.
+    private func header(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        bar(w, theme, p)
+            // The palette opens just below the bar: where it ends, read at open.
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { [palette = model.palette] in
+                palette.titleBarBottom = $0
+            }
+            .onDisappear { [palette = model.palette] in palette.titleBarBottom = nil }
+    }
+
+    @ViewBuilder
+    private func bar(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        switch prefs.navigation {
+        case .sidebar: titleHeader(w, theme, p)
+        case .tabs: tabStrip(w, theme, p)
+        }
+    }
+
+    /// Under a short window (landscape iPhone) the bar is thinner, to leave rows for the panes.
+    private var barHeight: CGFloat { vSize == .compact ? 34 : 44 }
+
+    /// Tab mode's bar (`TabStrip`): the session's tabs as chips, with what the title bar holds.
+    private func tabStrip(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        let block = w.flatMap { activeBlock($0) }
+        // The panes on screen and the panes the dots page through, as the title bar has them.
+        var visible: Set<String> = [], dots: [String] = []
+        if let w, let block {
+            let single = p == nil && !useSplits(w)
+            visible = p.map { VisiblePanes.inTab(w, $0) } ?? VisiblePanes.inTab(w, active: block, single: single)
+            dots = (p.map(\.pageIDs) ?? (single ? w.pageBlockIDs : nil)) ?? []
+        }
+        let actions = StripActions(
+            pick: { id in
+                guard id != windowID else { return }
+                Haptic.selection()
+                onOpen(Selection(serverID: server.id, sessionID: sessionID, windowID: id))
+            },
+            chip: { action, id in if action == .close, id == windowID { requestCloseTab() } },
+            newTab: { newTab() },
+            unzoom: { toggleZoom() },
+            stepPane: { dir in if let w = window { switchPane(w, by: dir) } },
+            jump: jump)
+        return TabStrip(target: StripTarget(server: server, sessionID: sessionID, windowID: w?.id, block: block),
+                        dots: dots, visible: visible, zoomed: zoomedHere, bar: barEdge != nil,
+                        height: barHeight, theme: theme, actions: actions) {
+            if let w, let block { paneMenu(w, block: block, p) }
+        }
+    }
+
     /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title with the shown pane's
     /// status beside it, then the page dots and the pane menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
     /// title and status. Under a short window (landscape iPhone) it is thinner, to leave rows for the
     /// panes.
-    private func header(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+    private func titleHeader(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         let bar = barEdge != nil
         let short = vSize == .compact
-        let height: CGFloat = short ? 34 : 44
+        let height = barHeight
         return HStack(spacing: 0) {
             if !bar {
                 IconButton(symbol: "sidebar.left", label: sidebarVisible ? "Hide Sidebar" : "Show Sidebar",
@@ -771,11 +821,6 @@ struct WindowScreen: View {
         .padding(.trailing, 4)
         .background(theme.chrome.canvas)
         .animation(.snappy(duration: 0.2), value: zoomedHere)
-        // The palette opens just below the title bar: where it ends, read at open.
-        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { [palette = model.palette] in
-            palette.titleBarBottom = $0
-        }
-        .onDisappear { [palette = model.palette] in palette.titleBarBottom = nil }
     }
 
     private func titleBar(_ w: WindowInfo, _ theme: TermTheme, subtitle showsSubtitle: Bool) -> some View {

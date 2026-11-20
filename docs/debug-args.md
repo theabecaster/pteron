@@ -142,8 +142,9 @@ builds.
   without the sidebar).
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
   ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`, and `portRows` for the Ports group's rows), how many
-  progress values were written (`progressWrites`), and how often the tab screen and the pane
-  menu's Arrange ran (`windowScreens`, `paneMenuItems`), to check that progress reports re-render
+  progress values were written (`progressWrites`), how often the tab screen and the pane
+  menu's Arrange ran (`windowScreens`, `paneMenuItems`), and how often the tab strip and its
+  chips ran (`tabStrips`, `tabChips`), to check that progress reports re-render
   only the status leaf and that an agent's spinning title re-renders neither: `xcrun simctl spawn <id> log show --last 1m --predicate 'eventMessage CONTAINS
   "RENDER_COUNT"'`.
 - `-sidebarFoldBench <cycles>`: 8 s after launch, fold and open every machine and session that many
