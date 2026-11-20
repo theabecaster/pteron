@@ -87,6 +87,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
     }
 
+    /// Sharing this pane's output: Share… in the edit menu and Share ▸ in the pane menu. Nil
+    /// where the pane has no server (a replay).
+    var share: PaneShare? {
+        didSet { share?.host = self }
+    }
+
     /// The pane's size with the software keyboard down, from the layout around it; nil when
     /// that isn't known. The grid is fitted to its height while the keyboard covers the pane.
     private var restSize: CGSize?
@@ -604,6 +610,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // Once this menu has gone: Copy for what is selected now.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.selectionUI.showMenu() }
         })
+        // The selection as plain text, through the share sheet. Formatted off the main thread; the
+        // selection goes once the sheet is up.
+        if term.hasActiveSelection, let share {
+            items.append(UIAction(title: "Share…", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                guard let self else { return }
+                share.shareSelection(at: self.menuTarget) { [weak self] in self?.clearSelection() }
+            })
+        }
         return UIMenu(children: items)
     }
 
@@ -1518,6 +1532,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if let s = Self.forcedStatus { showStatus(s) }  // `-forceStatus` (testing)
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
             if isActive { FilesTest.run(on: self) }  // `-filesTest` (testing, FilesTest.swift)
+            if isActive { ShareTest.run(on: self) }  // `-shareTest` (testing, ShareTest.swift)
             if isActive { KeyboardTest.run(on: self) }  // `-keyboardTest` (testing, KeyboardTest.swift)
             if isActive { FindScript.run(on: self) }  // `-findScript` (testing, spike S1, FindScript.swift)
             // `-typeTest <text>` (Debug builds, testing): types into the live shell.

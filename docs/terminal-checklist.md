@@ -85,6 +85,7 @@ How a row is verified:
 | 50 | Teardown | `GhosttyIntegrationTests.testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane` | No terminal, render-thread pane or thread left. |
 | 50a | OSC 9;4 progress: a ring in the tab row and overview card | RexKit `TermProgressTests`, `AlertEventsTests`, `TabBadgeTests`, `BlockBoxTableTests`; live (`printf '\e]9;4;1;40\a'` in a `zz-` pane) | Rex sends it as the `progress_report` block event; the terminal engine never sees it. No ring in the title bar or for a pane with an OSC 7501 record; gone 15 s after the last report ([sidebar.md](sidebar.md), Progress rings). |
 | 50b | OSC 9 / 777 desktop notification: a notice toast | `AlertEventsTests`, `NoticeToastTests`, `NoticeFilterTests`, `AlertCopyTests`; live (`printf '\e]9;zz probe\a'` with the pane off screen, then on screen) | The `desktop_notification` block event. Off screen only, never for an agent's pane ([notifications.md](notifications.md)). |
+| 50c | Share output: selection, screen, All Output | `ShareTests`, `ShareCompatibilityTests`, RexKit `StreamInputTests` (pending input); live in a `zz-` pane (below, Share) | Share… is last in the edit menu with a selection; Share ▸ in the pane menu holds Plain and Styled, each Screen and All Output. Styled documents run nothing, keep only web and mail links, and use the theme's colors and Menlo. All Output reads in 64–256 KiB chunks, one at a time, waiting for typed input ([terminal.md](terminal.md), Share). |
 | 51 | Backpressure | `TerminalBackpressureTests`, RexKit `StreamBackpressureTests`, `GhosttyCoreTests.testABacklogAboveTheMarkSignalsAndClears` | Above 4 MB of unparsed output the stream stops reading its data socket; below 1 MB it goes on, in order. Input and control calls are not held. Not run live against a real flood. |
 
 ## Taps: links, prompt clicks, OSC 52 (rows 29 to 31)
@@ -178,6 +179,22 @@ In a `zz-find` session with `seq 1 3000; echo error` and a few lines with `error
 5. `vim` on the alternate screen: the bar is at the top, below the chip; a match under it sends it
    to the bottom on the next step.
 6. `yes | head -n 20000` with find open: the count grows, typing stays smooth.
+
+## Share (about 5 minutes)
+
+In a `zz-share` pane:
+
+1. `printf '\e]8;;javascript:alert(1)\e\\click\e]8;;\e\\ <script>alert(2)</script>\n'`, then
+   Share ▸ Styled › Screen and open the file in Safari (or Quick Look): nothing runs, `click` is
+   plain text, `<script>` shows as text.
+2. `ls --color /` and `printf '\e[7m inverse \e[0m\n'`, Styled › All Output: the theme's colors,
+   Menlo, not Courier. Inverse cells: note whether they keep the computer's colors (the known
+   risk).
+3. `seq 1 2000000`, then Plain › All Output: progress with Cancel. Type in another pane of the same
+   server meanwhile: each key lands within a chunk (about 100 ms). Open the tab overview during
+   the read: it finishes or retries once.
+4. The share sheet on the unfolded Duo and on the iPad with `-simulateDuo`: it points at the pane
+   menu (title bar) or the window's bar edge, and at the selection for Share….
 
 ## Manual script (about 5 minutes)
 

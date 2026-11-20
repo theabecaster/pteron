@@ -11,7 +11,14 @@ struct Selection: Hashable, Codable {
 
 /// A short, unobtrusive notice (e.g. an action the server refused). One at a time; fades on its own.
 /// A notice can carry one button (Retry), and a running job's notice shows its progress with
-/// Cancel and stays until the job replaces it.
+/// Cancel.
+///
+/// Two places feed it:
+/// - **The slot**: plain notices (`show`), and a transfer's progress (`showProgress`). A plain
+///   notice shows its full time: progress that comes meanwhile waits and shows when it hides.
+/// - **The job lane**: one long job at a time (a share of a pane's whole output). Its progress
+///   shows whenever the slot is empty, so a plain notice over it shows its full time and the job's
+///   progress and Cancel come back after. A second job waits until the first ends.
 @MainActor
 @Observable
 final class Notice {
@@ -24,6 +31,11 @@ final class Notice {
         var run: @MainActor () -> Void
     }
 
+    /// A job in the lane (`beginJob`).
+    struct JobID: Hashable {
+        fileprivate let raw: Int
+    }
+
     private(set) var message: String?
     private(set) var style = Style.error
     /// 0...1 while a job runs; nil for a plain notice.
@@ -32,47 +44,169 @@ final class Notice {
     private(set) var actionTitle: String?
     @ObservationIgnored private var action: Action?
     @ObservationIgnored private var hide: Task<Void, Never>?
+    /// How long a plain notice shows, without and with a button. Tests shorten them.
+    @ObservationIgnored var plainSeconds = 3.5
+    @ObservationIgnored var actionSeconds = 6.0
+
+    /// What the slot holds.
+    private enum Slot {
+        case empty
+        case plain(String, Style, Action?)
+        case progress(String, Double, Action)
+    }
+    @ObservationIgnored private var slot = Slot.empty
+    /// Progress that came while a plain notice was up; it shows when that notice hides.
+    @ObservationIgnored private var heldProgress: (text: String, fraction: Double, cancel: Action)?
+
+    private struct Job {
+        var id: JobID
+        var text: String
+        var fraction: Double
+        var cancel: Action
+        /// A job shows from its first `progress`, so one that ends at once never shows.
+        var shown: Bool
+    }
+    @ObservationIgnored private var job: Job?
+    @ObservationIgnored private var nextJob = 0
+    /// Jobs waiting for the lane, oldest first.
+    @ObservationIgnored private var laneWaiters: [(id: Int, resume: CheckedContinuation<Bool, Never>)] = []
 
     func show(_ text: String, style: Style = .error, action: Action? = nil) {
-        self.style = style
-        message = text
-        progress = nil
-        self.action = action
-        actionTitle = action?.title
+        slot = .plain(text, style, action)
+        heldProgress = nil
         hide?.cancel()
         // Long enough to reach a button.
-        let wait: UInt64 = action == nil ? 3_500_000_000 : 6_000_000_000
+        let wait = action == nil ? plainSeconds : actionSeconds
         hide = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: wait)
+            try? await Task.sleep(for: .seconds(wait))
             guard !Task.isCancelled else { return }
-            self?.dismiss()
+            self?.plainHid()
         }
+        render()
     }
 
-    /// A running job: `text` with its progress and a Cancel button. It stays until the next `show`
-    /// or `dismiss`.
+    /// A transfer's progress: `text` with its progress and a Cancel button. It stays until the next
+    /// `show` or `dismiss`. A plain notice that is up stays up: this shows when it hides.
     func showProgress(_ text: String, fraction: Double, cancel: @escaping @MainActor () -> Void) {
+        let a = Action(title: "Cancel", run: cancel)
+        if case .plain = slot {
+            heldProgress = (text, fraction, a)
+            return
+        }
         hide?.cancel()
-        style = .neutral
-        message = text
-        progress = fraction
-        action = Action(title: "Cancel", run: cancel)
-        actionTitle = "Cancel"
+        slot = .progress(text, fraction, a)
+        render()
     }
 
+    /// Puts the slot away. A job in the lane shows again.
     func dismiss() {
         hide?.cancel()
-        message = nil
-        progress = nil
-        action = nil
-        actionTitle = nil
+        slot = .empty
+        heldProgress = nil
+        render()
     }
 
-    /// Puts the notice away and runs its button's action.
+    /// Puts the notice away and runs its button's action. A job's Cancel leaves its progress up
+    /// until the job ends.
     func runAction() {
+        if case .empty = slot {
+            job?.cancel.run()
+            return
+        }
         let a = action
         dismiss()
         a?.run()
+    }
+
+    private func plainHid() {
+        hide = nil
+        if let p = heldProgress {
+            heldProgress = nil
+            slot = .progress(p.text, p.fraction, p.cancel)
+        } else {
+            slot = .empty
+        }
+        render()
+    }
+
+    // MARK: Job lane
+
+    /// Takes the lane for a job, waiting while another job holds it. Nil when the waiting task is
+    /// cancelled first. The job shows from its first `progress`, with `text` and Cancel.
+    func beginJob(text: String, cancel: @escaping @MainActor () -> Void) async -> JobID? {
+        nextJob += 1
+        let raw = nextJob
+        if job != nil {
+            let got = await withTaskCancellationHandler {
+                await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+                    if Task.isCancelled { c.resume(returning: false) } else { laneWaiters.append((raw, c)) }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in self?.dropWaiter(raw) }
+            }
+            guard got, !Task.isCancelled else {
+                if got { passLane() }
+                return nil
+            }
+        }
+        let id = JobID(raw: raw)
+        job = Job(id: id, text: text, fraction: 0, cancel: Action(title: "Cancel", run: cancel), shown: false)
+        return id
+    }
+
+    /// The job's progress, 0...1, and optionally new text. It shows when the slot is empty.
+    func progress(_ id: JobID, fraction: Double, text: String? = nil) {
+        guard var j = job, j.id == id else { return }
+        j.fraction = fraction
+        if let text { j.text = text }
+        j.shown = true
+        job = j
+        if case .empty = slot { render() }
+    }
+
+    /// The job is over: its progress goes, and the next job waiting gets the lane.
+    func endJob(_ id: JobID) {
+        guard job?.id == id else { return }
+        job = nil
+        render()
+        passLane()
+    }
+
+    /// True while a job holds the lane.
+    var jobRunning: Bool { job != nil }
+
+    private func passLane() {
+        guard job == nil, !laneWaiters.isEmpty else { return }
+        laneWaiters.removeFirst().resume.resume(returning: true)
+    }
+
+    private func dropWaiter(_ raw: Int) {
+        guard let i = laneWaiters.firstIndex(where: { $0.id == raw }) else { return }
+        laneWaiters.remove(at: i).resume.resume(returning: false)
+    }
+
+    // MARK: What shows
+
+    private func render() {
+        var next: (String, Style, Double?, Action?)?
+        switch slot {
+        case .plain(let text, let style, let a): next = (text, style, nil, a)
+        case .progress(let text, let f, let a): next = (text, .neutral, f, a)
+        case .empty:
+            if let j = job, j.shown { next = (j.text, .neutral, j.fraction, j.cancel) }
+        }
+        guard let next else {
+            if message != nil { message = nil }
+            if progress != nil { progress = nil }
+            action = nil
+            if actionTitle != nil { actionTitle = nil }
+            return
+        }
+        if style != next.1 { style = next.1 }
+        if message != next.0 { message = next.0 }
+        if progress != next.2 { progress = next.2 }
+        action = next.3
+        if actionTitle != next.3?.title { actionTitle = next.3?.title }
     }
 }
 

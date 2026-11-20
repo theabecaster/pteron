@@ -24,6 +24,9 @@ Manual device script: [terminal-checklist.md](terminal-checklist.md), "Selection
 - **Tap elsewhere** clears. A tap within 3 columns and 1 row of the cursor (terminal focused, no
   selection, no mouse-tracking program) shows Paste.
 - Pointer (mouse, trackpad) drags select directly, with no loupe, handles or haptics.
+- **Share…** is the edit menu's last item, after Select All, whenever there is a selection: the
+  selection as plain text through the share sheet, formatted off the main thread, then cleared
+  once the sheet is up ([terminal.md](terminal.md), Share).
 - Without a selection nothing is drawn and no touch is intercepted.
 
 ## Why our own handles and not UITextInteraction

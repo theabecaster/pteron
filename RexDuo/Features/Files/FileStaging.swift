@@ -8,12 +8,14 @@ struct StagedFile: Equatable, Sendable {
     var size: Int64
 }
 
-/// The app's own copies of files on their way out (`Outgoing`) or in (`Incoming`), in its
-/// temporary folder. Each file has a folder of its own, so two files of one name don't collide.
-/// A send removes its copies when it ends; what a crash left behind goes at the next launch.
+/// The app's own copies of files on their way out (`Outgoing`), in (`Incoming`) or to the share
+/// sheet (`Shared`), in its temporary folder. Each file has a folder of its own, so two files of
+/// one name don't collide. A send or a share removes its copies when it ends; what a crash left
+/// behind goes at the next launch.
 enum FileStaging {
     static var outgoing: URL { FileManager.default.temporaryDirectory.appendingPathComponent("Outgoing", isDirectory: true) }
     static var incoming: URL { FileManager.default.temporaryDirectory.appendingPathComponent("Incoming", isDirectory: true) }
+    static var shared: URL { FileManager.default.temporaryDirectory.appendingPathComponent("Shared", isDirectory: true) }
 
     /// A new, empty folder under `root`.
     static func folder(in root: URL) throws -> URL {
@@ -57,10 +59,16 @@ enum FileStaging {
         for f in files { try? FileManager.default.removeItem(at: f.url.deletingLastPathComponent()) }
     }
 
+    /// Removes a folder made by `folder(in:)`, with what is in it.
+    static func remove(_ folder: URL) {
+        try? FileManager.default.removeItem(at: folder)
+    }
+
     /// At launch: whatever an earlier run left.
     static func clearAll() {
         try? FileManager.default.removeItem(at: outgoing)
         try? FileManager.default.removeItem(at: incoming)
+        try? FileManager.default.removeItem(at: shared)
     }
 
     /// Whether the phone's network costs money now (cellular, a hotspot). Asks the system once.

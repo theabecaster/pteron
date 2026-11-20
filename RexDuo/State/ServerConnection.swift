@@ -966,6 +966,14 @@ final class ServerConnection: Identifiable {
         return trimmed.suffix(lines).joined(separator: "\n")
     }
 
+    /// Reads a pane's whole output for a share (`OutputReader`): before each request it waits
+    /// while any pane on this server has typed input on its way, and it stops on a new
+    /// `connectionSerial`. `source` stands in for this connection in tests.
+    func formatChunks(_ sid: String, _ bid: String, form: OutputForm, reader: OutputReader,
+                      from source: OutputSource? = nil) async throws(OutputReadFailure) {
+        try await reader.read(form, session: sid, block: bid, from: source ?? self)
+    }
+
     func clear(_ sid: String, _ bid: String) async {
         await act("clear the pane", session: nil) {
             try await self.control.blockCall("com.superlogical.terminal.clear", session: sid, block: bid)
@@ -1011,4 +1019,14 @@ final class ServerConnection: Identifiable {
     func windowAgent(_ w: WindowInfo) -> AgentKind? {
         w.allBlocks.lazy.compactMap { self.meta[$0.id]?.agentKind }.first
     }
+}
+
+extension ServerConnection: OutputSource {
+    func outputCall(_ method: String, session: String, block: String, args: JSONObject) async throws -> JSONObject {
+        try await control.blockCall(method, session: session, block: block, args: args)
+    }
+
+    var outputConnected: Bool { control.state == .connected }
+
+    func inputIdle() async { await control.inputActivity.idle() }
 }

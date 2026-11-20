@@ -41,6 +41,7 @@ public final class RexControl {
     public let client: ClientInfo
     public private(set) var state: State = .idle {
         didSet {
+            inputActivity.connection(state == .connected)
             onStateChange?(state)
             if state == .connected, oldValue != .connected { notifyConnected() }
         }
@@ -59,6 +60,9 @@ public final class RexControl {
     /// have stopped: nothing changes until Rex or the app is updated. `kick()` and `wake()` (the
     /// user asked, or the app came back) still try once.
     public private(set) var retryStopped = false
+
+    /// Which of this connection's terminal streams have typed input on its way.
+    public let inputActivity = InputActivity()
 
     public var onEvent: ((_ seq: Int, _ event: JSONObject) -> Void)?
     public var onStateChange: ((State) -> Void)?

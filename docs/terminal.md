@@ -369,3 +369,83 @@ to the phone. The wire rules are in [rex-protocol.md](rex-protocol.md), Files.
 - `-filesTest` drives all of this in the simulator, which can't tap through a picker
   ([debug-args.md](debug-args.md)). Debug builds log the SHA-256 of each file sent (`FILES_SENT`)
   and opened (`FILES_OPENED`), to check against the computer's copy.
+
+## Share
+
+A pane's output goes to the share sheet, as text or as a styled HTML file with the theme's
+colors (`Features/Files/ShareOutput.swift`). Nothing new shows on a pane, and nothing runs until a
+Share item is chosen.
+
+- **Where.** "Share…" is last in the selection's edit menu, after Select All, on every non-empty
+  selection: the selection as plain text, as Copy takes it. "Share ▸" sits in the pane menu after
+  Find…, one submenu of two titled sections, Plain and Styled, each with Screen and All Output.
+  Screen is the viewport as drawn, scrolled rows and rows under the keyboard included, each row
+  its own line. All Output is the screen and scrollback as the server holds it (the active screen
+  for a full-screen program).
+- **Sources.** The selection and the screen come from the pane's own terminal: the libghostty-vt
+  formatter (`GhosttyCore.format(scope:emit:)`), in one `termLock` section, so only that pane's
+  parsing waits. The selection is formatted when Share… is tapped, as Copy takes it, so a tap
+  that clears it a moment later changes nothing; the screen is formatted on a detached task. They
+  work offline and on any server. All Output asks the server:
+  `terminal.format` (`text` with `trim` and `unwrap`, or `html`) with `max_bytes`, then
+  `blob_read` with the same `id` until `eof` or `total` (rex-protocol.md, Methods used).
+- **Chunks** (`ChunkSizer`). The first request is 64 KiB; each later one is sized to take about
+  100 ms at the throughput the previous one had, between 64 and 256 KiB. One request is out at a
+  time, and before each the reader waits while any pane on that server has typed input on its
+  way (`TerminalStream.hasPendingInput`, gathered in `RexControl.inputActivity`; observed, not
+  polled). A stream leaves that count when it stops or goes. The wait also ends when the
+  connection drops, and the read checks the connection before and after it, so a drop with
+  input queued ends the read at once. A keystroke's reply waits behind at most one chunk: about
+  100 ms, up to about 250 ms at 2 Mbps. The reconnect `readScreen` (900 KB chunks) is unchanged.
+- **Retry and connections.** A `not_found` mid-read (a concurrent `format` evicted the id, or it
+  expired) starts the read over once with a new `format`. A second one, a lost connection, or a
+  new connection (`connectionSerial`; the id belongs to the old one) ends the read, deletes its
+  folder and shows "Couldn't read the output." with Retry, or "The pane has closed." when the
+  pane is gone. `method_not_found` ends it without Retry and hides All Output on that
+  connection.
+- **Styled.** The document (`ShareHTML`) puts a Content Security Policy right after
+  `<meta charset>` (`default-src 'none'; style-src 'unsafe-inline'; form-action 'none';
+  base-uri 'none'`), the theme's 256 colors as `--vt-palette-N` custom properties marked
+  `!important` (server HTML has no palette, and the local formatter's own palette block loses to
+  them), the theme's background and foreground over the wrapper's inline defaults, and Menlo
+  (`ui-monospace`) over the wrapper's inline `monospace`, which iOS draws in Courier. Colors are
+  `#rrggbb` from components clamped to 0...1. RGB colors programs set stay as they are; a cell the
+  server writes with an explicit hex of the computer's default colors keeps it. Inverse video
+  comes as `filter: invert(100%)` on a run with no background, which would flip only the text to
+  a color near the page's; such a run gets the theme's background, so both flip.
+- **Links** (`LinkSanitizer`). Each `href` is decoded once as a browser does, tabs and line breaks
+  are removed, C0 controls and spaces trimmed at its ends, and it is kept only if it starts with
+  `http:`, `https:` or `mailto:` in any case; otherwise the attribute goes and the text stays. The
+  formatter escapes `<` and `>` in text and attributes, so a chunk holds back from its last `<`
+  that has no `>` and a split tag comes out whole. Non-ASCII URLs arrive as Latin-1 byte entities
+  and stay so.
+- **Forms and files.** Plain text up to 256 KiB goes as text; above that, and every styled share,
+  as a file `<Tab title> <yyyy-MM-dd HH.mm>.txt|html` in its own folder under `tmp/Shared`,
+  deleted when the sheet goes and swept at launch. Every file is written off the main thread
+  (`ShareFile`), styled ones through the link cleaning.
+- **Limits.** All Output text over 32 MiB keeps the newest 32 MiB (`TextCap`): it reads from
+  `total - 32 MiB`, drops the U+FFFD the server sends for each byte of a character the offset
+  cut through, starts after the first line break (or at the first whole character) and begins
+  with `[Earlier output not included: N MB]`. Styled output over 8 MiB is refused from the first
+  reply's `total`, before reading on: "Too much output to share styled." offers Share Plain.
+  Without a `total` in the first reply, the first `blob_read`'s total, else the bytes read so
+  far, decide. On an expensive network a read over 25 MB asks first.
+- **Progress** (`Notice` job lane). A read of more than one chunk shows "Reading the output · N%"
+  with Cancel in the notice's job lane: a plain notice that comes meanwhile shows its full time,
+  then the progress and Cancel come back, and a transfer's progress (`showProgress`) never
+  replaces a plain notice that is up. One job at a time: a second share waits until the first
+  ends or is cancelled. Cancel deletes the folder.
+- **In the background.** An All Output read runs inside a `BackgroundTask`. When its time runs out
+  the read stops, the folder is deleted, the lane clears and no sheet follows; nothing resumes on
+  return. A read that finishes in the background keeps its file and presents the sheet on return
+  if the pane still exists.
+- **Offline.** Selection and Screen work. All Output says "Needs a connection to the computer."
+  and its rows stay, so the menu keeps its shape. Empty output or selection: "Nothing to share."
+- **The sheet** comes from the topmost controller, always with a popover source (an iPad and
+  `-simulateDuo` make it a popover): the edit menu's target for the selection, the pane's
+  top-trailing corner under the title bar's menu, or the middle of the window's edge facing away
+  from the system's vertical bar (`ShareAnchor`). It carries the tab's title as subject and in its
+  header. The selection is formatted first and cleared once the sheet is up.
+- **Compatibility.** Selection and Screen need no server method. All Output needs `format` and
+  `blob_read` (both at revision 13 and below); its rows hide only when the pane's creator on its
+  host is known to lack one, or a read on this connection found one missing.

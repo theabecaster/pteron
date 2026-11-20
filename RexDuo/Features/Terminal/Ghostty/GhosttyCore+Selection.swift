@@ -225,19 +225,53 @@ extension GhosttyCore {
     /// The selected text as Ghostty copies it: plain, soft-wrapped rows joined into the line the
     /// program wrote, spaces at the end of each line and blank lines at the end removed.
     /// Nil without a selection.
-    var selectedText: String? {
+    var selectedText: String? { format(scope: .selection, emit: .plain) }
+
+    /// What a share formats from the pane's own terminal.
+    enum FormatScope: Sendable {
+        /// The selection, as Copy takes it (`selectedText`).
+        case selection
+        /// The viewport as drawn: every row of the grid at the place the view is scrolled to,
+        /// rows under the keyboard included, each row its own line.
+        case viewport
+    }
+
+    enum FormatEmit: Sendable {
+        case plain
+        /// Inline-styled HTML, with the palette as CSS variables (`--vt-palette-N`) in a
+        /// `<style>` block before the content.
+        case html
+    }
+
+    /// Formats the selection or the viewport in one `termLock` section, which stalls only this
+    /// pane's parsing. Callable from any thread: a share runs it off the main thread. Nil when
+    /// there is nothing to format (no selection) or the formatter fails.
+    func format(scope: FormatScope, emit: FormatEmit) -> String? {
         withTerminal { t -> String? in
-            guard var selection = Self.currentSelection(t) else { return nil }
+            var selection: GhosttySelection
+            switch scope {
+            case .selection:
+                guard let current = Self.currentSelection(t) else { return nil }
+                selection = current
+            case .viewport:
+                let size = Self.grid(t)
+                guard let start = Self.ref(t, (0, 0)), let end = Self.ref(t, (size.cols - 1, size.rows - 1)) else { return nil }
+                selection = GhosttySelection(start: start, end: end, rectangle: false)
+            }
             // The formatter borrows the terminal, and a snapshot restore replaces the terminal,
-            // so it lives for this one copy.
+            // so it lives for this one call.
             var formatter: GhosttyFormatter?
             guard ghostty_formatter_terminal_new(nil, &formatter, t) == GHOSTTY_SUCCESS, let formatter else { return nil }
             defer { ghostty_formatter_free(formatter) }
-            var emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+            var format = emit == .html ? GHOSTTY_FORMATTER_FORMAT_HTML : GHOSTTY_FORMATTER_FORMAT_PLAIN
             var yes = true
-            ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &emit)
-            ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &yes)
+            // The selection is copied as the program wrote it; the viewport keeps its rows.
+            var unwrap = scope == .selection
+            var extras = GhosttyFormatterExtras(GHOSTTY_FORMATTER_EXTRA_PALETTE)
+            ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &format)
+            ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap)
             ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &yes)
+            ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EXTRAS, &extras)
             guard ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else { return nil }
             var bytes: UnsafeMutablePointer<UInt8>?
             var count = 0

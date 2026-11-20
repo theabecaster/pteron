@@ -861,14 +861,14 @@ final class PushRegistrar {
     private func sendPresence(active: Bool) {
         let targets = channel.computers.filter { reconciler.relay($0) != nil }
         guard !targets.isEmpty else { return }
-        let bg = BackgroundTask(name: "push_presence", enabled: !active)
+        let bg = active ? nil : BackgroundTask(name: "push_presence") {}
         Task {
             await withTaskGroup(of: Void.self) { g in
                 for id in targets {
                     g.addTask { await self.presence(id, active) }
                 }
             }
-            bg.end()
+            bg?.end()
         }
     }
 }
@@ -904,22 +904,5 @@ final class ServerHelpers: HelperChannel {
         } catch {
             return .failure(HelperFailure(error))
         }
-    }
-}
-
-/// `beginBackgroundTask`, ended once by whichever comes first: the work or iOS's deadline.
-@MainActor
-private final class BackgroundTask {
-    private var id: UIBackgroundTaskIdentifier = .invalid
-
-    init(name: String, enabled: Bool) {
-        guard enabled else { return }
-        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in self?.end() }
-    }
-
-    func end() {
-        guard id != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(id)
-        id = .invalid
     }
 }

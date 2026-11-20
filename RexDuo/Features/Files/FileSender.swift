@@ -14,7 +14,7 @@ final class FileSender {
     /// Where the send goes, in words ("Claude", "studio"), read when it starts.
     var target: () -> String = { "this computer" }
     private var uploader: FileUploader?
-    private var background = UIBackgroundTaskIdentifier.invalid
+    private var background: BackgroundTask?
     private var cutOff = false
     private var shownPercent = -1
 
@@ -75,12 +75,11 @@ final class FileSender {
         uploader = up
         cutOff = false
         shownPercent = -1
-        background = UIApplication.shared.beginBackgroundTask(withName: "Send files") { [weak self] in
+        background = BackgroundTask(name: "Send files") { [weak self] in
             // Out of background time: stop cleanly instead of being killed mid-file.
             guard let self else { return }
             self.cutOff = true
             self.uploader?.cancel()
-            self.endBackground()
         }
         let items = files.map { f in
             FileUploader.Item(name: f.name, size: f.size) { [url = f.url] in try FileSource(url: url) }
@@ -161,8 +160,7 @@ final class FileSender {
     #endif
 
     private func endBackground() {
-        guard background != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(background)
-        background = .invalid
+        background?.end()
+        background = nil
     }
 }

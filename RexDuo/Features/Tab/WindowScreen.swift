@@ -445,6 +445,9 @@ struct WindowScreen: View {
             }
             Section {
                 FindMenuItem(keymap: server.keymap) { host(block)?.findFromMenu() }
+                ShareMenuItem(server: server, sessionID: sessionID, block: block) { scope, styled in
+                    host(block)?.share?.share(scope, styled: styled, anchor: barEdge.map { .bar($0) } ?? .titleBar)
+                }
             }
             Section {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }

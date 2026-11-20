@@ -84,8 +84,24 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   `server.status` (owner, session count), `server.version` (platform), `server.whoami` (account,
   this device's login), `session.list`, `client.list` (is a helper there).
 - Terminal block: `size`, `format` (`vt` with the `extra_*` flags for the screen, `text` for tab
-  previews), `blob_read`, `write`, `resize`, `clear`, `title`, `process`, `program_status`,
-  `upload_begin`, `download_begin`.
+  previews, `text` with `trim` and `unwrap` or `html` for Share's All Output), `blob_read`,
+  `write`, `resize`, `clear`, `title`, `process`, `program_status`, `upload_begin`,
+  `download_begin`.
+
+## Share's All Output (`format`, `blob_read`)
+
+- `format` with `max_bytes` answers `content`, and `id` and `total` while more remains; `eof` only
+  on newer servers, so the reader checks `id`. A reply without `id` is the whole output.
+- `blob_read` with that `id`, `offset` (bytes of content received so far) and `max_bytes` answers
+  `data`, `total` and `eof`. `max_bytes` counts the JSON-encoded string, so `data` can be shorter
+  than asked. `data` never ends inside a character. An `offset` inside a character returns one
+  U+FFFD for each byte from there to the next character (probed on a revision-18 server, macOS),
+  so a read that starts at a cut counts each leading U+FFFD as one byte, not three.
+- `id` 0 reads the newest result, whatever made it, so the reader always sends its own `id`. A
+  concurrent `format` (tab previews, a reconnect's screen read, another phone) can evict it:
+  `not_found`, after which the read starts over once.
+- Detection: the pane's creator on its host lists `format` and `blob_read` in `api.methods`. An
+  unknown or failed creator list counts as present (both exist at revision 13). No probe call.
 
 ## Files (`rex.data.bytes.v1`)
 

@@ -133,6 +133,10 @@ builds.
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
   `send:<Mac path>|<Mac path>`, `sendOriginal:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.
   The files land on the pane's computer and their paths are typed, so use a `zz-` session.
+- `-shareTest '<step>;<step>…'`: drive sharing in the active pane once it is live
+  (`Features/Files/ShareTest.swift` lists the steps): `screen`, `styledScreen`, `all`, `styledAll`
+  (each with `:bar:leading` or `:bar:trailing` to point at that edge), `selection`, `cancel`,
+  `dismiss`, `wait:<s>`. Each sheet logs `SHARE_ITEM <text|file> <bytes> <path>`.
 - `-forceStatus '<text>'`: every pane shows its status chip with this text once it opens and each
   time it is live, to look at the chip over any output. With `-replay <file>` it needs no server.
 - `-tapTest col,row[;col,row…]`: tap those cells as a focused finger would, `-tapTestAfter` seconds

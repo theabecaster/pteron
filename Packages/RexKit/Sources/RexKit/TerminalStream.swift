@@ -490,9 +490,19 @@ public final class TerminalStream {
         failedStarts = 0
         attachRetries = 0
         dropInput()
+        // A write still out ends on its own; a read waiting for this pane's input waits no more.
+        hasPendingInput = false
+        control.inputActivity.remove(ObjectIdentifier(self))
         ws?.close()
         ws = nil
         wakeReader()
+    }
+
+    deinit {
+        // A stream that goes without `stop()` takes its input out of the count, so no read
+        // waits on it.
+        let activity = control.inputActivity, key = ObjectIdentifier(self)
+        Task { @MainActor in activity.remove(key) }
     }
 
     /// Re-read the whole screen and open a fresh stream. Queued input is kept.
@@ -1045,9 +1055,19 @@ public final class TerminalStream {
     private enum Fate { case unsent, refused, unknown }
 
     /// What is still to send, oldest first. Text typed in a row is one item.
-    private var inputQueue: [InputItem] = []
+    private var inputQueue: [InputItem] = [] { didSet { inputChanged() } }
     /// True while an item's request is out; the next one waits for it.
-    private var inFlight = false
+    private var inFlight = false { didSet { inputChanged() } }
+    /// True while input is on its way: an item's request is out, or items wait to go. Read-only
+    /// for others: a long read on the same connection waits for it (`RexControl.inputActivity`).
+    public private(set) var hasPendingInput = false
+
+    private func inputChanged() {
+        let pending = inFlight || !inputQueue.isEmpty
+        guard pending != hasPendingInput else { return }
+        hasPendingInput = pending
+        control.inputActivity.set(self, pending: pending)
+    }
     private var flightID = 0
     /// Counts `stop()`s. An answer for an item sent before the last one changes nothing.
     private var inputEpoch = 0
@@ -1089,8 +1109,9 @@ public final class TerminalStream {
     /// (`controlConnected()` pumps again).
     private func pump() {
         guard !inFlight, !stopped, !inputQueue.isEmpty, link.isConnected else { return }
-        let item = inputQueue.removeFirst()
+        // In flight first, so the stream never looks idle between the two.
         inFlight = true
+        let item = inputQueue.removeFirst()
         flightID += 1
         let id = flightID, epoch = inputEpoch
         switch item {

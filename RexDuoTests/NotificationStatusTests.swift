@@ -1053,6 +1053,20 @@ struct NotificationChoiceTests {
         #expect((1...PushRegistrar.versionTries).contains(s.helpers[server].count("helper_status")))
     }
 
+    /// Going to the background tells each helper once, inside the shared `BackgroundTask` (it
+    /// replaced PushRegistrar's own copy).
+    @Test func goingToTheBackgroundTellsEachHelperOnce() async {
+        let s = await signedUp([server, other])
+        let before = (s.helpers[server].count("push_presence"), s.helpers[other].count("push_presence"))
+        s.push.enteredBackground()
+        await s.world.eventually {
+            s.helpers[self.server].count("push_presence") == before.0 + 1 && s.helpers[self.other].count("push_presence") == before.1 + 1
+        }
+        await s.world.quiet()
+        #expect(s.helpers[server].count("push_presence") == before.0 + 1)
+        #expect(s.helpers[other].count("push_presence") == before.1 + 1)
+    }
+
     @Test func turningNotificationsOnSignsEachComputerUpOnce() async {
         let s = await signedUp([server, other])
         // One device, and one secret for each computer.

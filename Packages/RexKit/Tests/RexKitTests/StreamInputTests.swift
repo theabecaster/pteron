@@ -261,4 +261,122 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(link.written.joined().unicodeScalars.contains("\u{fffd}"), false)
         link.release()
     }
+
+    // MARK: Pending input, for a long read on the same connection
+
+    func testPendingInputCoversAWriteInFlightAndWhatWaitsBehindIt() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        let activity = s.control.inputActivity
+        XCTAssertFalse(s.hasPendingInput)
+        XCTAssertFalse(activity.busy)
+        link.held = [Self.write]
+        s.send(text: "a")
+        s.send(text: "b")
+        XCTAssertTrue(s.hasPendingInput)
+        XCTAssertTrue(activity.busy)
+        var idle = false
+        let waiter = Task { @MainActor in
+            await activity.idle()
+            idle = true
+        }
+        _ = await eventually { link.waitingCount == 1 }
+        link.release()
+        _ = await eventually { link.waitingCount == 1 }
+        await settle()
+        XCTAssertFalse(idle, "the queued write is still on its way")
+        XCTAssertTrue(s.hasPendingInput)
+        link.release()
+        _ = await eventually { idle }
+        await waiter.value
+        XCTAssertTrue(idle)
+        XCTAssertFalse(s.hasPendingInput)
+        XCTAssertFalse(activity.busy)
+    }
+
+    func testIdleReturnsAtOnceWithNothingOnItsWayAndOnCancel() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        await s.control.inputActivity.idle()
+        link.held = [Self.write]
+        s.send(text: "a")
+        let waiter = Task { @MainActor in await s.control.inputActivity.idle() }
+        await settle()
+        waiter.cancel()
+        await waiter.value
+        XCTAssertTrue(s.hasPendingInput, "a cancelled wait changes nothing")
+        link.release()
+    }
+
+    func testStopDropsQueuedInputFromPending() async {
+        let link = FakeLink(connected: false)
+        let (s, _) = stream(link)
+        s.send(text: "a")
+        XCTAssertTrue(s.control.inputActivity.busy)
+        s.stop()
+        XCTAssertFalse(s.hasPendingInput)
+        XCTAssertFalse(s.control.inputActivity.busy)
+    }
+
+    func testIdleReturnsWhenTheConnectionDropsWithInputQueued() async {
+        let activity = InputActivity()
+        let stream = NSObject()
+        activity.set(stream, pending: true)
+        var returned = false
+        let waiter = Task { @MainActor in
+            await activity.idle()
+            returned = true
+        }
+        await settle()
+        XCTAssertFalse(returned, "connected, it waits for the input")
+        activity.connection(false)
+        _ = await eventually { returned }
+        XCTAssertTrue(returned, "input waits for the next connection: the read stops now")
+        await waiter.value
+        XCTAssertTrue(activity.busy, "the input still counts")
+        await activity.idle()  // down: at once
+        activity.connection(true)
+        let again = Task { @MainActor in await activity.idle() }
+        await settle()
+        activity.set(stream, pending: false)
+        await again.value
+        XCTAssertFalse(activity.busy)
+    }
+
+    func testStopTakesAWriteInFlightOutOfPending() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        XCTAssertTrue(s.control.inputActivity.busy)
+        s.stop()
+        XCTAssertFalse(s.hasPendingInput)
+        XCTAssertFalse(s.control.inputActivity.busy)
+        link.release()
+        await settle()
+        XCTAssertFalse(s.control.inputActivity.busy)
+    }
+
+    func testAStreamThatGoesWithoutStopTakesItsInputOut() async {
+        let link = FakeLink(connected: false)
+        var made: TerminalStream? = makeStream(link: link, sink: Sink()).0
+        let activity = made!.control.inputActivity
+        let control = made!.control
+        made!.send(text: "a")
+        XCTAssertTrue(activity.busy)
+        var returned = false
+        let waiter = Task { @MainActor in
+            await activity.idle()
+            returned = true
+        }
+        await settle()
+        XCTAssertFalse(returned)
+        made = nil
+        _ = await eventually { returned }
+        XCTAssertTrue(returned)
+        XCTAssertFalse(activity.busy)
+        await waiter.value
+        _ = control
+    }
 }
