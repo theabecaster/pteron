@@ -66,9 +66,12 @@ struct RexDuoApp: App {
                     .environment(model)
                     .environment(prefs)
                     // A view that appears is a scene on screen: the servers start here too, in
-                    // case no change of phase ever arrives (`sceneVisible` acts once).
+                    // case no change of phase ever arrives (`sceneVisible` acts once). Not in a
+                    // launch the system made in the background, which builds the scene as well.
                     .onAppear {
-                        model.sceneVisible()
+                        if ScenePhases.appearedCounts(inBackground: UIApplication.shared.applicationState == .background) {
+                            model.sceneVisible()
+                        }
                         appDelegate.attach(model)
                     }
                     // Links from the controls (`rexduo:`, navigation only). The test host and

@@ -103,7 +103,9 @@ import Testing
         let now = try date("2026-11-19T12:00:00Z")
         let allowed: Set<String> = ["v", "seq", "asOf", "palette", "dark", "light", "appearance", "bg", "fg", "accent", "ansi",
                                     "machines", "id", "name", "link", "counts", "waiting", "error", "working", "done", "idle",
-                                    "seen", "session", "window", "block", "kind", "symbol", "why", "place", "since", "record", "msg"]
+                                    "seen", "session", "window", "block", "kind", "symbol", "why", "place", "since", "record", "msg",
+                                    // A hash that names the wait; the message itself can't be read back from it.
+                                    "fp"]
         func keys(_ any: Any) -> Set<String> {
             var found = Set<String>()
             if let d = any as? [String: Any] {

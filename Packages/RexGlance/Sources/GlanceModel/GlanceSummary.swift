@@ -32,11 +32,13 @@ public enum GlanceInput {
         public var place: String
         public var record: String
         public var msg: String?
+        /// `ActionGuard.fingerprint` of the wait, from the status record as the server gave it.
+        public var fp: String?
         /// When the phone first saw this agent waiting, in this run of the app.
         public var firstSeen: Date?
 
         public init(session: String, window: String, block: String, kind: String?, name: String, symbol: String,
-                    why: String?, place: String, record: String, msg: String?, firstSeen: Date?) {
+                    why: String?, place: String, record: String, msg: String?, fp: String? = nil, firstSeen: Date?) {
             self.session = session
             self.window = window
             self.block = block
@@ -47,6 +49,7 @@ public enum GlanceInput {
             self.place = place
             self.record = record
             self.msg = msg
+            self.fp = fp
             self.firstSeen = firstSeen
         }
     }
@@ -75,7 +78,7 @@ public enum GlanceSummary {
                 GlanceSnapshot.Agent(session: w.session, window: w.window, block: w.block, kind: w.kind, name: w.name,
                                      symbol: w.symbol, why: w.why, place: w.place,
                                      since: GlanceSince.since(server: m.id, wait: w, previous: previous, now: now),
-                                     record: w.record, msg: w.msg)
+                                     record: w.record, msg: w.msg, fp: w.fp)
             }
             // The longest wait first; equal starts keep the server's order.
             let sorted = agents.enumerated().sorted { ($0.element.since, $0.offset) < ($1.element.since, $1.offset) }.map(\.element)

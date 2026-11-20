@@ -467,4 +467,121 @@ final class StreamInputTests: XCTestCase {
         await waiter.value
         _ = control
     }
+
+    // MARK: Input that goes once or not at all
+
+    func testSendOnceTypesTheTextOnceAndSaysSo() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r") { ended.append($0) }
+        _ = await eventually { !ended.isEmpty }
+        await settle()
+        XCTAssertEqual(link.written, ["\r"])
+        XCTAssertEqual(ended, [.delivered])
+        XCTAssertEqual(notices, [])
+    }
+
+    func testSendOnceWaitsItsTurnBehindWhatWasTyped() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r") { ended.append($0) }
+        s.send(text: "b")
+        await settle()
+        XCTAssertEqual(link.inputTrace, ["w:a"], "nothing overtakes the request that is out")
+        for _ in 0..<3 {
+            link.release()
+            await settle()
+        }
+        XCTAssertEqual(link.inputTrace, ["w:a", "w:\r", "w:b"])
+        XCTAssertEqual(ended, [.delivered])
+    }
+
+    func testSendOnceWithoutAConnectionIsDroppedAndNeverSentLater() async {
+        let link = FakeLink(connected: false)
+        let (s, _) = stream(link)
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r") { ended.append($0) }
+        XCTAssertEqual(ended, [.unsent])
+        link.connect()
+        await settle()
+        XCTAssertEqual(link.written, [])
+        XCTAssertFalse(s.hasPendingInput)
+    }
+
+    func testSendOnceThatWaitedTooLongIsDroppedNotSentLate() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r", within: .milliseconds(20)) { ended.append($0) }
+        try? await Task.sleep(for: .milliseconds(60))
+        link.release()
+        _ = await eventually { !ended.isEmpty }
+        await settle()
+        XCTAssertEqual(link.written, ["a"], "what it answered may be gone: it is not typed late")
+        XCTAssertEqual(ended, [.unsent])
+        XCTAssertEqual(notices, [])
+    }
+
+    func testSendOnceWhoseAnswerWasLostIsNeverSentAgain() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\u{3}") { ended.append($0) }
+        _ = await eventually { link.waitingCount == 1 }
+        s.send(text: "typed behind it")
+        link.disconnect()
+        _ = await eventually { !ended.isEmpty }
+        XCTAssertEqual(ended, [.unknown])
+        link.connect()
+        await settle()
+        XCTAssertEqual(link.written, ["\u{3}"], "sent once, and what was typed behind it went with it")
+        XCTAssertEqual(notices, [], "the phone shows nothing for an answer that came from elsewhere")
+    }
+
+    func testSendOnceRefusedByTheServerIsDropped() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.failures[Self.write] = [RexError(code: "block_not_found", message: "no such block", status: 404)]
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r") { ended.append($0) }
+        _ = await eventually { !ended.isEmpty }
+        await settle()
+        XCTAssertEqual(ended, [.refused])
+        XCTAssertEqual(link.count(Self.write), 1)
+    }
+
+    func testStopTellsQueuedOnceInputThatItNeverLeft() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r") { ended.append($0) }
+        s.stop()
+        XCTAssertEqual(ended, [.unsent])
+        link.release()
+        await settle()
+        XCTAssertEqual(link.written, ["a"])
+    }
+
+    func testTheControlFindsARunningStreamByItsBlock() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        XCTAssertNil(s.control.stream(block: s.blockID), "not before it starts")
+        s.start()
+        XCTAssertTrue(s.control.stream(block: s.blockID) === s)
+        XCTAssertNil(s.control.stream(block: "block:other"))
+        s.stop()
+        XCTAssertNil(s.control.stream(block: s.blockID))
+    }
 }

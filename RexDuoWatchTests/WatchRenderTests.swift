@@ -83,12 +83,22 @@ import WidgetKit
         .environment(\.watchLanded, true)
     }
 
-    private func detail(_ scenario: String, wristDown: Bool, redacted: Bool = false) -> some View {
+    /// `acted`: the agent's screen after an action that ended this way; `sending`: one on its way.
+    private func detail(_ scenario: String, wristDown: Bool, redacted: Bool = false, acted: (WatchAction.Kind, WatchActionOutcome)? = nil,
+                        sending: Bool = false) -> some View {
         let screen = WatchScreen(reading(scenario), now: Self.now)
         let style = WatchStyle(screen.palette)
+        var state = WatchActionState()
+        if let target = screen.rows.first?.target {
+            if sending { _ = state.begin(.enter, on: target, id: "a") }
+            if let acted {
+                _ = state.begin(acted.0, on: target, id: "a")
+                state.finish(id: "a", acted.1)
+            }
+        }
         return Group {
             if let row = screen.rows.first {
-                WatchDetailBody(row: row, style: style, wristDown: wristDown)
+                WatchDetailBody(row: row, style: style, wristDown: wristDown, state: state)
             } else {
                 Text("no agent waits in \(scenario)")
             }
@@ -149,6 +159,39 @@ import WidgetKit
         try save(gone, "detail-gone")
         cells.append(("no longer waiting", AnyView(gone)))
         try save(sheet(cells, columns: 4), "sheet-detail")
+    }
+
+    @Test func theDetailScreenDrawsItsActionsAndEveryWayOneEnds() throws {
+        var cells: [(String, AnyView)] = []
+        func add(_ name: String, _ view: some View) throws -> UIImage {
+            let image = try save(view, "action-\(name)")
+            cells.append((name, AnyView(view)))
+            return image
+        }
+        // The two buttons, under a wait the watch can act on.
+        let offered = try add("offered", detail("one", wristDown: false))
+        // None where the wait is only last known, and none with the wrist down.
+        let stale = try add("stale-none", detail("stale", wristDown: false))
+        let down = try add("wrist-down-none", detail("one", wristDown: true))
+        let sending = try add("sending", detail("one", wristDown: false, sending: true))
+        // The buttons take room: they are there when offered, and gone while one is on its way,
+        // with the wrist down and for a wait that is only last known.
+        let bare = down.size.height
+        #expect(offered.size.height > bare + 20, "\(offered.size.height) \(bare)")
+        #expect(sending.size.height < offered.size.height)
+        #expect(stale.size.height < offered.size.height)
+        for outcome in WatchActionOutcome.allCases {
+            for kind in WatchAction.Kind.allCases where kind == .enter || outcome == .sent {
+                let image = try add("\(kind.rawValue)-\(outcome)", detail("one", wristDown: false, acted: (kind, outcome)))
+                // After an answer from the phone only the line is left; after none, the line
+                // stands over the buttons, which stay.
+                #expect((image.size.height > offered.size.height) == !outcome.settled, "\(outcome) \(image.size.height)")
+            }
+        }
+        let gone = WatchGoneView(style: WatchStyle(.standardDark), line: WatchText.outcome(.sent, .enter))
+            .frame(width: Self.width, height: 100).background(Color.black)
+        _ = try add("gone-after-sent", gone)
+        try save(sheet(cells, columns: 4), "sheet-actions")
     }
 
     // MARK: Complications and the Smart Stack

@@ -5,7 +5,7 @@ import Foundation
 ///
 /// **Version rule.** `v` changes only for a breaking change. A field added later keeps `v` and
 /// is optional, so a file from an older app still decodes and a newer file's extra fields are
-/// ignored. `seq` and a machine's `seen` are such fields. A reader that meets a higher `v` shows
+/// ignored. `seq`, a machine's `seen` and an agent's `fp` are such fields. A reader that meets a higher `v` shows
 /// its placeholder (`GlanceReading.newer`).
 ///
 /// The file holds no server address: links back into the app key on the server's random id.
@@ -124,9 +124,12 @@ public struct GlanceSnapshot: Codable, Equatable, Sendable {
         public var record: String
         /// What it asks. Private: never shown on the Lock Screen.
         public var msg: String?
+        /// `ActionGuard.fingerprint` of the wait: its state, kind and whole message. Added
+        /// later, so a file from an older app has none, and the watch then offers no action.
+        public var fp: String?
 
         public init(session: String, window: String, block: String, kind: String?, name: String, symbol: String,
-                    why: String?, place: String, since: Date, record: String, msg: String?) {
+                    why: String?, place: String, since: Date, record: String, msg: String?, fp: String? = nil) {
             self.session = session
             self.window = window
             self.block = block
@@ -138,6 +141,7 @@ public struct GlanceSnapshot: Codable, Equatable, Sendable {
             self.since = since
             self.record = record
             self.msg = msg.map { String($0.prefix(GlanceSnapshot.messageLimit)) }
+            self.fp = fp
         }
     }
 

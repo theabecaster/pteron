@@ -2,9 +2,10 @@ import Foundation
 import GlanceModel
 import WatchConnectivity
 
-/// The watch's end of the session with the phone. It only receives: each payload goes to
+/// The watch's end of the session with the phone. Each payload it receives goes to
 /// `WatchInbox`, the one writer of the watch's snapshot file, and `changed` is called when the
-/// file was replaced. Nothing is ever sent to the phone, so the watch can't wake it.
+/// file was replaced. It sends one thing, and only when the person confirmed it: an action for
+/// a waiting agent (`send`), which wakes the phone's app to answer.
 ///
 /// Sendable: it holds only constants, and the session's delegate queue calls it serially.
 final class WatchSession: NSObject, WCSessionDelegate, Sendable {
@@ -27,6 +28,47 @@ final class WatchSession: NSObject, WCSessionDelegate, Sendable {
     func drain() async {
         await WatchDrain.wait(pending: { WCSession.default.hasContentPending },
                               sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+    }
+
+    /// Sends a confirmed action to the phone's app and waits for its answer. One message: it
+    /// is not sent again, whatever comes of it.
+    func send(_ action: WatchAction) async -> WatchActionOutcome {
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated, WCSession.default.isReachable else { return .noPhone }
+        return await withCheckedContinuation { done in
+            let answer = Answer(done)
+            // The session may neither answer nor fail for minutes: the watch stops waiting,
+            // and claims nothing either way.
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(WatchActionOutcome.replyLimit * 1_000_000_000))
+                answer.give(.unconfirmed)
+            }
+            WCSession.default.sendMessage(WatchActionWire.message(action), replyHandler: {
+                answer.give(WatchActionOutcome(reply: $0))
+            }, errorHandler: { error in
+                // The message got there and the reply didn't: the phone may have typed.
+                let code = (error as? WCError)?.code
+                answer.give(WatchActionOutcome(reply: nil, arrived: code == .messageReplyTimedOut || code == .messageReplyFailed))
+            })
+        }
+    }
+
+    /// The first answer wins; the session calls one of its two handlers, on its own queue.
+    /// `@unchecked Sendable`: the lock guards the one mutable field.
+    private final class Answer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done: CheckedContinuation<WatchActionOutcome, Never>?
+
+        init(_ done: CheckedContinuation<WatchActionOutcome, Never>) {
+            self.done = done
+        }
+
+        func give(_ outcome: WatchActionOutcome) {
+            lock.lock()
+            let d = done
+            done = nil
+            lock.unlock()
+            d?.resume(returning: outcome)
+        }
     }
 
     func take(_ payload: [String: Any]) {

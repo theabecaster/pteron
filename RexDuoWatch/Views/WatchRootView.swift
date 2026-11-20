@@ -31,7 +31,7 @@ struct WatchRootView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { id in
                 // Looked up at each draw: a delivery that arrives while the screen is open shows.
-                WatchDetailView(row: screen.rows.first { $0.id == id }, style: style)
+                WatchDetailView(id: id, row: screen.rows.first { $0.id == id }, style: style)
                     .containerBackground(style.ground(wristDown: wristDown), for: .navigation)
                     .transformEnvironment(\.isLuminanceReduced) { if dimmed { $0 = true } }
             }

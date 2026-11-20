@@ -4,7 +4,8 @@ import Testing
 
 /// The widgets and the watch app never ask for attention. They are passive: no Live Activity, no
 /// sound, haptic or notification, no reload beyond the one the throttle allows, and no delivery
-/// to the watch beyond what `WatchDelivery` allows. Widgets and complications have no motion of
+/// to the watch beyond what `WatchDelivery` allows. The watch acts only when the person taps an
+/// action and confirms it, and the phone then types once. Widgets and complications have no motion of
 /// their own; the watch app moves softly, and only as Reduce Motion and the wrist allow. These
 /// tests read the sources of the widget path and the watch path, so a line that breaks the rule
 /// fails here.
@@ -17,7 +18,7 @@ import Testing
     private static let path = [
         "RexDuoWidgets", "Packages/RexGlance/Sources", "RexDuo/Features/Board/GlanceWatcher.swift",
         "RexDuo/State/GlanceWriter.swift", "RexDuo/State/GlanceReload.swift", "RexDuo/State/OpenPaneLink.swift",
-        "RexDuo/State/GlanceBridge.swift", "RexDuoWatch", "RexDuoWatchWidgets",
+        "RexDuo/State/GlanceBridge.swift", "RexDuo/State/GlanceActions.swift", "RexDuoWatch", "RexDuoWatchWidgets",
     ]
 
     /// Everything that runs on the watch.
@@ -139,35 +140,93 @@ import Testing
         #expect(callers == ["RexDuo/State/GlanceReload.swift", "RexDuoWatch/WatchReload.swift"])
     }
 
-    @Test func theWatchNeverSendsToThePhone() throws {
-        // v1 only shows. With nothing sent from the watch, it can't wake the phone or act on a session.
-        let sends = ["sendMessage", "transferUserInfo", "updateApplicationContext", "transferFile", "transferCurrentComplicationUserInfo",
+    @Test func theWatchSendsThePhoneOnlyAConfirmedAction() throws {
+        // One message goes from the watch: an action the person confirmed (`WatchSession.send`).
+        // Nothing else is sent, nothing asks for a refresh, and no connection is opened.
+        let never = ["transferUserInfo", "updateApplicationContext", "transferFile", "transferCurrentComplicationUserInfo",
                      "URLSession", "NWConnection", "openSystemURL"]
         let files = try Self.sources(Self.watch)
         #expect(files.count >= 8)
         for f in files {
-            for word in sends { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
+            for word in never { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
         }
+        let senders = files.filter { $0.text.contains("sendMessage") }
+        #expect(senders.map(\.name) == ["RexDuoWatch/WatchSession.swift"])
+        // One call, with a reply handler, and nothing sent as data.
+        let session = try #require(senders.first).text
+        #expect(session.components(separatedBy: "sendMessage(").count == 2)
+        #expect(session.contains("sendMessage(WatchActionWire.message(action), replyHandler:"))
+        #expect(!session.contains("sendMessageData"))
+        // Only the model calls it, and only from `confirmed`.
+        let callers = files.filter { $0.text.contains(".send($0)") || $0.text.contains("session.send(") }.map(\.name)
+        #expect(callers == ["RexDuoWatch/RexDuoWatchApp.swift"])
     }
 
-    @Test func theWatchAppHasNoControlAndNoInput() throws {
-        // A view of the agents: nothing to press but a row, which opens its detail screen.
-        let controls = ["Button(", "TextField", "SecureField", "Toggle(", "Picker(", "Slider(", "Stepper(", "onTapGesture",
-                        "digitalCrownRotation", "handGestureShortcut", "AppIntent", "confirmationDialog", ".alert(", ".sheet("]
-        for f in try Self.sources(Self.watch) {
+    @Test func nothingOnTheWatchSendsWithoutAConfirmation() throws {
+        // The two buttons only ask. The question's own button is the one place that confirms,
+        // and the model sends nothing a second time or by itself: no loop, no timer, no retry.
+        let files = try Self.sources(Self.watch)
+        let views = "RexDuoWatch/Views/WatchDetailView.swift"
+        let pressers = files.filter { $0.text.contains("Button(") }.map(\.name)
+        #expect(pressers == [views])
+        #expect(files.filter { $0.text.contains("confirmationDialog") }.map(\.name) == [views])
+        let text = try #require(files.first { $0.name == views }).text
+        // Every button of the detail screen: the two that ask (one `ForEach`), the one that
+        // confirms, Cancel.
+        #expect(text.components(separatedBy: " Button(").count == 4)
+        #expect(text.contains("ForEach(WatchAction.Kind.allCases") && text.contains("asking = kind") && text.contains("{ confirmed(kind) }") && text.contains("Button(\"Cancel\", role: .cancel) {}"))
+        #expect(text.components(separatedBy: "confirmed(kind").count == 3)
+        let model = try #require(files.first { $0.name == "RexDuoWatch/WatchActions.swift" }).text
+        #expect(model.components(separatedBy: "await send(").count == 2)
+        for word in ["while ", "for _", "for await", "repeat", "Timer", "Task.sleep", "retry"] { #expect(!model.contains(word), "WatchActions uses \(word)") }
+        // No other control, and no shortcut that would fire an action without a look.
+        let controls = ["TextField", "SecureField", "Toggle(", "Picker(", "Slider(", "Stepper(", "onTapGesture",
+                        "digitalCrownRotation", "handGestureShortcut", "AppIntent", ".alert(", ".sheet(", "swipeActions", "onLongPressGesture"]
+        for f in files {
             for word in controls { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
         }
     }
 
-    @Test func thePhoneOnlySendsThroughTheBridgeAndTakesNothingBack() throws {
+    @Test func thePhoneTakesOnlyAnActionFromTheWatchAndOnlyThroughTheBridge() throws {
         let files = try Self.sources(["RexDuo", "RexDuoWidgets"])
         let users = files.filter { $0.text.contains("WCSession.") || $0.text.contains("import WatchConnectivity") }.map(\.name)
         #expect(users == ["RexDuo/State/GlanceBridge.swift"])
         let bridge = try #require(files.first { $0.name == "RexDuo/State/GlanceBridge.swift" }).text
-        // No message from the watch is handled, and none is sent that would open the watch app.
-        for word in ["didReceiveMessage", "didReceiveUserInfo", "didReceiveApplicationContext", "sendMessage", "AppModel("] {
+        // One message is handled, with a reply. No other is, and none is sent that would open the watch app.
+        #expect(bridge.components(separatedBy: "didReceiveMessage").count == 2)
+        #expect(bridge.contains("didReceiveMessage message: [String: Any], replyHandler:"))
+        for word in ["didReceiveMessageData", "didReceiveUserInfo", "didReceiveApplicationContext", "didReceive file", "sendMessage", "AppModel("] {
             #expect(!bridge.contains(word), "the bridge uses \(word)")
         }
+    }
+
+    @Test func anActionThatWakesThePhoneStartsNoServerAndTypesOnce() throws {
+        // The glance-widgets rule: a launch without a scene opens no full connection. What
+        // answers the watch can't start a server, show a scene, ask for the server's events or
+        // open a pane, and it has one place that types, called once. Its short connection
+        // attaches to the one session of the pane, which Rex asks for, and to nothing else.
+        let text = try #require(try Self.sources(["RexDuo/State/GlanceActions.swift"]).first).text
+        #expect(text.components(separatedBy: "control.call(\"session.attach\", [\"session_id\": session])").count == 2)
+        for word in ["sceneVisible", "startServer", ".start()", "rebuildServers", "session.bootstrap", "attach_all", "event_scope", "own_block", "data.connect",
+                     "focus_block", "openPane", "clientLabel", "deviceID", "AppModel(", "model.", "UNUserNotificationCenter", "Notice."] {
+            #expect(!text.contains(word), "GlanceActions uses \(word)")
+        }
+        #expect(text.components(separatedBy: "terminal.write\"").count == 2)
+        #expect(text.components(separatedBy: "channel.write(").count == 2)
+        #expect(text.components(separatedBy: ".sendOnce(").count == 2)
+        // Nothing loops over a write.
+        for word in ["while !", "while true", "for _", "repeat {", "retry("] { #expect(!text.contains(word), "GlanceActions uses \(word)") }
+        // The connection made for a wake is labelled without the device id.
+        let model = try #require(try Self.sources(["RexDuo/State/AppModel.swift"]).first).text
+        let made = try #require(model.range(of: "OneShotActionChannel("))
+        #expect(model[made.upperBound...].prefix(400).contains("PushIdentity.previewLabel("))
+        // The root view of a launch made in the background starts no server either.
+        let app = try #require(try Self.sources(["RexDuo/App/RexDuoApp.swift"]).first).text
+        #expect(app.contains("if ScenePhases.appearedCounts(inBackground: UIApplication.shared.applicationState == .background) {\n                            model.sceneVisible()"))
+        #expect(app.components(separatedBy: "model.sceneVisible()").count == 3)
+        // Nor does it write a snapshot: nothing new is known.
+        let watcher = try #require(try Self.sources(["RexDuo/Features/Board/GlanceWatcher.swift"]).first).text
+        #expect(watcher.contains("guard model.mayConnect else { return }"))
     }
 
     @Test func nothingInTheAppMentionsTheWatch() throws {

@@ -6,8 +6,45 @@ public enum WatchText {
     public static var open: String { "Open \(Brand.appName) on iPhone" }
     /// Over an hour old.
     public static var refresh: String { "Open \(Brand.appName) on iPhone to refresh" }
-    /// The watch only shows: it has nothing to answer with.
+    /// Under an agent the watch can't act on (last known, or named too loosely to act on).
     public static let answer = "Answer on your iPhone or computer"
+
+    // Actions from the wrist.
+    public static func title(_ kind: WatchAction.Kind) -> String {
+        switch kind {
+        case .enter: "Enter"
+        case .interrupt: "Interrupt"
+        }
+    }
+
+    /// The question before anything is sent.
+    public static func confirm(_ kind: WatchAction.Kind, name: String) -> String {
+        switch kind {
+        case .enter: "Send Enter to \(name)?"
+        case .interrupt: "Interrupt \(name)?"
+        }
+    }
+
+    /// The button that says yes.
+    public static func confirmButton(_ kind: WatchAction.Kind) -> String {
+        switch kind {
+        case .enter: "Send Enter"
+        case .interrupt: "Interrupt"
+        }
+    }
+
+    public static let sending = "Sending…"
+
+    /// How an action ended: one quiet line.
+    public static func outcome(_ outcome: WatchActionOutcome, _ kind: WatchAction.Kind) -> String {
+        switch outcome {
+        case .sent: "Sent \(title(kind))"
+        case .changed: "Not sent. It no longer waits for this."
+        case .unreachable: "Not sent. Your iPhone can't reach the computer."
+        case .unconfirmed: "Couldn't confirm. Check the pane."
+        case .noPhone: "Not sent. iPhone not reachable."
+        }
+    }
 }
 
 /// What the watch app shows for the snapshot it holds, at a moment. Pure: it is the widgets'
@@ -43,6 +80,9 @@ public struct WatchScreen: Equatable, Sendable {
         /// From a machine that was down at the write, or a snapshot over an hour old: last
         /// known, dimmed, with no running wait time.
         public var lastKnown: Bool
+        /// The wait an action from the wrist would answer. Nil when none is offered: the row is
+        /// only last known, or the snapshot doesn't name the wait well enough.
+        public var target: WatchAction.Target?
         var msg: String?
 
         /// What the agent asks. Nil when it said nothing, and always while the screen is
@@ -101,7 +141,8 @@ public struct WatchScreen: Equatable, Sendable {
         rows = digest.rows.map { r in
             Row(id: r.id, name: r.agent.name, kind: r.agent.kind, symbol: r.agent.symbol, words: Self.words(why: r.agent.why),
                 place: r.agent.place, machine: byID[r.machine] ?? "", listedMachine: r.machineName, since: r.agent.since,
-                lastKnown: r.stale || old, msg: r.agent.msg)
+                lastKnown: r.stale || old,
+                target: r.stale || old ? nil : WatchAction.Target(server: r.machine, agent: r.agent), msg: r.agent.msg)
         }
         machines = digest.machines.map {
             Machine(id: $0.id, name: $0.name, words: GlanceDigest.words($0.counts), parts: GlanceDigest.parts($0.counts),

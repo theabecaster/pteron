@@ -476,6 +476,7 @@ public final class TerminalStream {
         stopped = false
         failedStarts = 0
         attachRetries = 0
+        control.streamStarted(self)
         Task { await self.fullStart() }
     }
 
@@ -493,6 +494,7 @@ public final class TerminalStream {
         // A write still out ends on its own; a read waiting for this pane's input waits no more.
         hasPendingInput = false
         control.inputActivity.remove(ObjectIdentifier(self))
+        control.streamStopped(self)
         ws?.close()
         ws = nil
         wakeReader()
@@ -1055,6 +1057,9 @@ public final class TerminalStream {
         /// Told once how the call ended: true when the server answered without an error. Not
         /// called for work that `stop()` dropped.
         var ended: (@MainActor (Bool) -> Void)?
+        /// Set for input that goes once or not at all (`sendOnce`): told how it ended, always,
+        /// and never reported through `onActionFailed`.
+        var once: (@MainActor (Delivery) -> Void)?
         let run: @MainActor () async throws -> Void
     }
     private enum Fate { case unsent, refused, unknown }
@@ -1150,6 +1155,15 @@ public final class TerminalStream {
         // False for an action that `actionHold` gave up waiting for: later items have gone out.
         let current = inFlight && flightID == id
         if current { inFlight = false }
+        if case .work(let work) = item, let once = work.once {
+            // Told whatever happened since, a `stop()` too: its request did leave, or didn't.
+            let delivery = Delivery(failure: failure)
+            // Nobody knows whether it ran: what was typed behind it goes, as for a key.
+            if delivery == .unknown, current, epoch == inputEpoch { dropQueue() }
+            once(delivery)
+            if current { pump() }
+            return
+        }
         if case .work(let work) = item, epoch == inputEpoch { work.ended?(failure == nil) }
         // After `stop()` there is nothing to keep or to report; the queue is already empty.
         guard let failure, epoch == inputEpoch else {
@@ -1177,7 +1191,7 @@ public final class TerminalStream {
             }
             if current { pump() }
         case .unknown:
-            if current { inputQueue.removeAll() }
+            if current { dropQueue() }
             if case .work(let work) = item, let action = work.action {
                 onActionFailed?("Couldn't run \(action). The connection dropped.")
             } else {
@@ -1198,7 +1212,7 @@ public final class TerminalStream {
         case .refused:
             onActionFailed?("Couldn't run \(title). \((failure as? RexError)?.message ?? failure.localizedDescription)")
         case .unknown:
-            if current { inputQueue.removeAll() }
+            if current { dropQueue() }
         }
         if current { pump() }
     }
@@ -1206,7 +1220,7 @@ public final class TerminalStream {
     /// What a palette pick says when it couldn't leave.
     public static func droppedMessage(_ title: String) -> String { "Didn't run \(title): the connection dropped." }
 
-    private static func fate(of error: Error) -> Fate {
+    private nonisolated static func fate(of error: Error) -> Fate {
         guard let e = error as? RexError else { return .unknown }
         if e.neverSent { return .unsent }
         return e.code == "client" ? .unknown : .refused
@@ -1225,7 +1239,52 @@ public final class TerminalStream {
 
     private func dropInput() {
         inputEpoch += 1
+        dropQueue()
+    }
+
+    /// Empties the queue. Input that goes once or not at all is told that it never left.
+    private func dropQueue() {
+        let dropped = inputQueue
         inputQueue.removeAll()
+        for case .work(let work) in dropped { work.once?(.unsent) }
+    }
+
+    /// How input that goes once or not at all ended (`sendOnce`).
+    public enum Delivery: Equatable, Sendable {
+        /// The server took it.
+        case delivered
+        /// It never left this client: nothing was typed.
+        case unsent
+        /// The server refused it (the pane is gone, say): nothing was typed.
+        case refused
+        /// It left and the connection broke before the answer: nobody knows whether it ran.
+        case unknown
+
+        /// From what a call threw, or nil when it answered.
+        public init(failure: Error?) {
+            guard let failure else { self = .delivered; return }
+            switch TerminalStream.fate(of: failure) {
+            case .unsent: self = .unsent
+            case .refused: self = .refused
+            case .unknown: self = .unknown
+            }
+        }
+    }
+
+    /// Types `text` for someone who is not at this keyboard (an answer from the watch): now or
+    /// not at all, and once. It waits its turn in the queue behind what was typed before it,
+    /// but for `limit` at most: after that, and without a connection, it is dropped and never
+    /// sent later, when what it answered may be gone. `ended` is told once how it went.
+    public func sendOnce(text: String, within limit: Duration = .seconds(4),
+                         ended: @escaping @MainActor (Delivery) -> Void) {
+        guard !stopped, link.isConnected, !text.isEmpty else { ended(.unsent); return }
+        let latest = ContinuousClock.now + limit
+        var work = Work(action: nil) { [sessionID, blockID, link] in
+            guard ContinuousClock.now <= latest else { throw RexError.unsent("too late") }
+            _ = try await link.call("com.superlogical.terminal.write", ["session_id": sessionID, "block_id": blockID, "args": ["data": text]])
+        }
+        work.once = ended
+        enqueue(work)
     }
 
     /// Queues `work` behind every key typed before it; keys typed after it wait for it. It is

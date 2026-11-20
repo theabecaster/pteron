@@ -42,6 +42,10 @@ struct GlanceWatcher: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .onChange(of: key, initial: true) { old, now in
+                // In a launch the system made in the background (to hand the app an action from
+                // the watch) no server was started and nothing new is known: writing then would
+                // only mark what the widgets and the watch show as last known.
+                guard model.mayConnect else { return }
                 // On the first pass both are the same: whoever waits then is new to the writer.
                 let before = old == now ? [] : old.waiting
                 model.glance.changed(newWaiting: !now.waiting.isSubset(of: before))
@@ -81,7 +85,8 @@ enum GlanceSource {
                     session: key.sessionID, window: key.windowID, block: key.blockID, kind: kind?.rawValue,
                     name: kind?.displayName ?? status?.app ?? "Program", symbol: kind?.symbol ?? "cpu",
                     why: status?.waitingFor, place: place, record: record?.id ?? "",
-                    msg: status?.text.flatMap { $0.isEmpty ? nil : $0 }, firstSeen: since[key.blockID]))
+                    msg: status?.text.flatMap { $0.isEmpty ? nil : $0 }, fp: current(meta)?.fingerprint,
+                    firstSeen: since[key.blockID]))
             }
             return GlanceInput.Machine(id: s.id.uuidString, name: s.config.name, link: link(s), known: s.connectionSerial > 0,
                                        states: states, waiting: waiting)
@@ -101,6 +106,12 @@ enum GlanceSource {
         let rank = ["blocked": 5, "error": 4, "working": 3, "done": 2, "idle": 1]
         return meta?.statuses.sorted { $0.key < $1.key }.max { (rank[$0.value.state] ?? 0) < (rank[$1.value.state] ?? 0) }
             .map { ($0.key, $0.value) }
+    }
+
+    /// The same record as `ActionGuard` compares it: what the snapshot's fingerprint is made
+    /// from, and what an action from the watch is checked against.
+    static func current(_ meta: BlockMeta?) -> ActionGuard.Current? {
+        topRecord(meta).map { ActionGuard.Current(record: $0.id, state: $0.status.state, kind: $0.status.waitingFor, message: $0.status.text) }
     }
 
     /// The themes chosen for Dark and Light Mode, as the widgets' colors.

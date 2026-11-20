@@ -8,7 +8,8 @@ import SwiftUI
 /// helper hears that the phone is in front.
 ///
 /// The app doesn't count on a change of phase ever arriving: it also asks for the steps of the
-/// phase its scene starts in (`initial`), and the root view starts the servers when it appears.
+/// phase its scene starts in (`initial`), and the root view starts the servers when it appears,
+/// unless the app is in the background then (`appearedCounts`).
 enum ScenePhases {
     enum Step: Equatable {
         /// A scene is on its way to the screen: servers may connect (`AppModel.sceneVisible`,
@@ -29,5 +30,12 @@ enum ScenePhases {
         case .background: initial ? [] : [.background]
         @unknown default: []
         }
+    }
+
+    /// Whether the root view appearing means a scene is on its way to the screen. Not while the
+    /// app is in the background: the system also builds the scene of an app it launched there to
+    /// hand it a message (an action from the watch), and that launch must start no server.
+    static func appearedCounts(inBackground: Bool) -> Bool {
+        !inBackground
     }
 }

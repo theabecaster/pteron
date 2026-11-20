@@ -12,6 +12,7 @@ import Testing
     @MainActor
     final class FakeLink: WatchLink {
         var onEvent: (@MainActor (WatchLinkEvent) -> Void)?
+        var onAction: (@MainActor (Data) async -> [String: Any])?
         var isSupported = true
         var isActivated = false
         var isPaired = false
@@ -277,5 +278,41 @@ import Testing
             if let why { o["kind"] = why }
             #expect(WatchScreen.words(why: why) == AgentRowLabel.stateText(ProgramStatus(o)), "\(why ?? "nil")")
         }
+    }
+
+    // MARK: Actions from the watch
+
+    @Test func listeningOpensTheSessionWithoutASnapshotAndSendsNothing() {
+        let w = World()
+        w.bridge.listen()
+        #expect(w.made == 1 && w.link.calls == ["activate"])
+        w.link.open()
+        // Nothing was written, so nothing goes to the watch.
+        #expect(w.link.calls == ["activate"])
+        // The first snapshot uses the same session.
+        _ = w.write("one", seq: 1)
+        #expect(w.made == 1 && w.link.calls == ["activate", "context"])
+    }
+
+    @Test func anActionFromTheWatchIsHandedOnAndItsAnswerGoesBack() async throws {
+        let w = World()
+        var taken: [Data] = []
+        w.bridge.answer = { data in
+            taken.append(data)
+            return .sent
+        }
+        w.bridge.listen()
+        let action = WatchAction(id: "tap", kind: .enter, target: .init(server: "s", session: "session:1", block: "block:1", record: "r", fp: "f"))
+        let data = try #require(WatchActionWire.actionData(in: WatchActionWire.message(action)))
+        let reply = try #require(await w.link.onAction?(data))
+        #expect(WatchActionWire.result(in: reply) == .sent)
+        #expect(taken == [data])
+    }
+
+    @Test func withNobodyToAnswerAnActionIsRefused() async throws {
+        let w = World()
+        w.bridge.listen()
+        let reply = try #require(await w.link.onAction?(Data()))
+        #expect(WatchActionWire.result(in: reply) == .changed)
     }
 }

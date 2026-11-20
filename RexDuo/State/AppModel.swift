@@ -336,6 +336,8 @@ final class AppModel {
     @ObservationIgnored let glance: GlanceWriter
     /// Sends each written snapshot on to the watch. It only sends, and knows nothing of this model.
     @ObservationIgnored let bridge: GlanceBridge
+    /// Answers an action from the watch: Enter or Interrupt for one waiting agent.
+    @ObservationIgnored let actions = GlanceActions()
     /// Opens computers' dev servers on the phone, one browser at a time.
     @ObservationIgnored let forward = PortForward()
 
@@ -390,6 +392,7 @@ final class AppModel {
         }
         self.glance.palette = { [weak self] in self.map { GlanceSource.palette($0.prefs) } ?? .standard }
         self.glance.anyLive = { [weak self] in self?.servers.contains { GlanceSource.link($0) == .live } ?? false }
+        connectActions(mode)
         if connect { rebuildServers() }
         #if DEBUG
         // `-settings <page>` (testing): open Settings at launch, at that page.
@@ -629,6 +632,37 @@ final class AppModel {
                                                waiting: known ? Set(s.agentKeys.filter { $0.state == "blocked" }.map(\.blockID)) : nil)
             }
         }
+    }
+
+    /// Hands the watch's actions to `actions` and tells it how to reach a pane. Only a launch
+    /// that writes the real snapshot takes any (`GlanceWriter.Mode.live`): the session with the
+    /// watch is opened now, so a message that woke the app in the background is delivered.
+    private func connectActions(_ mode: GlanceWriter.Mode) {
+        guard case .live(let label) = mode else { return }
+        actions.enabled = { true }
+        actions.only = { label }
+        actions.channel = { [weak self] in self?.actionChannel($0) }
+        bridge.answer = { [actions] data in
+            // The app may be in the background: the system gives the time to answer.
+            let task = BackgroundTask(name: "watch_action") {}
+            defer { task.end() }
+            return await actions.answer(data)
+        }
+        // After `init`, off the launch path.
+        Task { [bridge] in bridge.listen() }
+    }
+
+    /// The way to the pane an action from the watch names. Nil: the server is not one of the
+    /// app's. It starts nothing: with the app in front and the server's connection up, that
+    /// connection; otherwise (the system woke the app for this) one short connection, labelled
+    /// without the device id, as the one that reads who a computer is.
+    func actionChannel(_ action: WatchAction) -> ActionChannel? {
+        guard let server = servers.first(where: { $0.id.uuidString == action.target.server }) else { return nil }
+        if mayConnect, !inBackground, server.control.state == .connected { return LiveActionChannel(server) }
+        return OneShotActionChannel(address: server.config.url, client: ClientInfo(
+            name: Brand.appName,
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
+            label: PushIdentity.previewLabel(deviceName: UIDevice.current.name)))
     }
 
     /// Set from the background until the app is active again, so a return from Control Center or

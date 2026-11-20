@@ -83,6 +83,12 @@ public final class RexControl {
     private var retryDelay: Double = 1
     private var retryTask: Task<Void, Never>?
     private var connectedObservers: [@MainActor () -> Bool] = []
+    /// The terminal streams that run on this connection, by block. Weak: a stream that went
+    /// without `stop()` is simply not found.
+    private var streams: [String: WeakStream] = [:]
+    private struct WeakStream {
+        weak var stream: TerminalStream?
+    }
 
     /// `address` is the server's HTTPS address, e.g. `https://mac.tailnet.ts.net`.
     public init(address: String, client: ClientInfo) {
@@ -440,6 +446,22 @@ public final class RexControl {
         default:
             break
         }
+    }
+
+    // MARK: Streams
+
+    func streamStarted(_ stream: TerminalStream) {
+        streams[stream.blockID] = WeakStream(stream: stream)
+    }
+
+    func streamStopped(_ stream: TerminalStream) {
+        if streams[stream.blockID]?.stream === stream { streams[stream.blockID] = nil }
+    }
+
+    /// The running stream of a block, whose queue every input to that pane goes through. Nil
+    /// when no pane of this connection shows the block.
+    public func stream(block: String) -> TerminalStream? {
+        streams[block]?.stream
     }
 
     // MARK: Calls

@@ -48,15 +48,16 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   Waiting") for Control Center, the Lock Screen and the Action button, which only open the app
   with a link; `OpenLinkIntent.swift` there is compiled into the app as well, where the system
   runs it. `Views/` is compiled into the app's tests too, which draw every size and state.
-- `RexDuoWatch`: the watch app, view-only: the agents as the iPhone app last saw them, from
-  the snapshot the phone sends (docs/glance.md, The watch). It connects to nothing and sends
-  nothing. `RexDuoWatchWidgets`: its complications and Smart Stack widget, which reuse the
+- `RexDuoWatch`: the watch app: the agents as the iPhone app last saw them, from the snapshot
+  the phone sends (docs/glance.md, The watch). It connects to nothing, and sends the phone one
+  thing: Enter or Interrupt for a waiting agent, after a confirmation. `RexDuoWatchWidgets`: its complications and Smart Stack widget, which reuse the
   Lock Screen views and the timeline of `RexDuoWidgets`. `RexDuoWatchTests`: their tests, run
   on a watchOS simulator with the scheme `RexDuoWatch`.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
   `GlanceWriter` (the snapshot's one writer), `GlanceBridge` (sends each written snapshot to the
-  watch), `ScenePhases` (what each scene phase asks; servers
+  watch), `GlanceActions` (answers the watch's Enter and Interrupt: status read, guard, one
+  write), `ScenePhases` (what each scene phase asks; servers
   start at the first one that shows the app).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),
@@ -179,7 +180,8 @@ shell.
 - Send terminal input through `TerminalStream.send`, and key-bound server calls through its
   `perform(action:)` and `forward(key:)`. They share one queue with one request in flight because
   Rex doesn't order concurrent block calls, and a request that left is never resent because
-  `terminal.write` has no sequence number (docs/terminal.md, Input).
+  `terminal.write` has no sequence number (docs/terminal.md, Input). Input that answers from
+  elsewhere (the watch) goes through the same queue with `sendOnce`: now or not at all.
 - `RexControl` is the only thing that retries a lost connection. Code that needs it waits for
   `observeConnected` instead of polling.
 - Other sessions work in parallel worktrees. Keep diffs to what the task needs; move files with `git mv`.

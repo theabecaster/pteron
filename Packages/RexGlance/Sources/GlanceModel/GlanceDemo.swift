@@ -20,7 +20,8 @@ public enum GlanceDemo {
                      minutes: Double, now: Date) -> GlanceSnapshot.Agent {
         GlanceSnapshot.Agent(session: "session:\(n)", window: "window:\(n)", block: "block:\(n)", kind: kind, name: name,
                              symbol: symbol, why: why, place: place, since: now.addingTimeInterval(-minutes * 60),
-                             record: "demo-\(n)", msg: msg)
+                             record: "demo-\(n)", msg: msg,
+                             fp: ActionGuard.fingerprint(state: ActionGuard.waiting, kind: why, message: msg))
     }
 
     /// Nil for `none` (no file), for `newer` (see `newerFile`) and for a name that isn't a scenario.

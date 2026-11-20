@@ -2,12 +2,14 @@ import GlanceModel
 import SwiftUI
 
 /// The watch app: who needs you, where, and for how long, as the iPhone app last saw it
-/// (docs/glance.md, The watch). It only shows. It has no connection of its own and sends
-/// nothing to the phone: what it knows is the snapshot the phone's app sent, kept in the
-/// watch's own App Group container, where the complications read it too.
+/// (docs/glance.md, The watch). It has no connection of its own: what it knows is the snapshot
+/// the phone's app sent, kept in the watch's own App Group container, where the complications
+/// read it too. The one thing it sends is an action the person confirmed for a waiting agent
+/// (Enter or Interrupt), which the phone's app checks and types.
 @main
 struct RexDuoWatchApp: App {
     @State private var model: WatchModel
+    @State private var actions: WatchActions
     private let session: WatchSession
     @Environment(\.scenePhase) private var phase
 
@@ -22,11 +24,17 @@ struct RexDuoWatchApp: App {
         #endif
         let model = WatchModel { store?.read() ?? .missing }
         _model = State(initialValue: model)
-        session = WatchSession(inbox: store.map(WatchInbox.init(store:))) {
+        let session = WatchSession(inbox: store.map(WatchInbox.init(store:))) {
             WatchReload.all()
             Task { @MainActor in await model.reload() }
         }
+        self.session = session
         session.activate()
+        let actions = WatchActions { await session.send($0) }
+        _actions = State(initialValue: actions)
+        #if DEBUG
+        WatchDemo.act(actions, store: store)
+        #endif
         #if DEBUG
         // `-glanceDemoThen <scenario>`: 4 s after launch, that snapshot replaces the first, as
         // a delivery would, to see the open app take a change.
@@ -78,6 +86,7 @@ struct RexDuoWatchApp: App {
                 // Nothing until the file was read: the first screen is the one that holds.
                 if model.loaded {
                     WatchRootView(screen: model.screen, path: startPath, dimmed: dimmed, openLater: openLater)
+                        .environment(actions)
                 }
             }
             .task { await model.reload() }

@@ -202,13 +202,15 @@ A watch app, `RexDuoWatch` (bundle id `dev.abrahamgonzalez.rexduo.watchkitapp`),
 complications, `RexDuoWatchWidgets` (`….watchkitapp.widgets`). From the wrist: who needs you,
 where, and for how long, as the iPhone app last saw it.
 
-- **It only shows.** There is no button, no input and no action: nothing on the watch answers
-  an agent, interrupts one or touches a session. A row opens its detail screen, and that is all.
+- **It shows, and it can give two answers.** A row opens its detail screen. Under a waiting
+  agent are Enter and Interrupt, each behind a question (Actions from the wrist, below).
+  Nothing else on the watch touches a session.
 - **It connects to nothing.** A watch can't reach a Rex server (there is no Tailscale for
-  watchOS), so everything it knows is the snapshot the phone's app sent. It can't run without
-  the iPhone app (`WKRunsIndependentlyOfCompanionApp` is false).
-- **Nothing goes from the watch to the phone.** No message, no request for a refresh: the
-  watch can never wake the phone or the app.
+  watchOS), so everything it knows is the snapshot the phone's app sent, and an action goes
+  through the phone's app. It can't run without the iPhone app
+  (`WKRunsIndependentlyOfCompanionApp` is false).
+- **One thing goes from the watch to the phone:** an action the person confirmed. There is no
+  other message and no request for a refresh, so the watch wakes the phone's app only for that.
 - **No settings** on either device, and the iPhone app shows nothing about the watch.
 
 ### From the phone to the watch
@@ -223,12 +225,12 @@ watch:  WatchSession (delegate) ─▶ WatchInbox decides ─▶ the watch's gla
 
 - **`GlanceBridge`** (`RexDuo/State/GlanceBridge.swift`, owned by `AppModel`) is given each
   snapshot the writer writes, with the bytes that went to the file, and sends them on as
-  `["s": <bytes>]`. It knows nothing of `AppModel` or the servers, and handles no message from
-  the watch.
-- **The session is made and activated at the first written snapshot**, not at launch, and
-  without asking anything first (its properties hold real values only after activation). A
-  launch that writes nothing (the test host, a test launch, a launch that never reaches the
-  screen) never touches WatchConnectivity.
+  `["s": <bytes>]`. It knows nothing of `AppModel` or the servers. The one message it takes
+  from the watch is an action, which it hands to `GlanceActions` and answers.
+- **The session is activated at launch** (`listen()`, after `init`, off the launch path), so an
+  action that woke the app is delivered, and without asking anything first (its properties
+  hold real values only after activation). The test host and a test launch that writes no
+  snapshot never touch WatchConnectivity.
 - **Before each send** it checks that the session is activated, a watch is paired and the
   watch app is installed. Otherwise nothing is sent, and nothing counts as sent.
 - **When the session opens** (activation ends, the watch app gets installed, or the person
@@ -294,8 +296,9 @@ counts, orders, dates and dims as they do.
 | over an hour old | everything dimmed, no running wait times, "Open Pteron on iPhone to refresh" |
 
 - **A row's detail screen:** the ring, the name, what it waits for and for how long, what it
-  asks, its place and its machine, and "Answer on your iPhone or computer". If the agent stops
-  waiting while the screen is open, it says "No longer waiting".
+  asks, its place and its machine, then Enter and Interrupt. A row that is only last known, or
+  whose wait the snapshot can't name, has "Answer on your iPhone or computer" instead. If the
+  agent stops waiting while the screen is open, it says "No longer waiting".
 - **Complications and the Smart Stack** (kind `dev.abrahamgonzalez.rexduo.widget.agents`):
 
   | Family | Shows |
@@ -312,6 +315,73 @@ counts, orders, dates and dims as they do.
   snapshot under an hour old, has a relevance score (the number waiting, 10 at most); every
   other entry has none (`GlanceDigest.relevance`). It only orders the stack.
 
+### Actions from the wrist
+
+Enter and Interrupt for a waiting agent: Return (`\r`) or Control-C (`0x03`) typed into its
+pane. Notification actions are not built: they need a status id in the push payload.
+
+```
+watch:  [Enter] [Interrupt] ─ tap ─▶ "Send Enter to Claude?" ─ confirmed ─▶ WatchActions ─▶ WatchSession.send
+                                                                              (WCSession.sendMessage, one message)
+phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status ─▶ ActionGuard ─▶ one terminal.write
+                                                             └────────── the answer, one word ──────────▶ watch
+```
+
+- **A tap only asks.** Each button opens a question ("Send Enter to Claude?", "Interrupt
+  Claude?"); only the question's own button sends. There is no swipe action, no Double Tap and
+  no shortcut, and nothing is offered with the wrist down.
+- **What travels:** a `WatchAction` (GlanceModel): the tap's own id, the kind, and the wait it
+  answers (`Target`: the server's id, session, pane, the status record's id, and the wait's
+  fingerprint). The fingerprint (`ActionGuard.fingerprint`, the snapshot's optional `fp`) is a
+  hash of the record's state, kind and whole message, written by the phone from the record as
+  the server gave it. A row offers actions only when it is current and has a record id and a
+  fingerprint.
+- **On the phone, `GlanceActions`** (`RexDuo/State/GlanceActions.swift`) does three things, in
+  order:
+  1. reads the pane's status records from the server, now;
+  2. `ActionGuard.allows`: the pane's top record is still `blocked`, has the same id, and gives
+     the same fingerprint. Anything else types nothing;
+  3. types once. A write that left is never sent again, and a tap that reaches the phone twice
+     is answered from memory.
+- **Which connection it uses:**
+
+  | The phone's app | Status read | The write |
+  |---|---|---|
+  | in front, the server connected, the pane on screen | the server's connection | the pane's own input queue (`TerminalStream.sendOnce`), behind what was typed on the phone; dropped, never sent late, if it can't leave within 3 s |
+  | in front, the server connected, the pane not on screen | the server's connection | one `terminal.write` on that connection (no stream, so no queue to pass) |
+  | anything else: in the background, woken or launched by the system for the message, or the server not connected | one short connection (`OneShotActionChannel`) | one `terminal.write` on it, then it closes |
+
+- **The short connection** says hello with a label that has no device id (so no Beacon takes
+  it for the app being open), attaches to the pane's session alone (Rex answers for a pane only
+  on a connection attached to its session), reads, writes at most once and closes. It asks for
+  no session list, no server events and no data stream, so nothing is opened, claimed or
+  resized. It gets one attempt.
+- **A wake starts no server.** The system launches or resumes the app in the background to
+  deliver the message, and builds its scene there. `sceneVisible()` is not called while the app
+  is in the background (`ScenePhases.appearedCounts`), so no server connects, and no snapshot
+  is written by such a launch (`GlanceWatcher`).
+- **The answer,** and the one quiet line the watch shows under the agent (`WatchText.outcome`):
+
+  | Answer | When | The watch says |
+  |---|---|---|
+  | `sent` | the computer took the write | "Sent Enter" |
+  | `changed` | the guard refused, or the pane or session is gone | "Not sent. It no longer waits for this." |
+  | `unreachable` | the phone couldn't reach the computer; nothing left the phone | "Not sent. Your iPhone can't reach the computer." |
+  | `unconfirmed` | the write left and no answer came, or no reply came from the phone in 30 s | "Couldn't confirm. Check the pane." |
+  | (none) | the message never reached the phone | "Not sent. iPhone not reachable." |
+
+- **Nothing is tried again by itself,** on either device. While an action is on its way the
+  buttons are gone ("Sending…"). After `sent`, `changed` or `unconfirmed` they stay gone for
+  that wait; after the two "not reachable" lines the person may tap again
+  (`WatchActionState`). There is no sound, haptic or motion for any of it.
+- **Limits:** the phone gives the status read 5 s and the write's answer 8 s, so it answers
+  well inside the watch's 30 s.
+- **In a test launch** (`-glanceLive YES -autoOpen <label>`) the phone types only into panes of
+  the session with that label; any other launch that shows made-up state takes no action.
+- Not seen on a device yet: the wake of a suspended or closed app by a real watch, how fast an
+  unreachable phone fails there, and Enter and Control-C as raw bytes in a program that asked
+  for the kitty keyboard protocol.
+
 ### Calm, on the watch
 
 `CalmRuleTests` reads the watch's sources too:
@@ -324,8 +394,11 @@ counts, orders, dates and dims as they do.
 - **The watch app moves only through `WatchMotion`** (`RexDuoWatch/Views/WatchMotion.swift`):
   no other file of the app may hold an animation, and every modifier there that moves reads
   Reduce Motion and the wrist and asks `WatchMotion` what to do (Motion, below).
-- **Nothing to press** but a row: no button, field, toggle, gesture, alert or intent.
-- **Nothing is sent to the phone**, and the watch app opens no connection.
+- **Nothing to press** but a row and, on its screen, Enter and Interrupt with their question:
+  no field, toggle, gesture, alert or intent, and nothing that sends without the confirmation.
+- **One message is sent to the phone**, a confirmed action, from one call; the watch app opens
+  no connection, and sends nothing again by itself.
+- **On the phone** the action starts no server, types through one call, and never repeats it.
 - **No prompt on the iPhone:** the app never mentions the watch.
 - **One reload call** on the watch, only after a delivery replaced the file.
 - **A stale watch is quiet:** dimmed, a small line in the secondary color, no warning color,
@@ -398,13 +471,19 @@ Short and soft, in the app only (`WatchMotion`). No haptic or sound goes with an
 
 ### Files and tests
 
-- `RexDuoWatch/`: `RexDuoWatchApp.swift`, `WatchSession.swift` (the delegate and the
-  background task), `WatchModel.swift`, `WatchReload.swift`, `WatchDemo.swift`, `Views/`.
+- `RexDuoWatch/`: `RexDuoWatchApp.swift`, `WatchSession.swift` (the delegate, the background
+  task and the one send), `WatchModel.swift`, `WatchActions.swift`, `WatchReload.swift`,
+  `WatchDemo.swift`, `Views/`.
 - `RexDuoWatchWidgets/`: the bundle, the widget and the corner view.
 - `RexDuo/State/GlanceBridge.swift`: the bridge and `WCSessionLink`, the system's session.
+  `RexDuo/State/GlanceActions.swift`: the actions and their two channels.
 - GlanceModel: `WatchDelivery`, `WatchInbox` (with `WatchPayload`, `WatchDrain`), `WatchScreen`
-  (with `WatchText`), each with tests that run on macOS.
-- `GlanceBridgeTests` (the app's tests) runs the bridge against a stand-in session.
+  (with `WatchText`), `WatchAction` (with `ActionGuard`, `WatchActionWire`, `WatchActionState`),
+  each with tests that run on macOS.
+- `GlanceBridgeTests` (the app's tests) runs the bridge against a stand-in session, and
+  `GlanceActionsTests` runs the actions against a stand-in channel and a stand-in server: the
+  order, the one write, each refusal, and that a wake starts no server. RexKit's
+  `StreamInputTests` holds `sendOnce` to the queue's rules.
 - `RexDuoWatchTests` runs in the watch app on a watchOS simulator (scheme `RexDuoWatch`):
   the model, `WatchStyleTests` (what Reduce Motion and the wrist turn each motion into, the
   headline's colors and the contrast of every text color), and `WatchRenderTests`, which draws
@@ -423,7 +502,13 @@ xcrun simctl launch <watch-sim-id> dev.abrahamgonzalez.rexduo.watchkitapp -glanc
   first waiting agent's screen, and `-glanceDetail later` opens it 2 s after launch, as a tap
   would (a simulator's watch can't be tapped from the command line). `-glanceDemoThen
   <scenario>` replaces the snapshot 4 s after launch, as a delivery would. `-glanceDim YES`
-  draws as with the wrist down (a simulator has no wrist to lower). To see Reduce Motion:
+  draws as with the wrist down (a simulator has no wrist to lower). For the actions:
+  `-glanceScroll YES` opens the agent's screen at its end, `-glanceAsk enter|interrupt` with
+  that question up, `-glanceOutcome sending|sent|changed|unreachable|unconfirmed|noPhone`
+  with that line and nothing sent, and `-glanceConfirm enter|interrupt` sends that action 6 s
+  after launch as a confirmed tap would (the phone logs `GLANCE_ACTION <kind> <answer>`). The
+  last one types into a real pane: use it only with the phone's app launched or saved as
+  `-glanceLive YES -autoOpen zz-…`, so the watch knows that session alone. To see Reduce Motion:
   `xcrun simctl spawn <watch-sim-id> defaults write com.apple.Accessibility ReduceMotionEnabled
   -bool YES`, then launch again.
 - To record the motion: `xcrun simctl io <watch-sim-id> recordVideo --codec=h264 motion.mp4`

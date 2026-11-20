@@ -18,6 +18,9 @@ protocol WatchLink: AnyObject {
     var transfersLeft: Int { get }
     func update(context: [String: Any]) throws
     func transferComplication(_ info: [String: Any])
+    /// Given the bytes of an action the watch sent (`WatchActionWire`), and answers with the
+    /// reply that goes back. The one kind of message taken from the watch.
+    var onAction: (@MainActor (Data) async -> [String: Any])? { get set }
 }
 
 enum WatchLinkEvent: Equatable, Sendable {
@@ -35,11 +38,13 @@ enum WatchLinkEvent: Equatable, Sendable {
 /// hands it to the snapshot's writer: the bridge gets each snapshot as it is written, with the
 /// bytes that went to the file, and `WatchDelivery` decides which of them go on, and when.
 ///
-/// It only sends. Nothing comes back from the watch, so the watch can never wake the phone or
-/// ask it for anything, and the bridge knows nothing of `AppModel` or the servers.
+/// One kind of message comes back: an action from the wrist (Enter or Interrupt for a waiting
+/// agent), which the bridge hands to `answer` and answers with what that gives. It takes no
+/// other message, and the bridge knows nothing of `AppModel` or the servers.
 ///
-/// The session is made and activated at the first snapshot, never at launch: a launch that
-/// writes nothing (a test, a launch that doesn't reach the screen) never touches it.
+/// The session is made and activated at the first snapshot, or at `listen()`, which the app
+/// calls at launch so that a message that woke it is delivered. A launch that does neither (a
+/// test, a test launch) never touches it.
 @MainActor
 final class GlanceBridge {
     struct Parts {
@@ -58,10 +63,19 @@ final class GlanceBridge {
     private var installed = false
     private var timer: Task<Void, Never>?
 
-    /// `link` is asked once, at the first snapshot.
+    /// Answers an action from the watch, given as bytes. Set by `AppModel`.
+    var answer: (@MainActor (Data) async -> WatchActionResult)?
+
+    /// `link` is asked once, at the first snapshot or at `listen()`.
     init(parts: Parts = Parts(), link: @escaping @MainActor () -> WatchLink?) {
         self.parts = parts
         makeLink = link
+    }
+
+    /// Opens the session so the watch's actions arrive, also in a launch the system made in
+    /// the background to deliver one. It sends nothing.
+    func listen() {
+        start()
     }
 
     /// The writer wrote this snapshot. `leaving`: the app is on its way to the background.
@@ -95,6 +109,11 @@ final class GlanceBridge {
         guard let link = makeLink(), link.isSupported else { return }
         self.link = link
         link.onEvent = { [weak self] in self?.handle($0) }
+        link.onAction = { [weak self] data in
+            // With nobody to answer, nothing was typed.
+            guard let answer = self?.answer else { return WatchActionWire.reply(.changed) }
+            return WatchActionWire.reply(await answer(data))
+        }
         // Its properties hold real values only after activation, so nothing is asked first.
         link.activate()
     }
@@ -176,6 +195,7 @@ final class GlanceBridge {
 @MainActor
 final class WCSessionLink: NSObject, WatchLink {
     var onEvent: (@MainActor (WatchLinkEvent) -> Void)?
+    var onAction: (@MainActor (Data) async -> [String: Any])?
     private let session: WCSession?
 
     override init() {
@@ -218,4 +238,24 @@ extension WCSessionLink: WCSessionDelegate {
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) { send(.inactive) }
     nonisolated func sessionDidDeactivate(_ session: WCSession) { send(.deactivated) }
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) { send(.watchChanged) }
+
+    /// An action from the wrist, the one message taken from the watch. It always gets a reply,
+    /// so the watch never waits for one that won't come. A message with no reply handler, user
+    /// info and contexts from the watch are not implemented: nothing else is taken.
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        let reply = Reply(send: replyHandler)
+        guard let data = WatchActionWire.actionData(in: message) else {
+            reply.send(WatchActionWire.reply(.changed))
+            return
+        }
+        Task { @MainActor in
+            reply.send(await self.onAction?(data) ?? WatchActionWire.reply(.changed))
+        }
+    }
+
+    /// The session's reply handler, taken to the main actor and back. `@unchecked Sendable`: the
+    /// session documents that it may be called from any thread, and it is called once.
+    private struct Reply: @unchecked Sendable {
+        let send: ([String: Any]) -> Void
+    }
 }

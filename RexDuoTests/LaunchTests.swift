@@ -64,6 +64,19 @@ import Testing
         #expect(m.servers.count == 3 && started().isEmpty)
     }
 
+    /// The system builds the scene of an app it launched in the background too (to hand it an
+    /// action from the watch): the root view appears, and that alone starts nothing.
+    @Test func theRootViewAppearingInTheBackgroundStartsNoServer() throws {
+        #expect(!ScenePhases.appearedCounts(inBackground: true))
+        #expect(ScenePhases.appearedCounts(inBackground: false))
+        let (m, started) = try model()
+        if ScenePhases.appearedCounts(inBackground: true) { m.sceneVisible() }
+        #expect(!m.mayConnect && started().isEmpty)
+        // Brought to the front later, its first visible phase starts them.
+        for step in ScenePhases.steps(for: .inactive) where step == .sceneVisible { m.sceneVisible() }
+        #expect(started() == ["desk", "laptop"])
+    }
+
     @Test func theFirstVisiblePhaseStartsEveryServerOnce() throws {
         let (m, started) = try model()
         for phase in [ScenePhase.background, .inactive, .active, .inactive, .active] {
