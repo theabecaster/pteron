@@ -225,6 +225,15 @@ builds.
   phase). `-perfClean YES` deletes `Documents/perf` and `Documents/bench`
   and quits. `-peelLeadIn <seconds>` and `-drawables 2` are A/B switches for the device
   benchmark. All of these also work in the benchmark's `BENCH` Release build.
+- `-echoTest <name>`: key-to-echo on the active pane once it is live (`EchoProbe`, also in the
+  `BENCH` build). It types `-echoKeys` distinct letters (default 30) `-echoEvery` seconds apart
+  (default 0.4) through the software keyboard's path, after `-echoStart` seconds (default 3),
+  then clears the line with Control-U and writes `Documents/perf/<name>.json`: for each key the
+  time to the server's answer to its write, to the output that echoes it, and to the first frame
+  that shows it, with medians and p95. `-echoWalk YES` first goes back two panes and forward
+  two, as `-perfSwitchWalk` does, which leaves two panes warm, and waits `-echoAfterWalk`
+  seconds (default 3). It types into a real shell: use `-autoOpen zz-…`. Unlike `-typeTest`,
+  which sends its text in one write, every key is a keypress of its own.
 - `-selectionDemo <steps>`, `-selectionLoupe off`: docs/selection.md.
 - `-simulateScan <payload>`: open "Pair via QR Code" at launch and read this payload as if the
   camera had (the simulator has no camera). `open` only opens the scanner. With `-settings

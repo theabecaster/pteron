@@ -193,6 +193,8 @@ struct WindowScreen: View {
         #if DEBUG || BENCH
         // `-perfSwitch <n>` (testing): the probe switches panes as a swipe does.
         .onAppear { PerfProbe.active?.setSwitcher { dir in if let w = window { switchPane(w, by: dir) } } }
+        // `-echoTest` with `-echoWalk YES` (testing): so does the key-to-echo probe.
+        .onAppear { EchoDriver.active?.setSwitcher { dir in if let w = window { switchPane(w, by: dir) } } }
         #endif
         #if DEBUG
         .onAppear { PanesTest.run(panesTestActions) }

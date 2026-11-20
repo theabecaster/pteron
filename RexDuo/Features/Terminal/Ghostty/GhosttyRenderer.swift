@@ -316,6 +316,7 @@ final class GhosttyRenderer: @unchecked Sendable {
         let built = frame.rowsAwaitingGlyphs > 0 ? 0 : now
         guard drawn else {
             PerfProbe.active?.ghosttyPass(self, built: built, presented: false)  // PERF: nothing new to draw
+            EchoProbe.active?.pass(core: core, built: built, presented: false)  // PERF
             return .idle
         }
         guard inFlight.wait(timeout: .now()) == .success else {
@@ -352,6 +353,7 @@ final class GhosttyRenderer: @unchecked Sendable {
         lastEncodeSeconds = lastPresent - start
         frameCount.add(1, ordering: .relaxed)
         PerfProbe.active?.ghosttyPass(self, built: built, presented: true)  // PERF: frame handed to the GPU
+        EchoProbe.active?.pass(core: core, built: built, presented: true)  // PERF
         return .presented
     }
 

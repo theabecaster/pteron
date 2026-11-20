@@ -259,6 +259,25 @@ final class PerfTests: XCTestCase {
 /// off the main actor (`GoToSearcher`). Budgets on a device in Release: build ≤ 25 ms for 2k,
 /// a query ≤ 4 ms for 2k and ≤ 20 ms for 10k (docs/goto.md, Measurements). A Debug simulator
 /// run is far slower; the bound here only catches a blowup.
+final class EchoProbeTests: XCTestCase {
+    private func printable(_ s: String) -> String {
+        let bytes = Array(s.utf8)
+        return String(decoding: bytes.withUnsafeBufferPointer { EchoProbe.printable($0) }, as: UTF8.self)
+    }
+
+    /// The echo of a key is found by its letter, so the letters inside escape sequences must not
+    /// count: a color's `m`, a cursor move's `C`, a title's text.
+    func testOnlyTheTextOfAChunkCounts() {
+        XCTAssertEqual(printable("a"), "a")
+        XCTAssertEqual(printable("\u{1b}[31mb\u{1b}[0m"), "b")
+        XCTAssertEqual(printable("\u{1b}[?25l\u{1b}[3Cc\u{1b}[?25h"), "c")
+        XCTAssertEqual(printable("\u{1b}]0;title\u{07}d"), "d")
+        XCTAssertEqual(printable("\u{1b}]2;title\u{1b}\\e"), "e")
+        XCTAssertEqual(printable("\u{1b}7f\u{1b}8\r\n"), "f")
+        XCTAssertEqual(printable("\u{1b}["), "", "a sequence cut at the chunk's end")
+    }
+}
+
 final class GoToPerfTests: XCTestCase {
     static func items(_ n: Int) -> [GoToItem] {
         let words = ["api", "web", "logs", "build", "deploy", "studio", "claude", "vim", "server", "tests"]

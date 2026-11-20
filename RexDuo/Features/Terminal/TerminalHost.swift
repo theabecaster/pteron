@@ -1823,6 +1823,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         PerfProbe.active?.fed(bytes.count, host: self)  // PERF
         // The terminal copies the bytes and parses them on its own queue, in stream order.
         term.feed(buffer: bytes)
+        EchoProbe.active?.fed(bytes, core: term.core)  // PERF: after the bytes, so its mark follows them
         // A pane nobody sees may not cost much: one that writes a lot parks. After this chunk
         // has been passed on whole, so the resume's byte count is exact.
         if isWarm, warmRate.add(bytes.count, at: CACurrentMediaTime()) {
@@ -1922,6 +1923,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         PerfProbe.active?.status(status, host: self)  // PERF
         switch status {
         case .live:
+            #if DEBUG || BENCH
+            EchoDriver.active?.live(self)  // `-echoTest` (testing, EchoProbe.swift)
+            #endif
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
             // A new connection may be to a server that does other things with files.
             refreshFiles()
