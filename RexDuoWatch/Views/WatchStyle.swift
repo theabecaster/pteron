@@ -3,8 +3,11 @@ import GlanceUI
 import SwiftUI
 
 /// The watch app's colors and type: the snapshot's dark theme over the watch's black
-/// (`WatchScreen.palette`), with the state colors of the agent board, and the system's text
-/// styles, which follow the person's text size.
+/// (`WatchScreen.palette`), with the state colors of the agent board, Glide's colors for the
+/// brand, and the system's text styles, which follow the person's text size.
+///
+/// Every text color holds 4.5:1 or more against what it sits on: black, a row's platter, and
+/// the top of the brand's ground (`WatchStyleTests`).
 struct WatchStyle {
     let colors: GlanceColors
 
@@ -13,13 +16,42 @@ struct WatchStyle {
     }
 
     var fg: Color { colors.fg }
-    var secondary: Color { colors.secondary }
+    /// The app's secondary text is the foreground at 55%; on the watch's small type that reads
+    /// under 4.5:1, so the watch's is stronger.
+    var secondary: Color { colors.fg.opacity(Self.secondaryOpacity) }
+    static let secondaryOpacity = 0.72
     /// A row's platter.
     var platter: Color { colors.sidebar.opacity(0.9) }
     var waiting: Color { colors.blocked }
 
     func state(_ urgency: GlanceDigest.Urgency) -> Color { colors.state(urgency) }
     func tint(kind: String?) -> Color { AgentGlyph.tint(kind: kind, colors) }
+
+    /// The headline's color: the state's, as on the agent board ("2 need you" in the waiting
+    /// color, "3 working" in the working color, "All done" in green). Plain when all is quiet,
+    /// and quiet when the snapshot is old or a machine is down: dimmed, never a warning.
+    func headline(_ screen: WatchScreen) -> Color {
+        if screen.urgency == .offline { return secondary }
+        if screen.dimmed || screen.urgency == .quiet { return fg }
+        return state(screen.urgency)
+    }
+
+    /// A machine's counts, each in its state's color: "2 waiting · 3 working · 4 idle". A machine
+    /// that is down, or an old snapshot, says them all in the secondary color.
+    func counts(_ machine: WatchScreen.Machine) -> Text {
+        guard !machine.dimmed, let first = machine.parts.first else { return Text(machine.words).foregroundStyle(secondary) }
+        func part(_ p: GlanceDigest.Part) -> Text { Text(p.text).foregroundStyle(p.urgency == .quiet ? secondary : state(p.urgency)) }
+        let dot = Text(" · ").foregroundStyle(secondary)
+        return machine.parts.dropFirst().reduce(part(first)) { Text("\($0)\(dot)\(part($1))") }
+    }
+
+    /// The ground behind the app's screens: Glide's deep blue at the top, fading to the watch's
+    /// black by the middle. Black with the wrist down, where the screen dims and should stay dark.
+    func ground(wristDown: Bool) -> LinearGradient {
+        let top = wristDown ? Color.black : WatchGlide.deep
+        return LinearGradient(stops: [.init(color: top, location: 0), .init(color: .black, location: 0.55)],
+                              startPoint: .top, endPoint: .bottom)
+    }
 
     static let headline = Font.title3.bold().monospacedDigit()
     static let name = Font.headline
@@ -30,15 +62,33 @@ struct WatchStyle {
     static let mark = "mark.open"
 }
 
-/// The ring of a waiting agent, still: the widgets' ring (`GlanceRing`).
+/// Glide's colors, from the app icon (`Brand/AppIcon.icon`): the body's cool gradient of mint,
+/// cyan, sky, indigo and violet, on the icon's deep blue.
+enum WatchGlide {
+    static let mintHex = "#8AF7DA", cyanHex = "#3DD6F8", skyHex = "#3F93FF", indigoHex = "#5A6AF8", violetHex = "#8A5CF8"
+    /// The icon's ground, display P3 (0.07, 0.11, 0.29), in sRGB.
+    static let deepHex = "#0F1C4D"
+
+    static let deep = Color(glanceHex: deepHex)
+    static let indigo = Color(glanceHex: indigoHex)
+
+    /// Glide's body, lit from the upper right as on the icon.
+    static let gradient = LinearGradient(colors: [mintHex, cyanHex, skyHex, indigoHex, violetHex].map(Color.init(glanceHex:)),
+                                         startPoint: .topTrailing, endPoint: .bottomLeading)
+}
+
+/// The ring of a waiting agent: the widgets' ring (`GlanceRing`), still. `breathes` puts the
+/// soft glow around it that breathes while the agent waits (`WatchBreath`).
 struct WatchRing: View {
     let row: WatchScreen.Row
     let style: WatchStyle
     let diameter: CGFloat
+    var breathes = false
 
     var body: some View {
         GlanceRing(state: "blocked", symbol: row.symbol, tint: style.tint(kind: row.kind), color: style.waiting,
                    ground: .black, diameter: diameter)
+            .modifier(WatchBreath(on: breathes && !row.lastKnown, color: style.waiting, diameter: diameter))
     }
 }
 

@@ -14,6 +14,9 @@ final class WatchModel {
     }
 
     private(set) var screen: WatchScreen
+    /// False until the file was first read, so the app never shows "Open Pteron on iPhone"
+    /// for the moment before it knows.
+    private(set) var loaded = false
     @ObservationIgnored private let read: @Sendable () -> GlanceReading
     @ObservationIgnored private let parts: Parts
     @ObservationIgnored private var timer: Task<Void, Never>?
@@ -35,6 +38,7 @@ final class WatchModel {
         let now = parts.now()
         let next = WatchScreen(reading, now: now)
         if next != screen { screen = next }
+        if !loaded { loaded = true }
         timer?.cancel()
         timer = nil
         guard let at = WatchScreen.nextChange(reading, after: now) else { return }

@@ -319,7 +319,11 @@ counts, orders, dates and dims as they do.
 - **No sound, no haptic, no notification** from the watch app or its complications, and no
   Live Activity. (A push from Beacon still mirrors to the watch as iOS does it; this app adds
   nothing to that.)
-- **No motion of its own.** The rings are still, on the detail screen too.
+- **Complications have no motion of their own**, nor does anything the iPhone's widgets
+  draw or share with them (`RexDuoWidgets`, `RexDuoWatchWidgets`, `Packages/RexGlance/Sources`).
+- **The watch app moves only through `WatchMotion`** (`RexDuoWatch/Views/WatchMotion.swift`):
+  no other file of the app may hold an animation, and every modifier there that moves reads
+  Reduce Motion and the wrist and asks `WatchMotion` what to do (Motion, below).
 - **Nothing to press** but a row: no button, field, toggle, gesture, alert or intent.
 - **Nothing is sent to the phone**, and the watch app opens no connection.
 - **No prompt on the iPhone:** the app never mentions the watch.
@@ -348,15 +352,49 @@ counts, orders, dates and dims as they do.
 - **Colors:** the theme chosen for Dark Mode when it is a dark theme, else the default dark
   theme (`WatchScreen.palette`), over the watch's black. Row platters are the sidebar color at
   90%. State has the board's colors and always its words.
+- **The brand** (`WatchGlide`, from `Brand/AppIcon.icon`): behind every screen, the icon's
+  deep blue at the top fading to black by the middle (`containerBackground` for the
+  navigation); black with the wrist down. On a screen with nothing to list, Glide is drawn in
+  the icon's gradient (mint, cyan, sky, indigo, violet) over a soft indigo halo.
+- **State colors:** the headline takes its state's color ("2 need you" waiting, "3 working"
+  working, "All done" done, "1 error" error); "All quiet" is the foreground. An old snapshot
+  keeps the foreground, dimmed, and "Last seen" stays secondary: a stale watch never shows a
+  warning color. A machine's counts are each in their state's color (idle secondary), except
+  on a machine that is down or in an old snapshot, where they are all secondary.
+- **Contrast:** every text color reads at 4.5:1 or more on black, on a platter and on the top
+  of the ground, for the default theme (`WatchStyleTests`). Secondary text is the foreground at
+  72%, not the app's 55%, which reads under 4.5:1 at the watch's sizes.
 - **Type:** the system's text styles (`.title3` bold for the headline, `.headline` for names,
   `.footnote` semibold for state words, `.caption2` for places), which follow the person's
   text size; rows wrap.
-- **Rings:** `GlanceRing`, 28 pt in a row and 44 pt on the detail screen.
+- **Rings:** `GlanceRing`, 28 pt in a row and 44 pt on the detail screen. The longest-waiting
+  agent's ring in the list, and a waiting agent's ring on its own screen, have a soft glow in
+  the waiting color.
 - **Native:** a `NavigationStack` and a `List`; the app's name is the title beside the clock.
   Double Tap is not claimed.
 - **Complications** take the watch face's tint (`widgetAccentable` on the count and the first
   line). On a face in full color the count takes the waiting color while someone waits.
 - **The icon** is the app's (`Brand/AppIcon.icon`).
+
+### Motion
+
+Short and soft, in the app only (`WatchMotion`). No haptic or sound goes with any of it.
+
+| Moment | Motion | With Reduce Motion | Wrist down (Always On) |
+|---|---|---|---|
+| The list first shows | the headline, rows and machines fade in and rise 10 pt, 45 ms apart (the first seven), a 0.5 s spring | a 0.25 s fade | there at once |
+| A delivery changes the screen | the count's digits roll (`numericText`), rows come and go, colors change: 0.4 s | a 0.2 s cross-fade | no animation |
+| Nothing to list | Glide glides in from the lower left, tilted and small, and lands (0.9 s spring); the line follows | a fade | there at once |
+| An agent's screen opens | the system's slide; the ring springs up from 60% and the words rise after it | a fade | — |
+| An agent waits | its ring's glow breathes, 1.8 s in and 1.8 s out, while it is on screen: the longest-waiting row in the list, and the agent's own screen | a still glow | no glow |
+
+- **One loop only:** the breath. Everything else runs once and stops.
+- **The first entrance waits 0.25 s** after the screen appears, so it isn't spent behind the
+  system's own opening of the app.
+- **The zoom transition** (`navigationTransition(.zoom)`) was tried: watchOS 27.2 kept its own
+  slide, so it is not used.
+- The app shows nothing until it has read its file (`WatchModel.loaded`), so "Open Pteron on
+  iPhone" never flashes, and Glide never glides in, on the way to the list.
 
 ### Files and tests
 
@@ -368,8 +406,10 @@ counts, orders, dates and dims as they do.
   (with `WatchText`), each with tests that run on macOS.
 - `GlanceBridgeTests` (the app's tests) runs the bridge against a stand-in session.
 - `RexDuoWatchTests` runs in the watch app on a watchOS simulator (scheme `RexDuoWatch`):
-  the model, and `WatchRenderTests`, which draws the list, the detail screen and every
-  complication family in every state into the test host's `tmp/watch-renders`.
+  the model, `WatchStyleTests` (what Reduce Motion and the wrist turn each motion into, the
+  headline's colors and the contrast of every text color), and `WatchRenderTests`, which draws
+  the list, the detail screen and every complication family in every state into the test
+  host's `tmp/watch-renders`, each part where it lands (`watchLanded`).
 
 ```sh
 xcodebuild -project RexDuo.xcodeproj -scheme RexDuoWatch -destination id=<watch-sim-id> \
@@ -380,7 +420,14 @@ xcrun simctl launch <watch-sim-id> dev.abrahamgonzalez.rexduo.watchkitapp -glanc
 
 - The watch app takes `-glanceDemo <scenario>` (Debug builds) as the iPhone app does: it puts
   that made-up snapshot in the watch's own file. `-glanceDetail YES` with it opens on the
-  first waiting agent's screen.
+  first waiting agent's screen, and `-glanceDetail later` opens it 2 s after launch, as a tap
+  would (a simulator's watch can't be tapped from the command line). `-glanceDemoThen
+  <scenario>` replaces the snapshot 4 s after launch, as a delivery would. `-glanceDim YES`
+  draws as with the wrist down (a simulator has no wrist to lower). To see Reduce Motion:
+  `xcrun simctl spawn <watch-sim-id> defaults write com.apple.Accessibility ReduceMotionEnabled
+  -bool YES`, then launch again.
+- To record the motion: `xcrun simctl io <watch-sim-id> recordVideo --codec=h264 motion.mp4`
+  in the background, launch, then stop it with an interrupt.
 - The iPhone app's `-glanceDemo` also sends its scenario to a paired watch simulator. A Debug
   build logs `GLANCE_WATCH seq=<n> complication=<0|1>` for each delivery (`GLANCE_WATCH demo
   bytes=<n>` for a demo) and `GLANCE_WATCH <event> activated=… paired=… installed=…` for each

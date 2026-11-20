@@ -58,32 +58,29 @@ import WidgetKit
             case .agents:
                 VStack(alignment: .leading, spacing: 4) {
                     WatchHeaderView(screen: screen, style: style).padding(.horizontal, 4)
-                    ForEach(screen.rows) { row in
-                        WatchRowView(row: row, style: style)
+                    ForEach(Array(screen.rows.enumerated()), id: \.element.id) { i, row in
+                        WatchRowView(row: row, style: style, breathes: i == 0)
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(style.platter))
+                            .background(WatchPlatter(style: style))
                     }
                     if screen.more > 0 {
                         Text("+\(screen.more) more").font(WatchStyle.place).foregroundStyle(style.secondary).padding(.horizontal, 8)
                     }
                     ForEach(screen.machines) { machine in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(machine.name).font(WatchStyle.words).foregroundStyle(style.fg)
-                            Text(machine.words).font(WatchStyle.place).foregroundStyle(style.secondary)
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(style.platter))
-                        .opacity(machine.dimmed ? WatchStyle.dim : 1)
+                        WatchMachineRow(machine: machine, style: style)
+                            .padding(8)
+                            .background(WatchPlatter(style: style))
                     }
                 }
             }
         }
         .padding(6)
         .frame(width: Self.width)
+        .background(style.ground(wristDown: false))
         .background(Color.black)
         .environment(\.colorScheme, .dark)
+        .environment(\.watchLanded, true)
     }
 
     private func detail(_ scenario: String, wristDown: Bool, redacted: Bool = false) -> some View {
@@ -99,8 +96,11 @@ import WidgetKit
         .redacted(reason: redacted ? .privacy : [])
         .padding(6)
         .frame(width: Self.width)
+        .background(style.ground(wristDown: wristDown))
         .background(Color.black)
         .environment(\.colorScheme, .dark)
+        .environment(\.isLuminanceReduced, wristDown)
+        .environment(\.watchLanded, true)
     }
 
     private func sheet(_ cells: [(String, AnyView)], columns: Int) -> some View {

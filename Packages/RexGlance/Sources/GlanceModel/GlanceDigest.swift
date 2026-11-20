@@ -179,13 +179,25 @@ public struct GlanceDigest: Equatable, Sendable {
 
     /// A machine's counts in words: "2 waiting · 3 working · 4 idle". "No agents" when it has none.
     public static func words(_ c: GlanceSnapshot.Counts) -> String {
-        var parts: [String] = []
-        if c.waiting > 0 { parts.append("\(c.waiting) waiting") }
-        if c.error > 0 { parts.append(c.error == 1 ? "1 error" : "\(c.error) errors") }
-        if c.working > 0 { parts.append("\(c.working) working") }
-        if c.done > 0 { parts.append("\(c.done) done") }
-        if c.idle > 0 { parts.append("\(c.idle) idle") }
-        return parts.isEmpty ? "No agents" : parts.joined(separator: " · ")
+        let parts = parts(c)
+        return parts.isEmpty ? "No agents" : parts.map(\.text).joined(separator: " · ")
+    }
+
+    /// One count of `words`, with the state it counts, for a view that colors each by its state.
+    public struct Part: Equatable, Sendable {
+        public var urgency: Urgency
+        public var text: String
+    }
+
+    /// The counts of `words`, in its order; idle counts as quiet. Empty when there are none.
+    public static func parts(_ c: GlanceSnapshot.Counts) -> [Part] {
+        var parts: [Part] = []
+        if c.waiting > 0 { parts.append(Part(urgency: .waiting, text: "\(c.waiting) waiting")) }
+        if c.error > 0 { parts.append(Part(urgency: .error, text: c.error == 1 ? "1 error" : "\(c.error) errors")) }
+        if c.working > 0 { parts.append(Part(urgency: .working, text: "\(c.working) working")) }
+        if c.done > 0 { parts.append(Part(urgency: .done, text: "\(c.done) done")) }
+        if c.idle > 0 { parts.append(Part(urgency: .quiet, text: "\(c.idle) idle")) }
+        return parts
     }
 
     // MARK: Lock Screen

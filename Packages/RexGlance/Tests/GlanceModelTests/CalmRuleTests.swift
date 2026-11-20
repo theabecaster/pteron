@@ -3,9 +3,11 @@ import Testing
 @testable import GlanceModel
 
 /// The widgets and the watch app never ask for attention. They are passive: no Live Activity, no
-/// sound, haptic or notification, no motion of their own, no reload beyond the one the throttle
-/// allows, and no delivery to the watch beyond what `WatchDelivery` allows. These tests read the
-/// sources of the widget path and the watch path, so a line that breaks the rule fails here.
+/// sound, haptic or notification, no reload beyond the one the throttle allows, and no delivery
+/// to the watch beyond what `WatchDelivery` allows. Widgets and complications have no motion of
+/// their own; the watch app moves softly, and only as Reduce Motion and the wrist allow. These
+/// tests read the sources of the widget path and the watch path, so a line that breaks the rule
+/// fails here.
 @Suite struct CalmRuleTests {
     private static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -56,16 +58,67 @@ import Testing
         }
     }
 
-    @Test func theWidgetsHaveNoMotionOfTheirOwn() throws {
+    /// What makes a view move. A file that holds none of these doesn't animate.
+    private static let motion = [
+        "withAnimation", ".animation(", "repeatForever", "symbolEffect", "contentTransition", "TimelineView",
+        "phaseAnimator", "PhaseAnimator", "keyframeAnimator", "KeyframeAnimator", "Animation.", ".transition(",
+        "matchedGeometryEffect", "navigationTransition", "Transaction", ".spring(", ".snappy(", ".bouncy(", ".smooth(",
+        ".easeIn", ".easeOut", ".linear(", "interpolatingSpring",
+    ]
+
+    /// The watch app's one file that moves anything (docs/glance.md, The watch, Motion).
+    private static let watchMotion = "RexDuoWatch/Views/WatchMotion.swift"
+
+    @Test func theWidgetsAndComplicationsHaveNoMotionOfTheirOwn() throws {
         // The ring is still, and nothing repeats, pulses or animates: the only motion is the
-        // system's own when a timeline entry replaces another.
-        let banned = [
-            "withAnimation", ".animation(", "repeatForever", "symbolEffect", "contentTransition", "TimelineView",
-            "phaseAnimator", "keyframeAnimator", "Animation.",
-        ]
-        for f in try Self.sources(["RexDuoWidgets", "Packages/RexGlance/Sources/GlanceUI"] + Self.watch) {
-            for word in banned { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
+        // system's own when a timeline entry replaces another. This holds for the iPhone's
+        // widgets, the watch's complications and everything they share. Only the watch app moves.
+        let files = try Self.sources(["RexDuoWidgets", "RexDuoWatchWidgets", "Packages/RexGlance/Sources"])
+        #expect(files.count > 15)
+        for f in files {
+            for word in Self.motion { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
         }
+    }
+
+    @Test func theWatchAppMovesOnlyThroughWatchMotion() throws {
+        // Its views ask `WatchMotion`'s modifiers for every movement, so no animation can skip
+        // Reduce Motion or the wrist.
+        let files = try Self.sources(["RexDuoWatch"])
+        #expect(files.contains { $0.name == Self.watchMotion })
+        for f in files where f.name != Self.watchMotion {
+            for word in Self.motion { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
+        }
+    }
+
+    @Test func everyWatchAnimationChecksReduceMotionAndTheWrist() throws {
+        let text = try #require(try Self.sources([Self.watchMotion]).first).text
+        // The file in its declarations: each starts at a line that opens a type.
+        var blocks: [[Substring]] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if ["struct ", "enum ", "extension ", "final class ", "private struct "].contains(where: line.hasPrefix) || blocks.isEmpty {
+                blocks.append([])
+            }
+            blocks[blocks.count - 1].append(line)
+        }
+        var moving = 0
+        for block in blocks {
+            let body = block.joined(separator: "\n")
+            guard Self.motion.contains(where: body.contains) else { continue }
+            moving += 1
+            let name = String(block.first { !$0.hasPrefix("///") && !$0.hasPrefix("import") && !$0.isEmpty } ?? "")
+            if name.hasPrefix("enum WatchMotion") {
+                // The values: one for each of full motion, Reduce Motion and the wrist down,
+                // made only from the two settings.
+                #expect(body.contains("init(reduceMotion: Bool, wristDown: Bool)"))
+                for c in ["case full", "case fade", "case still"] { #expect(body.contains(c), "WatchMotion lacks \(c)") }
+            } else {
+                // A modifier that moves reads both settings and works its motion out from them.
+                #expect(body.contains("@Environment(\\.accessibilityReduceMotion)"), "\(name) doesn't read Reduce Motion")
+                #expect(body.contains("@Environment(\\.isLuminanceReduced)"), "\(name) doesn't read the wrist")
+                #expect(body.contains("WatchMotion(reduceMotion: reduceMotion, wristDown: wristDown)"), "\(name) doesn't ask WatchMotion")
+            }
+        }
+        #expect(moving >= 5)
     }
 
     @Test func noTargetDeclaresLiveActivities() throws {

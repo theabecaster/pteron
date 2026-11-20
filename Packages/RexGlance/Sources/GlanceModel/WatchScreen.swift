@@ -58,6 +58,8 @@ public struct WatchScreen: Equatable, Sendable {
         public var name: String
         /// "2 waiting · 3 working".
         public var words: String
+        /// The same counts one by one, each with its state, for the app to color.
+        public var parts: [GlanceDigest.Part]
         public var dimmed: Bool
     }
 
@@ -102,7 +104,8 @@ public struct WatchScreen: Equatable, Sendable {
                 lastKnown: r.stale || old, msg: r.agent.msg)
         }
         machines = digest.machines.map {
-            Machine(id: $0.id, name: $0.name, words: GlanceDigest.words($0.counts), dimmed: !$0.live || digest.dimmed)
+            Machine(id: $0.id, name: $0.name, words: GlanceDigest.words($0.counts), parts: GlanceDigest.parts($0.counts),
+                    dimmed: !$0.live || digest.dimmed)
         }
     }
 

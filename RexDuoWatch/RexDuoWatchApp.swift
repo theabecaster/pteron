@@ -27,6 +27,18 @@ struct RexDuoWatchApp: App {
             Task { @MainActor in await model.reload() }
         }
         session.activate()
+        #if DEBUG
+        // `-glanceDemoThen <scenario>`: 4 s after launch, that snapshot replaces the first, as
+        // a delivery would, to see the open app take a change.
+        if let store, let next = UserDefaults.standard.string(forKey: "glanceDemoThen"), !next.isEmpty {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                WatchDemo.write(next, to: store, now: Date())
+                WatchReload.all()
+                await model.reload()
+            }
+        }
+        #endif
     }
 
     /// `-glanceDetail YES` (Debug builds): open on the first waiting agent's screen.
@@ -39,14 +51,40 @@ struct RexDuoWatchApp: App {
         return []
     }
 
+    /// `-glanceDetail later` (Debug builds): open the first waiting agent's screen 2 s after
+    /// launch, as a tap on its row would, to see the way in. A simulator's watch can't be tapped
+    /// from the command line.
+    private var openLater: Bool {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "glanceDetail") == "later"
+        #else
+        return false
+        #endif
+    }
+
+    /// `-glanceDim YES` (Debug builds): draw as with the wrist down in Always On, where the
+    /// screen dims and nothing moves. A simulator has no wrist to lower.
+    private var dimmed: Bool {
+        #if DEBUG
+        return UserDefaults.standard.bool(forKey: "glanceDim")
+        #else
+        return false
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
-            WatchRootView(screen: model.screen, path: startPath)
-                .task { await model.reload() }
-                .onChange(of: phase) { _, now in
-                    // Time passed while the app was away, and a delivery may have landed.
-                    if now == .active { Task { await model.reload() } }
+            ZStack {
+                // Nothing until the file was read: the first screen is the one that holds.
+                if model.loaded {
+                    WatchRootView(screen: model.screen, path: startPath, dimmed: dimmed, openLater: openLater)
                 }
+            }
+            .task { await model.reload() }
+            .onChange(of: phase) { _, now in
+                // Time passed while the app was away, and a delivery may have landed.
+                if now == .active { Task { await model.reload() } }
+            }
         }
         // A delivery that arrives while the app isn't open: the system starts it for this, the
         // session's delegate writes the file and reloads the complications, and the task ends

@@ -49,8 +49,10 @@ import Testing
         let clock = Clock()
         let m = model(try store(), clock)
         #expect(m.screen.kind == .message(WatchText.open))
+        // Not shown yet: the app draws nothing until the file was read.
+        #expect(!m.loaded)
         await m.reload()
-        #expect(m.screen.kind == .message(WatchText.open))
+        #expect(m.screen.kind == .message(WatchText.open) && m.loaded)
     }
 
     @Test func aDeliveryShowsAfterAReload() async throws {

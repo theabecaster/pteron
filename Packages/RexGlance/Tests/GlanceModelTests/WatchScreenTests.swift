@@ -44,6 +44,18 @@ import Testing
         #expect(s.machines.map(\.words) == ["2 waiting · 1 error · 3 working · 1 done · 4 idle"])
     }
 
+    @Test func aMachinesCountsComeOneByOneWithTheirStateInTheWordsOrder() {
+        let parts = screen("several").machines[0].parts
+        #expect(parts.map(\.urgency) == [.waiting, .error, .working, .done, .quiet])
+        for scenario in GlanceDemo.scenarios {
+            for m in screen(scenario).machines {
+                let joined = m.parts.map(\.text).joined(separator: " · ")
+                #expect(joined == (m.parts.isEmpty ? "" : m.words), "\(scenario) \(m.name)")
+            }
+        }
+        #expect(GlanceDigest.parts(.init()).isEmpty && GlanceDigest.words(.init()) == "No agents")
+    }
+
     @Test func theWordsForEveryReason() {
         #expect(WatchScreen.words(why: "permission") == "Needs permission")
         #expect(WatchScreen.words(why: "question") == "Has a question")

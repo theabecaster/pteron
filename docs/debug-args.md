@@ -106,7 +106,9 @@ builds.
   `GLANCE_DEMO <scenario>`. Without it, a test launch (`-servers`, `-boardDemo`, `-autoOpen`,
   `-simulateOffline`) writes no snapshot at all. The scenario also goes to a paired watch
   simulator that has the watch app. The watch app takes the same argument for its own file, and
-  `-glanceDetail YES` to open on the first waiting agent ([glance.md](glance.md), The watch).
+  `-glanceDetail YES` to open on the first waiting agent (`later` opens it 2 s after launch),
+  `-glanceDemoThen <scenario>` to replace the snapshot 4 s after launch, and `-glanceDim YES`
+  to draw as with the wrist down ([glance.md](glance.md), The watch).
 - `-glanceLive YES` with `-autoOpen <label>`: write the real snapshot in a test launch, with
   only the agents of the session with that label, so no other session's name reaches the file.
   A Debug build logs `GLANCE_WRITE seq=<n> bytes=<n>` for each write. The file is in the

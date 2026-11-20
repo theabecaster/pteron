@@ -45,7 +45,8 @@ struct WatchDetailBody: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                WatchRing(row: row, style: style, diameter: 44)
+                WatchRing(row: row, style: style, diameter: 44, breathes: true)
+                    .modifier(WatchArrival(part: .ring))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.name).font(WatchStyle.name).foregroundStyle(style.fg).privacySensitive()
                     Text(row.words).font(WatchStyle.words).foregroundStyle(style.waiting)
@@ -56,6 +57,7 @@ struct WatchDetailBody: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .modifier(WatchArrival(part: .words))
             }
             .opacity(row.lastKnown ? WatchStyle.dim : 1)
             if let message = row.message(wristDown: wristDown) {
@@ -67,6 +69,7 @@ struct WatchDetailBody: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(style.platter))
                     .opacity(row.lastKnown ? WatchStyle.dim : 1)
+                    .modifier(WatchArrival(part: .words))
             }
             VStack(alignment: .leading, spacing: 1) {
                 if !row.place.isEmpty { Text(row.place).privacySensitive() }
