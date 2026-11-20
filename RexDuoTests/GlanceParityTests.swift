@@ -177,6 +177,23 @@ import Testing
         #expect(!String(describing: rows).contains("tail1234"))
     }
 
+    /// The agents that don't wait, for the widgets' tiles: one per agent the counts count, in
+    /// the same pass, from the keys alone, and nothing that names a pane or a place.
+    @Test func theOtherAgentsBecomeTiles() throws {
+        let m = try model()
+        let s = server(m, "desk")
+        load(s, sessions: 2, tabs: 3) { ["blocked", "working", "done", "idle", "error", "blocked"][$0] }
+        let rows = GlanceSource.machines(m.servers, since: [:])
+        #expect(rows[0].busy.map(\.state) == ["working", "done", "idle", "error"])
+        #expect(rows[0].busy.allSatisfy { $0.kind == "claude" && $0.symbol == "asterisk" })
+        #expect(rows[0].busy.count + rows[0].waiting.count == rows[0].states.count)
+        let snapshot = GlanceSummary.snapshot(machines: rows, palette: .standard, previous: nil, seq: 1, now: Date())
+        #expect(snapshot.machines[0].busy?.map(\.state) == ["error", "working", "done", "idle"])
+        #expect(!String(describing: rows[0].busy).contains("desk-") && !String(describing: rows[0].busy).contains("zz-test"))
+        // A test launch's tiles are its own session's too.
+        #expect(GlanceSource.machines(m.servers, since: [:], only: "zz-test")[0].busy.map(\.state) == ["working", "done"])
+    }
+
     @Test func aPaneWhoseProgramExitedIsNoWaitingAgent() throws {
         let m = try model()
         let s = server(m, "desk")

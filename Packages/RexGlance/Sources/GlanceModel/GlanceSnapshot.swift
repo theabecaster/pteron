@@ -5,7 +5,7 @@ import Foundation
 ///
 /// **Version rule.** `v` changes only for a breaking change. A field added later keeps `v` and
 /// is optional, so a file from an older app still decodes and a newer file's extra fields are
-/// ignored. `seq`, a machine's `seen` and an agent's `fp` are such fields. A reader that meets a higher `v` shows
+/// ignored. `seq`, a machine's `seen` and `busy`, and an agent's `fp` are such fields. A reader that meets a higher `v` shows
 /// its placeholder (`GlanceReading.newer`).
 ///
 /// The file holds no server address: links back into the app key on the server's random id.
@@ -15,6 +15,8 @@ public struct GlanceSnapshot: Codable, Equatable, Sendable {
     public static let waitingLimit = 8
     /// A message is clipped to this many characters.
     public static let messageLimit = 200
+    /// Agents that don't wait, kept over all machines together, the most urgent first.
+    public static let busyLimit = 12
 
     public var v: Int
     /// Counts the app's writes, across launches. Orders snapshots when the clock doesn't.
@@ -56,21 +58,25 @@ public struct GlanceSnapshot: Codable, Equatable, Sendable {
         public var waiting: [Agent]
         /// When the app last wrote this machine while it was connected. Nil when it never was.
         public var seen: Date?
+        /// Its agents that don't wait, the most urgent first: error, working, done, idle. Added
+        /// later: nil in a file from an older app, and a widget then draws no tiles for it.
+        public var busy: [Busy]?
 
-        public init(id: String, name: String, link: Link, counts: Counts, waiting: [Agent], seen: Date?) {
+        public init(id: String, name: String, link: Link, counts: Counts, waiting: [Agent], seen: Date?, busy: [Busy]? = nil) {
             self.id = id
             self.name = name
             linkName = link.rawValue
             self.counts = counts
             self.waiting = waiting
             self.seen = seen
+            self.busy = busy
         }
 
         /// A word this reader doesn't know is taken as `stale`: never shown as current.
         public var link: Link { Link(rawValue: linkName) ?? .stale }
 
         enum CodingKeys: String, CodingKey {
-            case id, name, counts, waiting, seen
+            case id, name, counts, waiting, seen, busy
             case linkName = "link"
         }
     }
@@ -102,6 +108,31 @@ public struct GlanceSnapshot: Codable, Equatable, Sendable {
 
         /// Agents that are not idle.
         public var busy: Int { waiting + error + working + done }
+    }
+
+    /// An agent that doesn't wait, as a widget's tile draws it: what it is and its state. No
+    /// name, place or pane, so nothing private: about 40 bytes.
+    public struct Busy: Codable, Equatable, Sendable {
+        /// The agent's kind (`claude`, `codex`, …), for its tint and its tile's shape. Nil for
+        /// another program, drawn as a shell.
+        public var kind: String?
+        /// An SF Symbol name.
+        public var symbol: String
+        /// `error`, `working`, `done` or `idle`.
+        public var state: String
+
+        /// A state that isn't one of `order` is idle, as in the counts.
+        public init(kind: String?, symbol: String, state: String?) {
+            self.kind = kind
+            self.symbol = symbol
+            self.state = state.flatMap { Self.order.contains($0) ? $0 : nil } ?? "idle"
+        }
+
+        /// The states, the most urgent first.
+        public static let order = ["error", "working", "done", "idle"]
+
+        /// Its place in `order`. A word this reader doesn't know ranks as idle.
+        public var rank: Int { Self.order.firstIndex(of: state) ?? Self.order.count - 1 }
     }
 
     /// One waiting agent.
@@ -160,6 +191,9 @@ public struct GlanceSnapshot: Codable, Equatable, Sendable {
     /// and for each waiting agent which wait it is: since when, why, and what it asks. While it
     /// is the same, a reload would draw the same picture. An agent that was answered and asks
     /// again in the same pane changes it, so the widgets never keep the old question and time.
+    ///
+    /// `busy` is left out on purpose: the tiles add no reload. A change of state changes the
+    /// counts and reloads anyway; agents that only trade states show at the next reload.
     ///
     /// The key lives in memory only: it is compared within one run of the app and never saved,
     /// so it holds the message itself and needs no hash.

@@ -112,8 +112,10 @@ builds.
   way to test a cold launch.
 - `-glanceDemo <scenario>`: write a made-up snapshot for the widgets and reload them, once, when
   the app's scene shows (`GlanceDemo` in `Packages/RexGlance`). Scenarios: `quiet`, `working`,
-  `one`, `several`, `many` (11 waiting: "+N more"), `machines`, `stale` (one of three machines
-  down), `offline`, `aging` (ten minutes old), `old` (three hours old), `long`, `unpaired`,
+  `error` (one error, nobody waiting), `one`, `several`, `many` (11 waiting: "+N more"),
+  `machines`, `stale` (one of three machines down), `offline`, `aging` (ten minutes old), `old`
+  (three hours old), `long` (more agents than the snapshot lists), `empty` (connected, no
+  agent running), `unpaired`,
   `light-in-dark` (the light theme in both slots), `newer` (a file from a later, incompatible
   app), `none` (no file). Use it with `-autoOpen zz-none`, so the app opens nothing; it logs
   `GLANCE_DEMO <scenario>`. Without it, a test launch (`-servers`, `-boardDemo`, `-autoOpen`,

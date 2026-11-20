@@ -51,6 +51,21 @@ public struct GlanceDigest: Equatable, Sendable {
         public var live: Bool
     }
 
+    /// One agent in the widgets' strip: a circle for an agent, a rounded square for another
+    /// program, tinted by its kind, with its state's badge.
+    public struct Tile: Equatable, Sendable, Identifiable {
+        public var id: String
+        public var kind: String?
+        public var symbol: String
+        /// Waiting, error, working, done, or quiet for idle.
+        public var state: Urgency
+        /// A waiting agent's pane, which a tap opens. Nil for the others: the snapshot names no
+        /// pane for them, and a tap on them opens what the widget opens.
+        public var link: PaneLink?
+        /// From a machine that was down at the write: last known, drawn dimmed.
+        public var stale: Bool
+    }
+
     public var kind: Kind
     public var headline: Headline
     public var urgency: Urgency
@@ -64,18 +79,31 @@ public struct GlanceDigest: Equatable, Sendable {
     /// The line about the machines. Nil with one machine: its name adds nothing.
     public var machineLine: String?
     public var age: Age
-    /// Counts and rows are drawn at 40%: the snapshot is over an hour old, or no machine was live.
+    /// Counts, rows and tiles are drawn dimmed: the snapshot is over an hour old, or no machine was live.
     public var dimmed: Bool
     /// The state whose color edges the widget. Nil when nobody waits, fails or works, and when dimmed.
     public var glow: Urgency?
     /// Where a tap on the widget goes.
     public var tap: DeepLink
+    /// Every agent as a tile, the most urgent first: the waiting ones in the order of `rows`,
+    /// then error, working, done and idle from the live machines, then the down machines'
+    /// (last known). Only as many as the snapshot lists (`GlanceSnapshot.busyLimit`).
+    public var tiles: [Tile] = []
+    /// The snapshot lists the agents that don't wait. A file from an older app doesn't, and
+    /// the widgets then show each machine's counts where the tiles would be.
+    public var listsAgents = false
+    /// Every agent the snapshot counts, on the live and the down machines.
+    public var agents = 0
 
+    /// The watch's dimmed share (`WatchStyle`). The Home Screen sizes dim less (`GlanceStyle.dim`).
     public static let dimOpacity = 0.4
 
     public static var openText: String { "Open \(Brand.appName)" }
     public static var refreshText: String { "Open \(Brand.appName) to refresh" }
     public static let unpairedText = "No machines paired"
+    /// The Home Screen sizes' word for the same: what to do, since a tap does it.
+    public static let pairText = "Pair a computer"
+    public static let noAgentsText = "No agents running"
 
     public static let placeholder = GlanceDigest(
         kind: .placeholder, headline: .text(openText), urgency: .quiet, counts: .init(), rows: [], unlisted: 0,
@@ -161,6 +189,56 @@ public struct GlanceDigest: Equatable, Sendable {
             machines: (live + down).map { MachineLine(id: $0.id, name: $0.name, counts: $0.counts, live: $0.link == .live) },
             machineLine: several ? Self.machineLine(s.machines) : nil, age: age, dimmed: dimmed,
             glow: glows ? urgency : nil, tap: all.isEmpty ? .open : .waiting)
+
+        func others(_ group: [GlanceSnapshot.Machine], stale: Bool) -> [Tile] {
+            group.flatMap { m in
+                (m.busy ?? []).enumerated().map { i, b in
+                    (b.rank, Tile(id: "\(m.id):\(i)", kind: b.kind, symbol: b.symbol, state: Self.urgency(b.state), link: nil, stale: stale))
+                }
+            }
+            .enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }.map(\.element.1)
+        }
+        let waiting = all.map { r in
+            Tile(id: r.id, kind: r.agent.kind, symbol: r.agent.symbol, state: .waiting, link: r.link, stale: r.stale)
+        }
+        tiles = waiting + others(live, stale: false) + others(down, stale: true)
+        listsAgents = (live + down).contains { $0.busy != nil }
+        agents = (live + down).reduce(0) { $0 + $1.counts.busy + $1.counts.idle }
+    }
+
+    static func urgency(_ state: String) -> Urgency {
+        switch state {
+        case "error": .error
+        case "working": .working
+        case "done": .done
+        default: .quiet
+        }
+    }
+
+    /// No agent at all on the machines it knows: "No agents running", never "All quiet".
+    public var noAgents: Bool { kind == .agents && agents == 0 && rows.isEmpty && urgency != .offline }
+
+    /// The tiles a strip has room for after the `rows` drawn as rows, and how many agents are
+    /// left over: "+N". With some left over, the last place goes to the "+N".
+    public func strip(after rows: Int, limit: Int) -> (tiles: [Tile], more: Int) {
+        let rest = Array(tiles.dropFirst(rows))
+        let total = max(rest.count, agents - min(rows, self.rows.count))
+        if total <= limit, total == rest.count { return (rest, 0) }
+        let shown = Array(rest.prefix(max(0, limit - 1)))
+        return (shown, total - shown.count)
+    }
+
+    /// The one line under Glide where nothing needs a look: "All quiet · 4 idle". Nil where the
+    /// widget shows agents instead.
+    public var calmLine: String? {
+        switch kind {
+        case .placeholder: return Self.openText
+        case .unpaired: return Self.pairText
+        case .agents:
+            if noAgents { return Self.noAgentsText }
+            guard rows.isEmpty, case .text(let t) = headline, urgency == .quiet || urgency == .done else { return nil }
+            return counts.idle > 0 ? "\(t) · \(counts.idle) idle" : t
+        }
     }
 
     /// Their names while all are connected and there are at most two, else how many are connected.

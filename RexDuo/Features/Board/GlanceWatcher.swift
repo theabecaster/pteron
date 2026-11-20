@@ -54,8 +54,9 @@ struct GlanceWatcher: View {
 }
 
 /// The snapshot's rows, read from the servers when the writer builds a snapshot: the same
-/// agents, names, states and places as the agent board (`BoardSource`). Counts come from
-/// `agentKeys`; a pane's metadata is read only for the agents that wait, at its newest
+/// agents, names, states and places as the agent board (`BoardSource`). Counts and the other
+/// agents' tiles (kind, symbol, state) come from `agentKeys`; a pane's metadata is read only
+/// for the agents that wait, at its newest
 /// (`ServerConnection.currentMeta`), and which agent a pane holds is `BlockMeta.agentKind`'s call.
 @MainActor
 enum GlanceSource {
@@ -69,8 +70,14 @@ enum GlanceSource {
             }
             var states: [String?] = []
             var waiting: [GlanceInput.Wait] = []
+            var busy: [GlanceSnapshot.Busy] = []
             for key in keys {
-                guard key.state == "blocked" else { states.append(key.state); continue }
+                guard key.state == "blocked" else {
+                    states.append(key.state)
+                    // From the key alone, in the same pass: no metadata is read for a tile.
+                    busy.append(GlanceSnapshot.Busy(kind: key.kind?.rawValue, symbol: key.kind?.symbol ?? "terminal", state: key.state))
+                    continue
+                }
                 let meta = s.currentMeta(key.blockID)
                 // A pane whose program has exited is no agent any more, as on the board.
                 guard meta?.exited != true else { continue }
@@ -89,7 +96,7 @@ enum GlanceSource {
                     firstSeen: since[key.blockID]))
             }
             return GlanceInput.Machine(id: s.id.uuidString, name: s.config.name, link: link(s), known: s.connectionSerial > 0,
-                                       states: states, waiting: waiting)
+                                       states: states, waiting: waiting, busy: busy)
         }
     }
 

@@ -48,7 +48,7 @@ struct WatchStyle {
     /// The ground behind the app's screens: Glide's deep blue at the top, fading to the watch's
     /// black by the middle. Black with the wrist down, where the screen dims and should stay dark.
     func ground(wristDown: Bool) -> LinearGradient {
-        let top = wristDown ? Color.black : WatchGlide.deep
+        let top = wristDown ? Color.black : GlanceGlide.deep
         return LinearGradient(stops: [.init(color: top, location: 0), .init(color: .black, location: 0.55)],
                               startPoint: .top, endPoint: .bottom)
     }
@@ -60,21 +60,6 @@ struct WatchStyle {
     /// What is last known rather than current.
     static let dim = GlanceDigest.dimOpacity
     static let mark = "mark.open"
-}
-
-/// Glide's colors, from the app icon (`Brand/AppIcon.icon`): the body's cool gradient of mint,
-/// cyan, sky, indigo and violet, on the icon's deep blue.
-enum WatchGlide {
-    static let mintHex = "#8AF7DA", cyanHex = "#3DD6F8", skyHex = "#3F93FF", indigoHex = "#5A6AF8", violetHex = "#8A5CF8"
-    /// The icon's ground, display P3 (0.07, 0.11, 0.29), in sRGB.
-    static let deepHex = "#0F1C4D"
-
-    static let deep = Color(glanceHex: deepHex)
-    static let indigo = Color(glanceHex: indigoHex)
-
-    /// Glide's body, lit from the upper right as on the icon.
-    static let gradient = LinearGradient(colors: [mintHex, cyanHex, skyHex, indigoHex, violetHex].map(Color.init(glanceHex:)),
-                                         startPoint: .topTrailing, endPoint: .bottomLeading)
 }
 
 /// The ring of a waiting agent: the widgets' ring (`GlanceRing`), still. `breathes` puts the

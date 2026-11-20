@@ -31,8 +31,24 @@ struct GlanceStyle {
 
     func tint(kind: String?) -> Color { fullColor ? AgentGlyph.tint(kind: kind, colors) : .primary }
 
-    /// The opacity of what is last known rather than current.
-    var dim: Double { fullColor ? GlanceDigest.dimOpacity : 0.6 }
+    /// The headline's color: its state's, as on the agent board and the watch ("2 need you" in
+    /// the waiting color, "All done" in green). Plain when all is quiet or the snapshot is old,
+    /// and secondary for "Last seen": a stale widget never shows a warning color.
+    func headline(_ digest: GlanceDigest) -> Color {
+        if digest.urgency == .offline { return secondary }
+        if !fullColor || digest.dimmed || digest.urgency == .quiet { return fg }
+        return colors.state(digest.urgency)
+    }
+
+    /// The opacity of what is last known rather than current: dimmed enough to read as older,
+    /// not so much that it reads as broken.
+    var dim: Double { 0.6 }
+
+    /// The faint wash at the top of the canvas: the most urgent state's color while someone
+    /// waits, fails or works, else the theme's accent. Still, and only in full color.
+    func wash(_ digest: GlanceDigest) -> Color {
+        (digest.glow.map(colors.state) ?? colors.accent).opacity(colors.palette.isDark ? 0.16 : 0.1)
+    }
 
     static let markOpen = "mark.open"
 }

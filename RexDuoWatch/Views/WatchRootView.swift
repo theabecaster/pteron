@@ -60,13 +60,13 @@ struct WatchMessageView: View {
                 // A soft halo of the icon's indigo, gone with the wrist down.
                 if !wristDown {
                     Circle()
-                        .fill(RadialGradient(colors: [WatchGlide.indigo.opacity(0.4), .clear], center: .center,
+                        .fill(RadialGradient(colors: [GlanceGlide.indigo.opacity(0.4), .clear], center: .center,
                                              startRadius: 0, endRadius: 48))
                         .frame(width: 96, height: 96)
                 }
                 Image(WatchStyle.mark)
                     .font(.system(size: 48, weight: .medium))
-                    .foregroundStyle(WatchGlide.gradient)
+                    .foregroundStyle(GlanceGlide.gradient)
             }
             .frame(height: 72)
             .modifier(WatchArrival(part: .glide))

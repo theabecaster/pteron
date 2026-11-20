@@ -33,9 +33,9 @@ import WidgetKit
         GlanceDemo.snapshot(scenario, now: Self.now)?.palette ?? .standard
     }
 
-    private func save(_ view: some View, _ name: String) throws -> UIImage {
+    private func save(_ view: some View, _ name: String, scale: CGFloat = 3) throws -> UIImage {
         let renderer = ImageRenderer(content: view)
-        renderer.scale = 3
+        renderer.scale = scale
         let image = try #require(renderer.uiImage, "\(name)")
         try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
         try #require(image.pngData()).write(to: Self.folder.appendingPathComponent(name + ".png"))
@@ -59,7 +59,7 @@ import WidgetKit
             .frame(width: frame.width, height: frame.height)
             .background {
                 if mode == .fullColor {
-                    colors.canvas.overlay { GlanceEdge(digest: d, style: style).clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous)) }
+                    GlanceCanvas(digest: d, style: style).clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 } else {
                     // Tinted and clear widgets sit on the system's glass.
                     Color(white: 0.16)
@@ -79,7 +79,11 @@ import WidgetKit
 
     /// A Lock Screen accessory over a wallpaper-like ground, as the vibrant mode draws it.
     private func accessory(_ scenario: String, _ kind: Accessory, locked: Bool) -> some View {
-        let a = digest(scenario).accessory(private: locked)
+        accessory(digest(scenario), kind, locked: locked)
+    }
+
+    private func accessory(_ d: GlanceDigest, _ kind: Accessory, locked: Bool) -> some View {
+        let a = d.accessory(private: locked)
         return Group {
             switch kind {
             case .circular:
@@ -139,7 +143,7 @@ import WidgetKit
     @Test func tintedVibrantAndLockedDraw() throws {
         for (size, name, columns) in [(GlanceHomeView.Size.small, "small", 5), (.medium, "medium", 3), (.large, "large", 3)] {
             var cells: [(String, AnyView)] = []
-            for scenario in ["several", "one", "working", "quiet", "stale", "old", "none"] {
+            for scenario in ["several", "one", "working", "error", "quiet", "empty", "stale", "old", "unpaired", "none"] {
                 for (mode, word) in [(WidgetRenderingMode.accented, "accented"), (.vibrant, "vibrant")] {
                     let view = home(scenario, size, system: .dark, mode: mode)
                     _ = try save(view, "\(name)-\(scenario)-\(word)")
@@ -154,7 +158,7 @@ import WidgetKit
                     cells.append(("\(scenario) \(word) locked", AnyView(view)))
                 }
             }
-            _ = try save(sheet(cells, columns: columns), "sheet-\(name)-modes")
+            _ = try save(sheet(cells, columns: columns), "sheet-\(name)-modes", scale: 2)
         }
     }
 
@@ -176,9 +180,111 @@ import WidgetKit
     /// A picture is not empty: a view that drew nothing is one flat color.
     @Test func aDrawnWidgetIsNotBlank() throws {
         let image = try save(home("several", .medium, system: .dark), "check-several-medium")
+        #expect(try colors(image) > 8)
+        // Nor is a calm one: Glide and its line fill it.
+        for scenario in ["quiet", "empty", "unpaired", "none"] {
+            for size in [GlanceHomeView.Size.small, .medium, .large] {
+                #expect(try colors(try save(home(scenario, size, system: .dark), "check-\(scenario)")) > 8, "\(scenario) \(size)")
+            }
+        }
+    }
+
+    private func colors(_ image: UIImage) throws -> Int {
         let cg = try #require(image.cgImage)
         let data = try #require(cg.dataProvider?.data as Data?)
-        #expect(Set(data.prefix(400_000).chunked(4)).count > 8)
+        return Set(data.chunked(4)).count
+    }
+
+    // MARK: Hazards
+
+    /// Tinted and clear Home Screens, and StandBy at night: the system colors the widget, so
+    /// nothing may rely on a color, and no text is drawn under 60%.
+    @Test func tintedAndVibrantTextStaysAtSixtyPercentOrMore() throws {
+        let colors = GlanceColors.pick(.standard, system: .dark)
+        let env = EnvironmentValues()
+        for mode in [WidgetRenderingMode.accented, .vibrant] {
+            let style = GlanceStyle(colors: colors, mode: mode, symbols: Self.symbols)
+            for (name, color) in [("fg", style.fg), ("secondary", style.secondary), ("tertiary", style.tertiary)] {
+                #expect(color.resolve(in: env).opacity >= 0.6, "\(name) \(mode)")
+            }
+            #expect(style.dim >= 0.6)
+            for scenario in ["several", "working", "quiet", "empty", "unpaired", "none"] {
+                for size in [GlanceHomeView.Size.small, .medium, .large] {
+                    let image = try save(home(scenario, size, system: .dark, mode: mode), "check-\(scenario)-\(mode)")
+                    #expect(try self.colors(image) > 4, "\(scenario) \(size) \(mode)")
+                }
+            }
+        }
+        // Full color too: the stale share is 60%, and the headline of an old snapshot is no warning.
+        let full = GlanceStyle(colors: colors, mode: .fullColor, symbols: Self.symbols)
+        #expect(full.dim == 0.6)
+        #expect(full.headline(digest("old")) == full.fg && full.headline(digest("offline")) == full.secondary)
+        #expect(full.headline(digest("several")) == colors.blocked && full.headline(digest("working")) == colors.working)
+    }
+
+    /// The Lock Screen accessories draw exactly what they drew before the tiles: the same
+    /// pixels with and without `busy` in the file.
+    @Test func theLockScreenAccessoriesIgnoreTheTiles() throws {
+        for scenario in Self.scenarios {
+            guard var bare = GlanceDemo.snapshot(scenario, now: Self.now) else { continue }
+            for i in bare.machines.indices { bare.machines[i].busy = nil }
+            let with = digest(scenario), without = GlanceDigest(bare, now: Self.now)
+            for locked in [false, true] {
+                #expect(with.accessory(private: locked) == without.accessory(private: locked), "\(scenario)")
+                for kind in Accessory.allCases {
+                    let a = try #require(ImageRenderer(content: accessory(with, kind, locked: locked)).uiImage?.pngData())
+                    let b = try #require(ImageRenderer(content: accessory(without, kind, locked: locked)).uiImage?.pngData())
+                    #expect(a == b, "\(scenario) \(kind) \(locked)")
+                }
+            }
+        }
+    }
+
+    /// The longest names at the largest text the widget allows stay inside every size: they
+    /// truncate or scale, never push the widget's content out.
+    @Test func longNamesAtTheLargestTextStayInside() throws {
+        var machines = try #require(GlanceDemo.snapshot("machines", now: Self.now))
+        for i in machines.machines.indices { machines.machines[i].name = "A machine with a very long name indeed \(i)" }
+        let cases: [(String, GlanceDigest)] = [("long", digest("long")), ("long-machines", GlanceDigest(machines, now: Self.now)),
+                                               ("several", digest("several")), ("empty", digest("empty")), ("working", digest("working"))]
+        let style = GlanceStyle(colors: GlanceColors.pick(.standard, system: .dark), mode: .fullColor, symbols: Self.symbols)
+        for (name, d) in cases {
+            for size in [GlanceHomeView.Size.small, .medium, .large] {
+                let room: CGSize = switch size {
+                case .small: CGSize(width: 132, height: 132)
+                case .medium: CGSize(width: 318, height: 132)
+                case .large: CGSize(width: 318, height: 333)
+                }
+                for type in [DynamicTypeSize.xxLarge, .accessibility5] {
+                    let view = GlanceHomeView(digest: d, size: size, style: style).environment(\.dynamicTypeSize, type)
+                    let fit = UIHostingController(rootView: view).sizeThatFits(in: room)
+                    #expect(fit.width <= room.width + 0.5 && fit.height <= room.height + 0.5, "\(name) \(size) \(type): \(fit)")
+                }
+                // Past xxLarge nothing grows: the largest text draws as xxLarge does.
+                func png(_ type: DynamicTypeSize) -> Data? {
+                    let r = ImageRenderer(content: GlanceHomeView(digest: d, size: size, style: style)
+                        .environment(\.dynamicTypeSize, type).frame(width: room.width, height: room.height))
+                    return r.uiImage?.pngData()
+                }
+                #expect(png(.xxLarge) == png(.accessibility5), "\(name) \(size)")
+                _ = try save(GlanceHomeView(digest: d, size: size, style: style).environment(\.dynamicTypeSize, .accessibility5)
+                    .padding(16).frame(width: room.width + 32, height: room.height + 32)
+                    .background(GlanceCanvas(digest: d, style: style)), "largest-\(name)-\(size)")
+            }
+        }
+    }
+
+    /// Motion only on a change, never with the screen dimmed or in StandBy at night, and a
+    /// fade with Reduce Motion.
+    @Test func motionIsShortAndStillWhereItShouldBe() {
+        #expect(GlanceMotion(reduceMotion: false, luminanceReduced: false, mode: .fullColor) == .full)
+        #expect(GlanceMotion(reduceMotion: false, luminanceReduced: false, mode: .accented) == .full)
+        #expect(GlanceMotion(reduceMotion: true, luminanceReduced: false, mode: .fullColor) == .fade)
+        #expect(GlanceMotion(reduceMotion: false, luminanceReduced: true, mode: .fullColor) == .still)
+        #expect(GlanceMotion(reduceMotion: false, luminanceReduced: false, mode: .vibrant) == .still)
+        #expect(GlanceMotion.still.animation == nil)
+        #expect(GlanceMotion.full.animation != nil && GlanceMotion.fade.animation != nil)
+        #expect(GlanceMotion.longest <= 0.4)
     }
 }
 

@@ -105,7 +105,9 @@ import Testing
                                     "machines", "id", "name", "link", "counts", "waiting", "error", "working", "done", "idle",
                                     "seen", "session", "window", "block", "kind", "symbol", "why", "place", "since", "record", "msg",
                                     // A hash that names the wait; the message itself can't be read back from it.
-                                    "fp"]
+                                    "fp",
+                                    // The agents that don't wait: kind, symbol and state, nothing private.
+                                    "busy", "state"]
         func keys(_ any: Any) -> Set<String> {
             var found = Set<String>()
             if let d = any as? [String: Any] {

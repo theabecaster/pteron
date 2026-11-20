@@ -80,7 +80,7 @@ import Testing
         let grounds: [(String, RGB)] = [
             ("black", black),
             ("platter", over(rgb(style.platter), black)),
-            ("the ground's top", rgb(WatchGlide.deep)),
+            ("the ground's top", rgb(GlanceGlide.deep)),
         ]
         let texts: [(String, Color)] = [
             ("fg", style.fg), ("secondary", style.secondary), ("waiting", style.waiting),

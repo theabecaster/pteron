@@ -12,9 +12,9 @@ saw them. It connects to nothing: it reads the snapshot the app wrote (below).
 
 | Family | Shows | A tap opens |
 |---|---|---|
-| `systemSmall` (also StandBy) | the headline; the ring, name and wait of the agent waiting longest; then its place, or the snapshot's age | `rexduo://waiting`, or `open` when nobody waits |
-| `systemMedium` | the headline, the machine line and the other counts; up to 3 waiting agents, or each machine's counts when nobody waits | a row: `rexduo://pane?…`; elsewhere as small |
-| `systemLarge` | the headline; what the longest-waiting agent asks; up to 6 waiting agents; each machine's counts; "+N more" | as medium |
+| `systemSmall` (also StandBy) | someone waits: the headline; the ring, name and wait of the agent waiting longest; then its place, or the snapshot's age. Working or an error: the headline over Glide in the state's ring, and the other counts. Quiet, done, no agents, no snapshot, no machines: Glide over one line ("All quiet · 4 idle", "No agents running", "Open Pteron", "Pair a computer") | `rexduo://waiting`, or `open` when nobody waits |
+| `systemMedium` | the headline, the machine line and the other counts; on the right the agent waiting longest as a row, and the strip of agent tiles (up to 8, "+N"). No agents: Glide, "No agents running" and the machines | a row or a waiting agent's tile: `rexduo://pane?…`; elsewhere as small |
+| `systemLarge` | someone waits: the headline; what the longest-waiting agent asks; up to 4 waiting agents; the strip; a card per machine where there is room. Nobody waits: a Glide hero with the headline, the strip, one card per machine | as medium |
 | `accessoryCircular` | a raised hand over the waiting count; with nobody waiting, the mark over the working count in an arc; else the mark | `waiting` |
 | `accessoryRectangular` | "2 need you"; "Claude · api › tests"; "waiting 12 minutes" or the age | `waiting` |
 | `accessoryInline` | "2 need you · 3 working" | the app |
@@ -40,10 +40,17 @@ sources and fails on a line that breaks one of these:
   suggests or mentions adding a widget, and the app looks the same with or without one.
 - **No Live Activity**: no ActivityKit, no `NSSupportsLiveActivities`.
 - **No sound, haptic or notification** from the widgets, the watcher or the writer.
-- **No motion of their own.** The ring is still. Nothing repeats, pulses or animates, and no
-  transition or symbol effect is chosen; what moves is the system's own change from one
-  timeline entry to the next.
-- **A stale widget is quiet.** Its counts dim and a small line in the secondary color says
+- **Motion only once, on a change, and only through `GlanceMotion`**
+  (`RexDuoWidgets/Views/GlanceMotion.swift`, the one file of the widget path that may hold
+  any). A count's digits roll (`numericText`) when it changes; a tile whose agent's state
+  changed, and the top row when the agent waiting longest changes, are pushed up from below.
+  Each animation is tied to a value (`.animation(_, value:)`), 0.4 s at most. Nothing moves
+  with the screen dimmed (`isLuminanceReduced`) or where the system draws vibrant (StandBy at
+  night, the Lock Screen); with Reduce Motion it is a fade. Never: `repeatForever` or a
+  repeating effect, `symbolEffect`, `TimelineView`, `withAnimation`, springs, `.timer` or
+  `.relative` text. The ring is still, the complications and the shared packages have no
+  motion, and a wait's time still changes by the minute only.
+- **A stale widget is quiet.** Its counts dim (to 60% on the Home Screen) and a small line in the secondary color says
   "as of 12:04" or, after an hour and on the Home Screen sizes only, "Open Pteron to refresh"
   (`GlanceDigest.refreshText`, from
   `Brand.appName`). "Last seen 12:04" is in the secondary color and not bold. No warning color,
@@ -71,6 +78,7 @@ sources and fails on a line that breaks one of these:
   "machines": [{
     "id": "<ServerConfig.id>", "name": "studio", "link": "live", "seen": "2026-11-19T12:04:00Z",
     "counts": {"waiting": 2, "error": 0, "working": 3, "done": 1, "idle": 4},
+    "busy": [{"kind": "codex", "symbol": "hexagon", "state": "working"}, {"symbol": "terminal", "state": "idle"}],
     "waiting": [{
       "session": "session:…", "window": "window:…", "block": "block:…",
       "kind": "claude", "name": "Claude", "symbol": "asterisk", "why": "question",
@@ -108,6 +116,16 @@ sources and fails on a line that breaks one of these:
   case starts again from when this run of the app first saw the agent waiting, so the time
   shown is never too long.
 - **`msg`** is clipped to 200 characters. Only the large widget shows it.
+- **`busy`** (optional, added later without changing `v`): a machine's agents that don't
+  wait, as the strip's tiles draw them: `kind` (left out for another program), `symbol` and
+  `state` (`error`, `working`, `done`, `idle`), the most urgent first. Nothing private, about
+  40 bytes each, and at most 12 over all machines together: errors first wherever they are,
+  then working, done and idle (`GlanceSummary.capBusy`). A machine the app hasn't reached keeps
+  its last list. Built in the writer's one pass from `agentKeys`, with no metadata read. The
+  watch and older widgets ignore it; a widget reading a file without it draws each machine's
+  counts where the strip would be. It is not part of the picture that decides a reload
+  (`visibleKey`), so it adds no reload: a change of state changes the counts anyway, and
+  agents that only trade states show at the next reload.
 - **`palette`**: the themes chosen for Dark Mode and for Light Mode, each with its own
   `appearance`, since a dark theme can be the one chosen for Light Mode.
 - Every date is a whole second.
@@ -145,7 +163,7 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
 |---|---|
 | under 2 min, machine live | as current |
 | 2 min to 1 h | with "as of 12:04" |
-| over 1 h | counts and rows at 40%; on the Home Screen sizes also "Open Pteron to refresh". The Lock Screen accessories keep their counts, dimmed, and say nothing more: no refresh line and no running wait time |
+| over 1 h | counts, rows and tiles at 60%; on the Home Screen sizes also "Open Pteron to refresh". The Lock Screen accessories keep their counts, dimmed, and say nothing more: no refresh line and no running wait time |
 | a machine that was down at the write | its agents dimmed and last, with no running wait time; over them the headline says "Last seen 12:04", never "All quiet" |
 
 - A wait's length counts by itself (a system date text), with no reload.
@@ -178,7 +196,17 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
   for every theme in both slots, and every agent's tint with the sidebar's).
 - **State** has the board's colors (waiting ANSI 3, error 1, working 4, done 2) and always a
   word or a badge as well. A 1.5 pt edge in the most urgent state's color shows only while
-  someone waits, fails or works.
+  someone waits, fails or works. The headline takes its state's color, as on the watch ("All
+  quiet" plain; "Last seen" and an old snapshot never a warning color).
+- **The canvas** (`GlanceCanvas`) carries one faint, still wash at the top: the most urgent
+  state's color while someone waits, fails or works, else the theme's accent.
+- **Glide** (`GlanceGlide` and `GlanceGlideMark` in GlanceUI, the `mark.open` symbol in the
+  icon's gradient over a soft indigo halo, shared with the watch) stands where nothing needs a
+  look; working or failing with nobody waiting, it sits in the state's still ring.
+- **Tiles** (`GlanceTileView`): the sidebar's rule, a circle for an agent and a rounded square
+  for another program, in the agent's tint with its glyph, and the state's badge: the raised
+  hand, the x, the check, or the sidebar's dot for working. Idle and last-known tiles are
+  dimmed. A waiting agent's tile opens its pane; the others open what the widget opens.
 - **`GlanceRing`** is the board's ring with no motion.
 - **Type**: the system font. Headline 22 pt bold in small, 20 pt elsewhere; names 13 pt
   semibold; state words 12 pt semibold; places 11 pt. Dynamic Type stops at xxLarge.
@@ -192,9 +220,11 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
 ### Files
 
 `RexDuoWidgets/`: `GlanceWidget.swift` (the widget and the view that picks a family),
-`Provider.swift` (the timeline), `Demo.swift` (the gallery), `Views/` (the families and
-`GlanceStyle`; compiled into the app's tests too, which draw every size, state and mode:
-`GlanceRenderTests`). Everything the views show is decided in `GlanceDigest`, which is pure.
+`Provider.swift` (the timeline), `Demo.swift` (the gallery), `Views/` (the families,
+`GlanceStyle` and `GlanceMotion`; compiled into the app's tests too, which draw every size,
+state and mode, hold the Lock Screen's accessories to the same pixels with and without
+`busy`, and the longest names at the largest text inside every size: `GlanceRenderTests`).
+Everything the views show is decided in `GlanceDigest`, which is pure (`GlanceTilesTests`).
 
 ## The watch
 
@@ -396,8 +426,10 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
 - **No sound, no haptic, no notification** from the watch app or its complications, and no
   Live Activity. (A push from Beacon still mirrors to the watch as iOS does it; this app adds
   nothing to that.)
-- **Complications have no motion of their own**, nor does anything the iPhone's widgets
-  draw or share with them (`RexDuoWidgets`, `RexDuoWatchWidgets`, `Packages/RexGlance/Sources`).
+- **Complications have no motion of their own**, nor does anything they share with the
+  iPhone's widgets (`RexDuoWatchWidgets`, `Packages/RexGlance/Sources`, and the accessory views
+  and `GlanceStyle` they compile from `RexDuoWidgets`). The iPhone's Home Screen sizes move
+  only through `GlanceMotion`, which the watch doesn't compile.
 - **The watch app moves only through `WatchMotion`** (`RexDuoWatch/Views/WatchMotion.swift`):
   no other file of the app may hold an animation, and every modifier there that moves reads
   Reduce Motion and the wrist and asks `WatchMotion` what to do (Motion, below).
@@ -432,7 +464,7 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
 - **Colors:** the theme chosen for Dark Mode when it is a dark theme, else the default dark
   theme (`WatchScreen.palette`), over the watch's black. Row platters are the sidebar color at
   90%. State has the board's colors and always its words.
-- **The brand** (`WatchGlide`, from `Brand/AppIcon.icon`): behind every screen, the icon's
+- **The brand** (`GlanceGlide` in GlanceUI, from `Brand/AppIcon.icon`): behind every screen, the icon's
   deep blue at the top fading to black by the middle (`containerBackground` for the
   navigation); black with the wrist down. On a screen with nothing to list, Glide is drawn in
   the icon's gradient (mint, cyan, sky, indigo, violet) over a soft indigo halo.

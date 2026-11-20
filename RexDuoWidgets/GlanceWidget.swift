@@ -59,9 +59,7 @@ struct GlanceWidgetView: View {
                 // The theme's own appearance, so the system's styles match the canvas even
                 // when a dark theme serves Light Mode.
                 .environment(\.colorScheme, colors.scheme)
-                .containerBackground(for: .widget) {
-                    colors.canvas.overlay { GlanceEdge(digest: digest, style: style) }
-                }
+                .containerBackground(for: .widget) { GlanceCanvas(digest: digest, style: style) }
                 .widgetURL(digest.tap.url)
         }
     }

@@ -5,8 +5,9 @@ import Testing
 /// The widgets and the watch app never ask for attention. They are passive: no Live Activity, no
 /// sound, haptic or notification, no reload beyond the one the throttle allows, and no delivery
 /// to the watch beyond what `WatchDelivery` allows. The watch acts only when the person taps an
-/// action and confirms it, and the phone then types once. Widgets and complications have no motion of
-/// their own; the watch app moves softly, and only as Reduce Motion and the wrist allow. These
+/// action and confirms it, and the phone then types once. A widget moves only once, when a new
+/// entry changes a value, and only through `GlanceMotion`; complications don't move; the watch
+/// app moves softly, and only as Reduce Motion and the wrist allow. These
 /// tests read the sources of the widget path and the watch path, so a line that breaks the rule
 /// fails here.
 @Suite struct CalmRuleTests {
@@ -70,14 +71,57 @@ import Testing
     /// The watch app's one file that moves anything (docs/glance.md, The watch, Motion).
     private static let watchMotion = "RexDuoWatch/Views/WatchMotion.swift"
 
-    @Test func theWidgetsAndComplicationsHaveNoMotionOfTheirOwn() throws {
-        // The ring is still, and nothing repeats, pulses or animates: the only motion is the
-        // system's own when a timeline entry replaces another. This holds for the iPhone's
-        // widgets, the watch's complications and everything they share. Only the watch app moves.
+    /// What moves by itself or without end, or counts on screen: never in a widget, a
+    /// complication or what they share, not even in `GlanceMotion`.
+    private static let restless = [
+        "repeatForever", ".repeating", "symbolEffect", "TimelineView", "phaseAnimator", "PhaseAnimator", "keyframeAnimator",
+        "KeyframeAnimator", "withAnimation", "matchedGeometryEffect", "navigationTransition", "Transaction", "interpolatingSpring",
+        ".spring(", ".bouncy(", ".snappy(", "Timer", "style: .timer", "style: .relative", ".timer", ".relative",
+    ]
+
+    /// The iPhone widget's one file that moves anything (docs/glance.md, The agents widget, Calm).
+    private static let widgetMotion = "RexDuoWidgets/Views/GlanceMotion.swift"
+
+    @Test func theWidgetsMoveOnlyOnceOnAChangeAndOnlyThroughGlanceMotion() throws {
+        // The ring is still, and nothing repeats, pulses or counts by itself. What moves is the
+        // system's change from one timeline entry to the next, and `GlanceMotion`'s three
+        // motions tied to it. The watch's complications and the shared packages have none.
         let files = try Self.sources(["RexDuoWidgets", "RexDuoWatchWidgets", "Packages/RexGlance/Sources"])
         #expect(files.count > 15)
+        #expect(files.contains { $0.name == Self.widgetMotion })
         for f in files {
+            for word in Self.restless { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
+            guard f.name != Self.widgetMotion else { continue }
             for word in Self.motion { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
+        }
+    }
+
+    @Test func glanceMotionIsShortTiedToAValueAndStillWhenDimmed() throws {
+        let text = try #require(try Self.sources([Self.widgetMotion]).first).text
+        let lines = text.split(separator: "\n").map(String.init)
+        // Every animation is tied to a value: it runs when that value changes, never by itself.
+        let animations = lines.filter { $0.contains(".animation(") }
+        #expect(!animations.isEmpty)
+        for line in animations { #expect(line.contains(", value:"), "\(line)") }
+        // At most 0.4 s.
+        let durations = lines.compactMap { line -> Double? in
+            guard let r = line.range(of: "duration: ") else { return nil }
+            return Double(line[r.upperBound...].prefix { $0.isNumber || $0 == "." })
+        }
+        #expect(!durations.isEmpty && durations.allSatisfy { $0 <= 0.4 }, "\(durations)")
+        // Only these motions: digits that roll, a push from below, and a fade for Reduce Motion.
+        for word in [".push(", ".numericText(", ".opacity", ".identity"] { #expect(text.contains(word)) }
+        for word in [".scale", ".move(", ".slide", ".offset(", "rotation", ".blurReplace", "symbolEffect"] {
+            #expect(!text.contains(word), "GlanceMotion uses \(word)")
+        }
+        // Still with the screen dimmed (Always On) and where the system draws vibrant (StandBy
+        // at night), and every modifier that moves asks the same value.
+        #expect(text.contains("if luminanceReduced || mode == .vibrant {\n            self = .still"))
+        let modifiers = text.components(separatedBy: ": ViewModifier").count - 1
+        #expect(modifiers == 2)
+        for read in ["@Environment(\\.accessibilityReduceMotion)", "@Environment(\\.isLuminanceReduced)", "@Environment(\\.widgetRenderingMode)",
+                     "GlanceMotion(reduceMotion: reduceMotion, luminanceReduced: luminanceReduced, mode: mode)"] {
+            #expect(text.components(separatedBy: read).count - 1 == modifiers, "\(read)")
         }
     }
 

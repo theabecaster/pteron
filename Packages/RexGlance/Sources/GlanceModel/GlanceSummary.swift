@@ -13,14 +13,18 @@ public enum GlanceInput {
         public var states: [String?]
         /// The agents in state `blocked`, in the server's order.
         public var waiting: [Wait]
+        /// Every other agent, in the server's order: what the widgets' tiles draw.
+        public var busy: [GlanceSnapshot.Busy]
 
-        public init(id: String, name: String, link: GlanceSnapshot.Link, known: Bool, states: [String?], waiting: [Wait]) {
+        public init(id: String, name: String, link: GlanceSnapshot.Link, known: Bool, states: [String?], waiting: [Wait],
+                    busy: [GlanceSnapshot.Busy] = []) {
             self.id = id
             self.name = name
             self.link = link
             self.known = known
             self.states = states
             self.waiting = waiting
+            self.busy = busy
         }
     }
 
@@ -68,11 +72,11 @@ public enum GlanceSummary {
         // Whole seconds, as the file keeps them: what is in memory is what a reader gets back.
         let now = Date(timeIntervalSince1970: now.timeIntervalSince1970.rounded(.down))
         let before = Dictionary((previous?.machines ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let out = machines.map { m -> GlanceSnapshot.Machine in
+        var out = machines.map { m -> GlanceSnapshot.Machine in
             let old = before[m.id]
             if !m.known, let old {
                 return GlanceSnapshot.Machine(id: m.id, name: m.name, link: old.link == .never ? .never : .stale,
-                                              counts: old.counts, waiting: old.waiting, seen: old.seen)
+                                              counts: old.counts, waiting: old.waiting, seen: old.seen, busy: old.busy)
             }
             let agents = m.waiting.map { w in
                 GlanceSnapshot.Agent(session: w.session, window: w.window, block: w.block, kind: w.kind, name: w.name,
@@ -84,9 +88,30 @@ public enum GlanceSummary {
             let sorted = agents.enumerated().sorted { ($0.element.since, $0.offset) < ($1.element.since, $1.offset) }.map(\.element)
             return GlanceSnapshot.Machine(id: m.id, name: m.name, link: m.link, counts: counts(m.states),
                                           waiting: Array(sorted.prefix(GlanceSnapshot.waitingLimit)),
-                                          seen: m.link == .live ? now : old?.seen)
+                                          seen: m.link == .live ? now : old?.seen,
+                                          busy: m.busy.enumerated().sorted { ($0.element.rank, $0.offset) < ($1.element.rank, $1.offset) }.map(\.element))
         }
+        capBusy(&out)
         return GlanceSnapshot(seq: seq, asOf: now, palette: palette, machines: out)
+    }
+
+    /// Keeps `GlanceSnapshot.busyLimit` agents over all machines: errors first wherever they
+    /// are, then working, done and idle, and machines in their order within a state. Each
+    /// machine's list is already in that order, so it is cut, never reordered.
+    static func capBusy(_ machines: inout [GlanceSnapshot.Machine]) {
+        var room = GlanceSnapshot.busyLimit
+        var keep = Array(repeating: 0, count: machines.count)
+        for rank in GlanceSnapshot.Busy.order.indices {
+            for (i, m) in machines.enumerated() {
+                let n = (m.busy ?? []).filter { $0.rank == rank }.count
+                let taken = min(n, room)
+                keep[i] += taken
+                room -= taken
+            }
+        }
+        for i in machines.indices {
+            machines[i].busy = machines[i].busy.map { Array($0.prefix(keep[i])) }
+        }
     }
 
     public static func counts(_ states: [String?]) -> GlanceSnapshot.Counts {
