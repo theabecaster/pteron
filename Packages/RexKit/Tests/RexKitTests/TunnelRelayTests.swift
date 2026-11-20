@@ -88,7 +88,8 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
 final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
     private let lock = NSLock()
     private var inbox: [Data?] = []
-    private var waiter: CheckedContinuation<Data?, Error>?
+    private var waiter: (done: CheckedContinuation<Data?, Error>, max: Int)?
+    private var readingWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var written: [Data] = []
     private(set) var finished = false
     private(set) var closed = false
@@ -106,12 +107,35 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
         lock.lock()
         if let w = waiter {
             waiter = nil
+            let next = take(d, max: w.max)
             lock.unlock()
-            w.resume(returning: d)
+            w.done.resume(returning: next)
         } else {
             inbox.append(d)
             lock.unlock()
         }
+    }
+
+    /// Returns once a read waits with nothing left to read: the relay took all pushed so far.
+    func untilReading() async {
+        await withCheckedContinuation { c in
+            lock.lock()
+            if waiter != nil {
+                lock.unlock()
+                c.resume()
+            } else {
+                readingWaiters.append(c)
+                lock.unlock()
+            }
+        }
+    }
+
+    /// At most `max` bytes of `d`, as a TCP read gives them; the rest waits in front for the
+    /// next read. Call under `lock`.
+    private func take(_ d: Data?, max: Int) -> Data? {
+        guard let d, d.count > max else { return d }
+        inbox.insert(Data(d.dropFirst(max)), at: 0)
+        return Data(d.prefix(max))
     }
 
     func read(max: Int) async throws -> Data? {
@@ -119,7 +143,7 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
         let d: Data? = try await withTaskCancellationHandler { try await waitRead(max) } onCancel: {
             let w = lock.withLock { () -> CheckedContinuation<Data?, Error>? in
                 defer { waiter = nil }
-                return waiter
+                return waiter?.done
             }
             w?.resume(throwing: CancellationError())
         }
@@ -132,12 +156,15 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
             lock.lock()
             if wasReset || Task.isCancelled { lock.unlock(); return c.resume(throwing: URLError(.cancelled)) }
             if !inbox.isEmpty {
-                let d = inbox.removeFirst()
+                let d = take(inbox.removeFirst(), max: max)
                 lock.unlock()
-                c.resume(returning: d.map { $0.prefix(max) })
+                c.resume(returning: d)
             } else {
-                waiter = c
+                waiter = (c, max)
+                let reading = readingWaiters
+                readingWaiters = []
                 lock.unlock()
+                reading.forEach { $0.resume() }
             }
         }
     }
@@ -152,7 +179,7 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
         let w = waiter
         waiter = nil
         lock.unlock()
-        w?.resume(throwing: URLError(.cancelled))
+        w?.done.resume(throwing: URLError(.cancelled))
     }
 
     func rewind() -> Bool {
@@ -211,15 +238,18 @@ final class TunnelRelayTests: XCTestCase {
     func testChunksAreAtMost64KiBAndEachWaitsForTheSendBefore() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         s.sendDelay = .milliseconds(5)
+        // Pushed before the relay runs: its reads find the bytes waiting.
+        l.push(Data(count: 200_000))
         let r = relay(s, l)
         async let end = r.run()
-        l.push(Data(count: 200_000))
-        l.push(Data(count: 10))
+        // Pushed while a read waits: the read is handed them directly.
+        await l.untilReading()
+        l.push(Data(count: 100_000))
         l.push(nil)
         s.push(Data())
         _ = await end
-        XCTAssertTrue(s.sent.allSatisfy { $0.count <= TunnelRelay.chunk })
-        XCTAssertEqual(s.sent.first?.count, 65_536)
+        XCTAssertEqual(s.sent.map(\.count), [65_536, 65_536, 65_536, 3_392, 65_536, 34_464, 0],
+                       "every byte goes, in order, at most 64 KiB per message")
         XCTAssertEqual(s.maxInFlight, 1, "the next read waits for the send")
     }
 
