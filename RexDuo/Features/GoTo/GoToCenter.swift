@@ -266,6 +266,17 @@ final class GoToCenter {
                 else { return }
                 host.files?.run(c)
             }
+        case .port(let serverID, let rowID):
+            guard let server = model.server(serverID), let row = model.ports.row(server, id: rowID) else {
+                remember(nil, removing: id)
+                close()
+                Notice.shared.show("Nothing listens on that port now.", style: .neutral)
+                return
+            }
+            remember(id)
+            close()
+            // Once the pane has the keyboard back, so the page gives it back to the pane when it closes.
+            DispatchQueue.main.async { [weak self] in self?.model.ports.open(server, row) }
         case .server(let serverID, let name, let args, let title, let onTarget):
             remember(id)
             let target = s.target

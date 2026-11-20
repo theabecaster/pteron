@@ -95,6 +95,8 @@ enum GoToRun {
     case files(FilesCommand)
     /// A Lua or block action. With `onTarget`, on the target pane; else on the server alone.
     case server(serverID: UUID, name: String, args: JSONObject?, title: String, onTarget: Bool)
+    /// A port of a machine's Ports group (`PortRow.id`): its page opens in the app.
+    case port(serverID: UUID, row: String)
     /// Shown, not runnable (`GoToItem.dimmed`).
     case none
 

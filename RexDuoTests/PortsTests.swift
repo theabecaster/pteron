@@ -80,7 +80,7 @@ final class PortsTests: XCTestCase {
         r.fake.reply(Self.ports, .error(code: "method_not_found", status: 404))
         await r.connect()
         r.server.watchPorts(session: "session:1", block: "block:1a")
-        _ = await eventually { r.fake.count(Self.ports) == 1 }
+        _ = await eventually { r.fake.count(Self.ports) >= 1 }
         await quiet(200)
         XCTAssertFalse(r.server.portsAvailable)
         XCTAssertNil(r.server.ports.value("block:1a"))
@@ -125,17 +125,17 @@ final class PortsTests: XCTestCase {
 
     // MARK: Reading and following
 
-    func testAPaneOnScreenReadsItsPortsOncePerConnection() async throws {
+    func testEveryLocalTerminalReadsItsPortsOncePerConnection() async throws {
         let r = try await rig(18)
         await r.connect()
-        XCTAssertEqual(r.fake.count(Self.ports), 0, "nothing until a pane is on screen")
+        let read = await eventually { r.fake.count(Self.ports) == 4 }
+        XCTAssertTrue(read, "one read for each of the four panes, on screen or not")
+        XCTAssertEqual(Set(r.fake.calls(Self.ports).compactMap { $0.str("block_id") }), ["block:1a", "block:1b", "block:2a", "block:2b"])
+        _ = await eventually { r.server.ports.value("block:2b")?.webPorts.map(\.port) == [5173] }
+        // A pane that comes on screen, or leaves it, reads nothing more and keeps its list.
         r.server.watchPorts(session: "session:1", block: "block:1a")
-        let read = await eventually { r.server.ports.value("block:1a")?.webPorts.map(\.port) == [5173] }
-        XCTAssertTrue(read)
         r.server.unwatchPorts("block:1a")
-        XCTAssertNil(r.server.ports.value("block:1a"), "off screen: not kept")
-        r.server.watchPorts(session: "session:1", block: "block:1a")
-        _ = await eventually { r.fake.count(Self.ports) == 2 }
+        XCTAssertNotNil(r.server.ports.value("block:1a"), "off screen: kept for the Ports group")
         // A resync reads nothing more on the same connection.
         r.fake.forget()
         await r.server.bootstrap()
@@ -145,18 +145,20 @@ final class PortsTests: XCTestCase {
         r.stop()
     }
 
-    func testOnlyPanesOnScreenDecodeTheirEvents() async throws {
+    func testAPaneOffScreenKeepsItsEventsToo() async throws {
         let r = try await rig(18)
         await r.connect()
-        r.server.watchPorts(session: "session:1", block: "block:1a")
-        _ = await eventually { r.server.ports.value("block:1a") != nil }
+        _ = await eventually { r.server.ports.value("block:1b") != nil }
         sendPorts(r, block: "block:1a", [3000, 5173])
         sendPorts(r, block: "block:1b", [8080])
-        let got = await eventually { r.server.ports.value("block:1a")?.entries.map(\.port) == [3000, 5173] }
+        sendPorts(r, block: "block:9z", [9000])
+        let got = await eventually {
+            r.server.ports.value("block:1a")?.entries.map(\.port) == [3000, 5173] && r.server.ports.value("block:1b")?.entries.map(\.port) == [8080]
+        }
         XCTAssertTrue(got)
-        XCTAssertNil(r.server.ports.value("block:1b"), "an off-screen pane's event is dropped")
-        XCTAssertNil(r.server.pendingPorts["block:1b"])
-        XCTAssertFalse(r.server.ports.ids.contains("block:1b"), "and stores nothing")
+        await quiet(300)
+        XCTAssertFalse(r.server.ports.ids.contains("block:9z"), "a block no view holds stores nothing")
+        XCTAssertNil(r.server.pendingPorts["block:9z"])
         r.stop()
     }
 
@@ -178,7 +180,7 @@ final class PortsTests: XCTestCase {
         r.stop()
     }
 
-    func testADroppedPortsEventReadsTheListAgainForAPaneOnScreenOnly() async throws {
+    func testADroppedPortsEventReadsTheListAgain() async throws {
         let r = try await rig(18)
         await r.connect()
         r.server.watchPorts(session: "session:1", block: "block:1a")
@@ -192,18 +194,19 @@ final class PortsTests: XCTestCase {
         let read = await eventually { r.server.ports.value("block:1a")?.entries.map(\.port) == [4000] }
         XCTAssertTrue(read)
         await quiet()
-        XCTAssertEqual(r.fake.calls(Self.ports).map { $0.str("block_id") }, ["block:1a"])
+        XCTAssertEqual(Set(r.fake.calls(Self.ports).compactMap { $0.str("block_id") }), ["block:1a", "block:1b"])
         XCTAssertEqual(r.fake.count("session.bootstrap"), 0, "never a full sync")
         r.stop()
     }
 
-    func testANewConnectionDropsTheListsAndReadsThemAgain() async throws {
+    func testANewConnectionReadsTheListsAgainAndKeepsThemMeanwhile() async throws {
         let r = try await rig(18)
         await r.connect()
-        r.server.watchPorts(session: "session:1", block: "block:1a")
-        _ = await eventually { r.server.ports.value("block:1a") != nil }
+        _ = await eventually { r.fake.count(Self.ports) == 4 && r.server.portRows.count == 4 }
+        r.fake.reply(Self.ports, Self.reply([4000]))
         r.fake.dropAll()
-        let back = await eventually(seconds: 8) { r.fake.count(Self.ports) == 2 && r.server.ports.value("block:1a") != nil }
+        XCTAssertEqual(r.server.portRows.count, 4, "the group doesn't leave while the connection is away")
+        let back = await eventually(seconds: 8) { r.fake.count(Self.ports) == 8 && r.server.portRows.map(\.entry.port) == [4000, 4000, 4000, 4000] }
         XCTAssertTrue(back, "read again once the server is back")
         r.stop()
     }

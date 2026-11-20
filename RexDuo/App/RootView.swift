@@ -185,6 +185,8 @@ struct RootView: View {
             NavigationStack {
                 SidebarSplit(arrangement: arr, theme: theme, open: $sidebar.open) {
                     SidebarView(mode: $sidebar.mode, onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
+                        // A hidden sidebar reads no port: its Ports group catches up when it shows.
+                        .environment(\.sidebarShown, sidebar.open)
                 } tab: {
                     tab(arr)
                 }

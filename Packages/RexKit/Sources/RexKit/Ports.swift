@@ -10,11 +10,21 @@ public struct PortEntry: Equatable, Sendable {
     /// The program's name (`processLabel` of its process), or nil when the server couldn't tell
     /// which process holds the port.
     public var process: String?
+    /// The id of the process that holds the port, when the server could tell.
+    public var pid: Int?
+    /// That process's executable name (`python3.12`), for naming an interpreter whose script
+    /// says nothing (`PortNames`).
+    public var program: String?
+    /// That process's working directory, when the server could read it.
+    public var folder: String?
 
-    public init(port: Int, dialHost: String, process: String?) {
+    public init(port: Int, dialHost: String, process: String?, pid: Int? = nil, program: String? = nil, folder: String? = nil) {
         self.port = port
         self.dialHost = dialHost
         self.process = process
+        self.pid = pid
+        self.program = program
+        self.folder = folder
     }
 
     /// How the port is named on screen: `localhost:5173`.
@@ -50,8 +60,10 @@ public struct PortList: Equatable, Sendable {
         status = Status(rawValue: o.str("status") ?? "") ?? .partial
         truncated = o.bool("truncated") ?? false
         var names: [Int: String] = [:]
+        var holders: [Int: JSONObject] = [:]
         for p in o.arr("processes") {
             guard let pid = p.int("pid") else { continue }
+            holders[pid] = p
             let l = label(p)
             if !l.isEmpty { names[pid] = l }
         }
@@ -62,7 +74,9 @@ public struct PortList: Equatable, Sendable {
                   let address = p.str("address"), let host = PortRules.dialHost(address) else { continue }
             let loopback = PortRules.isLoopback(host)
             if let had = byPort[port], had.loopback || !loopback { continue }
-            byPort[port] = (PortEntry(port: port, dialHost: host, process: p.int("pid").flatMap { names[$0] }), loopback)
+            let pid = p.int("pid"), holder = pid.flatMap { holders[$0] }
+            byPort[port] = (PortEntry(port: port, dialHost: host, process: pid.flatMap { names[$0] }, pid: pid,
+                                      program: holder?.str("name"), folder: holder?.str("cwd")), loopback)
         }
         entries = byPort.values.map(\.entry).sorted { $0.port < $1.port }
     }

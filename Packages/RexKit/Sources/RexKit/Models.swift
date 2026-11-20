@@ -227,6 +227,8 @@ public struct BlockMeta: Equatable, Sendable {
     public var title: String?
     public var pwd: String?
     public var foreground: String?
+    /// The foreground process's id: Stop for a port is offered only for this process (`PortStop`).
+    public var foregroundPID: Int?
     public var statuses: [String: ProgramStatus] = [:]
     public var bellAt: Date?
     public var exited: Bool = false

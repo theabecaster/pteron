@@ -206,8 +206,8 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
 - `block_event` names: `title_changed`, `pwd_changed`, `process_changed`,
   `program_status_changed`, `program_status_removed`, `bell`, `child_exited`,
   `desktop_notification` (a notice toast, [notifications.md](notifications.md)), `progress_report`
-  (a progress ring, [sidebar.md](sidebar.md)), `ports_changed` (a pane's ports, for panes on
-  screen only; [terminal.md](terminal.md), Ports).
+  (a progress ring, [sidebar.md](sidebar.md)), `ports_changed` (a pane's ports, kept for every local
+  terminal; [terminal.md](terminal.md), Ports).
 
 ### Progress and notices (terminal block events)
 

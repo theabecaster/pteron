@@ -289,13 +289,25 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var noticeTexts: [String: NoticeText] = [:]
     /// How many of each block's notices wait out `noticeWait` now.
     @ObservationIgnored var noticesInWait: [String: Int] = [:]
-    /// Each on-screen pane's listening ports (`ServerConnection+Ports.swift`). Its own table, so a
-    /// change re-renders only the pane menu row that reads the pane.
+    /// Each local terminal's listening ports (`ServerConnection+Ports.swift`). Its own table, so a
+    /// change re-renders only the views that read that pane's list.
     @ObservationIgnored let ports = BlockBoxTable<PortList>()
     /// `ports_changed` lists since the last flush, newest per block.
     @ObservationIgnored var pendingPorts: [String: PortList] = [:]
-    /// Panes on screen whose ports are followed.
+    /// Panes on screen: their ports are read first.
     @ObservationIgnored var portWatch: [String: PortWatch] = [:]
+    /// The connection each pane's ports were last read on (or an event gave them on).
+    @ObservationIgnored var portsRead: [String: Int] = [:]
+    /// The Ports group's rows, in sidebar order: set only when they change, so the sidebar and
+    /// the palette read ports here and never walk the lists.
+    var portRows: [PortRow] = []
+    /// The rows' ids alone, set only when a row comes or goes: what the sidebar's list reads, so
+    /// a port that changes hands re-renders its own row and not the list.
+    var portRowIDs: [String] = []
+    /// Whether there is any row: all the list reads while the Ports group is folded.
+    var hasPortRows = false
+    /// Where each row's port is, for a row to read its own pane's list.
+    @ObservationIgnored var portRowPlaces: [String: PortRow] = [:]
     /// When `block_created` named each block that hasn't reached a view yet.
     @ObservationIgnored var createdAt: [String: Date] = [:]
     /// The app's forwards to dev servers; set by `AppModel`.
@@ -377,8 +389,8 @@ final class ServerConnection: Identifiable {
         }
         // No method reads a progress bar back: a dropped report clears it until the next one.
         router.on(blockEvent: "progress_report") { [weak self] _, bid in self?.dropProgress(bid) }
-        // The list is read back, for a pane on screen only.
-        router.on(blockEvent: "ports_changed") { [weak self] _, bid in self?.portsDropped(bid) }
+        // The list is read back.
+        router.on(blockEvent: "ports_changed") { [weak self] sid, bid in self?.portsDropped(session: sid, bid) }
     }
 
     // MARK: Connection
@@ -765,8 +777,9 @@ final class ServerConnection: Identifiable {
                 return
             }
             self.capabilities.creatorsLoaded(r, serial: serial)
-            // Panes on screen read their ports once the server is known to list them.
-            self.fillWatchedPorts()
+            // The panes' ports are read once the server is known to list them.
+            self.refreshPortRows()
+            self.fillAllPorts()
         }
     }
 
@@ -824,7 +837,7 @@ final class ServerConnection: Identifiable {
     /// One block's status, title and process, read in parallel. Each read parses its reply on the
     /// main actor and hands back plain values. Outer nil: the call failed, keep what we had.
     /// Inner nil: the server has none.
-    private func readMeta(_ sid: String, _ bid: String) async -> (String, BlockMeta?, String??, String??) {
+    private func readMeta(_ sid: String, _ bid: String) async -> (String, BlockMeta?, String??, (name: String?, pid: Int?)?) {
         async let st = readStatuses(sid, bid)
         async let ti = readTitle(sid, bid)
         async let pr = readProcess(sid, bid)
@@ -843,9 +856,10 @@ final class ServerConnection: Identifiable {
         return .some(r.str("title"))
     }
 
-    private func readProcess(_ sid: String, _ bid: String) async -> String?? {
+    private func readProcess(_ sid: String, _ bid: String) async -> (name: String?, pid: Int?)? {
         guard let r = try? await control.blockCall("com.superlogical.terminal.process", session: sid, block: bid) else { return nil }
-        return .some(r.obj("foreground").map(ProcessNames.label))
+        let fg = r.obj("foreground")
+        return (fg.map(ProcessNames.label), fg?.int("pid"))
     }
 
     /// Reads status, title and process for the blocks and replaces what we had for them. What a
@@ -855,7 +869,7 @@ final class ServerConnection: Identifiable {
         let read = nextMetaRead
         metaReads[read] = [:]
         defer { metaReads[read] = nil }
-        await withTaskGroup(of: (String, BlockMeta?, String??, String??).self) { g in
+        await withTaskGroup(of: (String, BlockMeta?, String??, (name: String?, pid: Int?)?).self) { g in
             for (sid, bid) in blocks {
                 g.addTask { await self.readMeta(sid, bid) }
             }
@@ -864,7 +878,10 @@ final class ServerConnection: Identifiable {
                 var cur = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
                 if let statuses, !live.contains(.statuses) { cur.statuses = statuses.statuses }
                 if let title, !live.contains(.title) { cur.title = title }
-                if let fg, !live.contains(.foreground) { cur.foreground = fg }
+                if let fg, !live.contains(.foreground) {
+                    cur.foreground = fg.name
+                    cur.foregroundPID = fg.pid
+                }
                 pendingMeta[bid] = nil
                 statusShownAt[bid] = Date()
                 meta[bid] = cur

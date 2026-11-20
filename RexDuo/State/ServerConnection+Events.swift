@@ -128,6 +128,7 @@ extension ServerConnection {
             m.pwd = e.str("pwd")
         case "process_changed":
             if let fg = e.obj("foreground") { m.foreground = ProcessNames.label(fg) } else { m.foreground = nil }
+            m.foregroundPID = e.obj("foreground")?.int("pid")
         case "program_status_changed":
             let id = e.str("id") ?? ""
             let prev = m.statuses[id]?.state
@@ -154,7 +155,7 @@ extension ServerConnection {
             receiveNotice(sid, bid, e)
             return
         case "ports_changed":
-            receivePorts(bid, e)
+            receivePorts(session: sid, bid, e)
             return
         default:
             return

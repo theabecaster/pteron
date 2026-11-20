@@ -50,6 +50,9 @@ from the field too (its ⌘ and ⌃ keys arrive as menu items, `AppShortcutComma
   where the attach menu or its key would work for that pane (`ServerConnection.offers`;
   docs/terminal.md, Files), with the key the keymap binds, if any. They are also found by image,
   photo, picture, screenshot, attach, upload, file and send (`FilesCommand.keywords`).
+- The ports of every connected machine's Ports group: "Open localhost:3000 · Next.js", with
+  the folder under it. It opens the page in the app, as the sidebar's row does; a port that
+  closed meanwhile says "Nothing listens on that port now." (docs/terminal.md, Ports).
 - Copy mode, dimmed ("Copy mode is only on the Mac."), only where the keymap binds one of its
   actions.
 

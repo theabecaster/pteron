@@ -11,6 +11,8 @@ struct SessionsList: View {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.sidebarShown) private var sidebarShown
+    @State private var portsSeen = PortsSeen()
     let theme: TermTheme
     /// Where the list was scrolled to, kept by the sidebar across mode switches.
     @Binding var scrollY: CGFloat
@@ -43,9 +45,13 @@ struct SessionsList: View {
         let collapsed = prefs.sidebarCollapsed
         // A drag's held order is applied here, at the outline's source (`PendingOrder`).
         let target = SidebarOutline.rows(model.servers.map { s in
-            SidebarOutline.Machine(id: s.id, sessions: s.orderedSessions.map { e in
+            // A folded Ports group reads only whether it exists, and a hidden sidebar reads no
+            // port at all, so a port that comes or goes then doesn't run this body (`PortsSeen`).
+            let portsOpen = !collapsed.contains(SidebarCollapse.ports(s.id)) && !collapsed.contains(SidebarCollapse.machine(s.id))
+            let ports = portsSeen.rows(s, shown: sidebarShown, open: portsOpen)
+            return SidebarOutline.Machine(id: s.id, sessions: s.orderedSessions.map { e in
                 SidebarOutline.Session(id: e.id, windowIDs: s.orderedWindowIDs(e.id))
-            }, empty: s.phase == .online && s.synced && s.sessions.isEmpty)
+            }, empty: s.phase == .online && s.synced && s.sessions.isEmpty, hasPorts: ports.has, ports: ports.ids)
         }, collapsed: collapsed)
         let drag = actions.drag
         let scroll = $position
@@ -177,6 +183,16 @@ struct SessionsList: View {
         case .empty:
             NoSessionsRow(server: server, theme: theme)
                 .modifier(SidebarStackRow(theme: theme))
+        case .portsHeader(let id):
+            PortsHeaderRow(serverID: id,
+                           collapsed: collapsed.contains(SidebarCollapse.ports(id)),
+                           topGap: server.sessions.isEmpty ? 0 : sessionGap, dim: dim, theme: theme)
+                .equatable()
+                .modifier(SidebarStackRow(theme: theme))
+        case .port(_, let port):
+            // Its own view: it reads the port's state and builds its swipe actions itself, so a
+            // change to one port re-renders that row and not this list.
+            PortRowView(server: server, rowID: port, outlineID: row.id, dim: dim, theme: theme, swipe: swipe)
         }
     }
 
@@ -678,7 +694,7 @@ struct SidebarDragRow: ViewModifier {
 extension SidebarOutline.Row.Kind {
     var serverID: UUID {
         switch self {
-        case .machine(let id), .session(let id, _), .tab(let id, _, _), .empty(let id): id
+        case .machine(let id), .session(let id, _), .tab(let id, _, _), .empty(let id), .portsHeader(let id), .port(let id, _): id
         }
     }
 }

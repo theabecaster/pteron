@@ -355,6 +355,8 @@ final class AppModel {
     @ObservationIgnored let actions = GlanceActions()
     /// Opens computers' dev servers on the phone, one browser at a time.
     @ObservationIgnored let forward = PortForward()
+    /// What a row of the sidebar's Ports group does: open, copy its link, show its pane, stop.
+    @ObservationIgnored private(set) lazy var ports = PortActions(model: self)
 
     /// `connect: false` builds no servers (unit tests and the test host). With `connect`, the
     /// servers are built here and none is started: `sceneVisible()` starts them. `glance`: the

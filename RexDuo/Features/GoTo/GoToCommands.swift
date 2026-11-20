@@ -27,6 +27,10 @@ enum GoToCommands {
     /// The key of an app command's row.
     static func appKey(_ action: String) -> String { "app:" + action }
 
+    /// The key of a port's row, and the words that find one besides its title.
+    static func portKey(_ server: UUID, _ row: String) -> String { "port:\(server.uuidString):\(row)" }
+    static let portKeywords = "ports browser page web server preview"
+
     static func add(_ servers: [ServerConnection], target: GoToTarget?, waitingCount: Int, into copy: inout GoToSource.Copy) {
         let targetServer = target.flatMap { t in servers.first { $0.id == t.serverID } }
         let server = targetServer ?? servers.first { $0.phase == .online } ?? servers.first
@@ -69,6 +73,25 @@ enum GoToCommands {
         }
 
         let several = servers.count > 1
+        // The pages of the dev servers that run in panes: every connected machine's Ports
+        // group, one row a port ("Open localhost:3000 · Next.js").
+        for s in servers where s.phase == .online {
+            for row in s.portRows {
+                order += 1
+                let program = PortNames.program(row.entry), folder = PortNames.folder(row.entry.folder)
+                var sub = ["Ports"]
+                if let folder { sub.append(folder) }
+                if several { sub.append(s.config.name) }
+                var fields: [GoToItem.Field] = [.init(text: portKeywords, weight: 0.7)]
+                if let folder { fields.append(.init(text: folder, weight: 0.7)) }
+                add(GoToItem(id: .command(portKey(s.id, row.id)), kind: .command,
+                             title: ["Open \(row.entry.name)", program].compactMap { $0 }.joined(separator: " · "),
+                             subtitle: sub.joined(separator: " · "), fields: fields, order: order, symbol: "globe",
+                             category: "Ports"),
+                    .port(serverID: s.id, row: row.id))
+            }
+        }
+
         // The configuration file's actions: the target's server, or with no tab every online one.
         // An offline server's actions are hidden: they could only fail.
         let luaServers = (targetServer.map { [$0] } ?? servers).filter { $0.phase == .online }

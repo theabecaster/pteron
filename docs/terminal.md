@@ -809,8 +809,9 @@ and shows them again, and never moves or resizes one (`Features/Tab/TabPresentat
 A program in a local pane that listens on a TCP port (`npm run dev` on `localhost:5173`) opens on
 the phone, in Safari's view inside the app, through a Rex dial tunnel. Servers bound to
 127.0.0.1 only work too. No port opens on the computer, and the phone listens on its own
-loopback only while the page is up. Nothing shows on a pane, and nothing runs for a pane that
-isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`,
+loopback only while the page is up. Nothing shows on a pane. The sidebar lists every such port
+of a machine in its Ports group, so nobody scrolls a pane's history for a link
+(`State/ServerConnection+Ports.swift`, `State/PortForward.swift`, `State/PortActions.swift`,
 `Features/Ports/`).
 
 - **Where.** The pane menu's last row in the section above Close: `localhost:5173` with the
@@ -830,13 +831,44 @@ isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`
   tap: "Couldn't open localhost:3000: …" when the pane closed before its question could show,
   when the app has no forward, when the phone can't listen, when the pane left the screen
   before the page came up, and when the tunnel's request never reached the computer.
-- **Ports.** A pane that comes on screen reads `terminal.ports` once per connection; then
-  `ports_changed` (the whole list each time) keeps it, applied in the 150 ms metadata flush and
-  written only when the list changed. An event for a pane that isn't on screen is dropped after
-  its `block_id`. A dropped `ports_changed` reads the list again for a pane on screen. Web ports
-  are every port but debuggers, SSH, mail, DNS, databases, queues and caches, by number and by
-  program (`PortRules`). The dial address is the program's loopback address; `0.0.0.0` dials
-  127.0.0.1 and `::` dials ::1.
+- **Ports.** After each sync, every local terminal reads `terminal.ports` once per connection,
+  panes on screen first and four calls at a time; then `ports_changed` (the whole list each
+  time) keeps it, applied in the 150 ms metadata flush and written only when the list changed.
+  Nothing polls: Rex looks for ports itself, and a list changes on the phone only when Rex says
+  so. An event counts as the pane's read. A new pane's event that comes before its view waits
+  for the view. A dropped `ports_changed` reads the list again. On a new connection the lists
+  from before stay until they are read again, so nothing leaves and comes back on a reconnect;
+  a read that fails takes that pane's list. Web ports are every port but debuggers, SSH, mail,
+  DNS, databases, queues and caches, by number and by program (`PortRules`). The dial address
+  is the program's loopback address; `0.0.0.0` dials 127.0.0.1 and `::` dials ::1.
+- **The Ports group** (`Features/Ports/PortsGroup.swift`; [sidebar.md](sidebar.md), Ports). Its
+  rows are `ServerConnection.portRows`: the web ports of the machine's local terminals in
+  sidebar order, set only when they change. A port an agent holds itself (its sign-in or editor
+  link) gets no row; a server an agent started does. A row is named by what runs, then the
+  folder it runs in ("Next.js · anchor"), with `localhost:3000` under it (`PortNames`: a small
+  table of known programs, else the program's own name). A tap opens the page in the app, as
+  the pane menu's row does. The row's menu and its swipe: Copy Link (`http://localhost:3000`),
+  Show Pane, and Stop. The palette lists the same ports as "Open localhost:3000 · Next.js"
+  ([goto.md](goto.md)).
+- **Stop** (`PortStop`, `PortActions`). Stop types one Ctrl-C into the port's pane. It is
+  offered only when the process that holds the port is itself the pane's foreground process
+  and the pane runs no agent. A server left in the background, one started by a script or an
+  agent that is still in front (`npm run dev`, where `npm` is in front and its child holds the
+  port), and a port whose process Rex couldn't name get no Stop, only Show Pane: Rex names the
+  foreground's parents and never the port holder's, so the phone can't tell such a server from
+  one beside the foreground. On the tap the pane's processes are read again
+  (`terminal.process`); if the foreground is no longer that process, nothing is typed and a
+  notice offers Show Pane. The Ctrl-C goes once, through the pane's input queue when the pane is
+  on screen or kept warm (`sendOnce`) and as one call otherwise (a parked pane has no running
+  stream); one that doesn't leave the phone, as while the pane is behind its catch-up fence, is
+  a calm notice with Show Pane, never a later send. The row says "Stopping…"; a port still held 5 s later says
+  "Still running" and Stop is there to tap again. The phone never sends a signal and never a
+  second interrupt by itself. The row goes when Rex says the port is gone.
+- **No Restart.** Typing a server's command again needs its exact command line from a source
+  that can't be wrong. Rex gives none: `terminal.process` returns each process's first argument
+  only ("Rex never returns the other arguments, because they can hold secrets"), no event
+  carries a shell's command marks, and Rex installs no shell integration that would write them.
+  So the app has Stop and Show Pane, and no Restart.
 - **The browser.** `SFSafariViewController`, on `http://localhost:<port>/` from the menu, or the
   tapped link's scheme, host and path. The phone listens on 127.0.0.1 on the same port when it
   is free and above 1024, else on a free one, and forwards **only the opened port**. A page on

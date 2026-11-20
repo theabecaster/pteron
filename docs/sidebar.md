@@ -59,7 +59,7 @@ Sessions are what people look for, so their names are full contrast and semibold
     other fades in.
   - With Reduce Motion, rows and summaries only fade.
 - The state is saved per item in `Prefs.sidebarCollapsed`: `m:<server id>` and
-  `s:<server id>:<session id>`. Everything starts open. Keys of sessions a connected server no
+  `s:<server id>:<session id>`, and `p:<server id>` for a machine's Ports group. Everything starts open. Keys of sessions a connected server no
   longer has, and of removed servers, are dropped.
 - The tab on screen always has a row: when the selection changes (a tap, Jump to Waiting, a push,
   a toast, a new session), its session and machine open, animated (`SidebarCollapse.revealing`).
@@ -97,6 +97,33 @@ Sessions are what people look for, so their names are full contrast and semibold
   on the Mac: it shows the sidebar in Agents mode, or returns to Sessions when Agents is already
   showing. Jump to Waiting has its own action, `client.agents.jump_to_waiting` (`alt+cmd+.` by
   default), besides the waiting pill and the VoiceOver magic tap.
+
+## Ports
+
+Under a machine's sessions, a **Ports** group lists the web ports that programs in its panes
+listen on, so a dev server's page is one tap away ([terminal.md](terminal.md), Ports).
+
+- It shows only while the machine has such a port, and goes with the last one. No badge, no
+  count on the machine, no notice when a port comes or goes.
+- The header reads "Ports" in the secondary color at a session's indent, and folds like a
+  session (`p:<server id>` in `Prefs.sidebarCollapsed`). Folded it shows no count: a port that
+  comes or goes then changes nothing on screen and runs no view.
+- A row: a globe tile, what runs and its folder ("Next.js · anchor"), `localhost:3000` under it.
+  Tap, or Return on a focused row, opens the page in the app. The menu: Copy Link, Show Pane,
+  and Stop where it applies. Swipe: Show Pane on the leading side, Stop and Copy Link on the
+  trailing side. After a Stop the address line adds "Stopping…", then "Still running" if the
+  port is still held 5 s later.
+- Rows don't lift: ports have no order of their own. They follow the sidebar's order of their
+  panes, then the port number.
+- A down machine keeps its last known ports, dimmed, as it keeps its sessions; a tap says the
+  machine is offline.
+- It sits after the sessions, so a port that comes or goes moves no session or tab of that
+  machine.
+- Cost: the list reads `ServerConnection.portRowIDs`, set only when a row comes or goes, and
+  only while the group is open; folded, it reads `hasPortRows`, which changes with the first
+  and the last port. A row reads its own pane's port list, its pane's foreground process and
+  its Stop state in its own body, so a port that changes hands re-renders that row alone
+  (`-renderCount`'s `portRows`).
 
 ## Not added
 

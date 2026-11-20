@@ -145,7 +145,7 @@ final class GoToModel {
         }
     }
 
-    /// Watches only what changes the list: servers, their phase, sessions, tabs and agents.
+    /// Watches only what changes the list: servers, their phase, sessions, tabs, agents and ports.
     /// Titles and directories live in the metadata boxes, which the copy reads outside this.
     private func track() {
         guard let model else { return }
@@ -155,6 +155,7 @@ final class GoToModel {
                 _ = s.sessions
                 _ = s.views
                 _ = s.agentKeys
+                _ = s.portRows
             }
         } onChange: { [weak self] in
             Task { @MainActor in self?.changed() }
