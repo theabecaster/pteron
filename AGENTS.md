@@ -65,7 +65,9 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection;
   docs/terminal.md, Files), Ports (a computer's dev server in Safari's view through a Rex dial
-  tunnel: the pane menu's row and tapped `localhost` links; docs/terminal.md, Ports).
+  tunnel: the pane menu's row and tapped `localhost` links; docs/terminal.md, Ports), GoTo (Go to
+  Anything, Change Session and the command palette, and the questions of actions the phone ran;
+  docs/goto.md).
 - `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
 - `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass.
@@ -197,6 +199,8 @@ is for users. Read the one for the area you touch:
   toolchain and patches, measurements. [docs/ghostty-api-notes.md](docs/ghostty-api-notes.md):
   libghostty-vt rules the engine relies on.
 - [docs/selection.md](docs/selection.md): touch selection (loupe, handles, haptics).
+- [docs/goto.md](docs/goto.md): the palette (Go to Anything, Change Session, commands), its
+  ranking, the keyboard hold, and questions from the phone's own runs.
 - [docs/terminal-checklist.md](docs/terminal-checklist.md): what the terminal must do, the test for
   each row, and the manual device scripts.
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.

@@ -109,6 +109,12 @@ struct AppShortcutCommands: Commands {
     private var keymap: KeymapStore? { (model.current?.server ?? model.servers.first)?.keymap }
 
     private func run(_ command: RexCommand) {
+        // The palette's own keys reach it first, from its field too: the same key closes it,
+        // another palette key switches its scope. Every other menu key waits until it closes.
+        if model.goTo != nil {
+            if case .goTo(let scope) = command { model.palette.keyPressed(scope) }
+            return
+        }
         let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
         let holder = KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: nil)
         guard KeyboardFocusPolicy.runsAppShortcut(holder: holder, sheetUp: KeyboardFocusPolicy.sheetUp(in: window)) else { return }

@@ -76,6 +76,7 @@ struct RootView: View {
                 }
             }
             .onAppear {
+                connectPalette()
                 // Nothing to list yet: the tab area, which says how to add a server, shows.
                 if model.servers.isEmpty { sidebar.open = false }
                 sidebar.mode = prefs.sidebarMode
@@ -148,9 +149,12 @@ struct RootView: View {
         .ignoresSafeArea(.keyboard)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
             let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
-            simKeyboard = (n.object as? UIScreen).map { f.intersection($0.bounds).height } ?? 0
+            let h = (n.object as? UIScreen).map { f.intersection($0.bounds).height } ?? 0
+            if model.palette.padHold.offer(.sim, h) { return }
+            simKeyboard = h
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            if model.palette.padHold.offer(.sim, 0) { return }
             simKeyboard = 0
         }
         .task(id: simulations.count) {
@@ -206,6 +210,10 @@ struct RootView: View {
             // Standing as a tent, the agent board covers all of it (`TentBoard`).
             .modifier(TentBoard(division: division, size: geo.size, inline: arr.inline, fills: fills, sidebar: $sidebar,
                                 pool: hostPool, keyboardHeight: keyboardHeight, theme: theme))
+            // The palette, over the tab and the sidebar, while it is open; nothing while closed.
+            .modifier(GoToOverlay(theme: theme, narrow: !arr.inline, division: division, keyboardPad: keyboardHeight))
+            // A new width resizes the panes anyway: the palette's hold on the keyboard's room ends.
+            .onChange(of: geo.size.width) { _, _ in model.palette.padHold.endNow() }
             .environment(\.division, division)
             .environment(\.rootOrigin, geo.frame(in: .global).origin)
             .environment(\.bookCrease, creaseSettle.crease(division))
@@ -268,8 +276,20 @@ struct RootView: View {
         #if DEBUG
         guard simulations.isEmpty else { return }
         #endif
+        // The palette holds the room it opened with (`PadHold`).
+        if model.palette.padHold.offer(.pad, pad) { return }
         guard pad != keyboardPad else { return }
         keyboardPad = pad
+    }
+
+    /// Lets the palette's hold write the keyboard's room back when it ends.
+    private func connectPalette() {
+        let center = model.palette
+        center.pool = hostPool
+        center.padHold.apply[.pad] = { pad in if keyboardPad != pad { keyboardPad = pad } }
+        #if DEBUG
+        center.padHold.apply[.sim] = { h in if simKeyboard != h { simKeyboard = h } }
+        #endif
     }
 
     /// The fold, from the reserved regions (iOS 27.1+). Inactive regions count: a flat device still
@@ -321,6 +341,9 @@ struct RootView: View {
             case .find:
                 // No pane to search: as before find existed, the key does nothing.
                 break
+            case .goTo(let scope):
+                // No tab: places and the commands that need no pane.
+                model.palette.open(scope, target: nil)
             default:
                 Haptic.bump()
             }

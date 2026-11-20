@@ -1050,6 +1050,11 @@ public final class TerminalStream {
     private struct Work {
         /// The action's name, for the message when it fails; nil for a forwarded key.
         let action: String?
+        /// Picked from the palette: dropped, never sent later, if it can't leave now.
+        var fromPalette = false
+        /// Told once how the call ended: true when the server answered without an error. Not
+        /// called for work that `stop()` dropped.
+        var ended: (@MainActor (Bool) -> Void)?
         let run: @MainActor () async throws -> Void
     }
     private enum Fate { case unsent, refused, unknown }
@@ -1145,9 +1150,14 @@ public final class TerminalStream {
         // False for an action that `actionHold` gave up waiting for: later items have gone out.
         let current = inFlight && flightID == id
         if current { inFlight = false }
+        if case .work(let work) = item, epoch == inputEpoch { work.ended?(failure == nil) }
         // After `stop()` there is nothing to keep or to report; the queue is already empty.
         guard let failure, epoch == inputEpoch else {
             if current { pump() }
+            return
+        }
+        if case .work(let work) = item, work.fromPalette {
+            paletteWorkFailed(work, failure: failure, current: current)
             return
         }
         switch Self.fate(of: failure) {
@@ -1176,6 +1186,25 @@ public final class TerminalStream {
             if current { pump() }
         }
     }
+
+    /// A palette pick that failed. One that never left is dropped, not queued for the next
+    /// connection: the user picked it for now. One whose answer was lost ends quietly, as nobody
+    /// knows whether it ran; what was typed behind it goes, as for a key.
+    private func paletteWorkFailed(_ work: Work, failure: Error, current: Bool) {
+        let title = work.action ?? "the action"
+        switch Self.fate(of: failure) {
+        case .unsent:
+            onActionFailed?(Self.droppedMessage(title))
+        case .refused:
+            onActionFailed?("Couldn't run \(title). \((failure as? RexError)?.message ?? failure.localizedDescription)")
+        case .unknown:
+            if current { inputQueue.removeAll() }
+        }
+        if current { pump() }
+    }
+
+    /// What a palette pick says when it couldn't leave.
+    public static func droppedMessage(_ title: String) -> String { "Didn't run \(title): the connection dropped." }
 
     private static func fate(of error: Error) -> Fate {
         guard let e = error as? RexError else { return .unknown }
@@ -1207,15 +1236,36 @@ public final class TerminalStream {
         pump()
     }
 
+    /// What started an action, as `client.action` reports it to the action (`ctx.origin`).
+    public enum ActionOrigin: String, Sendable {
+        case key, palette
+    }
+
     /// Runs a block or configuration-file action on this pane (`client.action`), as a key binding
     /// does on the Mac. Returns the client actions the server asks this client to perform.
-    public func perform(action: String, args: JSONObject?, then: @escaping @MainActor ([JSONObject]) -> Void) {
-        enqueue(Work(action: action) { [sessionID, blockID, link] in
-            var p: JSONObject = ["action": action, "origin": "key", "session_id": sessionID, "block_id": blockID]
+    ///
+    /// From a key it waits in the queue like a keystroke, also for a connection. From the palette
+    /// it goes now or not at all: without a connection it fails at once, and one that can't leave
+    /// is dropped, never sent later; its failure notices name it by `title`. `ended` is told once
+    /// how the call ended (not for work that `stop()` dropped).
+    public func perform(action: String, args: JSONObject?, origin: ActionOrigin = .key, title: String? = nil,
+                        ended: (@MainActor (Bool) -> Void)? = nil,
+                        then: @escaping @MainActor ([JSONObject]) -> Void) {
+        let palette = origin == .palette
+        if palette, stopped || !link.isConnected {
+            onActionFailed?(Self.droppedMessage(title ?? action))
+            ended?(false)
+            return
+        }
+        var work = Work(action: palette ? (title ?? action) : action) { [sessionID, blockID, link] in
+            var p: JSONObject = ["action": action, "origin": origin.rawValue, "session_id": sessionID, "block_id": blockID]
             if let args, !args.isEmpty { p["args"] = args }
             let r = try await link.call("client.action", p)
             then(r.arr("client_actions"))
-        })
+        }
+        work.fromPalette = palette
+        work.ended = ended
+        enqueue(work)
     }
 
     /// Sends a key to the server's Lua key bindings (`client.key`); unhandled, it reaches this pane.

@@ -394,6 +394,7 @@ final class ServerConnection: Identifiable {
             // The bootstrap's lists win over a drag's order from before.
             if !pendingOrder.isEmpty { pendingOrder = PendingOrder() }
             panesSupportChanged()
+            prompts.onConnected?(connectionSerial)
             #if DEBUG
             // To check on a device or simulator which revision a server gave this connection.
             NSLog("CONTROL_API negotiated=%d server=%d", control.negotiatedRevision, control.serverRevision)
@@ -1035,6 +1036,16 @@ final class ServerConnection: Identifiable {
         await act("clear the pane", session: nil) {
             try await self.control.blockCall("com.superlogical.terminal.clear", session: sid, block: bid)
         }
+    }
+
+    /// Runs a configuration-file action with no pane (`client.action` without `session_id`),
+    /// picked from the palette with no tab on screen. Without a connection it fails at once and
+    /// is never sent later. Returns the client actions the server asks this client to perform.
+    func runAction(name: String, args: JSONObject?) async throws -> [JSONObject] {
+        guard control.state == .connected else { throw RexError.unsent("not connected") }
+        var p: JSONObject = ["action": name, "origin": TerminalStream.ActionOrigin.palette.rawValue]
+        if let args, !args.isEmpty { p["args"] = args }
+        return try await control.call("client.action", p).arr("client_actions")
     }
 
     // MARK: Derived

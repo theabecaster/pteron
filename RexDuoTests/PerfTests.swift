@@ -247,3 +247,91 @@ final class PerfTests: XCTestCase {
         XCTAssertEqual(log.calls.filter { $0 == "feed" }.count, 5, "one call per chunk")
     }
 }
+
+/// The palette's search over a synthetic 10k-item index: the index builds and each query scores
+/// off the main actor (`GoToSearcher`). Budgets on a device in Release: build ≤ 25 ms for 2k,
+/// a query ≤ 4 ms for 2k and ≤ 20 ms for 10k (docs/goto.md, Measurements). A Debug simulator
+/// run is far slower; the bound here only catches a blowup.
+final class GoToPerfTests: XCTestCase {
+    static func items(_ n: Int) -> [GoToItem] {
+        let words = ["api", "web", "logs", "build", "deploy", "studio", "claude", "vim", "server", "tests"]
+        let server = UUID()
+        return (0..<n).map { i in
+            let w = words[i % words.count], s = words[(i / 10) % words.count]
+            return GoToItem(id: .tab(server, "s\(i / 20)", "w\(i)"), kind: .tab, title: "\(w)-\(i) ~/code/\(s)",
+                            subtitle: "", fields: [.init(text: "\(s) session", weight: 0.9), .init(text: "macbook", weight: 0.6)],
+                            shortIDs: [String(format: "%06x", i * 7919)], order: i, symbol: "terminal")
+        }
+    }
+
+    func testTenThousandItemsQuery() async {
+        let searcher = GoToSearcher()
+        await searcher.load(Self.items(10_000))
+        var worst = 0.0
+        for q in ["d", "dep", "deploy", "api lo", "zzz", "ser stu"] {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            _ = await searcher.search(q, scope: .anything, boosts: [:])
+            worst = max(worst, CFAbsoluteTimeGetCurrent() - t0)
+        }
+        print("GOTO_PERF 10k worst query \(Int(worst * 1000)) ms")
+        XCTAssertLessThan(worst, 1.0)
+    }
+
+    func testTwoThousandItemsIndex() async {
+        let items = Self.items(2_000)
+        let searcher = GoToSearcher()
+        let t0 = CFAbsoluteTimeGetCurrent()
+        await searcher.load(items)
+        let build = CFAbsoluteTimeGetCurrent() - t0
+        let t1 = CFAbsoluteTimeGetCurrent()
+        _ = await searcher.search("deploy", scope: .anything, boosts: [:])
+        let query = CFAbsoluteTimeGetCurrent() - t1
+        print("GOTO_PERF 2k index \(Int(build * 1000)) ms, query \(Int(query * 1000)) ms")
+        XCTAssertLessThan(build, 1.0)
+    }
+}
+
+/// The copy the palette takes on the main actor at open, with about 2k rows.
+@MainActor
+final class GoToSourcePerfTests: XCTestCase {
+    func testTheCopyAtOpen() {
+        let suite = "goto-perf-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        d.removePersistentDomain(forName: suite)
+        let prefs = Prefs(defaults: d)
+        let s = ServerConnection(config: ServerConfig(name: "desk", url: "https://desk-rex.tail1234.ts.net"),
+                                 prefs: prefs, notifier: AgentNotifier(), deviceID: "a1b2c3d4")
+        var views: [String: SessionView] = [:]
+        var sessions: [SessionEntry] = []
+        func block(_ id: String) -> JSONObject { ["block_id": id, "creator_name": "com.superlogical.terminal", "label": "shell"] }
+        for i in 0..<60 {
+            let sid = "session:\(i)"
+            sessions.append(SessionEntry(id: sid, label: "s\(i)"))
+            let windows = (0..<10).map { w -> JSONObject in
+                let a = "block:\(i)-\(w)a", b = "block:\(i)-\(w)b"
+                let split: JSONObject = ["split_id": "x", "direction": "horizontal", "ratio": 0.5,
+                                         "before": ["block_id": a, "rect": [0, 0, 0.5, 1]],
+                                         "after": ["block_id": b, "rect": [0.5, 0, 0.5, 1]]]
+                let layer: JSONObject = ["kind": "tiled", "blocks": [block(a), block(b)],
+                                         "layout": ["rect": [0, 0, 1, 1], "split": split] as JSONObject]
+                return ["window_id": "window:\(i)-\(w)", "label": "tab \(w)", "focused_block_id": a, "layers": [layer]]
+            }
+            views[sid] = SessionView(["revision": 1, "session_id": sid, "label": "s\(i)", "windows": windows])
+        }
+        s.sessions = sessions
+        s.views = views
+        s.phase = .online
+        var copy = GoToSource.Copy()
+        var ms = 0.0
+        // The first open, then a later one (the rebuild while open).
+        for run in 0..<2 {
+            copy = GoToSource.Copy()
+            let t0 = CFAbsoluteTimeGetCurrent()
+            GoToSource.places([s], target: nil, waiting: [], into: &copy, scope: .anything)
+            ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            print("GOTO_PERF copy \(run) of \(copy.items.count) rows \(String(format: "%.1f", ms)) ms")
+        }
+        XCTAssertEqual(copy.items.count, 60 + 600 + 1200)
+        XCTAssertLessThan(ms, 500)
+    }
+}

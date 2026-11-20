@@ -61,8 +61,10 @@ final class Notice {
     private struct Job {
         var id: JobID
         var text: String
-        var fraction: Double
-        var cancel: Action
+        /// Nil for a job that shows no progress (`tryBeginJob`).
+        var fraction: Double?
+        /// Nil for a job that can't be cancelled from here.
+        var cancel: Action?
         /// A job shows from its first `progress`, so one that ends at once never shows.
         var shown: Bool
     }
@@ -110,7 +112,7 @@ final class Notice {
     /// until the job ends.
     func runAction() {
         if case .empty = slot {
-            job?.cancel.run()
+            job?.cancel?.run()
             return
         }
         let a = action
@@ -151,6 +153,18 @@ final class Notice {
         }
         let id = JobID(raw: raw)
         job = Job(id: id, text: text, fraction: 0, cancel: Action(title: "Cancel", run: cancel), shown: false)
+        return id
+    }
+
+    /// Takes the lane for a short job with no progress and no button (an action running on the
+    /// server), shown at once while the slot is empty. Nil, and nothing waits, while another job
+    /// holds the lane: such a job is long, and this one says only that something runs.
+    func tryBeginJob(text: String) -> JobID? {
+        guard job == nil else { return nil }
+        nextJob += 1
+        let id = JobID(raw: nextJob)
+        job = Job(id: id, text: text, fraction: nil, cancel: nil, shown: true)
+        if case .empty = slot { render() }
         return id
     }
 
@@ -223,6 +237,8 @@ enum RexCommand: Equatable {
     case balanceSplits, closeOtherPanes, moveToTab, moveToNewTab
     /// Moves the tab one place forward (+1) or back (-1) in its session (`client.tab.move.*`).
     case moveTab(Int)
+    /// Opens the palette (`pane.go_to`, `session.switch`, `client.palette.toggle`).
+    case goTo(GoToScope)
 }
 
 /// What a find key asks for.
@@ -268,6 +284,11 @@ final class AppModel {
     var showSettings = false
     /// The agent board covers the tab (`TentBoard`). Toasts stay away meanwhile.
     var boardShown = false
+    /// The palette while it is open (Go to Anything, Change Session, the commands); nil closed.
+    var goTo: GoToModel?
+    /// Opens, runs and closes the palette, and keeps what outlives it: the runs a server's
+    /// question may belong to, the questions waiting their turn, the keyboard hold.
+    @ObservationIgnored private(set) lazy var palette = GoToCenter(model: self)
     /// The "Pair via QR Code" scanner, opened from the screen shown when there are no servers.
     var showPairing = false
     @ObservationIgnored private var landing: Task<Void, Never>?
@@ -401,6 +422,7 @@ final class AppModel {
             helperSetup.attach(s)
             s.agentsKnown = { [weak self] in self?.tidy.request() }
             s.forward = forward
+            palette.attach(s)
             return s
         }
         #if DEBUG

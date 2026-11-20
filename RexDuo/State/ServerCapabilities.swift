@@ -222,4 +222,7 @@ final class PromptHook {
     var onPrompt: ((PromptRequest) -> Bool)?
     /// A prompt ended without this app's answer. Close it whatever the reason.
     var onPromptEnded: ((_ callID: String, _ reason: String) -> Void)?
+    /// A new connection was made: every `call_id` from the old one means nothing now. Close
+    /// those prompts without replying.
+    var onConnected: ((_ serial: Int) -> Void)?
 }

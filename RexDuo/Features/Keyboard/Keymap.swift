@@ -120,7 +120,11 @@ enum AppAction {
         case "client.tab.goto":
             guard let i = a.int("index") else { return nil }
             return .command(.goToTab(i))
-        case "client.tab.overview", "session.switch", "pane.go_to": return .command(.tabOverview)
+        case "client.tab.overview": return .command(.tabOverview)
+        // One palette, three ways in (`GoToScope`).
+        case "pane.go_to": return .command(.goTo(.anything))
+        case "session.switch": return .command(.goTo(.sessions))
+        case "client.palette.toggle": return .command(.goTo(.commands))
         case "client.close", "pane.close": return .command(.closePane)
         case "session.new": return .command(.newSession)
         case "pane.split.right": return .command(.splitRight)
@@ -164,7 +168,8 @@ enum AppAction {
         case "client.find.next": return .command(.find(.next))
         case "client.find.previous": return .command(.find(.previous))
         default:
-            // Rex's own client actions that the app doesn't have (palette, resize, copy mode, …).
+            // Rex's own client actions that the app doesn't have (resize, copy mode, mute, …).
+            // Their keys stay unbound here: never sent to the server as a `client.action`.
             if name.hasPrefix("client.") || name.hasPrefix("pane.") || name.hasPrefix("session.") { return nil }
             // Dotted: a block action (com.superlogical.terminal.clear). No dot: a config-file action.
             return .server(name, args)
@@ -184,6 +189,7 @@ enum KeyActions {
     static let all: [Info] = [
         Info(name: "client.close", title: "Close", category: "Window", repeats: false),
         Info(name: "client.settings", title: "Settings…", category: "App", repeats: false),
+        Info(name: "client.palette.toggle", title: "Command Palette…", category: "App", repeats: false),
         Info(name: "client.sidebar.toggle", title: "Toggle Sidebar", category: "View", repeats: false),
         Info(name: "client.sidebar.activity.toggle", title: "Toggle Agents", category: "View", repeats: false),
         Info(name: "client.agents.jump_to_waiting", title: "Jump to Waiting Agent", category: "View", repeats: false),
@@ -305,6 +311,7 @@ enum KeyDefaults {
         bind(["shift+cmd+enter"], "pane.zoom")
         bind(["cmd+w"], "pane.close")
         bind(["cmd+p"], "pane.go_to")
+        bind(["shift+cmd+p"], "client.palette.toggle")
         bind(["cmd+backspace"], "pane.send_key", ["key": "ctrl+u"])
         bind(["cmd+left"], "pane.send_key", ["key": "ctrl+a"])
         bind(["cmd+right"], "pane.send_key", ["key": "ctrl+e"])
@@ -365,9 +372,21 @@ final class KeymapStore {
         didSet { if panes != oldValue { generation += 1 } }
     }
 
+    /// The configuration file's actions (`rex.action`), for the palette's rows. Read at open,
+    /// never observed: a reload while the palette is open shows on its next rebuild.
+    @ObservationIgnored private(set) var luaActions: [LuaAction] = []
+
     init(control: RexControl) {
         self.control = control
         apply(KeyDefaults.resolved)
+    }
+
+    /// The name to show for an action the keymap knows: a Lua action's title, a block action's,
+    /// the app's own; else the name itself.
+    func title(forAction name: String) -> String {
+        if let a = luaActions.first(where: { $0.name == name }) { return a.title }
+        if let t = KeyActions.blockTitles[name] ?? KeyActions.byName[name]?.title { return t }
+        return name
     }
 
     /// Bindings for a pressed key (its logical and physical spellings), in the order to try them.
@@ -418,13 +437,15 @@ final class KeymapStore {
         do {
             let r = try await control.call("client.keymap", [
                 "actions": actions,
-                "server_actions": "none",
+                // The configuration file's actions only (about 2 KB): the palette's Lua rows.
+                "server_actions": "configured",
                 "defaults": [KeyDefaults.requestLayer],
             ])
             if let c = r.obj("config") {
                 hash = c.str("hash")
                 instance = c.str("instance_id")
             }
+            luaActions = LuaAction.list(in: r)
             apply(Self.bindings(in: r))
         } catch {
             // Older server or no connection: keep what we have (the defaults at first).
@@ -446,5 +467,34 @@ final class KeymapStore {
         byChord = [:]
         for (i, b) in list.enumerated() { byChord[b.chord, default: []].append(i) }
         generation += 1
+    }
+}
+
+/// One action the server's configuration file defines (`rex.action`), as `client.keymap` lists
+/// it. Only `kind: "lua"` entries count, so a server that lists every action (an older one that
+/// ignores `server_actions`) gives the same list.
+struct LuaAction: Equatable, Sendable {
+    let name: String
+    let title: String
+    let description: String?
+    let category: String
+    let keywords: String?
+    /// Its argument schema names a required property: the phone can't fill it in.
+    let needsArguments: Bool
+
+    static func list(in response: JSONObject) -> [LuaAction] {
+        response.arr("actions").compactMap { a in
+            guard a.str("kind") == "lua", let name = a.str("name"), !name.isEmpty, !name.contains(".") else { return nil }
+            let required = (a.obj("args")?["required"] as? [Any])?.isEmpty == false
+            return LuaAction(name: name, title: a.str("title").flatMap { $0.isEmpty ? nil : $0 } ?? Self.title(name),
+                             description: a.str("description").flatMap { $0.isEmpty ? nil : $0 },
+                             category: a.str("category").flatMap { $0.isEmpty ? nil : $0 } ?? "Actions",
+                             keywords: a.str("keywords"), needsArguments: required)
+        }
+    }
+
+    /// `dev_layout` as `Dev Layout`, for an action that gives no title.
+    static func title(_ name: String) -> String {
+        name.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ").capitalized
     }
 }

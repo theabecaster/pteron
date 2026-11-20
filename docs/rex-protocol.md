@@ -215,7 +215,8 @@ event set (status, title or process) is kept, and the read fills in the rest.
 ## Prompts (`client_prompt_requested`, revision 17)
 
 An action from the configuration file that calls `rex.ui` asks every connected app a question;
-the first answer wins. The app shows none yet. `ServerConnection.receivePrompt` answers each with
+the first answer wins. The app shows only the questions of actions it ran itself, in the palette
+(below); every other one is declined. `ServerConnection.receivePrompt` answers each it isn't given with
 `client.reply {call_id, error: {code: "not_supported"}}` in the turn the event arrives
 (`RexControl.post`), which takes only this app out of the prompt: it stays open on the Mac. The
 decline is the same at every revision, so a prompt that reaches an older connection isn't left
@@ -226,7 +227,16 @@ waiting.
 returns true to take it, after which it owes the reply. A prompt whose `kind` isn't `input` or
 `pick` is declined without asking the hook. `prompts.onPromptEnded` passes on
 `client_prompt_ended`. A `call_id` belongs to its connection: after a reconnect the holder drops
-the prompt without replying.
+the prompt without replying (`prompts.onConnected`).
+
+The palette (`GoToCenter`) takes a prompt only on a connection at revision 17 or later, when its
+`action` names a Lua or block action this phone ran (from a key or the palette) on the same
+server and connection, whose `client.action` hasn't answered yet, started within 10 s (or
+answered from here since), of kind `input` or `pick`, and the tent board isn't up. It replies
+with `client.reply` straight on `RexControl`, never through the pane's input queue, where the
+waiting `client.action` holds the one slot: `{"text": …}`, `{"ids": […]}` or
+`{"cancelled": true}`. A `bad_request` answer keeps the question open; anything else closes it.
+Questions taken while one shows wait their turn and keep their `timeout_ms`.
 
 ## Program status (OSC 7501)
 
@@ -241,6 +251,14 @@ can perform (`KeyActions`) and its default layer (`KeyDefaults`), keeps single-k
 re-reads on `keymap_changed`. Bindings to actions the app lacks fall through to the next binding
 or the terminal; config-file and block actions run on the server with `client.action`; keys bound
 to Lua functions go to `client.key`.
+
+The request asks `server_actions: "configured"` (about 2 KB instead of about 20 KB for `all`),
+and the app keeps the reply's `actions` with `kind: "lua"` for the palette's rows
+(`KeymapStore.luaActions`). A server that ignores `server_actions` lists everything; only the
+`lua` entries count, so the rows are the same. A key runs an action with `origin: "key"`; a row
+of the palette with `origin: "palette"` (docs/goto.md, Running). With no tab on screen the
+palette's `client.action` leaves out `session_id`. `pane.copy_mode.*` and `client.tab.mute` are
+the Mac app's own: their keys stay unbound on the phone and never reach `client.action`.
 
 ## Ports and dial tunnels (revisions 14 and 15)
 

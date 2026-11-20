@@ -152,6 +152,11 @@ final class Prefs {
     /// Sessions or Agents, as the Mac's sidebar keeps its mode. `-sidebarMode agents` overrides it
     /// for one run.
     var sidebarMode: SidebarMode { didSet { d.set(sidebarMode.rawValue, forKey: "sidebarMode") } }
+    /// What the palette opened and ran lately, newest first (`GoToRecents`): its ranking and its
+    /// Recent list.
+    var goToRecents: [GoToRecent] {
+        didSet { d.set(try? JSONEncoder().encode(goToRecents), forKey: "goToRecents") }
+    }
     /// The tab open when the app last ran.
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
@@ -184,6 +189,10 @@ final class Prefs {
     // every 60 s, with the same 15 min restamp (`WatchDelivery`); it uses the Dark Mode theme
     // when that is a dark theme, else the default one (`WatchScreen.palette`); and its
     // background task for a delivery stays 10 s at most (`WatchDrain`).
+    // The palette has no settings: its keys are the keymap's; at most 50 rows, 5 commands after
+    // the places, 3 waiting and 8 recent ones; recents weigh up to +30% and halve every 3 days
+    // (`GoToRanker`, `GoToRecents`); a run's notice after 1.5 s for at most 6 s, and questions
+    // only from the phone's own runs within 10 s (`GoToCenter`, `PaletteOrigins`).
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0
@@ -227,6 +236,7 @@ final class Prefs {
         sidebarCollapsed = Set(d.stringArray(forKey: "sidebarCollapsed") ?? [])
         sidebarMode = d.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) ?? .sessions
         lastSelection = d.data(forKey: "lastSelection").flatMap { try? JSONDecoder().decode(Selection.self, from: $0) }
+        goToRecents = d.data(forKey: "goToRecents").flatMap { try? JSONDecoder().decode([GoToRecent].self, from: $0) } ?? []
         systemScheme = UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
         // Only the launch argument is left: `migrate` cleared the saved setting.
         sizing = d.string(forKey: "sizing") == SizingMode.mirror.rawValue ? .mirror : .fit

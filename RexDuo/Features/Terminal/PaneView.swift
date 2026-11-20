@@ -68,6 +68,12 @@ struct PaneHostView: UIViewRepresentable {
         host.files = PaneFiles(server: server, sessionID: sessionID, blockID: blockID)
         host.share = PaneShare(server: server, sessionID: sessionID, blockID: blockID)
         host.ports = PanePorts(server: server, sessionID: sessionID, blockID: blockID)
+        if let center = model?.palette {
+            host.onServerRun = { [weak center, weak server] name, title in
+                guard let center, let server else { return nil }
+                return center.keyRun(server, action: name, title: title)
+            }
+        }
         apply(host)
         let c = Container(host, key: key, pool: pool)
         if let pool {
@@ -189,10 +195,44 @@ final class TerminalHostPool {
         for host in hosts.values { host.setCovered(c, softwareKeyboard: softwareKeyboard) }
     }
 
+    /// A keyboard the palette owes the pane it showed (`owe`): shown or quiet, until it expires.
+    @ObservationIgnored private var owed: (key: Key, quiet: Bool, until: CFTimeInterval)?
+    @ObservationIgnored private var owedExpiry: DispatchWorkItem?
+    /// Told once when an owed keyboard was taken or ran out.
+    @ObservationIgnored var onOwedSettled: (() -> Void)?
+    static let owedLifetime: CFTimeInterval = 2
+
+    /// The palette showed another pane while the keyboard was up: that pane's host takes it once
+    /// it is active and on screen, also a host that is still to be made (another session or
+    /// server). It runs out after `owedLifetime`, so a later pane switch never raises it unasked.
+    func owe(_ key: Key, quiet: Bool) {
+        owedExpiry?.cancel()
+        owed = (key, quiet, CACurrentMediaTime() + Self.owedLifetime)
+        let work = DispatchWorkItem { [weak self] in self?.settleOwed() }
+        owedExpiry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.owedLifetime, execute: work)
+    }
+
+    /// Whether `key`'s host takes a keyboard now, and quietly or not; at most once.
+    func takeOwed(_ key: Key) -> Bool? {
+        guard let o = owed, o.key == key, CACurrentMediaTime() < o.until else { return nil }
+        settleOwed()
+        return o.quiet
+    }
+
+    private func settleOwed() {
+        guard owed != nil else { return }
+        owed = nil
+        owedExpiry?.cancel()
+        owedExpiry = nil
+        onOwedSettled?()
+    }
+
     func add(_ host: TerminalHost, for key: Key) {
         hosts[key] = host
         if covered { host.setCovered(true) }
         host.onKeyPress = onKeyPress
+        host.takeOwedKeyboard = { [weak self] in self?.takeOwed(key) }
         host.onStopped = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
             self.hosts[key] = nil

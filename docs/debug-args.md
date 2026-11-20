@@ -158,6 +158,10 @@ builds.
   (`Features/Files/ShareTest.swift` lists the steps): `screen`, `styledScreen`, `all`, `styledAll`
   (each with `:bar:leading` or `:bar:trailing` to point at that edge), `selection`, `cancel`,
   `dismiss`, `wait:<s>`. Each sheet logs `SHARE_ITEM <text|file> <bytes> <path>`.
+- `-goTo anything|sessions|commands`: open the palette two seconds after the first tab shows,
+  as its key would; `-goToQuery <text>` types that text into it half a second later
+  (`Features/GoTo/GoToDebug.swift`); `-goToClose <seconds>` closes it again that long after it
+  opened, as Esc does. Use them with `-autoOpen zz-…` for a screenshot or a no-resize check.
 - `-panesTest '<step>;<step>…'`: run Arrange's commands on the tab on screen, two seconds apart,
   through the same paths as the menu and the keys (`Features/Tab/PanesTest.swift`): `swap`,
   `moveTo:<n>`, `newTab`, `balance`, `closeOthers` (confirmed), `tab:+1`, `tab:-1`, `dragTab:<gap>`,

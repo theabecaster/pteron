@@ -154,6 +154,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var uncoverRelayout: DispatchWorkItem?
     /// Called for every hardware key press that reaches the pane.
     var onKeyPress: (() -> Void)?
+    /// The keyboard the palette owes this pane, taken once (`TerminalHostPool.owe`): whether
+    /// quietly, or nil when none is owed here.
+    var takeOwedKeyboard: (() -> Bool?)?
+    /// A key ran a Lua or block action here (name, title). Returns what to call when its
+    /// `client.action` answers. The palette keeps the run, so a question it asks shows here.
+    var onServerRun: ((String, String) -> (@MainActor (Bool) -> Void)?)?
     /// The view let go of its stream for good (see `TerminalHostPool`).
     var onStopped: (() -> Void)?
 
@@ -841,16 +847,40 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .promptNext:
             term.scrollToPrompt(next: true)
         case .server(let name, let args):
-            stream.perform(action: name, args: args) { [weak self] queued in
+            let ended = onServerRun?(name, keymap?.title(forAction: name) ?? name)
+            stream.perform(action: name, args: args, ended: ended) { [weak self] queued in
                 // A configuration-file action may ask this client to perform its own actions.
-                for q in queued {
-                    guard let n = q.str("action"), let a = AppAction.resolve(n, q.obj("args"), panes: self?.keymap?.panes ?? .none) else { continue }
-                    if case .server = a { continue }
-                    self?.perform(a, press: nil)
-                }
+                self?.performQueued(queued)
             }
         case .forwardKey:
             if let press { stream.forward(key: KeyInput.clientKeyEvent(press)) }
+        }
+    }
+
+    /// Performs the client actions an action asked for (`rex.client.queue`), as their keys would.
+    /// Returns how many it skipped: names it doesn't know, and server actions.
+    @discardableResult
+    private func performQueued(_ queued: [JSONObject]) -> Int {
+        var skipped = 0
+        for q in queued {
+            guard let n = q.str("action"), let a = AppAction.resolve(n, q.obj("args"), panes: keymap?.panes ?? .none) else {
+                skipped += 1
+                continue
+            }
+            if case .server = a { skipped += 1; continue }
+            perform(a, press: nil)
+        }
+        return skipped
+    }
+
+    /// Runs a Lua or block action on this pane from the palette (`origin: palette`): behind the
+    /// keys typed before it, never later than now (`TerminalStream.perform`). `ended` hears how
+    /// its `client.action` ended; `skipped` how many of the client actions it asked for this app
+    /// doesn't have.
+    func runFromPalette(_ name: String, args: JSONObject?, title: String,
+                        ended: @escaping @MainActor (Bool) -> Void, skipped: @escaping @MainActor (Int) -> Void) {
+        stream.perform(action: name, args: args, origin: .palette, title: title, ended: ended) { [weak self] queued in
+            skipped(self?.performQueued(queued) ?? 0)
         }
     }
 
@@ -904,7 +934,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         guard isActive, window != nil, !term.isFirstResponder, findFieldHoldingKeyboard == nil else { return }
         // Later: the view may still be on its way into the window, or the app into the foreground.
         DispatchQueue.main.async { [weak self] in
-            guard let self, KeyboardFocusPolicy.takesKeyboard(self.keyboardSituation) else { return }
+            guard let self else { return }
+            // The palette showed this pane with the keyboard up: it takes it, as it was.
+            if self.isActive, self.window != nil, !self.term.isFirstResponder, !self.covered,
+               !KeyboardFocusPolicy.sheetUp(in: self.window), let quiet = self.takeOwedKeyboard?() {
+                self.setKeyboardQuiet(quiet)
+                _ = self.term.becomeFirstResponder()
+                return
+            }
+            guard KeyboardFocusPolicy.takesKeyboard(self.keyboardSituation) else { return }
             if afterMove, !self.moveRetakes.allows(at: CACurrentMediaTime()) {
                 // The layout keeps moving this pane as it takes the keyboard: leave the keyboard down.
                 self.movedWithKeyboardAt = -10

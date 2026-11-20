@@ -358,6 +358,94 @@ final class StreamInputTests: XCTestCase {
         XCTAssertFalse(s.control.inputActivity.busy)
     }
 
+    // MARK: Picked from the palette
+
+    private func palette(_ s: TerminalStream, _ name: String = "dev_layout", ended: (@MainActor (Bool) -> Void)? = nil) {
+        s.perform(action: name, args: nil, origin: .palette, title: "Dev Layout", ended: ended) { _ in }
+    }
+
+    func testAPalettePickSaysSoAndKeepsItsPlaceBehindKeys() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        var ended: [Bool] = []
+        palette(s) { ended.append($0) }
+        s.send(text: "b")
+        await settle()
+        XCTAssertEqual(link.inputTrace, ["w:a"], "it waits behind the keys typed before it")
+        link.held = []
+        link.release()
+        _ = await eventually { link.inputTrace.count == 3 }
+        XCTAssertEqual(link.inputTrace, ["w:a", "client.action", "w:b"])
+        let call = link.calls.first { $0.method == "client.action" }
+        XCTAssertEqual(call?.payload.str("origin"), "palette")
+        XCTAssertEqual(call?.payload.str("action"), "dev_layout")
+        XCTAssertEqual(ended, [true])
+        XCTAssertEqual(notices, [])
+    }
+
+    func testAKeyStillSaysKey() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        action(s, "dev_layout")
+        _ = await eventually { link.count("client.action") == 1 }
+        XCTAssertEqual(link.calls.first { $0.method == "client.action" }?.payload.str("origin"), "key")
+    }
+
+    func testAPalettePickWithoutAConnectionFailsAtOnceAndNeverRunsLater() async {
+        let link = FakeLink(connected: false)
+        let (s, _) = stream(link)
+        var ended: [Bool] = []
+        palette(s) { ended.append($0) }
+        XCTAssertEqual(notices, ["Didn't run Dev Layout: the connection dropped."], "at once, in the same turn")
+        XCTAssertEqual(ended, [false])
+        link.connect()
+        await settle()
+        XCTAssertEqual(link.count("client.action"), 0)
+    }
+
+    func testAPalettePickThatNeverLeftIsDroppedNotQueued() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.failures["client.action"] = [RexError.unsent("not connected")]
+        var ended: [Bool] = []
+        palette(s) { ended.append($0) }
+        s.send(text: "x")
+        _ = await eventually { link.written == ["x"] }
+        await settle()
+        XCTAssertEqual(link.inputTrace, ["w:x"], "never sent later")
+        XCTAssertEqual(notices, ["Didn't run Dev Layout: the connection dropped."])
+        XCTAssertEqual(ended, [false])
+    }
+
+    func testARefusedPalettePickNamesItsTitle() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.failures["client.action"] = [RexError(code: "not_found", message: "no such action", status: 404)]
+        palette(s)
+        _ = await eventually { !self.notices.isEmpty }
+        XCTAssertEqual(notices, ["Couldn't run Dev Layout. no such action"])
+    }
+
+    func testAPalettePickWhoseAnswerWasLostEndsQuietly() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = ["client.action"]
+        var ended: [Bool] = []
+        palette(s) { ended.append($0) }
+        _ = await eventually { link.waitingCount == 1 }
+        link.held = []
+        link.disconnect()
+        _ = await eventually { !ended.isEmpty }
+        XCTAssertEqual(ended, [false])
+        link.connect()
+        await settle()
+        XCTAssertEqual(link.inputTrace, ["client.action"], "never sent again")
+        XCTAssertEqual(notices, [])
+    }
+
     func testAStreamThatGoesWithoutStopTakesItsInputOut() async {
         let link = FakeLink(connected: false)
         var made: TerminalStream? = makeStream(link: link, sink: Sink()).0

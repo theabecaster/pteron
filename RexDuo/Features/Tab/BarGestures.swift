@@ -22,6 +22,8 @@ struct TabTitleBar: View {
     let onOverview: @MainActor () -> Void
     let onNewTab: () -> Void
     let onRename: @MainActor () -> Void
+    /// Opens Go to Anything on this tab.
+    let onGoTo: @MainActor () -> Void
 
     @State private var dx: CGFloat = 0
     @State private var width: CGFloat = 200
@@ -50,7 +52,7 @@ struct TabTitleBar: View {
                     onPick: { sel in
                         onPick(sel)
                     },
-                    onOverview: onOverview, onNewTab: onNewTab, onRename: onRename)
+                    onOverview: onOverview, onNewTab: onNewTab, onRename: onRename, onGoTo: onGoTo)
                 .presentationCompactAdaptation(.popover)
         }
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -62,6 +64,7 @@ struct TabTitleBar: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { showMenu = true }
+        .accessibilityAction(named: "Go to Anything") { onGoTo() }
         .accessibilityHint("Shows this session's tabs. Swipe up or down for the next or previous tab.")
         .accessibilityAdjustableAction { d in onSwipe(d == .increment ? 1 : -1) }
     }
@@ -143,7 +146,7 @@ struct TabTitleBar: View {
     }
 }
 
-/// The title menu: the session's tabs, then All Tabs, New Tab and Rename.
+/// The title menu: the session's tabs, then All Tabs, Go to Anything, New Tab and Rename.
 struct TabMenu: View {
     let server: ServerConnection
     let sessionID: String
@@ -155,6 +158,7 @@ struct TabMenu: View {
     let onOverview: @MainActor () -> Void
     let onNewTab: () -> Void
     let onRename: @MainActor () -> Void
+    let onGoTo: @MainActor () -> Void
 
     var body: some View {
         let v = server.views[sessionID]
@@ -195,6 +199,10 @@ struct TabMenu: View {
             .frame(maxHeight: min(CGFloat(max(windows.count, 1)) * 44, 264))
             Divider().overlay(theme.chrome.divider)
             row("All Tabs", "square.on.square") { later(onOverview) }
+            // After the menu has closed, so the palette's field can take the keyboard.
+            row("Go to Anything…", "magnifyingglass", key: KeyLabel.for(action: "pane.go_to", in: server.keymap)) {
+                later(onGoTo)
+            }
             row("New Tab", "plus.square") { close(); onNewTab() }
             row("Rename Tab…", "pencil") { later(onRename) }
             Divider().overlay(theme.chrome.divider)
@@ -218,12 +226,17 @@ struct TabMenu: View {
         }
     }
 
-    private func row(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+    private func row(_ title: String, _ symbol: String, key: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: symbol).frame(width: 22)
                 Text(title)
                 Spacer()
+                if let key {
+                    Text(key)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(theme.chrome.tertiary)
+                }
             }
             .font(.body)
             .padding(.horizontal, 16)

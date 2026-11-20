@@ -61,6 +61,8 @@ struct WindowScreen: View {
     /// Direction of the last pane switch, for the slide transition.
     @State private var forward = true
     @State private var keyboardUp = false
+    /// Whether the keyboard is up now, also while the palette holds `keyboardUp`. Not drawn.
+    @State private var liveKeyboard = LiveKeyboard()
     @State private var showOverview = false
     @State private var confirm: Confirm?
     /// Move Pane to Tab… from its key: the tabs to pick from.
@@ -158,14 +160,23 @@ struct WindowScreen: View {
             // Duo) has another height and place. The key bar alone (hardware keyboard) is shorter.
             let covered = (n.object as? UIScreen).map { f.intersection($0.bounds).height } ?? f.height
             let up = covered > 150
+            liveKeyboard.up = up
+            // The palette keeps the tab as it was while it is open (`PadHold`).
+            if model.palette.padHold.active { return }
             if up != keyboardUp { keyboardUp = up }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            liveKeyboard.up = false
+            if model.palette.padHold.active { return }
             if keyboardUp { keyboardUp = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: PadHold.ended)) { _ in
+            if keyboardUp != liveKeyboard.up { keyboardUp = liveKeyboard.up }
         }
         .onChange(of: bookFits, initial: true) { _, fits in onBookFits(fits) }
         #if DEBUG
         .onAppear { PanesTest.run(panesTestActions) }
+        .onAppear { GoToDebug.launch(model) }
         #endif
     }
 
@@ -534,8 +545,15 @@ struct WindowScreen: View {
         case .moveToTab: chooseMoveTarget()
         case .moveToNewTab: moveToNewTab()
         case .moveTab(let d): moveTab(by: d)
+        case .goTo(let scope): openGoTo(scope, w)
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
         }
+    }
+
+    /// Opens the palette on this tab's active pane: its commands and actions run there.
+    private func openGoTo(_ scope: GoToScope, _ w: WindowInfo) {
+        model.palette.open(scope, target: GoToTarget(serverID: server.id, sessionID: sessionID, windowID: windowID,
+                                                     blockID: activeBlock(w), canZoom: canZoom(w)))
     }
 
     // MARK: Title bar
@@ -601,6 +619,11 @@ struct WindowScreen: View {
         .padding(.trailing, 4)
         .background(theme.chrome.canvas)
         .animation(.snappy(duration: 0.2), value: zoomedHere)
+        // The palette opens just below the title bar: where it ends, read at open.
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { [palette = model.palette] in
+            palette.titleBarBottom = $0
+        }
+        .onDisappear { [palette = model.palette] in palette.titleBarBottom = nil }
     }
 
     private func titleBar(_ w: WindowInfo, _ theme: TermTheme, subtitle showsSubtitle: Bool) -> some View {
@@ -610,7 +633,8 @@ struct WindowScreen: View {
                     onPick: { Haptic.selection(); onOpen($0) },
                     onOverview: { openOverview() },
                     onNewTab: { newTab() },
-                    onRename: { rename() })
+                    onRename: { rename() },
+                    onGoTo: { if let w = window { openGoTo(.anything, w) } })
     }
 
     /// Session name, plus the server's name when more than one server is set up.
@@ -1026,6 +1050,13 @@ struct WindowBadge: View {
 }
 
 // MARK: - Small pieces
+
+/// The keyboard's state as last reported, kept outside SwiftUI's state so writing it draws
+/// nothing (`WindowScreen.liveKeyboard`).
+@MainActor
+final class LiveKeyboard {
+    var up = false
+}
 
 /// A 44 pt wide icon button for headers and bars, 44 pt tall unless a thin bar asks for less.
 struct IconButton: View {

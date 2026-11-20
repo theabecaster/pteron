@@ -35,7 +35,12 @@ enum KeyboardFocusPolicy {
 
     /// The app's own fields beside find's. Later surfaces (the palette, the file browser's
     /// search) add their kind here and their `runsAppShortcut` answer.
-    enum AppFieldKind: Equatable {}
+    enum AppFieldKind: Equatable {
+        /// The palette's search field (`PaletteField`). No pane takes the keyboard from it, and
+        /// no menu key runs while it edits: the palette's own keys reach it through
+        /// `AppShortcutCommands`, which hands them to the palette first.
+        case palette
+    }
 
     struct Situation: Equatable {
         /// The pane is the tab's active pane.
@@ -58,7 +63,7 @@ enum KeyboardFocusPolicy {
         guard s.paneActive, s.inWindow, s.appActive, !s.holdsKeyboard, !s.sheetUp else { return false }
         switch s.holder {
         case .textInput: return false
-        case .appField(let kind): switch kind {}
+        case .appField(let kind): switch kind { case .palette: return false }
         // The keyboard follows the active pane, hardware or not: no other pane may keep it,
         // in its terminal or in its find field.
         case .terminal, .findField: return true
@@ -83,7 +88,7 @@ enum KeyboardFocusPolicy {
         guard !sheetUp else { return false }
         switch holder {
         case .textInput: return false
-        case .appField(let kind): switch kind {}
+        case .appField(let kind): switch kind { case .palette: return false }
         case .nobody, .terminal, .findField, .other: return true
         }
     }
@@ -114,6 +119,7 @@ enum KeyboardFocusPolicy {
         guard let responder else { return .nobody }
         if responder === own || ownFields.contains(where: { $0 === responder }) { return .nobody }
         if responder is FindField { return .findField }
+        if responder is PaletteField { return .appField(.palette) }
         // The terminal view may decline unknown actions, so a focused terminal can report its host.
         if responder is GhosttyTerminalView || responder is TerminalHost { return .terminal }
         if responder is any UIKeyInput { return .textInput }
