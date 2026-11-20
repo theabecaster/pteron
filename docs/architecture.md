@@ -13,6 +13,7 @@ The app and its extension both use `Packages/RexGlance`, which uses nothing of o
 | `RexDuo/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
 | `Packages/RexGlance` (`GlanceModel`) | what the app shares with its extensions: the links that open the app (`DeepLink`, `PaneLink`), the snapshot of the agents and everything decided from it (`GlanceSnapshot`, `GlanceSummary`, `GlanceSince`, `GlanceFreshness`, `GlanceDigest`, `WriteThrottle`, `GlanceStore`) | import anything but Foundation (no RexKit, no SwiftUI) |
 | `Packages/RexGlance` (`GlanceUI`) | what the widgets draw with: colors from a snapshot's palette, the ring, the type | import anything but SwiftUI and `GlanceModel` (no WidgetKit, no UIKit, so a watch target can use it) |
+| `RexDuoWatch`, `RexDuoWatchWidgets` (watch app and its extension) | the agents on the wrist, view-only: the snapshot the phone sent, the complications ([glance.md](glance.md), The watch) | import RexKit, app code or the engine; connect to anything; send anything to the phone |
 | `RexDuoWidgets` (app extension) | the agents widget (Home Screen and Lock Screen), the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; connect to anything; write the snapshot (it only reads it) |
 
 `Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
@@ -49,8 +50,10 @@ Three things from outside put a tab on screen, and all end in `AppModel.openRequ
   rules in `OpenPaneLink`.
 
 Targets (`project.yml`): `RexDuo` (the app; it embeds `RexDuoWidgets`, so every build and test
-of the app builds the extension), `RexDuoWidgets`, `RexDuoTests` (which also compiles the
-widgets' views, `RexDuoWidgets/Views`, to draw them).
+of the app builds the extension, and `RexDuoWatch`, which embeds `RexDuoWatchWidgets`),
+`RexDuoWidgets`, `RexDuoTests` (which also compiles the widgets' views, `RexDuoWidgets/Views`,
+to draw them), and `RexDuoWatchTests` (the watch app's tests, in the scheme `RexDuoWatch`, on a
+watchOS simulator).
 
 ## Launch
 
@@ -86,6 +89,9 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   and tells the writer that something changed. `WriteThrottle` turns that into writes and into
   reloads of the widgets' timeline. Going to the background writes once more, inside a
   `BackgroundTask`.
+- **On to the watch.** The writer hands each written snapshot to `GlanceBridge` (owned by
+  `AppModel`), which sends it over WatchConnectivity when `WatchDelivery` says so. On the
+  watch, `WatchInbox` is the one writer of the watch's own copy. Nothing comes back.
 - **Off** in the test host and in every test launch (`GlanceWriter.Mode`), so made-up or
   throwaway state never replaces what the widgets know.
 

@@ -1,8 +1,8 @@
 # Glance surfaces
 
 What the app offers outside its own window: the agents widget on the Home Screen and the Lock
-Screen, two controls, and the links they open the app with. A watch app comes later and adds
-its part here.
+Screen, two controls, the links they open the app with, and a watch app that shows the same
+agents on the wrist.
 
 ## The agents widget
 
@@ -195,6 +195,199 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
 `Provider.swift` (the timeline), `Demo.swift` (the gallery), `Views/` (the families and
 `GlanceStyle`; compiled into the app's tests too, which draw every size, state and mode:
 `GlanceRenderTests`). Everything the views show is decided in `GlanceDigest`, which is pure.
+
+## The watch
+
+A watch app, `RexDuoWatch` (bundle id `dev.abrahamgonzalez.rexduo.watchkitapp`), and its
+complications, `RexDuoWatchWidgets` (`….watchkitapp.widgets`). From the wrist: who needs you,
+where, and for how long, as the iPhone app last saw it.
+
+- **It only shows.** There is no button, no input and no action: nothing on the watch answers
+  an agent, interrupts one or touches a session. A row opens its detail screen, and that is all.
+- **It connects to nothing.** A watch can't reach a Rex server (there is no Tailscale for
+  watchOS), so everything it knows is the snapshot the phone's app sent. It can't run without
+  the iPhone app (`WKRunsIndependentlyOfCompanionApp` is false).
+- **Nothing goes from the watch to the phone.** No message, no request for a refresh: the
+  watch can never wake the phone or the app.
+- **No settings** on either device, and the iPhone app shows nothing about the watch.
+
+### From the phone to the watch
+
+```
+GlanceWriter (writes the phone's file)
+   └─ each written snapshot, with the file's bytes ─▶ GlanceBridge ─ WatchDelivery decides ─▶ WCSession
+                                                                                                 │
+watch:  WatchSession (delegate) ─▶ WatchInbox decides ─▶ the watch's glance/snapshot.json ◀──────┘
+                                        └─ replaced ─▶ WatchReload (complications) and WatchModel (the app)
+```
+
+- **`GlanceBridge`** (`RexDuo/State/GlanceBridge.swift`, owned by `AppModel`) is given each
+  snapshot the writer writes, with the bytes that went to the file, and sends them on as
+  `["s": <bytes>]`. It knows nothing of `AppModel` or the servers, and handles no message from
+  the watch.
+- **The session is made and activated at the first written snapshot**, not at launch, and
+  without asking anything first (its properties hold real values only after activation). A
+  launch that writes nothing (the test host, a test launch, a launch that never reaches the
+  screen) never touches WatchConnectivity.
+- **Before each send** it checks that the session is activated, a watch is paired and the
+  watch app is installed. Otherwise nothing is sent, and nothing counts as sent.
+- **When the session opens** (activation ends, the watch app gets installed, or the person
+  switched watches and the session was activated again) the newest snapshot goes once, so a
+  new watch app has the state at once.
+- **`WatchDelivery`** (GlanceModel, pure) decides what goes, since every delivery can wake the
+  watch:
+
+  | | |
+  |---|---|
+  | A change in who waits | `updateApplicationContext` at once, and the next no sooner than 30 s after the last delivery |
+  | Any other change (counts, a link, a color) | no sooner than 60 s after the last delivery |
+  | Nothing new to show | nothing |
+  | While the app watches and nothing changes | the 15 min restamp, so "as of" doesn't age |
+  | The app goes to the background | a change still held goes now, inside the same background task as the file's last write |
+  | The count of waiting agents changed, a complication is on a face, and the day's budget has transfers left | also `transferCurrentComplicationUserInfo`, which the system delivers ahead of the queue |
+
+- **The worst case** is 120 deliveries an hour (one each 30 s), and only while the iPhone app
+  is in front and who waits changes all the time; counts that change without a change in who
+  waits make 60 an hour; an app that is open and quiet makes 4 an hour; a closed or suspended
+  app makes none. A delivery is 1 to 4 KB. The system keeps only the newest application
+  context, and hands it to a watch app that isn't running when it sees fit. Complication
+  transfers are at most 50 a day, by the system's budget.
+- **`WatchSession`** (the watch's delegate) hands each payload to **`WatchInbox`** (GlanceModel,
+  pure), the one writer of the watch's `glance/snapshot.json`, in the watch's own container of
+  the same App Group. The bytes are written as they arrived. Which payload wins:
+
+  | Arrived | Kept on the watch | |
+  |---|---|---|
+  | not a snapshot | anything | dropped |
+  | a higher `v` than the watch app reads | anything | written; the watch shows its placeholder |
+  | a snapshot | nothing, or a file it can't read | written |
+  | a snapshot | dated over 2 min in the watch's future (the phone's clock went back) | written |
+  | a higher `seq` | a snapshot | written |
+  | the same or a lower `seq` | a snapshot | written only when its `asOf` is later (the app was installed anew and its count started again); else dropped, as late or as the same snapshot delivered twice (a context and a complication transfer) |
+  | no `seq` on either side | a snapshot | written when its `asOf` is later |
+
+- **After a write** the watch reloads its complications' timeline (`WatchReload`, the one
+  call) and the open app reads the file again.
+- **While the watch app isn't open**, the system starts it in the background for a delivery
+  (`.backgroundTask(.watchConnectivity)`), and the task stays until the session has nothing
+  more to hand over, 10 s at most (`WatchDrain`). The watch app asks for no background time of
+  its own: no refresh schedule, no extended session, no background mode.
+- **The phone away, asleep, or the app closed:** the watch keeps the last snapshot and dates
+  it. It never claims to be current: under 2 min it shows as is, then "as of 12:04", and after
+  an hour everything dims with "Open Pteron on iPhone to refresh" (`GlanceFreshness`, the
+  widgets' rule). The open app works its screen out again at those moments by itself.
+- **Versions.** The widgets' rule holds: the watch app ignores fields it doesn't know (and
+  keeps them on disk), reads a file from an older phone app that lacks later fields, and
+  shows "Open Pteron on iPhone" for a higher `v`.
+
+### What it shows
+
+`WatchScreen` (GlanceModel, pure) is built from the widgets' `GlanceDigest`, so the watch
+counts, orders, dates and dims as they do.
+
+| Snapshot | The watch app |
+|---|---|
+| none yet, one it can't read, or a higher `v` | the mark and "Open Pteron on iPhone" |
+| no servers | "No machines paired" |
+| agents | the headline ("2 need you"), the machine line when there are several, the age when there is one; the waiting agents, the longest wait first: ring, name, "Needs permission" (the sidebar's words), "12 minutes", place; "+N more"; then one row of counts per machine |
+| a machine that was down at the write | its agents dimmed and last, with no running wait time; the headline says "Last seen 12:04" |
+| over an hour old | everything dimmed, no running wait times, "Open Pteron on iPhone to refresh" |
+
+- **A row's detail screen:** the ring, the name, what it waits for and for how long, what it
+  asks, its place and its machine, and "Answer on your iPhone or computer". If the agent stops
+  waiting while the screen is open, it says "No longer waiting".
+- **Complications and the Smart Stack** (kind `dev.abrahamgonzalez.rexduo.widget.agents`):
+
+  | Family | Shows |
+  |---|---|
+  | `accessoryCircular` | a raised hand over the waiting count; else the mark over the working count in an arc; else the mark |
+  | `accessoryCorner` | the count with "needs you", "need you" or "working" curved beside it; else the mark |
+  | `accessoryRectangular` (also the Smart Stack) | "2 need you"; "Claude · api › tests"; "waiting 12 minutes" or the age |
+  | `accessoryInline` | "2 need you · 3 working" |
+
+  The circular, rectangular and inline families are the iPhone Lock Screen's views and the
+  timeline is the iPhone widget's (`RexDuoWidgets/Views`, `Provider.swift`), compiled into the
+  watch extension as they are. A tap opens the watch app.
+- **In the Smart Stack** an entry in which an agent waits on a connected machine, in a
+  snapshot under an hour old, has a relevance score (the number waiting, 10 at most); every
+  other entry has none (`GlanceDigest.relevance`). It only orders the stack.
+
+### Calm, on the watch
+
+`CalmRuleTests` reads the watch's sources too:
+
+- **No sound, no haptic, no notification** from the watch app or its complications, and no
+  Live Activity. (A push from Beacon still mirrors to the watch as iOS does it; this app adds
+  nothing to that.)
+- **No motion of its own.** The rings are still, on the detail screen too.
+- **Nothing to press** but a row: no button, field, toggle, gesture, alert or intent.
+- **Nothing is sent to the phone**, and the watch app opens no connection.
+- **No prompt on the iPhone:** the app never mentions the watch.
+- **One reload call** on the watch, only after a delivery replaced the file.
+- **A stale watch is quiet:** dimmed, a small line in the secondary color, no warning color,
+  and nothing raised in the Smart Stack.
+- **The delivery rate is bounded** as above.
+
+### Privacy on the wrist
+
+- **What an agent asks is not shown with the wrist down.** While the screen is dimmed
+  (`isLuminanceReduced`), the detail screen leaves the message out altogether
+  (`WatchScreen.Row.message(wristDown:)`).
+- **Names, places, machines' names and the message are `privacySensitive()`**, in the app and
+  in the complications: the system redacts them where it asks for privacy (a dimmed
+  always-on screen, a locked watch).
+- **A complication asked to be private carries counts only:** it is built without any name or
+  place (`GlanceDigest.accessory(private:)`), and no complication ever carries a message.
+- **The file** holds what the phone's does, protected until the first unlock after a restart.
+  It holds no server address, token or secret, and it stays on the watch.
+- How the system redacts on a real watch (wrist down with Always On, locked) has not been seen
+  on a device yet.
+
+### Design
+
+- **Colors:** the theme chosen for Dark Mode when it is a dark theme, else the default dark
+  theme (`WatchScreen.palette`), over the watch's black. Row platters are the sidebar color at
+  90%. State has the board's colors and always its words.
+- **Type:** the system's text styles (`.title3` bold for the headline, `.headline` for names,
+  `.footnote` semibold for state words, `.caption2` for places), which follow the person's
+  text size; rows wrap.
+- **Rings:** `GlanceRing`, 28 pt in a row and 44 pt on the detail screen.
+- **Native:** a `NavigationStack` and a `List`; the app's name is the title beside the clock.
+  Double Tap is not claimed.
+- **Complications** take the watch face's tint (`widgetAccentable` on the count and the first
+  line). On a face in full color the count takes the waiting color while someone waits.
+- **The icon** is the app's (`Brand/AppIcon.icon`).
+
+### Files and tests
+
+- `RexDuoWatch/`: `RexDuoWatchApp.swift`, `WatchSession.swift` (the delegate and the
+  background task), `WatchModel.swift`, `WatchReload.swift`, `WatchDemo.swift`, `Views/`.
+- `RexDuoWatchWidgets/`: the bundle, the widget and the corner view.
+- `RexDuo/State/GlanceBridge.swift`: the bridge and `WCSessionLink`, the system's session.
+- GlanceModel: `WatchDelivery`, `WatchInbox` (with `WatchPayload`, `WatchDrain`), `WatchScreen`
+  (with `WatchText`), each with tests that run on macOS.
+- `GlanceBridgeTests` (the app's tests) runs the bridge against a stand-in session.
+- `RexDuoWatchTests` runs in the watch app on a watchOS simulator (scheme `RexDuoWatch`):
+  the model, and `WatchRenderTests`, which draws the list, the detail screen and every
+  complication family in every state into the test host's `tmp/watch-renders`.
+
+```sh
+xcodebuild -project RexDuo.xcodeproj -scheme RexDuoWatch -destination id=<watch-sim-id> \
+  -derivedDataPath build/dd-watch test
+xcrun simctl install <watch-sim-id> build/dd-watch/Build/Products/Debug-watchsimulator/RexDuoWatch.app
+xcrun simctl launch <watch-sim-id> dev.abrahamgonzalez.rexduo.watchkitapp -glanceDemo several
+```
+
+- The watch app takes `-glanceDemo <scenario>` (Debug builds) as the iPhone app does: it puts
+  that made-up snapshot in the watch's own file. `-glanceDetail YES` with it opens on the
+  first waiting agent's screen.
+- The iPhone app's `-glanceDemo` also sends its scenario to a paired watch simulator. A Debug
+  build logs `GLANCE_WATCH seq=<n> complication=<0|1>` for each delivery (`GLANCE_WATCH demo
+  bytes=<n>` for a demo) and `GLANCE_WATCH <event> activated=… paired=… installed=…` for each
+  change of the session. Between two simulators the session can take a minute or two to
+  activate after a launch, and reports the watch app as installed a little after that.
+- A watchOS simulator runtime is needed to run the watch app and its tests, not to build
+  them. Delete a paired watch simulator a test made (`xcrun simctl delete <id>`).
 
 ## Controls
 

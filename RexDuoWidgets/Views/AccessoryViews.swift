@@ -9,6 +9,8 @@ import WidgetKit
 /// asks for redaction (`GlanceDigest.accessory(private:)`). Counts always show.
 struct GlanceCircularView: View {
     let accessory: GlanceDigest.Accessory
+    /// The count's color where the system draws in full color (a watch face). Nil: as inherited.
+    var accent: Color?
     var symbols: Bundle = .main
 
     var body: some View {
@@ -29,6 +31,7 @@ struct GlanceCircularView: View {
                         .font(GlanceType.count)
                         .minimumScaleFactor(0.6)
                         .lineLimit(1)
+                        .modifier(GlanceAccent(color: accent))
                         .widgetAccentable()
                 }
                 .padding(.horizontal, 6)
@@ -52,6 +55,8 @@ struct GlanceCircularView: View {
 
 struct GlanceRectangularView: View {
     let accessory: GlanceDigest.Accessory
+    /// The first line's color where the system draws in full color (a watch face). Nil: as inherited.
+    var accent: Color?
     var symbols: Bundle = .main
 
     var body: some View {
@@ -64,6 +69,7 @@ struct GlanceRectangularView: View {
                 }
                 GlanceHeadline(headline: accessory.title).font(.system(size: 15, weight: quiet ? .regular : .bold)).monospacedDigit()
             }
+            .modifier(GlanceAccent(color: accent))
             .widgetAccentable()
             .opacity(accessory.dimmed || quiet ? 0.6 : 1)
             if let detail = accessory.detail {

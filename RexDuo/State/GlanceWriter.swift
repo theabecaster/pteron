@@ -48,6 +48,13 @@ final class GlanceWriter {
         var sleep: @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64(max($0, 0) * 1_000_000_000)) }
         /// Asks WidgetKit to draw the widgets again from the file.
         var reload: @MainActor () -> Void = {}
+        /// Given each snapshot as it is written, with the bytes that go to the file, and whether
+        /// the app is on its way to the background: what `GlanceBridge` sends on to the watch.
+        var wrote: @MainActor (GlanceSnapshot, Data, _ leaving: Bool) -> Void = { _, _, _ in }
+        #if DEBUG
+        /// Given the bytes of a `-glanceDemo` scenario.
+        var wroteDemo: @MainActor (Data) -> Void = { _ in }
+        #endif
     }
 
     let mode: Mode
@@ -118,7 +125,7 @@ final class GlanceWriter {
         await load()
         let snapshot = build()
         let step = throttle.background(now: parts.now(), key: snapshot.visibleKey)
-        await write(snapshot, to: file)
+        await write(snapshot, to: file, leaving: true)
         if step.reload { parts.reload() }
     }
 
@@ -137,8 +144,10 @@ final class GlanceWriter {
         let now = parts.now()
         if let snapshot = GlanceDemo.snapshot(name, now: now), let data = try? snapshot.encoded() {
             await file.replace(with: data)
+            parts.wroteDemo(data)
         } else {
             await file.replace(with: name == "newer" ? GlanceDemo.newerFile : nil)
+            if name == "newer" { parts.wroteDemo(GlanceDemo.newerFile) }
         }
         NSLog("GLANCE_DEMO %@", name)
         parts.reload()
@@ -189,7 +198,7 @@ final class GlanceWriter {
         GlanceSummary.snapshot(machines: source(), palette: palette(), previous: latest, seq: nil, now: parts.now())
     }
 
-    private func write(_ snapshot: GlanceSnapshot, to file: SnapshotFileWriter) async {
+    private func write(_ snapshot: GlanceSnapshot, to file: SnapshotFileWriter, leaving: Bool = false) async {
         var snapshot = snapshot
         seq += 1
         snapshot.seq = seq
@@ -200,6 +209,7 @@ final class GlanceWriter {
         NSLog("GLANCE_WRITE seq=%d bytes=%d", seq, data.count)
         #endif
         await file.write(data, seq: seq)
+        parts.wrote(snapshot, data, leaving)
     }
 }
 

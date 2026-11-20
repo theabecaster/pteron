@@ -42,6 +42,16 @@ struct Accented: ViewModifier {
     func body(content: Content) -> some View { content.widgetAccentable() }
 }
 
+/// Colors a view only when there is a color to give it: without one the view is left exactly
+/// as it was, with the style it inherits.
+struct GlanceAccent: ViewModifier {
+    let color: Color?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let color { content.foregroundStyle(color) } else { content }
+    }
+}
+
 /// The headline: "2 need you", or "Last seen 12:04".
 struct GlanceHeadline: View {
     let headline: GlanceDigest.Headline

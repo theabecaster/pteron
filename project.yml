@@ -5,6 +5,7 @@ options:
   bundleIdPrefix: dev.abrahamgonzalez
   deploymentTarget:
     iOS: "18.0"
+    watchOS: "11.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -46,6 +47,8 @@ targets:
       # The widgets and the controls. Embedded in the app (PlugIns), so every build and test of
       # the app builds it.
       - target: RexDuoWidgets
+      # The watch app. Embedded in the app (Watch), so every build of the app builds it too.
+      - target: RexDuoWatch
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
@@ -158,6 +161,94 @@ targets:
         INFOPLIST_FILE: RexDuoWidgets/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
+  # The watch app: a view of the agents, as the iPhone app last saw them (docs/glance.md, The
+  # watch). It shows the snapshot the phone sends over WatchConnectivity and connects to
+  # nothing itself, so it links neither RexKit nor GhosttyVt. It can't run without the iPhone app.
+  RexDuoWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: RexDuoWatch
+      # The same icon as the app's.
+      - path: Brand/AppIcon.icon
+      # The mark, for the screen that has nothing to list.
+      - path: RexDuoWidgets/Assets.xcassets
+    dependencies:
+      - package: RexGlance
+        product: GlanceModel
+      - package: RexGlance
+        product: GlanceUI
+      - target: RexDuoWatchWidgets
+    # The App Group on the watch: where the watch app writes the snapshot it was sent and its
+    # complications read it. The same id as on the phone; a container is per device.
+    entitlements:
+      path: RexDuoWatch/RexDuoWatch.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.dev.abrahamgonzalez.rexduo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.watchkitapp
+        PRODUCT_NAME: RexDuoWatch
+        TARGETED_DEVICE_FAMILY: "4"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: RexDuoWatch/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+  # The watch's complications and its Smart Stack widget. They read the snapshot from the
+  # watch's App Group. The circular, rectangular and inline families are the iPhone Lock
+  # Screen's views, and the timeline is the iPhone widget's: the same files, compiled here too.
+  RexDuoWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: RexDuoWatchWidgets
+      - path: RexDuoWidgets/Views/AccessoryViews.swift
+      - path: RexDuoWidgets/Views/GlanceStyle.swift
+      - path: RexDuoWidgets/Provider.swift
+      - path: RexDuoWidgets/Demo.swift
+      - path: RexDuoWidgets/Assets.xcassets
+    dependencies:
+      - package: RexGlance
+        product: GlanceModel
+      - package: RexGlance
+        product: GlanceUI
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    entitlements:
+      path: RexDuoWatchWidgets/RexDuoWatchWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.dev.abrahamgonzalez.rexduo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.watchkitapp.widgets
+        PRODUCT_NAME: RexDuoWatchWidgets
+        TARGETED_DEVICE_FAMILY: "4"
+        INFOPLIST_FILE: RexDuoWatchWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+  # The watch app's tests: its model, and every screen and complication drawn in every state.
+  # They run in the watch app on a watchOS simulator, through the scheme RexDuoWatch.
+  RexDuoWatchTests:
+    type: bundle.unit-test
+    platform: watchOS
+    sources:
+      - path: RexDuoWatchTests
+      # The complications' views, which the tests draw.
+      - path: RexDuoWatchWidgets/WatchGlanceWidget.swift
+      - path: RexDuoWidgets/Views/AccessoryViews.swift
+      - path: RexDuoWidgets/Views/GlanceStyle.swift
+      - path: RexDuoWidgets/Provider.swift
+      - path: RexDuoWidgets/Demo.swift
+    dependencies:
+      - target: RexDuoWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.watchkitapp.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexDuoWatch.app/RexDuoWatch"
+        BUNDLE_LOADER: "$(TEST_HOST)"
   # Pure app logic (keymap, key encoding, layout math, prefs). Runs inside the app, which doesn't
   # connect while it hosts tests. Protocol tests live in Packages/RexKit (`swift test`).
   RexDuoTests:
@@ -189,5 +280,19 @@ schemes:
       config: Debug
       targets:
         - RexDuoTests
+    archive:
+      config: Release
+  # The watch app by itself, for a watchOS simulator: `build` builds it, `test` runs RexDuoWatchTests.
+  RexDuoWatch:
+    build:
+      targets:
+        RexDuoWatch: all
+        RexDuoWatchTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - RexDuoWatchTests
     archive:
       config: Release

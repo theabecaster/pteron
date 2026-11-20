@@ -310,6 +310,8 @@ final class AppModel {
     /// Writes the snapshot the widgets read. It does nothing in tests, the test host and test
     /// launches (`GlanceWriter.Mode`).
     @ObservationIgnored let glance: GlanceWriter
+    /// Sends each written snapshot on to the watch. It only sends, and knows nothing of this model.
+    @ObservationIgnored let bridge: GlanceBridge
 
     /// `connect: false` builds no servers (unit tests and the test host). With `connect`, the
     /// servers are built here and none is started: `sceneVisible()` starts them. `glance`: the
@@ -319,7 +321,14 @@ final class AppModel {
         let mode = connect ? GlanceWriter.Mode.current() : .off
         // The App Group's container is looked up at the writer's first read or write, off the
         // main thread, not here on the launch path.
-        self.glance = glance ?? GlanceWriter(mode: mode, parts: .init(reload: GlanceReload.all)) { GlanceStore.shared() }
+        // The session with the watch is made at the first written snapshot, not here.
+        let bridge = GlanceBridge { WCSessionLink() }
+        self.bridge = bridge
+        var parts = GlanceWriter.Parts(reload: GlanceReload.all, wrote: bridge.wrote)
+        #if DEBUG
+        parts.wroteDemo = bridge.wroteDemo
+        #endif
+        self.glance = glance ?? GlanceWriter(mode: mode, parts: parts) { GlanceStore.shared() }
         // One fetcher for the release list: the installs use it, and so does the one check that
         // tells every computer's row which Beacon version is the latest.
         let fetcher = HelperReleaseFetcher.standard()

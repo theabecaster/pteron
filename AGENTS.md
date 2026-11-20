@@ -47,9 +47,15 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   Waiting") for Control Center, the Lock Screen and the Action button, which only open the app
   with a link; `OpenLinkIntent.swift` there is compiled into the app as well, where the system
   runs it. `Views/` is compiled into the app's tests too, which draw every size and state.
+- `RexDuoWatch`: the watch app, view-only: the agents as the iPhone app last saw them, from
+  the snapshot the phone sends (docs/glance.md, The watch). It connects to nothing and sends
+  nothing. `RexDuoWatchWidgets`: its complications and Smart Stack widget, which reuse the
+  Lock Screen views and the timeline of `RexDuoWidgets`. `RexDuoWatchTests`: their tests, run
+  on a watchOS simulator with the scheme `RexDuoWatch`.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
-  `GlanceWriter` (the snapshot's one writer), `ScenePhases` (what each scene phase asks; servers
+  `GlanceWriter` (the snapshot's one writer), `GlanceBridge` (sends each written snapshot to the
+  watch), `ScenePhases` (what each scene phase asks; servers
   start at the first one that shows the app).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math),
@@ -89,7 +95,9 @@ xcrun simctl list devices available       # pick a simulator id
 xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<sim-id> \
   -derivedDataPath build/dd build         # `test` instead of `build` runs RexDuoTests (~1 min)
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS, ~15 s
-swift test --package-path Packages/RexGlance      # links, the snapshot and the widgets' colors, on macOS
+swift test --package-path Packages/RexGlance      # links, the snapshot, the watch's rules and the widgets' colors, on macOS
+xcodebuild -project RexDuo.xcodeproj -scheme RexDuoWatch -destination id=<watch-sim-id> \
+  -derivedDataPath build/dd-watch test    # the watch app's tests; needs a watchOS simulator runtime
 cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payloads, gateway client, updates
 (cd Gateway && npm ci && npx vitest run)          # gateway: API, limits, the APNs call (mocked)
 ```
@@ -193,7 +201,7 @@ is for users. Read the one for the area you touch:
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.
 - [docs/sidebar.md](docs/sidebar.md): the sidebar's levels, folding, Agents mode, not-added hosts.
 - [docs/notifications.md](docs/notifications.md): toasts, permission, push through the helper.
-- [docs/glance.md](docs/glance.md): the widgets, the snapshot they read, the controls, the
-  `rexduo:` links and what each does.
+- [docs/glance.md](docs/glance.md): the widgets, the snapshot they read, the watch app, the
+  controls, the `rexduo:` links and what each does.
 - [docs/release.md](docs/release.md): device installs, TestFlight via a build Mac, Beacon releases.
 - [docs/helper.md](docs/helper.md): installing Beacon, how it updates and what it checks.

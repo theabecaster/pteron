@@ -100,6 +100,37 @@ No device build or archive with the App Group has been made yet.
 The build number given on the command line applies to the extension too, which App Store Connect
 requires to match the app's.
 
+### The watch app
+
+The app also embeds the watch app, `RexDuoWatch.app` (in `RexDuo.app/Watch`), which embeds its
+own extension, `RexDuoWatchWidgets.appex` ([glance.md](glance.md), The watch). They are
+dependencies of the `RexDuo` target, so every build, archive and upload of the app builds and
+carries them: there is no separate step, scheme or upload, and the build number on the command
+line applies to both. The watch app ships inside the iPhone app's IPA and installs from the
+iPhone (Watch app → Available Apps, or by itself with Automatic App Install).
+
+- **Two more App IDs:** `dev.abrahamgonzalez.rexduo.watchkitapp` and
+  `dev.abrahamgonzalez.rexduo.watchkitapp.widgets`, both with the App Group
+  `group.dev.abrahamgonzalez.rexduo` (`RexDuoWatch/RexDuoWatch.entitlements`,
+  `RexDuoWatchWidgets/RexDuoWatchWidgets.entitlements`). The group is the phone's; a watch has
+  its own container of it. With automatic signing and `-allowProvisioningUpdates`, Xcode
+  registers them at the next device build or archive, if the signing account may edit
+  identifiers. If it may not, the build stops at the watch target with "No profiles for
+  'dev.abrahamgonzalez.rexduo.watchkitapp' were found"; then, in the developer portal:
+  Identifiers → "+" → App IDs → App, for each of the two bundle ids, with App Groups ticked and
+  the group chosen.
+- **A development install on a watch** needs the watch's UDID registered (Devices → "+",
+  platform watchOS; Xcode's Devices window shows the UDID of a watch paired with a connected
+  iPhone). `-allowProvisioningDeviceRegistration` registers a connected one. A TestFlight or
+  App Store build needs no registered watch.
+- **The build Mac** needs the watchOS platform of its Xcode (the SDK) to build the watch
+  targets. It needs no watchOS simulator runtime: that is only for running the watch app and
+  `RexDuoWatchTests` on a simulator.
+- **App Store Connect** shows the watch app under the same app record; it needs watch
+  screenshots before a release to the store, not for TestFlight.
+- No device build, archive or upload with the watch app has been made yet, and whether
+  `scripts/install-duo.sh` also puts the watch app on a paired watch has not been tried.
+
 `scripts/asc.mjs METHOD PATH [BODY]` makes signed App Store Connect API calls. It needs `ASC_ISS` in the environment (`source .asc.env`;
 the file is gitignored) and reads the key from `~/.appstoreconnect/private_keys/` (`ASC_KEY_ID` picks it).
 

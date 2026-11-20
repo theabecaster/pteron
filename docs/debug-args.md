@@ -104,7 +104,9 @@ builds.
   `light-in-dark` (the light theme in both slots), `newer` (a file from a later, incompatible
   app), `none` (no file). Use it with `-autoOpen zz-none`, so the app opens nothing; it logs
   `GLANCE_DEMO <scenario>`. Without it, a test launch (`-servers`, `-boardDemo`, `-autoOpen`,
-  `-simulateOffline`) writes no snapshot at all.
+  `-simulateOffline`) writes no snapshot at all. The scenario also goes to a paired watch
+  simulator that has the watch app. The watch app takes the same argument for its own file, and
+  `-glanceDetail YES` to open on the first waiting agent ([glance.md](glance.md), The watch).
 - `-glanceLive YES` with `-autoOpen <label>`: write the real snapshot in a test launch, with
   only the agents of the session with that label, so no other session's name reaches the file.
   A Debug build logs `GLANCE_WRITE seq=<n> bytes=<n>` for each write. The file is in the

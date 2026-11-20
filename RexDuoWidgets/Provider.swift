@@ -11,6 +11,14 @@ struct GlanceEntry: TimelineEntry {
         digest = entry.digest
         palette = entry.palette
     }
+
+    #if os(watchOS)
+    /// The watch's Smart Stack puts an entry in which an agent waits before one in which
+    /// nobody does. It only orders the stack.
+    var relevance: TimelineEntryRelevance? {
+        TimelineEntryRelevance(score: digest.relevance)
+    }
+    #endif
 }
 
 /// Reads the snapshot from the App Group and turns it into a timeline that ages by itself:

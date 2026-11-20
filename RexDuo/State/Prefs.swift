@@ -179,6 +179,11 @@ final class Prefs {
     // themes chosen here; the snapshot is written within 0.5 s for a new waiting agent and 2 s
     // for anything else, reloaded at most once in 10 s and restamped every 15 min
     // (`WriteThrottle`); it reads as current for 2 min and dims after an hour (`GlanceFreshness`).
+    // The watch app has no settings on either device and is always on: it only shows; a change in
+    // who waits goes to the watch at once and then at most every 30 s, anything else at most
+    // every 60 s, with the same 15 min restamp (`WatchDelivery`); it uses the Dark Mode theme
+    // when that is a dark theme, else the default one (`WatchScreen.palette`); and its
+    // background task for a delivery stays 10 s at most (`WatchDrain`).
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0
