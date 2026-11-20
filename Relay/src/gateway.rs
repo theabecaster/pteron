@@ -5,6 +5,7 @@
 use crate::devices::Device;
 use crate::info;
 use crate::net::{Exchange, Url};
+use crate::presence::{lease_outcome, LeaseAnswer};
 use crate::push::PushMessage;
 use crate::util::{now, Json};
 use serde_json::{json, Value};
@@ -23,6 +24,9 @@ pub enum SendResult {
     /// 410: Apple dropped the phone's token and the gateway deleted the phone with all its
     /// secrets. Forget the registration; the phone has to register again.
     Gone(String),
+    /// 202: the gateway held the push (`hold_if_desk`): the person is at a desk that shows the
+    /// agent's server. Nothing reached the phone; ask again after these seconds.
+    Held(u64),
     /// 401 in the gateway's own words: it does not know this secret. Once can be a fault on
     /// its side, so the relay gives the secret up only when it hears this twice, a minute
     /// apart (`devices::Strikes`).
@@ -46,6 +50,9 @@ pub fn push_body(m: &PushMessage, now: f64) -> Value {
     if let Some(c) = &m.collapse_id {
         body["collapse_id"] = json!(c);
     }
+    if let Some(tags) = m.hold_if_desk.as_ref().filter(|t| !t.is_empty()) {
+        body["hold_if_desk"] = json!(tags);
+    }
     body
 }
 
@@ -54,6 +61,9 @@ pub fn describe(m: &PushMessage) -> String {
     let mut h = format!("priority={}", m.priority());
     if let Some(c) = &m.collapse_id {
         h += &format!(" collapse-id={c}");
+    }
+    if let Some(tags) = m.hold_if_desk.as_ref().filter(|t| !t.is_empty()) {
+        h += &format!(" hold-if-desk={}", tags.len());
     }
     format!("{h} payload={}", m.payload())
 }
@@ -69,6 +79,9 @@ pub fn outcome(status: u16, body: &[u8], retry_after: Option<&str>) -> SendResul
     let code = word("error").unwrap_or("error");
     match status {
         200 => SendResult::Sent(word("apns_id").map(String::from)),
+        202 if v.get("held").and_then(Value::as_bool) == Some(true) => {
+            SendResult::Held(v.get("retry_after").and_then(Value::as_u64).filter(|s| (1..=3600).contains(s)).unwrap_or(60))
+        }
         // Every 401 of the gateway has exactly this `error`. A 401 from something in between
         // (a proxy, a sign-in page) says nothing about the secret.
         401 if v.str("error") == Some("unauthorized") => SendResult::Unauthorized,
@@ -89,13 +102,43 @@ pub enum Sender {
     Gateway,
     /// `--dry-run`: logs what would be sent and makes no network call.
     DryRun,
+    /// `--dry-run --send-local`: sends to a gateway on this machine (`http://127.0.0.1…`), as
+    /// a test runs one, and logs everything else as `DryRun` does. Nothing leaves the machine.
+    DryRunLocal,
 }
 
 impl Sender {
-    pub async fn send(&self, m: &PushMessage, d: &Device) -> SendResult {
+    /// True when this sender sends to `d`'s gateway for real.
+    fn reaches(&self, d: &Device) -> bool {
         match self {
-            Sender::Gateway => post(m, d).await,
-            Sender::DryRun => {
+            Sender::Gateway => true,
+            Sender::DryRun => false,
+            Sender::DryRunLocal => Url::parse(&d.gateway).is_some_and(|u| u.is_loopback()),
+        }
+    }
+
+    /// True for a sender that asks a gateway at all (a dry run's answers are made up).
+    pub fn asks(&self) -> bool {
+        !matches!(self, Sender::DryRun)
+    }
+
+    /// The lease of one desk for `d`'s phone, for `ttl` seconds (0 removes it). A dry run that
+    /// can't reach the gateway pretends it was stored and writes nothing.
+    pub async fn lease(&self, d: &Device, tag: &str, ttl: u32) -> LeaseAnswer {
+        if !self.reaches(d) {
+            crate::debug!("DRY-RUN lease -> {} ttl={ttl}", d.who());
+            return LeaseAnswer::Stored;
+        }
+        put_presence(d, tag, ttl).await
+    }
+
+    pub async fn send(&self, m: &PushMessage, d: &Device) -> SendResult {
+        if self.reaches(d) {
+            return post(m, d).await;
+        }
+        match self {
+            Sender::Gateway => unreachable!("the gateway is always reached"),
+            Sender::DryRun | Sender::DryRunLocal => {
                 info!(
                     "DRY-RUN push -> {} [{}] via {} {}",
                     d.device_name.as_deref().unwrap_or("?"),
@@ -106,6 +149,31 @@ impl Sender {
                 SendResult::Sent(None)
             }
         }
+    }
+}
+
+/// `PUT <gateway>/v1/presence`: one desk's lease, with the phone's secret. One request, no
+/// retry: the next look sends it again if it still matters.
+async fn put_presence(d: &Device, tag: &str, ttl: u32) -> LeaseAnswer {
+    let Some(url) = Url::parse(&format!("{}/v1/presence", d.gateway)) else {
+        return LeaseAnswer::Retry("bad gateway address".into());
+    };
+    let body = json!({"desk": tag, "ttl": ttl}).to_string();
+    let headers = [
+        ("Authorization", format!("Bearer {}", d.push_secret)),
+        ("Content-Type", "application/json".to_string()),
+        ("User-Agent", USER_AGENT.to_string()),
+    ];
+    let exchange = async {
+        let x = Exchange::open("PUT", &url, &headers, Some(body.as_bytes())).await?;
+        let (status, retry_after) = (x.status, x.header("retry-after").map(String::from));
+        let body = x.body(16 << 10).await.unwrap_or_default();
+        Ok::<_, String>(lease_outcome(status, &body, retry_after.as_deref()))
+    };
+    match tokio::time::timeout(TIMEOUT, exchange).await {
+        Ok(Ok(a)) => a,
+        Ok(Err(e)) => LeaseAnswer::Retry(format!("could not reach the gateway: {e}")),
+        Err(_) => LeaseAnswer::Retry("the gateway did not answer in 10 s".into()),
     }
 }
 
@@ -224,9 +292,14 @@ mod tests {
         assert_eq!(outcome(500, b"<html>", None), SendResult::Failed("gateway answered 500 error".into()));
         // Free text from the other end stays out of the log.
         assert_eq!(outcome(500, br#"{"error":"two words"}"#, None), SendResult::Failed("gateway answered 500 error".into()));
-        // A push the gateway held (a later gateway's 202 for `hold_if_desk`) reached no phone:
-        // not Sent, so nothing counts it as shown, and a held question stays held.
-        assert!(!matches!(outcome(202, br#"{"held":true,"retry_after":60}"#, None), SendResult::Sent(_)));
+        // A push the gateway held (its 202 for `hold_if_desk`) reached no phone: not Sent, so
+        // nothing counts it as shown, and a held question stays held.
+        assert_eq!(outcome(202, br#"{"held":true,"retry_after":60}"#, None), SendResult::Held(60));
+        assert_eq!(outcome(202, br#"{"held":true,"retry_after":90}"#, None), SendResult::Held(90));
+        assert_eq!(outcome(202, br#"{"held":true}"#, None), SendResult::Held(60));
+        assert_eq!(outcome(202, br#"{"held":true,"retry_after":99999}"#, None), SendResult::Held(60));
+        // A 202 that does not say it held the push is no hold.
+        assert!(matches!(outcome(202, b"{}", None), SendResult::Failed(_)));
     }
 
     #[tokio::test]
@@ -286,7 +359,52 @@ mod tests {
     async fn a_dry_run_makes_no_request() {
         let (base, seen) = serve(vec![canned(200, "{}")]).await;
         assert_eq!(Sender::DryRun.send(&message(PushCategory::Blocked), &phone(&base)).await, SendResult::Sent(None));
+        assert_eq!(Sender::DryRun.lease(&phone(&base), "tag", 600).await, LeaseAnswer::Stored);
         assert!(seen.lock().unwrap().is_empty());
+        // With --send-local, a gateway on this machine is asked; any other is not.
+        assert!(!Sender::DryRunLocal.reaches(&phone("https://push.example.com")));
+        assert!(!Sender::DryRunLocal.reaches(&phone("http://127.0.0.1.evil.example")));
+        assert_eq!(Sender::DryRunLocal.send(&message(PushCategory::Blocked), &phone("https://push.example.com")).await, SendResult::Sent(None));
+        assert_eq!(Sender::DryRunLocal.send(&message(PushCategory::Blocked), &phone(&base)).await, SendResult::Sent(None));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_push_carries_hold_if_desk_only_when_it_names_a_desk() {
+        let mut m = message(PushCategory::Blocked);
+        assert!(push_body(&m, 0.0).get("hold_if_desk").is_none());
+        m.hold_if_desk = Some(vec![]);
+        assert!(push_body(&m, 0.0).get("hold_if_desk").is_none());
+        m.hold_if_desk = Some(vec!["deskMacBook0000000000a".into()]);
+        assert_eq!(push_body(&m, 0.0)["hold_if_desk"], json!(["deskMacBook0000000000a"]));
+        assert!(describe(&m).contains("hold-if-desk=1"));
+    }
+
+    #[tokio::test]
+    async fn a_lease_is_one_put_with_the_secret_and_its_answers_read_as_meant() {
+        let retry = Canned { headers: "Retry-After: 30\r\n".into(), ..canned(429, r#"{"error":"rate_limited"}"#) };
+        let (base, seen) = serve(vec![
+            canned(200, r#"{"stored":true}"#),
+            canned(200, r#"{"stored":false}"#),
+            canned(404, r#"{"error":"not_found"}"#),
+            retry,
+            canned(503, r#"{"error":"presence_unavailable"}"#),
+        ])
+        .await;
+        let d = phone(&format!("{base}/gw"));
+        assert_eq!(Sender::Gateway.lease(&d, "deskMacBook0000000000a", 600).await, LeaseAnswer::Stored);
+        assert_eq!(Sender::Gateway.lease(&d, "deskMacBook0000000000a", 0).await, LeaseAnswer::NotStored);
+        assert_eq!(Sender::Gateway.lease(&d, "deskMacBook0000000000a", 600).await, LeaseAnswer::Absent);
+        assert_eq!(Sender::Gateway.lease(&d, "deskMacBook0000000000a", 600).await, LeaseAnswer::Limited(30.0));
+        assert!(matches!(Sender::Gateway.lease(&d, "deskMacBook0000000000a", 600).await, LeaseAnswer::Retry(_)));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 5);
+        let q = &seen[0];
+        assert_eq!((q.method.as_str(), q.path.as_str()), ("PUT", "/gw/v1/presence"));
+        assert_eq!(q.header("authorization"), Some(format!("Bearer {SECRET}").as_str()));
+        let body: Value = serde_json::from_slice(&q.body).unwrap();
+        assert_eq!(body, json!({"desk": "deskMacBook0000000000a", "ttl": 600}));
+        assert_eq!(serde_json::from_slice::<Value>(&seen[1].body).unwrap()["ttl"], 0);
     }
 
     #[test]

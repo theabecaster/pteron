@@ -1,21 +1,24 @@
-//! What Beacon holds back while the person is at the desk (`desk.rs`), per phone, and the rules
-//! that decide it (Relay/README.md, "Desk presence"):
+//! What Beacon holds back while the person is at a desk (`desk.rs`, `presence.rs`), per
+//! phone, and the rules that decide it (Relay/README.md, "Desk presence"):
 //!
-//! - parked.json: questions (`blocked`) held at the desk. Each is sent when the desk goes away
-//!   or after `HOLD_CAP`, whichever is first, if the agent still waits.
-//! - delivered.json: what each phone was last sent for each pane, so a `done` at the desk still
+//! - parked.json: questions (`blocked`) held at a desk. One held at this computer's desk is
+//!   sent when that desk goes away; one the gateway held for a desk elsewhere (`remote`) when a
+//!   look at the gateway finds nobody there (`probes`); either after `HOLD_CAP` at most, if the
+//!   agent still waits.
+//! - delivered.json: what each phone was last sent for each pane, so a `done` at a desk still
 //!   replaces a question the phone shows.
 //!
-//! Pure but for the two files, which a dry run doesn't write. Used only while the desk switch
-//! is on.
+//! Pure but for the two files, which a dry run doesn't write.
 
 use crate::auth::is_device_id;
 use crate::desk::{Moment, HOLD_CAP};
 use crate::devices::write_json;
 use crate::info;
 use crate::policy::{BlockRef, PushCategory, PushIntent};
+use crate::presence::PROBE_EVERY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub const PARKED_FILE: &str = "parked.json";
@@ -36,16 +39,18 @@ pub enum SendKind {
     Away,
     /// A `done` that replaces the question the phone shows.
     Replace,
-    /// The desk switch was turned off.
-    Off,
+    /// A question the gateway holds for a desk elsewhere, asked about again (`PROBE_EVERY`):
+    /// sent if nobody is at that desk any more, held again if someone is.
+    Probe,
 }
 
 impl SendKind {
-    /// Only a fresh event's first attempt may be held anywhere else (the gateway, in a later
-    /// version). A send that ends a hold never may, so a desk that wrongly looks present
-    /// delays a question by `HOLD_CAP` at most.
+    /// Only a fresh event, and the gateway's own question held for a desk asked about again,
+    /// may be held at the gateway (`hold_if_desk`). A send that ends a hold (the cap, a desk
+    /// here going away, a done replacing a question) never may, so a desk that wrongly looks
+    /// present delays a question by `HOLD_CAP` at most.
     pub fn may_hold(self) -> bool {
-        self == SendKind::Fresh
+        matches!(self, SendKind::Fresh | SendKind::Probe)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -54,7 +59,7 @@ impl SendKind {
             SendKind::Cap => "held 10 min",
             SendKind::Away => "desk away",
             SendKind::Replace => "replaces the question",
-            SendKind::Off => "desk switch off",
+            SendKind::Probe => "nobody at the desk any more",
         }
     }
 }
@@ -80,6 +85,9 @@ pub struct Parked {
     /// The same on this process's monotonic clock; not kept across a restart.
     #[serde(skip)]
     pub mono: Option<f64>,
+    /// Held by the gateway for a desk elsewhere, not by this computer's desk.
+    #[serde(default)]
+    pub remote: bool,
 }
 
 impl Parked {
@@ -128,6 +136,10 @@ pub struct Holds {
     delivered: Vec<Delivered>,
     /// The state folder, or None to keep everything in memory (a dry run).
     dir: Option<PathBuf>,
+    /// How long a question is held at most (`HOLD_CAP`; a dry run may shorten it, to try it).
+    cap: f64,
+    /// (phone, server) -> when the gateway was last asked about its questions held elsewhere.
+    asked: HashMap<(String, String), Moment>,
 }
 
 /// The entries of a file that read as `T` and pass `ok`. A file that doesn't read, or has
@@ -164,7 +176,12 @@ impl Holds {
             ),
             None => (vec![], vec![]),
         };
-        Holds { parked, delivered, dir: dir.map(Path::to_path_buf) }
+        Holds { parked, delivered, dir: dir.map(Path::to_path_buf), cap: HOLD_CAP, asked: HashMap::new() }
+    }
+
+    /// A shorter cap, for a dry run that tries it out.
+    pub fn set_cap(&mut self, cap: f64) {
+        self.cap = cap;
     }
 
     pub fn parked(&self) -> &[Parked] {
@@ -201,13 +218,14 @@ impl Holds {
                 }
                 if let Some(i) = held {
                     if self.parked[i].record() == record(intent) {
-                        // Same question, new words: the wait goes on.
+                        // Same question, new words: the wait goes on, now at this desk.
                         self.parked[i].intent = intent.clone();
+                        self.parked[i].remote = false;
                         self.save_parked();
                         return Verdict::Updated;
                     }
                     // Another question: its wait starts now.
-                    self.parked[i] = Parked { device_id: device_id.into(), intent: intent.clone(), parked_at: now.wall, mono: now.mono };
+                    self.parked[i] = Parked { device_id: device_id.into(), intent: intent.clone(), parked_at: now.wall, mono: now.mono, remote: false };
                     self.save_parked();
                     return Verdict::Park;
                 }
@@ -218,7 +236,7 @@ impl Holds {
                 if self.parked.len() >= PARKED_LIMIT {
                     return Verdict::Send(SendKind::Fresh, None);
                 }
-                self.parked.push(Parked { device_id: device_id.into(), intent: intent.clone(), parked_at: now.wall, mono: now.mono });
+                self.parked.push(Parked { device_id: device_id.into(), intent: intent.clone(), parked_at: now.wall, mono: now.mono, remote: false });
                 self.save_parked();
                 Verdict::Park
             }
@@ -228,12 +246,12 @@ impl Holds {
                     self.parked.remove(i);
                     self.save_parked();
                 }
-                if !here {
-                    return Verdict::Send(SendKind::Fresh, None);
-                }
+                // The phone shows this pane's question: the done replaces it, at a desk or not,
+                // and is never held, so no stale question stays on the phone.
                 match self.delivered.iter().find(|e| e.is(device_id, b)) {
                     Some(e) if e.category == PushCategory::Blocked => Verdict::Send(SendKind::Replace, e.collapse_id.clone()),
-                    _ => Verdict::Drop("at the desk"),
+                    _ if here => Verdict::Drop("at the desk"),
+                    _ => Verdict::Send(SendKind::Fresh, None),
                 }
             }
             PushCategory::Notice => {
@@ -321,19 +339,73 @@ impl Holds {
         }
     }
 
-    /// Questions to send now: those held `HOLD_CAP` (`Cap`), then those whose server no desk
-    /// shows any more (`away(server)`, `Away`). They stay held until `sent`, so one that could
-    /// not be sent is tried again.
+    /// The gateway held `intent` for this phone (`202`): a question waits for a desk elsewhere,
+    /// from now, or from when it was first held when it is the same question. False when no more
+    /// may be held: then it is sent rather than held.
+    pub fn park_remote(&mut self, device_id: &str, intent: &PushIntent, now: Moment) -> bool {
+        let b = &intent.block;
+        self.asked.insert((device_id.to_string(), b.server.clone()), now);
+        if let Some(i) = self.parked.iter().position(|p| p.is(device_id, b)) {
+            if self.parked[i].record() == record(intent) {
+                self.parked[i].intent = intent.clone();
+            } else {
+                self.parked[i] = Parked { device_id: device_id.into(), intent: intent.clone(), parked_at: now.wall, mono: now.mono, remote: true };
+            }
+            self.parked[i].remote = true;
+            self.save_parked();
+            return true;
+        }
+        if self.parked.len() >= PARKED_LIMIT {
+            return false;
+        }
+        self.parked.push(Parked { device_id: device_id.into(), intent: intent.clone(), parked_at: now.wall, mono: now.mono, remote: true });
+        self.save_parked();
+        true
+    }
+
+    /// Questions to send now: those held the cap (`Cap`), then those held at this computer's
+    /// desk whose server no desk here shows any more (`away(server)`, `Away`). They stay held
+    /// until `sent`, so one that could not be sent is tried again.
     pub fn due(&self, now: Moment, away: impl Fn(&str) -> bool) -> Vec<(Parked, SendKind)> {
         let mut out = vec![];
         for p in &self.parked {
-            if p.since().elapsed_to(&now) >= HOLD_CAP {
+            if p.since().elapsed_to(&now) >= self.cap {
                 out.push((p.clone(), SendKind::Cap));
-            } else if away(&p.intent.block.server) {
+            } else if !p.remote && away(&p.intent.block.server) {
                 out.push((p.clone(), SendKind::Away));
             }
         }
         out
+    }
+
+    /// The questions to ask the gateway about again: of each phone and server with questions
+    /// held for a desk elsewhere, the one held longest, once `PROBE_EVERY` has passed since the
+    /// last time. A question that is due for its cap is left to `due`.
+    pub fn probes(&self, now: Moment) -> Vec<Parked> {
+        let mut first: Vec<Parked> = vec![];
+        for p in self.parked.iter().filter(|p| p.remote && p.since().elapsed_to(&now) < self.cap) {
+            let key = (p.device_id.clone(), p.intent.block.server.clone());
+            if self.asked.get(&key).is_some_and(|at| at.elapsed_to(&now) < PROBE_EVERY) {
+                continue;
+            }
+            match first.iter_mut().find(|q| q.device_id == p.device_id && q.intent.block.server == p.intent.block.server) {
+                Some(q) if q.parked_at > p.parked_at => *q = p.clone(),
+                Some(_) => {}
+                None => first.push(p.clone()),
+            }
+        }
+        first
+    }
+
+    /// The gateway was asked about this phone's questions of this server at `now`.
+    pub fn asked(&mut self, device_id: &str, server: &str, now: Moment) {
+        self.asked.insert((device_id.to_string(), server.to_string()), now);
+    }
+
+    /// The other questions held elsewhere for this phone and server: once one of them was sent
+    /// (nobody is at that desk now), these go too.
+    pub fn remote_of(&self, device_id: &str, server: &str) -> Vec<Parked> {
+        self.parked.iter().filter(|p| p.remote && p.device_id == device_id && p.intent.block.server == server).cloned().collect()
     }
 
     /// Unparks the held questions of a server that `waits` says no longer wait. `waits` None:
@@ -456,8 +528,8 @@ mod tests {
         h.sent(PHONE, &q, Some("b1"), T0 + HOLD_CAP + 30.0);
         assert!(h.parked().is_empty());
         assert!(h.due(at(HOLD_CAP * 3.0), |_| true).is_empty());
-        assert!(!SendKind::Cap.may_hold() && !SendKind::Away.may_hold() && !SendKind::Replace.may_hold() && !SendKind::Off.may_hold());
-        assert!(SendKind::Fresh.may_hold());
+        assert!(!SendKind::Cap.may_hold() && !SendKind::Away.may_hold() && !SendKind::Replace.may_hold());
+        assert!(SendKind::Fresh.may_hold() && SendKind::Probe.may_hold());
     }
 
     #[test]
@@ -489,6 +561,97 @@ mod tests {
         h.sent(PHONE, &q, Some("b1-1234"), T0 + 130.0);
         h.sent(PHONE, &notice(), Some("b1-n"), T0 + 131.0);
         assert_eq!(h.decide(PHONE, &done("r1"), true, at(140.0)), Verdict::Send(SendKind::Replace, Some("b1-1234".into())));
+    }
+
+    #[test]
+    fn away_from_every_desk_a_done_still_replaces_the_question_the_phone_shows() {
+        let mut h = Holds::load(None);
+        let q = blocked("r1", "Allow?");
+        h.sent(PHONE, &q, Some("b1-1"), T0);
+        // Never held anywhere: `Replace` may not be held.
+        assert_eq!(h.decide(PHONE, &done("r1"), false, at(60.0)), Verdict::Send(SendKind::Replace, Some("b1-1".into())));
+        assert!(!SendKind::Replace.may_hold());
+        // Nothing shown for the pane: a fresh done, which a desk elsewhere may hold.
+        assert_eq!(h.decide(OTHER, &done("r1"), false, at(60.0)), fresh());
+    }
+
+    #[test]
+    fn a_question_the_gateway_held_waits_for_its_probe_or_its_cap_and_never_for_this_desk() {
+        let mut h = Holds::load(None);
+        let q = blocked("r1", "Allow?");
+        assert_eq!(h.decide(PHONE, &q, false, at(0.0)), fresh());
+        assert!(h.park_remote(PHONE, &q, at(0.0)));
+        assert!(h.parked()[0].remote);
+        // This computer's desk plays no part.
+        assert!(h.due(at(30.0), |_| true).is_empty());
+        // Asked again one minute after it was held, then every minute.
+        assert!(h.probes(at(PROBE_EVERY - 1.0)).is_empty());
+        assert_eq!(h.probes(at(PROBE_EVERY)).len(), 1);
+        h.asked(PHONE, SERVER, at(PROBE_EVERY));
+        assert!(h.probes(at(PROBE_EVERY + 30.0)).is_empty());
+        assert_eq!(h.probes(at(2.0 * PROBE_EVERY)).len(), 1);
+        // Held again by a probe, or by new words of the same question: the wait goes on.
+        let mut again = q.clone();
+        again.text = Some("Allow, really?".into());
+        assert!(h.park_remote(PHONE, &again, at(300.0)));
+        assert_eq!((h.parked().len(), h.parked()[0].parked_at), (1, T0));
+        // The cap releases it, and only `due` does.
+        assert!(h.probes(at(HOLD_CAP)).is_empty());
+        assert_eq!(h.due(at(HOLD_CAP), |_| false)[0].1, SendKind::Cap);
+        // Another record restarts the wait.
+        assert!(h.park_remote(PHONE, &blocked("r2", "Next?"), at(400.0)));
+        assert_eq!(h.parked()[0].parked_at, T0 + 400.0);
+    }
+
+    #[test]
+    fn one_probe_per_phone_and_server_and_the_others_go_once_one_was_sent() {
+        let mut h = Holds::load(None);
+        for (n, b) in ["block:b1", "block:b2"].into_iter().enumerate() {
+            let mut q = blocked("r", "Q");
+            q.block = block(b);
+            h.park_remote(PHONE, &q, at(n as f64));
+        }
+        let mut theirs = blocked("r", "Q");
+        theirs.block = block("block:b3");
+        h.park_remote(OTHER, &theirs, at(0.0));
+        let probes = h.probes(at(PROBE_EVERY + 1.0));
+        assert_eq!(probes.len(), 2, "one for each phone");
+        assert_eq!(probes.iter().find(|p| p.device_id == PHONE).unwrap().intent.block.block_id, "block:b1", "the oldest");
+        assert_eq!(h.remote_of(PHONE, SERVER).len(), 2);
+        assert!(h.remote_of(PHONE, "https://other.ts.net").is_empty());
+        // Restarted: held questions are asked about at the first look.
+        let dir = temp("remote");
+        let mut kept = Holds::load(Some(&dir));
+        kept.park_remote(PHONE, &blocked("r", "Q"), at(0.0));
+        let back = Holds::load(Some(&dir));
+        assert!(back.parked()[0].remote);
+        assert_eq!(back.probes(at(1.0)).len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_question_held_elsewhere_becomes_this_desks_when_the_person_sits_here() {
+        let mut h = Holds::load(None);
+        h.park_remote(PHONE, &blocked("r1", "Q"), at(0.0));
+        assert_eq!(h.decide(PHONE, &blocked("r1", "Q, again"), true, at(10.0)), Verdict::Updated);
+        assert!(!h.parked()[0].remote);
+        assert_eq!(h.due(at(20.0), |_| true)[0].1, SendKind::Away);
+        // Past the limit the gateway's hold can't be kept: the caller sends instead.
+        let mut full = Holds::load(None);
+        for n in 0..PARKED_LIMIT {
+            let mut i = blocked("", "Q");
+            i.block = block(&format!("block:{n}"));
+            assert!(full.park_remote(PHONE, &i, at(0.0)));
+        }
+        assert!(!full.park_remote(PHONE, &blocked("", "one more"), at(0.0)));
+    }
+
+    #[test]
+    fn a_shorter_cap_releases_sooner() {
+        let mut h = Holds::load(None);
+        h.set_cap(60.0);
+        h.decide(PHONE, &blocked("", "Q"), true, at(0.0));
+        assert_eq!(h.due(at(60.0), |_| false)[0].1, SendKind::Cap);
     }
 
     #[test]

@@ -306,6 +306,14 @@ impl RateLimiter {
         self.buckets.insert(key.to_string(), (tokens, now));
         ok
     }
+
+    /// Gives back the token `allow` took for a request that reached no phone (the gateway held
+    /// the push): holding never uses up a phone's allowance.
+    pub fn refund(&mut self, key: &str) {
+        if let Some((tokens, _)) = self.buckets.get_mut(key) {
+            *tokens = self.capacity.min(*tokens + 1.0);
+        }
+    }
 }
 
 #[cfg(test)]

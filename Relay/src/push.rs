@@ -29,6 +29,9 @@ pub struct PushMessage {
     pub session_id: String,
     pub window_id: Option<String>,
     pub block_id: String,
+    /// The desks whose presence may hold this push at the gateway (`hold_if_desk`), set per
+    /// phone and only on a send that may be held (`hold::SendKind::may_hold`).
+    pub hold_if_desk: Option<Vec<String>>,
 }
 
 impl PushMessage {
@@ -85,6 +88,7 @@ impl PushMessage {
             session_id: String::new(),
             window_id: None,
             block_id: String::new(),
+            hold_if_desk: None,
         }
     }
 
@@ -106,6 +110,7 @@ impl PushMessage {
             session_id: i.block.session_id.clone(),
             window_id: c.window_id.clone(),
             block_id: i.block.block_id.clone(),
+            hold_if_desk: None,
         };
         match i.category {
             PushCategory::Blocked => {
@@ -140,9 +145,9 @@ impl PushMessage {
 }
 
 impl PushMessage {
-    /// What a push looks like while the desk switch is on: a server's pushes form one stack on
-    /// the phone (`thread-id` is the server's address, at most 256 bytes), and a pane's notices
-    /// replace each other (`collapse_id` "<block>-n"). A test notification stays as it is.
+    /// What an agent push or a notice looks like on the phone: a server's pushes form one stack
+    /// (`thread-id` is the server's address, at most 256 bytes), and a pane's notices replace
+    /// each other (`collapse_id` "<block>-n"). A test notification stays as it is.
     pub fn stacked(mut self) -> PushMessage {
         if self.thread_id == TEST_THREAD {
             return self;
@@ -349,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn with_the_desk_switch_a_server_is_one_stack_and_a_panes_notices_replace_each_other() {
+    fn a_server_is_one_stack_and_a_panes_notices_replace_each_other() {
         let ctx = BlockContext { tab_label: Some("ops".into()), ..Default::default() };
         let mut n = PushIntent::new(PushCategory::Notice, block());
         n.text = Some("Built".into());

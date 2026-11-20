@@ -277,22 +277,23 @@ and how to verify by hand.
 | Agent reports `done` or `error` | `AGENT_DONE` | passive |
 | Desktop notification (OSC 9 / 777) | `NOTICE` | active, sound |
 
-The helper filters notices from panes with an OSC 7501 status only while desk presence is on
-(below): until then a Claude OSC 9 next to its `blocked` status gives two pushes, as before. The
-app's toasts filter them (above).
+The helper doesn't push notices from panes with an OSC 7501 status (below), so a Claude OSC 9 next
+to its `blocked` status gives one push. The app's toasts filter them too (above).
 
-**Desk presence (ships off).** While the person sits at a Mac whose Rex app shows the agent's
-server, Beacon holds what they would see there anyway: a question waits until they leave or for
-10 minutes at most, and a `done` or a notice isn't pushed, except a `done` that replaces a
-question the phone shows. Its signed release list turns it on (`"desk": "on"`); until then
-Beacon behaves as 0.4.0 did. With it on, Pteron counts as in front only while it renews a claim
-(`push_presence {active: true}`, 3 minutes), a server's pushes share one stack (`thread-id` is
+**Desk presence.** While the person sits at a Mac whose Rex app shows the agent's server, Beacon
+holds what they would see there anyway: a question waits until they leave or for 10 minutes at
+most, and a `done` or a notice isn't pushed, except a `done` that replaces a question the phone
+shows. The Mac's own Beacon does it for that Mac's server; for a server elsewhere (workdesk,
+shown on the Mac over SSH), the Mac's Beacon writes leases at the push gateway and workdesk's
+Beacon asks the gateway to hold its pushes while one is live (below, The push gateway). That
+needs the phone's presence key, which the app gives with `register_push` (`presence_key`) only to
+computers it confirmed as its owner's own; without it the phone is pushed to as before. There is
+no switch. Pteron counts as in front only while it renews a claim (`push_presence {active:
+true}`, 3 minutes; the app renews every 60 s), a server's pushes share one stack (`thread-id` is
 the server's address), a pane's notices replace each other, and notices from a pane with an OSC
 7501 status (now, or until 10 s after it went) are dropped; an agent that reports no status
-still gets its notices pushed. `helper_status` carries `desk: "on"` for the phone that
-registered, only while it is on. Relay/README.md, Desk presence, has the rules, the files and
-the fixed choices. The app doesn't read `desk` yet, and renewing the claim every 60 s is the
-app's part of this (notify-app).
+still gets its notices pushed. Relay/README.md, Desk presence, has the rules, the files and the
+fixed choices.
 
 Known limits of what Beacon remembers a phone shows (`delivered.json`):
 
@@ -468,8 +469,9 @@ that show its server in `hold_if_desk` on a push and gets `202 {"held": true}` w
 them holds a lease. Only a secret the phone flagged as one of its own computers
 (`"presence": true` on the secret's `PUT`) takes part; clearing the flag or deleting the secret
 removes the phone's leases. There is no switch: a Beacon or an app that sends none of this
-gets the gateway as before. Neither the app nor Beacon sends any of it yet
-(notify-beacon-presence). Gateway/README.md, Desk presence, has the rules.
+gets the gateway as before. Beacon writes the leases and names the desks
+(Relay/README.md, Desk presence); the app's part, the key and the flag, comes with its own
+release. Gateway/README.md, Desk presence, has the rules.
 
 The API, limits and deploy steps are in `Gateway/README.md`; `PushGateway`
 (`State/PushGateway.swift`) is the phone's side, tested in `RexDuoTests/PushGatewayTests.swift`.

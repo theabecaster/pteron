@@ -6,7 +6,8 @@
 //! and asks nothing of the person: no permission prompt. On Linux every reading is unknown,
 //! which means nobody is at the desk, so pushes go out as before.
 //!
-//! Nothing here is called while the desk switch is off.
+//! It is read only while it matters: when an event comes, every 30 s while a question is held,
+//! and every 30 s while a Rex desktop app runs here and a phone holds a presence key.
 
 use crate::desk::{Process, Reading};
 
@@ -49,6 +50,38 @@ impl Sense for System {
 
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
         watch_power()
+    }
+}
+
+/// `--desk-file` (a dry run only): this computer, but with the person at the desk or away as a
+/// file says, so a test can come and go without touching the keyboard. The file holds `present`
+/// or `away`; anything else, or no file, is the real reading. Processes and sleep are the
+/// computer's own.
+pub struct DeskFile {
+    pub inner: std::sync::Arc<dyn Sense>,
+    pub path: std::path::PathBuf,
+}
+
+impl Sense for DeskFile {
+    fn read(&self) -> Reading {
+        let present = Reading {
+            idle: Some(1.0),
+            session: Some(crate::desk::Session { locked: false, on_console: true }),
+            display_asleep: Some(false),
+        };
+        match std::fs::read_to_string(&self.path).unwrap_or_default().trim() {
+            "present" => present,
+            "away" => Reading { idle: Some(f64::from(u32::MAX)), ..present },
+            _ => self.inner.read(),
+        }
+    }
+
+    fn process(&self, pid: u32) -> Option<Process> {
+        self.inner.process(pid)
+    }
+
+    fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
+        self.inner.watch_power()
     }
 }
 

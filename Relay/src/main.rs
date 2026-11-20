@@ -18,6 +18,7 @@ mod legacy;
 mod net;
 mod notice;
 mod policy;
+mod presence;
 mod push;
 mod relay;
 #[cfg(any(target_os = "macos", test))]
@@ -69,6 +70,10 @@ Only with --dry-run, to try desk presence without the real helper noticing:
   --idle-away SECS   count the desk as away after SECS without input (default 300)
   --client-name NAME connect to Rex under NAME instead of rex-push-relay, so the
                      phone app does not take this run for the helper
+  --session ID       watch only this Rex session (repeatable), and no other's events
+  --desk-file FILE   at the desk or away as FILE says (\"present\" or \"away\")
+  --hold-cap SECS    hold a question SECS at most instead of 600
+  --send-local       send to a gateway on this machine (http://127.0.0.1:…) for real
 "
 );
 
@@ -80,6 +85,10 @@ struct RunOptions {
     log_file: bool,
     idle_away: Option<f64>,
     client_name: Option<String>,
+    sessions: Vec<String>,
+    desk_file: Option<PathBuf>,
+    hold_cap: Option<f64>,
+    send_local: bool,
 }
 
 fn main() {
@@ -270,7 +279,19 @@ fn runtime() -> tokio::runtime::Runtime {
 
 fn parse_run(args: &[String]) -> Result<RunOptions, String> {
     let env_dry = std::env::var("REX_DUO_DRY_RUN").is_ok_and(|v| !v.is_empty() && v != "0");
-    let mut o = RunOptions { dry_run: env_dry, servers: vec![], state_dir: default_state_dir(), config: None, log_file: false, idle_away: None, client_name: None };
+    let mut o = RunOptions {
+        dry_run: env_dry,
+        servers: vec![],
+        state_dir: default_state_dir(),
+        config: None,
+        log_file: false,
+        idle_away: None,
+        client_name: None,
+        sessions: vec![],
+        desk_file: None,
+        hold_cap: None,
+        send_local: false,
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{a} needs a value"));
@@ -292,12 +313,27 @@ fn parse_run(args: &[String]) -> Result<RunOptions, String> {
                 }
                 o.client_name = Some(name);
             }
+            "--session" => {
+                let id = value()?;
+                let ok = id.strip_prefix("session:").is_some_and(|rest| (1..=64).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+                if !ok {
+                    return Err(format!("--session takes a session id (session:<uuid>), not {id:?}"));
+                }
+                o.sessions.push(id);
+            }
+            "--desk-file" => o.desk_file = Some(expand(&value()?)),
+            "--hold-cap" => {
+                let secs = value()?;
+                o.hold_cap = Some(secs.parse::<f64>().ok().filter(|s| (10.0..=3600.0).contains(s)).ok_or(format!("--hold-cap takes 10 to 3600 seconds, not {secs}"))?);
+            }
+            "--send-local" => o.send_local = true,
             _ => return Err(format!("unknown option {a}")),
         }
     }
-    // Both change what the real helper relies on: only a run that sends nothing takes them.
-    if !o.dry_run && (o.idle_away.is_some() || o.client_name.is_some()) {
-        return Err("--idle-away and --client-name are only for --dry-run".into());
+    // These change what the real helper relies on: only a dry run takes them.
+    let trial = o.idle_away.is_some() || o.client_name.is_some() || !o.sessions.is_empty() || o.desk_file.is_some() || o.hold_cap.is_some() || o.send_local;
+    if !o.dry_run && trial {
+        return Err("--idle-away, --client-name, --session, --desk-file, --hold-cap and --send-local are only for --dry-run".into());
     }
     Ok(o)
 }
@@ -362,7 +398,16 @@ async fn run(o: RunOptions) -> i32 {
     };
     #[cfg(target_os = "macos")]
     rename::at_start(&o.state_dir, o.dry_run);
-    let sender = if o.dry_run { gateway::Sender::DryRun } else { gateway::Sender::Gateway };
+    let sender = match (o.dry_run, o.send_local) {
+        (false, _) => gateway::Sender::Gateway,
+        (true, false) => gateway::Sender::DryRun,
+        (true, true) => gateway::Sender::DryRunLocal,
+    };
+    let system: std::sync::Arc<dyn idle::Sense> = std::sync::Arc::new(idle::System);
+    let sense: std::sync::Arc<dyn idle::Sense> = match &o.desk_file {
+        Some(path) => std::sync::Arc::new(idle::DeskFile { inner: system, path: path.clone() }),
+        None => system,
+    };
     let updater = update::Updater::new(o.dry_run, cfg.auto_update.unwrap_or(true), &o.state_dir);
     let devices_path = o.state_dir.join("devices.json");
     let store = if o.dry_run { devices::DeviceStore::open_dry_run(devices_path) } else { devices::DeviceStore::open(devices_path) };
@@ -387,8 +432,10 @@ async fn run(o: RunOptions) -> i32 {
             key,
             state_dir: o.state_dir.clone(),
             os: host::os(),
-            sense: std::sync::Arc::new(idle::System),
+            sense,
             away_after: o.idle_away.unwrap_or(desk::AWAY_AFTER),
+            sessions: o.sessions.clone(),
+            hold_cap: o.hold_cap,
         },
     );
     relay.start();
@@ -448,6 +495,29 @@ mod tests {
         }
         let plain = parse_run(&args(&["--dry-run"])).unwrap();
         assert_eq!((plain.idle_away, plain.client_name), (None, None));
+        assert!(plain.sessions.is_empty() && plain.desk_file.is_none() && plain.hold_cap.is_none() && !plain.send_local);
+
+        let trial = parse_run(&args(&[
+            "--dry-run",
+            "--session",
+            "session:0b8e6a52-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+            "--session",
+            "session:abc",
+            "--desk-file",
+            "/tmp/desk",
+            "--hold-cap",
+            "90",
+            "--send-local",
+        ]))
+        .unwrap();
+        assert_eq!(trial.sessions, ["session:0b8e6a52-1c2d-4e5f-8a9b-0c1d2e3f4a5b", "session:abc"]);
+        assert_eq!((trial.desk_file.as_deref(), trial.hold_cap, trial.send_local), (Some(std::path::Path::new("/tmp/desk")), Some(90.0), true));
+        for only_dry in [&["--session", "session:abc"][..], &["--desk-file", "/tmp/desk"], &["--hold-cap", "90"], &["--send-local"]] {
+            assert!(parse_run(&args(only_dry)).is_err(), "{only_dry:?}");
+        }
+        for bad in [&["--dry-run", "--session", "abc"][..], &["--dry-run", "--session", "session:a b"], &["--dry-run", "--hold-cap", "5"], &["--dry-run", "--hold-cap", "soon"]] {
+            assert!(parse_run(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

@@ -136,8 +136,7 @@ pub fn base64(data: &[u8]) -> String {
     encode64(data, false)
 }
 
-/// Base64url without padding. Only tests encode this way (they sign with a key made on the spot).
-#[cfg(test)]
+/// Base64url without padding: presence keys and desk tags (`presence.rs`).
 pub fn base64url(data: &[u8]) -> String {
     encode64(data, true)
 }

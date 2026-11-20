@@ -12,7 +12,6 @@
 //! that restarting the service doesn't stop it.
 
 use crate::config::default_state_dir;
-use crate::desk::Switch;
 use crate::devices::{read_json, write_json};
 use crate::net::{Exchange, Url};
 use crate::util::{base64, base64_decode, iso8601, now, now_iso, parse_iso8601, sha256_hex, Json};
@@ -214,13 +213,6 @@ pub struct Manifest {
     pub expires_at: i64,
     /// A key the publisher is moving to, for the helper to trust from now on.
     pub next_key: Option<[u8; 32]>,
-    /// The desk switch (`desk.rs`). None when the list leaves it out or holds anything but
-    /// `"on"` or `"off"`: the helper then keeps the value it had.
-    pub desk: Option<Switch>,
-    /// When the list was signed (`signed_at`), seconds since 1970. release.sh writes it with
-    /// the desk switch; a switch is taken only from a list signed later than the one that set
-    /// it last, so an older signed list played back can't flip it.
-    pub signed_at: Option<i64>,
     pub assets: BTreeMap<String, Asset>,
 }
 
@@ -272,10 +264,9 @@ impl Manifest {
                 .ok_or_else(|| format!("the update manifest's {} size is not allowed", clip(name)))?;
             assets.insert(name.clone(), Asset { url: url.into(), sha256: sha256.to_ascii_lowercase(), size });
         }
-        // Read only for what it says; a value this helper doesn't know never spoils the list.
-        let desk = v.str("desk").and_then(Switch::parse);
-        let signed_at = v.str("signed_at").and_then(parse_iso8601);
-        Ok(Manifest { version: version.into(), min_version: min_version.into(), expires_at, next_key, desk, signed_at, assets })
+        // A field this helper doesn't know (such as `desk` and `signed_at`, which no released
+        // helper reads) never spoils the list.
+        Ok(Manifest { version: version.into(), min_version: min_version.into(), expires_at, next_key, assets })
     }
 }
 
@@ -456,21 +447,6 @@ fn accept_and_remember(state_dir: &Path, builtin: Vec<[u8; 32]>, data: &[u8], si
     let m = accept_manifest(data, signature_file, &trust.keys(), high_water, now)?;
     if Version::parse(&m.version) > high_water {
         write_json(&state_dir.join(HIGH_WATER_FILE), &json!({"version": m.version}));
-    }
-    // The desk switch follows the newest accepted list that names it, and stays as it was when
-    // a list leaves it out. Only a list signed after the one that set it last counts: one
-    // without `signed_at`, or signed earlier (an old list played back), changes nothing.
-    if let Some(desk) = m.desk {
-        match (m.signed_at, Switch::stored_at(state_dir)) {
-            (Some(at), last) if last.is_none_or(|last| at > last) => {
-                if desk != Switch::load(state_dir) {
-                    info!("update: the release list turns desk presence {}", desk.as_str());
-                }
-                desk.store(state_dir, Some(at));
-            }
-            (Some(_), _) => {}
-            (None, _) => info!("update: the release list names a desk switch but no signed_at; it is not taken"),
-        }
     }
     if m.next_key.is_some_and(|key| trust.hand_over(key)) {
         info!("update: the release list handed over a new signing key; it is trusted from now on");
@@ -2121,61 +2097,6 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_switch_follows_the_newest_accepted_list_that_names_it() {
-        let (pair, public) = keypair();
-        let (stranger, _) = keypair();
-        let dir = temp("desk");
-        // A list signed `signed` seconds after RELEASED, with `desk` when given.
-        let accept = |pair: &Ed25519KeyPair, desk: Option<Value>, signed: Option<i64>, version: &str, at: i64| {
-            let (data, sig) = signed_list(pair, desk, signed, version);
-            accept_and_remember(&dir, vec![public], &data, &sig, at)
-        };
-        // A list without the field, and no value stored before: off.
-        assert_eq!(accept(&pair, None, None, "0.4.0", RELEASED).unwrap().desk, None);
-        assert_eq!(Switch::load(&dir), Switch::Off);
-        assert_eq!(accept(&pair, Some(json!("on")), Some(10), "0.4.0", RELEASED).unwrap().desk, Some(Switch::On));
-        assert_eq!((Switch::load(&dir), Switch::stored_at(&dir)), (Switch::On, Some(RELEASED + 10)));
-        // Left out, or a value this helper doesn't know: the list is still taken, the switch
-        // stays as it was.
-        for kept in [None, Some(json!("maybe")), Some(json!(true)), Some(Value::Null), Some(json!("ON"))] {
-            let m = accept(&pair, kept.clone(), Some(20), "0.4.0", RELEASED).unwrap();
-            assert_eq!((m.desk, Switch::load(&dir)), (None, Switch::On), "{kept:?}");
-        }
-        // A list that is not accepted changes nothing: expired, signed by a stranger, replayed.
-        assert!(accept(&pair, Some(json!("off")), Some(30), "0.4.0", EXPIRES).is_err());
-        assert!(accept(&stranger, Some(json!("off")), Some(30), "0.4.0", RELEASED).is_err());
-        assert!(accept(&pair, Some(json!("off")), Some(30), "0.4.1", RELEASED).is_ok());
-        assert_eq!(Switch::load(&dir), Switch::Off);
-        assert!(accept(&pair, Some(json!("on")), Some(40), "0.4.0", RELEASED).is_err(), "older than one already seen");
-        assert_eq!(Switch::load(&dir), Switch::Off);
-        // The same version signed again: an earlier signature played back is taken as a list but
-        // can't flip the switch, nor can one with no signed time; one signed later can.
-        assert!(accept(&pair, Some(json!("on")), Some(10), "0.4.1", RELEASED).is_ok());
-        assert!(accept(&pair, Some(json!("on")), Some(30), "0.4.1", RELEASED).is_ok());
-        assert!(accept(&pair, Some(json!("on")), None, "0.4.1", RELEASED).is_ok());
-        assert_eq!(Switch::load(&dir), Switch::Off);
-        assert!(accept(&pair, Some(json!("on")), Some(31), "0.4.1", RELEASED).is_ok());
-        assert_eq!((Switch::load(&dir), Switch::stored_at(&dir)), (Switch::On, Some(RELEASED + 31)));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// A list of `version`, signed by `pair`, with the desk switch and when it was signed.
-    fn signed_list(pair: &Ed25519KeyPair, desk: Option<Value>, signed_at: Option<i64>, version: &str) -> (Vec<u8>, Vec<u8>) {
-        signed(
-            pair,
-            &|v| {
-                if let Some(d) = &desk {
-                    v["desk"] = d.clone();
-                }
-                if let Some(t) = signed_at {
-                    v["signed_at"] = json!(iso8601(RELEASED + t));
-                }
-            },
-            version,
-        )
-    }
-
-    #[test]
     fn a_list_with_fields_this_helper_does_not_know_is_read_as_before() {
         let mut v: Value = serde_json::from_str(&manifest_json("0.4.0")).unwrap();
         v["desk"] = json!("on");
@@ -2184,8 +2105,8 @@ mod tests {
         v["a_later_field"] = json!("whatever");
         let m = Manifest::parse(v.to_string().as_bytes()).unwrap();
         let plain = Manifest::parse(manifest_json("0.4.0").as_bytes()).unwrap();
-        assert_eq!((m.desk, m.signed_at), (Some(Switch::On), Some(RELEASED)));
-        assert_eq!(Manifest { desk: None, signed_at: None, ..m }, plain);
+        // A list signed with the fields of the desk switch that never shipped reads as one without.
+        assert_eq!(m, plain);
     }
 
     #[test]

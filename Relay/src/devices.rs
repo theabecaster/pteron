@@ -9,7 +9,7 @@ use crate::notice::SeenDevices;
 use crate::util::{now_iso, sha256_hex, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// One phone that asked for pushes: where its push gateway is and the secret that lets this
@@ -35,6 +35,11 @@ pub struct Device {
     /// stays, so switching back on needs nothing new from the gateway.
     #[serde(default)]
     pub paused: bool,
+    /// The phone's presence key (`presence.rs`), given only to computers the phone confirmed
+    /// as its owner's own. None: no desk presence across computers for this phone. Never
+    /// logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_key: Option<String>,
     #[serde(default)]
     pub registered_at: String,
     #[serde(default)]
@@ -109,6 +114,7 @@ impl Device {
             owner: owner.into(),
             push_secret: push_secret.into(),
             paused: false,
+            presence_key: None,
             registered_at: now.clone(),
             updated_at: now,
         }
@@ -441,22 +447,10 @@ pub fn device_id_from_label(label: Option<&str>) -> Option<String> {
     is_device_id(&id).then_some(id)
 }
 
-/// True if an iOS app client from this device is connected and hasn't said it's in the
-/// background. A client matches by the "#<device_id>" at the end of its label.
-pub fn is_app_open(d: &Device, clients: &[ClientSnapshot], backgrounded: &HashSet<String>) -> bool {
-    clients.iter().any(|c| {
-        c.kind.as_deref() == Some("app")
-            && c.platform.as_deref() == Some("ios")
-            && c.connection_state.as_deref() != Some("lost")
-            && !backgrounded.contains(&c.client_id)
-            && device_id_from_label(c.label.as_deref()).is_some_and(|id| id == d.device_id)
-    })
-}
-
-/// `is_app_open` while the desk switch is on: the app counts as open only while it holds an
-/// in-front claim (`push_presence {active: true}`) younger than `desk::CLAIM_LIFE`. A
-/// connection alone doesn't count, so a phone in a pocket stops counting within minutes even
-/// when its app never said it went to the background.
+/// True while the phone app of this device is in front: an iOS app client whose label ends in
+/// "#<device_id>" holds an in-front claim (`push_presence {active: true}`) younger than
+/// `desk::CLAIM_LIFE`. A connection alone doesn't count, so a phone in a pocket stops counting
+/// within minutes even when its app never said it went to the background.
 pub fn is_app_claimed(d: &Device, clients: &[ClientSnapshot], claims: &HashMap<String, Moment>, now: Moment) -> bool {
     clients.iter().any(|c| {
         c.kind.as_deref() == Some("app")
@@ -507,31 +501,12 @@ mod tests {
         }
     }
 
-    fn none() -> HashSet<String> {
-        HashSet::new()
-    }
 
     #[test]
     fn label_device_id() {
         assert_eq!(device_id_from_label(Some("Alex's iPhone #A1B2C3D4")).as_deref(), Some("a1b2c3d4"));
         assert_eq!(device_id_from_label(Some("Alex's iPhone")), None);
         assert_eq!(device_id_from_label(Some("Room #1")), None);
-    }
-
-    #[test]
-    fn matches_by_label_device_id() {
-        assert!(is_app_open(&dev(), &[app("c1", "iPhone #a1b2c3d4", "connected", "ios")], &none()));
-        assert!(is_app_open(&dev(), &[app("c1", "iPhone #A1B2C3D4", "connected", "ios")], &none()));
-        assert!(!is_app_open(&dev(), &[app("c1", "iPhone #ffff0000", "connected", "ios")], &none()));
-        assert!(!is_app_open(&dev(), &[app("c1", "iPhone", "connected", "ios")], &none()));
-    }
-
-    #[test]
-    fn ignores_lost_backgrounded_and_non_ios() {
-        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "lost", "ios")], &none()));
-        let bg: HashSet<String> = ["c1".to_string()].into();
-        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "connected", "ios")], &bg));
-        assert!(!is_app_open(&dev(), &[app("c1", "x #a1b2c3d4", "connected", "macos")], &none()));
     }
 
     #[test]
@@ -552,11 +527,12 @@ mod tests {
     }
 
     #[test]
-    fn with_the_desk_switch_only_a_live_claim_is_open() {
+    fn only_a_live_claim_is_open() {
         let at = |s: f64| Moment { wall: 1000.0 + s, mono: Some(s) };
         let c = [app("c1", "x #a1b2c3d4", "connected", "ios")];
         let mut claims = HashMap::new();
         // Connected alone is not open.
+        assert!(!is_app_claimed(&dev(), &[app("c1", "iPhone #A1B2C3D4", "connected", "ios")], &claims, at(0.0)));
         assert!(!is_app_claimed(&dev(), &c, &claims, at(0.0)));
         claims.insert("c1".to_string(), at(0.0));
         assert!(is_app_claimed(&dev(), &c, &claims, at(CLAIM_LIFE - 1.0)));
@@ -566,6 +542,9 @@ mod tests {
         assert!(!is_app_claimed(&dev(), &[app("c1", "x #a1b2c3d4", "lost", "ios")], &claims, at(CLAIM_LIFE + 60.0)));
         assert!(!is_app_claimed(&dev(), &[app("c1", "x #ffff0000", "connected", "ios")], &claims, at(CLAIM_LIFE + 60.0)));
         assert!(!is_app_claimed(&dev(), &[app("c1", "x #a1b2c3d4", "connected", "macos")], &claims, at(CLAIM_LIFE + 60.0)));
+        // Matched by the id at the end of the label, in any case.
+        assert!(is_app_claimed(&dev(), &[app("c1", "x #A1B2C3D4", "connected", "ios")], &claims, at(CLAIM_LIFE + 60.0)));
+        assert!(!is_app_claimed(&dev(), &[app("c1", "iPhone", "connected", "ios")], &claims, at(CLAIM_LIFE + 60.0)));
         // A clock set back ends a claim rather than stretch it.
         assert!(!is_app_claimed(&dev(), &c, &claims, Moment { wall: 0.0, mono: Some(CLAIM_LIFE + 1.0) }));
     }

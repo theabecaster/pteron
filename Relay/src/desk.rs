@@ -4,14 +4,8 @@
 //!
 //! Pure: the readings come from `idle.rs` and the times from the caller, so every state is
 //! tested. Anything unknown means not present, and a push that is not held is sent as before.
-//!
-//! It ships dark. Nothing here acts unless the signed release list says `"desk": "on"`
-//! (`Switch`); until then Beacon behaves as version 0.4.0 did.
 
-use crate::devices::{read_json, write_json, ClientSnapshot};
-use crate::util::Json;
-use serde_json::{json, Value};
-use std::path::Path;
+use crate::devices::ClientSnapshot;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -35,58 +29,6 @@ pub const NOTICE_WAIT: Duration = Duration::from_secs(1);
 pub const NOTICE_MEMORY: f64 = 10.0;
 /// A wall clock that went back by more than this makes earlier times unknown.
 const CLOCK_SLACK: f64 = 5.0;
-
-/// The switch the signed release list carries: `"desk": "on" | "off"`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Switch {
-    #[default]
-    Off,
-    On,
-}
-
-/// Where the last value the release list gave is kept, in the state folder.
-pub const SWITCH_FILE: &str = "desk.json";
-
-impl Switch {
-    pub fn parse(s: &str) -> Option<Switch> {
-        match s {
-            "on" => Some(Switch::On),
-            "off" => Some(Switch::Off),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Switch::On => "on",
-            Switch::Off => "off",
-        }
-    }
-
-    pub fn on(self) -> bool {
-        self == Switch::On
-    }
-
-    /// The value last stored in the state folder. None stored, or a file that can't be read:
-    /// off.
-    pub fn load(state_dir: &Path) -> Switch {
-        read_json::<Value>(&state_dir.join(SWITCH_FILE)).str("desk").and_then(Switch::parse).unwrap_or_default()
-    }
-
-    /// Keeps the value, with the time the list that set it was signed (seconds since 1970).
-    pub fn store(self, state_dir: &Path, signed_at: Option<i64>) {
-        let mut v = json!({"desk": self.as_str()});
-        if let Some(t) = signed_at {
-            v["signed_at"] = json!(crate::util::iso8601(t));
-        }
-        write_json(&state_dir.join(SWITCH_FILE), &v);
-    }
-
-    /// When the list that set the stored value was signed. None: nothing stored, or no time.
-    pub fn stored_at(state_dir: &Path) -> Option<i64> {
-        read_json::<Value>(&state_dir.join(SWITCH_FILE)).str("signed_at").and_then(crate::util::parse_iso8601)
-    }
-}
 
 /// Seconds since this process started, on a clock no change of the date can move.
 pub fn mono() -> f64 {
@@ -309,23 +251,6 @@ mod tests {
         let stored = Moment { wall: 1000.0, mono: None };
         assert_eq!(stored.elapsed_to(&Moment { wall: 1300.0, mono: Some(1.0) }), 300.0);
         assert!(mono() >= 0.0);
-    }
-
-    #[test]
-    fn the_switch_is_off_until_a_stored_value_says_on() {
-        let dir = std::env::temp_dir().join(format!("desk-switch-{}-{}", std::process::id(), crate::util::now()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(Switch::load(&dir), Switch::Off);
-        Switch::On.store(&dir, None);
-        assert_eq!(Switch::load(&dir), Switch::On);
-        Switch::Off.store(&dir, None);
-        assert_eq!(Switch::load(&dir), Switch::Off);
-        for unreadable in ["", "{", "{\"desk\": true}", "{\"desk\": \"maybe\"}", "[]"] {
-            std::fs::write(dir.join(SWITCH_FILE), unreadable).unwrap();
-            assert_eq!(Switch::load(&dir), Switch::Off, "{unreadable:?}");
-        }
-        assert_eq!((Switch::parse("on"), Switch::parse("off"), Switch::parse("ON")), (Some(Switch::On), Some(Switch::Off), None));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn client(platform: &str, state: &str, pid: Option<u32>) -> ClientSnapshot {

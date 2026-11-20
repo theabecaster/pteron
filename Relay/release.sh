@@ -6,8 +6,6 @@
 #   Relay/release.sh --publish       # also create the GitHub releases (asks nothing: be sure)
 #   Relay/release.sh --resign        # sign the current release list again with a new expiry date.
 #                                    # Builds nothing. With --publish, uploads the list and install.sh.
-#   Relay/release.sh --resign --desk on|off
-#                                    # the same, and set the desk switch (below) of that list.
 #
 # What a release is (the helper's updater, the phone app and setup.sh rely on every part):
 #   - a GitHub release tagged helper-v<version> with the Mac app (zipped, three times), the two
@@ -50,15 +48,6 @@
 #                on. That is how the signing key is replaced: publish a list that names the new
 #                key, signed with a key helpers already trust (the recovery key, if the primary
 #                is the one being replaced), then sign with the new key.
-#   desk         with --desk on|off, the desk presence switch (Relay/README.md, "Desk
-#                presence"): helpers hold pushes while their person is at the computer only
-#                while the newest list they accepted says "on". Left out, a list doesn't change
-#                what a helper has; a helper that never saw the field keeps it off. --resign
-#                keeps the field the list has unless --desk says otherwise. A new release
-#                carries it only when --desk is given, so give it in every release once it is on.
-#   signed_at    beside desk: when the list was signed, each time later than the last. A helper
-#                takes the switch only from a list signed after the one that set it, so an
-#                older signed list played back can't flip it.
 #
 # Beside the release it writes Relay/dist/release/fixtures: the same list and one Linux
 # signature, signed by a key made on the spot and thrown away, with that key's public half in
@@ -75,7 +64,6 @@ OPENSSL="${OPENSSL:-}"
 PUBLISH=0
 BUILD=1
 RESIGN=0
-DESK=""
 PACKAGE_ARGS=()
 
 die() {
@@ -89,11 +77,6 @@ while [[ $# -gt 0 ]]; do
     --skip-build) BUILD=0 ;;
     --resign) RESIGN=1 ;;
     --no-notarize) PACKAGE_ARGS+=("--no-notarize") ;;
-    --desk)
-      [[ $# -ge 2 && ( "$2" == on || "$2" == off ) ]] || die "--desk takes on or off"
-      DESK="$2"
-      shift
-      ;;
     *) die "unknown option $1" ;;
   esac
   shift
@@ -240,11 +223,10 @@ if [[ $RESIGN -eq 1 ]]; then
     mkdir -p "$OUT"
     gh release download helper-latest --repo "$REPO" --pattern manifest.json --dir "$OUT"
   fi
-  # Only the dates and, when asked, the next key and the desk switch change. The files it names
-  # stay as they are.
-  python3 - "$OUT/manifest.json" "$EXPIRES_AT" "$NEXT_KEY" "$DESK" <<'PY'
-import datetime, json, re, sys
-path, expires_at, next_key, desk = sys.argv[1:]
+  # Only the dates and, when asked, the next key change. The files it names stay as they are.
+  python3 - "$OUT/manifest.json" "$EXPIRES_AT" "$NEXT_KEY" <<'PY'
+import json, re, sys
+path, expires_at, next_key = sys.argv[1:]
 with open(path) as f:
     manifest = json.load(f)
 if not re.fullmatch(r"\d+\.\d+\.\d+", str(manifest.get("version", ""))) or not isinstance(manifest.get("assets"), dict):
@@ -254,19 +236,9 @@ manifest["expires_at"] = expires_at
 if next_key:
     manifest["next_key"] = next_key
 manifest.setdefault("next_key", None)
-if desk:
-    manifest["desk"] = desk
-# A list with the desk switch says when it was signed, always later than the list it replaces:
-# helpers take the switch only from a list signed after the one that set it last.
-if "desk" in manifest:
-    stamp = "%Y-%m-%dT%H:%M:%SZ"
-    signed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
-    try:
-        before = datetime.datetime.strptime(str(manifest.get("signed_at", "")), stamp)
-        signed = max(signed, before + datetime.timedelta(seconds=1))
-    except ValueError:
-        pass
-    manifest["signed_at"] = signed.strftime(stamp)
+# Desk presence has no switch: the fields of the one that never shipped don't stay in a list.
+manifest.pop("desk", None)
+manifest.pop("signed_at", None)
 with open(path, "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
@@ -278,7 +250,6 @@ PY
   rm -f "$OUT/install.sh"
   write_installer "$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' "$OUT/manifest.json")" "$EXPIRES_AT"
   echo "==> Signed Relay/$OUT/manifest.json again. It expires at $EXPIRES_AT."
-  [[ -z "$DESK" ]] || echo "    Desk presence: $DESK."
   note_installer
   if [[ $PUBLISH -eq 0 ]]; then
     echo "Nothing was published. Run again with --resign --publish."
@@ -361,9 +332,9 @@ for f in "${LINUX[@]}"; do
 done
 
 # One field per line (indent=2): setup.sh reads this file with sed and awk.
-python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "$DESK" "${LINUX[@]}" <<'PY'
+python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "${LINUX[@]}" <<'PY'
 import datetime, hashlib, json, os, sys
-out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, desk, *linux = sys.argv[1:]
+out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, *linux = sys.argv[1:]
 
 def number(v):
     return tuple(int(part) for part in v.split("."))
@@ -391,9 +362,6 @@ manifest = {
     "expires_at": expires_at,
     "next_key": next_key or None,
 }
-if desk:
-    manifest["desk"] = desk
-    manifest["signed_at"] = manifest["released_at"]
 manifest["assets"] = assets
 with open(os.path.join(out, "manifest.json"), "w") as f:
     json.dump(manifest, f, indent=2)
