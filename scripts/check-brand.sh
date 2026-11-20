@@ -18,7 +18,9 @@
 #     installed Beacons and apps ask for them by these names for good;
 #   - a line that defines an EARLIER_* or OLD_* constant, in Rust or shell: the folders, labels
 #     and state an installed Beacon is moved on from. The line has to begin with the definition
-#     (`pub const EARLIER_X: … =`, `OLD_X=`); a line that only mentions such a name does not count;
+#     (`pub const EARLIER_X: … =`, `OLD_X=`); a line that only mentions such a name does not count.
+#     Only the value is allowed (one string, one list, one word): a comment or a command after it
+#     on the same line is checked like any other text;
 #   - the test data for those moves: Relay/fixtures, Relay/tests-setup, Relay/test-install.sh;
 #   - the history in docs/helper.md, docs/release.md and Relay/README.md: inside a code span
 #     (a file, folder or path of that time), or on a line that says "before", "earlier" or a
@@ -36,17 +38,30 @@ EXACT='SuperLogical'
 
 # Reads "file:line:text" lines and prints the ones no rule allows.
 judge() {
-  awk -v names="$NAMES" -v exact="$EXACT" '
+  awk -v names="$NAMES" -v exact="$EXACT" -v q="'" '
     function named(t) { return tolower(t) ~ names || t ~ exact }
+    # The text without the names that stay everywhere: the release files and `rex-duo`.
+    function kept(t) { gsub(/Rex-DUO-(Beacon|Helper)\.zip/, "", t); gsub(/rex-duo/, "", t); return t }
+    # What follows a value at the start of t: one quoted string, one [ ] or ( ) list, or one
+    # bare word. An unclosed value is all of t, so it is checked as it is.
+    function after_value(t,   first, shut, i) {
+      first = substr(t, 1, 1)
+      if (first == "\"" || first == q) shut = first
+      else if (first == "[") shut = "]"
+      else if (first == "(") shut = ")"
+      else { sub(/^[^ \t;]*/, "", t); return t }
+      i = index(substr(t, 2), shut)
+      return i ? substr(t, i + 2) : t
+    }
     {
       file = $0; sub(/:.*/, "", file)
       text = $0; sub(/^[^:]*:[^:]*:/, "", text)
       if (file ~ /^Relay\/(fixtures|tests-setup)\// || file == "Relay/test-install.sh") next
-      rest = text
-      gsub(/Rex-DUO-(Beacon|Helper)\.zip/, "", rest)
-      gsub(/rex-duo/, "", rest)
+      rest = kept(text)
       if (!named(rest)) next
-      if (text ~ /^[ \t]*((pub(\([a-z]+\))?[ \t]+)?(const|static)[ \t]+|(readonly|local|export)[ \t]+)?(EARLIER|OLD)_[A-Z0-9_]+(:[^=]+)?[ \t]*=/) next
+      # A definition: only its value may name an earlier name, not what follows it on the line.
+      if (match(text, /^[ \t]*((pub(\([a-z]+\))?[ \t]+)?(const|static)[ \t]+|(readonly|local|export)[ \t]+)?(EARLIER|OLD)_[A-Z0-9_]+(:[^=]+)?[ \t]*=[ \t]*/) &&
+          !named(kept(after_value(substr(text, RLENGTH + 1))))) next
       if (file == "docs/helper.md" || file == "docs/release.md" || file == "Relay/README.md") {
         gsub(/`[^`]*`/, "", rest)
         if (!named(rest)) next
@@ -58,7 +73,8 @@ judge() {
 
 # Reads every line of the files as "file:line:text", in order, and prints the second line of a
 # name that a line break parts: one line ends with its first word and the next begins with its
-# second, after the indentation and whatever marks a comment, a quote or a list item there.
+# second, after the indentation and whatever marks a comment, a quote or a list item there, also
+# several of them (a list item in a doc comment: `/// - `).
 wrapped() {
   awk '
     {
@@ -66,7 +82,7 @@ wrapped() {
       text = $0; sub(/^[^:]*:[^:]*:/, "", text)
       if (file != last_file) { tail = ""; last_file = file }
       head = tolower(text)
-      sub(/^[ \t]*(\/\/[\/!]?|\/?\*+|#+|--|>+|-)?[ \t]*/, "", head)
+      sub(/^[ \t]*((\/\/[\/!]?|\/?\*+|#+|--|>+|-|[0-9]+[.)])[ \t]*)*/, "", head)
       if ((tail ~ /(^|[^a-z0-9])rex-?$/ && head ~ /^duo([^a-z0-9]|$)/ && !(raw ~ /rex-$/ && text ~ /^[ \t]*duo-/)) ||
           (tail ~ /(^|[^a-z0-9])super$/ && head ~ /^logical([^a-z0-9]|$)/)) print
       raw = text; sub(/[ \t]+$/, "", raw)
@@ -89,6 +105,9 @@ docs/helper.md:1:It had two names before: Rex DUO Helper and Rex DUO Beacon.
 docs/helper.md:2:The state folder keeps its name (`Rex DUO Helper`).
 Relay/README.md:1:Log: `~/Library/Logs/Rex DUO Helper.log`.
 NOTICE:1:Rex is a separate product by Superlogical.
+Relay/src/update.rs:3:pub const EARLIER_APPS: [&str; 1] = ["Rex DUO Beacon.app"]; // the folder of 0.3
+Relay/setup.sh:4:OLD_ZIPS=("Rex-DUO-Beacon.zip" "Rex DUO Helper.app") # kept for installed Beacons
+Relay/setup.sh:5:EARLIER_STATE='Rex DUO Helper'
 RexDuo/State/Pairing.swift:1:        let client = RexDuoClient(name: "rexduo")
 Relay/Cargo.toml:1:name = "rex-duo-helper"
 Relay/README.md:2:systemctl --user stop rex-duo-helper
@@ -115,6 +134,14 @@ Relay/setup.sh:4:say "moving on from $OLD_NAME = Rex DUO Helper"
 Relay/setup.sh:5:# EARLIER_BEACON="Rex DUO Beacon" was the name
 Relay/src/update.rs:3:    if name == EARLIER_NAME { log("Rex DUO Beacon"); let x = 1; }
 Relay/src/update.rs:4:    let folder = OLD_FOLDERS[0]; // = "Rex DUO Helper"
+README.md:5:rEx dUo and Super	Logical, in mixed case and with a tab.
+Relay/setup.sh:6:EARLIER_BEACON="Beacon"; say "Rex DUO Beacon"
+Relay/setup.sh:7:OLD_APPS=("Beacon.app") && echo Rex DUO
+Relay/setup.sh:8:EARLIER_X=plain # was Rex DUO
+Relay/setup.sh:9:EARLIER_STATE='Helper' # was 'Rex DUO Helper'
+Relay/src/config.rs:1:pub(crate) const EARLIER_NAME: &str = "Helper"; // was Rex DUO Helper
+Relay/src/update.rs:5:pub const EARLIER_APPS: [&str; 1] = ["Beacon.app"]; const B: &str = "Rex DUO Beacon";
+Relay/src/update.rs:6:pub const EARLIER_APPS: [&str; 1] = ["Rex DUO Beacon.app"
 SAMPLES
 )"
   want="$(printf '%s\n' "$stray" | wc -l | tr -d ' ')"
@@ -142,9 +169,15 @@ Relay/setup.sh:1:# Installs the helper of Rex
 Relay/setup.sh:2:# DUO on this computer.
 NOTICE:1:Rex is a product by Super
 NOTICE:2:Logical, misspelled over two lines.
+RexDuo/State/Posture.swift:1:    /// - Parameter name: what the app was called before, Rex
+RexDuo/State/Posture.swift:2:    /// - DUO, as a list item in a doc comment.
+RexDuo/State/Posture.swift:3:    /// > A quote in a doc comment that ends with REX
+RexDuo/State/Posture.swift:4:    /// > duo on the next line.
+RexDuo/State/Posture.swift:5:    // 1. The first item of Rex
+RexDuo/State/Posture.swift:6:    // 2. DUO in a numbered list.
 SAMPLES
 )"
-  [[ "$(printf '%s\n' "$parted" | wc -l | tr -d ' ')" == 8 ]] || { echo "check-brand: 8 parted names must be caught, got:"; echo "$parted"; exit 1; }
+  [[ "$(printf '%s\n' "$parted" | wc -l | tr -d ' ')" == 11 ]] || { echo "check-brand: 11 parted names must be caught, got:"; echo "$parted"; exit 1; }
   whole="$(wrapped <<'SAMPLES'
 README.md:1:An iOS remote for Rex
 README.md:2:Duolingo is something else, and so is a duo of panes after Rex.
@@ -153,6 +186,8 @@ docs/sidebar.md:1:DUO starts another file, which is no wrapped name.
 RexDuo/App/RootView.swift:1:    /// Connects to Rex
 RexDuo/App/RootView.swift:2:    /// and to nothing else. Superlogical
 RexDuo/App/RootView.swift:3:    /// logical order follows.
+RexDuo/App/RootView.swift:4:    /// - Parameter host: the Rex
+RexDuo/App/RootView.swift:5:    /// - Duolingo-like list, which is no wrapped name.
 Relay/README.md:1:    systemctl --user stop rex-
 Relay/README.md:2:    duo-helper
 SAMPLES
@@ -163,9 +198,10 @@ SAMPLES
 fi
 
 # -I: text files only. This script names what it looks for, so it is left out.
-found="$(git grep -I -n -i -E "$(printf '%s' "$NAMES" | sed 's/\\t/	/g')|superlogical" -- . ':!scripts/check-brand.sh' | judge || true)"
+# git grep exits 1 when nothing matches; any other failure, of it or of awk, stops the check.
+found="$( { git grep -I -n -i -E "$(printf '%s' "$NAMES" | sed 's/\\t/	/g')|superlogical" -- . ':!scripts/check-brand.sh' || [[ $? == 1 ]]; } | judge)"
 # A name broken over two lines ("Rex" ends one, "DUO" starts the next), in every text file.
-parted="$(git grep -I -n -e '' -- . ':!scripts/check-brand.sh' ':!Relay/fixtures' ':!Relay/tests-setup' ':!Relay/test-install.sh' | wrapped || true)"
+parted="$(git grep -I -n -e '' -- . ':!scripts/check-brand.sh' ':!Relay/fixtures' ':!Relay/tests-setup' ':!Relay/test-install.sh' | wrapped)"
 if [[ -n "$found$parted" ]]; then
   echo "check-brand: an earlier name is left in these lines (the rules are at the top of scripts/check-brand.sh):"
   [[ -z "$found" ]] || echo "$found"

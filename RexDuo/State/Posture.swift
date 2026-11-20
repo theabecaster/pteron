@@ -206,8 +206,8 @@ struct DuoSimulation: Equatable {
     /// The Duo's vertical bar, as the simulator reports it on the outer screen.
     private static let bar: CGFloat = 84
 
-    /// Every posture. The insets of the three with the bar or the island on the left come from
-    /// the iOS 27.2 simulators (docs/debug-args.md says which); the others are rough.
+    /// Every posture. The insets of the outer screen and of the iPhone in landscape come from the
+    /// iOS 27.2 simulators (docs/debug-args.md says which); the others are rough.
     static let postures: [DuoSimulation] = [
         .init(name: "unfolded", size: CGSize(width: 951, height: 669), horizontal: .regular, vertical: .regular,
               division: Division(frame: CGRect(x: 475.5, y: 0, width: 0, height: 669), isActive: false),
@@ -222,9 +222,9 @@ struct DuoSimulation: Equatable {
               division: Division(frame: CGRect(x: 0, y: 455.5, width: 669, height: 40), isActive: true),
               safeArea: EdgeInsets(top: 44, leading: 0, bottom: 20, trailing: 0)),
         .init(name: "folded", size: CGSize(width: 466, height: 678), horizontal: .compact, vertical: .regular,
-              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar)),
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 34, trailing: bar)),
         .init(name: "foldedLandscape", size: CGSize(width: 678, height: 466), horizontal: .compact, vertical: .compact,
-              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 20, trailing: bar)),
+              safeArea: EdgeInsets(top: 0, leading: 0, bottom: 34, trailing: bar)),
         // The outer screen on its side the other way: the bar is on the left.
         .init(name: "foldedLandscapeBarLeft", size: CGSize(width: 678, height: 466), horizontal: .compact, vertical: .compact,
               safeArea: EdgeInsets(top: 0, leading: bar, bottom: 34, trailing: 0)),
@@ -236,10 +236,9 @@ struct DuoSimulation: Equatable {
               safeArea: EdgeInsets(top: 0, leading: bar, bottom: 20, trailing: 0), fillsScreen: false),
         .init(name: "iPhone", size: CGSize(width: 402, height: 874), horizontal: .compact, vertical: .regular,
               safeArea: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0)),
+        // iOS insets both sides alike, whichever holds the Dynamic Island, so this is also the
+        // island on the left.
         .init(name: "iPhoneLandscape", size: CGSize(width: 874, height: 402), horizontal: .compact, vertical: .compact,
-              safeArea: EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)),
-        // The Dynamic Island on the left. iOS insets both sides alike, whichever holds the island.
-        .init(name: "iPhoneLandscapeIslandLeft", size: CGSize(width: 874, height: 402), horizontal: .compact, vertical: .compact,
               safeArea: EdgeInsets(top: 0, leading: 62, bottom: 20, trailing: 62)),
         .init(name: "proMaxLandscape", size: CGSize(width: 956, height: 440), horizontal: .regular, vertical: .compact,
               safeArea: EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)),

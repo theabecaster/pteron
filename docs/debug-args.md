@@ -34,14 +34,13 @@ builds.
   | `book` | 951×669 | 0, 0, 20, 84 | The same, partly folded: a 40 pt fold from 455.5 |
   | `unfoldedPortrait` | 669×951 | 44, 0, 20, 0 | Inner screen, portrait, flat fold at 475.5 |
   | `tabletop` | 669×951 | 44, 0, 20, 0 | The same, partly folded: a 40 pt fold from 455.5 |
-  | `folded` | 466×678 | 0, 0, 20, 84 | Outer screen, bar on the right |
-  | `foldedLandscape` | 678×466 | 0, 0, 20, 84 | Outer screen on its side, bar on the right |
+  | `folded` | 466×678 | 0, 0, 34, 84 | Outer screen, bar on the right |
+  | `foldedLandscape` | 678×466 | 0, 0, 34, 84 | Outer screen on its side, bar on the right |
   | `foldedLandscapeBarLeft` | 678×466 | 0, 84, 34, 0 | Outer screen on its side the other way, bar on the left |
   | `halfWindow` | 475×669 | 0, 0, 20, 84 | Right half of the inner screen in Split View |
   | `halfWindowBarLeft` | 475×669 | 0, 84, 20, 0 | Left half of the inner screen in Split View, bar on the left |
   | `iPhone` | 402×874 | 62, 0, 34, 0 | iPhone, portrait |
-  | `iPhoneLandscape` | 874×402 | 0, 62, 21, 62 | iPhone, landscape |
-  | `iPhoneLandscapeIslandLeft` | 874×402 | 0, 62, 20, 62 | iPhone, landscape, Dynamic Island on the left |
+  | `iPhoneLandscape` | 874×402 | 0, 62, 20, 62 | iPhone, landscape, Dynamic Island on either side |
   | `proMaxLandscape` | 956×440 | 0, 62, 21, 62 | iPhone Pro Max, landscape |
 
   - **The insets reach the sidebar and the tab.** The root is laid out inside them, so they
@@ -50,14 +49,15 @@ builds.
     and sidebar rows stay inside, backgrounds run under them to the window's edge. With the
     simulated keyboard up the bottom inset is gone, as under a real keyboard.
   - **Where the numbers come from.** Measured in the iOS 27.2 simulators as the window's
-    `safeAreaInsets`: `foldedLandscapeBarLeft` on the iPhone Duo with the interface in
+    `safeAreaInsets`: the outer screen (`folded`, `foldedLandscape`, `foldedLandscapeBarLeft`)
+    on the iPhone Duo, 34 pt at the bottom; `foldedLandscapeBarLeft` with the interface in
     `landscapeRight` (`verticalBarEdge` is then leading; in `landscapeLeft` the same 84 pt are
-    trailing), `iPhoneLandscapeIslandLeft` on the iPhone 17, which reports the same insets in
-    both landscape orientations, so the island's side changes nothing. `halfWindowBarLeft` is
+    trailing). `iPhoneLandscape` on the iPhone 17, which reports the same insets in both
+    landscape orientations, so the island's side changes nothing. `halfWindowBarLeft` is
     not measured, since the Duo simulator shows the outer screen only: it is `halfWindow` with
     the bar on the other side, the outer edge, where Apple puts it in Split View
-    ([duo-layout.md](duo-layout.md)). The other postures' insets are rough: the Duo simulator's
-    outer screen measures 34 pt at the bottom, not 20, and the iPhone 17 in landscape 20, not 21.
+    ([duo-layout.md](duo-layout.md)). The inner screen's insets, `iPhone` and `proMaxLandscape`
+    are rough.
   - **Not simulated.** The vertical bar itself: `verticalBarEdge` comes from the real device,
     so the sidebar toggle and the tab's actions stay in the title bar and the inset is empty.
   - **Posture pixel matrix.** A change to layout is compared with its base in every posture

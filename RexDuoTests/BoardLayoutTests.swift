@@ -5,9 +5,9 @@ import Testing
 /// The board's layout for a number of agents and a window: it never needs to scroll.
 struct BoardLayoutTests {
     /// The folded Duo inside its vertical bar and home indicator, upright and on its side.
-    private let tall = CGSize(width: 382, height: 658)
-    private let wide = CGSize(width: 594, height: 446)
-    private let narrow = CGSize(width: 233, height: 658)
+    private let tall = CGSize(width: 382, height: 644)
+    private let wide = CGSize(width: 594, height: 432)
+    private let narrow = CGSize(width: 233, height: 644)
 
     private func decide(_ n: Int, _ size: CGSize, footer: Bool = false, scale: CGFloat = 1) -> BoardLayout {
         BoardLayout.decide(count: n, size: size, hasFooter: footer, typeScale: scale)

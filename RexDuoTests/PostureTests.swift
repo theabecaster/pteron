@@ -140,10 +140,10 @@ struct DuoSimulationTests {
         .init(name: "tabletop", size: CGSize(width: 669, height: 951), insets: [44, 0, 20, 0],
               fold: CGRect(x: 0, y: 455.5, width: 669, height: 40), foldActive: true,
               root: CGSize(width: 669, height: 887), inline: true),
-        .init(name: "folded", size: CGSize(width: 466, height: 678), insets: [0, 0, 20, 84],
-              root: CGSize(width: 382, height: 658), inline: false),
-        .init(name: "foldedLandscape", size: CGSize(width: 678, height: 466), insets: [0, 0, 20, 84],
-              root: CGSize(width: 594, height: 446), inline: false),
+        .init(name: "folded", size: CGSize(width: 466, height: 678), insets: [0, 0, 34, 84],
+              root: CGSize(width: 382, height: 644), inline: false),
+        .init(name: "foldedLandscape", size: CGSize(width: 678, height: 466), insets: [0, 0, 34, 84],
+              root: CGSize(width: 594, height: 432), inline: false),
         .init(name: "foldedLandscapeBarLeft", size: CGSize(width: 678, height: 466), insets: [0, 84, 34, 0],
               root: CGSize(width: 594, height: 432), inline: false),
         .init(name: "halfWindow", size: CGSize(width: 475, height: 669), insets: [0, 0, 20, 84], fills: false,
@@ -152,9 +152,7 @@ struct DuoSimulationTests {
               root: CGSize(width: 391, height: 649), inline: false),
         .init(name: "iPhone", size: CGSize(width: 402, height: 874), insets: [62, 0, 34, 0],
               root: CGSize(width: 402, height: 778), inline: false),
-        .init(name: "iPhoneLandscape", size: CGSize(width: 874, height: 402), insets: [0, 62, 21, 62],
-              root: CGSize(width: 750, height: 381), inline: true),
-        .init(name: "iPhoneLandscapeIslandLeft", size: CGSize(width: 874, height: 402), insets: [0, 62, 20, 62],
+        .init(name: "iPhoneLandscape", size: CGSize(width: 874, height: 402), insets: [0, 62, 20, 62],
               root: CGSize(width: 750, height: 382), inline: true),
         .init(name: "proMaxLandscape", size: CGSize(width: 956, height: 440), insets: [0, 62, 21, 62],
               root: CGSize(width: 832, height: 419), inline: true),
@@ -217,8 +215,7 @@ struct DuoSimulationTests {
     /// by its width alone and stays in view under the bar: the bar or the island is on the left.
     @Test func thePosturesWithTheBarOrTheIslandOnTheLeft() {
         let left = DuoSimulation.postures.filter { $0.safeArea.leading > 0 }.map(\.name)
-        #expect(left == ["foldedLandscapeBarLeft", "halfWindowBarLeft", "iPhoneLandscape", "iPhoneLandscapeIslandLeft",
-                         "proMaxLandscape"])
+        #expect(left == ["foldedLandscapeBarLeft", "halfWindowBarLeft", "iPhoneLandscape", "proMaxLandscape"])
         for name in left {
             let inset = DuoSimulation.named(name)?.insets().leading ?? 0
             // A sidebar at the safe area's edge, moved left by its width and its shadow's 24 pt.

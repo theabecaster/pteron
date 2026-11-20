@@ -135,7 +135,7 @@ struct TentDetectorTests {
     /// Under `-simulateDuo` the posture says itself whether it could be a tent.
     @Test func simulatedPosturesAnswerForThemselves() {
         let enters = ["folded": true, "foldedLandscape": true, "foldedLandscapeBarLeft": true, "iPhone": true,
-                      "iPhoneLandscape": true, "iPhoneLandscapeIslandLeft": true, "proMaxLandscape": true,
+                      "iPhoneLandscape": true, "proMaxLandscape": true,
                       "halfWindow": false, "halfWindowBarLeft": false, "unfolded": false, "unfoldedPortrait": false,
                       "book": false, "tabletop": false]
         #expect(Set(enters.keys) == Set(DuoSimulation.postures.map(\.name)))
