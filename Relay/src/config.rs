@@ -126,4 +126,18 @@ mod tests {
             [a, None, b]
         );
     }
+
+    #[test]
+    fn the_state_folder_and_the_log_are_where_this_system_keeps_them() {
+        let state = state_dir("An App", "a-binary");
+        if cfg!(target_os = "macos") {
+            assert_eq!(state, home().join("Library/Application Support/An App"));
+            assert_eq!(default_state_dir(), home().join("Library/Application Support").join(EARLIER_NAME));
+            assert_eq!(default_log_file(), home().join("Library/Logs").join(format!("{EARLIER_NAME}.log")));
+        } else if cfg!(target_os = "linux") {
+            assert!(state.is_absolute() && state.ends_with("a-binary"), "{state:?}");
+            assert!(default_state_dir().ends_with("rex-duo-helper"));
+            assert_eq!(default_log_file(), default_state_dir().join("helper.log"));
+        }
+    }
 }

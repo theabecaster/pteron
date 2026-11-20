@@ -836,6 +836,16 @@ pub fn open_app(opening: Opening) -> i32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_process_is_alive_until_it_has_ended() {
+        assert!(pid_alive(u64::from(std::process::id())));
+        let mut child = crate::tools::command("sh").unwrap().args(["-c", "exit 0"]).spawn().unwrap();
+        let pid = u64::from(child.id());
+        assert!(pid_alive(pid));
+        child.wait().unwrap();
+        assert!(!pid_alive(pid));
+    }
+
     fn running(update: Option<&str>, error: Option<&str>) -> Option<Running> {
         Some(Running {
             pid: 1,

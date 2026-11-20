@@ -239,4 +239,31 @@ mod tests {
         assert!(!p("unix:///run/user/1000/rex/server.sock").same(&p("unix:///run/user/1001/rex/server.sock")));
         assert!(!p("unix:///run/user/1000/rex/server.sock").same(&p("https://rex-box.example.ts.net")));
     }
+
+    #[test]
+    fn rexs_socket_is_where_this_system_has_it() {
+        let socket = default_socket();
+        assert!(socket.is_absolute() && socket.ends_with("rex/server.sock"), "{socket:?}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(socket, home().join("Library/Application Support/rex/server.sock"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_is_a_file_someone_may_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("discovery-program-{}-{}", std::process::id(), crate::util::now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rex");
+        std::fs::write(&file, "").unwrap();
+        for (mode, runs) in [(0o644, false), (0o600, false), (0o755, true), (0o700, true), (0o001, true)] {
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(is_executable(&file), runs, "{mode:o}");
+        }
+        // A folder has the bits and is no program; nor is a name with nothing behind it.
+        assert!(!is_executable(&dir));
+        assert!(!is_executable(&dir.join("missing")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

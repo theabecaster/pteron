@@ -269,3 +269,19 @@ impl Conn {
         reason
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_relay_names_the_system_it_runs_on() {
+        let me = Identity::default();
+        assert_eq!((me.kind.as_str(), me.name.as_str()), ("other", "rex-push-relay"));
+        if cfg!(target_os = "macos") {
+            assert_eq!(me.platform, "macos");
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(me.platform, "linux");
+        }
+    }
+}
