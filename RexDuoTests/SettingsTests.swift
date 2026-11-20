@@ -86,6 +86,10 @@ import UIKit
 
     // MARK: The Navigation setting
 
+    @Test func theNavigationRowWaitsForTabMode() {
+        #expect(NavigationStyle.isAvailable == false)
+    }
+
     @Test func navigationIsTheSidebarUntilTabsIsPicked() throws {
         let suite = "settings-nav-\(UUID().uuidString)"
         let d = try #require(UserDefaults(suiteName: suite))
@@ -142,7 +146,8 @@ import UIKit
     }
 
     /// VoiceOver reads the row as "Navigation" with the style picked.
-    @Test func theNavigationRowSpeaksItsNameAndValue() async throws {
+    /// Runs once tab mode sets `NavigationStyle.isAvailable`; until then the row isn't shown.
+    @Test(.enabled(if: NavigationStyle.isAvailable)) func theNavigationRowSpeaksItsNameAndValue() async throws {
         try #require(Hosted.setAccessibility(on: true), "the simulator's accessibility runtime")
         defer { _ = Hosted.setAccessibility(on: false) }
         let m = try model()

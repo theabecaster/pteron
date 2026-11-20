@@ -67,6 +67,11 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
 enum NavigationStyle: String, CaseIterable, Identifiable {
     case sidebar, tabs
 
+    /// Whether Settings offers the choice. False until tab mode is wired (the tab-mode branch
+    /// sets it true in the same change), so no row ever does nothing. A build constant, not a
+    /// setting.
+    static let isAvailable = false
+
     var id: String { rawValue }
     var title: String {
         switch self {

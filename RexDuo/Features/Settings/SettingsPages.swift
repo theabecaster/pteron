@@ -109,6 +109,7 @@ struct AppearancePage: View {
             }
             .settingsRows(theme)
 
+            if NavigationStyle.isAvailable {
             Section {
                 Picker(Self.navigationLabel, selection: $p.navigation) {
                     ForEach(NavigationStyle.allCases) { Text($0.title).tag($0) }
@@ -117,6 +118,7 @@ struct AppearancePage: View {
                 SettingsFooter("Sidebar lists machines, sessions and tabs at the side. Tabs puts the session's tabs in a strip above the pane, as on the Mac.", theme)
             }
             .settingsRows(theme)
+            }
         }
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
