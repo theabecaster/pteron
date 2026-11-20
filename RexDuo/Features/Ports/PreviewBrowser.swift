@@ -1,0 +1,491 @@
+import UIKit
+import WebKit
+
+/// What the preview browser opens: the address it loads, and the address it shows.
+struct PreviewPage: Equatable {
+    /// What loads: the page on the phone's own listener, or the address the computer shares.
+    var load: URL
+    /// The address as the user knows it from the computer (`localhost:3000`, or a tapped link's
+    /// own host and port). The chrome shows this and never `load`.
+    var shown: String
+    /// The scheme of the address as the user knows it.
+    var scheme = "http"
+}
+
+/// What the preview browser shows and copies for a page. Pure, so it is tested
+/// (docs/terminal.md, Ports).
+enum PreviewAddress {
+    /// The page on screen is the opened server's own: the same scheme, host and port as what
+    /// was loaded. A link that led to another site is not.
+    static func isOwn(_ current: URL?, _ page: PreviewPage) -> Bool {
+        guard let current else { return true }
+        return origin(current) == origin(page.load)
+    }
+
+    /// The host line: the computer's address for the server's own pages, whatever loads
+    /// underneath; another site's own host for a link that left the server.
+    static func display(_ current: URL?, _ page: PreviewPage) -> String {
+        guard let current, !isOwn(current, page), let host = current.host else { return page.shown }
+        return current.port.map { "\(host):\($0)" } ?? host
+    }
+
+    /// Copy Link and Share: the address as shown, with the path of the page on screen. It is
+    /// the address that works on the computer.
+    static func link(_ current: URL?, _ page: PreviewPage) -> String {
+        guard isOwn(current, page) else { return current?.absoluteString ?? "" }
+        return "\(page.scheme)://\(page.shown)\(current.map(rest) ?? "/")"
+    }
+
+    static func errorTitle(_ current: URL?, _ page: PreviewPage) -> String {
+        "Couldn't load \(display(current, page))"
+    }
+
+    /// A failed load shows the error page, except one the user or a download ended.
+    static func showsError(_ error: Error) -> Bool {
+        let e = error as NSError
+        if e.domain == NSURLErrorDomain, e.code == NSURLErrorCancelled { return false }
+        // "Frame load interrupted": the response became a download.
+        if e.domain == "WebKitErrorDomain", e.code == 102 { return false }
+        return true
+    }
+
+    /// A response is handed to the share sheet when the page can't show it or the server says
+    /// it is an attachment.
+    static func isDownload(canShow: Bool, disposition: String?) -> Bool {
+        if !canShow { return true }
+        return disposition?.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("attachment") ?? false
+    }
+
+    /// Schemes a page may navigate to inside the view.
+    static func loads(_ url: URL?) -> Bool {
+        ["http", "https", "about", "blob", "data"].contains(url?.scheme?.lowercased() ?? "")
+    }
+
+    private static func origin(_ u: URL) -> String {
+        let scheme = u.scheme?.lowercased() ?? ""
+        return "\(scheme)://\(u.host?.lowercased() ?? ""):\(u.port ?? (scheme == "https" ? 443 : 80))"
+    }
+
+    private static func rest(_ u: URL) -> String {
+        guard let c = URLComponents(url: u, resolvingAgainstBaseURL: false) else { return "/" }
+        var r = c.percentEncodedPath.isEmpty ? "/" : c.percentEncodedPath
+        if let q = c.percentEncodedQuery { r += "?" + q }
+        if let f = c.percentEncodedFragment { r += "#" + f }
+        return r
+    }
+}
+
+/// The app's own browser for a computer's dev server: one `WKWebView`, made when the page opens
+/// and let go when it closes, under a small bar: Done, the page's title over the computer's
+/// address, a menu (Copy Link, Share), and back, forward and reload.
+///
+/// It has no button that leaves for an address only this app can reach. Downloads go to the
+/// share sheet, a link for a new window opens here, a sign-in a server asks for gets a small
+/// form, and a load that fails shows "Couldn't load localhost:3000" with Retry. Done or a swipe
+/// down closes it, and the pane that had the keyboard gets it back.
+@MainActor
+final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate,
+    UIAdaptivePresentationControllerDelegate {
+    let page: PreviewPage
+    private let onClose: () -> Void
+    private var closed = false
+    private(set) var webView: WKWebView?
+    private var observers: [NSKeyValueObservation] = []
+    /// The pane's view that held the keyboard when the page came up.
+    private weak var keyboardHolder: UIResponder?
+    /// The load that failed, for Retry.
+    private var failed: URL?
+    private var downloads: [ObjectIdentifier: URL] = [:]
+
+    private let titleLabel = UILabel()
+    private let hostLabel = UILabel()
+    private let errorView = UIView()
+    private let errorTitle = UILabel()
+    private let errorDetail = UILabel()
+    private lazy var backItem = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goBack() })
+    private lazy var forwardItem = UIBarButtonItem(image: UIImage(systemName: "chevron.forward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goForward() })
+    private lazy var reloadItem = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"), primaryAction: UIAction { [weak self] _ in self?.reload() })
+    /// Called after the chrome, the error page or what is shown over the page changed, and
+    /// `gone` when the browser is released: tests wait on these, not on the clock.
+    var onChange: (() -> Void)?
+    var gone: (@Sendable () -> Void)?
+    /// Copies a link. Tests put their own here.
+    var copy: (String) -> Void = { UIPasteboard.general.string = $0 }
+
+    /// The one shown now; it keeps itself alive while up.
+    private static var current: PreviewBrowser?
+
+    init(page: PreviewPage, onClose: @escaping () -> Void) {
+        self.page = page
+        self.onClose = onClose
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Shows the page over `view`'s window. False when there is no window to present from.
+    @discardableResult
+    static func present(_ page: PreviewPage, over view: UIView?, onClose: @escaping () -> Void) -> Bool {
+        guard var top = view?.window?.rootViewController else { return false }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        let browser = PreviewBrowser(page: page, onClose: onClose)
+        if let view, let holder = UIResponder.rexCurrentFirstResponder() as? UIView, holder.isDescendant(of: view) {
+            browser.keyboardHolder = holder
+        }
+        let nav = UINavigationController(rootViewController: browser)
+        nav.isToolbarHidden = false
+        // Opaque bars with the page between them: a page is any color, and the bars' text
+        // must read over none of it.
+        let bar = UINavigationBarAppearance()
+        bar.configureWithOpaqueBackground()
+        nav.navigationBar.standardAppearance = bar
+        nav.navigationBar.scrollEdgeAppearance = bar
+        nav.navigationBar.compactAppearance = bar
+        let tools = UIToolbarAppearance()
+        tools.configureWithOpaqueBackground()
+        nav.toolbar.standardAppearance = tools
+        nav.toolbar.scrollEdgeAppearance = tools
+        nav.toolbar.compactAppearance = tools
+        current = browser
+        top.present(nav, animated: true)
+        nav.presentationController?.delegate = browser
+        return true
+    }
+
+    // MARK: View
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        let web = WKWebView(frame: view.bounds, configuration: config)
+        web.translatesAutoresizingMaskIntoConstraints = false
+        web.navigationDelegate = self
+        web.uiDelegate = self
+        web.allowsBackForwardNavigationGestures = true
+        view.addSubview(web)
+        NSLayoutConstraint.activate([
+            web.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            web.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            web.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        webView = web
+        observers = [
+            web.observe(\.title) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
+            web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
+            web.observe(\.canGoBack) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
+            web.observe(\.canGoForward) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
+        ]
+        buildChrome()
+        buildErrorView()
+        refresh()
+        web.load(URLRequest(url: page.load))
+    }
+
+    private func buildChrome() {
+        titleLabel.font = .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold)
+        titleLabel.adjustsFontForContentSizeCategory = true
+        titleLabel.textAlignment = .center
+        titleLabel.lineBreakMode = .byTruncatingTail
+        hostLabel.font = .preferredFont(forTextStyle: .caption2)
+        hostLabel.adjustsFontForContentSizeCategory = true
+        hostLabel.textColor = .secondaryLabel
+        hostLabel.textAlignment = .center
+        hostLabel.lineBreakMode = .byTruncatingMiddle
+        let stack = UIStackView(arrangedSubviews: [titleLabel, hostLabel])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.isAccessibilityElement = true
+        navigationItem.titleView = stack
+        navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.done() })
+        let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: makeMenu())
+        more.accessibilityLabel = "More"
+        navigationItem.rightBarButtonItem = more
+        backItem.accessibilityLabel = "Back"
+        forwardItem.accessibilityLabel = "Forward"
+        reloadItem.accessibilityLabel = "Reload"
+        toolbarItems = [backItem, UIBarButtonItem(systemItem: .fixedSpace), forwardItem, UIBarButtonItem(systemItem: .flexibleSpace), reloadItem]
+        if let fixed = toolbarItems?[1] { fixed.width = 28 }
+    }
+
+    private func makeMenu() -> UIMenu {
+        UIMenu(children: [
+            UIAction(title: "Copy Link", image: UIImage(systemName: "link")) { [weak self] _ in self?.copyLink() },
+            UIAction(title: "Share…", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.share() },
+        ])
+    }
+
+    private func buildErrorView() {
+        errorView.backgroundColor = .systemBackground
+        errorView.isHidden = true
+        errorView.frame = view.bounds
+        errorView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        errorTitle.font = .preferredFont(forTextStyle: .headline)
+        errorTitle.adjustsFontForContentSizeCategory = true
+        errorTitle.textAlignment = .center
+        errorTitle.numberOfLines = 0
+        errorDetail.font = .preferredFont(forTextStyle: .subheadline)
+        errorDetail.adjustsFontForContentSizeCategory = true
+        errorDetail.textColor = .secondaryLabel
+        errorDetail.textAlignment = .center
+        errorDetail.numberOfLines = 0
+        var style = UIButton.Configuration.tinted()
+        style.title = "Retry"
+        style.cornerStyle = .capsule
+        let retry = UIButton(configuration: style, primaryAction: UIAction { [weak self] _ in self?.retry() })
+        let stack = UIStackView(arrangedSubviews: [errorTitle, errorDetail, retry])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 10
+        stack.setCustomSpacing(18, after: errorDetail)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        errorView.addSubview(stack)
+        view.addSubview(errorView)
+        NSLayoutConstraint.activate([
+            stack.centerYAnchor.constraint(equalTo: errorView.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: errorView.layoutMarginsGuide.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: errorView.layoutMarginsGuide.trailingAnchor, constant: -16),
+        ])
+    }
+
+    /// The title, the address and the arrows, from the page on screen.
+    private func refresh() {
+        let current = failed ?? webView?.url
+        let host = PreviewAddress.display(current, page)
+        // A failed load has no title of its own: the page before it must not name it.
+        let title = failed == nil ? (webView?.title.flatMap { $0.isEmpty ? nil : $0 } ?? host) : host
+        titleLabel.text = title
+        hostLabel.text = host
+        hostLabel.isHidden = title == host
+        navigationItem.titleView?.accessibilityLabel = "\(title), \(host)"
+        (navigationItem.titleView as? UIStackView)?.sizeToFit()
+        backItem.isEnabled = webView?.canGoBack ?? false
+        forwardItem.isEnabled = webView?.canGoForward ?? false
+        onChange?()
+    }
+
+    deinit { gone?() }
+
+    // MARK: What the chrome shows (tests read these)
+
+    var shownTitle: String? { titleLabel.text }
+    var shownHost: String? { hostLabel.text }
+    var shownError: String? { errorView.isHidden ? nil : errorTitle.text }
+
+    // MARK: Actions
+
+    private func reload() {
+        if failed != nil { retry() } else { webView?.reload() }
+    }
+
+    private func retry() {
+        let url = failed ?? webView?.url ?? page.load
+        failed = nil
+        errorView.isHidden = true
+        webView?.load(URLRequest(url: url))
+    }
+
+    func copyLink() {
+        copy(PreviewAddress.link(failed ?? webView?.url, page))
+    }
+
+    private func share() {
+        guard let url = URL(string: PreviewAddress.link(failed ?? webView?.url, page)) else { return }
+        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        present(sheet, animated: true)
+    }
+
+    private func done() {
+        (navigationController ?? self).dismiss(animated: true)
+        finish()
+    }
+
+    nonisolated func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        MainActor.assumeIsolated { finish() }
+    }
+
+    /// Closes the page as Done does, for a caller that isn't a tap.
+    func close() { done() }
+
+    /// The page is gone: the web view is let go, so its process can end, and the forward closes.
+    private func finish() {
+        guard !closed else { return }
+        closed = true
+        observers = []
+        if let web = webView {
+            web.stopLoading()
+            web.navigationDelegate = nil
+            web.uiDelegate = nil
+            web.removeFromSuperview()
+        }
+        webView = nil
+        for file in downloads.values { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        downloads = [:]
+        onClose()
+        if Self.current === self { Self.current = nil }
+        if let holder = keyboardHolder { Self.giveKeyboardBack(to: holder, tries: 20) }
+    }
+
+    /// Once the page is gone (Done calls `finish` before the page slides away), the pane takes
+    /// the keyboard again, unless something else took it or the pane left the screen meanwhile.
+    private static func giveKeyboardBack(to holder: UIResponder, tries: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak holder] in
+            guard let view = holder as? UIView, let window = view.window, !view.isFirstResponder,
+                  UIResponder.rexCurrentFirstResponder() == nil else { return }
+            if window.rootViewController?.presentedViewController != nil {
+                if tries > 0 { giveKeyboardBack(to: view, tries: tries - 1) }
+                return
+            }
+            _ = view.becomeFirstResponder()
+        }
+    }
+
+    // MARK: Loads
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        failed = nil
+        errorView.isHidden = true
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        show(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        show(error)
+    }
+
+    /// The error page, in the app's own words: the address as the user knows it, never the one
+    /// that loads underneath.
+    private func show(_ error: Error) {
+        guard PreviewAddress.showsError(error) else { return }
+        let e = error as NSError
+        failed = (e.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? webView?.url ?? page.load
+        errorTitle.text = PreviewAddress.errorTitle(failed, page)
+        errorDetail.text = Self.reason(e)
+        errorView.isHidden = false
+        refresh()
+    }
+
+    /// Why a load failed, in a few words that name no address.
+    static func reason(_ e: NSError) -> String {
+        guard e.domain == NSURLErrorDomain else { return "The page didn't load." }
+        switch e.code {
+        case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost: return "Nothing answered there. Is the server still running?"
+        case NSURLErrorTimedOut: return "It took too long to answer."
+        case NSURLErrorNotConnectedToInternet: return "The phone is offline."
+        case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid:
+            return "Its secure connection couldn't be trusted."
+        default: return "The page didn't load."
+        }
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+        if action.shouldPerformDownload { return .download }
+        return PreviewAddress.loads(action.request.url) ? .allow : .cancel
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        let disposition = (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")
+        guard response.isForMainFrame else { return .allow }
+        return PreviewAddress.isDownload(canShow: response.canShowMIMEType, disposition: disposition) ? .download : .allow
+    }
+
+    /// A link for a new window or tab opens here: there is one view.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if action.targetFrame == nil, PreviewAddress.loads(action.request.url) { webView.load(action.request) }
+        return nil
+    }
+
+    // MARK: Sign-in
+
+    func webView(_ webView: WKWebView, respondTo challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        let method = challenge.protectionSpace.authenticationMethod
+        guard method == NSURLAuthenticationMethodHTTPBasic || method == NSURLAuthenticationMethodHTTPDigest,
+              challenge.previousFailureCount < 3 else { return (.performDefaultHandling, nil) }
+        let host = PreviewAddress.display(webView.url, page)
+        return await withCheckedContinuation { answer in
+            let alert = UIAlertController(title: "Sign in to \(host)", message: challenge.protectionSpace.realm, preferredStyle: .alert)
+            alert.addTextField { $0.placeholder = "Name"; $0.autocapitalizationType = .none; $0.autocorrectionType = .no; $0.textContentType = .username }
+            alert.addTextField { $0.placeholder = "Password"; $0.isSecureTextEntry = true; $0.textContentType = .password }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in answer.resume(returning: (.cancelAuthenticationChallenge, nil)) })
+            alert.addAction(UIAlertAction(title: "Sign In", style: .default) { [weak alert] _ in
+                let user = alert?.textFields?.first?.text ?? "", password = alert?.textFields?.last?.text ?? ""
+                answer.resume(returning: (.useCredential, URLCredential(user: user, password: password, persistence: .forSession)))
+            })
+            present(alert, animated: true)
+            onChange?()
+        }
+    }
+
+    // MARK: Page dialogs
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in done.resume() })
+            present(alert, animated: true)
+        }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async -> Bool {
+        await withCheckedContinuation { done in
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in done.resume(returning: false) })
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in done.resume(returning: true) })
+            present(alert, animated: true)
+        }
+    }
+
+    // MARK: Downloads
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String) async -> URL? {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString)", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil else { return nil }
+        let name = (suggestedFilename as NSString).lastPathComponent
+        let file = folder.appendingPathComponent(name.isEmpty ? "download" : name)
+        downloads[ObjectIdentifier(download)] = file
+        return file
+    }
+
+    /// The file goes to the share sheet, and leaves the phone's temporary folder with it.
+    func downloadDidFinish(_ download: WKDownload) {
+        guard let file = downloads.removeValue(forKey: ObjectIdentifier(download)) else { return }
+        let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        sheet.completionWithItemsHandler = { _, _, _, _ in try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        guard !closed, presentedViewController == nil else {
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+            return
+        }
+        present(sheet, animated: true)
+        onChange?()
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        if let file = downloads.removeValue(forKey: ObjectIdentifier(download)) {
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+        }
+        Notice.shared.show("Couldn't download that file.", style: .neutral)
+    }
+}
+
+private extension UIFont {
+    func withTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
+        fontDescriptor.withSymbolicTraits(traits).map { UIFont(descriptor: $0, size: 0) } ?? self
+    }
+}

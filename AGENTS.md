@@ -72,7 +72,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   first-run guide and Setup Guide's checklist; docs/architecture.md, First run),
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection, the file
-  browser of a pane and Insert Path; docs/terminal.md, Files), Ports (a computer's dev server in Safari's view through a Rex dial
+  browser of a pane and Insert Path; docs/terminal.md, Files), Ports (a computer's dev server in the app's own browser through a Rex dial
   tunnel: the pane menu's row and tapped `localhost` links; docs/terminal.md, Ports), GoTo (Go to
   Anything, Change Session and the command palette, and the questions of actions the phone ran;
   docs/goto.md).

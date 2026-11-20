@@ -1,6 +1,5 @@
 #if DEBUG
 import RexKit
-import SafariServices
 import UIKit
 
 /// `-portsTest '<step>;<step>…'` (Debug builds, testing): drives ports in the active pane once it
@@ -11,7 +10,7 @@ import UIKit
 /// - `link:<url>`: a tapped link; `yes:<url>` answers its question with Open, `no:<url>` with
 ///   Cancel.
 /// - `fetch:<path>`: loads the open page's `path` through the forward from inside the app, and
-///   logs `PORTS_FETCH <status> <bytes>`, since Safari's view can't be read.
+///   logs `PORTS_FETCH <status> <bytes>`, without reading the browser.
 /// - `parallel:<n>`: that many fetches at once.
 /// - `done`: Done in the browser.
 /// - `wait:<seconds>`: pause.
@@ -74,10 +73,7 @@ enum PortsTest {
             var top = ScreenInspector.keyWindow?.rootViewController
             while let next = top?.presentedViewController { top = next }
             NSLog("PORTS_TEST top %@", String(describing: top.map { type(of: $0) }))
-            if let safari = top as? SFSafariViewController {
-                safari.dismiss(animated: true)
-                safari.delegate?.safariViewControllerDidFinish?(safari)
-            }
+            if let browser = (top as? UINavigationController)?.viewControllers.first as? PreviewBrowser { browser.close() }
         case "wait":
             try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
         default:

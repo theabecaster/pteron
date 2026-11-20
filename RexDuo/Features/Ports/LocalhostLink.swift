@@ -13,6 +13,10 @@ struct LocalhostLink: Equatable {
     var port: Int
     /// Path, query and fragment, as given.
     var rest: String
+    /// The address as the user knows it from the computer, which the browser's chrome shows
+    /// whatever it loads underneath: the link's own host and port as written
+    /// (`0.0.0.0:8000`, `[::1]:4000`, a LAN address), or `localhost:<port>` from a list.
+    var shown: String
 
     init?(_ url: URL) {
         guard let (scheme, c, bare) = Self.parts(url) else { return nil }
@@ -42,6 +46,7 @@ struct LocalhostLink: Equatable {
         self.scheme = scheme
         self.port = port
         self.rest = rest
+        shown = Self.written(bare, port)
     }
 
     /// A web address on a private network address (`http://10.0.0.246:3000`, as `next dev` and
@@ -58,6 +63,7 @@ struct LocalhostLink: Equatable {
         dialHost = bare
         self.port = port
         self.rest = rest
+        shown = Self.written(bare, port)
     }
 
     /// A menu open: plain http on `localhost`.
@@ -67,6 +73,12 @@ struct LocalhostLink: Equatable {
         self.dialHost = dialHost
         self.port = port
         rest = "/"
+        shown = "localhost:\(port)"
+    }
+
+    /// A host and port as an address reads: an IPv6 host in brackets.
+    static func written(_ bare: String, _ port: Int) -> String {
+        bare.contains(":") ? "[\(bare)]:\(port)" : "\(bare):\(port)"
     }
 
     /// The address the browser opens: the same page on the phone's listener.

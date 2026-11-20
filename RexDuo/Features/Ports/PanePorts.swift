@@ -1,5 +1,4 @@
 import RexKit
-import SafariServices
 import UIKit
 
 /// One pane's ports: it follows them while the pane is on screen, routes the pane's tapped
@@ -144,78 +143,13 @@ final class PanePorts {
             #endif
             if let present { return present(url) }
             let opened = forward.forward
-            guard BrowserPresenter.present(url, over: view, onClose: { forward.close(opened) }) else {
+            // The chrome names the address as the user knows it, never the phone's own listener.
+            let page = PreviewPage(load: url, shown: link.shown, scheme: link.scheme)
+            guard PreviewBrowser.present(page, over: view, onClose: { forward.close(opened) }) else {
                 forward.close(opened)
                 notify("Couldn't open \(link.name): its pane is no longer on screen. Show the pane, then try again.")
                 return
             }
-        }
-    }
-}
-
-/// The page, in Safari's view inside the app. Its Done, or a swipe down, ends the forward. The
-/// pane that had the keyboard when the page came up gets it back when the page goes: opening a
-/// link leaves the keyboard as it was.
-@MainActor
-final class BrowserPresenter: NSObject, SFSafariViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
-    private let onClose: () -> Void
-    private var closed = false
-    /// The pane's view that held the keyboard when the page came up.
-    private weak var keyboardHolder: UIResponder?
-    /// The one shown now; it keeps itself alive while up.
-    private static var current: BrowserPresenter?
-
-    private init(onClose: @escaping () -> Void) {
-        self.onClose = onClose
-    }
-
-    /// False when there is no window to present from.
-    @discardableResult
-    static func present(_ url: URL, over view: UIView?, onClose: @escaping () -> Void) -> Bool {
-        guard var top = view?.window?.rootViewController else { return false }
-        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-        let p = BrowserPresenter(onClose: onClose)
-        if let view, let holder = UIResponder.rexCurrentFirstResponder() as? UIView, holder.isDescendant(of: view) {
-            p.keyboardHolder = holder
-        }
-        let config = SFSafariViewController.Configuration()
-        config.entersReaderIfAvailable = false
-        let safari = SFSafariViewController(url: url, configuration: config)
-        safari.dismissButtonStyle = .done
-        safari.delegate = p
-        current = p
-        top.present(safari, animated: true)
-        safari.presentationController?.delegate = p
-        return true
-    }
-
-    nonisolated func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-        MainActor.assumeIsolated { finish() }
-    }
-
-    nonisolated func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        MainActor.assumeIsolated { finish() }
-    }
-
-    private func finish() {
-        guard !closed else { return }
-        closed = true
-        onClose()
-        if Self.current === self { Self.current = nil }
-        if let holder = keyboardHolder { Self.giveKeyboardBack(to: holder, tries: 20) }
-    }
-
-    /// Once the page is gone (Done calls `finish` before the page slides away), the pane takes
-    /// the keyboard again, unless something else took it or the pane left the screen meanwhile.
-    private static func giveKeyboardBack(to holder: UIResponder, tries: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak holder] in
-            guard let view = holder as? UIView, let window = view.window, !view.isFirstResponder,
-                  UIResponder.rexCurrentFirstResponder() == nil else { return }
-            if window.rootViewController?.presentedViewController != nil {
-                if tries > 0 { giveKeyboardBack(to: view, tries: tries - 1) }
-                return
-            }
-            _ = view.becomeFirstResponder()
         }
     }
 }

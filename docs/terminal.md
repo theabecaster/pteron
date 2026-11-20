@@ -943,7 +943,7 @@ again, and never moves or resizes one (`Features/Tab/TabPresentation.swift`, `Fl
 ## Ports
 
 A program in a local pane that listens on a TCP port (`npm run dev` on `localhost:5173`) opens on
-the phone, in Safari's view inside the app, through a Rex dial tunnel. Servers bound to
+the phone, in the app's own browser, through a Rex dial tunnel. Servers bound to
 127.0.0.1 only work too. No port opens on the computer, and the phone listens on its own
 loopback only while the page is up. Nothing shows on a pane. The sidebar lists every such port
 of a machine in its Ports group, so nobody scrolls a pane's history for a link
@@ -1005,18 +1005,35 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
   only ("Rex never returns the other arguments, because they can hold secrets"), no event
   carries a shell's command marks, and Rex installs no shell integration that would write them.
   So the app has Stop and Show Pane, and no Restart.
-- **The browser.** `SFSafariViewController`, on `http://localhost:<port>/` from the menu, or the
-  tapped link's scheme, host and path. The phone listens on 127.0.0.1 on the same port when it
-  is free and above 1024, else on a free one, and forwards **only the opened port**. A page on
-  one port that calls an API on another (a frontend on 5173 and its API on 3000) can't reach the
-  second: open that one on its own. `[::1]` links open as `localhost`, since the phone listens on
-  IPv4 only. "Open in Safari" in its menu leaves the app's forward behind and fails. Done or a
-  swipe down ends the forward, and the pane that had the keyboard gets it back.
-- **Why not WKWebView.** The ports plan's spike (P0) tried a `WKWebView` with a loopback HTTP
+- **The browser.** `PreviewBrowser`: the app's own view, one `WKWebView` made when the page
+  opens and let go when it closes, never kept warm. It loads `http://localhost:<port>/` from the
+  menu or a Ports row, or the tapped link's scheme and path. The phone listens on 127.0.0.1 on
+  the same port when it is free and above 1024, else on a free one, and forwards **only the
+  opened port**. A page on one port that calls an API on another (a frontend on 5173 and its API
+  on 3000) can't reach the second: open that one on its own. Done or a swipe down ends the
+  forward, and the pane that had the keyboard gets it back.
+  - Chrome: Done, the page's title over its address, a menu (Copy Link, Share…), and back,
+    forward and reload. There is no button that leaves for another app: the address only works
+    inside this one.
+  - The address shown is the one the user knows from the computer (`PreviewAddress`,
+    `LocalhostLink.shown`): a tapped link's own host and port as written (`localhost:3000`,
+    `127.0.0.1:5173`, `0.0.0.0:8000`, `[::1]:4000`, a LAN address), and `localhost:<port>` from
+    the pane menu, a Ports row or the palette. What loads underneath (the phone's listener,
+    whose port may differ) is never shown, the error page included. Copy Link and Share give
+    that same address with the path of the page on screen. A link that leaves the server shows
+    its own host.
+  - A response the page can't show, or one sent as an attachment, downloads to the phone's
+    temporary folder and goes to the share sheet. A link for a new window opens in the same
+    view. A server that asks for a name and password (Basic or Digest) gets a small form, kept
+    for the session only. A load that fails shows "Couldn't load localhost:3000" with Retry.
+    Light and dark come from the page's own CSS.
+  - What Safari's view gave and this one doesn't: Reader, the saved passwords' AutoFill bar,
+    content blockers and Safari's cookies. None matters for a dev server's page.
+- **Why one listener.** The ports plan's spike (P0) tried a `WKWebView` with a loopback HTTP
   CONNECT proxy (`WKWebsiteDataStore.proxyConfigurations`, iOS 17). WebKit sent `localhost`
   through the proxy, but never `127.0.0.1` or `[::1]`, with or without `matchDomains`: loopback
-  IP literals always go direct, to the phone. So `WKWebView` can't forward every port, and the app
-  uses Safari's view with one listener.
+  IP literals always go direct, to the phone. So no proxy forwards every port, and the view
+  loads from one listener for the opened port.
 - **The tunnel.** One dial block (`session.new_block`, `com.superlogical.tunnel.dial`, options
   `host`, `port`, `client_address`), detached, in the pane's session, labeled `Pteron #<tag>`,
   made on the browser's first connection. The tag is 8 hex characters in the Keychain, this
