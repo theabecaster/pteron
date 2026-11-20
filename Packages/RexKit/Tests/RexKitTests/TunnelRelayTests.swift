@@ -14,8 +14,13 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
     private(set) var pings = 0
     private var code = 0
     private var sentWaiters: [(count: Int, done: CheckedContinuation<Void, Never>)] = []
+    private var held: CheckedContinuation<Void, Error>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
     /// Each send waits this long, so a test can see backpressure.
     var sendDelay: Duration = .zero
+    /// Sends from this one on (0 is the first) wait for `releaseSend`, or end when their task
+    /// is cancelled.
+    var holdFrom = Int.max
     var inFlight = 0
     var maxInFlight = 0
 
@@ -24,10 +29,11 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
 
     /// The server sends a message (empty: its end of data).
     func push(_ d: Data) { deliver(.success(d)) }
-    /// The server closes with a status.
-    func serverClose(_ status: Int) {
+    /// The server closes with a status. `receiveFails` false: only a send sees it at first, and
+    /// the receive fails once the relay lets the socket go.
+    func serverClose(_ status: Int, receiveFails: Bool = true) {
         lock.withLock { code = status }
-        deliver(.failure(URLError(.networkConnectionLost)))
+        if receiveFails { deliver(.failure(URLError(.networkConnectionLost))) }
     }
 
     private func deliver(_ r: Result<Data?, Error>) {
@@ -43,11 +49,20 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
     }
 
     func send(_ data: Data) async throws {
-        lock.withLock {
+        let hold = lock.withLock { () -> Bool in
             inFlight += 1
             maxInFlight = max(maxInFlight, inFlight)
+            return sentMessages.count >= holdFrom
         }
         if sendDelay > .zero { try? await Task.sleep(for: sendDelay) }
+        do {
+            if hold { try await waitHeld() }
+            // A closed task's send fails, as URLSession's does: the message never goes.
+            if lock.withLock({ code != 0 }) { throw URLError(.networkConnectionLost) }
+        } catch {
+            lock.withLock { inFlight -= 1 }
+            throw error
+        }
         let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
             inFlight -= 1
             sentMessages.append(data)
@@ -57,6 +72,49 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
         }
         ready.forEach { $0.resume() }
         if lock.withLock({ aborted }) { throw URLError(.cancelled) }
+    }
+
+    private func waitHeld() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if Task.isCancelled { lock.unlock(); return c.resume(throwing: CancellationError()) }
+                held = c
+                let waiting = heldWaiters
+                heldWaiters = []
+                lock.unlock()
+                waiting.forEach { $0.resume() }
+            }
+        } onCancel: {
+            let c = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+                defer { held = nil }
+                return held
+            }
+            c?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Returns once a send is held.
+    func untilHeld() async {
+        await withCheckedContinuation { c in
+            lock.lock()
+            if held != nil {
+                lock.unlock()
+                c.resume()
+            } else {
+                heldWaiters.append(c)
+                lock.unlock()
+            }
+        }
+    }
+
+    /// Lets the held send go on.
+    func releaseSend() {
+        let c = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+            defer { held = nil }
+            return held
+        }
+        c?.resume()
     }
 
     /// Returns once the relay has sent `count` messages.
@@ -187,6 +245,15 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
                 reading.forEach { $0.resume() }
             }
         }
+    }
+
+    /// The browser's connection fails: the waiting read throws, and nothing is reset yet.
+    func fail() {
+        let w = lock.withLock { () -> CheckedContinuation<Data?, Error>? in
+            defer { waiter = nil }
+            return waiter?.done
+        }
+        w?.resume(throwing: URLError(.networkConnectionLost))
     }
 
     func write(_ data: Data) async throws { lock.withLock { written.append(data); answered = true } }
@@ -385,6 +452,78 @@ final class TunnelRelayTests: XCTestCase {
             let e2 = await ended(run2, r2)
             XCTAssertEqual(e2, .clean)
         }
+    }
+
+    /// A request in two chunks: the first goes, and the server closes with `code` while the
+    /// second is held in its send. `sendFailsFirst`: the send sees the close before the receive.
+    private func closeMidSend(_ code: Int, sendFailsFirst: Bool,
+                              file: StaticString = #filePath, line: UInt = #line)
+        async -> (end: TunnelRelay.End?, socket: FakeTunnelSocket, local: FakeTunnelLocal) {
+        let s = FakeTunnelSocket(), l = FakeTunnelLocal()
+        s.holdFrom = 1
+        let r = relay(s, l)
+        let run = start(r)
+        l.push(Data("GET / HTTP/1.1\r\n".utf8))
+        await within("the first chunk goes", file: file, line: line) { await s.untilSent(1) }
+        l.push(Data("Host: x\r\n\r\n".utf8))
+        await within("the second chunk's send is held", file: file, line: line) { await s.untilHeld() }
+        if sendFailsFirst {
+            s.serverClose(code, receiveFails: false)
+            s.releaseSend()
+        } else {
+            // The receive ends the relay, and its end cancels the held send.
+            s.serverClose(code)
+        }
+        let e = await ended(run, r, file: file, line: line)
+        return (e, s, l)
+    }
+
+    func testA4006WhileASendIsHeldRetriesWhicheverSideSeesItFirst() async {
+        for sendFailsFirst in [true, false] {
+            let (e, s, l) = await closeMidSend(4006, sendFailsFirst: sendFailsFirst)
+            let side = sendFailsFirst ? "send first" : "receive first"
+            XCTAssertEqual(e, .ownerLost(beforeAnyByte: true), side)
+            XCTAssertFalse(l.didReset, "\(side): the caller sends the request again on a new block")
+            XCTAssertTrue(s.aborted, side)
+            XCTAssertFalse(s.closedClean, side)
+            XCTAssertEqual(s.sent, [Data("GET / HTTP/1.1\r\n".utf8)], "\(side): the held chunk never went")
+            XCTAssertTrue(l.rewind(), side)
+
+            // Both chunks go again, in order: the one sent and the one that was in flight.
+            let s2 = FakeTunnelSocket()
+            let r2 = relay(s2, l)
+            let run2 = start(r2)
+            await within("the request goes again") { await s2.untilSent(2) }
+            XCTAssertEqual(s2.sent, [Data("GET / HTTP/1.1\r\n".utf8), Data("Host: x\r\n\r\n".utf8)], side)
+            l.push(nil)
+            s2.push(Data())
+            let e2 = await ended(run2, r2)
+            XCTAssertEqual(e2, .clean, side)
+            XCTAssertEqual(s2.sent.last, Data(), side)
+        }
+    }
+
+    func testAnotherCloseWhileASendIsHeldResets() async {
+        for sendFailsFirst in [true, false] {
+            let (e, _, l) = await closeMidSend(4000, sendFailsFirst: sendFailsFirst)
+            let side = sendFailsFirst ? "send first" : "receive first"
+            XCTAssertEqual(e, .blockClosed, side)
+            XCTAssertTrue(l.didReset, side)
+        }
+    }
+
+    func testABrowserThatFailsResetsBoth() async {
+        let s = FakeTunnelSocket(), l = FakeTunnelLocal()
+        let r = relay(s, l)
+        let run = start(r)
+        l.push(Data("GET /".utf8))
+        await within("a read waits") { await l.untilReading() }
+        l.fail()
+        let e = await ended(run, r)
+        XCTAssertEqual(e, .cancelled)
+        XCTAssertTrue(l.didReset)
+        XCTAssertTrue(s.aborted)
+        XCTAssertFalse(s.closedClean)
     }
 
     func testCancelResetsBoth() async {

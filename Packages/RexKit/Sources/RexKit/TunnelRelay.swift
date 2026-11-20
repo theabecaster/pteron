@@ -116,20 +116,30 @@ public final class TunnelRelay: @unchecked Sendable {
     }
 
     private func pumpUp() async {
-        do {
-            while true {
-                guard let d = try await local.read(max: Self.chunk), !d.isEmpty else {
-                    try await socket.send(Data())
-                    if mark(local: true) { finishClean() }
-                    return
-                }
-                try await socket.send(d)
+        while true {
+            // Nil or empty: the browser's end, one empty message.
+            let d: Data
+            do {
+                d = try await local.read(max: Self.chunk) ?? Data()
+            } catch {
+                // The browser reset its connection (or `run` ended): the other pump resets it.
+                if lock.withLock({ finished }) { return }
+                lock.withLock { cancelled = true }
+                socket.abort()
+                return
             }
-        } catch {
-            // The browser reset its connection, or the socket failed; the other pump sees it.
-            if lock.withLock({ finished }) { return }
-            lock.withLock { cancelled = true }
-            socket.abort()
+            do {
+                try await socket.send(d)
+            } catch {
+                // The socket failed, a 4006 say, perhaps before its receive saw it. Not the
+                // browser: the other pump says how it ended from the close status, as when idle.
+                if !lock.withLock({ finished }) { socket.abort() }
+                return
+            }
+            if d.isEmpty {
+                if mark(local: true) { finishClean() }
+                return
+            }
         }
     }
 

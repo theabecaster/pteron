@@ -76,6 +76,7 @@ final class StubSocket: TunnelSocket, @unchecked Sendable {
     private var waiter: CheckedContinuation<Data?, Error>?
     private var code = 0
     private var wasAborted = false
+    private var sendFails = false
     private(set) var sentData: [Data] = []
     var sent: [Data] { lock.withLock { sentData } }
     var closeCode: Int { lock.withLock { code } }
@@ -99,7 +100,16 @@ final class StubSocket: TunnelSocket, @unchecked Sendable {
         }
     }
 
-    func send(_ data: Data) async throws { lock.withLock { sentData.append(data) } }
+    /// The server closes while a send is on its way: the send fails first, and the receive only
+    /// once the relay lets the socket go.
+    func closeUnderSend(_ c: Int) { lock.withLock { code = c; sendFails = true } }
+
+    func send(_ data: Data) async throws {
+        try lock.withLock {
+            if sendFails { throw URLError(.networkConnectionLost) }
+            sentData.append(data)
+        }
+    }
     func receive() async throws -> Data? {
         try await withCheckedThrowingContinuation { c in
             lock.lock()
@@ -394,6 +404,24 @@ final class PortForwardTests: XCTestCase {
         listener.accept?(again)
         await settle { again.resets == 1 }
         XCTAssertEqual(server.nextBlock, 3, "one retry on a new block, then the browser gets a reset")
+    }
+
+    func testA4006WhileTheRequestGoesUpRetriesOnANewBlock() async throws {
+        let f = forward()
+        let server = FakeTunnelServer()
+        var n = 0
+        server.onSocket = { s in
+            n += 1
+            if n == 1 { s.closeUnderSend(4006) } else { s.push(Data("ok".utf8)); s.push(Data()) }
+        }
+        _ = try await f.open(target, on: server)
+        let local = StubLocal()
+        listener.accept?(local)
+        await settle { local.writes == [Data("ok".utf8)] }
+        XCTAssertEqual(server.sockets.first?.sent, [], "the first send failed")
+        XCTAssertEqual(server.nextBlock, 2, "a new block for the retry")
+        XCTAssertEqual(server.sockets.last?.sent.first, Data("GET / HTTP/1.1\r\n\r\n".utf8), "the request goes once more, whole")
+        XCTAssertEqual(local.resets, 0)
     }
 
     func testConnectionsWaitForTheSyncUpTo30Seconds() async throws {

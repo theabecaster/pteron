@@ -671,8 +671,8 @@ isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`
   (`data.connect`, `conn:<uuid>`, `rex.data.bytes.v1`), at most 16 at once; more wait for a slot.
   Connections made while the server isn't synced wait for it, up to 30 s. A refused target
   resets the browser's connection. A block a new client ID can't use (after a long drop) is
-  dropped and a new one made; a 4006 before any byte came back sends the request again, once, on
-  a new block. A server that is full (`conflict`) shows one notice per browser.
+  dropped and a new one made; a 4006 before any byte came back, even one that comes while the
+  request is still going up, sends the request again, once, on a new block. A server that is full (`conflict`) shows one notice per browser.
 - **Cleanup.** Rex never removes a tunnel block. Every block made is remembered in UserDefaults,
   and a session where one is about to be made is marked first. On each sync of a server with
   remembered blocks or a mark, and before each `new_block`, the sweep lists the session's blocks
