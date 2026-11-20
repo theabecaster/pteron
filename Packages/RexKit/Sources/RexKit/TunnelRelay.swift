@@ -33,6 +33,9 @@ public protocol TunnelSocket: AnyObject, Sendable {
 /// The phone's side: one TCP connection a browser made to the app's loopback listener.
 public protocol TunnelLocal: AnyObject, Sendable {
     /// Up to `max` bytes; nil at the end of the browser's data. Throws when the connection fails.
+    /// Must also throw, and lose nothing, when its task is cancelled: after a 4006 before any
+    /// byte the relay keeps the browser's connection up for a retry, so cancelling is the only
+    /// thing that ends a read still waiting on the browser, and `run` returns only after it.
     func read(max: Int) async throws -> Data?
     func write(_ data: Data) async throws
     /// Ends the data towards the browser (a TCP half-close).
@@ -151,7 +154,8 @@ public final class TunnelRelay: @unchecked Sendable {
             }
             let end = Self.end(code: socket.closeCode, received: got)
             // Nothing came back: the caller may send the browser's bytes again on a new block
-            // (`TunnelLocal.rewind`), so the browser's connection stays up for that.
+            // (`TunnelLocal.rewind`), so the browser's connection stays up for that. The read
+            // still waiting on it ends with `run`'s `cancelAll`, and then aborts the socket.
             if end != .ownerLost(beforeAnyByte: true) { local.reset() }
             return end
         }

@@ -75,9 +75,11 @@ final class StubSocket: TunnelSocket, @unchecked Sendable {
     private var inbox: [Result<Data?, Error>] = []
     private var waiter: CheckedContinuation<Data?, Error>?
     private var code = 0
+    private var wasAborted = false
     private(set) var sentData: [Data] = []
     var sent: [Data] { lock.withLock { sentData } }
     var closeCode: Int { lock.withLock { code } }
+    var aborted: Bool { lock.withLock { wasAborted } }
 
     func push(_ d: Data) { deliver(.success(d)) }
     func serverClose(_ c: Int) {
@@ -113,7 +115,10 @@ final class StubSocket: TunnelSocket, @unchecked Sendable {
     }
     func ping() async throws {}
     func close() { lock.withLock { code = 1000 }; deliver(.failure(URLError(.cancelled))) }
-    func abort() { deliver(.failure(URLError(.cancelled))) }
+    func abort() {
+        lock.withLock { wasAborted = true }
+        deliver(.failure(URLError(.cancelled)))
+    }
 }
 
 /// A browser connection: one request, then its end.
@@ -132,10 +137,23 @@ final class StubLocal: TunnelLocal, @unchecked Sendable {
         toRead = [Data(request.utf8)] + (end ? [nil] : [])
     }
 
+    /// A cancelled read throws, as the real one does (`TunnelLocal.read`), so a relay always ends.
     func read(max: Int) async throws -> Data? {
-        let d: Data? = try await withCheckedThrowingContinuation { c in
+        let d: Data? = try await withTaskCancellationHandler { try await waitRead() } onCancel: {
+            let w = lock.withLock { () -> CheckedContinuation<Data?, Error>? in
+                defer { waiter = nil }
+                return waiter
+            }
+            w?.resume(throwing: CancellationError())
+        }
+        if let d { lock.withLock { readSoFar.append(d) } }
+        return d
+    }
+
+    private func waitRead() async throws -> Data? {
+        try await withCheckedThrowingContinuation { c in
             lock.lock()
-            if resetCount > 0 { lock.unlock(); return c.resume(throwing: URLError(.cancelled)) }
+            if resetCount > 0 || Task.isCancelled { lock.unlock(); return c.resume(throwing: URLError(.cancelled)) }
             if !toRead.isEmpty {
                 let d = toRead.removeFirst()
                 lock.unlock()
@@ -145,8 +163,6 @@ final class StubLocal: TunnelLocal, @unchecked Sendable {
                 lock.unlock()
             }
         }
-        if let d { lock.withLock { readSoFar.append(d) } }
-        return d
     }
     func write(_ data: Data) async throws { lock.withLock { written.append(data); answered = true } }
     func finishWriting() {}
@@ -551,26 +567,97 @@ final class PortForwardTests: XCTestCase {
         XCTAssertFalse(p.includePeerToPeer)
 
         let l = LoopbackListener()
-        var accepted = 0
-        let port = try await l.start(preferring: 0) { local in
-            accepted += 1
-            local.close()
+        let accepted = Accepted()
+        let started = await within("the listener starts") {
+            try? await l.start(preferring: 0) { local in
+                accepted.locals.append(local)
+                local.close()
+            }
         }
         defer { l.stop() }
+        guard let port = started ?? nil else { return XCTFail("no listener") }
         XCTAssertGreaterThan(port, 1024)
         let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
         c.start(queue: .main)
-        await settle { accepted == 1 }
+        await settle { accepted.locals.count == 1 }
         c.cancel()
-        XCTAssertEqual(accepted, 1)
+        XCTAssertEqual(accepted.locals.count, 1)
+    }
+
+    func testA4006BeforeAnyByteEndsTheRelayAndKeepsTheBrowsersConnection() async throws {
+        // The app's own connection, its read waiting on the browser when the 4006 comes: the
+        // relay ends, lets the socket go, and the browser's connection carries the retry.
+        let l = LoopbackListener()
+        let accepted = Accepted()
+        let started = await within("the listener starts") {
+            try? await l.start(preferring: 0) { accepted.locals.append($0) }
+        }
+        defer { l.stop() }
+        guard let port = started ?? nil else { return XCTFail("no listener") }
+        let browser = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        browser.start(queue: .main)
+        defer { browser.cancel() }
+        await settle { !accepted.locals.isEmpty }
+        guard let local = accepted.locals.first else { return XCTFail("no connection") }
+        defer { local.close() }
+        let request = Data("GET / HTTP/1.1\r\n\r\n".utf8)
+        browser.send(content: request, completion: .contentProcessed { _ in })
+
+        let s = StubSocket()
+        let relay = TunnelRelay(socket: s, local: local)
+        let run = Task { await relay.run() }
+        await settle { s.sent.reduce(Data(), +) == request }
+        s.serverClose(4006)
+        let end = await within("the relay's end") { await run.value }
+        if end == nil { relay.cancel() }
+        XCTAssertEqual(end, .ownerLost(beforeAnyByte: true))
+        XCTAssertTrue(s.aborted, "the read that waited on the browser ended, and the socket is let go")
+
+        XCTAssertTrue(local.rewind())
+        let again = await within("the request reads again") { try? await local.read(max: TunnelRelay.chunk) }
+        XCTAssertEqual(again ?? nil, s.sent.first, "the request, from the start")
+        await within("the answer goes") { try? await local.write(Data("ok".utf8)) }
+        let reply = await within("the answer reaches the browser") { () -> Data? in
+            await withCheckedContinuation { c in
+                browser.receive(minimumIncompleteLength: 1, maximumLength: 64) { d, _, _, _ in c.resume(returning: d) }
+            }
+        }
+        XCTAssertEqual(reply ?? nil, Data("ok".utf8), "never reset: the browser's connection is still up")
     }
 
     // MARK: Helpers
+
+    /// What `work` gives, or nil and a failure once `timeout` passes, so a wait for an event that
+    /// never comes fails the test instead of hanging the run. Work still waiting then is
+    /// cancelled and left behind.
+    @discardableResult
+    private func within<T: Sendable>(_ what: String, timeout: TimeInterval = 5,
+                                     file: StaticString = #filePath, line: UInt = #line,
+                                     _ work: @escaping @Sendable () async -> T) async -> T? {
+        let task = Task { await work() }
+        let done = XCTestExpectation(description: what)
+        Task {
+            _ = await task.value
+            done.fulfill()
+        }
+        guard await XCTWaiter().fulfillment(of: [done], timeout: timeout) == .completed else {
+            task.cancel()
+            XCTFail("\(what): nothing after \(timeout) s", file: file, line: line)
+            return nil
+        }
+        return await task.value
+    }
 
     private func settle(_ seconds: Double = 3, _ condition: @MainActor () -> Bool) async {
         let end = Date().addingTimeInterval(seconds)
         while !condition(), Date() < end { try? await Task.sleep(for: .milliseconds(10)) }
     }
+}
+
+/// What a listener accepted, for a test.
+@MainActor
+private final class Accepted {
+    var locals: [any TunnelLocal] = []
 }
 
 /// The Keychain, in memory.

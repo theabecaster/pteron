@@ -13,6 +13,7 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
     private(set) var aborted = false
     private(set) var pings = 0
     private var code = 0
+    private var sentWaiters: [(count: Int, done: CheckedContinuation<Void, Never>)] = []
     /// Each send waits this long, so a test can see backpressure.
     var sendDelay: Duration = .zero
     var inFlight = 0
@@ -47,11 +48,29 @@ final class FakeTunnelSocket: TunnelSocket, @unchecked Sendable {
             maxInFlight = max(maxInFlight, inFlight)
         }
         if sendDelay > .zero { try? await Task.sleep(for: sendDelay) }
-        lock.withLock {
+        let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
             inFlight -= 1
             sentMessages.append(data)
+            let n = sentMessages.count
+            defer { sentWaiters.removeAll { $0.count <= n } }
+            return sentWaiters.filter { $0.count <= n }.map(\.done)
         }
+        ready.forEach { $0.resume() }
         if lock.withLock({ aborted }) { throw URLError(.cancelled) }
+    }
+
+    /// Returns once the relay has sent `count` messages.
+    func untilSent(_ count: Int) async {
+        await withCheckedContinuation { c in
+            lock.lock()
+            if sentMessages.count >= count {
+                lock.unlock()
+                c.resume()
+            } else {
+                sentWaiters.append((count, c))
+                lock.unlock()
+            }
+        }
     }
 
     func receive() async throws -> Data? {
@@ -95,6 +114,7 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
     private(set) var closed = false
     private(set) var wasReset = false
     private var readSoFar: [Data] = []
+    private var readEnd = false
     private var answered = false
 
     var writes: [Data] { lock.withLock { written } }
@@ -147,7 +167,7 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
             }
             w?.resume(throwing: CancellationError())
         }
-        if let d { lock.withLock { readSoFar.append(d) } }
+        lock.withLock { if let d { readSoFar.append(d) } else { readEnd = true } }
         return d
     }
 
@@ -185,8 +205,10 @@ final class FakeTunnelLocal: TunnelLocal, @unchecked Sendable {
     func rewind() -> Bool {
         lock.withLock {
             guard !answered else { return false }
-            inbox = readSoFar.map { Optional($0) } + inbox
+            // The browser's end, once read, comes again too: the real connection stays ended.
+            inbox = readSoFar.map { Optional($0) } + (readEnd ? [nil] : []) + inbox
             readSoFar = []
+            readEnd = false
             return true
         }
     }
@@ -198,18 +220,31 @@ final class TunnelRelayTests: XCTestCase {
         TunnelRelay(socket: s, local: l, sleep: sleep)
     }
 
+    /// Runs the relay in a task of its own, not an `async let`: a relay that never ends would
+    /// hang the test where the `async let` goes out of scope. `ended` waits for it.
+    private func start(_ r: TunnelRelay) -> Task<TunnelRelay.End, Never> { Task { await r.run() } }
+
+    /// How the relay ended, or nil and a failure after 5 s. A relay still running then is
+    /// cancelled, so it ends too.
+    private func ended(_ run: Task<TunnelRelay.End, Never>, _ r: TunnelRelay,
+                       file: StaticString = #filePath, line: UInt = #line) async -> TunnelRelay.End? {
+        let end = await within("the relay's end", file: file, line: line) { await run.value }
+        if end == nil { r.cancel() }
+        return end
+    }
+
     func testBytesGoBothWaysAndTheCleanEndClosesWith1000() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         l.push(Data("GET / HTTP/1.1\r\n\r\n".utf8))
         s.push(Data("HTTP/1.1 200 OK\r\n\r\nhi".utf8))
         // The browser ends, then the server: only then does the socket close.
         l.push(nil)
-        try? await Task.sleep(for: .milliseconds(50))
+        await within("the browser's end goes") { await s.untilSent(2) }
         XCTAssertFalse(s.closedClean, "the server's end hasn't come yet")
         s.push(Data())
-        let e = await end
+        let e = await ended(run, r)
         XCTAssertEqual(e, .clean)
         XCTAssertEqual(s.sent, [Data("GET / HTTP/1.1\r\n\r\n".utf8), Data()], "one empty message at the browser's end")
         XCTAssertEqual(l.writes, [Data("HTTP/1.1 200 OK\r\n\r\nhi".utf8)])
@@ -222,7 +257,7 @@ final class TunnelRelayTests: XCTestCase {
     func testTheServerMayEndFirst() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         s.push(Data("x".utf8))
         s.push(Data())
         try? await Task.sleep(for: .milliseconds(50))
@@ -230,7 +265,7 @@ final class TunnelRelayTests: XCTestCase {
         XCTAssertFalse(s.closedClean, "half-closed: the browser may still send")
         l.push(Data("late".utf8))
         l.push(nil)
-        let e = await end
+        let e = await ended(run, r)
         XCTAssertEqual(e, .clean)
         XCTAssertEqual(s.sent, [Data("late".utf8), Data()])
     }
@@ -241,13 +276,13 @@ final class TunnelRelayTests: XCTestCase {
         // Pushed before the relay runs: its reads find the bytes waiting.
         l.push(Data(count: 200_000))
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         // Pushed while a read waits: the read is handed them directly.
-        await l.untilReading()
+        await within("a read waits") { await l.untilReading() }
         l.push(Data(count: 100_000))
         l.push(nil)
         s.push(Data())
-        _ = await end
+        _ = await ended(run, r)
         XCTAssertEqual(s.sent.map(\.count), [65_536, 65_536, 65_536, 3_392, 65_536, 34_464, 0],
                        "every byte goes, in order, at most 64 KiB per message")
         XCTAssertEqual(s.maxInFlight, 1, "the next read waits for the send")
@@ -256,9 +291,9 @@ final class TunnelRelayTests: XCTestCase {
     func testARefusedTargetIs1001WithNoBytes() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         s.serverClose(1001)
-        let e = await end
+        let e = await ended(run, r)
         XCTAssertEqual(e, .refused)
         XCTAssertTrue(l.didReset, "the browser sees a reset, not an empty page")
     }
@@ -274,11 +309,11 @@ final class TunnelRelayTests: XCTestCase {
     func testAClosedBlockResetsTheBrowser() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         s.push(Data("partial".utf8))
         try? await Task.sleep(for: .milliseconds(20))
         s.serverClose(4000)
-        let e = await end
+        let e = await ended(run, r)
         XCTAssertEqual(e, .blockClosed)
         XCTAssertTrue(l.didReset)
     }
@@ -286,35 +321,79 @@ final class TunnelRelayTests: XCTestCase {
     func testOwnerLostBeforeAnyByteLeavesTheBrowserForARetry() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         l.push(Data("GET /".utf8))
-        try? await Task.sleep(for: .milliseconds(20))
+        // A read waits with nothing left: the relay sent the request and waits on the browser.
+        await within("a read waits") { await l.untilReading() }
+        XCTAssertEqual(s.sent, [Data("GET /".utf8)])
         s.serverClose(4006)
-        let e = await end
+        let e = await ended(run, r)
         XCTAssertEqual(e, .ownerLost(beforeAnyByte: true))
         XCTAssertFalse(l.didReset, "the caller sends the request again on a new block")
+        XCTAssertTrue(s.aborted, "the read that waited ended, and the socket is let go")
         XCTAssertTrue(l.rewind())
 
         // The same request goes out again, whole, on the next relay.
         let s2 = FakeTunnelSocket()
         let r2 = relay(s2, l)
-        async let end2 = r2.run()
-        try? await Task.sleep(for: .milliseconds(20))
+        let run2 = start(r2)
+        await within("the request goes again") { await s2.untilSent(1) }
         XCTAssertEqual(s2.sent.first, Data("GET /".utf8))
         s2.push(Data("ok".utf8))
         l.push(nil)
         s2.push(Data())
-        let e2 = await end2
+        let e2 = await ended(run2, r2)
         XCTAssertEqual(e2, .clean)
+        XCTAssertEqual(l.writes, [Data("ok".utf8)])
+    }
+
+    func testOwnerLostBeforeAnyByteEndsTheRelayWhereverTheBrowserIs() async {
+        // Before the browser sent anything.
+        do {
+            let s = FakeTunnelSocket(), l = FakeTunnelLocal()
+            let r = relay(s, l)
+            let run = start(r)
+            await within("a read waits") { await l.untilReading() }
+            s.serverClose(4006)
+            let e = await ended(run, r)
+            XCTAssertEqual(e, .ownerLost(beforeAnyByte: true))
+            XCTAssertFalse(l.didReset)
+            XCTAssertTrue(s.aborted)
+            XCTAssertFalse(s.closedClean)
+        }
+        // After the browser's end: no read is left, and the end comes again on the retry.
+        do {
+            let s = FakeTunnelSocket(), l = FakeTunnelLocal()
+            let r = relay(s, l)
+            let run = start(r)
+            l.push(Data("GET /".utf8))
+            l.push(nil)
+            await within("the browser's end goes") { await s.untilSent(2) }
+            s.serverClose(4006)
+            let e = await ended(run, r)
+            XCTAssertEqual(e, .ownerLost(beforeAnyByte: true))
+            XCTAssertFalse(l.didReset)
+            XCTAssertFalse(s.closedClean)
+            XCTAssertTrue(l.rewind())
+
+            let s2 = FakeTunnelSocket()
+            let r2 = relay(s2, l)
+            let run2 = start(r2)
+            await within("the request and its end go again") { await s2.untilSent(2) }
+            XCTAssertEqual(s2.sent, [Data("GET /".utf8), Data()])
+            s2.push(Data())
+            let e2 = await ended(run2, r2)
+            XCTAssertEqual(e2, .clean)
+        }
     }
 
     func testCancelResetsBoth() async {
         let s = FakeTunnelSocket(), l = FakeTunnelLocal()
         let r = relay(s, l)
-        async let end = r.run()
+        let run = start(r)
         try? await Task.sleep(for: .milliseconds(20))
         r.cancel()
-        let e = await end
+        let e = await ended(run, r)
         XCTAssertEqual(e, .cancelled)
         XCTAssertTrue(l.didReset)
         XCTAssertTrue(s.aborted)
@@ -326,18 +405,46 @@ final class TunnelRelayTests: XCTestCase {
         let asked = AsyncStream<Duration>.makeStream()
         let clock = TickClock(asked: asked.continuation)
         let r = relay(s, l, sleep: { try await clock.sleep($0) })
-        async let end = r.run()
-        var it = asked.stream.makeAsyncIterator()
-        for _ in 0..<3 {
-            let d = await it.next()
-            XCTAssertEqual(d, .seconds(25))
-            clock.tick()
+        let run = start(r)
+        // Three sleeps pass, and the fourth is asked for: by then three pings went.
+        let sleeps = await within("four sleeps") { () -> [Duration?] in
+            var it = asked.stream.makeAsyncIterator()
+            var got: [Duration?] = []
+            for _ in 0..<3 {
+                got.append(await it.next())
+                clock.tick()
+            }
+            got.append(await it.next())
+            return got
         }
-        _ = await it.next()
+        XCTAssertEqual(sleeps, Array(repeating: Duration?.some(.seconds(25)), count: 4))
         XCTAssertEqual(s.pings, 3)
         l.push(nil)
         s.push(Data())
-        _ = await end
+        _ = await ended(run, r)
+    }
+}
+
+extension XCTestCase {
+    /// What `work` gives, or nil and a failure once `timeout` passes, so a test that waits on an
+    /// event that never comes fails instead of hanging the run. Work still waiting then is
+    /// cancelled and left behind.
+    @discardableResult
+    func within<T: Sendable>(_ what: String, timeout: TimeInterval = 5,
+                             file: StaticString = #filePath, line: UInt = #line,
+                             _ work: @escaping @Sendable () async -> T) async -> T? {
+        let task = Task { await work() }
+        let done = XCTestExpectation(description: what)
+        Task {
+            _ = await task.value
+            done.fulfill()
+        }
+        guard await XCTWaiter().fulfillment(of: [done], timeout: timeout) == .completed else {
+            task.cancel()
+            XCTFail("\(what): nothing after \(timeout) s", file: file, line: line)
+            return nil
+        }
+        return await task.value
     }
 }
 
