@@ -1,29 +1,70 @@
 import SwiftUI
 
-/// The pages under Settings.
-enum SettingsPage: String, Hashable {
-    case main, addServer, darkTheme, lightTheme, acknowledgements
+/// The pages under Settings. The top level lists five, each with its current value; the rest sit
+/// one level under one of them.
+enum SettingsPage: String, Hashable, CaseIterable {
+    case main
+    case servers, appearance, keyboard, notifications, about
+    case addServer, darkTheme, lightTheme, acknowledgements
 
-    /// `-settings main|addServer|darkTheme|lightTheme|acknowledgements` (Debug builds): open Settings at that page
-    /// at launch.
+    /// The top level's rows, in order.
+    static let topLevel: [SettingsPage] = [.servers, .appearance, .keyboard, .notifications, .about]
+
+    /// The top-level page this one opens from; nil for the top level and its own rows.
+    var parent: SettingsPage? {
+        switch self {
+        case .addServer: .servers
+        case .darkTheme, .lightTheme: .appearance
+        case .acknowledgements: .about
+        default: nil
+        }
+    }
+
+    /// The navigation path that shows this page, so Back leads where a tap would have come from:
+    /// Add Server goes back to Servers, a theme to Appearance.
+    var path: [SettingsPage] {
+        guard self != .main else { return [] }
+        return (parent.map { [$0] } ?? []) + [self]
+    }
+
+    /// The page a launch opens at: `-settingsScroll` names a place on the Notifications page, so it
+    /// opens that page when `-settings` asks for the top level.
+    static func launch(page: SettingsPage?, anchor: String?) -> SettingsPage? {
+        guard let page else { return nil }
+        return anchor != nil && page == .main ? SettingsAnchor.page : page
+    }
+
+    /// `-settings <page>` (Debug builds): open Settings at that page at launch. The pages are
+    /// `main`, `servers`, `appearance`, `keyboard`, `notifications`, `about`, `addServer`,
+    /// `darkTheme`, `lightTheme` and `acknowledgements`.
     static var debugLaunch: SettingsPage? {
         #if DEBUG
-        UserDefaults.standard.string(forKey: "settings").flatMap(SettingsPage.init(rawValue:))
+        launch(page: UserDefaults.standard.string(forKey: "settings").flatMap(SettingsPage.init(rawValue:)),
+               anchor: SettingsAnchor.debugLaunch)
         #else
         nil
         #endif
     }
 }
 
-/// Places in the main Settings list that `-settingsScroll` can bring to the top.
+/// Places on the Notifications page that `-settingsScroll` can bring into view.
 enum SettingsAnchor {
+    /// The page every anchor is on.
+    static let page = SettingsPage.notifications
     static let notifications = "notifications"
     static func computer(_ index: Int) -> String { "notifications.\(index)" }
     static let end = "end"
 
-    /// `-settingsScroll notifications|notifications.<n>|end` (Debug builds): open the main page
-    /// scrolled to the Notifications section, to its n-th computer (from 0), or to the end of
-    /// the page, which is where a short Notifications section sits.
+    /// The row to scroll to for an anchor, and whether it goes to the bottom of the screen: `end`
+    /// is the last computer's row, or the master switch's when no computer is listed.
+    static func target(_ anchor: String, computers: Int) -> (id: String, bottom: Bool) {
+        guard anchor == end else { return (anchor, false) }
+        return (computers > 0 ? computer(computers - 1) : notifications, true)
+    }
+
+    /// `-settingsScroll notifications|notifications.<n>|end` (Debug builds): open the
+    /// Notifications page scrolled to the master switch, to its n-th computer (from 0), or to the
+    /// end of the page.
     static var debugLaunch: String? {
         #if DEBUG
         UserDefaults.standard.string(forKey: "settingsScroll")
@@ -33,169 +74,68 @@ enum SettingsAnchor {
     }
 }
 
+/// What the top level shows beside each row.
+enum SettingsSummary {
+    static func servers(total: Int, connected: Int) -> String {
+        if total == 0 { return "None" }
+        return connected == total ? "\(total) connected" : "\(connected) of \(total) connected"
+    }
+
+    static func appearance(theme: String, fontSize: Double) -> String {
+        "\(theme) · \(fontSize.formatted()) pt"
+    }
+
+    /// The same, as VoiceOver says it.
+    static func appearanceSpoken(theme: String, fontSize: Double) -> String {
+        "\(theme), \(fontSize.formatted()) points"
+    }
+
+    static func notifications(on: Bool) -> String { on ? "On" : "Off" }
+}
+
 /// Settings: only what a user would want to change. `Prefs` decides the rest.
 /// Styled like the sidebar, from the theme's chrome; the controls are the standard ones.
+/// The top level is one short list, one row per page with that page's current value; each page
+/// is built only when it is opened.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
-    @State private var path = SettingsPage.debugLaunch.map { $0 == .main ? [] : [$0] } ?? []
+    @State private var path = SettingsPage.debugLaunch?.path ?? []
 
     var body: some View {
         @Bindable var p = prefs
         let theme = prefs.theme
         NavigationStack(path: $path) {
-            ScrollViewReader { scroller in
-            SettingsList(theme: theme) {
-                Section {
-                    ForEach(model.servers) { s in serverRow(s, theme) }
-                    NavigationLink(value: SettingsPage.addServer) {
-                        Label("Add Server", systemImage: "plus")
-                    }
-                } header: {
-                    SettingsHeader("Servers", theme)
-                } footer: {
-                    SettingsFooter("A server is a computer running Rex. Run `rex server tailscale pair` on it, then scan the code it shows.", theme)
-                }
-                .settingsRows(theme)
-
-                Section {
-                    NavigationLink(value: SettingsPage.darkTheme) {
-                        LabeledContent("Dark Theme", value: ThemeStore.theme(p.darkThemeID).name)
-                    }
-                    NavigationLink(value: SettingsPage.lightTheme) {
-                        LabeledContent("Light Theme", value: ThemeStore.theme(p.lightThemeID).name)
-                    }
-                    Stepper(value: $p.fontSize, in: Prefs.fontSizes, step: 1) {
-                        LabeledContent("Text Size", value: "\(p.fontSize.formatted()) pt")
-                    }
-                    .accessibilityValue("\(p.fontSize.formatted()) points")
-                    Text("~/agents $ claude --resume")
-                        .font(Font(RexFont.ui(p.fontSize)))
-                        .foregroundStyle(theme.fg)
-                        .lineLimit(1)
-                        .padding(.horizontal, 10)
-                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(theme.bg))
-                        .accessibilityHidden(true)
-                } header: {
-                    SettingsHeader("Appearance", theme)
-                } footer: {
-                    SettingsFooter("Follows Light and Dark Mode. Pinch a pane to change the text size there.", theme)
-                }
-                .settingsRows(theme)
-
-                Section {
-                    Picker("Layout", selection: $p.keyBarLayout) {
-                        ForEach(KeyBarLayout.allCases) { Text($0.title).tag($0) }
-                    }
-                } header: {
-                    SettingsHeader("Key Bar", theme)
-                } footer: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text((p.keyBar + KeyBarLayout.pinned).map(Self.keyLabel).joined(separator: "  "))
-                            .font(Font(RexFont.ui(12)))
-                            .foregroundStyle(theme.chrome.secondary)
-                            .accessibilityHidden(true)
-                        SettingsFooter("⏎ stays at the end of the bar; hold it for a new line in an agent. Hold an arrow to repeat it. Drag ✥ to move through menus and history. Tap ctrl, alt or cmd for the next key; double-tap to lock it. cmd runs Rex's shortcuts: cmd then t opens a tab.", theme)
+            SettingsTopLevel(theme: theme)
+                .navigationDestination(for: SettingsPage.self) { page in
+                    switch page {
+                    case .main: EmptyView()
+                    case .servers: ServersPage(theme: theme)
+                    case .appearance: AppearancePage(theme: theme)
+                    case .keyboard: KeyboardPage(theme: theme)
+                    case .notifications: NotificationsPage(theme: theme)
+                    case .about: AboutPage(theme: theme)
+                    case .addServer: AddServerView(theme: theme)
+                    case .darkTheme: ThemePicker(title: "Dark Theme", selection: $p.darkThemeID, dark: true, theme: theme)
+                    case .lightTheme: ThemePicker(title: "Light Theme", selection: $p.lightThemeID, dark: false, theme: theme)
+                    case .acknowledgements: AcknowledgementsView()
                     }
                 }
-                .settingsRows(theme)
-
-                NotificationSettingsSection(theme: theme)
-
-                Section {
-                    LabeledContent("Version", value: Self.version)
-                    // The first-run checklist again, for another computer or a second look.
-                    Button("Setup Guide") { model.openGuide() }
-                    NavigationLink(value: SettingsPage.acknowledgements) { Text("Acknowledgements") }
-                        .id(SettingsAnchor.end)
-                } header: {
-                    SettingsHeader("About", theme)
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
+                .settingsBar(theme)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 }
-                .settingsRows(theme)
-            }
-            .task {
-                guard let anchor = SettingsAnchor.debugLaunch else { return }
-                // The list lays itself out first, and the sheet arrives. A row the list has not
-                // made yet can't be scrolled to, so the scroll is asked for a few times.
-                for _ in 0..<6 {
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                    scroller.scrollTo(anchor, anchor: anchor == SettingsAnchor.end ? .bottom : .top)
-                }
-            }
-            }
-            .navigationDestination(for: SettingsPage.self) { page in
-                switch page {
-                case .main: EmptyView()
-                case .addServer: AddServerView(theme: theme)
-                case .darkTheme: ThemePicker(title: "Dark Theme", selection: $p.darkThemeID, dark: true, theme: theme)
-                case .lightTheme: ThemePicker(title: "Light Theme", selection: $p.lightThemeID, dark: false, theme: theme)
-                case .acknowledgements: AcknowledgementsView()
-                }
-            }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .settingsBar(theme)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
         .onAppear {
             if let page = model.settingsStart {
                 model.settingsStart = nil
-                path = page == .main ? [] : [page]
+                path = page.path
             }
-        }
-    }
-
-    private func serverRow(_ s: ServerConnection, _ theme: TermTheme) -> some View {
-        let saved = prefs.servers.contains { $0.id == s.config.id }
-        let remove = {
-            prefs.servers.removeAll { $0.id == s.config.id }
-            model.rebuildServers()
-        }
-        return HStack(spacing: 10) {
-            ServerDot(server: s, theme: theme)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(s.config.name).fontWeight(.medium).lineLimit(1)
-                Text(URL(string: s.config.url)?.host() ?? s.config.url)
-                    .font(.caption)
-                    .foregroundStyle(theme.chrome.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 8)
-            // One line; the name and address truncate first.
-            Text(Self.status(s.phase))
-                .font(.caption)
-                .foregroundStyle(theme.chrome.secondary)
-                .lineLimit(1)
-                .fixedSize()
-                .layoutPriority(1)
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .swipeActions {
-            if saved {
-                Button(role: .destructive, action: remove) { Label("Remove", systemImage: "trash") }
-            }
-        }
-        .contextMenu {
-            Button { s.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
-            if saved {
-                Button(role: .destructive, action: remove) { Label("Remove Server", systemImage: "trash") }
-            }
-        }
-    }
-
-    private static func status(_ p: ServerConnection.Phase) -> String {
-        switch p {
-        case .online: return "Connected"
-        case .connecting, .idle: return "Connecting…"
-        case .offline(let p): return OfflineCopy.short(p.kind)
         }
     }
 
@@ -205,7 +145,7 @@ struct SettingsView: View {
         return names[k] ?? KeyBar.titles[k] ?? k
     }
 
-    private static var version: String {
+    static var version: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? ""
         let build = info?["CFBundleVersion"] as? String ?? ""
@@ -213,8 +153,51 @@ struct SettingsView: View {
     }
 }
 
+/// The top level: one row per page, with what is set there. It reads only the values it shows.
+struct SettingsTopLevel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(Prefs.self) private var prefs
+    let theme: TermTheme
+
+    var body: some View {
+        let servers = model.servers
+        let connected = servers.filter { $0.phase == .online }.count
+        let current = prefs.theme
+        SettingsList(theme: theme) {
+            Section {
+                row(.servers, "Servers", "server.rack",
+                    value: SettingsSummary.servers(total: servers.count, connected: connected))
+                row(.appearance, "Appearance", "textformat.size",
+                    value: SettingsSummary.appearance(theme: current.name, fontSize: prefs.fontSize),
+                    spoken: SettingsSummary.appearanceSpoken(theme: current.name, fontSize: prefs.fontSize))
+                row(.keyboard, "Keyboard", "keyboard", value: prefs.keyBarLayout.title)
+                row(.notifications, "Notifications", "bell",
+                    value: SettingsSummary.notifications(on: model.push.master.switchOn))
+            }
+            .settingsRows(theme)
+
+            Section {
+                row(.about, "About", "info.circle", value: nil)
+            }
+            .settingsRows(theme)
+        }
+    }
+
+    private func row(_ page: SettingsPage, _ title: String, _ symbol: String, value: String?,
+                     spoken: String? = nil) -> some View {
+        NavigationLink(value: page) {
+            LabeledContent {
+                if let value { Text(value).lineLimit(1) }
+            } label: {
+                Label(title, systemImage: symbol)
+            }
+        }
+        .accessibilityValue(spoken ?? value ?? "")
+    }
+}
+
 /// The sidebar's status mark for a server: a dot when connected, a spinner while connecting.
-private struct ServerDot: View {
+struct ServerDot: View {
     let server: ServerConnection
     let theme: TermTheme
 

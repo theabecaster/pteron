@@ -291,7 +291,7 @@ struct OfflineScreen: View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(spacing: 4))
         layout {
             if problem.kind == .badAddress {
-                PrimaryButton(title: "Server Settings", busy: false, theme: theme) { model.showSettings = true }
+                PrimaryButton(title: "Server Settings", busy: false, theme: theme) { model.openSettings(at: .servers) }
             } else {
                 PrimaryButton(title: "Try Again", busyTitle: "Trying…", busy: server.retrying, theme: theme) {
                     Haptic.tap()
@@ -363,7 +363,7 @@ struct OfflineScreen: View {
         switch a {
         case .openSettings:
             if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
-        case .serverSettings: model.showSettings = true
+        case .serverSettings: model.openSettings(at: .servers)
         case .getTailscale: TailscaleApp.showInAppStore()
         }
     }

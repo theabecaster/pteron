@@ -95,7 +95,7 @@ path. Tap near the cursor for a Paste button.
 
 ### The key bar
 
-The key bar above the keyboard holds the keys a phone keyboard lacks. Settings → Key Bar offers
+The key bar above the keyboard holds the keys a phone keyboard lacks. Settings → Keyboard offers
 three layouts: **Agents** (Escape, Shift-Tab, Tab, `/` for slash commands, arrows, Ctrl-C, and 1,
 2, 3 for an agent's choices), **Shell** and **Vim**. Each has ctrl and cmd; Shell also has alt and
 Shift-Tab.

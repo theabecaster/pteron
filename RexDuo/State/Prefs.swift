@@ -62,6 +62,20 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the app moves between sessions and tabs: the sidebar beside or over the tab, or the tabs
+/// in a strip above it, as the Rex Mac app's horizontal tabs.
+enum NavigationStyle: String, CaseIterable, Identifiable {
+    case sidebar, tabs
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .sidebar: return "Sidebar"
+        case .tabs: return "Tabs"
+        }
+    }
+}
+
 struct ServerConfig: Codable, Identifiable, Hashable {
     var id: UUID = UUID()
     var name: String
@@ -93,7 +107,7 @@ struct ServerConfig: Codable, Identifiable, Hashable {
 /// User preferences. Stored in UserDefaults.
 ///
 /// Settings shows only what a user would want to change and would understand: servers, a theme for
-/// Light and for Dark Mode, text size, the key bar layout and notifications. Everything else is
+/// Light and for Dark Mode, text size, the navigation style, the key bar layout and notifications. Everything else is
 /// decided under "Fixed choices" and isn't saved.
 ///
 /// SwiftUI views read the app's instance from the environment (`@Environment(Prefs.self)`) and
@@ -117,6 +131,8 @@ final class Prefs {
             NotificationCenter.default.post(name: .keyBarChanged, object: nil)
         }
     }
+    /// The sidebar, or tabs above the pane. Sidebar until the user picks Tabs.
+    var navigation: NavigationStyle { didSet { d.set(navigation.rawValue, forKey: "navigation") } }
     /// The master switch: push notifications through Beacon. Off until the user turns
     /// them on, and kept as chosen while iOS has notifications turned off.
     var pushEnabled: Bool { didSet { d.set(pushEnabled, forKey: "pushEnabled") } }
@@ -253,6 +269,7 @@ final class Prefs {
         lightThemeID = d.string(forKey: "lightThemeID") ?? Self.defaultLightTheme
         fontSize = d.object(forKey: "fontSize") as? Double ?? Self.defaultFontSize
         keyBarLayout = KeyBarLayout(rawValue: d.string(forKey: "keyBarLayout") ?? "") ?? Self.defaultKeyBar
+        navigation = d.string(forKey: "navigation").flatMap(NavigationStyle.init(rawValue:)) ?? .sidebar
         pushEnabled = d.bool(forKey: "pushEnabled")
         helperOfferSkipped = Set((d.stringArray(forKey: "helperOfferSkipped") ?? []).compactMap(UUID.init(uuidString:)))
         func ids(_ key: String) -> Set<UUID> { Set((d.stringArray(forKey: key) ?? []).compactMap(UUID.init(uuidString:))) }

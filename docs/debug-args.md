@@ -131,7 +131,9 @@ builds.
 - No argument: a Debug build logs `SCENE_VISIBLE servers=<n>` when it starts its servers, at the
   first scene phase that shows the app (docs/architecture.md, Launch).
 - `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
-  keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
+  keyboard. `-settings <page>`: open Settings at that page: `main` (the top level), `servers`,
+  `appearance`, `keyboard`, `notifications`, `about`, or a page under one of them, `addServer`,
+  `darkTheme`, `lightTheme` or `acknowledgements`, whose Back then leads to its parent.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
@@ -263,9 +265,10 @@ builds.
   longest lines a long computer name, to check how they wrap. `confirm-remove`,
   `confirm-trust`, `details` and `how` open the screen with that confirm or sheet up over the
   first computer; a row's menu has no name, because iOS opens a menu only for a touch. Use it
-  with `-servers x -settings main`, and `-settingsScroll notifications` to bring the section
-  into view: `-settingsScroll notifications.<n>` puts its n-th computer (from 0) at the top,
-  and `-settingsScroll end` shows the end of the page, where a short section sits. A target
+  with `-servers x -settings notifications`. `-settingsScroll` scrolls that page, and with
+  `-settings main` opens it: `-settingsScroll notifications` shows the master switch at the top,
+  `-settingsScroll notifications.<n>` puts its n-th computer (from 0) at the top, and
+  `-settingsScroll end` shows the end of the page, the last computer at the bottom. A target
   that is already partly in view stays where it is.
 - `-pushToken <hex>`: use this APNs token and skip the permission check (push registration in a
   simulator).
