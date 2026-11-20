@@ -13,6 +13,10 @@ enum PaneCommand: CaseIterable, Sendable {
     case moveTab
     /// The sidebar's session drag.
     case moveSession
+    /// Floating windows: Minimize (`pane.minimize_floating`), Minimize All
+    /// (`pane.minimize_all_floating`), a minimized float's row in Arrange, and the raise a tap on
+    /// a float behind another sends.
+    case minimize, minimizeAll, restore, raise
 
     /// The server methods it calls. A server that lacks one doesn't get the command.
     var methods: [String] {
@@ -24,6 +28,7 @@ enum PaneCommand: CaseIterable, Sendable {
         case .closeOthers: ["block.close"]
         case .moveTab: ["session.move_window"]
         case .moveSession: ["session.move"]
+        case .minimize, .minimizeAll, .restore, .raise: [FloatArrange.layerStateMethod]
         }
     }
 
@@ -38,6 +43,8 @@ enum PaneCommand: CaseIterable, Sendable {
         case "pane.move_to_tab": .moveToTab
         case "pane.move_to_new_tab": .moveToNewTab
         case "client.tab.move.backward", "client.tab.move.forward": .moveTab
+        case "pane.minimize_floating": .minimize
+        case "pane.minimize_all_floating": .minimizeAll
         default: nil
         }
     }
@@ -74,20 +81,29 @@ enum PaneArrange {
     static func isAvailable(_ c: PaneCommand, target: PaneTarget?, support: PaneSupport) -> Bool {
         guard support.has(c) else { return false }
         guard let t = target else { return true }
-        let panes = PaneScope.arrangeable(window: t.window)
-        let tiled = panes.contains(t.block)
+        let w = t.window
+        let panes = PaneScope.arrangeable(window: w)
+        let here = panes.contains(t.block)
         switch c {
-        case .swap, .closeOthers: return tiled && panes.count > 1
-        case .moveToTab: return tiled && !MoveAnchor.targets(from: t.window.id, in: t.tabs).isEmpty
-        case .moveToNewTab: return tiled && panes.count > 1
-        case .balance: return panes.count > 1
+        case .swap: return here && !PaneScope.swappable(window: w, except: t.block).isEmpty
+        case .closeOthers: return here && panes.count > 1
+        case .moveToTab: return here && !MoveAnchor.targets(from: w.id, in: t.tabs).isEmpty
+        case .moveToNewTab: return here && panes.count > 1
+        // Balance evens the tiled splits; floats have none.
+        case .balance: return (w.layout?.leaves.count ?? 0) > 1
         case .moveTab: return t.tabs.count > 1
         case .moveSession: return true
+        case .minimize: return FloatArrange.minimizable(w, block: t.block) != nil
+        case .minimizeAll: return !FloatArrange.minimizeAll(w).isEmpty
+        case .restore: return !w.minimizedFloating.isEmpty
+        case .raise: return w.floatingLayer(of: t.block) != nil
         }
     }
 
-    /// Arrange shows for a tab with several panes when one of its items applies.
+    /// Arrange shows for a tab with several panes when one of its items applies, and for a tab
+    /// with a floating window to minimize or a minimized one to show, even with one pane.
     static func showsArrange(_ t: PaneTarget, support: PaneSupport) -> Bool {
+        if [.minimize, .restore].contains(where: { isAvailable($0, target: t, support: support) }) { return true }
         guard PaneScope.arrangeable(window: t.window).count > 1 else { return false }
         return [.swap, .moveToTab, .moveToNewTab, .balance, .closeOthers].contains {
             isAvailable($0, target: t, support: support)
@@ -95,16 +111,47 @@ enum PaneArrange {
     }
 }
 
-/// Which panes the commands work on: the tab's tiled panes, in reading order. Floating panes
-/// aren't drawn yet, so nothing offers them; the floats plan widens this one function.
+/// Which panes the commands work on: the tab's tiled panes in reading order, then its floating
+/// windows' panes, front first, the minimized ones last. With no floating layer, the tiled panes.
 enum PaneScope {
     static func arrangeable(window w: WindowInfo) -> [String] {
-        w.layout?.leaves.map(\.id) ?? []
+        var ids = w.layout?.leaves.map(\.id) ?? []
+        for layer in w.visibleFloating.reversed() + w.minimizedFloating.reversed() {
+            for id in layer.layout?.leaves.map(\.id) ?? [] where !ids.contains(id) { ids.append(id) }
+        }
+        return ids
+    }
+
+    /// The panes Swap With lists: every other pane on screen or a swipe away. A minimized float's
+    /// pane isn't one: the pane swapped in would vanish with it.
+    static func swappable(window w: WindowInfo, except block: String) -> [String] {
+        arrangeable(window: w).filter { $0 != block && !w.isHidden($0) }
+    }
+}
+
+/// The floating-window commands' rules, as the server keeps them: a window always keeps a pane
+/// on screen, so a minimize that would leave none fails there and isn't offered here.
+enum FloatArrange {
+    static let layerStateMethod = "session.set_layer_state"
+
+    /// The drawn floating layer that holds `block`, when minimizing it leaves a pane on screen.
+    static func minimizable(_ w: WindowInfo, block: String) -> LayerInfo? {
+        guard let layer = w.floatingLayer(of: block), layer.isDrawnFloat else { return nil }
+        let rest = !(w.layout?.leaves.isEmpty ?? true) || w.visibleFloating.contains { $0.id != layer.id }
+        return rest ? layer : nil
+    }
+
+    /// The layers Minimize All minimizes, back to front, in the order they are sent. With no tiled
+    /// pane the front one stays, since minimizing it too would fail.
+    static func minimizeAll(_ w: WindowInfo) -> [String] {
+        let ids = w.visibleFloating.map(\.id)
+        return (w.layout?.leaves.isEmpty ?? true) ? Array(ids.dropLast()) : ids
     }
 }
 
 /// Where a pane goes in another tab: beside that tab's focused pane if it is tiled, else beside
-/// its first tiled pane, so a pane never lands in a floating layer.
+/// its first tiled pane, so a pane doesn't land in a floating layer while the tab has a tiled
+/// one. A tab whose layout is empty takes it beside its focused (else front) floating pane.
 enum MoveAnchor {
     struct Pick: Equatable {
         var block: String
@@ -113,7 +160,11 @@ enum MoveAnchor {
     }
 
     static func pick(window w: WindowInfo) -> Pick? {
-        guard let leaves = w.layout?.leaves, !leaves.isEmpty else { return nil }
+        var leaves = w.layout?.leaves ?? []
+        if leaves.isEmpty {
+            for layer in w.visibleFloating.reversed() { leaves += layer.layout?.leaves ?? [] }
+        }
+        guard !leaves.isEmpty else { return nil }
         let leaf = leaves.first { $0.id == w.focusedBlockID } ?? leaves[0]
         return Pick(block: leaf.id, direction: leaf.rect.width >= leaf.rect.height ? "horizontal" : "vertical")
     }

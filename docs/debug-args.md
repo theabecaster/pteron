@@ -165,8 +165,11 @@ builds.
 - `-panesTest '<step>;<step>…'`: run Arrange's commands on the tab on screen, two seconds apart,
   through the same paths as the menu and the keys (`Features/Tab/PanesTest.swift`): `swap`,
   `moveTo:<n>`, `newTab`, `balance`, `closeOthers` (confirmed), `tab:+1`, `tab:-1`, `dragTab:<gap>`,
-  `dragSession:<gap>`, `wait:<s>`. After each it logs `PANES_STATE` with the session's tabs, their
-  panes and split ratios, the tab shown and the pane shown. Only in a `zz-` session you made.
+  `dragSession:<gap>`, `wait:<s>`, and for floating windows `tapFloat:<n>` (a tap on the first
+  pane of the n-th drawn float from the back, from 1), `minimize`, `minimizeAll` and `restore`
+  (the first minimized float's row). After each it logs `PANES_STATE` with the session's tabs,
+  their panes, split ratios and floating layers, the tab shown and the pane shown; a float tap
+  logs `FLOATS_TAP` with what it sent. Only in a `zz-` session you made.
 - `-portsTest '<step>;<step>…'`: drive ports in the active pane once it is live
   (`Features/Ports/PortsTest.swift` lists the steps): `list`, `menu:<port>`, `link:<url>`,
   `yes:<url>`, `no:<url>`, `fetch:<path>`, `parallel:<n>`, `done`, `wait:<s>`. It logs

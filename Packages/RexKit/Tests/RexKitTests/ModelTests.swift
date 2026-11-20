@@ -54,6 +54,80 @@ struct SessionTests {
         #expect(w.block("F")?.isTerminal == false)
     }
 
+    /// A tiled pane under three floats: the back one minimized, the middle one normal with two
+    /// panes, the front one with no usable bounds.
+    private var floatsWindow: WindowInfo { WindowInfo(json("""
+    {"window_id": "w1", "layers": [
+      {"layer_id": "t", "kind": "tiled", "bounds": [0, 0, 1, 1], "layout": {"block_id": "A", "rect": [0, 0, 1, 1]},
+       "blocks": [{"block_id": "A"}]},
+      {"layer_id": "m", "kind": "floating", "state": "minimized", "bounds": [0.1, 0.1, 0.3, 0.3],
+       "layout": {"block_id": "M", "rect": [0.1, 0.1, 0.3, 0.3]}, "blocks": [{"block_id": "M"}]},
+      {"layer_id": "f", "kind": "floating", "bounds": [0.3, 0.2, 0.5, 0.6],
+       "layout": {"rect": [0.3, 0.2, 0.5, 0.6], "split": {"split_id": "s", "direction": "vertical", "ratio": 0.5,
+         "before": {"block_id": "F1", "rect": [0.3, 0.2, 0.5, 0.3]}, "after": {"block_id": "F2", "rect": [0.3, 0.5, 0.5, 0.3]}}},
+       "blocks": [{"block_id": "F1"}, {"block_id": "F2"}]},
+      {"layer_id": "x", "kind": "floating", "bounds": [0.5, 0.5],
+       "layout": {"block_id": "X", "rect": [0.5, 0.5, 0.2, 0.2]}, "blocks": [{"block_id": "X"}]}]}
+    """)) }
+
+    @Test func floatingLayersSplitIntoDrawnAndMinimized() {
+        let w = floatsWindow
+        #expect(w.tiled?.id == "t")
+        #expect(w.floating.map(\.id) == ["m", "f", "x"])
+        #expect(w.visibleFloating.map(\.id) == ["f"], "minimized and unplaced layers aren't drawn")
+        #expect(w.minimizedFloating.map(\.id) == ["m"])
+        #expect(w.layers[2].isFloating && !w.layers[0].isFloating)
+        #expect(!w.layers[3].hasBounds)
+        #expect(w.isMinimized("M") && !w.isMinimized("F1") && !w.isMinimized("A"))
+        #expect(w.isHidden("M") && w.isHidden("X") && !w.isHidden("F2") && !w.isHidden("A"))
+        #expect(w.floatingLayer(of: "F2")?.id == "f")
+        #expect(w.floatingLayer(of: "A") == nil)
+    }
+
+    @Test func pageBlockIDsLeaveOutMinimizedAndPutTheFrontFloatFirst() {
+        #expect(floatsWindow.pageBlockIDs == ["A", "F1", "F2"])
+        #expect(floatsWindow.orderedBlockIDs == ["A", "M", "F1", "F2", "X"], "orderedBlockIDs doesn't change")
+        // Two normal floats: front first.
+        let w = WindowInfo(json("""
+        {"window_id": "w", "layers": [
+          {"layer_id": "t", "kind": "tiled", "layout": {"block_id": "A", "rect": [0, 0, 1, 1]}, "blocks": [{"block_id": "A"}]},
+          {"layer_id": "back", "kind": "floating", "bounds": [0, 0, 0.5, 0.5], "layout": {"block_id": "B", "rect": [0, 0, 0.5, 0.5]}, "blocks": [{"block_id": "B"}]},
+          {"layer_id": "front", "kind": "floating", "bounds": [0.5, 0.5, 0.5, 0.5], "layout": {"block_id": "C", "rect": [0.5, 0.5, 0.5, 0.5]}, "blocks": [{"block_id": "C"}]}]}
+        """))
+        #expect(w.pageBlockIDs == ["A", "C", "B"])
+        // No floating layer: the same as orderedBlockIDs.
+        let plain = WindowInfo(json(#"{"window_id": "p", "layers": [{"layer_id": "t", "kind": "tiled", "layout": {"rect": [0, 0, 1, 1], "split": {"direction": "horizontal", "ratio": 0.5, "before": {"block_id": "A", "rect": [0, 0, 0.5, 1]}, "after": {"block_id": "B", "rect": [0.5, 0, 0.5, 1]}}}, "blocks": [{"block_id": "A"}, {"block_id": "B"}]}]}"#))
+        #expect(plain.pageBlockIDs == plain.orderedBlockIDs)
+        #expect(plain.floating.isEmpty && plain.visibleFloating.isEmpty)
+    }
+
+    @Test func aLayerWithoutAnIDKeepsOneWhenTheOrderChanges() {
+        let a = #"{"kind": "floating", "layer_id": null, "bounds": [0, 0, 0.5, 0.5], "layout": {"block_id": "B", "rect": [0, 0, 0.5, 0.5]}, "blocks": [{"block_id": "B"}]}"#
+        let b = #"{"kind": "floating", "bounds": [0.5, 0.5, 0.5, 0.5], "layout": {"block_id": "C", "rect": [0.5, 0.5, 0.5, 0.5]}, "blocks": [{"block_id": "C"}]}"#
+        let tiled = #"{"kind": "tiled", "layout": {"block_id": "A", "rect": [0, 0, 1, 1]}, "blocks": [{"block_id": "A"}]}"#
+        let one = WindowInfo(json(#"{"window_id": "w", "layers": [\#(tiled), \#(a), \#(b)]}"#))
+        let two = WindowInfo(json(#"{"window_id": "w", "layers": [\#(tiled), \#(b), \#(a)]}"#))
+        #expect(one.floating.map(\.id) == ["layer:B", "layer:C"])
+        #expect(two.floating.map(\.id) == ["layer:C", "layer:B"])
+        #expect(LayerInfo(json(#"{"kind": "floating"}"#)).id == "layer:empty")
+    }
+
+    @Test func anUnknownKindFloatsAndAnUnknownStateIsNormal() {
+        let w = WindowInfo(json("""
+        {"window_id": "w", "layers": [
+          {"layer_id": "t", "kind": "tiled", "layout": {"block_id": "A", "rect": [0, 0, 1, 1]}, "blocks": [{"block_id": "A"}]},
+          {"layer_id": "p", "kind": "popover", "state": "shaded", "bounds": [0.2, 0.2, 0.4, 0.4],
+           "layout": {"block_id": "P", "rect": [0.2, 0.2, 0.4, 0.4]}, "blocks": [{"block_id": "P"}], "future": 1}]}
+        """))
+        #expect(w.visibleFloating.map(\.id) == ["p"])
+        #expect(w.pageBlockIDs == ["A", "P"])
+    }
+
+    @Test func noLayersMeansNoFloats() {
+        let w = WindowInfo(json(#"{"window_id": "w"}"#))
+        #expect(w.tiled == nil && w.floating.isEmpty && w.pageBlockIDs.isEmpty)
+    }
+
     @Test func activeWindowFallsBackToFirst() {
         let v = SessionView(json(#"{"revision": 3, "session_id": "s", "active_window_id": "gone", "windows": [{"window_id": "w1"}, {"window_id": "w2", "layers": [{"blocks": [{"block_id": "B"}]}]}]}"#))
         #expect(v.revision == 3)

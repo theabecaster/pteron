@@ -94,6 +94,17 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     and forth. The fold has to hold for 400 ms before book mode goes on or off (and before the
     sidebar moves), then the fit claim's 120 ms settle sends one resize. The first layout doesn't
     wait, and a crease that is gone or has moved (fully folded, rotated) is dropped at once.
+  - **Floating windows** keep off the crease whether or not book mode is on: each moves onto
+    the page that holds its center, 3 pt clear of the fold, narrowed to the page if it must be;
+    if a pane in it would drop under 40×8 cells the tab shows one pane at a time instead. The
+    tiled layer under them is laid out as above. Whether book mode collapses the sidebar is
+    asked of the tiled splits alone, as for a tab without floats ([terminal.md](terminal.md),
+    Floating windows).
+- **Floating windows by posture.** Wide windows (unfolded, book, tabletop, iPhone landscape)
+  draw them where the Mac places them, grown until each pane is legible. Narrow windows (folded,
+  iPhone portrait, half the inner screen) always show one pane at a time: the tiled panes, then
+  the floats' panes front first, with dots. A tab whose floats are all minimized is laid out as
+  if it had none.
 - **Tent mode** (`TentDetector`, `Features/Board`). Folded back and stood on a desk as a tent,
   the phone shows the agent board on its outer screen instead of the tab: who needs you, read
   from a meter away.

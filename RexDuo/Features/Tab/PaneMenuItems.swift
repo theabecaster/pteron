@@ -2,7 +2,8 @@ import SwiftUI
 import RexKit
 
 /// "Arrange ▸" in the pane menu: Swap With, Move to Tab, Balance Splits and Close Other Panes…
-/// for a tab with several panes. Its own view, so only it reads the server's support, the
+/// for a tab with several panes, and Floating Windows (Minimize, then each minimized float to
+/// show again) for a tab with floats. Its own view, so only it reads the server's support, the
 /// session's tabs and the panes' names: a change there redraws this row, not the tab screen. The
 /// names never come from a title (`PaneName`), so an agent's spinning title rebuilds nothing.
 struct PaneMenuItems: View {
@@ -15,6 +16,10 @@ struct PaneMenuItems: View {
     let onMoveToNewTab: () -> Void
     let onBalance: () -> Void
     let onCloseOthers: () -> Void
+    /// Minimizes the active pane's floating window.
+    var onMinimize: () -> Void = {}
+    /// Shows a minimized floating window again, by its layer.
+    var onRestore: (String) -> Void = { _ in }
 
     var body: some View {
         #if DEBUG
@@ -46,6 +51,14 @@ struct PaneMenuItems: View {
                         Button(role: .destructive, action: onCloseOthers) {
                             Label("Close Other Panes…", systemImage: "xmark.square")
                         }
+                    }
+                }
+                if m.minimize || !m.minimized.isEmpty {
+                    Section("Floating Windows") {
+                        if m.minimize {
+                            Button(action: onMinimize) { Label("Minimize", systemImage: "minus.square") }
+                        }
+                        ForEach(m.minimized) { r in Button { onRestore(r.id) } label: { row(r) } }
                     }
                 }
             } label: {
@@ -80,6 +93,10 @@ struct PaneMenuModel: Equatable {
     /// Every split is even already: Balance Splits shows, disabled.
     var balanced = false
     var closeOthers = false
+    /// Minimize applies to the pane's floating window.
+    var minimize = false
+    /// The tab's minimized floating windows, each a row that shows it again (`id` is its layer).
+    var minimized: [Row] = []
 
     /// What the pane's server, session and names give. Reads only the server's support, the
     /// session's tabs and the name table, never a title.
@@ -96,7 +113,8 @@ struct PaneMenuModel: Equatable {
         guard PaneArrange.showsArrange(t, support: support) else { return nil }
         var m = PaneMenuModel()
         if PaneArrange.isAvailable(.swap, target: t, support: support) {
-            m.swap = paneRows(t.window, names: names).filter { $0.id != t.block }
+            let ids = Set(PaneScope.swappable(window: t.window, except: t.block))
+            m.swap = paneRows(t.window, names: names).filter { ids.contains($0.id) }
         }
         if PaneArrange.isAvailable(.moveToTab, target: t, support: support) {
             let all = t.tabs.map(\.id)
@@ -110,11 +128,28 @@ struct PaneMenuModel: Equatable {
             m.balanced = SplitBalance.ratios(layout).isEmpty
         }
         m.closeOthers = PaneArrange.isAvailable(.closeOthers, target: t, support: support)
+        m.minimize = PaneArrange.isAvailable(.minimize, target: t, support: support)
+        if PaneArrange.isAvailable(.restore, target: t, support: support) {
+            m.minimized = minimizedRows(t.window, names: names)
+        }
         return m
     }
 
-    /// A tab's tiled panes by name, in reading order. Two panes of the same name also say which
-    /// pane they are.
+    /// A tab's minimized floating windows, back to front, each by its first pane's name; one with
+    /// several panes says how many.
+    static func minimizedRows(_ w: WindowInfo, names: Names) -> [Row] {
+        let rows = paneRows(w, names: names)
+        return w.minimizedFloating.compactMap { layer in
+            let ids = layer.layout?.leaves.map(\.id) ?? layer.blocks.map(\.id)
+            guard let first = ids.first else { return nil }
+            let r = rows.first { $0.id == first }
+            return Row(id: layer.id, name: r?.name ?? PaneName.menu(w.block(first), position: 1, parts: names(first)),
+                       subtitle: ids.count > 1 ? "\(ids.count) panes" : r?.subtitle, symbol: r?.symbol ?? "terminal")
+        }
+    }
+
+    /// A tab's panes by name, tiled in reading order, then floats (`PaneScope`). Two panes of the
+    /// same name also say which pane they are. Swap With leaves out minimized floats' panes.
     static func paneRows(_ w: WindowInfo, names: Names) -> [Row] {
         let ids = PaneScope.arrangeable(window: w)
         let rows = ids.enumerated().map { i, id in

@@ -106,12 +106,19 @@ enum Waiting {
         .sorted { (since[$0.id] ?? .distantFuture) < (since[$1.id] ?? .distantFuture) }
     }
 
-    /// Points the app at that agent's pane and returns the tab to open.
+    /// Points the app at that agent's pane and returns the tab to open. A pane in a minimized
+    /// floating window shows it again first, where the server can.
     static func prepare(_ model: AppModel, _ item: Item) -> Selection {
         let k = item.key
         model.focusedPane[k.windowID] = k.blockID
         let server = item.server
-        Task { await server.focus(k.sessionID, block: k.blockID) }
+        if let w = server.views[k.sessionID]?.window(k.windowID), let layer = w.floatingLayer(of: k.blockID), layer.minimized,
+           server.capabilities.paneSupport.has(.restore) {
+            let id = layer.id, several = layer.blocks.count > 1
+            Task { await server.raiseFloat(k.sessionID, id, focus: several ? k.blockID : nil) }
+        } else {
+            Task { await server.focus(k.sessionID, block: k.blockID) }
+        }
         return Selection(serverID: server.id, sessionID: k.sessionID, windowID: k.windowID)
     }
 }

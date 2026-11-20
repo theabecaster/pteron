@@ -107,6 +107,8 @@ enum AppAction {
             case "pane.close_others": return .command(.closeOtherPanes)
             case "pane.move_to_tab": return .command(.moveToTab)
             case "pane.move_to_new_tab": return .command(.moveToNewTab)
+            case "pane.minimize_floating": return .command(.minimizeFloat)
+            case "pane.minimize_all_floating": return .command(.minimizeAllFloats)
             case "client.tab.move.backward": return .command(.moveTab(-1))
             default: return .command(.moveTab(1))
             }
@@ -216,6 +218,8 @@ enum KeyActions {
         Info(name: "pane.focus_next", title: "Focus Next Pane", category: "Pane", repeats: true),
         Info(name: "pane.focus_previous", title: "Focus Previous Pane", category: "Pane", repeats: true),
         Info(name: "pane.zoom", title: "Zoom Pane", category: "Pane", repeats: false),
+        Info(name: "pane.minimize_floating", title: "Minimize Floating Window", category: "Pane", repeats: false),
+        Info(name: "pane.minimize_all_floating", title: "Minimize Floating Windows", category: "Pane", repeats: false),
         Info(name: "pane.close", title: "Close Pane", category: "Pane", repeats: false),
         Info(name: "pane.close_others", title: "Close Other Panes", category: "Pane", repeats: false),
         Info(name: "pane.balance", title: "Balance Splits", category: "Pane", repeats: false),

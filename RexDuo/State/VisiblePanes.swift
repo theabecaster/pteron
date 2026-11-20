@@ -31,8 +31,15 @@ enum VisiblePanes {
     }
 
     /// The panes a tab shows: only the active one when it shows one pane at a time (`single`),
-    /// else every pane of its splits.
+    /// else every pane of its splits. A minimized float's pane is never one.
     nonisolated static func inTab(_ w: WindowInfo, active: String, single: Bool) -> Set<String> {
-        single ? [active] : Set(w.orderedBlockIDs)
+        single ? [active] : Set(w.pageBlockIDs)
+    }
+
+    /// The panes a tab with a floating window on screen shows (`TabPresentation`): the page
+    /// shown, or the tiled panes drawn and every float's panes. Minimized floats and pages a
+    /// swipe away aren't on screen. The toasts' UIKit walk (`onScreen`) finds the same hosts.
+    nonisolated static func inTab(_ w: WindowInfo, _ presentation: TabPresentation) -> Set<String> {
+        presentation.visible(in: w)
     }
 }

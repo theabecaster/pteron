@@ -73,6 +73,16 @@ struct WindowScreen: View {
     @State private var canvasSize: CGSize = .zero
     /// Where the panes' area ends, in global coordinates. The sidebar doesn't move it.
     @State private var canvasMaxX: CGFloat?
+    /// A floating window a tap raised, drawn in front until the server's view puts it there, for
+    /// at most `FloatRaise.hold`, and only on the connection that sent the raise.
+    @State private var raised: FloatRaise?
+
+    struct FloatRaise: Equatable {
+        static let hold: UInt64 = 1_000_000_000
+        var layer: String
+        var serial: Int
+        var token = UUID()
+    }
 
     private var view: SessionView? { server.views[sessionID] }
     private var window: WindowInfo? { view?.window(windowID) }
@@ -84,25 +94,27 @@ struct WindowScreen: View {
         let _ = RenderCount.bump(.windowScreens)
         #endif
         let theme = prefs.theme(for: scheme)
+        // Nil for every tab without a floating window on screen: those run the code below as before.
+        let p = window.flatMap { presentation($0) }
         VStack(spacing: 0) {
             if let w = window {
                 if case .wide(let t?) = mode {
                     // Tabletop: title bar and panes above the crease, read at a distance; the keyboard
                     // comes up below it. The top region gives way only if the keyboard needs it.
                     VStack(spacing: 0) {
-                        if showsHeader { header(w, theme) }
-                        panes(w, theme)
+                        if showsHeader { header(w, theme, p) }
+                        panes(w, theme, p)
                     }
                     .frame(maxHeight: t.top)
                     .layoutPriority(1)
                     Color.clear.frame(height: t.gap)
                     Spacer(minLength: 0)
                 } else {
-                    if showsHeader { header(w, theme) }
-                    panes(w, theme)
+                    if showsHeader { header(w, theme, p) }
+                    panes(w, theme, p)
                 }
             } else {
-                header(nil, theme)
+                header(nil, theme, nil)
                 VStack(spacing: 10) {
                     Image(systemName: "rectangle.dashed").font(.system(size: 34, weight: .light))
                     Text("This tab closed.").font(.subheadline)
@@ -115,7 +127,7 @@ struct WindowScreen: View {
         // Edge to edge, under the status bar and the Duo's vertical bar, so system UI sits on the
         // app's chrome. The panes themselves stay inside the safe area.
         .background(theme.chrome.canvas.ignoresSafeArea())
-        .toolbar { barItems(theme) }
+        .toolbar { barItems(theme, p) }
         .background(CommandListener { handle($0) })
         .alert("Rename Tab", isPresented: $renaming) {
             TextField("Name", text: $renameText)
@@ -174,15 +186,22 @@ struct WindowScreen: View {
             if keyboardUp != liveKeyboard.up { keyboardUp = liveKeyboard.up }
         }
         .onChange(of: bookFits, initial: true) { _, fits in onBookFits(fits) }
+        // The server's view put the raised float in front: its order holds from here.
+        .onChange(of: window?.visibleFloating.last?.id) { _, front in
+            if let r = raised, r.layer == front { raised = nil }
+        }
         #if DEBUG
         .onAppear { PanesTest.run(panesTestActions) }
         .onAppear { GoToDebug.launch(model) }
         #endif
     }
 
-    private func panes(_ w: WindowInfo, _ theme: TermTheme) -> some View {
-        canvas(w, theme)
+    private func panes(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        canvas(w, theme, p)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The floating windows sit above the tiled panes, a sibling of them, so one coming or
+            // going never rebuilds the panes below. Empty in a tab without one.
+            .overlay(alignment: .topLeading) { floatWindows(w, theme, p) }
             .clipped()
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
                 if !keyboardUp, s != canvasSize { canvasSize = s }
@@ -211,19 +230,45 @@ struct WindowScreen: View {
     /// Splits as the Mac lays them out would show, zoom aside. Wide (unfolded), always; folded, only
     /// while every pane keeps a legible grid.
     private func splitsFit(_ w: WindowInfo) -> Bool {
-        guard let layout = w.layout, w.orderedBlockIDs.count > 1 else { return false }
+        guard let layout = w.layout, w.pageBlockIDs.count > 1 else { return false }
         guard w.zoomedBlockID == nil else { return false }
         return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
     }
 
     private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
 
+    /// How a tab with a floating window on screen is shown; nil for every other tab, which the
+    /// functions above lay out as before.
+    private func presentation(_ w: WindowInfo) -> TabPresentation? {
+        guard !w.visibleFloating.isEmpty else { return nil }
+        return TabPresentation.decide(.init(window: w, narrow: mode == .narrow, zoomed: w.zoomedBlockID != nil || zoomedHere,
+                                            active: activeBlock(w), canvas: canvasSize, fontSize: prefs.fontSize,
+                                            crease: floatCrease, front: frontOverride))
+    }
+
+    /// A float the phone raised, until the server's view or time takes over. Another connection's
+    /// views set the order alone.
+    private var frontOverride: String? {
+        guard let r = raised, r.serial == server.connectionSerial else { return nil }
+        return r.layer
+    }
+
+    /// The crease the floats keep clear of, in the splits' area, from the keyboard-down canvas.
+    private var floatCrease: FloatLayout.Crease? {
+        guard let canvasMaxX, canvasSize.width > 0 else { return nil }
+        let pad = PaneLayout.splitPadding
+        return FloatLayout.crease(bookCrease, areaMinX: canvasMaxX - canvasSize.width + pad - rootOrigin.x,
+                                  areaWidth: canvasSize.width - pad * 2)
+    }
+
     /// Whether this tab, with the fold bent as it is now, would be in book mode if the sidebar
-    /// were collapsed (`BookSidebar`). Nil until the tab is measured.
+    /// were collapsed (`BookSidebar`). Nil until the tab is measured. Floats on screen don't
+    /// change the answer: it is about the tiled splits under them, which beside the sidebar may
+    /// show as pages and as splits once it collapses.
     private var bookFits: Bool? {
         guard let w = window, canvasSize != .zero, let canvasMaxX else { return nil }
         // Zoom aside, as `splitsFit`; beside the sidebar the splits may be too narrow to show.
-        guard w.orderedBlockIDs.count > 1, w.zoomedBlockID == nil, !zoomedHere else { return false }
+        guard w.pageBlockIDs.count > 1, w.zoomedBlockID == nil, !zoomedHere else { return false }
         // A split whose layout hasn't arrived yet isn't measured.
         guard let layout = w.layout else { return nil }
         // Collapsed, the panes' area runs from the root's leading edge to where it ends now.
@@ -233,27 +278,32 @@ struct WindowScreen: View {
     }
 
     /// Zoom means something only while more than one pane is on screen.
-    private func canZoom(_ w: WindowInfo) -> Bool { zoomedHere || splitsFit(w) }
+    private func canZoom(_ w: WindowInfo) -> Bool { canZoom(w, presentation(w)) }
 
-    private func activeBlock(_ w: WindowInfo) -> String? {
-        if let f = model.focusedPane[w.id], w.allBlocks.contains(where: { $0.id == f }) { return f }
-        if let z = w.zoomedBlockID { return z }
-        return w.focusedBlockID ?? w.orderedBlockIDs.first
+    private func canZoom(_ w: WindowInfo, _ p: TabPresentation?) -> Bool {
+        zoomedHere || (p.map(\.canZoom) ?? splitsFit(w))
     }
+
+    private func activeBlock(_ w: WindowInfo) -> String? { ActivePane.of(w, phone: model.focusedPane[w.id]) }
 
     /// Shows pane `id` with a slide in the direction of travel.
     private func pick(_ w: WindowInfo, _ id: String, forward fw: Bool? = nil) {
-        let ids = w.orderedBlockIDs
+        let ids = w.pageBlockIDs
         guard let cur = activeBlock(w), id != cur else { return }
         forward = fw ?? ((ids.firstIndex(of: id) ?? 0) > (ids.firstIndex(of: cur) ?? 0))
         Haptic.selection()
         withAnimation(.snappy(duration: 0.24)) { model.focusedPane[w.id] = id }
+        // A floating window on screen comes to the front as a tap brings it.
+        if case .floating? = presentation(w), w.floatingLayer(of: id) != nil {
+            tapFloat(id)
+            return
+        }
         Task { await server.focus(sessionID, block: id) }
     }
 
     /// Terminal swipe or pane command: +1 next pane, -1 previous pane. No wrap: at either end, a bump.
     private func switchPane(_ w: WindowInfo, by dir: Int) {
-        let ids = w.orderedBlockIDs
+        let ids = w.pageBlockIDs
         guard let cur = activeBlock(w), let i = ids.firstIndex(of: cur) else { return }
         guard ids.indices.contains(i + dir) else { Haptic.bump(); return }
         pick(w, ids[i + dir], forward: dir > 0)
@@ -390,6 +440,16 @@ struct WindowScreen: View {
             dragSession: { gap in
                 if let m = TabOrder.before(server.orderedSessions.map(\.id), moving: sid, gap: gap) { server.dragSession(sid, order: m.order) }
             },
+            tapFloat: { n in
+                guard let w = window, w.visibleFloating.indices.contains(n - 1),
+                      let b = w.visibleFloating[n - 1].layout?.leaves.first?.id else { return }
+                tapFloat(b)
+            },
+            minimize: { minimizeFloat() },
+            minimizeAll: { minimizeAllFloats() },
+            restore: {
+                if let l = window?.minimizedFloating.first { restoreFloat(l.id) }
+            },
             state: { [model] in
                 PanesTest.describe(server.views[sid], current: model.selection?.windowID ?? "")
                     + " shown=" + (model.selection.flatMap { model.focusedPane[$0.windowID] }.map { String($0.suffix(4)) } ?? "-")
@@ -520,6 +580,75 @@ struct WindowScreen: View {
         Task { await server.moveWindow(sid, wid, before: move.before) }
     }
 
+    // MARK: Floating windows
+
+    /// A tap (or a long press, a two-finger tap, a pointer drag) on a floating pane: it becomes
+    /// the active pane, and the server hears only what changed (`FloatTap`). A raise shows at once
+    /// and holds until the server's view agrees, at most `FloatRaise.hold`.
+    private func tapFloat(_ block: String) {
+        guard let w = window else { return }
+        if model.focusedPane[w.id] != block { model.focusedPane[w.id] = block }
+        let canRaise = server.capabilities.paneSupport.has(.raise)
+        let front = frontOverride ?? w.visibleFloating.last?.id
+        let server = server, sid = sessionID
+        let decision = FloatTap.decide(window: w, block: block, front: front, canRaise: canRaise)
+        #if DEBUG
+        NSLog("FLOATS_TAP %@ %@", String(block.suffix(4)), String(describing: decision))
+        #endif
+        switch decision {
+        case .none:
+            return
+        case .focus:
+            Task { await server.focus(sid, block: block) }
+        case .raise(let focusBlock):
+            guard let layer = w.floatingLayer(of: block)?.id else { return }
+            hold(raised: layer)
+            Task { await server.raiseFloat(sid, layer, focus: focusBlock ? block : nil) }
+        }
+    }
+
+    private func hold(raised layer: String) {
+        let r = FloatRaise(layer: layer, serial: server.connectionSerial)
+        raised = r
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: FloatRaise.hold)
+            if raised?.token == r.token { raised = nil }
+        }
+    }
+
+    /// Minimize: the active pane's floating window, where the tab keeps a pane on screen.
+    private func minimizeFloat() {
+        guard let t = arrangeTarget(.minimize), let layer = FloatArrange.minimizable(t.window, block: t.block) else {
+            Haptic.bump()
+            return
+        }
+        Haptic.tap()
+        let server = server, sid = sessionID, id = layer.id
+        Task { await server.minimizeFloat(sid, id) }
+    }
+
+    /// `pane.minimize_all_floating`: every floating window the tab can spare, in one turn.
+    private func minimizeAllFloats() {
+        guard let t = arrangeTarget(.minimizeAll) else { Haptic.bump(); return }
+        let layers = FloatArrange.minimizeAll(t.window)
+        Haptic.tap()
+        let server = server, sid = sessionID
+        Task { await server.minimizeFloats(sid, layers) }
+    }
+
+    /// A minimized floating window's row: it shows again, in front, with its pane active.
+    private func restoreFloat(_ layer: String) {
+        guard let t = arrangeTarget(.restore), let l = t.window.minimizedFloating.first(where: { $0.id == layer }) else {
+            Haptic.bump()
+            return
+        }
+        Haptic.tap()
+        if let b = l.layout?.leaves.first?.id ?? l.blocks.first?.id { model.focusedPane[t.window.id] = b }
+        hold(raised: layer)
+        let server = server, sid = sessionID
+        Task { await server.restoreFloat(sid, layer) }
+    }
+
     /// Runs the tab-scoped `RexCommand`s; RootView runs the app-wide ones.
     private func handle(_ r: CommandRequest) {
         guard r.command.isWindowCommand, PhoneState.shared.claim(r) else { return }
@@ -545,6 +674,8 @@ struct WindowScreen: View {
         case .moveToTab: chooseMoveTarget()
         case .moveToNewTab: moveToNewTab()
         case .moveTab(let d): moveTab(by: d)
+        case .minimizeFloat: minimizeFloat()
+        case .minimizeAllFloats: minimizeAllFloats()
         case .goTo(let scope): openGoTo(scope, w)
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
         }
@@ -562,14 +693,14 @@ struct WindowScreen: View {
     /// there (Apple: navigation at the top, then actions, each with a title and a symbol). The title
     /// and status stay in the title bar: text and custom views stay off the vertical axis.
     @ToolbarContentBuilder
-    private func barItems(_ theme: TermTheme) -> some ToolbarContent {
+    private func barItems(_ theme: TermTheme, _ p: TabPresentation?) -> some ToolbarContent {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if zoomedHere {
                     Button { toggleZoom() } label: { Label("Unzoom", systemImage: "arrow.down.right.and.arrow.up.left") }
                 }
                 Button { openOverview() } label: { Label("All Tabs", systemImage: "square.on.square") }
-                paneMenu(w, block: b)
+                paneMenu(w, block: b, p)
             }
         }
     }
@@ -578,7 +709,7 @@ struct WindowScreen: View {
     /// status beside it, then the page dots and the pane menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
     /// title and status. Under a short window (landscape iPhone) it is thinner, to leave rows for the
     /// panes.
-    private func header(_ w: WindowInfo?, _ theme: TermTheme) -> some View {
+    private func header(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         let bar = barEdge != nil
         let short = vSize == .compact
         let height: CGFloat = short ? 34 : 44
@@ -597,15 +728,18 @@ struct WindowScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let w, let b = activeBlock(w) {
-                let single = !useSplits(w)
-                WaitingPill(visible: VisiblePanes.inTab(w, active: b, single: single), theme: theme, onJump: jump)
+                let single = p == nil && !useSplits(w)
+                let visible = p.map { VisiblePanes.inTab(w, $0) } ?? VisiblePanes.inTab(w, active: b, single: single)
+                // One pane at a time: the dots say which, of the tab's panes on screen or a swipe away.
+                let dots = p.map(\.pageIDs) ?? (single ? w.pageBlockIDs : nil)
+                WaitingPill(visible: visible, theme: theme, onJump: jump)
                     .layoutPriority(1)
-                if single, w.orderedBlockIDs.count > 1 {
-                    PaneDots(ids: w.orderedBlockIDs, current: b, theme: theme) { switchPane(w, by: $0) }
+                if let dots, dots.count > 1 {
+                    PaneDots(ids: dots, current: b, theme: theme) { switchPane(w, by: $0) }
                 }
                 if !bar {
                     if zoomedHere { unzoomButton(theme, height: height) }
-                    paneMenu(w, block: b)
+                    paneMenu(w, block: b, p)
                         .labelStyle(.iconOnly)
                         .frame(width: 44, height: height)
                         .contentShape(Rectangle())
@@ -649,7 +783,7 @@ struct WindowScreen: View {
             .transition(.scale.combined(with: .opacity))
     }
 
-    private func paneMenu(_ w: WindowInfo, block: String) -> some View {
+    private func paneMenu(_ w: WindowInfo, block: String, _ p: TabPresentation?) -> some View {
         Menu {
             Section {
                 Button { split(vertical: false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
@@ -658,7 +792,7 @@ struct WindowScreen: View {
                 Button { openOverview() } label: { Label("All Tabs", systemImage: "square.on.square") }
             }
             Section {
-                if canZoom(w) {
+                if canZoom(w, p) {
                     Button { toggleZoom() } label: {
                         Label(zoomedHere ? "Unzoom" : "Zoom Pane",
                               systemImage: zoomedHere ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
@@ -675,7 +809,8 @@ struct WindowScreen: View {
                 }
                 PaneMenuItems(server: server, sessionID: sessionID, window: w, block: block,
                               onSwap: { swap(with: $0) }, onMove: { moveToTab($0) }, onMoveToNewTab: { moveToNewTab() },
-                              onBalance: { balance() }, onCloseOthers: { requestCloseOthers() })
+                              onBalance: { balance() }, onCloseOthers: { requestCloseOthers() },
+                              onMinimize: { minimizeFloat() }, onRestore: { restoreFloat($0) })
                 PortsMenuRow(server: server, sessionID: sessionID, block: block) { host(block)?.ports?.open($0) }
             }
             Section {
@@ -696,15 +831,39 @@ struct WindowScreen: View {
 
     // MARK: Panes
 
+    /// What the tiled canvas draws: the splits, or one pane, which is the active one (else a tap
+    /// makes it so) and pages to the next with a swipe, or not under floating windows.
+    private struct CanvasLook {
+        var splits = false
+        var block: String?
+        var active = true
+        var pages = true
+    }
+
+    private func canvasLook(_ w: WindowInfo, _ p: TabPresentation?) -> CanvasLook {
+        guard let p else { return useSplits(w) ? CanvasLook(splits: true) : CanvasLook(block: activeBlock(w)) }
+        switch p {
+        case .pages(_, let current): return CanvasLook(block: current)
+        case .floating(.splits, _): return CanvasLook(splits: true)
+        case .floating(.single(let id), _): return CanvasLook(block: id, active: id == activeBlock(w), pages: false)
+        case .floating(.empty, _): return CanvasLook(block: nil, active: false, pages: false)
+        }
+    }
+
     @ViewBuilder
-    private func canvas(_ w: WindowInfo, _ theme: TermTheme) -> some View {
-        if !useSplits(w) {
-            if let b = activeBlock(w) {
+    private func canvas(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        let look = canvasLook(w, p)
+        if !look.splits {
+            if let b = look.block {
                 let rounded = mode != .narrow
                 let radius = rounded ? PaneLayout.singleRadius : 0
                 ZStack {
-                    PaneView(server: server, sessionID: sessionID, blockID: b, active: true, onFocus: {},
-                             onSwipe: { dir in switchPane(w, by: dir) },
+                    PaneView(server: server, sessionID: sessionID, blockID: b, active: look.active,
+                             onFocus: look.active ? {} : {
+                                 model.focusedPane[w.id] = b
+                                 Task { await server.focus(sessionID, block: b) }
+                             },
+                             onSwipe: look.pages ? { dir in switchPane(w, by: dir) } : nil,
                              restSize: PaneLayout.single(canvas: canvasSize, rounded: rounded))
                         .id(b)
                         .padding(PaneLayout.clearance(radius: radius))
@@ -746,6 +905,49 @@ struct WindowScreen: View {
                             SplitHandle(split: handle, canvas: size, theme: theme) { shown in
                                 let ratio = book?.ratio(sp, shown: shown) ?? shown
                                 Task { await server.resizePane(sessionID, direction: sp.direction, before: sp.beforeFirst, after: sp.afterFirst, ratio: ratio) }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(PaneLayout.splitPadding)
+        }
+    }
+
+    /// The floating windows, back to front, in the splits' area. Each is the terminal's
+    /// background with one soft shadow, and its panes drawn as split panes are: no title strip,
+    /// no buttons. Nothing at all in a tab without one on screen.
+    @ViewBuilder
+    private func floatWindows(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        if case .floating(_, let floats)? = p {
+            let active = activeBlock(w)
+            let radius = PaneLayout.splitRadius
+            GeometryReader { geo in
+                let size = geo.size
+                ZStack(alignment: .topLeading) {
+                    ForEach(floats) { f in
+                        let outer = PaneLayout.split(f.rect, in: size)
+                        ZStack(alignment: .topLeading) {
+                            // The window's backing and shadow, never on the Metal view, and never hit.
+                            RoundedRectangle(cornerRadius: radius)
+                                .fill(theme.bg)
+                                .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.25), radius: 12, y: 4)
+                                .frame(width: outer.width, height: outer.height)
+                                .offset(x: outer.minX, y: outer.minY)
+                                .allowsHitTesting(false)
+                            ForEach(f.leaves, id: \.id) { leaf in
+                                let frame = PaneLayout.split(leaf.rect, in: size)
+                                PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
+                                         onFocus: { tapFloat(leaf.id) },
+                                         restSize: PaneLayout.splitRest(leaf.rect, canvas: canvasSize))
+                                .id(leaf.id)
+                                .padding(PaneLayout.clearance(radius: radius))
+                                .background(theme.bg)
+                                .clipShape(RoundedRectangle(cornerRadius: radius))
+                                .overlay(RoundedRectangle(cornerRadius: radius)
+                                    .stroke(leaf.id == active ? theme.chrome.activeBorder : theme.chrome.divider, lineWidth: leaf.id == active ? 1.5 : 1))
+                                .frame(width: frame.width, height: frame.height)
+                                .offset(x: frame.minX, y: frame.minY)
                             }
                         }
                     }

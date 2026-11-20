@@ -105,11 +105,13 @@ struct PanesTests {
         #expect(MoveAnchor.pick(window: tall)?.direction == "vertical")
     }
 
-    @Test func aTabWithNoTiledPaneIsNoTarget() {
-        let empty = Self.window("window:2", layout: nil, blocks: [], floats: [Self.block("f")])
+    @Test func aTabWithOnlyAFloatTakesThePaneBesideIt() {
+        let floats = Self.window("window:2", layout: nil, blocks: [], floats: [Self.block("f")])
+        #expect(MoveAnchor.pick(window: floats)?.block == "f")
+        let empty = Self.window("window:4", layout: nil, blocks: [])
         #expect(MoveAnchor.pick(window: empty) == nil)
-        let tabs = [Self.threeAcross(), empty, Self.window("window:3", layout: Self.leaf("t", [0, 0, 1, 1]), blocks: [Self.block("t")])]
-        #expect(MoveAnchor.targets(from: "window:1", in: tabs).map(\.id) == ["window:3"])
+        let tabs = [Self.threeAcross(), floats, Self.window("window:3", layout: Self.leaf("t", [0, 0, 1, 1]), blocks: [Self.block("t")]), empty]
+        #expect(MoveAnchor.targets(from: "window:1", in: tabs).map(\.id) == ["window:2", "window:3"])
     }
 
     // MARK: Names
@@ -156,27 +158,29 @@ struct PanesTests {
         #expect(PaneNameParts(a) == PaneNameParts(b))
     }
 
-    // MARK: One tiled-only filter
+    // MARK: One pane filter
 
-    @Test func everyTiledOnlyPlaceReadsTheOneFilter() {
-        // Two tiled panes and a float: the float is in no list, no snapshot and no count.
+    @Test func everyPaneListReadsTheOneFilterFloatsIncluded() {
+        // Two tiled panes and a float: the float is in the list, the snapshot and the count.
         let w = Self.window("window:1", focused: "a", layout: Self.split("horizontal", 0.5, [0, 0, 1, 1], Self.leaf("a", [0, 0, 0.5, 1]), Self.leaf("b", [0.5, 0, 0.5, 1])),
                             blocks: [Self.block("a"), Self.block("b")], floats: [Self.block("f")])
-        #expect(PaneScope.arrangeable(window: w) == ["a", "b"])
+        #expect(PaneScope.arrangeable(window: w) == ["a", "b", "f"])
         #expect(w.allBlocks.count == 3)
         let t = PaneTarget(window: w, block: "a", tabs: [w])
         #expect(PaneArrange.isAvailable(.swap, target: t, support: Self.full))
         #expect(PaneArrange.isAvailable(.moveToNewTab, target: t, support: Self.full))
-        // A float is no pane to act on yet.
-        #expect(!PaneArrange.isAvailable(.swap, target: PaneTarget(window: w, block: "f", tabs: [w]), support: Self.full))
+        #expect(PaneArrange.isAvailable(.swap, target: PaneTarget(window: w, block: "f", tabs: [w]), support: Self.full))
         let single = Self.window("window:2", layout: Self.leaf("x", [0, 0, 1, 1]), blocks: [Self.block("x")], floats: [Self.block("g")])
         let one = PaneTarget(window: single, block: "x", tabs: [w, single])
-        // The tab's only tiled pane: no New Tab, though a float shares the tab.
-        #expect(!PaneArrange.isAvailable(.moveToNewTab, target: one, support: Self.full))
-        #expect(!PaneArrange.isAvailable(.closeOthers, target: one, support: Self.full))
-        #expect(!PaneArrange.showsArrange(one, support: Self.full))
-        // It can still move to another tab.
+        // The tab's only tiled pane shares the tab with a float: New Tab and Close Other Panes apply.
+        #expect(PaneArrange.isAvailable(.moveToNewTab, target: one, support: Self.full))
+        #expect(PaneArrange.isAvailable(.closeOthers, target: one, support: Self.full))
+        #expect(PaneArrange.showsArrange(one, support: Self.full))
         #expect(PaneArrange.isAvailable(.moveToTab, target: one, support: Self.full))
+        // Without floats nothing changes: one pane, no Arrange.
+        let alone = Self.window("window:3", layout: Self.leaf("y", [0, 0, 1, 1]), blocks: [Self.block("y")])
+        #expect(!PaneArrange.showsArrange(PaneTarget(window: alone, block: "y", tabs: [alone]), support: Self.full))
+        #expect(PaneScope.arrangeable(window: alone) == ["y"])
     }
 
     // MARK: Orders

@@ -79,7 +79,14 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   `new_split`, `focus_block`, `zoom_block`, `resize_pane` (ratio 0.05–0.95), `own_block`
   (`mode: "take"`), `disown_block`, and for Arrange and the sidebar's reorder `swap_blocks`,
   `move_block`, `move_window` and `move` ([terminal.md](terminal.md), Arrange;
-  [sidebar.md](sidebar.md), Reorder).
+  [sidebar.md](sidebar.md), Reorder), and for floating windows `set_layer_state` (raise with
+  `focus`, Minimize, show again; [terminal.md](terminal.md), Floating windows). The phone never
+  sends `resize_layer`, `raise_layer`, `close_layer` or `float_block`.
+- Floating layers come in the view: `layers[]` back to front, the tiled one first. A floating
+  layer's `bounds` and its layout's rects are window fractions; `state: "minimized"` isn't
+  drawn. An unknown `kind` is drawn as floating, an unknown `state` as normal, a null
+  `layer_id` gets an ID from the layer's first block, and a layer without four numbers in
+  `bounds` isn't drawn.
 - Other: `block.close`, `hosts.list`, `block_creator.list`, `data.connect`, `client.keymap`,
   `client.action`, `client.key`, `client.reply`.
 - Ports: `session.new_block` (dial tunnels), `session.list_blocks` (the sweep),
@@ -99,8 +106,9 @@ The server runs its ordered methods (`move_block`, `move_window`, `swap_blocks`,
 `new_window`, from revision 13) one at a time in arrival order on a connection; others, and
 responses, can come in any order. `RexControl.callInOrder` hands every request of a sequence to
 the socket in one turn of the main actor, which keeps their order on the wire, then waits for all
-the answers. Separate calls, `async let` or a task group promise no order. Move to New Tab and
-Close Other Panes use it. `session.move` isn't ordered, so the app sends one at a time.
+the answers. Separate calls, `async let` or a task group promise no order. Move to New Tab,
+Close Other Panes, a float's raise (`set_layer_state`, then `focus_block`) and Minimize All use
+it. `session.move` isn't ordered, so the app sends one at a time.
 
 ## Share's All Output (`format`, `blob_read`)
 

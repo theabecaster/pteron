@@ -58,7 +58,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   watch), `ScenePhases` (what each scene phase asks; servers
   start at the first one that shows the app).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
-  mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math),
+  mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline,

@@ -235,6 +235,9 @@ enum RexCommand: Equatable {
     case find(FindStep)
     /// The pane commands of Arrange (`pane.balance`, `pane.close_others`, `pane.move_to_*`).
     case balanceSplits, closeOtherPanes, moveToTab, moveToNewTab
+    /// Minimizes the active pane's floating window, or every one the tab can spare
+    /// (`pane.minimize_floating`, `pane.minimize_all_floating`).
+    case minimizeFloat, minimizeAllFloats
     /// Moves the tab one place forward (+1) or back (-1) in its session (`client.tab.move.*`).
     case moveTab(Int)
     /// Opens the palette (`pane.go_to`, `session.switch`, `client.palette.toggle`).

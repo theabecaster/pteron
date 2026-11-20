@@ -456,10 +456,11 @@ The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Ta
 `PaneMenuItems.swift`, `State/ServerConnection+Panes.swift`). Nothing new shows on a pane.
 
 - **Where.** "Arrange ▸" sits in the pane menu's section above Close, after Find… and Share ▸,
-  on a tab with two or more tiled panes. One submenu, its groups titled inline sections: Swap
-  With (the other panes), Move to Tab (the session's other tabs, then New Tab), Balance Splits,
-  and Close Other Panes… in a destructive section of its own. No shortcut text, no
-  `.keyboardShortcut`: the keymap stays the only key dispatch.
+  on a tab with two or more panes, or with a floating window to minimize or show again (a
+  one-pane tab too). One submenu, its groups titled inline sections: Swap With (the other
+  panes), Move to Tab (the session's other tabs, then New Tab), Balance Splits, Close Other
+  Panes… in a destructive section of its own, then Floating Windows (Floating windows, below).
+  No shortcut text, no `.keyboardShortcut`: the keymap stays the only key dispatch.
 - **Names.** A pane is named by its label when someone gave it one (on the Mac, from the CLI or a
   layout; not `shell` or `Block 89abcdef`), else its agent, else its program, else "Pane N" by
   its place (`PaneName.menu`). Never its title, which an agent's spinner changes ten times a
@@ -468,12 +469,15 @@ The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Ta
   spinning title rebuilds neither the menu nor the tab screen. Two panes of the same name also
   say "Pane N". A tab is its own label, else "Tab N", with the name of the pane a moved pane
   goes beside. Labels never become titles (Rename Pane isn't in v1).
-- **Tiled panes only.** Floating panes aren't drawn yet, so nothing offers them. Every such
-  filter reads `PaneScope.arrangeable(window:)`.
+- **Which panes.** The tiled panes in reading order, then the floating windows' panes, front
+  first, the minimized ones last. Every such list and count reads `PaneScope.arrangeable(window:)`,
+  so with no floats it is the tiled panes as before.
 - **Swap With** is `session.swap_blocks`. The pane on screen stays the one shown; with one pane
-  at a time only the dots move.
+  at a time only the dots move. A minimized float's pane isn't listed: the pane swapped in would
+  vanish with it.
 - **Move to Tab** is `session.move_block` beside the target tab's focused tiled pane (else its
-  first), along that pane's longer side, so a pane never lands in a floating layer
+  first), along that pane's longer side, so a pane doesn't land in a floating layer while the tab
+  has a tiled one; a tab with only floats takes it beside its focused (else front) float
   (`MoveAnchor`). When the call returns the session's view is read at once (`reloadView`, no
   80 ms wait) and the target tab opens in the same update as the layout that holds the pane, so
   the pane's terminal, stream and fit claim carry over (well inside `scheduleStop`'s 0.5 s). If
@@ -505,6 +509,63 @@ The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Ta
   method hides only the commands that use it, at once; the tap that found it shows the usual
   failure notice. Below 13 nothing shows, keys fall through and the pane menu is as before. An
   open menu is a snapshot: each item checks again at the tap and only bumps if the server can't.
+
+## Floating windows
+
+A tab's floating layers (Rex's floating panes, "floating windows" in the Mac's menus) are drawn
+above its tiled panes where the Mac places them. View-only: the phone raises, focuses, minimizes
+and shows them again, and never moves or resizes one (`Features/Tab/TabPresentation.swift`,
+`FloatLayout.swift`, `State/ServerConnection+Floats.swift`).
+
+- **No float, no change.** Only a tab with a floating window on screen has a `TabPresentation`.
+  Every other tab, one whose floats are all minimized included, runs the screen's split-or-page
+  logic over its tiled panes as before, so it is drawn exactly as before.
+- **One decision per body.** `TabPresentation.decide` is read by the canvas, the floats, the
+  dots, the Waiting pill and Zoom. Book mode's sidebar collapse still asks about the tiled
+  splits alone, with the sidebar collapsed: beside the sidebar they may show as pages under a
+  float, and the float must not keep the sidebar open. Zoom (the server's or the phone's) and narrow
+  windows give pages: one pane at a time, the tiled panes then the floats' panes front first,
+  minimized ones left out, with dots and swipes as any tab. A wide window draws floating windows
+  when the tiled splits are legible and every float can be placed; else pages.
+- **Where a float is drawn** (`FloatLayout.place`). Rex's rects are window fractions; they map to
+  the area the splits use (the canvas inset by 3 pt). A layer grows as one unit around its
+  center until each of its panes keeps 40 × 8 cells, then stays inside the area. Across a
+  vertical crease (`CreaseSettle`, book mode or not) it moves onto the page that holds its
+  center, narrowed to it if it must be; illegible there, the tab shows pages. The tiled layer
+  under it is laid out exactly as before, a single pane across the fold included. A float big
+  enough is drawn at the Mac's own rect.
+- **Look.** Radius 8 and the split panes' stroke (1 pt, 1.5 pt on the active pane), over a
+  backing of the terminal's color with one soft shadow (radius 12, y 4, black at 25 %, 35 % in
+  Dark Mode) that takes no touches and never sits on the Metal view. No title strip, no buttons.
+  A single tiled pane under floats keeps its own 6 pt inset and radius 10. With no tiled pane
+  left, the floats sit on the terminal's background.
+- **View tree.** The floats are an overlay beside the tiled canvas, so one coming or going never
+  rebuilds the panes below; panes keep their hosts by block, so a raise or a moved rect rebuilds
+  nothing.
+- **Taps** (`FloatTap`). A tap, long press, two-finger tap or pointer drag on a float makes its
+  pane active. A float behind another is raised: `set_layer_state` with `focus`, then
+  `focus_block` for the tapped pane when the layer holds several, in one turn. It shows in front
+  at once and holds there until the server's view agrees, at most 1 s, on that connection only.
+  A front float only takes focus; a front, focused one sends nothing. Without `set_layer_state` a
+  tap focuses as a tiled pane does. A raise that fails says nothing.
+- **Active pane** (`ActivePane`). Never one in a float that isn't drawn (minimized on the Mac,
+  say): the next pane on screen takes the keyboard instead.
+- **Floating Windows**, in Arrange: Minimize (the active pane's float; hidden when it holds the
+  tab's last panes on screen, which the server refuses) and each minimized float by its first
+  pane's name, which shows it again in front (`set_layer_state` normal with `focus`). Keys:
+  `pane.minimize_floating` and `pane.minimize_all_floating` ("Minimize Floating Window(s)", no
+  default keys). Minimize All sends every drawn float's minimize in order in one turn, keeping
+  the front one when no tiled pane is left; a refusal shows one notice.
+- **Waiting agents.** The pill and the toasts count a drawn float as on screen, and a minimized
+  float or a page a swipe away as not. Jumping to an agent in a minimized float shows the float
+  again first.
+- **Fit.** A float claims the grid of the frame it is drawn at (grown or narrowed), as a split
+  pane does; one no longer drawn lets go after 0.5 s (`scheduleStop`).
+- **Compatibility.** Drawing is data-driven: no `layers`, a null `layer_id` (an ID from the
+  layer's first block, stable across raises) and an unknown kind (floating) or state (normal)
+  all draw; a float without usable bounds is skipped. Minimize, the rows, the keys and the raise
+  follow `PaneArrange.isAvailable` (revision 13 or later, and `set_layer_state` not found missing
+  on this connection); without them floats still draw.
 
 ## Ports
 

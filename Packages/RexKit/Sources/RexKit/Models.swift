@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// A node of a window's layout tree. Every node carries its normalized rect [x, y, w, h].
-public indirect enum LayoutNode: Sendable {
+public indirect enum LayoutNode: Equatable, Sendable {
     case block(id: String, rect: CGRect)
     case split(id: String, direction: String, ratio: Double, before: LayoutNode, after: LayoutNode, rect: CGRect)
 
@@ -22,6 +22,14 @@ public indirect enum LayoutNode: Sendable {
     public static func rect(_ any: Any?) -> CGRect {
         guard let a = any as? [Any], a.count == 4 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
         let n = a.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+        return CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
+    }
+
+    /// Four finite numbers that make a rect with some area, else nil: no fallback.
+    public static func strictRect(_ any: Any?) -> CGRect? {
+        guard let a = any as? [Any], a.count == 4 else { return nil }
+        let n = a.compactMap { ($0 as? NSNumber)?.doubleValue }
+        guard n.count == 4, n.allSatisfy(\.isFinite), n[2] > 0, n[3] > 0 else { return nil }
         return CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
     }
 
@@ -71,22 +79,36 @@ public struct BlockInfo: Identifiable, Equatable, Sendable {
     public var isTerminal: Bool { creator == "com.superlogical.terminal" }
 }
 
-public struct LayerInfo: Identifiable, Sendable {
+public struct LayerInfo: Identifiable, Equatable, Sendable {
     public var id: String
     public var kind: String
     public var bounds: CGRect
+    /// The server sent `bounds` as four numbers with some area. A floating layer without them
+    /// can't be placed, so it isn't drawn.
+    public var hasBounds: Bool
     public var layout: LayoutNode?
     public var blocks: [BlockInfo]
     public var minimized: Bool
 
     public init(_ o: JSONObject) {
-        id = o.str("layer_id") ?? UUID().uuidString
-        kind = o.str("kind") ?? "tiled"
-        bounds = LayoutNode.rect(o["bounds"])
-        layout = LayoutNode.parse(o.obj("layout"))
         blocks = o.arr("blocks").map(BlockInfo.init)
+        // An older server may send no ID. One made from the layer's first block stays the same
+        // when the layers' order changes, so a raise never rebuilds a pane.
+        id = o.str("layer_id") ?? "layer:" + (blocks.first?.id ?? "empty")
+        kind = o.str("kind") ?? "tiled"
+        let placed = LayoutNode.strictRect(o["bounds"])
+        bounds = placed ?? LayoutNode.rect(o["bounds"])
+        hasBounds = placed != nil
+        layout = LayoutNode.parse(o.obj("layout"))
+        // A state the app doesn't know is drawn as normal.
         minimized = (o.str("state") ?? "") == "minimized"
     }
+
+    /// Every layer but a window's tiled one floats, a kind the app doesn't know too.
+    public var isFloating: Bool { kind != "tiled" }
+    public var isMinimized: Bool { minimized }
+    /// A floating layer the app draws: normal, placed, and holding panes.
+    public var isDrawnFloat: Bool { !minimized && hasBounds && !(layout?.leaves.isEmpty ?? true) }
 }
 
 public struct WindowInfo: Identifiable, Sendable {
@@ -104,15 +126,56 @@ public struct WindowInfo: Identifiable, Sendable {
         layers = o.arr("layers").map(LayerInfo.init)
     }
 
-    public var tiled: LayerInfo? { layers.first { $0.kind == "tiled" } ?? layers.first }
+    private var tiledIndex: Int? { layers.firstIndex { $0.kind == "tiled" } ?? (layers.isEmpty ? nil : 0) }
+    public var tiled: LayerInfo? { tiledIndex.map { layers[$0] } }
     public var allBlocks: [BlockInfo] { layers.flatMap(\.blocks) }
     public var layout: LayoutNode? { tiled?.layout }
+    /// Every block, the tiled panes first, then the floating layers' blocks, back to front,
+    /// minimized ones included.
     public var orderedBlockIDs: [String] {
         var ids = layout?.leaves.map(\.id) ?? []
         for b in allBlocks where !ids.contains(b.id) { ids.append(b.id) }
         return ids
     }
     public func block(_ id: String) -> BlockInfo? { allBlocks.first { $0.id == id } }
+
+    /// The floating layers, back to front: every layer but the tiled one.
+    public var floating: [LayerInfo] {
+        guard let t = tiledIndex else { return [] }
+        return layers.enumerated().filter { $0.offset != t }.map(\.element)
+    }
+
+    /// The floating layers the app draws, back to front: normal, placed, with panes.
+    public var visibleFloating: [LayerInfo] { floating.filter(\.isDrawnFloat) }
+
+    /// The minimized floating layers that hold panes, back to front.
+    public var minimizedFloating: [LayerInfo] { floating.filter { $0.minimized && !$0.blocks.isEmpty } }
+
+    /// The panes in the order the phone pages through them: the tiled panes in reading order,
+    /// then the drawn floating windows' panes, front first. A minimized float isn't in it. With no
+    /// floating layer it is `orderedBlockIDs`.
+    public var pageBlockIDs: [String] {
+        var ids = layout?.leaves.map(\.id) ?? []
+        for b in tiled?.blocks ?? [] where !ids.contains(b.id) { ids.append(b.id) }
+        for layer in visibleFloating.reversed() {
+            for id in (layer.layout?.leaves.map(\.id) ?? []) + layer.blocks.map(\.id) where !ids.contains(id) { ids.append(id) }
+        }
+        return ids
+    }
+
+    /// The floating layer that holds a block; nil for a tiled block.
+    public func floatingLayer(of block: String) -> LayerInfo? {
+        floating.first { $0.blocks.contains { $0.id == block } }
+    }
+
+    /// The block sits in a floating layer the app doesn't draw: minimized, or with no place.
+    public func isHidden(_ block: String) -> Bool {
+        guard let l = floatingLayer(of: block) else { return false }
+        return !l.isDrawnFloat
+    }
+
+    /// The block sits in a minimized floating layer.
+    public func isMinimized(_ block: String) -> Bool { floatingLayer(of: block)?.minimized ?? false }
 }
 
 public struct SessionView: Sendable {

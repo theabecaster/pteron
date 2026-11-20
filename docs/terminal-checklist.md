@@ -216,6 +216,28 @@ once with fit:
    moving: the menu, as before. Swipe: the actions, as before. With VoiceOver: Move Up, Move Down.
 7. `-sidebarFoldBench 3` before and after: no slower.
 
+## Floating windows (about 10 minutes)
+
+In a `zz-floats` session you made, with a float from the CLI (`rex api call -s zz-floats
+session.new_layer '{"window_id": "<id>", "bounds": [0.3, 0.2, 0.5, 0.6], "layout": {"block":
+{"flavor": "com.superlogical.terminal.shell"}}}'`), on a simulator with `-sizing mirror`, then
+once with fit:
+
+1. Unfolded (`-simulateDuo unfolded`): the float sits where the Mac has it, with a soft shadow
+   and the split stroke; the tiled pane under it is drawn as before. A second float overlaps it.
+2. Tap the back float: it comes to the front at once and stays there (`session_view_changed`
+   shows it in front on the server). Tap it four more times: nothing more is sent.
+3. Arrange ▸ Floating Windows ▸ Minimize: the float goes, the row for it appears; tap the row:
+   it is back in front. With only floats left in the tab, Minimize hides on the last one.
+4. Folded (`-simulateDuo folded`): one pane at a time, tiled first, then the front float; the
+   dots count them. A minimized float isn't a page.
+5. Book (`-simulateDuo book`) with one tiled pane and a float across the crease: the float sits
+   on one page, the tiled pane spans the fold as before.
+6. Fit mode: the float's pane resizes on the Mac to its drawn frame once; minimized, the Mac gets
+   its size back within a second.
+7. The tent board covers the floats as it covers any pane.
+8. Pixel diff every posture, light and dark, of a tab without floats against main: identical.
+
 ## Ports (about 10 minutes)
 
 In a `zz-ports` session, with `python3 -m http.server 8765 --bind 127.0.0.1` in a pane:

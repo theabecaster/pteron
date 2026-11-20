@@ -11,6 +11,9 @@ import RexKit
 ///   confirmed. `tab:+1`, `tab:-1`: `client.tab.move.*`.
 /// - `dragTab:<gap>`: the sidebar's drop of this tab in that gap of its session's tabs.
 ///   `dragSession:<gap>`: the same for this session among its machine's.
+/// - `tapFloat:<n>`: a tap on the first pane of the n-th drawn floating window, from the back.
+///   `minimize`, `minimizeAll`: Minimize and its all key. `restore`: the first minimized
+///   float's row in Arrange.
 /// - `wait:<seconds>`: pause.
 ///
 /// After each step it logs `PANES_STATE` with the session's tabs and each tab's panes and split
@@ -26,6 +29,12 @@ enum PanesTest {
         var moveTab: (Int) -> Void
         var dragTab: (Int) -> Void
         var dragSession: (Int) -> Void
+        /// Floating windows: a tap on the n-th drawn float's first pane (from the back, from 1),
+        /// Minimize, Minimize All, and the first minimized float's row.
+        var tapFloat: (Int) -> Void = { _ in }
+        var minimize: () -> Void = {}
+        var minimizeAll: () -> Void = {}
+        var restore: () -> Void = {}
         var state: () -> String
     }
 
@@ -51,6 +60,10 @@ enum PanesTest {
                 case "tab": a.moveTab(n)
                 case "dragTab": a.dragTab(n)
                 case "dragSession": a.dragSession(n)
+                case "tapFloat": a.tapFloat(n)
+                case "minimize": a.minimize()
+                case "minimizeAll": a.minimizeAll()
+                case "restore": a.restore()
                 case "wait": try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
                 default: NSLog("PANES_TEST unknown step %@", step)
                 }
@@ -66,7 +79,10 @@ enum PanesTest {
         return "rev=\(v.revision) " + v.windows.map { w in
             let ratios = w.layout?.splits.map { String(format: "%@%.3f", $0.direction == "vertical" ? "v" : "h", $0.ratio) } ?? []
             let mark = w.id == current ? "*" : ""
-            return "\(mark)\(w.id.suffix(4))[\(PaneScope.arrangeable(window: w).map { String($0.suffix(4)) }.joined(separator: ","))](\(ratios.joined(separator: ",")))"
+            // Floating layers back to front: `~` a minimized one.
+            let floats = w.floating.map { ($0.minimized ? "~" : "") + String($0.id.suffix(4)) }
+            let layers = floats.isEmpty ? "" : "{\(floats.joined(separator: ","))} focus=\(w.focusedBlockID.map { String($0.suffix(4)) } ?? "-")"
+            return "\(mark)\(w.id.suffix(4))[\(PaneScope.arrangeable(window: w).map { String($0.suffix(4)) }.joined(separator: ","))](\(ratios.joined(separator: ",")))\(layers)"
         }.joined(separator: " ")
     }
 }

@@ -128,16 +128,18 @@ enum GoToCommands {
             case .toggleZoom: return t.canZoom
             case .nextTab: return TabNav.neighbor(server, t.sessionID, t.windowID, by: 1) != nil
             case .previousTab: return TabNav.neighbor(server, t.sessionID, t.windowID, by: -1) != nil
-            case .nextPane, .previousPane: return window.orderedBlockIDs.count > 1
+            case .nextPane, .previousPane: return window.pageBlockIDs.count > 1
             case .find: return block?.isTerminal == true
             case .closePane, .splitRight, .splitDown, .clear: return block != nil
-            case .balanceSplits, .closeOtherPanes, .moveToTab, .moveToNewTab, .moveTab:
+            case .balanceSplits, .closeOtherPanes, .moveToTab, .moveToNewTab, .moveTab, .minimizeFloat, .minimizeAllFloats:
                 guard let b = t.blockID else { return false }
                 let pc: PaneCommand = switch c {
                 case .balanceSplits: .balance
                 case .closeOtherPanes: .closeOthers
                 case .moveToTab: .moveToTab
                 case .moveToNewTab: .moveToNewTab
+                case .minimizeFloat: .minimize
+                case .minimizeAllFloats: .minimizeAll
                 default: .moveTab
                 }
                 return PaneArrange.isAvailable(pc, target: PaneTarget(window: window, block: b, tabs: tabs), support: support)
@@ -169,6 +171,7 @@ enum GoToCommands {
         case .balanceSplits: "rectangle.split.3x1"
         case .closeOtherPanes: "xmark.square"
         case .moveToTab, .moveToNewTab: "rectangle.portrait.and.arrow.right"
+        case .minimizeFloat, .minimizeAllFloats: "minus.square"
         case .fontBigger, .fontSmaller, .fontReset: "textformat.size"
         default: "command"
         }
