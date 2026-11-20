@@ -107,7 +107,7 @@ the current release:
 
 <!-- install-sha -->
 ```
-3b2a029a16c16f5c6fec99c00cf5e67f69a29fa35ea1f093730d5cc545b39a08  install.sh
+92def8a5dcbe4011ba0241570a4f466614c7c9b8184f71af24983a6d6d417042  install.sh
 ```
 <!-- /install-sha -->
 
