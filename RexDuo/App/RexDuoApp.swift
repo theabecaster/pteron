@@ -21,7 +21,10 @@ struct RexDuoApp: App {
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
         // An offline replay or demo has no server either.
-        _model = State(initialValue: AppModel(prefs: prefs, connect: !Self.isTestHost && !Self.runsOffline))
+        let model = AppModel(prefs: prefs, connect: !Self.isTestHost && !Self.runsOffline)
+        _model = State(initialValue: model)
+        // For an action on a notification in a launch that never shows a view.
+        AppDelegate.launching(with: model)
     }
 
     /// A launch argument asked for an offline screen instead of the app: `-replay <file>` (Debug

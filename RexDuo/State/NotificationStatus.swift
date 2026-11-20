@@ -638,8 +638,16 @@ struct HelperDetails: Equatable, Sendable {
 
 // MARK: - Confirms and the manual steps
 
-/// The words of the screen's two confirms and of "How".
+/// The words of the screen's two confirms and of "How", and of a question's notification
+/// after an action on it typed nothing.
 enum NotificationCopy {
+    /// Enter or Interrupt on a notification, and the agent no longer waits for that.
+    static let actionChanged = "The question changed. Open \(Brand.appName) to see it."
+    /// The same, and the computer couldn't be reached or didn't answer.
+    static let actionFailed = "Couldn't send. Open \(Brand.appName)."
+    /// The same, and another action answered this wait a moment ago, so nothing was typed.
+    static let actionAnswered = "Already answered a moment ago. Open \(Brand.appName) if it's still waiting."
+
     struct Confirm: Equatable, Sendable {
         var title: String
         var message: String

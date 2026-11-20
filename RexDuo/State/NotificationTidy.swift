@@ -5,7 +5,7 @@ import UserNotifications
 /// stays in Notification Center after the agent was answered at the computer; once the app is
 /// in front and knows the agents' states, the ones whose agent no longer waits are removed.
 ///
-/// Only the two agent categories are ever removed. A desktop notification (`NOTICE`) is its
+/// Only the agent categories are ever removed. A desktop notification (`NOTICE`) is its
 /// own and only copy, and the test notification is one of those, so both always stay.
 enum NotificationTidy {
     /// A notification in Notification Center, as far as the rule reads it.
@@ -29,7 +29,7 @@ enum NotificationTidy {
     }
 
     /// The categories of a push about an agent's state (docs/notifications.md).
-    static let agentCategories: Set<String> = ["AGENT_BLOCKED", "AGENT_DONE"]
+    static let agentCategories: Set<String> = [PushAction.plain, PushAction.category, "AGENT_DONE"]
 
     /// The identifiers to remove, in the order given:
     ///

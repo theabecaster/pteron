@@ -28,6 +28,14 @@ struct NotificationTidyTests {
         #expect(NotificationTidy.stale(delivered, servers: [studio(waiting: [])]) == ["a", "b"])
     }
 
+    @Test func aQuestionWithActionsGoesAsAnyQuestionDoes() {
+        let delivered = [note("a", "AGENT_BLOCKED_ACT", block: "block:a"), note("b", "AGENT_BLOCKED_ACT", block: "block:b")]
+        #expect(NotificationTidy.stale(delivered, servers: [studio(waiting: ["block:a", "block:b"])]).isEmpty)
+        #expect(NotificationTidy.stale(delivered, servers: [studio(waiting: ["block:a"])]) == ["b"])
+        #expect(NotificationTidy.stale(delivered, servers: [studio(waiting: nil)]).isEmpty)
+        #expect(NotificationTidy.agentCategories == ["AGENT_BLOCKED", "AGENT_BLOCKED_ACT", "AGENT_DONE"])
+    }
+
     @Test func aFinishedGoesWhenItsAgentIsNotWaiting() {
         let delivered = [note("a", "AGENT_DONE", block: "block:a"), note("b", "AGENT_DONE", block: "block:b")]
         #expect(NotificationTidy.stale(delivered, servers: [studio(waiting: [])]) == ["a", "b"])

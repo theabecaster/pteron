@@ -10,7 +10,10 @@ protocol ActionChannel: AnyObject {
     /// The pane's status records, by id, read from the server now. Nil when it couldn't be read.
     func statuses(session: String, block: String) async -> [String: ProgramStatus]?
     /// Types `text`, once. `limit`: how long it may wait to leave before it is dropped.
-    func write(_ text: String, session: String, block: String, within limit: TimeInterval) async -> TerminalStream.Delivery
+    /// `mayWrite` is asked as the last thing before the text is handed over: false types
+    /// nothing and answers `.unsent`.
+    func write(_ text: String, session: String, block: String, within limit: TimeInterval,
+               mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery
     /// The job is over.
     func close()
 }
@@ -24,6 +27,11 @@ protocol ActionChannel: AnyObject {
 ///    the same thing the watch showed;
 /// 3. it types once. A write that left is never sent again, whatever came of it, and an action
 ///    that reaches the phone twice is answered from memory.
+///
+/// One wait is answered once, whoever asks: the watch and a notification's action both come
+/// here, and for `answeredFor` after a write left for a wait, another action for that same
+/// wait types nothing. The agent's status needs a moment to change after a key, and until
+/// then a second Enter would pass the guard and land on whatever the agent asks next.
 ///
 /// It starts no server and opens no pane. With the app in front it uses the server's live
 /// connection, and the pane's own input queue when the pane is on screen. Otherwise (the system
@@ -39,6 +47,20 @@ final class GlanceActions {
         var leaveLimit: TimeInterval = 3
         /// The longest to wait for the write's answer, from when it was asked for.
         var answerLimit: TimeInterval = 8
+        var now: @Sendable () -> Date = { Date() }
+        /// How long a wait counts as answered after a write for it left.
+        var answeredFor: TimeInterval = 15
+    }
+
+    /// How an action ended, for a caller that must tell these apart (a notification, which
+    /// is removed, put back or left alone). The watch gets a `WatchActionResult` (`handle`).
+    enum Answer: Equatable, Sendable {
+        /// This call did the work, or waited for the one that did and nothing was typed.
+        case fresh(WatchActionResult)
+        /// The same tap again (`WatchAction.id`): the answer it had, from memory.
+        case repeated(WatchActionResult)
+        /// Another action answered this same wait a moment ago: nothing was typed for this one.
+        case answered
     }
 
     /// The way to the action's pane. Nil: the server is not one of the app's. Set by `AppModel`.
@@ -53,6 +75,10 @@ final class GlanceActions {
     private var answers: [String: WatchActionResult?] = [:]
     private var order: [String] = []
     static let memory = 64
+    /// The waits a write left for, and when (`waitKey`). Kept for `answeredFor`.
+    private var answered: [String: Date] = [:]
+    /// The waits an action is under way for, with the later actions that wait for its answer.
+    private var running: [String: [CheckedContinuation<WatchActionResult, Never>]] = [:]
 
     init(parts: Parts = Parts()) {
         self.parts = parts
@@ -64,17 +90,60 @@ final class GlanceActions {
         return await handle(action)
     }
 
-    func handle(_ action: WatchAction) async -> WatchActionResult {
+    /// What the watch is told. A wait another action just answered no longer waits for this
+    /// one: `changed`, the watch's word for that.
+    func handle(_ action: WatchAction, mayWrite: @escaping @MainActor () -> Bool = { true }) async -> WatchActionResult {
+        switch await take(action, mayWrite: mayWrite) {
+        case .fresh(let result), .repeated(let result): result
+        case .answered: .changed
+        }
+    }
+
+    /// `mayWrite` is asked right before the write, and again by the connection as the last
+    /// thing before the text is handed over: false types nothing. It is how a caller whose
+    /// time has run out (a notification's action in the background) stops a run that is
+    /// still reading.
+    func take(_ action: WatchAction, mayWrite: @escaping @MainActor () -> Bool = { true }) async -> Answer {
         // The same tap again: never typed twice. One still on its way may have typed.
-        if let known = answers[action.id] { return known ?? .unconfirmed }
+        if let known = answers[action.id] { return .repeated(known ?? .unconfirmed) }
         remember(action.id)
-        let result = await run(action)
+        let key = Self.waitKey(action.target)
+        let now = parts.now()
+        answered = answered.filter { now.timeIntervalSince($0.value) < parts.answeredFor && now >= $0.value }
+        // Another action answered this wait a moment ago.
+        if answered[key] != nil {
+            answers[action.id] = .some(.changed)
+            return .answered
+        }
+        // Another action for this wait is under way: its answer decides, and this one never
+        // types. If that one typed, this wait is answered; if not, this one failed as it did.
+        if running[key] != nil {
+            let first = await withCheckedContinuation { running[key, default: []].append($0) }
+            let typed = Self.left(first)
+            answers[action.id] = .some(typed ? .changed : first)
+            return typed ? .answered : .fresh(first)
+        }
+        running[key] = []
+        let result = await run(action, mayWrite: mayWrite)
         answers[action.id] = .some(result)
+        if Self.left(result) { answered[key] = parts.now() }
+        for waiting in running.removeValue(forKey: key) ?? [] { waiting.resume(returning: result) }
         #if DEBUG
         // To check on a simulator what the phone did: `eventMessage CONTAINS "GLANCE_ACTION"`.
         NSLog("GLANCE_ACTION %@ %@", action.kind.rawValue, result.rawValue)
         #endif
-        return result
+        return .fresh(result)
+    }
+
+    /// True when a write left the phone for this answer: the computer took it, or nobody
+    /// knows whether it did.
+    static func left(_ result: WatchActionResult) -> Bool {
+        result == .sent || result == .unconfirmed
+    }
+
+    /// Names a wait whoever asks about it: the server, the pane, the record and the fingerprint.
+    static func waitKey(_ target: WatchAction.Target) -> String {
+        [target.server, target.block, target.record, target.fp].joined(separator: "\u{0}")
     }
 
     private func remember(_ id: String) {
@@ -83,7 +152,7 @@ final class GlanceActions {
         if order.count > Self.memory { answers[order.removeFirst()] = nil }
     }
 
-    private func run(_ action: WatchAction) async -> WatchActionResult {
+    private func run(_ action: WatchAction, mayWrite: @escaping @MainActor () -> Bool) async -> WatchActionResult {
         guard enabled() else { return .changed }
         guard let channel = channel(action) else { return .changed }
         defer { channel.close() }
@@ -97,10 +166,11 @@ final class GlanceActions {
         let read = await within(limit) { await channel.statuses(session: target.session, block: target.block) }
         guard let statuses = read else { return .unreachable }
         guard ActionGuard.allows(action, current: Self.current(statuses)) else { return .changed }
+        guard mayWrite() else { return .unreachable }
         // From here on nothing is tried twice.
         let leave = parts.leaveLimit
         let delivery = await within(parts.answerLimit) {
-            await channel.write(action.kind.text, session: target.session, block: target.block, within: leave)
+            await channel.write(action.kind.text, session: target.session, block: target.block, within: leave, mayWrite: mayWrite)
         }
         switch delivery {
         case .delivered: return .sent
@@ -164,10 +234,12 @@ final class LiveActionChannel: ActionChannel {
         await ActionCalls.statuses(server.control, session: session, block: block)
     }
 
-    func write(_ text: String, session: String, block: String, within limit: TimeInterval) async -> TerminalStream.Delivery {
+    func write(_ text: String, session: String, block: String, within limit: TimeInterval,
+               mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery {
         guard let stream = server.control.stream(block: block) else {
-            return await ActionCalls.write(server.control, text, session: session, block: block)
+            return await ActionCalls.write(server.control, text, session: session, block: block, mayWrite: mayWrite)
         }
+        guard mayWrite() else { return .unsent }
         return await withCheckedContinuation { done in
             stream.sendOnce(text: text, within: .milliseconds(Int(limit * 1000))) { done.resume(returning: $0) }
         }
@@ -239,9 +311,10 @@ final class OneShotActionChannel: ActionChannel {
         return await ActionCalls.statuses(control, session: session, block: block)
     }
 
-    func write(_ text: String, session: String, block: String, within limit: TimeInterval) async -> TerminalStream.Delivery {
+    func write(_ text: String, session: String, block: String, within limit: TimeInterval,
+               mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery {
         guard await attached(session) == true else { return .unsent }
-        return await ActionCalls.write(control, text, session: session, block: block)
+        return await ActionCalls.write(control, text, session: session, block: block, mayWrite: mayWrite)
     }
 
     func close() {
@@ -267,8 +340,11 @@ enum ActionCalls {
         return out
     }
 
-    /// One `terminal.write`. Whatever it throws, it is not called again.
-    static func write(_ control: RexControl, _ text: String, session: String, block: String) async -> TerminalStream.Delivery {
+    /// One `terminal.write`. Whatever it throws, it is not called again. `mayWrite` is asked
+    /// with nothing between its answer and the call: false, and nothing is sent.
+    static func write(_ control: RexControl, _ text: String, session: String, block: String,
+                      mayWrite: @MainActor () -> Bool = { true }) async -> TerminalStream.Delivery {
+        guard mayWrite() else { return .unsent }
         do {
             try await control.blockCall("com.superlogical.terminal.write", session: session, block: block, args: ["data": text])
             return .delivered

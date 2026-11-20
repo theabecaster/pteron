@@ -45,7 +45,10 @@ import Testing
             return records
         }
 
-        func write(_ text: String, session: String, block: String, within limit: TimeInterval) async -> TerminalStream.Delivery {
+        func write(_ text: String, session: String, block: String, within limit: TimeInterval,
+                   mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery {
+            // As the real connections do: asked as the last thing before the text leaves.
+            guard mayWrite() else { return .unsent }
             calls.append("write")
             written.append(text)
             if silent.contains("write") { await hang() }
@@ -55,9 +58,31 @@ import Testing
         func close() { calls.append("close") }
     }
 
-    private func actions(_ channel: FakeChannel?, only: String? = nil, enabled: Bool = true) -> GlanceActions {
+    /// A clock the test moves. Read from the actions' `@Sendable` clock and written by the
+    /// test, both on the main actor only, so the lock is never contended; it is there
+    /// because the closure's type can't say so.
+    final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var date = Date(timeIntervalSince1970: 1_800_000_000)
+
+        var now: Date {
+            lock.lock()
+            defer { lock.unlock() }
+            return date
+        }
+
+        func advance(_ seconds: TimeInterval) {
+            lock.lock()
+            date.addTimeInterval(seconds)
+            lock.unlock()
+        }
+    }
+
+    private func actions(_ channel: FakeChannel?, only: String? = nil, enabled: Bool = true, clock: TestClock? = nil) -> GlanceActions {
         // Limits that pass at once, so a call that never answers ends the test quickly.
-        let a = GlanceActions(parts: .init(sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) }))
+        var parts = GlanceActions.Parts(sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) })
+        if let clock { parts.now = { clock.now } }
+        let a = GlanceActions(parts: parts)
         a.channel = { _ in channel }
         a.enabled = { enabled }
         a.only = { only }
@@ -78,6 +103,131 @@ import Testing
         let channel = FakeChannel()
         #expect(await actions(channel).handle(Self.action(.interrupt)) == .sent)
         #expect(channel.written == ["\u{03}"])
+    }
+
+    @Test func aCallerWhoseTimeRanOutStopsTheWriteAfterTheRead() async {
+        // Asked once, after the status was read and the guard passed, right before the write.
+        let channel = FakeChannel()
+        var asked: [[String]] = []
+        let result = await actions(channel).handle(Self.action()) {
+            asked.append(channel.calls)
+            return false
+        }
+        #expect(result == .unreachable)
+        #expect(asked == [["status"]])
+        #expect(channel.calls == ["status", "close"] && channel.written.isEmpty)
+        // A wait that changed is refused before it is asked at all.
+        let changed = FakeChannel()
+        changed.records = [:]
+        #expect(await actions(changed).handle(Self.action()) { Issue.record("asked"); return false } == .changed)
+        // True, and by default: typed.
+        let open = FakeChannel()
+        #expect(await actions(open).handle(Self.action()) { true } == .sent)
+        #expect(open.written == ["\r"])
+    }
+
+    @Test func theConnectionAsksOnceMoreAsTheLastThingBeforeTheTextLeaves() async {
+        // Time that runs out after the first question and before the text is handed over:
+        // the connection's own question stops it.
+        let channel = FakeChannel()
+        var asked = 0
+        let result = await actions(channel).handle(Self.action()) {
+            asked += 1
+            return asked == 1
+        }
+        #expect(asked == 2)
+        #expect(result == .unreachable)
+        #expect(channel.written.isEmpty && channel.calls == ["status", "close"])
+        // The one call both real connections make: refused, it sends nothing and reaches no server.
+        let control = RexControl(address: "https://unused.example.ts.net", client: ClientInfo(name: "t", version: "0", label: "t"))
+        #expect(await ActionCalls.write(control, "\r", session: "session:1", block: "block:1a", mayWrite: { false }) == .unsent)
+        #expect(control.state != .connected)
+    }
+
+    // MARK: One wait is answered once, whoever asks
+
+    @Test func aWaitThatWasJustAnsweredIsNotAnsweredAgainByAnotherAction() async {
+        let clock = TestClock()
+        let channel = FakeChannel()
+        let a = actions(channel, clock: clock)
+        #expect(await a.take(Self.action(.enter)) == .fresh(.sent))
+        // Another tap, from anywhere, for the same wait: the pane still reads `blocked`,
+        // because the agent's status has not caught up, and nothing is typed.
+        clock.advance(3)
+        #expect(await a.take(Self.action(.enter)) == .answered)
+        #expect(await a.take(Self.action(.interrupt)) == .answered)
+        // The watch hears that the agent no longer waits for this.
+        #expect(await a.handle(Self.action(.enter)) == .changed)
+        #expect(channel.written == ["\r"])
+        #expect(channel.calls == ["status", "write", "close"])
+        // Another wait is not held back: another pane, another record, other words.
+        for other in [WatchAction.Target(server: "server", session: "session:1", block: "block:2b", record: "claude", fp: Self.fp),
+                      WatchAction.Target(server: "other", session: "session:1", block: "block:1a", record: "claude", fp: Self.fp)] {
+            #expect(await a.take(Self.action(target: other)) == .fresh(.sent), "\(other)")
+        }
+        // After the hold the pane's status decides again.
+        clock.advance(GlanceActions.Parts().answeredFor)
+        #expect(await a.take(Self.action(.enter)) == .fresh(.sent))
+        #expect(GlanceActions.Parts().answeredFor == 15)
+    }
+
+    @Test func aWriteNobodyKnowsTheEndOfHoldsTheWaitToo() async {
+        let clock = TestClock()
+        let channel = FakeChannel()
+        channel.delivery = .unknown
+        let a = actions(channel, clock: clock)
+        #expect(await a.take(Self.action()) == .fresh(.unconfirmed))
+        #expect(await a.take(Self.action()) == .answered)
+        #expect(channel.calls.filter { $0 == "write" }.count == 1)
+    }
+
+    @Test func aWriteThatNeverLeftHoldsNothing() async {
+        for (delivery, result) in [(TerminalStream.Delivery.unsent, WatchActionResult.unreachable), (.refused, .changed)] {
+            let channel = FakeChannel()
+            channel.delivery = delivery
+            let a = actions(channel, clock: TestClock())
+            #expect(await a.take(Self.action()) == .fresh(result))
+            // The next tap is tried in its own right.
+            channel.delivery = .delivered
+            #expect(await a.take(Self.action()) == .fresh(.sent), "\(delivery)")
+        }
+        // A wait that changed, or a status that can't be read: nothing left, nothing held.
+        let unread = FakeChannel()
+        unread.records = nil
+        let b = actions(unread, clock: TestClock())
+        #expect(await b.take(Self.action()) == .fresh(.unreachable))
+        unread.records = ["claude": ProgramStatus(Self.waiting)]
+        #expect(await b.take(Self.action()) == .fresh(.sent))
+    }
+
+    @Test func twoActionsForOneWaitAtTheSameTimeTypeOnce() async {
+        // The second arrives while the first still reads the status: it waits for the
+        // first's answer and never types.
+        let channel = FakeChannel()
+        let a = actions(channel, clock: TestClock())
+        async let first = a.take(Self.action(.enter))
+        async let second = a.take(Self.action(.enter))
+        let both = await [first, second]
+        #expect(both.sorted { "\($0)" < "\($1)" } == [.answered, .fresh(.sent)])
+        #expect(channel.calls == ["status", "write", "close"])
+        // When the first could not type, the second failed as it did, and still did not try.
+        let down = FakeChannel()
+        down.records = nil
+        let b = actions(down, clock: TestClock())
+        async let one = b.take(Self.action())
+        async let two = b.take(Self.action())
+        #expect(await [one, two] == [.fresh(.unreachable), .fresh(.unreachable)])
+        #expect(down.calls == ["status", "close"])
+    }
+
+    @Test func theSameTapAgainIsSaidToBeARepeat() async {
+        let channel = FakeChannel()
+        let a = actions(channel, clock: TestClock())
+        let action = Self.action()
+        #expect(await a.take(action) == .fresh(.sent))
+        #expect(await a.take(action) == .repeated(.sent))
+        #expect(await a.handle(action) == .sent)
+        #expect(channel.written == ["\r"])
     }
 
     @Test func nothingIsTypedWhenTheWaitChanged() async {
@@ -157,8 +307,13 @@ import Testing
 
     @Test func itRemembersOnlyTheNewestTaps() async {
         let channel = FakeChannel()
-        let a = actions(channel)
-        for i in 0...GlanceActions.memory { _ = await a.handle(Self.action(id: "tap-\(i)")) }
+        // Each tap long enough after the one before that the wait counts as a new one.
+        let clock = TestClock()
+        let a = actions(channel, clock: clock)
+        for i in 0...GlanceActions.memory {
+            _ = await a.handle(Self.action(id: "tap-\(i)"))
+            clock.advance(60)
+        }
         #expect(channel.written.count == GlanceActions.memory + 1)
         // The newest is still known.
         _ = await a.handle(Self.action(id: "tap-\(GlanceActions.memory)"))
