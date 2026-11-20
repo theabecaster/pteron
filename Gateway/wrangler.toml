@@ -1,5 +1,5 @@
 name = "rexduo-push"
-main = "src/index.ts"
+main = "src/worker.ts"
 compatibility_date = "2026-09-01"
 workers_dev = true
 preview_urls = false
@@ -17,6 +17,18 @@ database_name = "rexduo-push"
 # copy of this file (wrangler.deploy.toml, gitignored). Local tests don't need a real one.
 database_id = "PLACEHOLDER_SET_BY_DEPLOY_SCRIPT"
 migrations_dir = "migrations"
+
+# Desk presence: one SQLite-backed Durable Object per phone, holding at most four leases.
+[[durable_objects.bindings]]
+name = "PRESENCE_DO"
+class_name = "Presence"
+
+# Adding a Durable Object class is a lifecycle change: Cloudflare can't roll the Worker back
+# to a version from before it. It is deployed first on its own, before any route uses it
+# (Gateway/README.md, Deploy).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Presence"]
 
 # The daily purge of idle devices and expired counters (src/purge.ts), at 03:17 UTC.
 [triggers]

@@ -1,4 +1,5 @@
 import { isKey, utf8 } from "./encoding";
+import { MAX_LEASE_SECONDS, TAG } from "./presence";
 
 export type Environment = "sandbox" | "production";
 /** The one APNs push type the gateway sends. */
@@ -18,7 +19,16 @@ export interface PushRequest {
   priority: 5 | 10;
   collapseId?: string;
   expiration?: number;
+  /**
+   * The desks whose presence holds this push (`hold_if_desk`), only when the field is well
+   * formed. A field that is not is left out here and the push is sent, never refused: the
+   * field may only ever hold a push back, so a fault in it must not stop one.
+   */
+  holdIfDesk?: string[];
 }
+
+/** The most desk tags one push may name. A server is shown by a handful of desks at most. */
+export const MAX_HOLD_TAGS = 8;
 
 /** Apple's limit for an alert payload. */
 export const MAX_PAYLOAD_BYTES = 4096;
@@ -73,6 +83,8 @@ export function parseLabel(body: unknown): Parsed<string> {
 export interface ChosenSecret {
   label: string;
   pushSecret: string;
+  /** Whether the secret's computer is one of the phone's own. Absent keeps what is stored. */
+  presence?: boolean;
 }
 
 /** A secret id a phone chooses: 16 url-safe characters, the length of the ids the gateway makes. */
@@ -82,16 +94,44 @@ export function isSecretId(text: string): boolean {
 
 /**
  * Checks the body that stores a secret the phone chose: the label as for a minted secret,
- * and `push_secret`, 32 bytes as base64url.
+ * `push_secret`, 32 bytes as base64url, and the optional `presence`, true or false.
  */
 export function parseChosenSecret(body: unknown): Parsed<ChosenSecret> {
   const label = parseLabel(body);
   if (!label.ok) return label;
-  const { push_secret: pushSecret } = body as Record<string, unknown>;
+  const { push_secret: pushSecret, presence } = body as Record<string, unknown>;
   if (typeof pushSecret !== "string" || !isKey(pushSecret)) {
     return invalid("push_secret must be 32 bytes as base64url, 43 characters.");
   }
-  return { ok: true, value: { label: label.value, pushSecret } };
+  if (presence !== undefined && typeof presence !== "boolean") return invalid("presence must be true or false.");
+  const value: ChosenSecret = { label: label.value, pushSecret };
+  if (presence !== undefined) value.presence = presence;
+  return { ok: true, value };
+}
+
+export interface PresenceLease {
+  /** The desk's tag. */
+  desk: string;
+  /** Seconds the lease runs; 0 removes it. */
+  ttl: number;
+}
+
+/** Checks `PUT /v1/presence`: `{"desk": tag, "ttl": 0 to MAX_LEASE_SECONDS}`. */
+export function parsePresence(body: unknown): Parsed<PresenceLease> {
+  if (!isObject(body)) return invalid("The body must be a JSON object.");
+  const { desk, ttl } = body;
+  if (typeof desk !== "string" || !TAG.test(desk)) return invalid("desk must be 22 url-safe characters.");
+  if (typeof ttl !== "number" || !Number.isInteger(ttl) || ttl < 0 || ttl > MAX_LEASE_SECONDS) {
+    return invalid(`ttl must be a whole number of seconds from 0 to ${MAX_LEASE_SECONDS}.`);
+  }
+  return { ok: true, value: { desk, ttl } };
+}
+
+/** The tags of `hold_if_desk` when the field is well formed: 1 to MAX_HOLD_TAGS tags. Otherwise none. */
+function holdTags(field: unknown): string[] | undefined {
+  if (!Array.isArray(field) || field.length === 0 || field.length > MAX_HOLD_TAGS) return undefined;
+  for (const tag of field) if (typeof tag !== "string" || !TAG.test(tag)) return undefined;
+  return field as string[];
 }
 
 /** What a payload field may hold: a string of at most this many characters, or one of these words. */
@@ -203,6 +243,9 @@ export function parsePush(body: unknown, now: number): Parsed<PushRequest> {
     }
     value.expiration = at;
   }
+
+  const holdIfDesk = holdTags(body.hold_if_desk);
+  if (holdIfDesk) value.holdIfDesk = holdIfDesk;
 
   return { ok: true, value };
 }

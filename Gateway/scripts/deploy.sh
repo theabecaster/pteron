@@ -9,7 +9,8 @@
 # Cloudflare's secret store: it is never printed, copied or written anywhere else.
 #
 # Migrations only add. A pending migration that holds DROP TABLE or DELETE FROM stops the
-# script before anything is applied, unless ALLOW_DESTRUCTIVE_MIGRATION=1 is set.
+# script before anything is applied, unless ALLOW_DESTRUCTIVE_MIGRATION=1 is set. The Worker
+# is deployed only once every migration is recorded as applied.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -97,6 +98,10 @@ fi
 # Applies only the migrations the database has not recorded, so a second run does nothing.
 # Without a terminal on stdin wrangler applies pending migrations without asking.
 wrangler d1 migrations apply "$DB_NAME" --remote --config "$CONFIG" </dev/null
+# The Worker reads every column the migrations add, so it never runs on a database that lacks
+# one. Every file must now be recorded as applied; an answer that can't be read counts as none.
+missing="$(applied_migrations | pending_migrations migrations)"
+[ -z "$missing" ] || die "not deployed: these migrations are not applied: $(printf '%s ' $missing)"
 
 echo "== secret"
 # On the first run this also creates the Worker, empty, to hold the secret until the deploy below.

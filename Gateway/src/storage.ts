@@ -30,6 +30,11 @@ export interface NewSecret {
   secretId: string;
   secretHash: string;
   label: string;
+  /**
+   * The phone's own computer: its secret may write desk-presence leases and ask for holds.
+   * Absent: a new secret is not one, and a replaced secret keeps what the row held.
+   */
+  presence?: boolean;
 }
 
 export interface SecretInfo {
@@ -52,6 +57,8 @@ export interface OwnedDevice extends ManageCounts {
   secretsHeld: number;
   /** The hash the device holds under the secret id the caller asked about, or null. */
   heldSecretHash: string | null;
+  /** The presence flag of that secret, or null when there is none. */
+  heldPresence: boolean | null;
   /** True when the secret hash the caller asked about is in a row other than that one. */
   secretTaken: boolean;
 }
@@ -63,6 +70,8 @@ export interface PushTarget extends PushCounts {
   environment: Environment;
   /** Apple said this token will never work again. */
   dead: boolean;
+  /** The secret is one of the phone's own computers (`secrets.presence`). */
+  presence: boolean;
 }
 
 /**
@@ -105,8 +114,9 @@ export async function findOwned(
   // Named in the statement only when asked for, as are their two values.
   const secretColumns =
     secret === null
-      ? "NULL AS held, 0 AS taken"
+      ? "NULL AS held, NULL AS held_presence, 0 AS taken"
       : `(SELECT secret_hash FROM secrets WHERE device_id = ?1 AND secret_id = ?9) AS held,
+              (SELECT presence FROM secrets WHERE device_id = ?1 AND secret_id = ?9) AS held_presence,
               EXISTS (SELECT 1 FROM secrets
                       WHERE secret_hash = ?10 AND NOT (device_id = ?1 AND secret_id = ?9)) AS taken`;
   const counter = (place: number): string => `(SELECT count FROM counters WHERE key = ?${place} AND expires_at > ?3)`;
@@ -149,6 +159,7 @@ export async function findOwned(
       apns_token: string;
       dead: number;
       held: string | null;
+      held_presence: number | null;
       taken: number;
     }>();
   if (!row) return null;
@@ -166,6 +177,7 @@ export async function findOwned(
     dead: row.dead !== 0,
     secretsHeld: row.secrets_held,
     heldSecretHash: row.held,
+    heldPresence: row.held_presence === null ? null : row.held_presence !== 0,
     secretTaken: row.taken !== 0,
   };
 }
@@ -238,36 +250,83 @@ export async function insertSecret(
 ): Promise<boolean> {
   const result = await db
     .prepare(
-      `INSERT INTO secrets (secret_hash, device_id, secret_id, label, created_at)
-       SELECT ?3, device_id, ?4, ?5, ?6 FROM devices
+      `INSERT INTO secrets (secret_hash, device_id, secret_id, label, created_at, presence)
+       SELECT ?3, device_id, ?4, ?5, ?6, ?8 FROM devices
        WHERE device_id = ?1 AND owner_hash = ?2
          AND (SELECT COUNT(*) FROM secrets WHERE device_id = ?1) < ?7
        ON CONFLICT DO NOTHING`,
     )
-    .bind(deviceId, ownerHash, s.secretHash, s.secretId, s.label, now, MAX_SECRETS_PER_DEVICE)
+    .bind(deviceId, ownerHash, s.secretHash, s.secretId, s.label, now, MAX_SECRETS_PER_DEVICE, s.presence ? 1 : 0)
     .run();
   return result.meta.changes > 0;
 }
 
 /**
  * Puts another secret in the place of the one a device holds under `secretId`: the row
- * keeps its device and its id and takes the new hash, label and time. False when the device
- * holds no such secret, or when the hash is in another row, which then stays as it is.
+ * keeps its device and its id and takes the new hash, label and time. It keeps its presence
+ * flag unless `s` names one. False when the device holds no such secret, or when the hash is
+ * in another row, which then stays as it is.
  */
 export async function replaceSecret(db: D1Database, deviceId: string, s: NewSecret, now: number): Promise<boolean> {
   const result = await db
     .prepare(
-      `UPDATE OR IGNORE secrets SET secret_hash = ?3, label = ?4, created_at = ?5
+      `UPDATE OR IGNORE secrets SET secret_hash = ?3, label = ?4, created_at = ?5, presence = COALESCE(?6, presence)
        WHERE device_id = ?1 AND secret_id = ?2`,
     )
-    .bind(deviceId, s.secretId, s.secretHash, s.label, now)
+    .bind(deviceId, s.secretId, s.secretHash, s.label, now, s.presence === undefined ? null : s.presence ? 1 : 0)
     .run();
   return result.meta.changes > 0;
 }
 
-/** Removes one secret of a device. Removing one that is already gone is not an error. */
-export async function deleteSecret(db: D1Database, deviceId: string, secretId: string): Promise<void> {
-  await db.prepare("DELETE FROM secrets WHERE device_id = ?1 AND secret_id = ?2").bind(deviceId, secretId).run();
+/**
+ * Sets the presence flag of the secret a device holds under `secretId`, while that secret is
+ * still the one with `secretHash`. Nothing else in the row changes. False when it is not.
+ */
+export async function setSecretPresence(
+  db: D1Database,
+  deviceId: string,
+  secretId: string,
+  secretHash: string,
+  presence: boolean,
+): Promise<boolean> {
+  const result = await db
+    .prepare("UPDATE secrets SET presence = ?4 WHERE device_id = ?1 AND secret_id = ?2 AND secret_hash = ?3")
+    .bind(deviceId, secretId, secretHash, presence ? 1 : 0)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/** What a presence lease needs to know about its secret: the device, its flag, and a dead token. */
+export interface PresenceSecret {
+  deviceId: string;
+  presence: boolean;
+  dead: boolean;
+}
+
+/** The secret with this hash, for `PUT /v1/presence`. As for a push, the lookup is the authentication. */
+export async function findPresenceSecret(db: D1Database, secretHash: string): Promise<PresenceSecret | null> {
+  const row = await db
+    .prepare(
+      `SELECT s.device_id, s.presence, d.dead
+       FROM secrets s JOIN devices d ON d.device_id = s.device_id
+       WHERE s.secret_hash = ?1`,
+    )
+    .bind(secretHash)
+    .first<{ device_id: string; presence: number; dead: number }>();
+  if (!row) return null;
+  return { deviceId: row.device_id, presence: row.presence !== 0, dead: row.dead !== 0 };
+}
+
+/**
+ * Removes one secret of a device. Removing one that is already gone is not an error. True
+ * when the secret removed carried the presence flag.
+ */
+export async function deleteSecret(db: D1Database, deviceId: string, secretId: string): Promise<boolean> {
+  const row = await db
+    .prepare("DELETE FROM secrets WHERE device_id = ?1 AND secret_id = ?2 RETURNING presence")
+    .bind(deviceId, secretId)
+    .first<{ presence: number }>();
+  return (row?.presence ?? 0) !== 0;
 }
 
 /**
@@ -281,7 +340,7 @@ export async function deleteSecret(db: D1Database, deviceId: string, secretId: s
 export async function findBySecret(db: D1Database, secretHash: string, now: number): Promise<PushTarget | null> {
   const row = await db
     .prepare(
-      `SELECT d.device_id, d.apns_token, d.environment, d.dead,
+      `SELECT d.device_id, d.apns_token, d.environment, d.dead, s.presence,
               CASE
                 WHEN d.token_hash IS NULL THEN CASE WHEN d.push_day = ?4 THEN d.push_count ELSE 0 END
                 ELSE (SELECT COALESCE(SUM(o.push_count), 0) FROM devices o
@@ -297,6 +356,7 @@ export async function findBySecret(db: D1Database, secretHash: string, now: numb
       apns_token: string;
       environment: Environment;
       dead: number;
+      presence: number;
       token_count: number;
       sent_today: number | null;
     }>();
@@ -306,6 +366,7 @@ export async function findBySecret(db: D1Database, secretHash: string, now: numb
     apnsToken: row.apns_token,
     environment: row.environment,
     dead: row.dead !== 0,
+    presence: row.presence !== 0,
     tokenCount: row.token_count,
     sentToday: row.sent_today ?? 0,
   };

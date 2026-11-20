@@ -460,6 +460,17 @@ Owner-key routes answer `401 unauthorized` for an unknown phone and for a wrong 
 that JSON body counts as "the gateway no longer has this phone"; a 401 from anything in between
 is treated as the gateway being unreachable.
 
+**Desk presence across computers.** The gateway also keeps which of a phone's desks
+are in use, so a Beacon on a computer nobody sits at (workdesk) can hold a question while the
+person is at a Mac whose Rex app shows that server. A Beacon on the Mac writes a lease
+(`PUT /v1/presence`, an HMAC tag of the desk and an end time); another Beacon names the desks
+that show its server in `hold_if_desk` on a push and gets `202 {"held": true}` while one of
+them holds a lease. Only a secret the phone flagged as one of its own computers
+(`"presence": true` on the secret's `PUT`) takes part; clearing the flag or deleting the secret
+removes the phone's leases. There is no switch: a Beacon or an app that sends none of this
+gets the gateway as before. Neither the app nor Beacon sends any of it yet
+(notify-beacon-presence). Gateway/README.md, Desk presence, has the rules.
+
 The API, limits and deploy steps are in `Gateway/README.md`; `PushGateway`
 (`State/PushGateway.swift`) is the phone's side, tested in `RexDuoTests/PushGatewayTests.swift`.
 

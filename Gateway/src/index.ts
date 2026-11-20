@@ -21,9 +21,18 @@ import {
   hitRegistration,
   pushVerdict,
 } from "./limits";
+import type { LeaseResult } from "./presence";
 import { purge } from "./purge";
 import * as storage from "./storage";
-import { type Registration, isSecretId, parseChosenSecret, parseLabel, parsePush, parseRegistration } from "./validate";
+import {
+  type Registration,
+  isSecretId,
+  parseChosenSecret,
+  parseLabel,
+  parsePresence,
+  parsePush,
+  parseRegistration,
+} from "./validate";
 
 export const VERSION = "2.0.0";
 
@@ -66,6 +75,8 @@ function match(pathname: string): Match | null {
       return top({ name: "/v1/devices", methods: { POST: register } });
     case "/v1/push":
       return top({ name: "/v1/push", methods: { POST: push } });
+    case "/v1/presence":
+      return top({ name: "/v1/presence", methods: { PUT: putPresence } });
   }
   const device = DEVICE_PATH.exec(pathname);
   if (!device) return null;
@@ -411,19 +422,23 @@ async function putSecret(call: Call): Promise<Reply> {
   if (!body.ok) return body.reply;
   const parsed = parseChosenSecret(body.value);
   if (!parsed.ok) return fail(400, "invalid_request", parsed.message);
-  const { label, pushSecret } = parsed.value;
+  const { label, pushSecret, presence } = parsed.value;
   // A push secret goes to a helper, and the owner key never leaves the phone.
   if (pushSecret === ownerKey) return fail(400, "invalid_request", "push_secret must not be the owner key.");
 
   const ownerHash = await sha256Hex(ownerKey);
   const secret: storage.NewSecret = { secretId, secretHash: await sha256Hex(pushSecret), label };
+  if (presence !== undefined) secret.presence = presence;
   const now = deps.now();
   const read = (): Promise<storage.OwnedDevice | null> =>
     storage.findOwned(env.DB, deviceId, ownerHash, client, now, null, secret);
   /** The answer when there is nothing to write, or null. */
   const settled = (device: storage.OwnedDevice): Reply | null => {
     if (device.secretTaken) return secretInUse();
-    if (device.heldSecretHash === secret.secretHash) return ok(200, { secret_id: secretId });
+    // The same secret with the flag as stored, or with no flag, which keeps the stored one.
+    if (device.heldSecretHash === secret.secretHash && (presence === undefined || presence === device.heldPresence)) {
+      return ok(200, { secret_id: secretId });
+    }
     // A full device takes no new id. An id it holds is one of its secrets, and is replaced.
     return device.heldSecretHash === null && device.secretsHeld >= MAX_SECRETS_PER_DEVICE ? tooManySecrets() : null;
   };
@@ -436,10 +451,19 @@ async function putSecret(call: Call): Promise<Reply> {
   if (refused) return refused;
 
   const adding = device.heldSecretHash === null;
+  // The secret is stored already and only its flag changes: `presence` is set, or `settled`
+  // would have answered.
+  const flagOnly = device.heldSecretHash === secret.secretHash;
   const written = adding
     ? await storage.insertSecret(env.DB, deviceId, ownerHash, secret, now)
-    : await storage.replaceSecret(env.DB, deviceId, secret, now);
-  if (written) return ok(adding ? 201 : 200, { secret_id: secretId });
+    : flagOnly
+      ? await storage.setSecretPresence(env.DB, deviceId, secretId, secret.secretHash, presence === true)
+      : await storage.replaceSecret(env.DB, deviceId, secret, now);
+  if (written) {
+    // The flag went from set to cleared: no lease of the phone outlives that trust.
+    if (device.heldPresence === true && presence === false) await clearLeases(env, deviceId, now);
+    return ok(adding ? 201 : 200, { secret_id: secretId });
+  }
 
   // Nothing was written: a request at the same time took the device's last place, stored
   // this secret or took its hash, between the read and the write. What is there now is the
@@ -456,7 +480,9 @@ async function deleteSecret(call: Call): Promise<Reply> {
   const refused = await countChange(call, await sha256Hex(ownerKey), deps.now(), "delete");
   if (refused) return refused;
   // 204 also when the secret is already gone: the caller wanted it gone, and it is.
-  await storage.deleteSecret(env.DB, deviceId, secretId);
+  const wasOwn = await storage.deleteSecret(env.DB, deviceId, secretId);
+  // A computer that is no longer trusted holds nothing back from then on.
+  if (wasOwn) await clearLeases(env, deviceId, deps.now());
   return { status: 204 };
 }
 
@@ -499,6 +525,16 @@ async function push({ request, env, deps }: Call): Promise<Reply> {
   const verdict = pushVerdict(target, now);
   if (!verdict.allowed) return tooMany(verdict, "Too many pushes. Try again later.");
 
+  // Held while the person is at one of the named desks: nothing goes to Apple and nothing is
+  // counted. Asked only for a well-formed field from one of the phone's own computers; any
+  // doubt sends the push.
+  const holdIfDesk = parsed.value.holdIfDesk;
+  if (holdIfDesk && target.presence && hasPresence(env)) {
+    if (await deskHolds(env.PRESENCE_DO, target.deviceId, holdIfDesk, now)) {
+      return ok(202, { held: true, retry_after: HELD_RETRY_SECONDS });
+    }
+  }
+
   const config: ApnsConfig = {
     keyId: env.APNS_KEY_ID,
     teamId: env.APNS_TEAM_ID,
@@ -527,6 +563,111 @@ async function push({ request, env, deps }: Call): Promise<Reply> {
       };
     }
   }
+}
+
+/*
+ * Desk presence (src/presence.ts). It can only hold a push back, and every fault (a slow,
+ * failing or missing Durable Object, a malformed field, a secret that is not the phone's
+ * own) sends the push as before. A helper or an app that sends none of its fields gets the
+ * gateway as it was before presence.
+ */
+
+/** How long a push waits for the Durable Object before it is sent anyway. */
+export const HOLD_TIMEOUT_MS = 1000;
+
+/** What a held push tells its helper: ask again in this many seconds. */
+export const HELD_RETRY_SECONDS = 60;
+
+/** A Worker without the binding has no presence. */
+function hasPresence(env: Env): env is Env & { PRESENCE_DO: NonNullable<Env["PRESENCE_DO"]> } {
+  return env.PRESENCE_DO !== undefined;
+}
+
+function presenceOf(namespace: NonNullable<Env["PRESENCE_DO"]>, deviceId: string) {
+  return namespace.get(namespace.idFromName(`phone:${deviceId}`));
+}
+
+/**
+ * True only when the phone's Durable Object answers, within HOLD_TIMEOUT_MS, that one of
+ * `tags` holds a lease. An error, a timeout or any answer but `true` is false: send.
+ */
+export async function deskHolds(
+  namespace: NonNullable<Env["PRESENCE_DO"]> | undefined,
+  deviceId: string,
+  tags: string[],
+  now: number,
+  timeoutMs = HOLD_TIMEOUT_MS,
+): Promise<boolean> {
+  if (!namespace) return false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    const answer = Promise.resolve()
+      .then(() => presenceOf(namespace, deviceId).holds(tags, now))
+      .then(
+        (held) => held === true,
+        () => false,
+      );
+    return await Promise.race([answer, timeout]);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Removes every lease of the phone, once, without a retry, waiting at most HOLD_TIMEOUT_MS.
+ * A failure changes no answer; a lease left behind ends by itself within MAX_LEASE_SECONDS.
+ */
+async function clearLeases(env: Env, deviceId: string, now: number): Promise<void> {
+  if (!hasPresence(env)) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, HOLD_TIMEOUT_MS);
+  });
+  const cleared = Promise.resolve()
+    .then(() => presenceOf(env.PRESENCE_DO, deviceId).clear(now))
+    .catch(() => undefined);
+  await Promise.race([cleared, timeout]);
+  clearTimeout(timer);
+}
+
+/**
+ * `PUT /v1/presence`, bearer: a push secret. Stores or removes the lease of one desk for
+ * the secret's phone. Only a secret flagged as the phone's own computer stores anything;
+ * any other answers `200 {"stored": false}`. A Worker without the binding answers `404`, as
+ * a gateway from before presence does.
+ */
+async function putPresence({ request, env, deps }: Call): Promise<Reply> {
+  if (!hasPresence(env)) return fail(404, "not_found", "No such route.");
+  const secret = bearer(request);
+  if (!secret) return unauthorized();
+  const body = await readJson(request, MAX_BODY_BYTES);
+  if (!body.ok) return body.reply;
+  const parsed = parsePresence(body.value);
+  if (!parsed.ok) return fail(400, "invalid_request", parsed.message);
+
+  // Its own key in the secret's limiter, so leases never take a push's place.
+  const secretHash = await sha256Hex(secret);
+  if (!(await allowedBy(env.RL_SECRET, `presence:${secretHash}`))) {
+    return rateLimited(LIMITS.secretPerMinute.windowSeconds, "Too many presence updates. Try again later.");
+  }
+  const found = await storage.findPresenceSecret(env.DB, secretHash);
+  if (!found) return unauthorized();
+  if (found.dead) return unregistered();
+  if (!found.presence) return ok(200, { stored: false });
+
+  let result: LeaseResult;
+  try {
+    result = await presenceOf(env.PRESENCE_DO, found.deviceId).lease(parsed.value.desk, parsed.value.ttl, deps.now());
+  } catch (error) {
+    return { ...fail(503, "presence_unavailable", "The presence store failed. Try again later."), reason: errorName(error) };
+  }
+  if (!result.stored) return rateLimited(result.retryAfter, "Too many presence updates today. Try again later.");
+  return ok(200, { stored: true });
 }
 
 /** The cron trigger's work (wrangler.toml, `[triggers]`). Logs counts only. */

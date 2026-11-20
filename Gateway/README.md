@@ -21,9 +21,10 @@ JSON in and out. Errors are `{"error": "<code>", "message": "<sentence>"}`.
 | `PUT /v1/devices/{id}` | owner key | Replaces the token and environment. The secrets stay, and a device whose token was dead is live again. With an id the phone chose it also makes the device (see below). | `200 {}`, `201 {"device_id"}`, `400`, `401`, `409 too_many_devices`, `429` |
 | `DELETE /v1/devices/{id}` | owner key | Unregisters: deletes the device and all its secrets. | `204`, `401`, `429` |
 | `POST /v1/devices/{id}/secrets` | owner key | Mints a secret for one helper from `{"label"}` (1 to 64 printable characters). At most 10 per device. | `201 {"secret_id", "push_secret"}`, `400`, `401`, `409 too_many_secrets`, `429` |
-| `PUT /v1/devices/{id}/secrets/{secret_id}` | owner key | Stores `{"label", "push_secret"}`, a secret the phone chose, under an id it chose, or puts it in the place of the one under that id (see below). At most 10 per device. | `201 {"secret_id"}`, `200 {"secret_id"}`, `400`, `401`, `409 conflict`, `409 too_many_secrets`, `429` |
+| `PUT /v1/devices/{id}/secrets/{secret_id}` | owner key | Stores `{"label", "push_secret", "presence"?}`, a secret the phone chose, under an id it chose, or puts it in the place of the one under that id (see below). At most 10 per device. | `201 {"secret_id"}`, `200 {"secret_id"}`, `400`, `401`, `409 conflict`, `409 too_many_secrets`, `429` |
 | `DELETE /v1/devices/{id}/secrets/{secret_id}` | owner key | Deletes one secret. It stops working at once. | `204` (also when already gone), `401`, `429` |
-| `POST /v1/push` | push secret | Sends `{"payload", "push_type", "priority", "collapse_id", "expiration"}` to the secret's phone. | `200 {"apns_id"}`, `400`, `401`, `410`, `413`, `429`, `502` |
+| `POST /v1/push` | push secret | Sends `{"payload", "push_type", "priority", "collapse_id", "expiration", "hold_if_desk"?}` to the secret's phone. | `200 {"apns_id"}`, `202 {"held", "retry_after"}`, `400`, `401`, `410`, `413`, `429`, `502` |
+| `PUT /v1/presence` | push secret | Stores or removes one desk lease `{"desk", "ttl"}` for the secret's phone (see Desk presence). | `200 {"stored"}`, `400`, `401`, `404` (no presence), `410`, `429`, `503` |
 
 Every route can also answer `429` from the per-minute limits below.
 
@@ -61,8 +62,9 @@ and secrets, and every other route treats them alike.
   is in this case also with the token it holds, and is live again, as after any token
   change.
 
-**`PUT /v1/devices/{device_id}/secrets/{secret_id}`**, body `{"label", "push_secret"}`,
-owner key as above, for a device made by either route.
+**`PUT /v1/devices/{device_id}/secrets/{secret_id}`**, body `{"label", "push_secret"}` and
+an optional `"presence": true | false` (see Desk presence), owner key as above, for a device
+made by either route.
 
 - `secret_id` is 16 url-safe characters and `push_secret` 32 random bytes as base64url, 43
   characters, and not the owner key. `label` is as for `POST`. Anything else answers
@@ -73,11 +75,14 @@ owner key as above, for a device made by either route.
   each was sent. A device that holds 10 answers `409 too_many_secrets` to an id it does not
   hold, from the one read: nothing is written or counted. An id it holds is still answered
   as below.
-- The device holds this secret under the id: `200 {"secret_id"}`. Nothing is written or
-  counted, and the label stays as it was stored.
+- The device holds this secret under the id, with the `presence` flag the body gives or with
+  no flag in the body: `200 {"secret_id"}`. Nothing is written or counted, and the label
+  stays as it was stored.
+- The device holds this secret under the id with the other flag: the flag alone changes,
+  `200 {"secret_id"}`. One management write.
 - The device holds another secret under the id: it is replaced, with the label and the time
   of this request, `200 {"secret_id"}`. One management write. The secret that was there
-  stops working at once.
+  stops working at once. The flag stays as it was unless the body gives one.
 - `push_secret` is already stored in another row: `409 conflict`, and nothing is written or
   counted.
   The answer is the same whether that row is this device's or another's.
@@ -131,14 +136,83 @@ field is a string, and a field that is not in this table is refused with `400`:
 It reaches Apple as `JSON.stringify` of the parsed `payload`: same keys, order and values,
 compact, which is what the helper sends. The 4096-byte limit applies to that text.
 
+## Desk presence
+
+A helper may hold a push back while the phone's person sits at one of their own computers
+whose Rex app shows the agent's server (docs/notifications.md, Relay/README.md). The gateway
+keeps the part that crosses computers: which desks are in use, as leases.
+
+There is no switch. A helper that sends no `hold_if_desk` and no lease, and an app that sets
+no flag, get the gateway as it was before presence. A Worker without the `PRESENCE_DO`
+binding has no presence: `hold_if_desk` is ignored and `PUT /v1/presence` answers `404`.
+
+**Flag.** A secret can be marked as one of the phone's own computers with `"presence": true`
+on its `PUT`. Only such a secret stores a lease or has a push held; any other secret pushes as
+before. A secret starts unflagged, `POST …/secrets` never flags one, and a `PUT` without
+`presence` keeps the flag as stored. When the flag goes from `true` to `false` (also when a
+replaced secret takes the id with `false`), or a flagged secret is deleted, the phone's leases
+are all removed at once, so a hold never outlives that trust. Tags name no secret, so the
+leases of the computers still trusted go too; those write theirs again at their next renewal,
+and until then pushes are sent. The removal is one try with a 1-second wait; if it fails, the
+leases end by themselves within 15 minutes, and the answer is the same either way.
+
+**`PUT /v1/presence`**, `Authorization: Bearer <push_secret>`, body `{"desk", "ttl"}`:
+
+- `desk` is the desk's tag, 22 url-safe characters: the first 22 characters of
+  base64url(HMAC-SHA256(presence key, `"rexduo-desk-v1\n"` + label)). The presence key is
+  made by the phone and given only to its own computers. The gateway never has it.
+- `ttl` is 0 to 900 seconds. The lease runs until now + `ttl`; `0` removes this desk's lease
+  and no other.
+- `200 {"stored": true}`: stored or removed.
+- `200 {"stored": false}`: the secret is not flagged. The helper stops leasing for that phone
+  until its next registration.
+- `404`: a gateway without presence. The helper waits a day and tries again.
+- `400` for a body that is not as above, `401` as for a push, `410 unregistered` for a dead
+  token, `429` past a limit, `503 presence_unavailable` when the store failed.
+
+**`hold_if_desk`** on `POST /v1/push`: a list of 1 to 8 desk tags. When the secret is flagged
+and one of the tags holds a lease, the answer is
+`202 {"held": true, "retry_after": 60}`: nothing goes to Apple and nothing is counted. In every
+other case the push is sent as without the field:
+
+- the field is not a list of 1 to 8 tags (it is never refused with `400`);
+- the secret is not flagged;
+- the store failed, or did not answer within 1 second;
+- the push would not have gone to Apple anyway (a dead token, a cap): that answer comes first.
+
+The field never reaches Apple. A helper sends it only on the first attempt of a fresh event,
+never on the send that ends a hold, so a desk that looks present by mistake delays a question
+by the helper's cap (10 minutes) at most.
+
+**Store.** One SQLite-backed Durable Object per phone (`src/presence.ts`), named
+`"phone:" + device_id`. It holds at most 4 leases `{tag, until}`; a fifth desk takes the
+place of the lease closest to its end. One alarm at the latest `until` deletes every lease.
+The day's count of lease writes stays, with no tag, until the UTC day ends, and then goes
+too. Presence writes no D1 row.
+
+**Privacy.**
+
+- Idle time, lock and display state never leave the computer. Only "present until T" leaves,
+  and only from the phone's own computers.
+- What the gateway stores: per phone, in its Durable Object, at most 4 HMAC tags with expiry
+  times. They are not linked to a secret or a label, and an alarm deletes them after the last
+  expiry. The tag key never reaches the gateway, so the stored state names no desk.
+- What each request reveals while it runs: a lease `PUT` arrives on a named secret (the label
+  is the computer's name in D1), so the Worker can see that the phone's owner is active at
+  that named computer at that time. A `hold_if_desk` from a server's secret shows that some of
+  the phone's desks show that server.
+- The gateway logs only the route and the status, so none of this is recorded.
+
 ## Layout
 
-- `src/index.ts`: routing, the handlers and the cron handler. `handleRequest` takes the clock and
+- `src/worker.ts`: the entry, which exports only the handlers and the Durable Object class (the
+  runtime refuses any other export). `src/index.ts`: routing, the handlers and the cron handler. `handleRequest` takes the clock and
   the `fetch` used for Apple, which is how tests replace both.
 - `src/apns.ts`: the provider JWT and the request to Apple.
 - `src/limits.ts`: every limit as a constant, the arithmetic behind them, and the counters.
 - `src/storage.ts`: the device and secret queries. `src/purge.ts`: the daily clean-up.
 - `src/address.ts`: the client address a limit is keyed by (IPv6 by /64 and by /48).
+- `src/presence.ts`: the desk-presence Durable Object (`Presence`).
 - `src/validate.ts`: the request bodies. `src/http.ts`: replies, the bounded body read, the
   bearer header.
 
@@ -172,6 +246,8 @@ All of them are constants in `src/limits.ts`.
 | Requests per client address | 120 | 60 s | Rate Limiting binding `RL_ADDRESS` |
 | Requests, everyone | 3,000 | 60 s | Rate Limiting binding `RL_GLOBAL` |
 | Pushes per secret | 30 | 60 s | Rate Limiting binding `RL_SECRET` |
+| Presence leases per secret | 30 | 60 s | `RL_SECRET`, under a key of its own |
+| Presence leases written per phone (removals not counted) | 1,500 | UTC day | the phone's Durable Object |
 | Pushes per APNs token, all the devices that share it and all their secrets together | 1,500 | UTC day | D1, on the devices' rows |
 | Management writes per device | 60 | UTC day | D1, on the device's row |
 | Secrets minted and token changes per client address (IPv4 address or IPv6 /64) | 120 | UTC day | D1 counter |
@@ -289,7 +365,8 @@ device registered before the token hash existed gets the hash with its first suc
 more row, once: 7, the figure the table uses. The `PUT` routes write the same rows: making a
 device is a registration, 7; a token update is a token change, 6; a secret stored is a mint,
 6; a secret replaced is 4 counts, the secret's row with its new hash and its index entry, 6
-(7 with the hash filled in, as for a mint). A `PUT` that finds things as it says, and one
+(7 with the hash filled in, as for a mint); a change of the `presence` flag alone is 4 counts
+and the secret's row, 5. A `PUT` that finds things as it says, and one
 answered `409 conflict` or `409 too_many_secrets`, costs one read and writes nothing. Deleting a secret counts in two rows (the
 device and the counter for deletes) and writes 2 more, 4 in all. Deleting the device counts
 in the counter for deletes alone, because its own row goes, and then writes the device, its
@@ -305,6 +382,14 @@ checked"). Past a cap the Worker answers
 so a request this Worker refuses with `429` is a billed request like any other. The limits
 keep such requests away from D1 and Apple, which is where a request costs more than itself.
 
+**Durable Objects (desk presence).** Nothing until helpers and the app use presence. Then a
+phone's object gets one request per lease `PUT`, one per push that carries `hold_if_desk`
+from a flagged secret, and one when trust is taken back, and writes one row per lease stored
+or removed. At the owner's scale that is
+about 1,000 requests and 500 rows written a day, inside what the plan includes; at 100 times
+that, about 3 million requests a month, about $0.30 a month beyond it. An idle object costs
+nothing.
+
 ## Test
 
 ```sh
@@ -319,7 +404,9 @@ The tests run inside workerd (`@cloudflare/vitest-plugin`) against a real local 
 migrations applied. Apple is always a fake, the signing key is generated by the test run, and
 the rate limiters are fakes or absent, because the tests set their own clock.
 `wrangler dev` can't reach Apple at all: the local runtime has no HTTP/2 client, and APNs speaks
-only HTTP/2. Only a deployed Worker can send, which is what the smoke test is for.
+only HTTP/2. Only a deployed Worker can send, which is what the smoke test is for. A push that
+`wrangler dev` sends on answers `502 apns_unreachable`, which is how a local run tells a push
+that was sent from one that was held (`202`).
 
 ## Deploy
 
@@ -344,6 +431,22 @@ which migrations the database has recorded and refuses to apply when a pending f
 runs it. `0002` and `0003` made the tables anew; they are recorded as applied on the deployed
 database and do not run there again, and a database the script has just created takes them
 without the variable.
+
+Deploy only with `scripts/deploy.sh`, never `wrangler deploy` by hand: the Worker reads every
+column the migrations add (`secrets.presence` from `0005` on), so it must not run on a
+database without them. The script applies the migrations first and refuses to deploy while
+any file in `migrations/` is not recorded as applied.
+
+### Desk presence: the two deploys
+
+Adding the `Presence` Durable Object class is a lifecycle change: Cloudflare can't roll the
+Worker back to a version from before it. So presence went out in two deploys:
+
+1. The class, its binding, its migration (`[[migrations]]`, tag `v1`) and the D1 column
+   (`0005`), with no route that reaches them. It is inert. A defect in it gets a deploy that
+   fixes it, not a rollback.
+2. The routes (`PUT /v1/presence`, `hold_if_desk`, the secret's `presence` flag). It can be
+   rolled back to deploy 1, which is the way back to the gateway without presence.
 
 ## Smoke test
 

@@ -182,6 +182,7 @@ describe("POST /v1/devices/{id}/secrets", () => {
         secret_id: body.secret_id,
         label: "studio",
         created_at: T0 + 7,
+        presence: 0,
       },
     ]);
     expect(JSON.stringify(rows)).not.toContain(body.push_secret);

@@ -66,11 +66,13 @@ beforeEach(async () => {
 describe("the migrations after 0003", () => {
   it("only add: no statement drops a table or deletes rows", () => {
     const migrations = later();
-    expect(migrations.map((m) => m.name)).toEqual(["0004_token_hash_and_dead.sql"]);
+    expect(migrations.map((m) => m.name)).toEqual(["0004_token_hash_and_dead.sql", "0005_secret_presence.sql"]);
     for (const { queries } of migrations) {
       for (const query of queries) {
-        expect(query).toMatch(/^\s*(ALTER TABLE \w+ ADD COLUMN|CREATE TABLE IF NOT EXISTS|CREATE (UNIQUE )?INDEX IF NOT EXISTS|UPDATE)\b/i);
-        expect(query).not.toMatch(/DROP|DELETE/i);
+        // A file of one statement comes back with its comments, which are not SQL.
+        const statement = query.replace(/^\s*--.*$/gm, "");
+        expect(statement).toMatch(/^\s*(ALTER TABLE \w+ ADD COLUMN|CREATE TABLE IF NOT EXISTS|CREATE (UNIQUE )?INDEX IF NOT EXISTS|UPDATE)\b/i);
+        expect(statement).not.toMatch(/DROP|DELETE/i);
       }
     }
   });
@@ -83,7 +85,7 @@ describe("the migrations after 0003", () => {
 
     for (const { queries } of later()) await run(queries);
 
-    expect(await table("secrets")).toEqual(before.secrets);
+    expect(await table("secrets")).toEqual(before.secrets.map((row) => ({ ...row, presence: 0 })));
     expect(await table("counters")).toEqual(before.counters);
     expect(await table("devices")).toEqual(before.devices.map((row) => ({ ...row, token_hash: null, dead: 0 })));
   });
@@ -157,6 +159,8 @@ describe("the migrations after 0003", () => {
       (r) => r.name,
     );
     expect(columns).toEqual(expect.arrayContaining(["token_hash", "dead"]));
+    const secretColumns = (await env.DB.prepare("SELECT name FROM pragma_table_info('secrets')").all<{ name: string }>()).results;
+    expect(secretColumns.map((r) => r.name)).toContain("presence");
     const index = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'devices_token'").first();
     expect(index).not.toBeNull();
   });

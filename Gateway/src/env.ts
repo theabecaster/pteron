@@ -1,3 +1,5 @@
+import type { Presence } from "./presence";
+
 export interface Env {
   DB: D1Database;
   APNS_KEY_ID: string;
@@ -12,6 +14,11 @@ export interface Env {
   RL_ADDRESS?: RateLimit;
   RL_SECRET?: RateLimit;
   RL_GLOBAL?: RateLimit;
+  /**
+   * Desk presence (src/presence.ts): one Durable Object per phone. Optional: a deployment
+   * without the binding has no presence, and pushes and answers as before presence existed.
+   */
+  PRESENCE_DO?: DurableObjectNamespace<Presence>;
 }
 
 /** What a request needs from outside, so tests replace Apple and the clock. */

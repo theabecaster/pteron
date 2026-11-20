@@ -536,6 +536,7 @@ describe("PUT /v1/devices/{id}/secrets/{secret_id}", () => {
         secret_id: secret.secret_id,
         label: "Abe's MacBook Pro 🦖",
         created_at: T0 + 7,
+        presence: 0,
       },
     ]);
     expect(JSON.stringify(rows)).not.toContain(secret.push_secret);
@@ -596,6 +597,7 @@ describe("PUT /v1/devices/{id}/secrets/{secret_id}", () => {
         secret_id: first.secret_id,
         label: "studio, again",
         created_at: T0 + 90,
+        presence: 0,
       },
     ]);
     // Two secrets stored and one replaced.
