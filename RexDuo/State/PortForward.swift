@@ -354,16 +354,20 @@ final class PortForward {
         }
     }
 
-    /// `conflict` (the server is full) or a changed shape (`bad_request`): one notice per browser.
-    /// `not_found`: the server has no dial tunnels after all.
+    /// `conflict` (the server is full), a changed shape (`bad_request`) or a request that never
+    /// reached the server (the connection dropped): one notice per browser, so a page that
+    /// doesn't load always says why. `not_found`: the server has no dial tunnels after all.
     private func refused(_ error: Error, _ f: Forward) {
         let e = error as? RexError
         if e?.code == "not_found" || e?.code == "method_not_found" { f.server.tunnelsMissing() }
-        guard e?.neverSent != true, e?.code != "client" else { return }
         guard !f.refusedShown else { return }
         f.refusedShown = true
-        notify(e?.code == "conflict" ? "The computer has too many panes open to show this page."
-                                    : "Couldn't open the page through Rex.")
+        if e?.neverSent == true || e?.code == "client" {
+            notify("Couldn't open localhost:\(f.target.port): the connection to the computer dropped.")
+        } else {
+            notify(e?.code == "conflict" ? "The computer has too many panes open to show this page."
+                                        : "Couldn't open the page through Rex.")
+        }
     }
 
     // MARK: Server state

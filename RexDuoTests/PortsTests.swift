@@ -237,7 +237,7 @@ final class PortsTests: XCTestCase {
         XCTAssertEqual(route("http://localhost:9229/json"), .refuse)
         XCTAssertEqual(route("http://[::1]:9222/"), .refuse)
         XCTAssertEqual(route("https://example.com/"), .elsewhere)
-        XCTAssertEqual(route("http://192.168.1.2:5173/"), .elsewhere, "no LAN hosts")
+        XCTAssertEqual(route("http://192.168.1.2:3000/"), .elsewhere, "a LAN host on a port the pane doesn't listen on")
         XCTAssertEqual(route("ftp://localhost:21/"), .elsewhere)
 
         // A remote pane, and a server without tunnels: links go where they always went.
@@ -267,7 +267,7 @@ final class PortsTests: XCTestCase {
         _ = await eventually { r.server.control.state != .connected }
         let p = PanePorts(server: r.server, sessionID: "session:1", blockID: "block:1a")
         var elsewhere = 0
-        p.openElsewhere = { _ in elsewhere += 1 }
+        p.openElsewhere = { _, _ in elsewhere += 1 }
         XCTAssertEqual(p.route(URL(string: "http://localhost:5173/")!, asked: false), .offline)
         p.open(URL(string: "http://localhost:5173/")!, asked: false)
         XCTAssertEqual(elsewhere, 0)
@@ -296,6 +296,130 @@ final class PortsTests: XCTestCase {
         XCTAssertEqual(questions.count, 1)
         XCTAssertEqual(presented.first?.absoluteString, "http://localhost:3000/")
         forward.close()
+        r.stop()
+    }
+
+    // MARK: LAN links
+
+    /// `next dev` prints `Network: http://10.0.0.246:3000`. It is the pane's own computer only
+    /// when the pane listens on that port: then it tunnels, dialed at that address.
+    func testALANLinkOnAListedPortTunnelsAndAnyOtherGoesToSafari() async throws {
+        let r = try await rig(18)
+        r.fake.reply(Self.ports, Self.reply([5173, 9229]))
+        await r.connect()
+        r.server.watchPorts(session: "session:1", block: "block:1a")
+        _ = await eventually { r.server.ports.value("block:1a") != nil }
+        let p = PanePorts(server: r.server, sessionID: "session:1", blockID: "block:1a")
+        func route(_ s: String) -> PanePorts.Route { p.route(URL(string: s)!, asked: false) }
+        for host in ["10.0.0.246", "172.16.4.2", "172.31.255.1", "192.168.1.2", "169.254.10.3", "[fd12:3456::1]"] {
+            guard case .open(let l) = route("http://\(host):5173/app?x=1#y") else { return XCTFail("\(host) on a listed port tunnels") }
+            XCTAssertEqual(l.dialHost, host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), "dialed at the link's own address")
+            XCTAssertEqual(l.url(localPort: 5173)?.absoluteString, "http://localhost:5173/app?x=1#y", "named localhost in the browser")
+        }
+        // Another machine's address on a port this pane doesn't listen on: Safari, as before.
+        XCTAssertEqual(route("http://10.0.0.246:3000/"), .elsewhere)
+        // Public addresses and names are never the pane's computer, whatever the port.
+        for s in ["http://8.8.8.8:5173/", "http://172.32.0.1:5173/", "http://100.101.102.103:5173/", "http://example.com:5173/",
+                  "http://[2001:db8::1]:5173/", "http://[fe80::1]:5173/"] {
+            XCTAssertEqual(route(s), .elsewhere, s)
+        }
+        XCTAssertEqual(route("http://10.0.0.246:9229/"), .refuse, "a debugger port never opens")
+        // A remote pane, and offline: Safari, which reaches it on the same network.
+        let remote = PanePorts(server: r.server, sessionID: "session:1", blockID: "block:nowhere")
+        XCTAssertEqual(remote.route(URL(string: "http://10.0.0.246:5173/")!, asked: false), .elsewhere)
+        r.fake.close(code: 1001, reason: "bye")
+        _ = await eventually { r.server.control.state != .connected }
+        XCTAssertEqual(route("http://10.0.0.246:5173/"), .elsewhere)
+        r.stop()
+
+        // A server without port lists: no LAN link is known to be the pane's.
+        let old = try await rig(14)
+        await old.connect()
+        let q = PanePorts(server: old.server, sessionID: "session:1", blockID: "block:1a")
+        XCTAssertEqual(q.route(URL(string: "http://10.0.0.246:5173/")!, asked: false), .elsewhere)
+        old.stop()
+    }
+
+    func testALANLinkOpensThroughTheTunnelAtItsAddress() async throws {
+        let r = try await rig(18)
+        await r.connect()
+        r.server.watchPorts(session: "session:1", block: "block:1a")
+        _ = await eventually { r.server.ports.value("block:1a") != nil }
+        let forward = PortForward(tag: { "a1b2c3d4" }, ledger: TunnelLedger(defaults: UserDefaults(suiteName: UUID().uuidString)!),
+                                  makeListener: { StubListener() })
+        r.server.forward = forward
+        let p = PanePorts(server: r.server, sessionID: "session:1", blockID: "block:1a")
+        var presented: [URL] = []
+        p.present = { presented.append($0) }
+        p.open(URL(string: "http://10.0.0.246:5173/")!, asked: false)
+        _ = await eventually { !presented.isEmpty }
+        XCTAssertEqual(presented.first?.absoluteString, "http://localhost:5173/")
+        XCTAssertEqual(forward.forward?.target, PortForward.Target(sessionID: "session:1", port: 5173, dialHost: "10.0.0.246"))
+        forward.close()
+        r.stop()
+    }
+
+    // MARK: Never silent
+
+    func testEveryLinkThatCantOpenSaysWhy() async throws {
+        let r = try await rig(18)
+        await r.connect()
+        r.server.watchPorts(session: "session:1", block: "block:1a")
+        _ = await eventually { r.server.ports.value("block:1a") != nil }
+        var notes: [String] = []
+        func pane() -> PanePorts {
+            let p = PanePorts(server: r.server, sessionID: "session:1", blockID: "block:1a")
+            p.notify = { notes.append($0) }
+            return p
+        }
+
+        // Safari refused the link.
+        let a = pane()
+        a.openElsewhere = { _, done in done(false) }
+        a.open(URL(string: "https://example.com/x")!, asked: false)
+        XCTAssertEqual(notes.popLast(), "Couldn't open example.com.")
+        a.openElsewhere = { _, done in done(true) }
+        a.open(URL(string: "https://example.com/x")!, asked: false)
+        XCTAssertTrue(notes.isEmpty, "nothing when it opened")
+
+        // An unlisted port's question with no pane left to ask over.
+        let b = pane()
+        b.open(URL(string: "http://localhost:3000/")!, asked: false)
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:3000: its pane is closed.")
+
+        // No forward to show pages with.
+        r.server.forward = nil
+        pane().open(URL(string: "http://localhost:5173/")!, asked: false)
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: the app isn't ready to show pages yet.")
+
+        // The phone couldn't listen.
+        let failing = PortForward(tag: { "a1b2c3d4" }, ledger: TunnelLedger(defaults: UserDefaults(suiteName: UUID().uuidString)!),
+                                  makeListener: { FailingListener() })
+        r.server.forward = failing
+        pane().open(URL(string: "http://localhost:5173/")!, asked: false)
+        _ = await eventually { !notes.isEmpty }
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: the phone couldn't get ready to show it.")
+
+        // No window to show the page in: the forward closes too.
+        let forward = PortForward(tag: { "a1b2c3d4" }, ledger: TunnelLedger(defaults: UserDefaults(suiteName: UUID().uuidString)!),
+                                  makeListener: { StubListener() })
+        r.server.forward = forward
+        let offScreen = pane()
+        let view = UIView()
+        offScreen.view = view
+        offScreen.open(URL(string: "http://localhost:5173/")!, asked: false)
+        _ = await eventually { !notes.isEmpty }
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: its pane is no longer on screen.")
+        XCTAssertNil(forward.forward)
+
+        // Offline and debugger ports, as before, through the same notice.
+        pane().open(URL(string: "http://localhost:9229/")!, asked: false)
+        XCTAssertEqual(notes.popLast(), "Debugger ports don't open on the phone.")
+        r.fake.close(code: 1001, reason: "bye")
+        _ = await eventually { r.server.control.state != .connected }
+        pane().open(URL(string: "http://localhost:5173/")!, asked: false)
+        XCTAssertEqual(notes.popLast(), "Desk is offline, so localhost:5173 can't open.")
+        XCTAssertTrue(notes.isEmpty)
         r.stop()
     }
 
@@ -389,5 +513,53 @@ final class WriteCount {
                 self?.observe(box)
             }
         }
+    }
+}
+
+/// A listener that can't start: the phone has no free port.
+final class FailingListener: PortListener {
+    var port = 0
+    func start(preferring port: Int, accept: @escaping @MainActor (any TunnelLocal) -> Void) async throws -> Int {
+        throw RexError.local("no port")
+    }
+
+    func stop() {}
+}
+
+/// Which addresses are the computer's loopback and which a private network's.
+final class LocalhostLinkTests: XCTestCase {
+    func testLoopbackLinks() {
+        func link(_ s: String) -> LocalhostLink? { LocalhostLink(URL(string: s)!) }
+        XCTAssertEqual(link("http://localhost:3000/")?.dialHost, "localhost")
+        XCTAssertEqual(link("http://127.0.0.1:3000/")?.dialHost, "127.0.0.1")
+        XCTAssertEqual(link("http://127.1.2.3:3000/")?.dialHost, "127.1.2.3")
+        XCTAssertEqual(link("http://[::1]:3000/")?.dialHost, "::1")
+        XCTAssertEqual(link("http://0.0.0.0:3000/")?.dialHost, "127.0.0.1")
+        XCTAssertEqual(link("http://[::]:8765/")?.dialHost, "::1", "python3 -m http.server prints it")
+        XCTAssertEqual(link("http://[::]:8765/")?.url(localPort: 8765)?.absoluteString, "http://localhost:8765/")
+        XCTAssertEqual(link("https://localhost/")?.port, 443)
+        XCTAssertNil(link("http://10.0.0.246:3000/"), "a LAN address is no loopback")
+        XCTAssertNil(link("http://127.0.0.256:3000/"))
+        XCTAssertNil(link("ftp://localhost:3000/"))
+    }
+
+    func testPrivateNetworkLinks() {
+        func lan(_ s: String) -> LocalhostLink? { LocalhostLink(lan: URL(string: s)!) }
+        let l = lan("http://10.0.0.246:3000/a?b=c#d")
+        XCTAssertEqual(l?.dialHost, "10.0.0.246")
+        XCTAssertEqual(l?.host, "localhost")
+        XCTAssertEqual(l?.port, 3000)
+        XCTAssertEqual(l?.url(localPort: 3000)?.absoluteString, "http://localhost:3000/a?b=c#d")
+        XCTAssertEqual(lan("https://192.168.0.5/")?.port, 443)
+        for yes in ["10.255.255.255", "172.16.0.1", "172.31.0.1", "192.168.1.1", "169.254.0.1", "fd00::1", "fdff:1:2:3:4:5:6:7"] {
+            XCTAssertTrue(LocalhostLink.isPrivate(yes), yes)
+        }
+        for no in ["127.0.0.1", "0.0.0.0", "8.8.8.8", "172.15.0.1", "172.32.0.1", "192.169.0.1", "100.64.0.1", "11.0.0.1",
+                   "10.0.0", "10.0.0.256", "::1", "fe80::1", "fc00::1", "2001:db8::1", "fd::1", "fd00:1", "localhost", ""] {
+            XCTAssertFalse(LocalhostLink.isPrivate(no), no)
+        }
+        XCTAssertNil(lan("http://localhost:3000/"))
+        XCTAssertNil(lan("http://8.8.8.8:3000/"))
+        XCTAssertNil(lan("ftp://10.0.0.1:21/"))
     }
 }

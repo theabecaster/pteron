@@ -15,11 +15,12 @@ final class TerminalTapTests: XCTestCase {
     private typealias Facts = TerminalTapFacts
 
     /// The decision with every later question answered, and which of them were asked.
-    private func decide(_ facts: Facts, engine: Bool = false, mouse: Bool = false, cursor: Bool = false)
+    private func decide(_ facts: Facts, link: Bool = false, engine: Bool = false, mouse: Bool = false, cursor: Bool = false)
         -> (outcome: TerminalTapOutcome, asked: [String]) {
         var asked: [String] = []
         let outcome = TerminalTapDecision.outcome(
             facts,
+            opensLink: { asked.append("link"); return link },
             engineUses: { asked.append("engine"); return engine },
             tracksMouse: { asked.append("mouse"); return mouse },
             nearCursor: { asked.append("cursor"); return cursor })
@@ -35,7 +36,8 @@ final class TerminalTapTests: XCTestCase {
             (Facts(tapCount: 2), true, true, true, .select(line: false)),
             (Facts(tapCount: 3), true, true, true, .select(line: true)),
             (Facts(tapCount: 2, keyboardUp: false, hadSelection: true, shift: true), true, true, true, .select(line: false)),
-            // 3. No keyboard on this pane: focus, and nothing else, even over a link or in a mouse program.
+            // 3. No keyboard on this pane: focus, and nothing else, even over the prompt or in a mouse
+            //    program (a link is `testWithTheKeyboardDownALinkOpensAndPlainTextFocuses`).
             (Facts(keyboardUp: false), true, true, true, .focus(clearsSelection: false)),
             (Facts(keyboardUp: false, hadSelection: true), true, true, true, .focus(clearsSelection: true)),
             (Facts(keyboardUp: false, shift: true, menuVisible: true), true, true, true, .focus(clearsSelection: false)),
@@ -70,7 +72,10 @@ final class TerminalTapTests: XCTestCase {
         // A link must not open, and no lock is taken, for a tap that means something earlier.
         XCTAssertEqual(decide(Facts(onHandle: true)).asked, [])
         XCTAssertEqual(decide(Facts(tapCount: 2)).asked, [])
-        XCTAssertEqual(decide(Facts(keyboardUp: false), engine: true).asked, [])
+        XCTAssertEqual(decide(Facts(keyboardUp: false), engine: true).asked, ["link"])
+        XCTAssertEqual(decide(Facts(keyboardUp: false, hadSelection: true), link: true).asked, [])
+        XCTAssertEqual(decide(Facts(keyboardUp: false, shift: true), link: true).asked, [])
+        XCTAssertEqual(decide(Facts(stopsScroll: true), link: true).asked, [])
         XCTAssertEqual(decide(Facts(hadSelection: true), engine: true).asked, [])
         XCTAssertEqual(decide(Facts(shift: true), engine: true).asked, [])
         XCTAssertEqual(decide(Facts(), engine: true).asked, ["engine"])
@@ -172,10 +177,121 @@ final class TerminalTapTests: XCTestCase {
 
     func testATapCatchesAScrollWhileItMovesAndJustAfter() {
         typealias Rule = TerminalScrollTouch
+        XCTAssertEqual(Rule.settle, 0.15, "short, so a link just scrolled into view opens on the next tap")
         XCTAssertTrue(Rule.stopsScroll(now: 10, moving: true, lastMoved: nil))
         XCTAssertTrue(Rule.stopsScroll(now: 10, moving: false, lastMoved: 10 - Rule.settle + 0.01))
         XCTAssertFalse(Rule.stopsScroll(now: 10, moving: false, lastMoved: 10 - Rule.settle - 0.01))
         XCTAssertFalse(Rule.stopsScroll(now: 10, moving: false, lastMoved: nil))
+    }
+
+    // MARK: Links
+
+    func testWithTheKeyboardDownALinkOpensAndPlainTextFocuses() {
+        // Step 3: the link is looked up first; the keyboard stays down when one opens.
+        XCTAssertEqual(decide(Facts(keyboardUp: false), link: true).outcome, .engineUsed)
+        XCTAssertEqual(decide(Facts(keyboardUp: false), link: true).asked, ["link"], "no prompt move, no click, no menu")
+        XCTAssertEqual(decide(Facts(keyboardUp: false), link: false, engine: true, mouse: true).outcome, .focus(clearsSelection: false))
+        // A tap that clears a selection or holds Shift only focuses, as before.
+        XCTAssertEqual(decide(Facts(keyboardUp: false, hadSelection: true), link: true).outcome, .focus(clearsSelection: true))
+        XCTAssertEqual(decide(Facts(keyboardUp: false, shift: true), link: true).outcome, .focus(clearsSelection: false))
+        // The keyboard up: the link step isn't asked; the engine opens links as before.
+        XCTAssertEqual(decide(Facts(), link: true).asked, ["engine", "mouse", "cursor"])
+    }
+
+    private let nextDev = "Local:   http://localhost:3000\r\nNetwork: http://10.0.0.246:3000\r\n\r\nplain words here"
+
+    /// The cell's centre, in engine view coordinates.
+    private func point(_ host: TerminalHost, col: Int, row: Int) -> CGPoint {
+        let rect = host.term.viewportRect(row: row, columns: col..<(col + 1))
+        return CGPoint(x: rect.midX, y: rect.midY)
+    }
+
+    func testTheKeyboardDownTapOnALinkOpensItAndLeavesTheKeyboardDown() {
+        let (host, spy) = makeHost(nextDev)
+        var opened: [URL] = []
+        host.term.taps.open = { url, _ in opened.append(url) }
+        XCTAssertFalse(host.term.isFirstResponder)
+        XCTAssertEqual(host.tap(at: point(host, col: 10, row: 0), shift: false, keyboardUp: false, hadSelection: false), .engineUsed)
+        XCTAssertEqual(opened, [URL(string: "http://localhost:3000")!])
+        XCTAssertFalse(host.term.isFirstResponder, "the keyboard stays down")
+        XCTAssertEqual(spy.sent, [])
+    }
+
+    func testTheKeyboardDownTapOnPlainTextStillFocuses() {
+        let (host, spy) = makeHost(nextDev)
+        var opened: [URL] = []
+        host.term.taps.open = { url, _ in opened.append(url) }
+        XCTAssertEqual(host.tap(at: point(host, col: 3, row: 3), shift: false, keyboardUp: false, hadSelection: false),
+                       .focus(clearsSelection: false))
+        XCTAssertEqual(opened, [])
+        XCTAssertEqual(spy.sent, [])
+    }
+
+    func testTheKeyboardUpTapOnALinkOpensItAsBefore() {
+        let (host, spy) = makeHost(nextDev)
+        var opened: [URL] = []
+        host.term.taps.open = { url, _ in opened.append(url) }
+        XCTAssertEqual(host.tap(at: point(host, col: 28, row: 1), shift: false, keyboardUp: true, hadSelection: false), .engineUsed)
+        XCTAssertEqual(opened, [URL(string: "http://10.0.0.246:3000")!])
+        XCTAssertEqual(spy.sent, [])
+    }
+
+    /// The phone's Cmd-click: under mouse tracking a tap on an address in the text opens it and
+    /// sends the program no click; a tap on plain text still clicks.
+    func testUnderMouseTrackingALinkOpensWithNoClickAndPlainTextClicks() {
+        let (host, spy) = makeHost(mouseProgram + nextDev)
+        var opened: [URL] = []
+        host.term.taps.open = { url, _ in opened.append(url) }
+        XCTAssertEqual(host.tap(at: point(host, col: 10, row: 0), shift: false, keyboardUp: true, hadSelection: false), .engineUsed)
+        XCTAssertEqual(opened, [URL(string: "http://localhost:3000")!])
+        XCTAssertEqual(spy.sent, [], "no click for the link")
+        XCTAssertEqual(host.tap(at: point(host, col: 3, row: 3), shift: false, keyboardUp: true, hadSelection: false), .programClick)
+        XCTAssertEqual(spy.sent.count, 1)
+        XCTAssertTrue(spy.sent[0].starts(with: Array("\u{1b}[<0;".utf8)), "an SGR left press")
+        XCTAssertEqual(opened.count, 1)
+        // With the keyboard down, the link opens there too, and plain text only focuses.
+        XCTAssertEqual(host.tap(at: point(host, col: 28, row: 1), shift: false, keyboardUp: false, hadSelection: false), .engineUsed)
+        XCTAssertEqual(opened.count, 2)
+        XCTAssertEqual(host.tap(at: point(host, col: 3, row: 3), shift: false, keyboardUp: false, hadSelection: false),
+                       .focus(clearsSelection: false))
+        XCTAssertEqual(spy.sent.count, 1)
+    }
+
+    /// A long press still selects an address, also in a mouse program: the way to copy it.
+    func testALongPressStillSelectsALinksText() {
+        let (host, _) = makeHost(mouseProgram + nextDev)
+        host.term.beginSelection(at: point(host, col: 10, row: 0), word: true)
+        host.term.endSelectionDrag()
+        XCTAssertTrue(host.term.hasActiveSelection)
+        XCTAssertEqual(host.tap(at: point(host, col: 10, row: 0), shift: false, keyboardUp: true, hadSelection: true), .dismissSelection)
+    }
+
+    func testATapOnAMalformedHyperlinkSaysSo() {
+        let (host, spy) = makeHost(mouseProgram + "\u{1b}]8;;not a url\u{1b}\\BAD\u{1b}]8;;\u{1b}\\")
+        var notes: [String] = []
+        var opened: [URL] = []
+        host.term.taps.notify = { notes.append($0) }
+        host.term.taps.open = { url, _ in opened.append(url) }
+        XCTAssertEqual(host.tap(at: point(host, col: 1, row: 0), shift: false, keyboardUp: true, hadSelection: false), .engineUsed)
+        XCTAssertEqual(notes, ["Couldn't open this link: it isn't a web address."])
+        XCTAssertEqual(opened, [])
+        XCTAssertEqual(spy.sent, [], "never a click instead")
+    }
+
+    func testATapJustAfterAScrollCountsAtTheNewSettle() {
+        // 0.15 s: a tap 0.1 s after the scrollback moved catches it, one 0.2 s after opens the link.
+        typealias Rule = TerminalScrollTouch
+        XCTAssertTrue(Rule.stopsScroll(now: 10, moving: false, lastMoved: 9.9))
+        XCTAssertFalse(Rule.stopsScroll(now: 10, moving: false, lastMoved: 9.8))
+        let (host, _) = makeHost(nextDev)
+        var opened: [URL] = []
+        host.term.taps.open = { url, _ in opened.append(url) }
+        XCTAssertEqual(host.tap(at: point(host, col: 10, row: 0), shift: false, keyboardUp: false, hadSelection: false,
+                                stopsScroll: Rule.stopsScroll(now: 10, moving: false, lastMoved: 9.9)), .nothing)
+        XCTAssertEqual(opened, [])
+        XCTAssertEqual(host.tap(at: point(host, col: 28, row: 1), shift: false, keyboardUp: false, hadSelection: false,
+                                stopsScroll: Rule.stopsScroll(now: 10, moving: false, lastMoved: 9.8)), .engineUsed)
+        XCTAssertEqual(opened.count, 1)
     }
 
     /// A reading flick arcs sideways; only a clearly sideways drag swipes panes.

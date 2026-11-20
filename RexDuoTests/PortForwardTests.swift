@@ -534,6 +534,25 @@ final class PortForwardTests: XCTestCase {
         XCTAssertEqual(server.missing, 1, "the flavor is marked missing for this server")
     }
 
+    /// A block request that never reached the server (the connection dropped) used to fail
+    /// silently: the page just didn't load. It says so now, once per browser.
+    func testAnUnsentBlockRequestShowsOneNoticePerBrowser() async throws {
+        for error in [RexError.unsent("not connected"), RexError.local("connection lost")] {
+            notices = []
+            let f = forward()
+            let server = FakeTunnelServer()
+            server.newBlockError = error
+            _ = try await f.open(target, on: server)
+            let a = StubLocal(), b = StubLocal()
+            listener.accept?(a)
+            listener.accept?(b)
+            await settle { a.resets == 1 && b.resets == 1 }
+            XCTAssertEqual(notices, ["Couldn't open localhost:5173: the connection to the computer dropped."], "\(error)")
+            XCTAssertEqual(server.missing, 0, "the server still makes tunnels")
+            f.close()
+        }
+    }
+
     func testAGateThatClosesStopsTheListenerWithOneNotice() async throws {
         let f = forward()
         let server = FakeTunnelServer()

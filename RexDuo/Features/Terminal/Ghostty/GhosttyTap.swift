@@ -4,17 +4,20 @@ import UIKit
 // What a single tap on the terminal does, in order (with TerminalHost's focus tap,
 // `TerminalTapDecision`):
 //
-// 1. A tap on a pane that doesn't have the keyboard only focuses it (the host does that).
+// 1. A tap on a pane that doesn't have the keyboard opens the link under it (`tapOpensLink`)
+//    and leaves the keyboard down; anywhere else it only focuses the pane (the host does that).
 // 2. A tap while text is selected only clears the selection.
-// 3. An OSC 8 hyperlink opens, even in a program that tracks the mouse.
+// 3. A link opens: an OSC 8 hyperlink or a web address in the text, also in a program that
+//    tracks the mouse. A tap on a link is the phone's Cmd-click, as Mac terminals open a link
+//    on Cmd-click even where a program takes clicks; a long press still selects the text.
 // 4. A program that tracks the mouse gets a click.
-// 5. A web address in the text opens.
-// 6. A tap next to the cursor is left alone (the host shows its Paste menu there).
-// 7. A tap on the shell's prompt moves the shell's cursor (OSC 133).
+// 5. A tap next to the cursor is left alone (the host shows its Paste menu there).
+// 6. A tap on the shell's prompt moves the shell's cursor (OSC 133).
 //
-// Steps 3, 5 and 7 are this file's: TerminalHost's tap asks `tapOpensLinkOrMovesCursor` first
-// (`TAP HOOK`), before the selection UI counts the tap and before the focus logic. The host does
-// 1, 2 and 6 (its Paste menu uses the same "next to the cursor"), the scroll surface's tap does 4.
+// The links of 1 and 3, and 6, are this file's: TerminalHost's tap asks `tapOpensLink` or
+// `tapOpensLinkOrMovesCursor` (`TAP HOOK`) in the order `TerminalTapDecision` gives. The host
+// does the focus of 1, 2 and 5 (its Paste menu uses the same "next to the cursor"), the scroll
+// surface's tap does 4.
 
 /// What the terminal says about a tapped cell, read in one hold of its lock.
 struct GhosttyTapProbe: Equatable {
@@ -41,9 +44,8 @@ enum GhosttyTapRouting {
         guard focusedAtTouch else { return .focusOnly }
         if shift { return .nothing }
         if hasSelection { return .dismissSelection }
-        if let link = probe.link, link.explicit { return .open(link.url) }
-        if probe.mouseTracking { return .mouseClick }
         if let link = probe.link { return .open(link.url) }
+        if probe.mouseTracking { return .mouseClick }
         if probe.nearCursor { return .nothing }
         if probe.prompt != .none { return .prompt(probe.prompt) }
         return .nothing
@@ -56,11 +58,9 @@ extension GhosttyCore {
         withTerminal { t in
             var probe = GhosttyTapProbe()
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &probe.mouseTracking)
-            probe.link = Self.hyperlink(t, col: col, row: row)
-            // A program that takes clicks keeps them unless the cell is a real hyperlink.
-            guard !probe.mouseTracking else { return probe }
-            if probe.link == nil { probe.link = Self.plainLink(t, col: col, row: row) }
-            guard probe.link == nil else { return probe }
+            // A link wins over a program's click; a program that takes clicks keeps every other one.
+            probe.link = Self.hyperlink(t, col: col, row: row) ?? Self.plainLink(t, col: col, row: row)
+            guard probe.link == nil, !probe.mouseTracking else { return probe }
 
             var point = GhosttyPoint()
             point.tag = GHOSTTY_POINT_TAG_VIEWPORT
@@ -96,6 +96,8 @@ final class GhosttyTapState {
     /// Asks before a link opens that `LinkOpenPolicy` doesn't open at once. Nil: the view shows
     /// an alert (`TerminalPrompt`). Tests put their own here.
     var ask: ((URL, LinkOpenPolicy.LinkQuestion, @escaping @MainActor (Bool) -> Void) -> Void)?
+    /// Says why a tapped link didn't open. `Notice` by default; tests put their own here.
+    var notify: (String) -> Void = { Notice.shared.show($0, style: .neutral) }
     var clock: () -> CFTimeInterval = { CACurrentMediaTime() }
     private var last: (time: CFTimeInterval, point: CGPoint)?
 
@@ -110,8 +112,20 @@ final class GhosttyTapState {
 }
 
 extension GhosttyTerminalView {
-    /// Asked by the host's tap before anything else (`TAP HOOK` in TerminalHost). True if the tap
-    /// opened a link or moved the shell's cursor, and so is used up.
+    /// Asked by the host's tap on a pane without the keyboard (`TAP HOOK` in TerminalHost), in
+    /// place of the focus: true if a link was under the finger, so the tap is used up and the
+    /// keyboard stays down. Never moves the shell's cursor or clicks in the program.
+    func tapOpensLink(at point: CGPoint) -> Bool {
+        guard !taps.repeats(at: point) else { return false }
+        let cell = viewportCell(at: point)
+        guard let link = core.link(atViewportCol: cell.col, row: cell.row) else { return false }
+        open(tapped: link, cell: cell)
+        taps.used(at: point)
+        return true
+    }
+
+    /// Asked by the host's tap on a pane with the keyboard (`TAP HOOK` in TerminalHost). True if
+    /// the tap opened a link or moved the shell's cursor, and so is used up.
     func tapOpensLinkOrMovesCursor(at point: CGPoint, focused: Bool, shift: Bool) -> Bool {
         // The cheap conditions first: the rest costs a terminal lock.
         guard focused, !shift, !taps.repeats(at: point) else { return false }
@@ -120,27 +134,9 @@ extension GhosttyTerminalView {
         let action = GhosttyTapRouting.action(focusedAtTouch: focused, shift: shift, hasSelection: hasActiveSelection, probe: probe)
         var used = false
         switch action {
-        case .open(let link):
-            // A program wrote the link: web and mail addresses open, anything else, and a label
-            // that names another site, is asked about first (`LinkOpenPolicy`). An address found
-            // in the text is its own label.
-            let label = probe.link?.explicit == true ? core.hyperlinkLabel(atViewportCol: cell.col, row: cell.row) : nil
-            switch LinkOpenPolicy.decide(target: link, label: label) {
-            case .open(let url):
-                taps.open(url, false)
-                used = true
-            case .ask(let url, let question):
-                let open = taps.open
-                let answer: @MainActor (Bool) -> Void = { if $0 { open(url, true) } }
-                if let ask = taps.ask {
-                    ask(url, question, answer)
-                } else {
-                    TerminalPrompt.ask(over: self, link: url, question: question, answer: answer)
-                }
-                used = true
-            case .refuse:
-                break
-            }
+        case .open:
+            if let link = probe.link { open(tapped: link, cell: cell) }
+            used = true
         case .prompt(let click):
             used = send(promptClick: click)
         case .focusOnly, .dismissSelection, .mouseClick, .nothing:
@@ -148,6 +144,28 @@ extension GhosttyTerminalView {
         }
         if used { taps.used(at: point) }
         return used
+    }
+
+    /// Opens a tapped link. A program wrote it: web and mail addresses open, anything else, and a
+    /// label that names another site, is asked about first (`LinkOpenPolicy`). An address found
+    /// in the text is its own label. One that is no address at all says so: the tap was the
+    /// user's, and it must not look as if it did nothing.
+    private func open(tapped link: GhosttyTappedLink, cell: (col: Int, row: Int)) {
+        let label = link.explicit ? core.hyperlinkLabel(atViewportCol: cell.col, row: cell.row) : nil
+        switch LinkOpenPolicy.decide(target: link.url, label: label) {
+        case .open(let url):
+            taps.open(url, false)
+        case .ask(let url, let question):
+            let open = taps.open
+            let answer: @MainActor (Bool) -> Void = { if $0 { open(url, true) } }
+            if let ask = taps.ask {
+                ask(url, question, answer)
+            } else {
+                TerminalPrompt.ask(over: self, link: url, question: question, answer: answer)
+            }
+        case .refuse:
+            taps.notify("Couldn't open this link: it isn't a web address.")
+        }
     }
 
     /// A click the host decided on (`TerminalTapDecision`): press and release at the cell.

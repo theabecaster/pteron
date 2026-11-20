@@ -402,9 +402,10 @@ final class GhosttyTapRoutingTests: XCTestCase {
         XCTAssertEqual(act(link: explicit), .open("https://osc8.example/"))
         XCTAssertEqual(act(link: explicit, tracking: true), .open("https://osc8.example/"))
         XCTAssertEqual(act(link: explicit, near: true, prompt: move), .open("https://osc8.example/"))
-        // A program that tracks the mouse gets the click, also on an address in its text.
+        // An address in the text opens under mouse tracking too (the phone's Cmd-click); a program
+        // that tracks the mouse gets every other tap as a click.
+        XCTAssertEqual(act(link: plain, tracking: true), .open("https://text.example/"))
         XCTAssertEqual(act(tracking: true), .mouseClick)
-        XCTAssertEqual(act(link: plain, tracking: true), .mouseClick)
         XCTAssertEqual(act(tracking: true, near: true, prompt: move), .mouseClick)
         // An address in the text opens otherwise.
         XCTAssertEqual(act(link: plain), .open("https://text.example/"))
@@ -427,11 +428,11 @@ final class GhosttyTapRoutingTests: XCTestCase {
         XCTAssertEqual(c.tapProbe(viewportCol: 14, row: 1), GhosttyTapProbe(prompt: .keys(left: 4, right: 0)))
         XCTAssertEqual(c.tapProbe(viewportCol: 18, row: 2), GhosttyTapProbe(nearCursor: true))
         XCTAssertEqual(c.tapProbe(viewportCol: 30, row: 5), GhosttyTapProbe())
-        // Mouse tracking: only the hyperlink is still looked up.
+        // Mouse tracking: both kinds of link are still looked up, the prompt and the cursor aren't.
         c.feed(Array("\(esc)[?1000h".utf8))
         c.sync()
         XCTAssertEqual(c.tapProbe(viewportCol: 0, row: 0), GhosttyTapProbe(link: GhosttyTappedLink(url: "https://osc8.example/", explicit: true), mouseTracking: true))
-        XCTAssertEqual(c.tapProbe(viewportCol: 5, row: 0), GhosttyTapProbe(mouseTracking: true))
+        XCTAssertEqual(c.tapProbe(viewportCol: 5, row: 0), GhosttyTapProbe(link: GhosttyTappedLink(url: "https://text.example/", explicit: false), mouseTracking: true))
         XCTAssertEqual(c.tapProbe(viewportCol: 4, row: 1), GhosttyTapProbe(mouseTracking: true))
     }
 
@@ -506,13 +507,32 @@ final class GhosttyTapRoutingTests: XCTestCase {
         XCTAssertEqual(sink.sent, [], "opening a link sends nothing to the program")
     }
 
-    func testAMouseTrackingProgramKeepsItsClicksExceptOnAHyperlink() {
-        let (view, sink) = make("\(esc)[?1000h\(esc)[?1006h\(esc)]8;;https://osc8.example/\(esc)\\link\(esc)]8;;\(esc)\\ https://text.example/")
+    func testAMouseTrackingProgramKeepsItsClicksExceptOnALink() {
+        let (view, sink) = make("\(esc)[?1000h\(esc)[?1006h\(esc)]8;;https://osc8.example/\(esc)\\link\(esc)]8;;\(esc)\\ https://text.example/ menu")
         var opened: [URL] = []
         view.taps.open = { url, _ in opened.append(url) }
-        XCTAssertFalse(tap(view, col: 8, row: 0), "the address in the text is the program's to click")
+        XCTAssertTrue(tap(view, col: 8, row: 0), "an address in the text opens, as a Cmd-click does on a Mac")
         XCTAssertTrue(tap(view, col: 1, row: 0))
-        XCTAssertEqual(opened.map(\.absoluteString), ["https://osc8.example/"])
+        XCTAssertFalse(tap(view, col: 28, row: 0), "the word after it is the program's to click")
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://text.example/", "https://osc8.example/"])
+        XCTAssertEqual(sink.sent, [])
+    }
+
+    func testWithoutTheKeyboardOnlyALinkIsUsed() {
+        let (view, sink) = make("see https://text.example/z ok\r\n\r\n\(esc)]133;A;cl=line\(bel)$ \(esc)]133;B\(bel)echo hello world")
+        var opened: [URL] = []
+        view.taps.open = { url, _ in opened.append(url) }
+        func tapLink(col: Int, row: Int) -> Bool {
+            let rect = view.viewportRect(row: row, columns: col..<(col + 1))
+            now += 2
+            let at = now
+            view.taps.clock = { at }
+            return view.tapOpensLink(at: CGPoint(x: rect.midX, y: rect.midY))
+        }
+        XCTAssertTrue(tapLink(col: 8, row: 0))
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://text.example/z"])
+        XCTAssertFalse(tapLink(col: 1, row: 0), "a plain word")
+        XCTAssertFalse(tapLink(col: 4, row: 2), "the prompt's cursor never moves from this tap")
         XCTAssertEqual(sink.sent, [])
     }
 

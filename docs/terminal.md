@@ -123,11 +123,20 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 
 ## Gestures
 
-- Tap: focus the pane, clear a selection, raise the keyboard on the first tap. On a focused pane:
-  open the link under the finger, or move the shell's cursor on its prompt
-  (`Ghostty/GhosttyTap.swift`).
-  A tap that catches moving scrollback, or lands within 0.3 s of it stopping, only stops it: no
-  keyboard, link, Paste menu or click (`TerminalScrollTouch`). Reading with flicks stays reading.
+- Tap: focus the pane, clear a selection, raise the keyboard on the first tap. A tap on a link
+  (an OSC 8 hyperlink or a web address in the text) opens it every time, also on the first tap
+  and with the keyboard down; the keyboard stays as it was. On a focused pane a tap elsewhere
+  moves the shell's cursor on its prompt (`TerminalTap.swift` has the order,
+  `Ghostty/GhosttyTap.swift` the engine's part).
+  In a program that tracks the mouse, a tap on a link opens it and the program gets no click:
+  the phone's Cmd-click, as Mac terminals open links on Cmd-click in such programs. A tap
+  anywhere else is the program's click. A program that wants clicks on its own URLs loses them;
+  that is rare, and a long press still selects the text to copy.
+  A tap that catches moving scrollback, or lands within 0.15 s of it stopping, only stops it: no
+  keyboard, link, Paste menu or click (`TerminalScrollTouch`). Reading with flicks stays reading,
+  and a link just scrolled into view opens on the next tap.
+  A tapped link that can't open says why in a short notice (a malformed hyperlink, Safari
+  refusing it, and every failure under Ports below); none fails silently.
 - Vertical drag: scrolls the scrollback (a native scroll view). On the alternate screen or when
   the program tracks the mouse it sends wheel reports instead, and arrow keys on the alternate
   screen with mode 1007 and no tracking.
@@ -648,12 +657,21 @@ isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`
 
 - **Where.** The pane menu's last row in the section above Close: `localhost:5173` with the
   program under it for one web port, `Ports ▸` for two or more, nothing for none. A tapped
-  loopback link (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`) in a local pane opens through Rex:
+  loopback link (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`, `[::]`) in a local pane opens through Rex:
   at once when a program in the pane listens on that port, else after "Open localhost:3000 from
   <computer>?". A link the link policy already asked about isn't asked again. Debugger ports
   (9229, 9222, 9230) never open. Offline a notice says so; such a link never goes to Safari,
-  which would reach the phone itself. Every other link, and every link on a server without
-  tunnels or in a remote pane, opens as before.
+  which would reach the phone itself. A link to a private network address (10/8, 172.16/12,
+  192.168/16, 169.254/16, fd00::/8), such as the `Network: http://10.0.0.246:3000` that
+  `next dev` prints, opens the same way, dialed at that address and named `localhost` in the
+  browser, but only when a program in the pane listens on that port; otherwise (another
+  machine's address, an unknown port, no port list, offline) it goes to Safari, which reaches it
+  on the same network. Every other link, and every link on a server without tunnels or in a
+  remote pane, opens as before.
+- **Never silent.** A page that can't open says why, once, in a calm notice, and only after a
+  tap: "Couldn't open localhost:3000: …" when the pane closed before its question could show,
+  when the app has no forward, when the phone can't listen, when the pane left the screen
+  before the page came up, and when the tunnel's request never reached the computer.
 - **Ports.** A pane that comes on screen reads `terminal.ports` once per connection; then
   `ports_changed` (the whole list each time) keeps it, applied in the 150 ms metadata flush and
   written only when the list changed. An event for a pane that isn't on screen is dropped after
@@ -667,7 +685,7 @@ isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`
   one port that calls an API on another (a frontend on 5173 and its API on 3000) can't reach the
   second: open that one on its own. `[::1]` links open as `localhost`, since the phone listens on
   IPv4 only. "Open in Safari" in its menu leaves the app's forward behind and fails. Done or a
-  swipe down ends the forward.
+  swipe down ends the forward, and the pane that had the keyboard gets it back.
 - **Why not WKWebView.** The ports plan's spike (P0) tried a `WKWebView` with a loopback HTTP
   CONNECT proxy (`WKWebsiteDataStore.proxyConfigurations`, iOS 17). WebKit sent `localhost`
   through the proxy, but never `127.0.0.1` or `[::1]`, with or without `matchDomains`: loopback
@@ -681,7 +699,7 @@ isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`
   Connections made while the server isn't synced wait for it, up to 30 s. A refused target
   resets the browser's connection. A block a new client ID can't use (after a long drop) is
   dropped and a new one made; a 4006 before any byte came back, even one that comes while the
-  request is still going up, sends the request again, once, on a new block. A server that is full (`conflict`) shows one notice per browser.
+  request is still going up, sends the request again, once, on a new block. A server that is full (`conflict`), a refused block and a block request that never left (the connection dropped) show one notice per browser.
 - **Cleanup.** Rex never removes a tunnel block. Every block made is remembered in UserDefaults,
   and a session where one is about to be made is marked first. On each sync of a server with
   remembered blocks or a mark, and before each `new_block`, the sweep lists the session's blocks

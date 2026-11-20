@@ -57,7 +57,7 @@ How a row is verified:
 | 26 | Gesture arbitration: scroll, drag-select, pane swipe, mirror canvas pan, pinch, two-finger tap | `GhosttyIntegrationTests.testEveryPanOfTheEngineAsksThePanGate`, `GhosttyScrollViewTests.testGatesDecideWhetherPansAndTheTapBegin`; hand | Every pan of the terminal view asks `panGate`; its tap asks `tapGate`. The view has no pan that selects. |
 | 27 | Double tap (word), triple tap (line) | `SelectionUITests.testDoubleTapSelectsAWordAndTripleTapTheLine`, `testSelectionEndsAdjustAndLine`; hand (Selection 7) | The host counts taps (`TerminalSelectionController.tap`), so the first tap acts at once instead of waiting for a second. Both copy, and show handles and the edit menu. A line follows soft wraps. |
 | 28 | Tap near the cursor shows a Paste menu | `SelectionUITests.testATapByTheCursorOffersPaste`, `testRules`; hand (Selection 8) | The trigger (`SelectionRules.tapShowsPaste`): within 3 columns and 1 row of the cursor, terminal focused, no selection cleared by the tap, no mouse tracking, no menu up. Shown with `UIEditMenuInteraction`. |
-| 29 | Tap on a link opens it | `GhosttyLinkLookupTests`, `GhosttyTapRoutingTests`; live (`-tapTest` on an OSC 8 link and on a web address, Safari opened); hand (a real finger) | A tap on a focused pane opens an OSC 8 hyperlink (also in a mouse-tracking program), and an `http(s)` address written as text (soft-wrapped ones too) unless the program tracks the mouse. See "Taps" below. |
+| 29 | Tap on a link opens it | `GhosttyLinkLookupTests`, `GhosttyTapRoutingTests`, `TerminalTapTests`; live (`-tapTest` on an OSC 8 link and on a web address, Safari opened; a finger tap with the keyboard down and up in a `zz-` session); hand (a real finger) | A tap opens an OSC 8 hyperlink and an `http(s)` address written as text (soft-wrapped ones too), with the keyboard up or down (the keyboard stays as it was) and also in a mouse-tracking program, which then gets no click. See "Taps" below. |
 | 30 | Tap on a prompt line moves the cursor (OSC 133 click) | `GhosttyPromptClickTests`, `GhosttyTapRoutingTests`; live (`-tapTest`, then a typed character landed at the tapped cell); hand | The shell must announce `cl=…` or `click_events=…`, the cursor must be at a prompt, primary screen, no mouse tracking, no selection, not within 3 columns and 1 row of the cursor. Arrow keys go through the key encoder (DECCKM). As in Ghostty, every `cl` value moves within one input line. See "Taps" below. |
 | 31 | OSC 52 copy to the pasteboard | `GhosttyClipboardTests`; live (`printf '\e]52;c;…'`, then `xcrun simctl pbpaste`) | Every destination is the iOS pasteboard, only valid UTF-8 text, an empty write empties it, silent (no haptic, no shimmer). A query is never answered. One-letter destinations only (`52;pc;…` is dropped). |
 | 32 | Theme: foreground, background, cursor, selection, ANSI 16, keyboard appearance, indicator | `GhosttyViewTests.testThemeReachesEveryPart`, `GhosttyScrollViewTests.testThemeStylesTheIndicator`, `GhosttyRenderTests.testExplicitAndPaletteColors`; live (dark theme) | Light themes: by test only. |
@@ -93,14 +93,15 @@ How a row is verified:
 
 Code: `Ghostty/GhosttyTap.swift` (the order of things a tap does, as a table with a test),
 `GhosttyLinks.swift`, `GhosttyPrompts.swift`, `GhosttyClipboard.swift`. The host's tap asks the
-terminal view (`tapOpensLinkOrMovesCursor`, at `TAP HOOK` in `TerminalHost.tap`) before the
-selection UI and the focus logic see the tap; one hold of the terminal lock reads everything. A
-tap that opened a link or moved the cursor is used up: it is no click for the program and shows
-no menu.
+terminal view (`tapOpensLink` without the keyboard, `tapOpensLinkOrMovesCursor` with it, at
+`TAP HOOK` in `TerminalHost.tap`) in the order `TerminalTapDecision` gives; one hold of the
+terminal lock reads everything. A tap that opened a link or moved the cursor is used up: it is
+no click for the program and shows no menu.
 
-Order: an unfocused pane is only focused; a selection is only cleared; an OSC 8 hyperlink opens;
-a mouse-tracking program gets its click; a web address in the text opens; next to the cursor
-nothing moves (the Paste menu, row 28); a tap on the prompt moves the cursor.
+Order: on an unfocused pane a link opens and the keyboard stays down, anything else only
+focuses; a selection is only cleared; a link (OSC 8 or a web address in the text) opens, also in
+a mouse-tracking program; a mouse-tracking program gets its click; next to the cursor nothing
+moves (the Paste menu, row 28); a tap on the prompt moves the cursor.
 
 With the selection UI (rows 27 and 28):
 

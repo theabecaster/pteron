@@ -31,6 +31,7 @@ enum TerminalTapOutcome: Equatable {
     /// The selection goes.
     case dismissSelection
     /// The engine used it: it opened the link under it or moved the shell's cursor on its prompt.
+    /// The keyboard stays as it was.
     case engineUsed
     /// A mouse click for the program.
     case programClick
@@ -51,8 +52,10 @@ enum TerminalTapOutcome: Equatable {
 ///    tap must not raise the keyboard, open a link, show Paste or click in the program.
 /// 2. The second or third tap of a run: select the word or the line. (The first tap already did
 ///    what a single tap does.)
-/// 3. The keyboard was not up on this pane: focus it. Never a click, a link or a menu, so the
-///    tap that brings the keyboard can't also press a button in a program.
+/// 3. The keyboard was not up on this pane: a link under the finger opens (`opensLink`) and the
+///    keyboard stays down; anywhere else the pane is focused. Never a click, a prompt move or a
+///    menu, so the tap that brings the keyboard can't also press a button in a program. A tap
+///    that clears a selection or holds Shift only focuses.
 /// 4. Text was selected: clear the selection.
 /// 5. Shift is held: nothing.
 /// 6. The engine's own use: a link under the finger opens, a tap on the shell's prompt moves
@@ -61,16 +64,20 @@ enum TerminalTapOutcome: Equatable {
 /// 8. By the cursor, no menu up: the Paste menu.
 /// 9. Nothing.
 ///
-/// The three questions that cost a terminal lock, or do something, are asked only when the tap
-/// gets that far: `engineUses` (which also performs what it finds), `tracksMouse`, `nearCursor`.
+/// The questions that cost a terminal lock, or do something, are asked only when the tap gets
+/// that far: `opensLink` and `engineUses` (which also perform what they find), `tracksMouse`,
+/// `nearCursor`.
 enum TerminalTapDecision {
-    static func outcome(_ facts: TerminalTapFacts, engineUses: () -> Bool, tracksMouse: () -> Bool,
-                        nearCursor: () -> Bool) -> TerminalTapOutcome {
+    static func outcome(_ facts: TerminalTapFacts, opensLink: () -> Bool, engineUses: () -> Bool,
+                        tracksMouse: () -> Bool, nearCursor: () -> Bool) -> TerminalTapOutcome {
         if facts.onHandle { return .handle }
         if facts.stopsScroll { return .nothing }
         if facts.tapCount == 2 { return .select(line: false) }
         if facts.tapCount >= 3 { return .select(line: true) }
-        if !facts.keyboardUp { return .focus(clearsSelection: facts.hadSelection) }
+        if !facts.keyboardUp {
+            if !facts.hadSelection, !facts.shift, opensLink() { return .engineUsed }
+            return .focus(clearsSelection: facts.hadSelection)
+        }
         if facts.hadSelection { return .dismissSelection }
         if facts.shift { return .nothing }
         if engineUses() { return .engineUsed }
@@ -84,8 +91,8 @@ enum TerminalTapDecision {
 /// only a little sideways.
 enum TerminalScrollTouch {
     /// How long after the scrollback last moved under a finger or by its own momentum a new touch
-    /// still counts as catching it.
-    static let settle: CFTimeInterval = 0.3
+    /// still counts as catching it. Short, so a tap on a link just scrolled into view still opens.
+    static let settle: CFTimeInterval = 0.15
 
     /// True when a touch at `now` stops or ends a scroll: the scrollback is still moving
     /// (`moving`), or it moved less than `settle` ago (`lastMoved`, the time of its last

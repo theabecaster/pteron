@@ -481,6 +481,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                                      stopsScroll: stopsScroll)
         let outcome = TerminalTapDecision.outcome(
             facts,
+            // TAP HOOK (links): with the keyboard down, a link still opens and the keyboard stays.
+            opensLink: { term.tapOpensLink(at: point) },
             // TAP HOOK (links, prompts): the engine opens the link or moves the shell's cursor.
             engineUses: { term.tapOpensLinkOrMovesCursor(at: point, focused: true, shift: false) },
             tracksMouse: { term.sendsTapsToProgram },
