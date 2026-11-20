@@ -82,7 +82,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             files?.view = self
             files?.installDrop(on: self)
             files?.onSupportChanged = { [weak self] in self?.refreshFiles() }
-            files?.insertText = { [weak self] text in self?.paste(text) }
+            files?.insertText = { [weak self] text in self?.insertPath(text) }
+            files?.whenCurrent = { [weak self] body in
+                guard let self else { return body() }
+                self.stream.whenCurrent(body)
+            }
             files?.bracketedPaste = { [weak self] in self?.term.core.input.modes.bracketedPaste ?? false }
             files?.keyboard = (capture: { [weak self] in self.map(KeyboardRecord.capture) ?? .none },
                                retake: { [weak self] record in self?.retakeKeyboard(record) })
@@ -212,6 +216,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Transient states (connecting, reconnecting) show only if they last this long.
     static let statusDelay: TimeInterval = 1.0
     private var statusWork: DispatchWorkItem?
+    /// A fence still up after this long says "Reconnecting…". Tests shorten it.
+    var fenceStatusDelay: TimeInterval = 2.5
+    private var fenceStatusWork: DispatchWorkItem?
+    private static let reconnectingText = "Reconnecting…"
+    /// The pane holds its screen while its stream catches up, until the server's size is known
+    /// to be the one it shows (`streamFence`, `streamResized`).
+    private var holdsForCatchUp = false
+    /// `stop()` is ending the stream: its fence goes without the stream having caught up.
+    private var stoppingStream = false
     private static let lostText = "Resized elsewhere · tap to fit here"
     #if DEBUG
     /// `-forceStatus <text>` (Debug builds, testing): every pane shows this chip once it opens and
@@ -1168,7 +1181,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         stopKeyRepeats()
         // Also when nothing is claimed yet: a claim on its way must not resize the pane now.
         claimedSize = nil
-        claim.release()
+        releaseClaim()
     }
 
     @objc private func willForeground() {
@@ -1276,7 +1289,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         releaseFitHold(deferrable: false)
         if m == .mirror {
             claimedSize = nil
-            claim.release()
+            releaseClaim()
         }
         lastBounds = .zero
         setNeedsLayout()
@@ -1296,6 +1309,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // Off screen: no new size is claimed for a pane nobody sees. A fold brings it back
             // in a moment; otherwise `stop()` gives the pane back.
             claim.pause()
+            stream.setClaimPending(false)
             scheduleStop()
         } else {
             stopWork?.cancel()
@@ -1354,10 +1368,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         closeFind(giveBack: false)
         // A snapshot half received is of no use to the next start.
         snapshot.reset()
+        stoppingStream = true
         stream.stop()
+        stoppingStream = false
         // Gives the pane back once any call in flight has returned; no resize follows.
         claimedSize = nil
-        claim.release()
+        releaseClaim()
+        fenceStatusWork?.cancel()
+        fenceStatusWork = nil
         started = false
         files?.close()
         ports?.unwatch()
@@ -1441,13 +1459,25 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 // While find holds the fit, a request still settling would land after this layout
                 // with another size: ask again for this one, which supersedes it (and sends nothing
                 // for a size in place). With no hold the claim works as it always did.
-                if findHold != nil, claim.isSettling { claim.request(cols: want.0, rows: want.1) }
+                if findHold != nil, claim.isSettling { requestClaim(want) }
                 return
             }
-            claim.request(cols: want.0, rows: want.1)
+            requestClaim(want)
         case .mirror:
             if !started { started = true; stream.start() }
         }
+    }
+
+    /// Asks for the pane at this size. Until that ends (`claimed`, a release, a loss) a raised
+    /// fence stays up: the resize will change the screen.
+    private func requestClaim(_ size: (Int, Int)) {
+        stream.setClaimPending(true)
+        claim.request(cols: size.0, rows: size.1)
+    }
+
+    private func releaseClaim() {
+        claim.release()
+        stream.setClaimPending(false)
     }
 
     /// One cell's size in points at the current font.
@@ -1475,6 +1505,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// The status chip is down.
     var statusChipHidden: Bool { statusLabel.isHidden }
+    /// The chip's text, for tests.
+    var statusChipText: String? { statusLabel.isHidden ? nil : statusLabel.text }
 
     /// Mirror mode's zoom and vertical pan, for the find bar's inset.
     var zoomScale: CGFloat { zoomer.zoomScale }
@@ -1533,6 +1565,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Once started, the stream carries the resize and the program's redraw; nothing to reload.
     private func claimed(cols: Int, rows: Int) {
         claimedSize = (cols, rows)
+        stream.setClaimPending(false)
         if !started {
             started = true
             stream.start()
@@ -1602,12 +1635,52 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             lostOwnership = true
             releaseFitHold(deferrable: false)
             claim.lost()
+            stream.setClaimPending(false)
             showStatus(Self.lostText)
         }
+        // A pane that opens at the size it will keep has no reflow to hide: show it at once.
+        if holdsForCatchUp, !stream.isClaimPending, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
         applyLocalGrid(cols, rows)
         positionTerm()
     }
+
+    // MARK: The catch-up fence
+
+    /// The stream may be behind the program (`CatchUpFence`). The pane keeps its look: only the
+    /// cursor is hollow, and the screen holds still until the catch-up can be shown as one
+    /// frame. Keys typed meanwhile are held by the stream.
+    func streamFence(_ up: Bool, screen: Bool) {
+        fenceStatusWork?.cancel()
+        fenceStatusWork = nil
+        holdsForCatchUp = up
+        term.setCatchingUp(up, hold: up)
+        if up {
+            // A pane with nothing to show says so itself ("Connecting…").
+            guard screen else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.statusLabel.isHidden else { return }
+                // A transient chip, so it waits out a wake's grace like any other.
+                self.showStatus(Self.reconnectingText, after: 0.001)
+            }
+            fenceStatusWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + fenceStatusDelay, execute: work)
+        } else {
+            if transientStatus == Self.reconnectingText { hideStatus() }
+            if !stoppingStream { PerfProbe.active?.caughtUp(self) }  // PERF
+        }
+    }
+
+    /// The screen follows the stream again while the fence stays up for input.
+    private func endCatchUpHold() {
+        holdsForCatchUp = false
+        term.setCatchingUp(stream.isFenced, hold: false)
+    }
+
+    func streamWhenParsed(_ done: @escaping @MainActor () -> Void) { term.whenParsed(done) }
+
+    /// True while keys typed here are held, not sent. For tests.
+    var isCatchingUp: Bool { stream.isFenced }
 
     func streamTheme(_ theme: JSONObject) {}
 
@@ -1637,7 +1710,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 // `-scrollBackTest <seconds>` (testing): scroll two pages into the scrollback first
                 // and type that much later, to check that input returns the view to the bottom.
                 let wait = UserDefaults.standard.double(forKey: "scrollBackTest")
-                guard wait > 0 else { term.send(txt: text); return }
+                // Typed once the screen is current, as a user who waits for the pane would.
+                guard wait > 0 else {
+                    stream.whenCurrent { [weak self] in self?.term.send(txt: text) }
+                    return
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                     self?.term.scrollPage(up: true)
                     self?.term.scrollPage(up: true)
@@ -1707,6 +1784,19 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func engineSend(_ bytes: [UInt8]) {
         stream.send(bytes)
         keyBar.consumedModifiers()
+    }
+
+    /// A mouse, wheel or focus report, or the keys of a tap: dropped while the stream catches
+    /// up, because the place it names may be another by now.
+    func engineSendReport(_ bytes: [UInt8]) {
+        stream.send(report: bytes)
+    }
+
+    /// Insert Path: a path picked for the program on screen. Behind the fence it is dropped,
+    /// and the user is told: the program may be another by now.
+    func insertPath(_ text: String) {
+        guard !stream.isFenced else { return stream.noteFenceDrop() }
+        paste(text)
     }
 
     /// Pastes through the engine, so the text is bracketed when the program asked for bracketed

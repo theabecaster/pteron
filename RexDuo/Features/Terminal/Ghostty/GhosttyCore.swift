@@ -116,6 +116,11 @@ final class GhosttyCore: @unchecked Sendable {
     private var holdStarted: CFTimeInterval = 0
     /// Guarded by `stateLock`. A wake-up for the hold's time limit is scheduled.
     private var holdTimerArmed = false
+    /// Guarded by `stateLock`. True while the host holds the screen for a stream that is
+    /// catching up (`setCatchUpHold`), and when that began. `catchUpSerial` counts the holds.
+    private var catchUpHeld = false
+    private var catchUpStarted: CFTimeInterval = 0
+    private var catchUpSerial = 0
     /// Bumped (under `stateLock`) when the render state is replaced, so a renderer drops its cache.
     private(set) var stateGeneration = 0
     /// Scroll position at the last frame's update. Guarded by `stateLock`. Phase 2 (scroll view).
@@ -735,6 +740,51 @@ final class GhosttyCore: @unchecked Sendable {
         }
     }
 
+    // MARK: The catch-up hold
+
+    /// Holds the screen on show while the pane's stream catches up, and shows what arrived
+    /// meanwhile as one frame when the hold ends: a pane that comes back doesn't flicker through
+    /// the output it missed or through a resize. The same limit as a program's own hold
+    /// (`renderHoldTimeout`): after that the screen follows the bytes again.
+    ///
+    /// Parsing goes on as always. Scrolling, a selection and find still draw (`lockFrame`).
+    /// Called on the main thread; it waits for `termLock` like a selection does.
+    func setCatchUpHold(_ on: Bool) {
+        if on {
+            lockTerminal()
+            stateLock.lock()
+            // The frame to keep is the terminal as it is now, drawn or not.
+            if !catchUpHeld, !held, let rs = renderState, let t = terminal { ghostty_render_state_update(rs, t) }
+            catchUpHeld = true
+            catchUpStarted = CACurrentMediaTime()
+            catchUpSerial += 1
+            let serial = catchUpSerial
+            stateLock.unlock()
+            termLock.unlock()
+            // The renderer ends a hold only when it draws: wake it at the limit.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.renderHoldTimeout + 0.02) { [weak self] in
+                guard let self else { return }
+                stateLock.lock()
+                let due = catchUpHeld && catchUpSerial == serial
+                stateLock.unlock()
+                if due { onDirty?() }
+            }
+        } else {
+            stateLock.lock()
+            let was = catchUpHeld
+            catchUpHeld = false
+            stateLock.unlock()
+            if was { onDirty?() }
+        }
+    }
+
+    /// The host's hold is on (and not past its limit). For tests.
+    var isCatchUpHeld: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return catchUpHeld && CACurrentMediaTime() - catchUpStarted < Self.renderHoldTimeout
+    }
+
     // MARK: Renderer access
 
     /// Brings the render state up to date and returns it locked. Returns nil (unlocked) if there
@@ -772,11 +822,12 @@ final class GhosttyCore: @unchecked Sendable {
             ghostty_terminal_set(t, GHOSTTY_TERMINAL_OPT_MODE, &cfg)
             held = false
         }
+        if catchUpHeld, now - catchUpStarted >= Self.renderHoldTimeout { catchUpHeld = false }
         // Upstream: a hold may be ignored when someone scrolls or selects. Find's user actions
         // too; a refresh caused by output waits for the program's frame.
         let selectionChanged = selectionDirty.exchange(false, ordering: .relaxed)
         let findChanged = findDirty.exchange(false, ordering: .relaxed)
-        if !held || scroll.hasPending || selectionChanged || findChanged {
+        if !(held || catchUpHeld) || scroll.hasPending || selectionChanged || findChanged {
             scroll.prepareFrame(terminal: t, renderState: rs, cellHeightPx: Int(cellHeightPx), generation: stateGeneration)
             ghostty_render_state_begin_update(rs, t)
             // The find result these rows go with (a leaf lock, under `stateLock`).

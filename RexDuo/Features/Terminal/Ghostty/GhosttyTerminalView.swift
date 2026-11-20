@@ -200,6 +200,18 @@ final class GhosttyTerminalView: UIView {
         core.feed(UnsafeRawBufferPointer(buffer))
     }
 
+    /// Calls `done` on the main thread once everything fed so far has been parsed.
+    func whenParsed(_ done: @escaping @MainActor () -> Void) {
+        core.enqueue { DispatchQueue.main.async { done() } }
+    }
+
+    /// The pane's stream is catching up (true) or current again: the cursor is hollow
+    /// meanwhile, and `hold` keeps the screen on show until then (`GhosttyCore.setCatchUpHold`).
+    func setCatchingUp(_ on: Bool, hold: Bool) {
+        renderer.setFenced(on)
+        core.setCatchUpHold(on && hold)
+    }
+
     func feed(text: String) {
         var t = text
         t.withUTF8 { core.feed(UnsafeRawBufferPointer($0)) }

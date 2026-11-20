@@ -526,6 +526,7 @@ public final class TerminalStream {
     /// was resized, the claim was given up, or another client took it. While one is on its way
     /// a raised fence stays up: the resize changes the screen.
     public func setClaimPending(_ pending: Bool) { fence.setClaimPending(pending) }
+    public var isClaimPending: Bool { fence.claimPending }
 
     /// Runs `body` once the screen is current: now if the fence is down, else when it comes
     /// down. Never, if the stream stops first.

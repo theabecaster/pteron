@@ -190,11 +190,11 @@ extension GhosttyTerminalView {
             // Keys, like typed ones: the line the keyboard's shadow document mirrors has a new
             // cursor, and a scrolled-up view returns to the bottom.
             resetInputDocument()
-            scroller.sendKeys(bytes)
+            scroller.sendKeys(bytes, fromTouch: true)
             return true
         case .press(let column, let row):
             // A mouse report: it leaves the view where it is.
-            engineDelegate?.engineSend(GhosttyPromptClick.pressBytes(column: column, row: row))
+            engineDelegate?.engineSendReport(GhosttyPromptClick.pressBytes(column: column, row: row))
             return true
         }
     }

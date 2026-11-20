@@ -70,8 +70,8 @@ struct PerfReplayInfo: Sendable {
 /// `resumed`, the return to the foreground):
 /// - `firstFrameMs`: the first frame that shows the pane's content: the restored snapshot for a
 ///   cold mount, the kept screen otherwise.
-/// - `currentMs`: the first frame that shows the screen as current as the stream can say.
-///   The restored snapshot is that for a cold mount; nothing says it for the other kinds.
+/// - `currentMs`: the first frame after the pane's stream caught up (its fence came down):
+///   from then on the screen is the program's, and typed keys are sent.
 /// `-perfSwitch <n>` adds a phase that switches between a tab's panes n times, as a swipe does,
 /// `-perfSwitchEvery` seconds apart (default 1.5); `mounts.cold`, `.parked` and `.resumed` then
 /// hold the medians over that phase's mounts.
@@ -384,6 +384,20 @@ final class PerfProbe: Sendable {
         }
     }
 
+    /// The pane's stream caught up (its fence came down): its next frame is current.
+    @MainActor
+    func caughtUp(_ host: TerminalHost) {
+        let now = Self.clock()
+        let core = host.term.core, id = ObjectIdentifier(core)
+        let open = state.withLock { s in
+            guard let i = s.mounts.lastIndex(where: { $0.core == id }), s.mounts[i].current == nil else { return false }
+            s.mounts[i].current = Target(at: now)
+            return true
+        }
+        // Behind what the engine still has to parse, as every mark.
+        if open { core.enqueue { core.onDirty?() } }
+    }
+
     /// The tab screen's pane switch, for the switch phase.
     @MainActor
     func setSwitcher(_ switcher: @escaping @MainActor (Int) -> Void) { main.switcher = switcher }
@@ -475,8 +489,6 @@ final class PerfProbe: Sendable {
         let mounted = state.withLock { s in
             guard let i = s.mounts.lastIndex(where: { $0.core == id }), s.mounts[i].frame == nil else { return false }
             s.mounts[i].frame = Target(at: now)
-            // A fresh snapshot is the screen as it is now.
-            s.mounts[i].current = Target(at: now)
             return true
         }
         ghosttyHolds(.restored, core: core)

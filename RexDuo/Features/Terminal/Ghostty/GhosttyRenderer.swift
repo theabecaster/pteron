@@ -130,6 +130,8 @@ final class GhosttyRenderer: @unchecked Sendable {
     private var drawableSize: SIMD2<Int32> = .zero
     private var visible = false
     private var focused = true
+    /// The pane's stream is catching up (`setFenced`).
+    private var fenced = false
     private var pendingAtlas: GhosttyGlyphAtlas?
     private var pendingSelection: UInt32?
     private var pendingFindColors: GhosttyFindHighlights.Colors?
@@ -239,6 +241,19 @@ final class GhosttyRenderer: @unchecked Sendable {
         configLock.unlock()
         if !same { configure { focused = f } }
     }
+    /// While the pane's stream catches up its cursor is hollow, as an unfocused pane's: what is
+    /// typed now is not sent yet (`CatchUpFence`). Nothing else on the pane changes.
+    func setFenced(_ f: Bool) {
+        configLock.lock()
+        let same = fenced == f
+        configLock.unlock()
+        if !same { configure { fenced = f } }
+    }
+    var isFenced: Bool {
+        configLock.lock()
+        defer { configLock.unlock() }
+        return fenced
+    }
     /// The pane draws the solid cursor (its view has the keyboard).
     var isFocused: Bool {
         configLock.lock()
@@ -255,7 +270,7 @@ final class GhosttyRenderer: @unchecked Sendable {
     var wantsBlink: Bool {
         configLock.lock()
         defer { configLock.unlock() }
-        return visible && focused && frame.cursor.visible && frame.cursor.blinking
+        return visible && focused && !fenced && frame.cursor.visible && frame.cursor.blinking
     }
 
     func toggleBlink() {
@@ -427,7 +442,7 @@ final class GhosttyRenderer: @unchecked Sendable {
         var c = frame.cursor
         guard c.visible else { return c }
         configLock.lock()
-        let focused = focused
+        let focused = focused && !fenced
         configLock.unlock()
         if !focused {
             c.style = GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW.rawValue

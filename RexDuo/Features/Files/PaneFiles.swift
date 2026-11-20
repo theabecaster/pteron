@@ -81,6 +81,8 @@ final class PaneFiles {
     var onSupportChanged: (() -> Void)?
     /// Writes text into the pane as a paste does (`TerminalHost.paste`).
     var insertText: ((String) -> Void)?
+    /// Runs its argument once the pane's stream has caught up: at once when it is current.
+    var whenCurrent: ((@escaping @MainActor () -> Void) -> Void)?
     /// Whether the pane's program asked for bracketed paste.
     var bracketedPaste: () -> Bool = { false }
     /// Asks before an insert into a program that didn't ask for text. Nil: an alert. Tests put
@@ -403,7 +405,9 @@ final class PaneFiles {
             Notice.shared.show("This computer's Rex can't take files. Update Rex there.")
             return
         }
-        sender.send(files, over: view)
+        // The user picked files, not a place on the screen: they go once the pane is current.
+        let go: @MainActor () -> Void = { [sender, weak view] in sender.send(files, over: view) }
+        if let whenCurrent { whenCurrent(go) } else { go() }
     }
 
     func cancel() { sender.cancel() }

@@ -409,7 +409,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         case .cursorKeys:
             let count = budget.grant(GhosttyWheelBudget.requested(lines: lines))
             bytes = mouse.key(lines > 0 ? .arrowUp : .arrowDown, count: count, core: core)
-            sendKeys(bytes)
+            sendKeys(bytes, fromTouch: true)
         case .none:
             break
         }
@@ -506,13 +506,15 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// keys and pastes bring it back to the bottom.
     private func sendReport(_ bytes: [UInt8]) {
         guard !bytes.isEmpty, let view else { return }
-        view.engineDelegate?.engineSend(bytes)
+        view.engineDelegate?.engineSendReport(bytes)
     }
 
     /// Keys for the program. Like typing, they bring a scrolled-up view back to the bottom.
-    func sendKeys(_ bytes: [UInt8]) {
+    /// `fromTouch`: a tap or a drag made them from a place on the screen, so they are sent as
+    /// a report is.
+    func sendKeys(_ bytes: [UInt8], fromTouch: Bool = false) {
         guard !bytes.isEmpty, let view else { return }
-        view.engineDelegate?.engineSend(bytes)
+        if fromTouch { view.engineDelegate?.engineSendReport(bytes) } else { view.engineDelegate?.engineSend(bytes) }
         scrollToBottomForInput()
     }
 
