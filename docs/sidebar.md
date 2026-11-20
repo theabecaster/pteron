@@ -97,6 +97,9 @@ Sessions are what people look for, so their names are full contrast and semibold
   on the Mac: it shows the sidebar in Agents mode, or returns to Sessions when Agents is already
   showing. Jump to Waiting has its own action, `client.agents.jump_to_waiting` (`alt+cmd+.` by
   default), besides the waiting pill and the VoiceOver magic tap.
+- Where there is no sidebar, the same list shows in a sheet (`AgentsSheet`, opened with
+  `AppModel.showAgents()`): the same rows, order, swipe actions and empty state, a title and
+  Done. Tapping an agent opens its pane and closes the sheet. Sidebar mode never opens it.
 
 ## Ports
 

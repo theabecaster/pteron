@@ -136,6 +136,8 @@ builds.
   `darkTheme`, `lightTheme` or `acknowledgements`, whose Back then leads to its parent.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
+- `-showAgents YES`: open the Agents sheet at launch (`AgentsSheet`, the Agents list for a layout
+  without the sidebar).
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
   ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`, and `portRows` for the Ports group's rows), how many
   progress values were written (`progressWrites`), and how often the tab screen and the pane

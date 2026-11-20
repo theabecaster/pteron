@@ -44,6 +44,7 @@ private struct AgentToasts: ViewModifier {
             .onChange(of: model.openRequest) { _, _ in
                 // A push tapped while a sheet was up: close it so the pane shows.
                 model.showSettings = false
+                model.agentsShown = false
                 ScreenInspector.dismissModals()
             }
             // The board takes the screen: a waiting toast already up goes, a notice toast waits

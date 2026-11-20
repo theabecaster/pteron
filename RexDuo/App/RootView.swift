@@ -61,6 +61,10 @@ struct RootView: View {
                    onDismiss: { model.helperSetup.presentPending() }) {
                 SettingsView().environment(model)
             }
+            .sheet(isPresented: Binding(get: { model.agentsShown }, set: { model.agentsShown = $0 }),
+                   onDismiss: { model.helperSetup.presentPending() }) {
+                AgentsSheet().environment(model)
+            }
             .helperSetupCover(model: model)
             .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
                 model.openSettings(at: .addServer)
@@ -99,6 +103,8 @@ struct RootView: View {
                 model.helperSetup.simulateFromLaunchArguments()
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
+                // `-showAgents YES` (testing): open the Agents sheet at launch.
+                if UserDefaults.standard.bool(forKey: "showAgents") { model.showAgents() }
                 #endif
             }
     }

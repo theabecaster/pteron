@@ -285,6 +285,19 @@ final class AppModel {
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
     var showSettings = false
+    /// The Agents sheet is up (`AgentsSheet`): the sidebar's Agents list, for a layout without
+    /// the sidebar. Open it with `showAgents()`.
+    var agentsShown = false
+
+    /// Shows every agent in a sheet: the same list, order and actions as the sidebar's Agents
+    /// mode. For callers with no sidebar to show it in (tab mode's session menu, ⌘., the board's
+    /// "+K more"); the sidebar keeps its own Agents mode. Does nothing while Settings or the
+    /// scanner is up, which would hold the one sheet the root can show.
+    func showAgents() {
+        guard !showSettings, !showPairing else { return }
+        agentsShown = true
+    }
+
     /// The agent board covers the tab (`TentBoard`). Toasts stay away meanwhile.
     var boardShown = false
     /// The palette while it is open (Go to Anything, Change Session, the commands); nil closed.
@@ -393,7 +406,9 @@ final class AppModel {
             self?.showSettings = false
         }
         helperSetup.servers = { [weak self] in self?.servers ?? [] }
-        helperSetup.sheetIsUp = { [weak self] in self?.showSettings == true || self?.showPairing == true }
+        helperSetup.sheetIsUp = { [weak self] in
+            self?.showSettings == true || self?.showPairing == true || self?.agentsShown == true
+        }
         helperSetup.shownSession = { [weak self] server in
             guard let self else { return nil }
             if let sel = self.selection, sel.serverID == server.id { return sel.sessionID }
@@ -795,7 +810,7 @@ final class AppModel {
             break
         case .plain(.pair):
             // Only onto the bare app: a sheet or a cover that is up stays, and the link is dropped.
-            guard !showSettings, !showPairing, helperSetup.active == nil else { return }
+            guard !showSettings, !showPairing, !agentsShown, helperSetup.active == nil else { return }
             pairingStart = nil
             showPairing = true
             // Straight to pairing: the guide steps aside for this run (a cancel lands on the
