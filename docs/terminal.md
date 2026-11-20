@@ -449,3 +449,59 @@ Share item is chosen.
 - **Compatibility.** Selection and Screen need no server method. All Output needs `format` and
   `blob_read` (both at revision 13 and below); its rows hide only when the pane's creator on its
   host is known to lack one, or a read on this connection found one missing.
+
+## Arrange
+
+The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Tab/PaneArrange.swift`,
+`PaneMenuItems.swift`, `State/ServerConnection+Panes.swift`). Nothing new shows on a pane.
+
+- **Where.** "Arrange ▸" sits in the pane menu's section above Close, after Find… and Share ▸,
+  on a tab with two or more tiled panes. One submenu, its groups titled inline sections: Swap
+  With (the other panes), Move to Tab (the session's other tabs, then New Tab), Balance Splits,
+  and Close Other Panes… in a destructive section of its own. No shortcut text, no
+  `.keyboardShortcut`: the keymap stays the only key dispatch.
+- **Names.** A pane is named by its label when someone gave it one (on the Mac, from the CLI or a
+  layout; not `shell` or `Block 89abcdef`), else its agent, else its program, else "Pane N" by
+  its place (`PaneName.menu`). Never its title, which an agent's spinner changes ten times a
+  second: the names' parts live in their own per-block table (`ServerConnection.paneNames`),
+  written only when the agent or the program changes, and only `PaneMenuItems` reads them, so a
+  spinning title rebuilds neither the menu nor the tab screen. Two panes of the same name also
+  say "Pane N". A tab is its own label, else "Tab N", with the name of the pane a moved pane
+  goes beside. Labels never become titles (Rename Pane isn't in v1).
+- **Tiled panes only.** Floating panes aren't drawn yet, so nothing offers them. Every such
+  filter reads `PaneScope.arrangeable(window:)`.
+- **Swap With** is `session.swap_blocks`. The pane on screen stays the one shown; with one pane
+  at a time only the dots move.
+- **Move to Tab** is `session.move_block` beside the target tab's focused tiled pane (else its
+  first), along that pane's longer side, so a pane never lands in a floating layer
+  (`MoveAnchor`). When the call returns the session's view is read at once (`reloadView`, no
+  80 ms wait) and the target tab opens in the same update as the layout that holds the pane, so
+  the pane's terminal, stream and fit claim carry over (well inside `scheduleStop`'s 0.5 s). If
+  no view shows it there within 2 s the tab stays; if this tab is gone too, a notice says
+  "Moved the pane to <tab>." with Open. A full target: "That tab can't take another pane."
+- **Move to New Tab** (hidden for a tab's only pane): `session.new_window` with `focus: false`
+  and no label, so the new tab's title follows its pane; then, in one turn and in order
+  (`RexControl.callInOrder`), `move_block` beside the placeholder, `block.close` of the
+  placeholder, and `move_window` right after this tab (left out from the last tab). A failed move
+  is rolled back by the close (it empties the new tab), and the place call's `not_found` is
+  expected; only the move's error shows. A suspend between the two steps leaves a tab with a
+  fresh shell, visible and harmless. Nothing is ever sent again after a reconnect.
+- **Balance Splits** gives each pane in a row or column of splits the same way the same share
+  (`SplitBalance`: a split's weight is the sum of its sides' when they split the same way, else
+  1), clamped to 0.05–0.95. Every changed split goes at once (`resize_pane` isn't ordered and
+  sets one split outright), then one view read and at most one notice: each pane sees one layout
+  change and sends one `terminal.resize`. Disabled when every split is within 0.005 of even.
+- **Close Other Panes…** always asks: "Close 3 other panes?", adding "The agents running there
+  stop, on the Mac too." when one runs. The panes and the agent check are taken at the tap; the
+  dialog closes exactly those, in order in one turn, and a pane that is gone already is fine.
+- **Keys** (the Mac's action names and titles): `pane.balance`, `pane.close_others`,
+  `pane.move_to_tab` (a list of the tabs), `pane.move_to_new_tab`, `client.tab.move.backward` and
+  `.forward` (the tab one place along). No default keys. `pane.rename` and `pane.move.<dir>`
+  stay unbound and fall through. Where a command doesn't apply (one pane, the last tab) the key
+  bumps.
+- **Compatibility.** One check, `PaneArrange.isAvailable`, for the menu, the keys and the
+  shortcut list: the connection's revision is 13 or later (every method is there from 13), and
+  no call on this connection found the command's method missing (`method_not_found`). A missing
+  method hides only the commands that use it, at once; the tap that found it shows the usual
+  failure notice. Below 13 nothing shows, keys fall through and the pane menu is as before. An
+  open menu is a snapshot: each item checks again at the tap and only bumps if the server can't.

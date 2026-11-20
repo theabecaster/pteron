@@ -107,6 +107,37 @@ that host's address (`AppModel.startPairing(prefilled:name:guessed:)`), named af
 server's (`guessed: true`); a failed check then says to pair with a code. Without any address,
 Add opens the scanner.
 
+## Reorder
+
+Tabs move within their session and sessions within their machine, by dragging their rows, as on
+the Mac (`Features/Sidebar/SidebarDrag.swift`). There is no visible Move item.
+
+- **Lift.** A press that moves lifts the row (`.onDrag`, beside the row's context menu, carrying
+  only ids). A press that doesn't move shows the menu as before. A sideways move before the lift
+  is the swipe; an open swipe row closes when a lift begins. Rows of a down machine don't lift,
+  nor does anything in Agents mode, nor rows of a server older than revision 13 or one that
+  answered `method_not_found` for `session.move_window` (tabs) or `session.move` (sessions).
+- **Drop.** One drop target for the whole list. Each draggable row records its frame in the
+  list's space without being observed (pruned when it leaves), and the point maps to the nearest
+  gap: between two tab rows of the lifted tab's session, or above a session's header or below its
+  last tab, so a session dropped over another's tabs goes to that session's nearer edge
+  (`SidebarGaps`). A 2 pt accent line at the row's indent marks the gap, with a selection tick
+  when it changes. Held in the top or bottom 44 pt, the list scrolls a step every 60 ms. Ids are
+  worked out again at the drop; a row that is gone bumps.
+- **Held order** (`PendingOrder`, on the server's connection). On the drop the rows move by id on
+  the fold's spring and the new order shows at once, applied where the outline's lists come from
+  (`orderedSessions`, `orderedWindowIDs`). A tab order is let go when a view at or above the
+  revision the newest drag's `session.move_window` returned arrives; a session order when
+  `session.list` (hidden sessions left out) gives it, since `session.move` returns no revision.
+  Either way 2 s after the newest call returns at most, at once if the call fails, and on a new
+  connection, whose lists win. A tab that is gone (`not_found`) drops the hold silently.
+- **Session moves wait for each other.** `session.move` isn't ordered on the server, so a second
+  drag's call waits for the first, and its neighbor is the next session of its own drop's order
+  that still exists when it is sent. A call queued across a reconnect is dropped with a bump.
+- **The session list** (`session_moved`, and a dropped session event) is read once for a burst,
+  one read at a time. An event while a read is out asks for one more, and a read that an event or
+  a full sync came after is dropped, so an older list never lands last.
+
 ## Postures
 
 The same sidebar runs inline (200 pt to half the window), as the drawer, folded, unfolded and on
@@ -170,6 +201,8 @@ place. Only these show it:
 - `-sidebarFoldBench` (docs/debug-args.md) measures late frames while folding; it keeps the
   user's fold state aside and puts it back, also after a run that was cut short.
 - No work per event on the main thread beyond reading the boxes that changed.
+- Reorder: rows stay equatable and capture ids only; their frames are recorded unobserved; only
+  the gap line reads the drag. Without support no row records or lifts.
 
 ### Device measurements (iPhone Duo, 120 Hz)
 
@@ -226,3 +259,4 @@ not help: every step sized the whole screen again. With trivial rows (one `Text`
 - The mode switch reads as two selectable buttons, "Sessions" and "Agents, 2 waiting".
 - Rows are buttons, so Full Keyboard Access moves through them and Space opens or folds.
 - Tab rows say their pane count and status ("2 panes", "waiting for you").
+- Where rows can be reordered, tab and session rows offer Move Up and Move Down, one place each.

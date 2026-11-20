@@ -21,13 +21,13 @@ enum AppShortcuts {
     /// The shortcuts for a keymap: for each key with ⌘ or ⌃, the first binding the app can
     /// perform, when that is an app command. Keys bound to something a pane does (send a key, copy,
     /// scroll) need a pane and stay with the terminal.
-    static func list(_ bindings: [KeyBinding]) -> [AppShortcut] {
+    static func list(_ bindings: [KeyBinding], panes: PaneSupport = .none) -> [AppShortcut] {
         var decided = Set<KeyChord>()
         var taken = Set<String>()
         var out: [AppShortcut] = []
         for b in bindings where !decided.contains(b.chord) {
             guard !b.chord.mods.isDisjoint(with: [.cmd, .ctrl]) else { continue }
-            guard let action = AppAction.resolve(b.action, b.args) else { continue }
+            guard let action = AppAction.resolve(b.action, b.args, panes: panes) else { continue }
             decided.insert(b.chord)
             guard case .command(let command) = action, let key = keyEquivalent(b.chord) else { continue }
             // Two spellings of one key (`cmd+1` and `cmd+[Digit1]`): the first one wins.
@@ -79,7 +79,7 @@ struct AppShortcutCommands: Commands {
     let model: AppModel
 
     var body: some Commands {
-        let all = AppShortcuts.list(bindings)
+        let all = AppShortcuts.list(bindings, panes: keymap?.panes ?? .none)
         // The system's own Settings item takes ⌘, before any responder sees the key, and opens the
         // Settings app. Ours replaces it: the item must not be empty, or the system's stays and a
         // second ⌘, in the menu conflicts with it.
@@ -104,9 +104,9 @@ struct AppShortcutCommands: Commands {
     }
 
     /// The keymap of the server on screen, else the first server's, else the built-in defaults.
-    private var bindings: [KeyBinding] {
-        (model.current?.server ?? model.servers.first)?.keymap.bindings ?? KeyDefaults.resolved
-    }
+    private var bindings: [KeyBinding] { keymap?.bindings ?? KeyDefaults.resolved }
+
+    private var keymap: KeymapStore? { (model.current?.server ?? model.servers.first)?.keymap }
 
     private func run(_ command: RexCommand) {
         let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first

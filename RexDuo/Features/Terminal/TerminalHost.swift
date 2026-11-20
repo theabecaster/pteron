@@ -723,7 +723,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         var decided = Set<KeyChord>()
         for b in keymap.bindings where b.chord.mods.contains(.cmd) && !decided.contains(b.chord) {
             // The first binding on a key that the app can perform runs; one it can't falls through.
-            guard let action = AppAction.resolve(b.action, b.args) else { continue }
+            guard let action = keymap.action(b) else { continue }
             decided.insert(b.chord)
             if editing, !FindKeys.keepsWhileEditing(action: action, chord: b.chord) { continue }
             guard let input = KeyInput.commandInput(b.chord) else { continue }
@@ -832,7 +832,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             stream.perform(action: name, args: args) { [weak self] queued in
                 // A configuration-file action may ask this client to perform its own actions.
                 for q in queued {
-                    guard let n = q.str("action"), let a = AppAction.resolve(n, q.obj("args")) else { continue }
+                    guard let n = q.str("action"), let a = AppAction.resolve(n, q.obj("args"), panes: self?.keymap?.panes ?? .none) else { continue }
                     if case .server = a { continue }
                     self?.perform(a, press: nil)
                 }

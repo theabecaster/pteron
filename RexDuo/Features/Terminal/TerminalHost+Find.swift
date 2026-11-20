@@ -135,7 +135,7 @@ extension TerminalHost: FindBarOwner {
         var decided = Set<KeyChord>()
         var out: [UIKeyCommand] = []
         for b in bindings where b.chord.mods.contains(.cmd) && !decided.contains(b.chord) {
-            guard let action = AppAction.resolve(b.action, b.args) else { continue }
+            guard let action = AppAction.resolve(b.action, b.args, panes: keymap?.panes ?? .none) else { continue }
             decided.insert(b.chord)
             // The find keys; with the menu-route fallback on, every app command too.
             let carried: Bool

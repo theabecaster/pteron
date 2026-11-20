@@ -7,7 +7,7 @@ import Foundation
 @MainActor
 enum RenderCount {
     enum Counter: String, CaseIterable {
-        case sessionLists, tabRows, tabRowLabels, statusLeaves, progressWrites
+        case sessionLists, tabRows, tabRowLabels, statusLeaves, progressWrites, windowScreens, paneMenuItems
     }
 
     private static var counts: [Counter: Int] = [:]

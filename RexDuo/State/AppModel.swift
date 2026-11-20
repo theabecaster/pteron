@@ -219,6 +219,10 @@ enum RexCommand: Equatable {
     case fontBigger, fontSmaller, fontReset, settings
     /// Find in the active pane's history (`client.find.*`).
     case find(FindStep)
+    /// The pane commands of Arrange (`pane.balance`, `pane.close_others`, `pane.move_to_*`).
+    case balanceSplits, closeOtherPanes, moveToTab, moveToNewTab
+    /// Moves the tab one place forward (+1) or back (-1) in its session (`client.tab.move.*`).
+    case moveTab(Int)
 }
 
 /// What a find key asks for.

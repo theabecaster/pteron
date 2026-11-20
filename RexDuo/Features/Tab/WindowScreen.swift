@@ -15,10 +15,24 @@ struct WindowScreen: View {
         case wide(tabletop: Arrangement.Tabletop? = nil)
     }
 
-    /// A close that needs a second tap because an agent would stop.
+    /// A close that needs a second tap because an agent would stop, or that closes several panes.
     enum Confirm: Identifiable {
         case pane(String), tab
-        var id: String { if case .pane(let b) = self { return b } else { return "tab" } }
+        /// Close Other Panes: exactly these blocks, as the tab held them at the tap.
+        case others([String], agent: Bool)
+        var id: String {
+            switch self {
+            case .pane(let b): b
+            case .tab: "tab"
+            case .others: "others"
+            }
+        }
+    }
+
+    /// A tab Move Pane to Tab… can move the pane to, named as the tab was at the key press.
+    struct MoveChoice: Identifiable {
+        var id: String
+        var name: String
     }
 
     @Environment(AppModel.self) private var model
@@ -49,6 +63,8 @@ struct WindowScreen: View {
     @State private var keyboardUp = false
     @State private var showOverview = false
     @State private var confirm: Confirm?
+    /// Move Pane to Tab… from its key: the tabs to pick from.
+    @State private var moveChoices: [MoveChoice]?
     /// The panes' area with the keyboard down. For the folded legibility check: typing must not
     /// flip splits to one pane. And for each pane's grid, which stays the one that fits it with
     /// the keyboard down while the keyboard covers it (`PaneLayout`).
@@ -62,6 +78,9 @@ struct WindowScreen: View {
     private var zoomedHere: Bool { PhoneState.shared.zoomed.contains(windowID) }
 
     var body: some View {
+        #if DEBUG
+        let _ = RenderCount.bump(.windowScreens)
+        #endif
         let theme = prefs.theme(for: scheme)
         VStack(spacing: 0) {
             if let w = window {
@@ -108,10 +127,21 @@ struct WindowScreen: View {
                 Button("Close Pane", role: .destructive) { Task { await server.closeBlock(sessionID, b) } }
             case .tab:
                 Button("Close Tab", role: .destructive) { closeTab() }
+            case .others(let ids, _):
+                Button(ids.count == 1 ? "Close Other Pane" : "Close Other Panes", role: .destructive) { closeOthers(ids) }
             }
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("The agent running there stops, on the Mac too.")
+        } message: { c in
+            switch c {
+            case .others(_, agent: false): EmptyView()
+            case .others: Text("The agents running there stop, on the Mac too.")
+            default: Text("The agent running there stops, on the Mac too.")
+            }
+        }
+        .confirmationDialog("Move Pane to Tab", isPresented: Binding(get: { moveChoices != nil }, set: { if !$0 { moveChoices = nil } }),
+                            titleVisibility: .visible, presenting: moveChoices) { choices in
+            ForEach(choices) { c in Button(c.name) { moveToTab(c.id) } }
+            Button("Cancel", role: .cancel) {}
         }
         .fullScreenCover(isPresented: $showOverview) {
             TabOverview(server: server, currentSessionID: sessionID, currentWindowID: windowID) { sel in
@@ -134,6 +164,9 @@ struct WindowScreen: View {
             if keyboardUp { keyboardUp = false }
         }
         .onChange(of: bookFits, initial: true) { _, fits in onBookFits(fits) }
+        #if DEBUG
+        .onAppear { PanesTest.run(panesTestActions) }
+        #endif
     }
 
     private func panes(_ w: WindowInfo, _ theme: TermTheme) -> some View {
@@ -155,8 +188,11 @@ struct WindowScreen: View {
     private var showsHeader: Bool { !(vSize == .compact && keyboardUp) }
 
     private var confirmTitle: String {
-        if case .tab = confirm { return "Close this tab?" }
-        return "Close this pane?"
+        switch confirm {
+        case .tab: return "Close this tab?"
+        case .others(let ids, _): return ids.count == 1 ? "Close 1 other pane?" : "Close \(ids.count) other panes?"
+        default: return "Close this pane?"
+        }
     }
 
     // MARK: State helpers
@@ -313,6 +349,166 @@ struct WindowScreen: View {
         onOpen(Waiting.prepare(model, item))
     }
 
+    // MARK: Arrange
+
+    #if DEBUG
+    /// `-panesTest`: the same paths as the menu items and keys, for the simulator.
+    private var panesTestActions: PanesTest.Actions {
+        let server = server, sid = sessionID, wid = windowID
+        return PanesTest.Actions(
+            swapNext: {
+                guard let w = window, let b = activeBlock(w) else { return }
+                let ids = PaneScope.arrangeable(window: w)
+                guard let i = ids.firstIndex(of: b) else { return }
+                swap(with: ids[(i + 1) % ids.count])
+            },
+            moveTo: { n in
+                let ws = view?.windows ?? []
+                if ws.indices.contains(n - 1) { moveToTab(ws[n - 1].id) }
+            },
+            newTab: { moveToNewTab() },
+            balance: { balance() },
+            closeOthers: {
+                guard let t = arrangeTarget(.closeOthers) else { return }
+                closeOthers(PaneScope.arrangeable(window: t.window).filter { $0 != t.block })
+            },
+            moveTab: { moveTab(by: $0) },
+            dragTab: { gap in
+                if let m = TabOrder.before(server.orderedWindowIDs(sid), moving: wid, gap: gap) { server.dragTab(sid, wid, m) }
+            },
+            dragSession: { gap in
+                if let m = TabOrder.before(server.orderedSessions.map(\.id), moving: sid, gap: gap) { server.dragSession(sid, order: m.order) }
+            },
+            state: { [model] in
+                PanesTest.describe(server.views[sid], current: model.selection?.windowID ?? "")
+                    + " shown=" + (model.selection.flatMap { model.focusedPane[$0.windowID] }.map { String($0.suffix(4)) } ?? "-")
+                    + " sessions=" + server.orderedSessions.map { $0.label }.joined(separator: ",")
+            })
+    }
+    #endif
+
+    /// The active pane, if the command applies to it now. Checked at the tap or key press, so a
+    /// menu opened before a reconnect to an older server sends nothing.
+    private func arrangeTarget(_ c: PaneCommand) -> PaneTarget? {
+        guard let w = window, let b = activeBlock(w) else { return nil }
+        let t = PaneTarget(window: w, block: b, tabs: view?.windows ?? [w])
+        return PaneArrange.isAvailable(c, target: t, support: server.capabilities.paneSupport) ? t : nil
+    }
+
+    /// Swap With: the two panes trade places. The pane on screen stays the one shown.
+    private func swap(with other: String) {
+        guard let t = arrangeTarget(.swap), t.window.block(other) != nil else { Haptic.bump(); return }
+        Haptic.tap()
+        let server = server, sid = sessionID, b = t.block
+        Task { await server.swapBlocks(sid, b, other) }
+    }
+
+    /// Move to Tab: beside the target tab's focused (else first) tiled pane, then that tab opens
+    /// once its view holds the pane.
+    private func moveToTab(_ target: String) {
+        guard let t = arrangeTarget(.moveToTab), let tw = view?.window(target), let anchor = MoveAnchor.pick(window: tw) else {
+            Haptic.bump()
+            return
+        }
+        Haptic.tap()
+        let server = server, sid = sessionID, b = t.block
+        let all = t.tabs.map(\.id)
+        let name = PaneMenuModel.tabRow(tw, position: (all.firstIndex(of: target) ?? 0) + 1, server: server).name
+        Task {
+            guard await server.moveBlock(sid, b, anchor: anchor.block, direction: anchor.direction) else { return }
+            await server.reloadView(sid)
+            Self.dropZoom(server, sid, t.window.id)
+            await follow(b, to: target, from: t.window.id, name: name)
+        }
+    }
+
+    /// Move to New Tab: the pane gets a tab of its own, right after this one.
+    private func moveToNewTab() {
+        guard let t = arrangeTarget(.moveToNewTab) else { Haptic.bump(); return }
+        Haptic.tap()
+        let server = server, sid = sessionID, b = t.block
+        Task {
+            guard let tab = await server.moveToNewTab(sid, block: b, source: t.window.id) else { return }
+            Self.dropZoom(server, sid, t.window.id)
+            await follow(b, to: tab, from: t.window.id, name: "a new tab")
+        }
+    }
+
+    /// Opens the tab a pane moved to, in the same update as the layout that holds it, so the pane's
+    /// terminal carries over. If the views don't show it there within 2 s, this tab stays; with this
+    /// tab gone too, a notice says where the pane went.
+    private func follow(_ b: String, to target: String, from source: String, name: String) async {
+        let server = server, sid = sessionID, open = onOpen, model = model
+        let sel = Selection(serverID: server.id, sessionID: sid, windowID: target)
+        let there: @MainActor (SessionView) -> Bool = { $0.window(target)?.block(b) != nil }
+        if let v = server.views[sid], there(v) {
+            model.focusedPane[target] = b
+            open(sel)
+            return
+        }
+        if await server.awaitView(sid, timeout: 2, there) {
+            model.focusedPane[target] = b
+            open(sel)
+        } else if server.views[sid]?.window(source) == nil {
+            Notice.shared.show("Moved the pane to \(name).", style: .neutral,
+                               action: Notice.Action(title: "Open") { open(sel) })
+        }
+    }
+
+    /// Balance Splits: every split even, in one go.
+    private func balance() {
+        guard let t = arrangeTarget(.balance), let layout = t.window.layout else { Haptic.bump(); return }
+        let changes = SplitBalance.ratios(layout)
+        guard !changes.isEmpty else { Haptic.bump(); return }
+        Haptic.zoom()
+        let server = server, sid = sessionID
+        Task { await server.balance(sid, changes) }
+    }
+
+    /// Close Other Panes…: always asks, with the panes and whether an agent runs in one worked
+    /// out now, so the dialog reads nothing later.
+    private func requestCloseOthers() {
+        guard let t = arrangeTarget(.closeOthers) else { Haptic.bump(); return }
+        let ids = PaneScope.arrangeable(window: t.window).filter { $0 != t.block }
+        guard !ids.isEmpty else { Haptic.bump(); return }
+        confirm = .others(ids, agent: ids.contains { server.meta[$0]?.agentKind != nil })
+    }
+
+    private func closeOthers(_ ids: [String]) {
+        guard server.capabilities.paneSupport.has(.closeOthers) else { Haptic.bump(); return }
+        let server = server, sid = sessionID
+        // One pane is left: phone zoom means nothing there.
+        PhoneState.shared.zoomed.remove(windowID)
+        Task { await server.closeBlocks(sid, ids) }
+    }
+
+    /// A tab a pane left keeps the phone's zoom only while it still has several panes.
+    private static func dropZoom(_ server: ServerConnection, _ sid: String, _ wid: String) {
+        let left = server.views[sid]?.window(wid).map { PaneScope.arrangeable(window: $0).count } ?? 0
+        if left <= 1, PhoneState.shared.zoomed.contains(wid) { PhoneState.shared.zoomed.remove(wid) }
+    }
+
+    /// Move Pane to Tab… from its key: the session's other tabs to pick from.
+    private func chooseMoveTarget() {
+        guard let t = arrangeTarget(.moveToTab) else { Haptic.bump(); return }
+        let all = t.tabs.map(\.id)
+        moveChoices = MoveAnchor.targets(from: t.window.id, in: t.tabs).map { w in
+            let r = PaneMenuModel.tabRow(w, position: (all.firstIndex(of: w.id) ?? 0) + 1, server: server)
+            return MoveChoice(id: w.id, name: [r.name, r.subtitle].compactMap { $0 }.joined(separator: " · "))
+        }
+    }
+
+    /// `client.tab.move.*`: this tab one place forward or back among the session's tabs.
+    private func moveTab(by d: Int) {
+        guard let t = arrangeTarget(.moveTab), let move = TabOrder.step(t.tabs.map(\.id), moving: windowID, by: d) else {
+            Haptic.bump()
+            return
+        }
+        Haptic.selection()
+        let server = server, sid = sessionID, wid = windowID
+        Task { await server.moveWindow(sid, wid, before: move.before) }
+    }
+
     /// Runs the tab-scoped `RexCommand`s; RootView runs the app-wide ones.
     private func handle(_ r: CommandRequest) {
         guard r.command.isWindowCommand, PhoneState.shared.claim(r) else { return }
@@ -333,6 +529,11 @@ struct WindowScreen: View {
         case .clear: if let b = activeBlock(w) { Task { await server.clear(sessionID, b) } }
         case .tabOverview: openOverview()
         case .find(let step): if let b = activeBlock(w) { host(b)?.performFind(step) }
+        case .balanceSplits: balance()
+        case .closeOtherPanes: requestCloseOthers()
+        case .moveToTab: chooseMoveTarget()
+        case .moveToNewTab: moveToNewTab()
+        case .moveTab(let d): moveTab(by: d)
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
         }
     }
@@ -448,6 +649,9 @@ struct WindowScreen: View {
                 ShareMenuItem(server: server, sessionID: sessionID, block: block) { scope, styled in
                     host(block)?.share?.share(scope, styled: styled, anchor: barEdge.map { .bar($0) } ?? .titleBar)
                 }
+                PaneMenuItems(server: server, sessionID: sessionID, window: w, block: block,
+                              onSwap: { swap(with: $0) }, onMove: { moveToTab($0) }, onMoveToNewTab: { moveToNewTab() },
+                              onBalance: { balance() }, onCloseOthers: { requestCloseOthers() })
             }
             Section {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }

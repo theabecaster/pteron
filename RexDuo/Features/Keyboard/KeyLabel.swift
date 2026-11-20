@@ -8,11 +8,11 @@ import Foundation
 enum KeyLabel {
     /// The first chord that runs `action` in `bindings`: bound to it, and the binding a press of
     /// that key would run. Nil when no key runs it.
-    static func `for`(action: String, in bindings: [KeyBinding]) -> String? {
+    static func `for`(action: String, in bindings: [KeyBinding], panes: PaneSupport = .none) -> String? {
         var decided = Set<KeyChord>()
         for b in bindings where !decided.contains(b.chord) {
             // The first binding on a key that the app can perform is the one the key runs.
-            guard AppAction.resolve(b.action, b.args) != nil else { continue }
+            guard AppAction.resolve(b.action, b.args, panes: panes) != nil else { continue }
             decided.insert(b.chord)
             if b.action == action { return text(b.chord) }
         }
@@ -21,7 +21,7 @@ enum KeyLabel {
 
     @MainActor
     static func `for`(action: String, in keymap: KeymapStore?) -> String? {
-        `for`(action: action, in: keymap?.bindings ?? KeyDefaults.resolved)
+        `for`(action: action, in: keymap?.bindings ?? KeyDefaults.resolved, panes: keymap?.panes ?? .none)
     }
 
     /// `shift+cmd+g` as `⇧⌘G`, in Apple's order: ⌃ ⌥ ⇧ ⌘.

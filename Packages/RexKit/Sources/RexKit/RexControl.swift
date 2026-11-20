@@ -72,7 +72,8 @@ public final class RexControl {
     private var task: URLSessionWebSocketTask?
     /// Also used by `TerminalStream` for the data sockets, so both share one configuration.
     let session: URLSession
-    private var pending: [String: CheckedContinuation<DecodedJSON, Error>] = [:]
+    /// Calls waiting for their answer, by request id.
+    private var pending: [String: (Result<DecodedJSON, Error>) -> Void] = [:]
     private var nextID = 0
     private var reconnectToken: String?
     private var welcomeWaiter: CheckedContinuation<Void, Error>?
@@ -407,7 +408,7 @@ public final class RexControl {
     private func failAll(_ err: Error) {
         let p = pending
         pending.removeAll()
-        for (_, c) in p { c.resume(throwing: err) }
+        for (_, c) in p { c(.failure(err)) }
     }
 
     private func handle(_ m: JSONObject) {
@@ -430,9 +431,9 @@ public final class RexControl {
         case "response":
             guard let id = m.str("id"), let c = pending.removeValue(forKey: id) else { return }
             if let e = m.obj("error") {
-                c.resume(throwing: RexError(code: e.str("code") ?? "internal", message: e.str("message") ?? "error", status: e.int("status") ?? 500))
+                c(.failure(RexError(code: e.str("code") ?? "internal", message: e.str("message") ?? "error", status: e.int("status") ?? 500)))
             } else {
-                c.resume(returning: DecodedJSON(m["payload"] ?? NSNull()))
+                c(.success(DecodedJSON(m["payload"] ?? NSNull())))
             }
         case "event":
             onEvent?(m.int("seq") ?? 0, m.obj("payload") ?? [:])
@@ -453,32 +454,72 @@ public final class RexControl {
         // `neverSent`: a caller that must not repeat a request (typed input) may send this one again.
         guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
         // A method newer than this connection's revision: the answer is known, so don't ask.
-        let needs = RexAPI.minimum(for: method)
-        if negotiatedRevision < needs {
-            var e = RexError(code: "revision_too_low", message: "\(method) needs API revision \(needs).", status: 400)
-            e.neverSent = true
-            throw e
+        if let e = Self.tooNew(method, for: negotiatedRevision) { throw e }
+        let reply = try await withCheckedThrowingContinuation { (c: CheckedContinuation<DecodedJSON, Error>) in
+            send(method, payload, on: t) { c.resume(with: $0) }
         }
+        return reply.value
+    }
+
+    /// Sends every request in `calls` in this one turn of the main actor, in order, then waits
+    /// for all the answers, which come back in the same order whatever order they arrive in.
+    ///
+    /// The socket keeps the order of sends, and the server runs its ordered methods (`move_block`,
+    /// `block.close`, `new_window`, …) in arrival order on a connection. Separate calls, `async
+    /// let` or a task group promise no order, so a sequence that depends on it goes through here.
+    /// One failing call doesn't stop the others: they have left already.
+    public func callInOrder(_ calls: [(method: String, payload: JSONObject)]) async -> [Result<JSONObject, Error>] {
+        guard !calls.isEmpty else { return [] }
+        guard let t = task, state == .connected else {
+            return calls.map { _ in .failure(RexError.unsent("not connected")) }
+        }
+        let revision = negotiatedRevision
+        let replies = await withCheckedContinuation { (done: CheckedContinuation<[Result<DecodedJSON, Error>], Never>) in
+            var results = [Result<DecodedJSON, Error>?](repeating: nil, count: calls.count)
+            var left = calls.count
+            func finish(_ i: Int, _ r: Result<DecodedJSON, Error>) {
+                results[i] = r
+                left -= 1
+                if left == 0 { done.resume(returning: results.map { $0! }) }
+            }
+            for (i, c) in calls.enumerated() {
+                if let e = Self.tooNew(c.method, for: revision) {
+                    finish(i, .failure(e))
+                } else {
+                    send(c.method, c.payload, on: t) { finish(i, $0) }
+                }
+            }
+        }
+        return replies.map { r in r.map { $0.value as? JSONObject ?? [:] } }
+    }
+
+    /// `revision_too_low`, never sent, for a method this connection's revision doesn't have.
+    private static func tooNew(_ method: String, for revision: Int) -> RexError? {
+        let needs = RexAPI.minimum(for: method)
+        guard revision < needs else { return nil }
+        var e = RexError(code: "revision_too_low", message: "\(method) needs API revision \(needs).", status: 400)
+        e.neverSent = true
+        return e
+    }
+
+    /// Registers `answer` for a new request and hands the request to the socket, in this turn.
+    private func send(_ method: String, _ payload: JSONObject?, on t: URLSessionWebSocketTask,
+                      answer: @escaping (Result<DecodedJSON, Error>) -> Void) {
         nextID += 1
         let id = String(nextID)
         var req: JSONObject = ["type": "request", "id": id, "method": method]
         if let payload { req["payload"] = payload }
-        let text = JSONCodec.encode(req)
-        let reply = try await withCheckedThrowingContinuation { (c: CheckedContinuation<DecodedJSON, Error>) in
-            pending[id] = c
-            t.send(.string(text)) { err in
-                if let err {
-                    Task { @MainActor in
-                        // The socket didn't take the message, so the server never saw it. (A
-                        // request that was sent and then lost its connection fails in `failAll`.)
-                        if let c = self.pending.removeValue(forKey: id) {
-                            c.resume(throwing: RexError.unsent(err.localizedDescription))
-                        }
-                    }
+        pending[id] = answer
+        t.send(.string(JSONCodec.encode(req))) { err in
+            guard let err else { return }
+            Task { @MainActor in
+                // The socket didn't take the message, so the server never saw it. (A request
+                // that was sent and then lost its connection fails in `failAll`.)
+                if let c = self.pending.removeValue(forKey: id) {
+                    c(.failure(RexError.unsent(err.localizedDescription)))
                 }
             }
         }
-        return reply.value
     }
 
     /// Sends a request and doesn't wait for its answer, which is dropped when it comes. The

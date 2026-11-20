@@ -28,17 +28,15 @@ extension ServerConnection {
         case "session_destroyed":
             let id = p.str("session_id") ?? p.obj("session")?.str("session_id") ?? ""
             for w in views[id]?.windows ?? [] {
-                for b in w.allBlocks { forgetBlockAlerts(b.id) }
+                for b in w.allBlocks {
+                    forgetBlockAlerts(b.id)
+                    paneNames.remove(b.id)
+                }
             }
             sessions.removeAll { $0.id == id }
             views[id] = nil
         case "session_moved":
-            Task {
-                if let r = try? await control.call("session.list") {
-                    let order = r.arr("sessions").compactMap { $0.str("session_id") }
-                    sessions.sort { (order.firstIndex(of: $0.id) ?? 0) < (order.firstIndex(of: $1.id) ?? 0) }
-                }
-            }
+            reloadSessionList()
         case "hosts_changed":
             Task { await loadHosts() }
             // A host that came, went or was updated brings other creators.
@@ -101,7 +99,10 @@ extension ServerConnection {
         case "block_event":
             handleBlockEvent(sessionID: sid, p)
         case "window_created", "window_closed", "window_label_changed", "active_window_changed", "block_closed", "block_owner_changed":
-            if type == "block_closed", let bid = p.str("block_id") { forgetBlockAlerts(bid) }
+            if type == "block_closed", let bid = p.str("block_id") {
+                forgetBlockAlerts(bid)
+                paneNames.remove(bid)
+            }
             touchedSessions.insert(sid)
             refreshView(sid)
         default:
@@ -264,34 +265,51 @@ extension ServerConnection {
         }
     }
 
-    /// Reads which sessions exist and in what order (`session.list`), for a dropped
-    /// `session_created`, `session_destroyed` or `session_moved`: sessions that are gone leave,
-    /// new ones are attached, and the rest take the server's order. Bursts collapse into one read.
+    /// Reads which sessions exist and in what order (`session.list`), for `session_moved` and for
+    /// a dropped `session_created`, `session_destroyed` or `session_moved`: sessions that are gone
+    /// leave, new ones are attached, and the rest take the server's order.
+    ///
+    /// One read at a time. An event while it is out asks for one more, and a read that an event
+    /// or a full sync came after is dropped (`sessionListGeneration`), so an older list never
+    /// lands after a newer one.
     func reloadSessionList() {
+        sessionListGeneration += 1
+        sessionListAgain = true
         guard sessionListTask == nil else { return }
         let serial = connectionSerial
         sessionListTask = Task { [weak self] in
+            // A burst of events (one per session in a reorder) waits for one read.
+            try? await Task.sleep(nanoseconds: 80_000_000)
             guard let self else { return }
             defer { self.sessionListTask = nil }
-            guard let r = try? await self.control.call("session.list"), serial == self.connectionSerial else { return }
-            let hidden = self.hiddenSessions()
-            let listed = r.arr("sessions").compactMap { s -> SessionEntry? in
-                guard let id = s.str("session_id"), !hidden.contains(id) else { return nil }
-                return SessionEntry(id: id, label: s.str("label") ?? "")
+            while self.sessionListAgain {
+                self.sessionListAgain = false
+                let generation = self.sessionListGeneration
+                guard let r = try? await self.control.call("session.list"), serial == self.connectionSerial else { return }
+                guard generation == self.sessionListGeneration else { continue }
+                await self.applySessionList(r)
             }
-            let order = listed.map(\.id)
-            let known = Set(self.sessions.map(\.id))
-            let gone = known.subtracting(order)
-            var next = self.sessions.filter { !gone.contains($0.id) }
-            let fresh = listed.filter { !known.contains($0.id) }
-            next.append(contentsOf: fresh)
-            next.sort { (order.firstIndex(of: $0.id) ?? 0) < (order.firstIndex(of: $1.id) ?? 0) }
-            if next != self.sessions { self.sessions = next }
-            for id in gone where self.views[id] != nil { self.views[id] = nil }
-            for s in fresh {
-                self.touchedSessions.insert(s.id)
-                await self.attach(s.id)
-            }
+        }
+    }
+
+    private func applySessionList(_ r: JSONObject) async {
+        let hidden = hiddenSessions()
+        let listed = r.arr("sessions").compactMap { s -> SessionEntry? in
+            guard let id = s.str("session_id"), !hidden.contains(id) else { return nil }
+            return SessionEntry(id: id, label: s.str("label") ?? "")
+        }
+        let order = listed.map(\.id)
+        let known = Set(sessions.map(\.id))
+        let gone = known.subtracting(order)
+        var next = sessions.filter { !gone.contains($0.id) }
+        let fresh = listed.filter { !known.contains($0.id) }
+        next.append(contentsOf: fresh)
+        next.sort { (order.firstIndex(of: $0.id) ?? 0) < (order.firstIndex(of: $1.id) ?? 0) }
+        if next != sessions { sessions = next }
+        for id in gone where views[id] != nil { views[id] = nil }
+        for s in fresh {
+            touchedSessions.insert(s.id)
+            await attach(s.id)
         }
     }
 

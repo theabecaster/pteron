@@ -77,6 +77,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   - **Off**, and laid out exactly as when flat, in every other case: flat, tabletop, a single
     pane, a zoomed pane, one pane at a time, a tab whose top split is stacked, three columns too
     narrow for a page.
+  - **Arrange.** Swap With keeps the splits. Balance Splits changes Rex's ratios while the aligned
+    divider stays on the crease, display only. A tab that drops to one pane goes flat, and
+    `BookSidebar` doesn't reopen the sidebar until book mode ends; a tab that gains a split
+    while the sidebar is open stays flat.
   - **Display only.** Rex's split ratios don't change and the Mac's layout stays as it is. The
     panes are fitted to their new widths like after any layout change: one `terminal.resize`
     per pane each time the phone settles into or out of book mode, columns only.

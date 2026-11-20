@@ -41,11 +41,16 @@ struct SessionsList: View {
         actions.onSelect = onSelect
         let servers = Dictionary(model.servers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let collapsed = prefs.sidebarCollapsed
+        // A drag's held order is applied here, at the outline's source (`PendingOrder`).
         let target = SidebarOutline.rows(model.servers.map { s in
-            SidebarOutline.Machine(id: s.id, sessions: s.sessions.map { e in
-                SidebarOutline.Session(id: e.id, windowIDs: s.views[e.id]?.windows.map(\.id) ?? [])
+            SidebarOutline.Machine(id: s.id, sessions: s.orderedSessions.map { e in
+                SidebarOutline.Session(id: e.id, windowIDs: s.orderedWindowIDs(e.id))
             }, empty: s.phase == .online && s.synced && s.sessions.isEmpty)
         }, collapsed: collapsed)
+        let drag = actions.drag
+        let scroll = $position
+        drag.scrollTo = { scroll.wrappedValue.scrollTo(y: $0) }
+        drag.onLift = { [swipe] in if swipe.open != nil { swipe.open = nil } }
         let rows = reveal.rows(target, collapsed: collapsed)
         let selection = model.selection
         return ScrollView {
@@ -68,8 +73,19 @@ struct SessionsList: View {
                     .zIndex(Double(rows.count))
             }
             .padding(.bottom, 8)
+            .coordinateSpace(name: SidebarDrag.space)
+            // One drop target for the whole list; rows only lift.
+            .onDrop(of: [SidebarDrag.type], delegate: SidebarDropDelegate(drag: drag, orders: orders(servers), onDrop: dropped))
+            .overlay(alignment: .topLeading) { SidebarGapLine(drag: drag, theme: theme) }
         }
         .scrollPosition($position)
+        .onScrollGeometryChange(for: CGRect.self) { g in
+            CGRect(x: g.contentSize.height - g.containerSize.height, y: g.contentOffset.y + g.contentInsets.top,
+                   width: 0, height: g.containerSize.height)
+        } action: { _, r in
+            // Not observed: only a drag's edge scroll reads it.
+            drag.visible = (r.minY, r.height, r.minX)
+        }
         .onScrollGeometryChange(for: ScrollSpot.self) { g in
             ScrollSpot(y: g.contentOffset.y + g.contentInsets.top, room: g.contentSize.height - g.containerSize.height)
         } action: { _, spot in
@@ -95,6 +111,7 @@ struct SessionsList: View {
                      _ selection: Selection?) -> some View {
         // A down server's last known sessions stay listed, dimmed: they open read-only.
         let dim = server.phase.problem != nil
+        let support = server.capabilities.paneSupport
         // Row style and swipe actions go outside `.equatable()`, so a swipe or a selection change
         // doesn't re-render the row's contents.
         switch row.kind {
@@ -115,11 +132,15 @@ struct SessionsList: View {
         case .session(let id, let sid):
             if let entry = server.sessions.first(where: { $0.id == sid }) {
                 let target = SidebarActions.Target(server: server, sessionID: sid, label: entry.label)
+                let canDrag = !dim && PaneArrange.isAvailable(.moveSession, target: nil, support: support)
                 SessionRow(server: server, session: entry, windows: server.views[sid]?.windows ?? [],
                            collapsed: collapsed.contains(SidebarCollapse.session(id, sid)),
-                           topGap: server.sessions.first?.id == sid ? 0 : sessionGap, dim: dim,
-                           theme: theme, actions: actions)
+                           topGap: server.orderedSessions.first?.id == sid ? 0 : sessionGap, dim: dim,
+                           canDrag: canDrag, theme: theme, actions: actions)
                     .equatable()
+                    .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: canDrag) { d in
+                        step(.session(server: id, session: sid), by: d)
+                    })
                     .modifier(SidebarStackRow(theme: theme))
                     .modifier(SidebarSwipe(id: row.id, leading: [
                         SwipeAction(title: "New Tab", symbol: "plus.square", tint: theme.accent) {
@@ -136,9 +157,13 @@ struct SessionsList: View {
             if let w = server.views[sid]?.window(wid) {
                 let selected = selection == Selection(serverID: server.id, sessionID: sid, windowID: wid)
                 let target = SidebarActions.Target(server: server, sessionID: sid, windowID: wid, label: w.label)
-                TabRow(server: server, sessionID: sid, window: w, selected: selected, dim: dim, theme: theme,
-                       actions: actions)
+                let canDrag = !dim && PaneArrange.isAvailable(.moveTab, target: nil, support: support)
+                TabRow(server: server, sessionID: sid, window: w, selected: selected, dim: dim, canDrag: canDrag,
+                       theme: theme, actions: actions)
                     .equatable()
+                    .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: canDrag) { d in
+                        step(.tab(server: server.id, session: sid, window: wid), by: d)
+                    })
                     .modifier(SidebarStackRow(theme: theme, selected: selected, selectionLeading: SidebarMetrics.tabLeading))
                     .modifier(SidebarSwipe(id: row.id, trailing: [
                         SwipeAction(title: "Close", symbol: "xmark", tint: theme.chrome.error) {
@@ -152,6 +177,44 @@ struct SessionsList: View {
         case .empty:
             NoSessionsRow(server: server, theme: theme)
                 .modifier(SidebarStackRow(theme: theme))
+        }
+    }
+
+    // MARK: Drag
+
+    /// The order a drop is measured against: what the sidebar shows now.
+    private func orders(_ servers: [UUID: ServerConnection]) -> SidebarDrag.Orders {
+        SidebarDrag.Orders(sessions: { servers[$0]?.orderedSessions.map(\.id) ?? [] },
+                           tabs: { servers[$0]?.orderedWindowIDs($1) ?? [] })
+    }
+
+    /// A drop: the row goes to the gap, worked out again from ids now. A row that is gone bumps.
+    private func dropped(_ item: SidebarDrag.Item, _ gap: Int) {
+        move(item) { ids, id in TabOrder.before(ids, moving: id, gap: gap) }
+    }
+
+    /// VoiceOver's Move Up and Move Down: one place.
+    private func step(_ item: SidebarDrag.Item, by d: Int) {
+        move(item) { ids, id in TabOrder.step(ids, moving: id, by: d) }
+    }
+
+    private func move(_ item: SidebarDrag.Item, _ place: ([String], String) -> TabOrder.Move?) {
+        let servers = model.servers
+        switch item {
+        case .tab(let srv, let sid, let wid):
+            guard let s = servers.first(where: { $0.id == srv }), case let ids = s.orderedWindowIDs(sid), ids.contains(wid) else {
+                Haptic.bump()
+                return
+            }
+            guard let m = place(ids, wid) else { return }
+            withAnimation(SidebarCollapse.animation) { s.dragTab(sid, wid, m) }
+        case .session(let srv, let sid):
+            guard let s = servers.first(where: { $0.id == srv }), case let ids = s.orderedSessions.map(\.id), ids.contains(sid) else {
+                Haptic.bump()
+                return
+            }
+            guard let m = place(ids, sid) else { return }
+            withAnimation(SidebarCollapse.animation) { s.dragSession(sid, order: m.order) }
         }
     }
 
@@ -288,6 +351,8 @@ final class SidebarActions {
     }
 
     @ObservationIgnored var onSelect: (Selection) -> Void = { _ in }
+    /// The list's one drag: rows lift into it, the list's drop target follows it.
+    @ObservationIgnored let drag = SidebarDrag()
     var renaming: Target?
     var renameText = ""
     var closing: Target?
@@ -397,13 +462,15 @@ struct SessionRow: View, Equatable {
     let collapsed: Bool
     let topGap: CGFloat
     let dim: Bool
+    /// The server can reorder sessions and this one is online: a press that moves lifts it.
+    var canDrag = false
     let theme: TermTheme
     let actions: SidebarActions
     @Environment(Prefs.self) private var prefs
 
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.server === b.server && a.session == b.session && a.collapsed == b.collapsed && a.topGap == b.topGap
-            && a.dim == b.dim && a.theme.id == b.theme.id && a.actions === b.actions
+            && a.dim == b.dim && a.canDrag == b.canDrag && a.theme.id == b.theme.id && a.actions === b.actions
             && SidebarRowKeys.windows(a.windows) == SidebarRowKeys.windows(b.windows)
     }
 
@@ -419,6 +486,7 @@ struct SessionRow: View, Equatable {
                 Button { actions.rename(target, current: s.label) } label: { Label("Rename Session", systemImage: "pencil") }
                 Button(role: .destructive) { actions.closing = target } label: { Label("Close Session…", systemImage: "xmark") }
             }
+            .modifier(SidebarLift(enabled: canDrag) { actions.drag.lift(.session(server: server.id, session: s.id)) })
             .padding(.top, topGap)
             .opacity(dim ? 0.45 : 1)
     }
@@ -430,6 +498,8 @@ struct TabRow: View, Equatable {
     let window: WindowInfo
     let selected: Bool
     let dim: Bool
+    /// The server can reorder tabs and this one is online: a press that moves lifts it.
+    var canDrag = false
     let theme: TermTheme
     let actions: SidebarActions
     @Environment(AppModel.self) private var model
@@ -437,7 +507,7 @@ struct TabRow: View, Equatable {
     /// What the row shows of its tab; the status comes from the block boxes the label observes.
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.server === b.server && a.sessionID == b.sessionID && a.selected == b.selected
-            && a.dim == b.dim && a.theme.id == b.theme.id && a.actions === b.actions
+            && a.dim == b.dim && a.canDrag == b.canDrag && a.theme.id == b.theme.id && a.actions === b.actions
             && SidebarRowKeys.windows([a.window]) == SidebarRowKeys.windows([b.window])
     }
 
@@ -472,6 +542,7 @@ struct TabRow: View, Equatable {
             Button { Task { await server.newWindow(sid) } } label: { Label("New Tab", systemImage: "plus.square") }
             Button(role: .destructive, action: close) { Label("Close Tab", systemImage: "xmark") }
         }
+        .modifier(SidebarLift(enabled: canDrag) { actions.drag.lift(.tab(server: server.id, session: sid, window: w.id)) })
         .opacity(dim ? 0.45 : 1)
     }
 }
@@ -566,6 +637,41 @@ struct SidebarRowStyle: ViewModifier {
                     .padding(.trailing, 6)
                     .padding(.vertical, 1)
             ) : AnyView(Color.clear))
+    }
+}
+
+/// A row that lifts into a drag on a press that moves, beside its menu. Only the item's ids are
+/// captured. Without support the row is exactly as it was.
+struct SidebarLift: ViewModifier {
+    let enabled: Bool
+    let lift: () -> NSItemProvider
+
+    func body(content: Content) -> some View {
+        if enabled { content.onDrag(lift) } else { content }
+    }
+}
+
+/// A draggable row records where it is for the list's one drop target, without being observed,
+/// and forgets it when it leaves the list. VoiceOver gets Move Up and Move Down instead of a drag.
+struct SidebarDragRow: ViewModifier {
+    let drag: SidebarDrag
+    let id: String
+    let kind: SidebarOutline.Row.Kind
+    let enabled: Bool
+    let step: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(SidebarDrag.space)) } action: { f in
+                    drag.record(id, kind, f)
+                }
+                .onDisappear { drag.forget(id) }
+                .accessibilityAction(named: "Move Up") { step(-1) }
+                .accessibilityAction(named: "Move Down") { step(1) }
+        } else {
+            content
+        }
     }
 }
 

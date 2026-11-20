@@ -196,6 +196,25 @@ In a `zz-share` pane:
 4. The share sheet on the unfolded Duo and on the iPad with `-simulateDuo`: it points at the pane
    menu (title bar) or the window's bar edge, and at the selection for Share….
 
+## Arrange (about 10 minutes)
+
+In a `zz-panes` session you made (`rex new zz-panes`), on a simulator with `-sizing mirror`, then
+once with fit:
+
+1. Split twice (`a | b | c`). Arrange ▸ Swap With: the two panes trade places on the Mac too; the
+   pane on screen stays. Folded (one pane at a time), only the dots move.
+2. Make a second tab. Move to Tab › Tab 2: the pane lands beside Tab 2's focused pane and Tab 2
+   opens with it, its scrollback intact. From a tab's last pane: the old tab closes.
+3. Move to Tab › New Tab: a new tab right after this one, titled by its pane. Suspend the app
+   between the steps once (lock the screen right after the tap): at worst a tab with a fresh shell.
+4. Drag a split off even, then Balance Splits. Compare with the Mac's own Balance Splits on the
+   same layout. In fit mode each pane sends one `terminal.resize` (`FIT_RESIZE` lines).
+5. Close Other Panes…: the dialog counts the panes; with an agent in one it says so.
+6. In the sidebar, press a tab row and move: it lifts, the accent line follows, the list scrolls
+   at the edges. Drop: the row moves at once and stays. The same for a session row. Press without
+   moving: the menu, as before. Swipe: the actions, as before. With VoiceOver: Move Up, Move Down.
+7. `-sidebarFoldBench 3` before and after: no slower.
+
 ## Manual script (about 5 minutes)
 
 Rows that still need a hand: 8, 9, 12, 13, 18 to 21 (with 20a), 25, 26, 29, 30, 39, 41, 42, 44, 45, 46a (on a Duo), 48.

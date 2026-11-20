@@ -44,6 +44,7 @@ struct MetaTable {
             guard box.value != newValue else { return }
             let old = box.value
             box.value = newValue
+            server.paneNames.set(id, PaneNameParts(newValue))
             if old?.agentKind != newValue?.agentKind || old?.topStatus?.state != newValue?.topStatus?.state {
                 server.agentsMayHaveChanged()
             }
@@ -152,8 +153,22 @@ final class ServerConnection: Identifiable {
 
     /// Connection state for the UI. A drop from online shows only after it lasts `phaseGrace`.
     var phase: Phase = .idle
-    var sessions: [SessionEntry] = [] { didSet { agentsMayHaveChanged() } }
-    var views: [String: SessionView] = [:] { didSet { agentsMayHaveChanged() } }
+    var sessions: [SessionEntry] = [] {
+        didSet {
+            agentsMayHaveChanged()
+            if pendingOrder.sessions != nil { releaseSessionHold() }
+        }
+    }
+    var views: [String: SessionView] = [:] {
+        didSet {
+            agentsMayHaveChanged()
+            if !pendingOrder.tabs.isEmpty { releaseTabHolds() }
+        }
+    }
+    /// A sidebar drag's new order, shown until the server's lists agree (`PendingOrder`).
+    var pendingOrder = PendingOrder()
+    /// Each pane's agent and program, for its name in menus: a title change writes nothing here.
+    @ObservationIgnored let paneNames = BlockBoxTable<PaneNameParts>()
     /// Every agent's place, kind and state, in sidebar order. It changes only when an agent comes,
     /// goes, moves or changes kind or state, so the Agents list and the waiting count don't
     /// re-render for a title, directory or progress change in some pane.
@@ -248,6 +263,15 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var metaReads: [Int: [String: MetaFields]] = [:]
     @ObservationIgnored private var nextMetaRead = 0
     @ObservationIgnored var sessionListTask: Task<Void, Never>?
+    /// Counts what makes a session list read out of date: a session event, or a full sync. Only a
+    /// read that saw no change after it began is applied, so an older list never lands last.
+    @ObservationIgnored var sessionListGeneration = 0
+    /// Another read is owed: an event came while one was out.
+    @ObservationIgnored var sessionListAgain = false
+    /// The latest session drag's call, which the next one waits for (`session.move` isn't ordered).
+    @ObservationIgnored var sessionMoveTask: Task<Void, Never>?
+    /// Counts the drags whose order is held, so only the newest one's answer sets the release.
+    @ObservationIgnored var nextOrderToken = 0
     // Coalescing and status hold.
     @ObservationIgnored var pendingMeta: [String: BlockMeta] = [:]
     @ObservationIgnored var statusShownAt: [String: Date] = [:]
@@ -353,6 +377,9 @@ final class ServerConnection: Identifiable {
             resetProgress()
             capabilities.connected(serial: connectionSerial, revision: control.negotiatedRevision,
                                    serverRevision: control.serverRevision, features: control.features)
+            // The bootstrap's lists win over a drag's order from before.
+            if !pendingOrder.isEmpty { pendingOrder = PendingOrder() }
+            panesSupportChanged()
             #if DEBUG
             // To check on a device or simulator which revision a server gave this connection.
             NSLog("CONTROL_API negotiated=%d server=%d", control.negotiatedRevision, control.serverRevision)
@@ -628,6 +655,8 @@ final class ServerConnection: Identifiable {
         let progressMark = ContinuousClock.now
         touchedBlocks = []
         touchedSessions = []
+        // A session list read that began before this sync is older than it.
+        sessionListGeneration += 1
         defer {
             syncing = false
             if syncAgain { syncAgain = false; scheduleResync(after: 0.1) }
@@ -659,6 +688,8 @@ final class ServerConnection: Identifiable {
             // Replace, don't merge. Sessions changed by events during the sync get one more read.
             sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
             views = fresh
+            let live = Set(fresh.values.flatMap { $0.windows.flatMap(\.allBlocks).map(\.id) })
+            paneNames.removeAll { !live.contains($0) }
             // A sync means events may have been missed, a bar's removal among them: bars with
             // no report since the sync began go. A bar reported during the sync is live and stays.
             clearProgressBoxes(notSeenSince: progressMark)
@@ -741,7 +772,7 @@ final class ServerConnection: Identifiable {
         await loadMeta(v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (sessionID, $0.id) })
     }
 
-    private func apply(view: SessionView) {
+    func apply(view: SessionView) {
         guard !hiddenSessions().contains(view.sessionID) else { return }
         if let old = views[view.sessionID], old.revision > view.revision { return }
         views[view.sessionID] = view
@@ -856,7 +887,7 @@ final class ServerConnection: Identifiable {
     // the server either way.
 
     @discardableResult
-    private func act(_ what: String, session sid: String?, _ body: () async throws -> JSONObject) async -> JSONObject? {
+    func act(_ what: String, session sid: String?, _ body: () async throws -> JSONObject) async -> JSONObject? {
         do {
             let r = try await body()
             if let sid { refreshView(sid) }
@@ -868,7 +899,7 @@ final class ServerConnection: Identifiable {
         }
     }
 
-    private static func short(_ error: Error) -> String {
+    static func short(_ error: Error) -> String {
         let s = (error as? RexError).map { $0.message } ?? error.localizedDescription
         return s.count > 80 ? String(s.prefix(80)) : s
     }

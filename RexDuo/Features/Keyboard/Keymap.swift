@@ -96,8 +96,21 @@ enum AppAction {
     case forwardKey
 
     /// Nil when the app can't perform the action; the next binding on the key, or the terminal, gets it.
-    static func resolve(_ name: String, _ args: JSONObject?) -> AppAction? {
+    /// The pane and tab order commands resolve only where the pane's server can run them
+    /// (`panes`, `PaneArrange.isAvailable`), so elsewhere their keys fall through as before.
+    static func resolve(_ name: String, _ args: JSONObject?, panes: PaneSupport = .none) -> AppAction? {
         let a = args ?? [:]
+        if let c = PaneCommand.forAction(name) {
+            guard PaneArrange.isAvailable(c, target: nil, support: panes) else { return nil }
+            switch name {
+            case "pane.balance": return .command(.balanceSplits)
+            case "pane.close_others": return .command(.closeOtherPanes)
+            case "pane.move_to_tab": return .command(.moveToTab)
+            case "pane.move_to_new_tab": return .command(.moveToNewTab)
+            case "client.tab.move.backward": return .command(.moveTab(-1))
+            default: return .command(.moveTab(1))
+            }
+        }
         switch name {
         case "client.tab.new": return .command(.newTab)
         case "client.tab.close": return .command(.closeTab)
@@ -183,6 +196,8 @@ enum KeyActions {
         Info(name: "client.tab.previous", title: "Show Previous Tab", category: "Tab", repeats: true),
         Info(name: "client.tab.goto", title: "Go to Tab", category: "Tab", repeats: false),
         Info(name: "client.tab.overview", title: "Show All Tabs", category: "Tab", repeats: false),
+        Info(name: "client.tab.move.backward", title: "Move Tab Backward", category: "Tab", repeats: true),
+        Info(name: "client.tab.move.forward", title: "Move Tab Forward", category: "Tab", repeats: true),
         Info(name: "pane.split", title: "Split Pane", category: "Pane", repeats: false),
         Info(name: "pane.split.right", title: "Split Pane Right", category: "Pane", repeats: false),
         Info(name: "pane.split.down", title: "Split Pane Down", category: "Pane", repeats: false),
@@ -196,6 +211,10 @@ enum KeyActions {
         Info(name: "pane.focus_previous", title: "Focus Previous Pane", category: "Pane", repeats: true),
         Info(name: "pane.zoom", title: "Zoom Pane", category: "Pane", repeats: false),
         Info(name: "pane.close", title: "Close Pane", category: "Pane", repeats: false),
+        Info(name: "pane.close_others", title: "Close Other Panes", category: "Pane", repeats: false),
+        Info(name: "pane.balance", title: "Balance Splits", category: "Pane", repeats: false),
+        Info(name: "pane.move_to_tab", title: "Move Pane to Tab…", category: "Pane", repeats: false),
+        Info(name: "pane.move_to_new_tab", title: "Move Pane to New Tab", category: "Pane", repeats: false),
         Info(name: "pane.go_to", title: "Go to Anything…", category: "Pane", repeats: false),
         Info(name: "pane.send_key", title: "Send Key", category: "Pane", repeats: true),
         Info(name: "pane.copy", title: "Copy", category: "Pane", repeats: false),
@@ -339,6 +358,12 @@ final class KeymapStore {
     @ObservationIgnored private var hash: String?
     @ObservationIgnored private var instance: String?
     @ObservationIgnored private var loading = false
+    /// Which pane and tab order commands the server runs (`ServerConnection.panesSupportChanged`).
+    /// Observed, as `bindings` is: the app's shortcut menu follows it. A change is a new
+    /// `generation`, so key command lists built for the old one are built again.
+    var panes = PaneSupport.none {
+        didSet { if panes != oldValue { generation += 1 } }
+    }
 
     init(control: RexControl) {
         self.control = control
@@ -352,10 +377,13 @@ final class KeymapStore {
         return idx.sorted().map { bindings[$0] }
     }
 
+    /// What a binding does on this server; nil when the app can't perform it here.
+    func action(_ b: KeyBinding) -> AppAction? { AppAction.resolve(b.action, b.args, panes: panes) }
+
     /// The binding a key runs: the first one the app can perform.
     func resolve(_ chords: [KeyChord]) -> (KeyBinding, AppAction)? {
         for b in bindings(for: chords) {
-            if let a = AppAction.resolve(b.action, b.args) { return (b, a) }
+            if let a = action(b) { return (b, a) }
         }
         return nil
     }

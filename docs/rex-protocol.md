@@ -77,7 +77,9 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
 - Sessions: `session.bootstrap` (`event_scope: "all"`), `attach`, `view`, `list`, `create`,
   `destroy`, `set_label`, `new_window`, `close_window`, `set_window_label`, `focus_window`,
   `new_split`, `focus_block`, `zoom_block`, `resize_pane` (ratio 0.05–0.95), `own_block`
-  (`mode: "take"`), `disown_block`.
+  (`mode: "take"`), `disown_block`, and for Arrange and the sidebar's reorder `swap_blocks`,
+  `move_block`, `move_window` and `move` ([terminal.md](terminal.md), Arrange;
+  [sidebar.md](sidebar.md), Reorder).
 - Other: `block.close`, `hosts.list`, `block_creator.list`, `data.connect`, `client.keymap`,
   `client.action`, `client.key`, `client.reply`.
 - Before a server is added (`ServerPreview`, one short connection that attaches to nothing):
@@ -87,6 +89,15 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   previews, `text` with `trim` and `unwrap` or `html` for Share's All Output), `blob_read`,
   `write`, `resize`, `clear`, `title`, `process`, `program_status`, `upload_begin`,
   `download_begin`.
+
+## Ordered calls
+
+The server runs its ordered methods (`move_block`, `move_window`, `swap_blocks`, `block.close`,
+`new_window`, from revision 13) one at a time in arrival order on a connection; others, and
+responses, can come in any order. `RexControl.callInOrder` hands every request of a sequence to
+the socket in one turn of the main actor, which keeps their order on the wire, then waits for all
+the answers. Separate calls, `async let` or a task group promise no order. Move to New Tab and
+Close Other Panes use it. `session.move` isn't ordered, so the app sends one at a time.
 
 ## Share's All Output (`format`, `blob_read`)
 
@@ -145,8 +156,8 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
 
 ## Events handled
 
-- Top level: `session_created`, `session_destroyed`, `session_moved`, `hosts_changed` (hosts,
-  then creators), `keymap_changed`, `client_joined`, `client_left`, `client_prompt_requested`,
+- Top level: `session_created`, `session_destroyed`, `session_moved` (`session.list`, read as for
+  a dropped one below), `hosts_changed` (hosts, then creators), `keymap_changed`, `client_joined`, `client_left`, `client_prompt_requested`,
   `client_prompt_ended`, `event_dropped`, `session_event`.
 - Inside `session_event`: `session_view_changed` (re-read if the revision is newer),
   `session_label_changed`, `block_created`, `block_event`, `creator_changed` (re-read the
@@ -184,7 +195,7 @@ session and features hang work on it.
 | --- | --- |
 | `block_event` (with `block_id`) | that block's status, title and process, once per block for a burst, then the handlers registered for its `block_event_name` (`router.on(blockEvent:)`). The session comes from the event, or from the view that holds the block. Never a full sync. |
 | `creator_changed` | `block_creator.list` |
-| `session_created`, `session_destroyed`, `session_moved` | `session.list`, once for a burst: gone sessions leave, new ones are attached, the order is the server's |
+| `session_created`, `session_destroyed`, `session_moved` | `session.list`, once for a burst and one at a time: gone sessions leave, new ones are attached, the order is the server's. An event while it is out asks for one more read; a read an event or a full sync came after is dropped |
 | `hosts_changed` | `hosts.list` and `block_creator.list` |
 | `keymap_changed` | `client.keymap` |
 | `client_joined`, `client_left`, `client_changed` | the push helper's lookup |

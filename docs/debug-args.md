@@ -117,9 +117,10 @@ builds.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
-  ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`) and how many
-  progress values were written (`progressWrites`), to check that progress reports re-render only
-  the status leaf: `xcrun simctl spawn <id> log show --last 1m --predicate 'eventMessage CONTAINS
+  ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`), how many
+  progress values were written (`progressWrites`), and how often the tab screen and the pane
+  menu's Arrange ran (`windowScreens`, `paneMenuItems`), to check that progress reports re-render
+  only the status leaf and that an agent's spinning title re-renders neither: `xcrun simctl spawn <id> log show --last 1m --predicate 'eventMessage CONTAINS
   "RENDER_COUNT"'`.
 - `-sidebarFoldBench <cycles>`: 8 s after launch, fold and open every machine and session that many
   times, as a tap does, and log one `SIDEBAR_FOLD_BENCH` line (rows, frames, late frames, worst
@@ -153,6 +154,11 @@ builds.
   (`Features/Files/ShareTest.swift` lists the steps): `screen`, `styledScreen`, `all`, `styledAll`
   (each with `:bar:leading` or `:bar:trailing` to point at that edge), `selection`, `cancel`,
   `dismiss`, `wait:<s>`. Each sheet logs `SHARE_ITEM <text|file> <bytes> <path>`.
+- `-panesTest '<step>;<step>…'`: run Arrange's commands on the tab on screen, two seconds apart,
+  through the same paths as the menu and the keys (`Features/Tab/PanesTest.swift`): `swap`,
+  `moveTo:<n>`, `newTab`, `balance`, `closeOthers` (confirmed), `tab:+1`, `tab:-1`, `dragTab:<gap>`,
+  `dragSession:<gap>`, `wait:<s>`. After each it logs `PANES_STATE` with the session's tabs, their
+  panes and split ratios, the tab shown and the pane shown. Only in a `zz-` session you made.
 - `-forceStatus '<text>'`: every pane shows its status chip with this text once it opens and each
   time it is live, to look at the chip over any output. With `-replay <file>` it needs no server.
 - `-tapTest col,row[;col,row…]`: tap those cells as a focused finger would, `-tapTestAfter` seconds
