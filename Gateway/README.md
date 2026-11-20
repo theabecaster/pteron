@@ -126,12 +126,19 @@ field is a string, and a field that is not in this table is refused with `400`:
 |---|---|---|
 | `aps.alert.title`, `aps.alert.body` | required | 120 and 1000 characters |
 | `aps.alert.subtitle` | optional | 256 characters |
-| `aps.category` | `AGENT_BLOCKED`, `AGENT_DONE` or `NOTICE` | |
+| `aps.category` | `AGENT_BLOCKED`, `AGENT_BLOCKED_ACT`, `AGENT_DONE` or `NOTICE` | |
 | `aps.interruption-level` | `passive`, `active` or `time-sensitive` | |
 | `aps.thread-id` | the pane's id | 256 characters |
 | `aps.sound` | `default` | |
 | `server` | the Rex server's address | 512 characters |
 | `session_id`, `window_id`, `block_id` | ids the app opens | 256 characters each |
+| `record` | optional: the id of the status record a question is about | 1 to 128 characters, none a control character |
+| `fp` | optional: the fingerprint of that wait | exactly 16 lowercase hex characters |
+
+`record` and `fp` come with the category `AGENT_BLOCKED_ACT`, on which the app offers Enter and
+Interrupt (docs/notifications.md, Answering from a notification). The gateway only checks
+their form. A helper from before them sends neither and the category `AGENT_BLOCKED`, which
+stays valid.
 
 It reaches Apple as `JSON.stringify` of the parsed `payload`: same keys, order and values,
 compact, which is what the helper sends. The 4096-byte limit applies to that text.

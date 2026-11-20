@@ -318,7 +318,9 @@ counts, orders, dates and dims as they do.
 ### Actions from the wrist
 
 Enter and Interrupt for a waiting agent: Return (`\r`) or Control-C (`0x03`) typed into its
-pane. Notification actions are not built: they need a status id in the push payload.
+pane. A question's notification on the phone has the same two actions, and they go through
+the same `GlanceActions` and the same guard: [notifications.md](notifications.md), Answering
+from a notification.
 
 ```
 watch:  [Enter] [Interrupt] ─ tap ─▶ "Send Enter to Claude?" ─ confirmed ─▶ WatchActions ─▶ WatchSession.send
@@ -343,6 +345,11 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
      the same fingerprint. Anything else types nothing;
   3. types once. A write that left is never sent again, and a tap that reaches the phone twice
      is answered from memory.
+
+  A wait is answered once, whether from the watch or from a notification's action: for
+  15 s after a write left for it, another action for the same wait types nothing and the
+  watch hears `changed` ([notifications.md](notifications.md), Answering from a
+  notification).
 - **Which connection it uses:**
 
   | The phone's app | Status read | The write |

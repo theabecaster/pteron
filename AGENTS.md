@@ -57,7 +57,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
   `GlanceWriter` (the snapshot's one writer), `GlanceBridge` (sends each written snapshot to the
   watch), `GlanceActions` (answers the watch's Enter and Interrupt: status read, guard, one
-  write), `ScenePhases` (what each scene phase asks; servers
+  write), `NotificationActions` (the same two on a question's notification, through
+  `GlanceActions`), `ScenePhases` (what each scene phase asks; servers
   start at the first one that shows the app).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),

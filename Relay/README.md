@@ -6,7 +6,7 @@ which is what the iOS app looks for), watches every session, and sends a push wh
 
 | Event | Category | Interruption level |
 | --- | --- | --- |
-| An agent becomes `blocked` (OSC 7501: question, permission, sign-in) | `AGENT_BLOCKED` | `time-sensitive`, sound |
+| An agent becomes `blocked` (OSC 7501: question, permission, sign-in) | `AGENT_BLOCKED_ACT`, or `AGENT_BLOCKED` when the push can't name the wait (step 7) | `time-sensitive`, sound |
 | An agent reports `done` or `error` | `AGENT_DONE` | `passive`, no sound |
 | A terminal raises a desktop notification (OSC 9 / OSC 777) | `NOTICE` | `active`, sound |
 
@@ -819,12 +819,14 @@ every push. It has no `session_id`, `window_id` or `block_id`, and no collapse i
     "interruption-level": "time-sensitive",
     "sound": "default",
     "thread-id": "block:<uuid>",
-    "category": "AGENT_BLOCKED"
+    "category": "AGENT_BLOCKED_ACT"
   },
   "server": "https://my-mac-rex.example.ts.net",
   "session_id": "session:<uuid>",
   "window_id": "window:<uuid>",
-  "block_id": "block:<uuid>"
+  "block_id": "block:<uuid>",
+  "record": "claude",
+  "fp": "d110a7daf17e741b"
 }
 ```
 
@@ -834,7 +836,32 @@ every push. It has no `session_id`, `window_id` or `block_id`, and no collapse i
 - A collapse id is set for agent pushes (`collapse_id` in the gateway request, which becomes
   `apns-collapse-id`), so a later state of the same block replaces the earlier notification.
 - The time-sensitive level needs the Time Sensitive Notifications capability in the app.
-- Categories `AGENT_BLOCKED`, `AGENT_DONE`, and `NOTICE` exist so the app can register actions.
+- `record` and `fp` name the wait a question is about, so the app can answer it from the
+  notification with Enter or Interrupt (docs/notifications.md, Answering from a notification).
+  `record` is the id of the status record that reports it. `fp` is the wait's fingerprint
+  (`policy::fingerprint`): FNV-1a, 64 bits, as 16 hex characters, over the record's `state`,
+  `kind` and `msg` as Rex gave them, not trimmed as the push's words are, with a missing
+  value apart from an empty one. The app makes the same from the record it reads before it
+  types (`ActionGuard.fingerprint`), and types only when the two are equal;
+  `fixtures/fingerprints.json` holds the cases both are tested against.
+- Only a question carries the two, with the category `AGENT_BLOCKED_ACT`, and only when it
+  can name its wait: the record's state is exactly `blocked`, and its id is not empty, at
+  most 128 bytes and written as an identifier (ASCII letters, digits and `. _ : -`). The id
+  is the reporting program's own and goes into the push as it is, so one that could be text
+  is not sent; `fp` is a hash. Beside its title and body a push carries none of the
+  record's words. Any other question is `AGENT_BLOCKED` with
+  no `record` and no `fp`, as every question was before 0.6.0, and the app shows no action
+  on it. A question held at a desk, or sent at the end of the debounce window, goes with its
+  own wait; one that 0.5.0 parked has none.
+- A gateway from before these fields refuses such a question whole (`400`). Beacon then
+  sends it once more as `AGENT_BLOCKED` without `record` and `fp`, so the phone still gets
+  the question, with no actions. It says so in its log once per run. That is the only case
+  in which a push is sent twice; any other answer stands, and so does the second request's.
+- The payload is at most 4096 bytes, Apple's limit. The title is cut to 120 characters and
+  the body to 1000; a body that would still take the payload over the limit (wide
+  characters, or ones JSON escapes) is cut further, and no other field is.
+- The app registers the categories `AGENT_BLOCKED`, `AGENT_BLOCKED_ACT`, `AGENT_DONE` and
+  `NOTICE`; only `AGENT_BLOCKED_ACT` has actions.
 
 ## Desk presence
 

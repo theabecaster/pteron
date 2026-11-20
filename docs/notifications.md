@@ -277,12 +277,16 @@ and how to verify by hand.
 
 | Event | Category | Level |
 |---|---|---|
-| Agent becomes `blocked` | `AGENT_BLOCKED` | time-sensitive, sound |
+| Agent becomes `blocked` | `AGENT_BLOCKED_ACT`; `AGENT_BLOCKED` when the push can't name the wait | time-sensitive, sound |
 | Agent reports `done` or `error` | `AGENT_DONE` | passive |
 | Desktop notification (OSC 9 / 777) | `NOTICE` | active, sound |
 
 The helper doesn't push notices from panes with an OSC 7501 status (below), so a Claude OSC 9 next
 to its `blocked` status gives one push. The app's toasts filter them too (above).
+
+A question's push names the wait it is about, and the app offers Enter and Interrupt on it
+("Answering from a notification" below). A Beacon before 0.6.0 names none and sends
+`AGENT_BLOCKED`, which has no actions.
 
 **Desk presence.** While the person sits at a Mac whose Rex app shows the agent's server, Beacon
 holds what they would see there anyway: a question waits until they leave or for 10 minutes at
@@ -658,8 +662,10 @@ permission macOS asks for when the app is first opened; `notify-send` on Linux w
 `seen_devices.json`, so it is once per phone, not per connect or per helper start.
 
 Pushes carry `server` (the Tailscale URL as entered in the app), `session_id`, `window_id` and
-`block_id`, so a tap can open the pane. The gateway sets the APNs topic, the bundle id
-`dev.abrahamgonzalez.rexduo`.
+`block_id`, so a tap can open the pane. A question's push of the category `AGENT_BLOCKED_ACT`
+also carries `record` (the id of the status record that reports the wait) and `fp` (the
+wait's fingerprint, 16 hex characters), so an action can answer it. The gateway sets the APNs
+topic, the bundle id `dev.abrahamgonzalez.rexduo`.
 
 ## The app's side
 
@@ -761,8 +767,8 @@ computer. While the app is in front, `NotificationTidier` (`State/NotificationTi
 removes the ones that say nothing true any more, with `removeDeliveredNotifications`. It shows
 and plays nothing.
 
-- Only `AGENT_BLOCKED` and `AGENT_DONE` are ever removed. A `NOTICE` is its only copy and
-  always stays, and so does the test notification.
+- Only `AGENT_BLOCKED`, `AGENT_BLOCKED_ACT` and `AGENT_DONE` are ever removed. A `NOTICE` is
+  its only copy and always stays, and so does the test notification.
 - On a server whose agents' states have all been read on a live connection
   (`ServerConnection.agentsCurrent`), a question or a "finished" goes when the agent in its
   pane does not wait now; a pane that is gone counts as not waiting. The pane is the payload's
@@ -785,8 +791,108 @@ cold-launched the app; the route waits there until the app attaches its model.
 `PushRoute(userInfo:)` reads `server`, `session_id`, `window_id`, `block_id`. `AppModel.open(_:)`
 finds the server by host (as entered, or the Tailscale name it reports), waits up to 30 s for the
 session to load, focuses the pane and sets `openRequest`; `RootView` shows that tab, and the toast
-modifier closes any sheet. The three categories are registered without actions; iOS groups by the
-payload's `thread-id`.
+modifier closes any sheet. `AGENT_BLOCKED`, `AGENT_DONE` and `NOTICE` are registered without
+actions; iOS groups by the payload's `thread-id`.
+
+### Answering from a notification
+
+A question's notification has two actions, Enter and Interrupt: Return (`\r`) or Control-C
+(`0x03`) typed into the agent's pane, as from the watch
+([glance.md](glance.md), Actions from the wrist). iOS shows them when the notification is
+expanded or long-pressed, and nowhere else. There is no setting, prompt, sound or haptic for
+them.
+
+- **Which notifications have them.** The category `AGENT_BLOCKED_ACT`
+  (`AppDelegate.notificationCategories`), which Beacon 0.6.0 and later sends for a question
+  whose push names its wait: `record` and `fp` in the payload. `AGENT_BLOCKED` has no
+  actions, so a push from an earlier Beacon, or one that can't name its wait, shows no
+  button that could only fail. Both actions ask for the unlocked phone
+  (`.authenticationRequired`), since they type into a terminal; Interrupt is marked
+  destructive. Neither opens the app.
+- **Enter takes the agent's highlighted answer**, which is often "Yes", as it does on the
+  watch and at the keyboard. The watch asks before it sends; here the long press that shows
+  the buttons and the unlock stand in for that question. The button reads "Enter", never
+  "Yes": it types a key, and what the key means is the agent's. The notification's body is
+  the question as Beacon has it, and an action is refused when the question is no longer
+  that one.
+- **The fingerprint** is Beacon's `policy::fingerprint` and the app's
+  `ActionGuard.fingerprint`, one function written twice: FNV-1a over the record's state, kind
+  and message as the server gave them. `Relay/fixtures/fingerprints.json` holds the cases and
+  their expected values; `cargo test` and the RexGlance tests both read it.
+- **What a tap does** (`NotificationActions`, `State/NotificationActions.swift`).
+  `NotificationDelegate` hands it the response, and tells iOS the response was handled only
+  once all of the following has ended, inside a background task.
+  1. `PushAction.target` builds the wait from the payload: the server is found among the
+     app's as a tapped push finds it (`PushRoute.matches`), and `session_id`, `block_id`,
+     `record` and `fp` are taken as they are. An address that fits none of the app's servers,
+     or more than one, is refused: an action never guesses where to type.
+  2. `GlanceActions.handle` does what it does for the watch: it reads the pane's status now,
+     `ActionGuard` passes it only while the top record is still `blocked`, with the same id
+     and the same fingerprint, and then it types once. Nothing happens between that read and
+     the write, so an agent that moved on after the tap (it finished, or was answered at the
+     computer) is found out by the read; of two questions of one pane only the one the pane
+     asks now passes. A write that left is never sent again. With the app in the background it uses one short connection that starts no
+     server (`OneShotActionChannel`).
+  3. The action's id is the request's identifier, the time the notification was delivered
+     and the kind, so a tap that reaches the app twice types once. The delivery time is in
+     it because the identifier is the push's collapse id, which the pane's next question
+     from the same record has again.
+- **A launch with no view.** After the app was swiped away, the system starts it for an
+  action in the background and builds no scene, so no view appears to hand the model over.
+  `RexDuoApp.init` leaves its model for the delegate (`AppDelegate.launching(with:)`), which
+  takes it in `didFinishLaunching` and gives it to the actions only: no server starts and
+  push registration does not begin, as in every launch in the background. Should the model
+  still be missing, it is waited for, 5 s at most (`NotificationActions.Parts.modelLimit`).
+  The status read and the write have `GlanceActions`' limits (5 s and 8 s), and the write to
+  Notification Center 2 s.
+- **When the system's time for the background runs out first**, the task ends as soon as
+  the system's handler returns, so the action ends inside that handler: the notification is
+  put back as not sent (handed to Notification Center, not waited for) and iOS is told the
+  response was handled. The run that was under way types nothing afterwards: `mayWrite` is
+  asked right before the write, and again by the connection as the last thing before the
+  text is handed over (`ActionCalls.write`). An expiry after the notification was dealt
+  with changes nothing.
+- **One wait is answered once, whoever asks.** The same wait can show on the watch and as
+  a notification, and an agent's status needs a moment to change after a key. For 15 s
+  after a write left for a wait (`GlanceActions.Parts.answeredFor`; the computer took it, or
+  nobody knows whether it did), another action for the same server, pane, record and
+  fingerprint types nothing, and the watch hears `changed`. A notification is never
+  removed for this: an agent can ask the very same question again within those 15 s, and
+  that alert must stay. It is put back like any action that typed nothing, saying
+  "Already answered a moment ago. Open Pteron if it's still waiting." An action that
+  arrives while another for the same wait is under way waits for that one's answer and
+  never types.
+- **The same tap delivered twice** types once, and the second leaves the notification as
+  the first one left it or will leave it: it is neither removed nor put back.
+- **What the notification becomes** (`PushAction.outcome`):
+
+  | The action | The notification |
+  |---|---|
+  | typed, and the computer took it | removed |
+  | not typed: another action answered this same wait in the last 15 s | put back: "Already answered a moment ago. Open Pteron if it's still waiting." |
+  | the same tap again | left as it is |
+  | not typed: the agent no longer waits, or waits for something else | put back: "The question changed. Open Pteron to see it." |
+  | not typed, or not known to be: the computer couldn't be reached or didn't answer in time, the server is not in the app or is there twice, the app's model didn't come in time, or the system's time ran out | put back: "Couldn't send. Open Pteron." |
+
+  "Put back" is a local notification under the same request identifier, so it takes the
+  place of the one iOS cleared for the action and the question is never lost. It is passive,
+  has no sound and no actions (category `AGENT_BLOCKED`), keeps the title, the subtitle, the
+  thread and the payload's fields, so a tap opens the pane and the tidier above removes it
+  like any question. While the app is in front it goes into the list with no banner
+  (`PushPresentation`); it is the only notification the app makes itself.
+- **Where the app types nothing** (a test launch, `GlanceActions.enabled`), an action types
+  nothing either.
+- **What the two keys say.** `fp` is a hash, and `record` is the id the reporting program
+  gave its status record, which Beacon sends only when it is written as an identifier
+  (Relay/README.md, Handle the push). Neither holds the question's words; those are in the
+  title and body, as before.
+- **An app from before the actions** has no category of that name, so iOS shows it no
+  button, and a tap opens the pane by the keys it always read. It does not clear a question
+  of the new category from the list by itself (`NotificationTidy` there knows two
+  categories); a "finished" from the same record still replaces it.
+
+Tests: `RexDuoTests/NotificationActionsTests.swift` (with a stand-in connection),
+`Packages/RexGlance` `FingerprintVectorTests`, `Relay/src/push.rs` and `policy.rs`.
 
 ### Testing
 
@@ -798,6 +904,8 @@ payload's `thread-id`.
   tokens; `-pushToken <hex>` (debug builds) fakes one and skips the permission check, and
   `-pushGateway <url>` registers with another gateway.
 - Push taps: `xcrun simctl push <sim> dev.abrahamgonzalez.rexduo payload.json` with the payload
-  above, app in the background or not running, then tap the banner.
+  above, app in the background or not running, then tap the banner. With `"category":
+  "AGENT_BLOCKED_ACT"`, `record` and `fp` in it, the expanded notification shows Enter and
+  Interrupt.
 - Toasts: a throwaway `zz-` session printing OSC 7501 `blocked` (see `Relay/README.md`,
   "Verify by hand").
