@@ -29,7 +29,8 @@ import Foundation
 /// - Down with nothing received since it went up, over a screen the user saw (`exact`): they
 ///   go out, in order, through the stream's one queue.
 /// - Otherwise they are dropped, as soon as something comes, and the user is told once
-///   (`onDropped`). Bytes encoded under the old screen's modes are never sent to a new one.
+///   (`onDropped`, with why: the screen changed, or the stream was not back in time). Bytes
+///   encoded under the old screen's modes are never sent to a new one.
 ///   A pane that shows nothing yet, or a fresh snapshot, never sends held keys.
 /// - They live `heldLife` (1 s) at most, counted from the first one; then they are dropped
 ///   the same way. After a drop, every later key of the same fence is dropped too, silently:
@@ -58,8 +59,16 @@ final class CatchUpFence {
     var onChange: (@MainActor (Bool) -> Void)?
     /// Held keys to send now, in order.
     var onFlush: (@MainActor ([UInt8]) -> Void)?
+    /// Why input was dropped.
+    enum Drop: Sendable, Equatable {
+        /// Output, a resize or a snapshot came: the screen is another one.
+        case changed
+        /// Nothing came, but the stream was not back in time, or the pane had no screen yet.
+        case waiting
+    }
+
     /// Input was dropped: at most once per fence.
-    var onDropped: (@MainActor () -> Void)?
+    var onDropped: (@MainActor (Drop) -> Void)?
     /// The fence comes down over a screen that changed: input queued before it went up is the
     /// stream's to drop. True when it dropped any.
     var onStale: (@MainActor () -> Bool)?
@@ -85,7 +94,11 @@ final class CatchUpFence {
     /// Counts bytes, messages and changes of the conditions: a quiet wait that sees another
     /// value starts over.
     private var activity = 0
-    private var quietArmed = false
+    /// The fence whose quiet wait is running. A wait left over from an older fence, still
+    /// asleep, doesn't stand in for this one's.
+    private var quietEpoch = -1
+    /// Something came since the fence went up.
+    private var changedSince = false
     /// Counts the times conditions 1 and 2 began to hold, for the cap.
     private var readySerial = 0
     private var wasReady = false
@@ -111,6 +124,7 @@ final class CatchUpFence {
         self.exact = exact
         echoed = false
         dropped = false
+        changedSince = false
         held.removeAll()
         wasReady = false
         activity += 1
@@ -129,6 +143,7 @@ final class CatchUpFence {
     func changed() {
         guard isUp else { return }
         exact = false
+        changedSince = true
         // Keys held for the screen that just changed can never be sent.
         if !held.isEmpty { drop() }
         noteActivity()
@@ -192,7 +207,7 @@ final class CatchUpFence {
         held.removeAll()
         guard !dropped else { return }
         dropped = true
-        onDropped?()
+        onDropped?(changedSince ? .changed : .waiting)
     }
 
     private func armExpiry() {
@@ -223,8 +238,8 @@ final class CatchUpFence {
 
     /// One wait at a time: it starts over while bytes keep coming.
     private func armQuiet() {
-        guard !quietArmed else { return }
-        quietArmed = true
+        guard quietEpoch != epoch else { return }
+        quietEpoch = epoch
         let mine = epoch, sleep = self.sleep
         Task { [weak self] in
             while true {
@@ -233,11 +248,12 @@ final class CatchUpFence {
                 await sleep(self.echoed ? self.timing.resizeQuiet : self.timing.quiet)
                 guard self.epoch == mine, self.isUp, self.ready else { break }
                 guard self.activity == seen else { continue }
-                self.quietArmed = false
+                self.quietEpoch = -1
                 self.lowerWhenDrained(epoch: mine, activity: seen)
                 return
             }
-            self?.quietArmed = false
+            // Only this fence's own wait gives the place back: a newer fence has armed its own.
+            if let self, self.quietEpoch == mine { self.quietEpoch = -1 }
         }
     }
 
@@ -272,7 +288,7 @@ final class CatchUpFence {
         // Keys typed at the old screen that had not left yet go the same way.
         if !exact, onStale?() == true, !dropped {
             dropped = true
-            onDropped?()
+            onDropped?(changedSince ? .changed : .waiting)
         }
         epoch += 1
         isUp = false

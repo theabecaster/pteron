@@ -77,6 +77,8 @@ final class StreamFenceTests: XCTestCase {
     }
 
     private var message: String { TerminalStream.fenceDroppedMessage }
+    /// For keys dropped though nothing came: the stream was not back, or there was no screen.
+    private var waiting: String { TerminalStream.fenceWaitingMessage }
 
     // MARK: Up and down
 
@@ -226,7 +228,7 @@ final class StreamFenceTests: XCTestCase {
         log.real.insert(.milliseconds(30))
         let socket = await dropAndWaitForResume(link, s)
         s.send(text: "x")
-        let told = await eventually { self.notices == [self.message] }
+        let told = await eventually { self.notices == [self.waiting] }
         XCTAssertTrue(told)
         XCTAssertTrue(s.isFenced, "the fence itself stays up")
         // The rest of the line must not arrive alone.
@@ -236,7 +238,7 @@ final class StreamFenceTests: XCTestCase {
         XCTAssertTrue(down)
         await settle()
         XCTAssertEqual(link.written, [])
-        XCTAssertEqual(notices, [message])
+        XCTAssertEqual(notices, [waiting])
     }
 
     func testAColdOpenDropsTypedKeys() async {
@@ -247,7 +249,7 @@ final class StreamFenceTests: XCTestCase {
         await catchUp(s, link)
         await settle()
         XCTAssertEqual(link.written, [])
-        XCTAssertEqual(notices, [message])
+        XCTAssertEqual(notices, [waiting])
     }
 
     func testInputQueuedBeforeTheFenceGoesOnlyOverAnExactScreen() async {
@@ -344,7 +346,7 @@ final class StreamFenceTests: XCTestCase {
         await settle()
         XCTAssertEqual(link.inputTrace, [])
         XCTAssertEqual(ended, [false, false])
-        XCTAssertEqual(notices, [message])
+        XCTAssertEqual(notices, [waiting], "nothing had come yet: the stream was on its way back")
     }
 
     func testInputThatGoesOnceIsUnsentWhileFenced() async {
@@ -573,5 +575,77 @@ final class StreamFenceTests: XCTestCase {
         XCTAssertEqual(link.written, [])
         XCTAssertEqual(notices, [message])
         XCTAssertFalse(s.isFenced)
+    }
+
+    // MARK: Arrival, the quiet wait and the two notices
+
+    func testAWakeOrAReturnInTheMiddleOfASnapshotSendsNothingBeforeItsEnd() async {
+        let link = FakeLink()
+        let (s, sink, _) = await current(link)
+        s.restart()
+        let live = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
+        XCTAssertTrue(live, "the fresh stream is open and its snapshot has not come")
+        XCTAssertTrue(s.isFenced)
+        s.send(text: "x")
+        // The socket answers the wake's ping, and the pane comes back on screen: neither says
+        // that the screen is the program's.
+        s.wake()
+        s.returned()
+        await settle()
+        await settle()
+        XCTAssertTrue(s.isFenced, "the snapshot has not ended")
+        XCTAssertEqual(link.written, [], "no key before `end`")
+        link.sockets[1].push(Wire.opening)
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        await settle()
+        XCTAssertEqual(link.written, [], "typed at the old screen: the snapshot replaced it")
+        XCTAssertEqual(notices, [message])
+    }
+
+    func testAQuietWaitLeftFromAnOlderFenceDoesNotStandInForTheNext() async {
+        let fence = CatchUpFence()
+        var sleepers: [(time: Duration, wake: CheckedContinuation<Void, Never>)] = []
+        fence.sleep = { time in await withCheckedContinuation { sleepers.append((time, $0)) } }
+        let quiet = fence.timing.quiet
+        fence.raise(exact: true)
+        fence.arrived()
+        let first = await eventually { sleepers.filter { $0.time == quiet }.count == 1 }
+        XCTAssertTrue(first)
+        // The stream parks while that wait sleeps, and comes back: another fence.
+        fence.reset()
+        fence.raise(exact: true)
+        fence.arrived()
+        let second = await eventually { sleepers.filter { $0.time == quiet }.count == 2 }
+        XCTAssertTrue(second, "the new fence has a quiet wait of its own")
+        // The old wait wakes late and changes nothing; the new one lowers the fence, with no cap.
+        let waits = sleepers.filter { $0.time == quiet }
+        waits[0].wake.resume()
+        await settle()
+        XCTAssertTrue(fence.isUp)
+        waits[1].wake.resume()
+        let down = await eventually { !fence.isUp }
+        XCTAssertTrue(down)
+        for s in sleepers where s.time != quiet { s.wake.resume() }
+    }
+
+    func testKeysThatExpiredOrHadNoScreenAreSaidToBeWaitingNotChanged() async {
+        let link = FakeLink()
+        let (s, _, _) = stream(link)
+        var calm: [String] = []
+        s.onFenceNotice = { calm.append($0) }
+        s.start()
+        s.send(text: "x")
+        XCTAssertEqual(calm, [TerminalStream.fenceWaitingMessage], "a pane with no screen yet")
+        await catchUp(s, link)
+        // Output during a catch-up: the other text.
+        let socket = await dropAndWaitForResume(link, s)
+        s.send(text: "y")
+        socket.push(FakeLink.welcome() + Array("out".utf8))
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        XCTAssertEqual(calm, [TerminalStream.fenceWaitingMessage, TerminalStream.fenceDroppedMessage])
+        XCTAssertEqual(notices, [], "not through the failure notice when the app gave a calm one")
+        XCTAssertEqual(link.written, [])
     }
 }

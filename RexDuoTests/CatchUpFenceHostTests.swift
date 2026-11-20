@@ -188,7 +188,7 @@ final class CatchUpFenceHostTests: XCTestCase {
         stream.start()
         host.insertPath("~/Documents/report.txt ")
         XCTAssertFalse(stream.hasPendingInput)
-        XCTAssertEqual(notices, ["The pane changed. Nothing was sent."])
+        XCTAssertEqual(notices, ["Not sent: the pane was still reconnecting."], "nothing had come: no screen yet")
         stream.stop()
     }
 

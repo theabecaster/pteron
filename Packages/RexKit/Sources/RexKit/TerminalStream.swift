@@ -484,6 +484,11 @@ public final class TerminalStream {
     public var isFenced: Bool { fence.isUp }
     /// What the user is told when the fence dropped input.
     public static let fenceDroppedMessage = "The pane changed. Nothing was sent."
+    /// Input dropped because the stream was not back in time, or the pane had no screen yet.
+    public static let fenceWaitingMessage = "Not sent: the pane was still reconnecting."
+    /// Tells the user that the fence dropped input: nothing failed, so the app shows it in its
+    /// neutral style. Without one, `onActionFailed` gets the text.
+    public var onFenceNotice: (@MainActor (String) -> Void)?
     /// True once the sink has been given a screen (a snapshot or a screen read).
     private var hasScreen = false
 
@@ -520,7 +525,11 @@ public final class TerminalStream {
         }
         // Held keys go out through the same queue as any typed key.
         fence.onFlush = { [weak self] bytes in self?.enqueueText(bytes) }
-        fence.onDropped = { [weak self] in self?.onActionFailed?(Self.fenceDroppedMessage) }
+        fence.onDropped = { [weak self] why in
+            guard let self else { return }
+            let text = why == .changed ? Self.fenceDroppedMessage : Self.fenceWaitingMessage
+            if let say = self.onFenceNotice { say(text) } else { self.onActionFailed?(text) }
+        }
         fence.drained = { [weak self] done in
             guard let sink = self?.sink else { return done() }
             sink.streamWhenParsed(done)
@@ -623,9 +632,10 @@ public final class TerminalStream {
     /// A pane whose stream kept running while it was off screen is on screen again. The screen
     /// it shows is the stream's, but its size may be about to change (a fit claim that lapsed is
     /// claimed again), so the fence goes up as for any return, and comes down as soon as the
-    /// stream is quiet and no claim is on its way. A stream that is not live has it up already.
+    /// stream is quiet and no claim is on its way. A stream that is not live has it up already,
+    /// and so has one whose snapshot is still arriving: those come down by their own arrival.
     public func returned() {
-        guard !stopped, live else { return }
+        guard !stopped, live, !fence.isUp, snapshotState == .none else { return }
         fence.raise(exact: hasScreen)
         fence.arrived()
     }
@@ -675,7 +685,12 @@ public final class TerminalStream {
             guard let self, self.unansweredPing == id else { return }
             self.unansweredPing = nil
             // The waiting `receive` fails with the socket and handles the drop.
-            if !answered { self.drop(socket, gen: myGen) } else if myGen == self.gen, self.live { self.fence.arrived() }
+            if !answered {
+                self.drop(socket, gen: myGen)
+            } else if myGen == self.gen, self.live, self.snapshotState == .none {
+                // A stream still receiving its snapshot arrives when that ends, not now.
+                self.fence.arrived()
+            }
         }
         Task { [weak self] in
             await sleep(timeout)
@@ -1137,7 +1152,7 @@ public final class TerminalStream {
         if code == 4000 {
             token = nil
             // Keys held for a pane that is gone are dropped, and say so.
-            if fence.heldCount > 0 { fence.noteDropped() }
+            if fence.heldCount > 0 { fence.changed() }
             fence.reset()
             sink?.streamStatus(.ended("pane closed"))
             return
