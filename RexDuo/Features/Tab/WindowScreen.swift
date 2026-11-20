@@ -1057,7 +1057,7 @@ struct BlockBadge: View {
     }
 
     /// The status as VoiceOver reads it beside the title.
-    static func spoken(_ state: String?) -> String {
+    nonisolated static func spoken(_ state: String?) -> String {
         switch state {
         case "working": "Working"
         case "blocked": "Waiting for you"
