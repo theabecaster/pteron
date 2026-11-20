@@ -14,6 +14,9 @@ import UIKit
 ///   repeats. Held for `KeyCap.holdDelay` it sends Shift-Return instead, as a hardware keyboard
 ///   encodes it: a new line without sending in an agent. While an input method composes, Return
 ///   commits the composition, as the system keyboard's return does, and sends nothing.
+/// - The attach key is pinned too, just before Return, where the pane's server takes files: sending
+///   a photo or a file never scrolls out of sight. A tap only opens its menu; nothing is sent
+///   until a row of it is picked.
 /// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key moves into
 ///   its column and the keys get the bar's width. Keys stay off a vertical crease (`KeyBarPlacement`).
 /// - Since iOS 26 the keyboard is a glass panel with rounded top corners. The bar draws no
@@ -75,7 +78,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     /// The pinned keys, at the capsule's trailing end. Their own stack, so whatever takes the
     /// scrolling keys' place keeps them.
     private let pinnedStack = UIStackView()
-    private var pinnedCaps: [KeyCap] = []
+    private(set) var pinnedCaps: [KeyCap] = []
     /// A hairline between the scrolling keys and the pinned ones: keys scroll under it.
     private let divider = UIView()
     private var dividerWidth: NSLayoutConstraint?
@@ -268,8 +271,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             stack.addArrangedSubview(cap)
             caps.append(cap)
         }
-        pinnedCaps = KeyBarLayout.pinned.map { key in
+        pinnedCaps = KeyBarLayout.pinned.filter { $0 != "attach" || attachAvailable }.map { key in
             let cap = makeCap(key)
+            if key == "attach" { addMenu(to: cap) }
             if key == "enter" {
                 cap.onHold = { [weak self] in self?.hold(key) }
                 cap.accessibilityHint = "Hold for Shift-Return, a new line in an agent"
@@ -303,7 +307,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     /// `-filesTest menu`: opens the attach menu as a tap does; `reveal` only scrolls to its key.
     func openAttachMenu(open: Bool = true) {
         guard let button = attachButton, let cap = button.superview else { return }
-        scroll.scrollRectToVisible(scroll.convert(cap.bounds, from: cap), animated: false)
+        if cap.isDescendant(of: stack) { scroll.scrollRectToVisible(scroll.convert(cap.bounds, from: cap), animated: false) }
         if open { button.performPrimaryAction() }
     }
     #endif

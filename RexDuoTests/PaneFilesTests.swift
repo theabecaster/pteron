@@ -109,6 +109,20 @@ final class PaneFilesTests: XCTestCase {
         XCTAssertFalse(files.showsAttachKey)
         XCTAssertTrue(titles(files.menu()).isEmpty)
         for c in FilesCommand.allCases { XCTAssertFalse(files.offers(c), c.rawValue) }
+        XCTAssertFalse(AttachMenuItem.shows(files), "no Attach in the pane menu either")
+        XCTAssertNil(files.pasteFileTitle, "nor Paste Image in the edit menu")
+    }
+
+    /// The pane menu's Attach shows exactly where the attach key does, with the key's rows.
+    func testThePaneMenusAttachFollowsTheKey() async throws {
+        for methods in [["write", "upload_begin", "download_begin", "list_dir"], ["write", "list_dir"], ["write"]] {
+            let (rig, files) = try await pane(creators: Self.creators(methods))
+            defer { rig.stop() }
+            files.checkSupport()
+            XCTAssertEqual(AttachMenuItem.shows(files), files.showsAttachKey, "\(methods)")
+            XCTAssertEqual(files.sections().map { $0.rows.map(\.title) }, titles(files.menu()), "\(methods)")
+        }
+        XCTAssertFalse(AttachMenuItem.shows(nil), "no host on screen: no row")
     }
 
     /// A creator for another host says nothing about this pane's: each method is asked, once.
@@ -572,6 +586,30 @@ final class BrowserKeyboardTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(changes, afterCover, "no second keyboard move")
         XCTAssertEqual(KeyboardRecord.capture(host), record)
+    }
+
+    /// The edit menu: Paste Image right after Paste, only with an image on the clipboard and a
+    /// host that takes uploads; beside text too, where Paste still pastes the text.
+    func testTheEditMenuOffersPasteImageOnlyWithAnImageAndUploads() {
+        let (host, files) = makeHost()
+        let board = UIPasteboard.general
+        defer { board.items = [] }
+        func pasteRows() -> [String] {
+            let menu = host.editMenuInteraction(UIEditMenuInteraction(delegate: nil),
+                                                menuFor: UIEditMenuConfiguration(identifier: nil, sourcePoint: .zero),
+                                                suggestedActions: [])
+            return (menu?.children.compactMap { ($0 as? UIAction)?.title } ?? []).filter { $0.hasPrefix("Paste") }
+        }
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).pngData { $0.fill(CGRect(x: 0, y: 0, width: 4, height: 4)) }
+        board.items = [["public.png": png]]
+        XCTAssertEqual(pasteRows(), [], "a host without uploads: neither row, as before")
+        files.server.capabilities.record(method: FileMethod.upload.full, host: nil, .present, serial: files.server.capabilities.serial)
+        XCTAssertEqual(pasteRows(), ["Paste", "Paste Image"])
+        board.items = [["public.png": png, "public.utf8-plain-text": "https://example.com/a.png"]]
+        XCTAssertEqual(pasteRows(), ["Paste", "Paste Image"])
+        XCTAssertEqual(files.pasteChoice, .text, "Paste keeps pasting the text")
+        board.items = [["public.utf8-plain-text": "hello"]]
+        XCTAssertEqual(pasteRows(), ["Paste"])
     }
 
     func testInsertModeWritesThePathIntoThePaneAfterTheSheetGoes() async throws {

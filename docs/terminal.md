@@ -311,11 +311,20 @@ so it works in a shell and in an agent alike. The reverse, Open, brings a file t
 to the phone, and the file browser lists the folders of the pane's computer. The wire rules are
 in [rex-protocol.md](rex-protocol.md), Folders and Files.
 
-- **Sending.** The key bar's attach key (paperclip, after Paste) opens a menu titled with where the
+- **Sending.** The key bar's attach key (paperclip) is pinned before Return in every layout, so it
+  never scrolls out of sight. A tap opens a menu titled with where the
   files go: the agent working in the pane (OSC 7501), else the pane's computer. It offers Paste
   Image or Paste File (when the clipboard has one), Photos, Camera, Files, and Send Original.
+  The same rows are under Attach in the pane menu, right after Share (subtitle "or 📎 on the
+  key bar"), for a pane whose keyboard is down (`AttachMenuItem`, built from
+  `PaneFiles.sections`). Close Pane and Close Tab stay last.
   Paste, the paste key, ⌘V and the edit menu's Paste paste text whenever the clipboard has text;
   they send an image or files only from a clipboard with no text at all (`ClipboardChoice`).
+  Beside Paste the edit menu offers Paste Image (Paste File for copied files) whenever the
+  clipboard has one and the host takes uploads, even with text; deciding checks the clipboard's
+  types only, and its content is read when the row is picked. The palette finds Insert Photo…,
+  Insert File…, Browse Files… and Insert Path… by image, photo, picture, screenshot, attach,
+  upload, file and send.
   Images, movies and files dragged in from another app can be dropped on a pane (`PaneDrop`); a
   drag of text or a link is refused, never sent as a `.txt`, and the app's own drags, such as a
   selection, are left alone. Nothing is sent without one of these actions.

@@ -40,6 +40,9 @@ enum FilesCommand: String, CaseIterable, Sendable {
         }
     }
 
+    /// Words the palette also finds the row by, so "attach" or "screenshot" leads to sending one.
+    var keywords: String { "image photo picture screenshot attach upload file send" }
+
     /// The file method the pane's host must have.
     var needs: FileMethod {
         switch self {
@@ -192,49 +195,75 @@ final class PaneFiles {
 
     // MARK: Menu
 
-    /// The attach menu, built when it opens so its title and Paste Image are current. The rows
-    /// for sending show where the host takes uploads, the browse rows where it lists folders.
-    func menu() -> UIMenu {
-        var sections: [UIMenuElement] = []
-        if support.upload == true { sections.append(sendSection()) }
-        let browse = [FilesCommand.browse, .insertPath].filter(offers).map { c in
-            UIAction(title: c.title, image: UIImage(systemName: c.symbol)) { [weak self] _ in self?.run(c) }
-        }
-        if !browse.isEmpty { sections.append(UIMenu(options: .displayInline, children: browse)) }
-        if support.upload == true {
-            let original = UIAction(title: "Send Original", subtitle: "Photos as they are, with their location",
-                                    image: UIImage(systemName: "photo.badge.checkmark"),
-                                    state: sendOriginals ? .on : .off) { [weak self] _ in
-                self?.sendOriginals.toggle()
-            }
-            sections.append(UIMenu(options: .displayInline, children: [original]))
-        }
-        return UIMenu(children: sections)
+    /// One row of the attach menu. The attach key draws the rows as a `UIMenu` (`menu()`), the
+    /// pane menu's Attach as SwiftUI (`AttachMenuItem`): one list, so the two never differ.
+    struct Row {
+        var title: String
+        var subtitle: String?
+        var symbol: String
+        /// A toggle's state; nil for a plain row.
+        var on: Bool?
+        var run: @MainActor () -> Void
     }
 
-    private func sendSection() -> UIMenu {
-        let board = UIPasteboard.general
-        var items: [UIMenuElement] = []
-        if ClipboardChoice.offersPasteImage(hasImage: board.hasImages || Self.hasFiles(board), canSend: true) {
-            let title = Self.hasFiles(board) ? "Paste File" : "Paste Image"
-            items.append(UIAction(title: title, image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
-                self?.pasteFiles()
-            })
+    struct Section {
+        var title: String?
+        var rows: [Row]
+    }
+
+    /// The attach menu's rows, read when it opens so its title and Paste Image are current. The
+    /// rows for sending show where the host takes uploads, the browse rows where it lists folders.
+    func sections() -> [Section] {
+        var sections: [Section] = []
+        if support.upload == true { sections.append(sendSection()) }
+        let browse = [FilesCommand.browse, .insertPath].filter(offers).map { c in
+            Row(title: c.title, symbol: c.symbol) { [weak self] in self?.run(c) }
         }
-        items.append(UIAction(title: "Photos", subtitle: "Without location. Videos are sent as they are.",
-                              image: UIImage(systemName: "photo")) { [weak self] _ in
+        if !browse.isEmpty { sections.append(Section(rows: browse)) }
+        if support.upload == true {
+            let original = Row(title: "Send Original", subtitle: "Photos as they are, with their location",
+                               symbol: "photo.badge.checkmark", on: sendOriginals) { [weak self] in
+                self?.sendOriginals.toggle()
+            }
+            sections.append(Section(rows: [original]))
+        }
+        return sections
+    }
+
+    /// The attach key's menu.
+    func menu() -> UIMenu {
+        UIMenu(children: sections().map { s in
+            UIMenu(title: s.title ?? "", options: .displayInline, children: s.rows.map { r in
+                UIAction(title: r.title, subtitle: r.subtitle, image: UIImage(systemName: r.symbol),
+                         state: r.on.map { $0 ? .on : .off } ?? .off) { _ in r.run() }
+            })
+        })
+    }
+
+    private func sendSection() -> Section {
+        var rows: [Row] = []
+        if let title = pasteFileTitle {
+            rows.append(Row(title: title, symbol: "doc.on.clipboard") { [weak self] in self?.pasteFiles() })
+        }
+        rows.append(Row(title: "Photos", subtitle: "Without location. Videos are sent as they are.", symbol: "photo") { [weak self] in
             self?.pickPhotos()
         })
         if AttachPicker.cameraAvailable {
-            items.append(UIAction(title: "Camera", image: UIImage(systemName: "camera")) { [weak self] _ in
+            rows.append(Row(title: "Camera", symbol: "camera") { [weak self] in
                 guard let self, let view = self.view else { return }
                 self.picker.takePhoto(over: view, original: self.sendOriginals)
             })
         }
-        items.append(UIAction(title: "Files", image: UIImage(systemName: "folder")) { [weak self] _ in
-            self?.pickFiles()
-        })
-        return UIMenu(title: SendTarget.menuTitle(target), options: .displayInline, children: items)
+        rows.append(Row(title: "Files", symbol: "folder") { [weak self] in self?.pickFiles() })
+        return Section(title: SendTarget.menuTitle(target), rows: rows)
+    }
+
+    /// "Paste Image" or "Paste File" where the clipboard holds one and the host takes uploads,
+    /// else nil. It checks the clipboard's types only, which asks nothing of the user; the
+    /// clipboard is read when the row is picked (`pasteFiles`).
+    var pasteFileTitle: String? {
+        let b = UIPasteboard.general
+        return ClipboardChoice.pasteFileTitle(hasImage: b.hasImages, hasFiles: Self.hasFiles(b), canSend: support.upload == true)
     }
 
     /// The Photos picker, honoring Send Original. Its pick is sent to the pane.

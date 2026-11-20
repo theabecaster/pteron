@@ -61,8 +61,9 @@ enum GoToCommands {
         if let s = targetServer, s.phase == .online, let block, block.isTerminal {
             for c in FilesCommand.allCases where s.offers(c, host: block.hostID, block: block.id) {
                 order += 1
-                add(GoToItem(id: .command(appKey(c.action)), kind: .command, title: c.title, subtitle: "Pane", order: order,
-                             symbol: c.symbol, keyLabel: KeyLabel.for(action: c.action, in: keymap), category: "Pane"),
+                add(GoToItem(id: .command(appKey(c.action)), kind: .command, title: c.title, subtitle: "Pane",
+                             fields: [.init(text: c.keywords, weight: 0.7)], order: order, symbol: c.symbol,
+                             keyLabel: KeyLabel.for(action: c.action, in: keymap), category: "Pane"),
                     .files(c))
             }
         }

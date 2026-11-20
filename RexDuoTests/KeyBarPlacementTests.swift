@@ -92,3 +92,56 @@ struct KeyBarPlacementTests {
         #expect(KeyBarPlacement.creaseGap(widths: widths, start: 6, spacing: 6, crease: -200 ... -200) == nil)
     }
 }
+
+/// The pinned attach key: before Return with the bar's gap between them, Return where it always
+/// was, and neither on the Duo's vertical crease in any posture.
+@MainActor
+struct PinnedAttachKeyTests {
+    /// A key bar laid out over `width` points of keyboard, with or without the attach key.
+    private func bar(width: CGFloat, attach: Bool) -> KeyBar {
+        let bar = KeyBar()
+        bar.frame = CGRect(x: 0, y: 0, width: width, height: KeyBar.barHeight)
+        bar.attachAvailable = attach
+        for _ in 0..<3 {
+            bar.setNeedsLayout()
+            bar.layoutIfNeeded()
+            for cap in bar.pinnedCaps { cap.superview?.superview?.layoutIfNeeded() }
+        }
+        return bar
+    }
+
+    private func frames(_ bar: KeyBar) -> [CGRect] { bar.pinnedCaps.map { $0.convert($0.bounds, to: bar) } }
+
+    @Test(arguments: [320, 375, 402, 466, 669, 951] as [CGFloat])
+    func attachSitsBeforeReturnAndReturnKeepsItsPlace(width: CGFloat) {
+        let without = bar(width: width, attach: false)
+        let with = bar(width: width, attach: true)
+        #expect(without.pinnedCaps.map(\.key) == ["enter"], "no uploads: no attach key, as before")
+        #expect(with.pinnedCaps.map(\.key) == ["attach", "enter"])
+        let ret = frames(without)[0]
+        let f = frames(with)
+        #expect(f[1] == ret, "Return keeps its size and its place at the trailing end")
+        #expect(f[0].width >= 44 && f[1].width >= 44)
+        #expect(f[1].minX - f[0].maxX >= 6, "at least the bar's 6 pt between attach and Return")
+    }
+
+    /// Every posture with a vertical crease: the pinned keys sit clear of it by the crease
+    /// clearance. The bar gets the posture's width inside its side insets, where the capsule ends
+    /// nearest the crease (the hide key in the bar, not in the vertical bar's column).
+    @Test func pinnedKeysStayOffEveryVerticalCrease() {
+        let creased = DuoSimulation.postures.filter { p in
+            guard let d = p.division?.frame else { return false }
+            return d.height > 0 && d.width < 100
+        }
+        #expect(!creased.isEmpty)
+        for p in creased {
+            let lead = p.safeArea.leading
+            let inner = p.size.width - lead - p.safeArea.trailing
+            let fold = p.division!.frame.insetBy(dx: -KeyBarPlacement.creaseClearance, dy: 0)
+            for f in frames(bar(width: inner, attach: true)) {
+                let x = f.offsetBy(dx: lead, dy: 0)
+                #expect(x.maxX <= fold.minX || x.minX >= fold.maxX, "\(p.name): \(x) on \(fold)")
+            }
+        }
+    }
+}

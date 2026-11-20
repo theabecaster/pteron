@@ -103,10 +103,11 @@ Shift-Tab.
   typed; a key with no shortcut does nothing.
 - Hold an arrow to repeat it.
 - Drag the ✥ key like a trackpad to move through menus and history.
-- The paperclip sends a photo or a file to the pane's computer and types its path into the pane,
-  as dropping a file on a terminal does on a Mac. Its menu says where it goes. You can also drop
-  files on a pane from another app, and select a path the terminal shows to Open that file on the
-  phone.
+- The paperclip beside Return, or Attach in the pane menu, sends a photo or a file to the pane's
+  computer and types its path into the pane, as dropping a file on a terminal does on a Mac. Its
+  menu says where it goes. With an image copied, the edit menu offers Paste Image beside Paste.
+  You can also drop files on a pane from another app, and select a path the terminal shows to
+  Open that file on the phone.
 - The last key hides the keyboard.
 
 ### Hardware keyboards

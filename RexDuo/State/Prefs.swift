@@ -12,8 +12,10 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
 
     /// Keys that never scroll, in every layout: they sit at the end of the keys' capsule, next to
     /// the hide key. Return runs a shell's line and sends an agent's message, so it never scrolls
-    /// out of reach. No layout's `keys` lists them.
-    static let pinned = ["enter"]
+    /// out of reach, and stays last. Attach sits before it, so sending a photo or a file is always
+    /// in sight; it shows only where the pane's host takes files, as it always has. No layout's
+    /// `keys` lists them.
+    static let pinned = ["attach", "enter"]
 
     var id: String { rawValue }
     var title: String {
@@ -27,13 +29,13 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
         switch self {
         case .agents:
             return ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "ctrl-c", "1", "2", "3", "ctrl", "cmd",
-                    "paste", "attach"]
+                    "paste"]
         case .shell:
             return ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left", "right", "ctrl-r",
-                    "ctrl-c", "|", "~", "/", "-", "paste", "attach"]
+                    "ctrl-c", "|", "~", "/", "-", "paste"]
         case .vim:
             return ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
-                    "$", "~", "paste", "attach"]
+                    "$", "~", "paste"]
         }
     }
 
@@ -53,7 +55,7 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
     }
 
     /// The layout a key list saved by the removed editor stands for, nil for an edited one. A list
-    /// saved as `keys` were before Return was pinned has Return among them: it is left out.
+    /// saved as `keys` were before Return and attach were pinned has them among it: they are left out.
     static func matching(stored keys: [String]) -> KeyBarLayout? {
         let scrolling = keys.filter { !pinned.contains($0) }
         return allCases.first { $0.storedKeys == keys || $0.keys == scrolling }
@@ -216,6 +218,8 @@ final class Prefs {
         min(max((s * 2).rounded() / 2, fontSizes.lowerBound), fontSizes.upperBound)
     }
     static let defaultKeyBar = KeyBarLayout.agents
+    // Every layout pins Return, with the attach key before it where the pane's host takes files
+    // (`KeyBarLayout.pinned`); no setting moves them.
     // Also decided for the user, where they're used: a tab shows its splits whenever every pane stays
     // legible (`WindowScreen.splitsFit`); agent status always shows in the sidebar; haptics follow
     // iOS's System Haptics; in-app banners for waiting agents are always on; sidebar text follows

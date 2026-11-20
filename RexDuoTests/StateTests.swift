@@ -153,14 +153,21 @@ struct PrefsTests {
                "$", "~", "paste", "attach"],
     ]
 
-    /// Return is pinned in every layout, so no layout scrolls it too, and every other key keeps
-    /// its place.
+    /// Return and attach are pinned in every layout, attach first and Return last, so no layout
+    /// scrolls them too, and every other key keeps its place: only attach left the scrolling end.
     @Test(arguments: KeyBarLayout.allCases)
-    func pinnedReturnLeftTheScrollingKeysInOrder(layout: KeyBarLayout) {
-        #expect(KeyBarLayout.pinned == ["enter"])
+    func pinnedKeysLeftTheScrollingKeysInOrder(layout: KeyBarLayout) {
+        #expect(KeyBarLayout.pinned == ["attach", "enter"])
         #expect(layout.keys.allSatisfy { !KeyBarLayout.pinned.contains($0) })
-        #expect(layout.keys == Self.beforeReturnWasPinned[layout]!.filter { $0 != "enter" })
+        #expect(layout.keys == Self.beforeReturnWasPinned[layout]!.filter { $0 != "enter" && $0 != "attach" })
+        #expect(Self.beforeReturnWasPinned[layout]!.last == "attach", "attach was the last scrolling key")
         #expect(Set(layout.keys).count == layout.keys.count)
+    }
+
+    @Test func aListSavedWithAttachStillMatchesItsLayout() {
+        // As the keys were before attach was pinned: attach last.
+        #expect(KeyBarLayout.matching(stored: KeyBarLayout.shell.keys + ["attach"]) == .shell)
+        #expect(KeyBarLayout.matching(stored: KeyBarLayout.agents.keys + ["attach", "enter"]) == .agents)
     }
 
     @Test func aListWithReturnAddedStillMatchesItsLayout() {
@@ -174,11 +181,11 @@ struct PrefsTests {
 
     @Test func layoutsHaveCmdAndShiftTab() {
         #expect(KeyBarLayout.agents.keys == ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "ctrl-c",
-                                             "1", "2", "3", "ctrl", "cmd", "paste", "attach"])
+                                             "1", "2", "3", "ctrl", "cmd", "paste"])
         #expect(KeyBarLayout.shell.keys == ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left",
-                                            "right", "ctrl-r", "ctrl-c", "|", "~", "/", "-", "paste", "attach"])
+                                            "right", "ctrl-r", "ctrl-c", "|", "~", "/", "-", "paste"])
         #expect(KeyBarLayout.vim.keys == ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w",
-                                          "pgup", "pgdn", "$", "~", "paste", "attach"])
+                                          "pgup", "pgdn", "$", "~", "paste"])
         // Every key has a cap: a symbol, a pair of symbols or a title, and the Settings preview spells it.
         for layout in KeyBarLayout.allCases {
             for key in layout.keys + KeyBarLayout.pinned where key.count > 1 {

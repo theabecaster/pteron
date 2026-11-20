@@ -181,6 +181,10 @@ final class TerminalHostPool {
 
     func host(for key: Key) -> TerminalHost? { hosts[key] }
 
+    /// Changes when a host comes or goes. Only views that look a host up while they draw read it
+    /// (`AttachMenuItem`), so a new pane redraws them and nothing else.
+    private(set) var hostsChanged = 0
+
     /// The agent board covers every pane (`TerminalHost.setCovered`), the ones made later too.
     @ObservationIgnored private(set) var covered = false
     /// A hardware key reached a pane. The hosts are told only while someone listens.
@@ -230,12 +234,14 @@ final class TerminalHostPool {
 
     func add(_ host: TerminalHost, for key: Key) {
         hosts[key] = host
+        hostsChanged &+= 1
         if covered { host.setCovered(true) }
         host.onKeyPress = onKeyPress
         host.takeOwedKeyboard = { [weak self] in self?.takeOwed(key) }
         host.onStopped = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
             self.hosts[key] = nil
+            self.hostsChanged &+= 1
             self.containers[key] = nil
         }
     }

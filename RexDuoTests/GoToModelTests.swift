@@ -196,6 +196,31 @@ final class GoToModelTests: XCTestCase {
         XCTAssertTrue(rows(t).isEmpty)
     }
 
+    /// The files rows have words besides their titles: each of them finds Insert Photo… and
+    /// Browse Files…, and a word no row has still finds nothing.
+    func testFilesCommandsAreFoundByTheirSynonyms() async {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1"])])])
+        var meta = BlockMeta()
+        meta.foreground = "zsh"
+        s.meta["b1"] = meta
+        for method in [FileMethod.listDir, .upload] {
+            s.capabilities.record(method: method.full, host: "host-a", .present, serial: s.capabilities.serial)
+        }
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        let items = copy(m, target: t).items
+        let searcher = GoToSearcher()
+        await searcher.load(items)
+        for word in ["image", "photo", "picture", "screenshot", "attach", "upload", "file", "send"] {
+            let titles = await searcher.search(word, scope: .commands, boosts: [:]).map { items[$0.index].title }
+            XCTAssertTrue(titles.contains("Insert Photo…"), word)
+            XCTAssertTrue(titles.contains("Browse Files…"), word)
+        }
+        let none = await searcher.search("zebra", scope: .commands, boosts: [:])
+        XCTAssertTrue(none.isEmpty)
+    }
+
     func testBlockActionsShowOnlyWhereTheCreatorListsThem() {
         let m = model()
         let s = server(m)

@@ -95,6 +95,21 @@ final class FileRulesTests: XCTestCase {
         XCTAssertTrue(C.offersPasteImage(hasImage: true, canSend: true))
         XCTAssertFalse(C.offersPasteImage(hasImage: true, canSend: false))
     }
+
+    /// Paste Image beside Paste in the edit menu (and in both attach menus): only with an image or
+    /// copied files and a host that takes uploads, and even beside text. Paste itself never changes.
+    func testPasteImageShowsOnlyWithAnImageAndUploads() {
+        typealias C = ClipboardChoice
+        XCTAssertEqual(C.pasteFileTitle(hasImage: true, hasFiles: false, canSend: true), "Paste Image")
+        XCTAssertEqual(C.pasteFileTitle(hasImage: true, hasFiles: true, canSend: true), "Paste File")
+        XCTAssertEqual(C.pasteFileTitle(hasImage: false, hasFiles: true, canSend: true), "Paste File")
+        XCTAssertNil(C.pasteFileTitle(hasImage: false, hasFiles: false, canSend: true), "text alone: no row")
+        XCTAssertNil(C.pasteFileTitle(hasImage: true, hasFiles: false, canSend: false), "no uploads: no row")
+        XCTAssertNil(C.pasteFileTitle(hasImage: true, hasFiles: true, canSend: false))
+        // Beside text the row shows and Paste still pastes the text.
+        XCTAssertNotNil(C.pasteFileTitle(hasImage: true, hasFiles: false, canSend: true))
+        XCTAssertEqual(C.paste(hasText: true, hasImage: true, hasFiles: false, canSend: true), .text)
+    }
 }
 
 /// Drops: only files from another app, and only where the server takes them.

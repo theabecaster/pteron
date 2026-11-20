@@ -807,6 +807,7 @@ struct WindowScreen: View {
                 ShareMenuItem(server: server, sessionID: sessionID, block: block) { scope, styled in
                     host(block)?.share?.share(scope, styled: styled, anchor: barEdge.map { .bar($0) } ?? .titleBar)
                 }
+                AttachMenuItem(pool: pool, key: TerminalHostPool.Key(server: server.id, session: sessionID, block: block))
                 PaneMenuItems(server: server, sessionID: sessionID, window: w, block: block,
                               onSwap: { swap(with: $0) }, onMove: { moveToTab($0) }, onMoveToNewTab: { moveToNewTab() },
                               onBalance: { balance() }, onCloseOthers: { requestCloseOthers() },

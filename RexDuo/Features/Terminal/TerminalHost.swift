@@ -624,6 +624,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 self.pasteFromClipboard()
             })
         }
+        // Beside Paste, which keeps pasting text: an image or copied files on the clipboard can be
+        // sent even when it also holds text (an image copied from Safari carries its address).
+        if let title = files?.pasteFileTitle {
+            items.append(UIAction(title: title, image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
+                guard let self else { return }
+                self.clearSelection()
+                self.files?.pasteFiles()
+            })
+        }
         // SELECTION UI: Select All, with handles to pull it back in from.
         items.append(UIAction(title: "Select All", image: UIImage(systemName: "character.textbox")) { [weak self] _ in
             guard let self else { return }

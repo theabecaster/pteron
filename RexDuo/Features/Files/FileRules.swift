@@ -128,6 +128,14 @@ enum ClipboardChoice: Equatable {
     /// The attach menu offers Paste Image or Paste File whenever there is one, even beside text (an
     /// image copied from Safari also carries its address).
     static func offersPasteImage(hasImage: Bool, canSend: Bool) -> Bool { hasImage && canSend }
+
+    /// The row that sends the clipboard's image or files, in the attach menu, the pane menu's
+    /// Attach and the edit menu beside Paste: "Paste File" for copied files, "Paste Image" for an
+    /// image, nil for neither or where the host takes no uploads. It never changes what Paste does.
+    static func pasteFileTitle(hasImage: Bool, hasFiles: Bool, canSend: Bool) -> String? {
+        guard offersPasteImage(hasImage: hasImage || hasFiles, canSend: canSend) else { return nil }
+        return hasFiles ? "Paste File" : "Paste Image"
+    }
 }
 
 /// Which of an item's types is read as the file to send: an image, else a movie, else, for an item

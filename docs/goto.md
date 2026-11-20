@@ -48,7 +48,8 @@ from the field too (its ⌘ and ⌃ keys arrive as menu items, `AppShortcutComma
 - Clear Terminal and Reset Terminal, where the target pane's creator lists the method.
 - The target pane's files: Browse Files…, Insert Path…, Insert File… and Insert Photo…, each
   where the attach menu or its key would work for that pane (`ServerConnection.offers`;
-  docs/terminal.md, Files), with the key the keymap binds, if any.
+  docs/terminal.md, Files), with the key the keymap binds, if any. They are also found by image,
+  photo, picture, screenshot, attach, upload, file and send (`FilesCommand.keywords`).
 - Copy mode, dimmed ("Copy mode is only on the Mac."), only where the keymap binds one of its
   actions.
 
