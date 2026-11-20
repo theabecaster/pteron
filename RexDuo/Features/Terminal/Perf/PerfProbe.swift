@@ -74,7 +74,9 @@ struct PerfReplayInfo: Sendable {
 ///   from then on the screen is the program's, and typed keys are sent.
 /// `-perfSwitch <n>` adds a phase that switches between a tab's panes n times, as a swipe does,
 /// `-perfSwitchEvery` seconds apart (default 1.5); `mounts.cold`, `.parked` and `.resumed` then
-/// hold the medians over that phase's mounts.
+/// hold the medians over that phase's mounts. With `-perfSwitchType <text>` the text is typed
+/// into each pane as it comes back from the park, and `keyAnsweredMs` is the time from there to
+/// the server's answer to its write: one way less than that is when the key reached the server.
 ///
 /// ## A frame that shows a state
 ///
@@ -167,6 +169,9 @@ final class PerfProbe: Sendable {
         var switched: Bool
         var frame: Target?
         var current: Target?
+        /// `-perfSwitchType`: when the text was typed, and when the server had answered its write.
+        var typed: Double?
+        var written: Double?
     }
 
     /// Everything more than one thread touches.
@@ -382,6 +387,28 @@ final class PerfProbe: Sendable {
             if kind != .cold { m.frame = Target(at: now) }
             s.mounts.append(m)
         }
+        typeOnMount(host, kind: kind)
+    }
+
+    /// `-perfSwitchType <text>` (with `-perfSwitch`): types the text into each pane the switch
+    /// phase brings back from the park, at the moment it comes on screen, as a user who starts
+    /// typing at once. The mount records when the server answered the write, if it ever left.
+    @MainActor
+    private func typeOnMount(_ host: TerminalHost, kind: MountKind) {
+        guard kind == .parked, state.withLock({ $0.switching }),
+              let text = UserDefaults.standard.string(forKey: "perfSwitchType"), !text.isEmpty else { return }
+        let id = ObjectIdentifier(host.term.core)
+        let index = state.withLock { s -> Int in
+            s.mounts[s.mounts.count - 1].typed = Self.clock()
+            return s.mounts.count - 1
+        }
+        host.stream.onWritten = { [self] in
+            let now = Self.clock()
+            state.withLock { s in
+                if s.mounts.indices.contains(index), s.mounts[index].core == id, s.mounts[index].written == nil { s.mounts[index].written = now }
+            }
+        }
+        host.term.send(txt: text.replacingOccurrences(of: "\\n", with: "\r"))
     }
 
     /// The pane's stream caught up (its fence came down): its next frame is current.
@@ -1009,8 +1036,10 @@ final class PerfProbe: Sendable {
         func ms(_ seconds: Double) -> Double { (seconds * 1e6).rounded() / 1e3 }
         func since(_ m: Mount, _ t: Target?) -> Double? { t?.shown.map { ms($0 - m.at) } }
         var out: JSONObject = ["list": mounts.map { m -> JSONObject in
-            ["kind": m.kind.rawValue, "switched": m.switched, "firstFrameMs": since(m, m.frame) ?? NSNull() as Any,
-             "currentMs": since(m, m.current) ?? NSNull() as Any]
+            var one: JSONObject = ["kind": m.kind.rawValue, "switched": m.switched, "firstFrameMs": since(m, m.frame) ?? NSNull() as Any,
+                                   "currentMs": since(m, m.current) ?? NSNull() as Any]
+            if let typed = m.typed { one["keyAnsweredMs"] = m.written.map { ms($0 - typed) } ?? NSNull() as Any }
+            return one
         }]
         for kind in MountKind.allCases {
             let mine = mounts.filter { $0.kind == kind && $0.switched == switched }
@@ -1021,6 +1050,17 @@ final class PerfProbe: Sendable {
                 guard !values.isEmpty else { continue }
                 stats[name] = PerfMedian.of(values)
                 stats[name.replacingOccurrences(of: "Ms", with: "WorstMs")] = values.max() ?? 0
+            }
+            // Typed keys: how many were typed, how many the server answered, and how long that took.
+            let typed = mine.filter { $0.typed != nil }
+            if !typed.isEmpty {
+                let answered = typed.compactMap { m in m.written.map { ms($0 - (m.typed ?? $0)) } }
+                stats["keysTyped"] = typed.count
+                stats["keysAnswered"] = answered.count
+                if !answered.isEmpty {
+                    stats["keyAnsweredMs"] = PerfMedian.of(answered)
+                    stats["keyAnsweredWorstMs"] = answered.max() ?? 0
+                }
             }
             out[kind.rawValue] = stats
         }

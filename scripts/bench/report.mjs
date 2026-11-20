@@ -109,6 +109,9 @@ if (switches.length) {
       ['parked: first frame', 'mounts.parked.firstFrameMs'],
       ['parked: current', 'mounts.parked.currentMs'],
       ['parked mounts', 'mounts.parked.count'],
+      ['key answered', 'mounts.parked.keyAnsweredMs'],
+      ['keys typed', 'mounts.parked.keysTyped'],
+      ['keys answered', 'mounts.parked.keysAnswered'],
       ['peak MB', 'memory.peakMB'],
     ]);
 }

@@ -395,6 +395,9 @@ public final class TerminalStream {
     /// typed input was dropped because the connection broke while it was being sent (see `send`).
     public var onActionFailed: (@MainActor (String) -> Void)?
 
+    /// Called each time the server has answered a write of typed text. For measuring.
+    public var onWritten: (@MainActor () -> Void)?
+
     public private(set) var serverCols = 80
     public private(set) var serverRows = 24
     public private(set) var owner: String?
@@ -1295,6 +1298,7 @@ public final class TerminalStream {
                 var failure: Error?
                 do {
                     _ = try await self.blockCall("com.superlogical.terminal.write", args: ["data": text])
+                    self.onWritten?()
                 } catch { failure = error }
                 self.finished(item, failure: failure, id: id, epoch: epoch)
             }

@@ -24,6 +24,12 @@ builds.
   iOS does a suspended app's sockets on a device (a simulator keeps them). `drop` reconnects on
   the return, inside the wake's grace: no offline screen. `unreachable` fails every attempt from
   then on, so the offline screen shows when the grace runs out (`ForegroundWake`).
+- `-netDelay <ms>`: add a simulated round-trip time to every server's calls and terminal streams
+  (`LinkDelay`, RexKit): half before each request leaves and half after its answer; three round
+  trips before a new terminal data socket carries its first message (TCP, TLS 1.3 and the
+  WebSocket upgrade, which is how the server's data sockets connect), then half per message
+  either way. It delays without limiting: a burst stays a burst. Events, file transfers and
+  tunnels are not delayed. Also in the benchmark's `BENCH` build.
 - No argument: a Debug build logs one `CONTROL_API negotiated=<n> server=<n>` line for each
   control connection it makes, the API revision the server gave it and the newest the server
   speaks, and one `CONTROL_SYNC creators=read|kept` line for each full sync, which says whether
@@ -207,7 +213,12 @@ builds.
   `-replay <file>`: no server; feed a capture to a real pane (`ReplayScreen`, more arguments
   there). `-perfLog <name>`: measure the pane into `Documents/perf/<name>.json` (`PerfProbe`);
   with it, `-perfIdle <seconds>` and `-perfScroll <seconds>` add an idle phase and a scripted
-  fling through the scrollback. `-findTest <needle>` opens find on the replay's pane before the
+  fling through the scrollback. `-perfSwitch <n>` switches between the panes of the tab on
+  screen n times, forward and back, as a swipe does, `-perfSwitchEvery <seconds>` apart (default
+  1.5), and the result's `mounts` holds every pane mount (cold, parked or resumed) with its time
+  to the first frame and to the current screen; with `-autoOpen zz-…` only, since fit mode
+  claims the panes. `-perfSwitchType <text>` types the text into each pane as it comes back from
+  the park and records when the server answered the write. `-findTest <needle>` opens find on the replay's pane before the
   first byte, and `-findSteps <n>` then steps n matches 100 ms apart after the replay (a `find`
   phase). `-perfClean YES` deletes `Documents/perf` and `Documents/bench`
   and quits. `-peelLeadIn <seconds>` and `-drawables 2` are A/B switches for the device

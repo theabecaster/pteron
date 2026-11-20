@@ -84,7 +84,8 @@ that terminal's lock.
 Locks of one `GhosttyCore` (`GhosttyLock`, an `os_unfair_lock`):
 
 - `termLock`: the terminal, its size, colors, the prompt watch, the selection anchor.
-- `stateLock`: the render state and its iterators, the render hold, the scrollbar.
+- `stateLock`: the render state and its iterators, the render holds (the program's and the
+  catch-up's), the scrollbar.
 - `opLock`: the queue of work for the feed queue. `handlerLock`: the dirty handler.
 
 **Lock order: `termLock` first, then `stateLock`.** Find's `searchLock` (its search handle)
@@ -156,6 +157,19 @@ Accepted, with the bound:
   changed (`GhosttyRowBuilder.matches`). Scrolling output and programs that repaint the whole
   screen dirty rows they don't change.
 - **Synchronized output** (mode 2026) holds frames until the program ends the update, at most 1 s.
+- **The catch-up hold** (`GhosttyCore.setCatchUpHold`) is the same hold, set by the host while
+  its stream's fence is up ([terminal.md](terminal.md), The catch-up fence): the frame on show
+  is the terminal as it was when the hold began, bytes are parsed as always, and the first frame
+  after the hold shows everything at once, so a pane that comes back doesn't flicker through
+  missed output or the reflow of a resize. It has the program hold's limit (1 s, then the screen
+  follows the bytes) and its exceptions (a scroll, a selection and find still draw). The two
+  holds are independent: a frame is updated only when neither is on. Setting it takes `termLock`
+  once on the main thread, as a selection does, to capture the frame to keep; it is set only
+  when a fence goes up, never at rest. A fenced pane's cursor is drawn hollow
+  (`GhosttyRenderer.setFenced`); nothing else in the frame changes.
+- **A parked pane** has no drawables: `releaseDrawables` shrinks the layer's drawable size to one
+  pixel and the renderer draws nothing; `restoreDrawables` puts the size back and the first frame
+  makes them again.
 - **Renderer.** `CAMetalLayer`, bgra8Unorm, premultiplied blending. Three instanced passes:
   background rects (adjacent cells of one color merged), glyph quads (an r8 mask atlas and a
   bgra atlas for color emoji), decoration rects (underline, strike, cursor). Inverse and bold

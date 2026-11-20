@@ -62,7 +62,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   start at the first one that shows the app).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),
-  Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is the engine,
+  Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `TerminalHostPool` keeps the panes on screen and parks the ones that left it last (docs/terminal.md, Parking); `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline, Onboarding (the
   first-run guide and Setup Guide's checklist; docs/architecture.md, First run),
@@ -184,6 +184,10 @@ shell.
   Rex doesn't order concurrent block calls, and a request that left is never resent because
   `terminal.write` has no sequence number (docs/terminal.md, Input). Input that answers from
   elsewhere (the watch) goes through the same queue with `sendOnce`: now or not at all.
+- Nothing reaches a program state the user did not see. While a stream catches up its fence
+  holds typed bytes and sends them only over an exact screen; reports and actions are dropped
+  (docs/terminal.md, The catch-up fence). Bytes made from a place on the screen go through
+  `engineSendReport`, never `engineSend`.
 - `RexControl` is the only thing that retries a lost connection. Code that needs it waits for
   `observeConnected` instead of polling.
 - Other sessions work in parallel worktrees. Keep diffs to what the task needs; move files with `git mv`.

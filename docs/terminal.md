@@ -1,7 +1,8 @@
 # Terminal: stream, sizing, gestures and input
 
-One `TerminalStream` (RexKit) per visible pane feeds one `TerminalHost` (UIKit), which wraps the
-terminal engine view. Output arrives on a data socket; input goes over the control socket.
+One `TerminalStream` (RexKit) per pane feeds one `TerminalHost` (UIKit), which wraps the
+terminal engine view. Output arrives on a data socket; input goes over the control socket. The
+panes on screen stream; the few that left it last are parked (Parking).
 
 ## Engine
 
@@ -30,7 +31,16 @@ selected range and key encoding. What must keep working, and the manual script f
    Rex message. The host restores it into a new terminal.
 
 There is no size or screen read before the stream: the snapshot is the screen, and the `resize`
-message that follows it carries the size and the owner.
+message that follows it carries the size and the owner. So a fitted pane starts its stream at its
+first layout, beside its fit claim and not after it (Fit and mirror): the claim's settle delay and
+two round trips no longer come before the first request for a screen.
+
+Until the first screen can be drawn the pane shows `GlideLoader` in its center: Glide's outline,
+about 44 pt, with a soft stroke gliding along it in a 1.2 s loop while the body sways a few
+degrees (a still mark that breathes slowly with Reduce Motion), in the theme's text color. It
+fades in over 180 ms only after 400 ms, and out over 150 ms, so a pane that opens fast shows
+nothing. "Connecting…" sits under it and waits 2.5 s. Core Animation runs all of it: no
+main-thread work per frame. A pane that has a screen never shows it.
 
 REJECT `0x02` means this client still has a connection to the terminal. Right after a `restart()`
 that is the old socket, whose close the server hasn't handled yet, so the first start asks again
@@ -84,7 +94,7 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 - A fresh start that fails while the control connection is up (a refused ticket or HELLO, a data
   socket that won't open) is tried again after 3 s, then 6, 12, 24 and 30 s, and every 30 s from
   there. The next WELCOME resets that. These later starts ask for one ticket each.
-- `stop()`, `restart()` and a newer start end whatever was waiting.
+- `stop()`, `park()`, `restart()` and a newer start end whatever was waiting.
 - `resync()` (a fresh stream, for its snapshot) does nothing while a start is under way or owed.
 - A fresh start whose ticket is refused with `conflict` right after a reconnect (the app's resync
   hasn't attached the session again yet) is tried again after 250 ms, up to 8 times, before the
@@ -93,13 +103,93 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   that fails, or doesn't answer within 2.5 s (half open after a suspension), is dropped without a
   status 1000 close and the stream goes on with a RESUME, as after any drop. One that answers is
   live. Transient chips ("Reconnecting…") wait out the wake's grace (`ForegroundWake.grace`).
+  The fence is up from the wake until the socket has answered and the stream is quiet.
+
+## The catch-up fence
+
+Input has no sequence number and is never sent twice (Input), so a key typed at a screen that is
+behind the program can't be taken back. `CatchUpFence` (RexKit, one per stream) keeps input away
+from a program state the user has not seen.
+
+- **Up**: from `start()` until the first screen, and on every data socket drop, wake, return from
+  the park and fresh restart. Raising it again while it is up is still the same fence.
+- **Down**, only when all of these hold:
+  1. the stream has arrived: the WELCOME of a RESUME, the end of a fresh stream's snapshot (or
+     the screen read that stands in for it), or the pong of a wake;
+  2. no fit claim is on its way (`TerminalStream.setClaimPending`, set by the host from the
+     request until the resize has returned, the claim is released or the pane is lost);
+  3. no byte and no Rex message came for 40 ms, or for 60 ms once our own `resize` came back in
+     the stream, while the program redraws for its new size;
+  4. the engine has parsed everything it was fed (`streamWhenParsed`), and nothing came meanwhile.
+- **A pane that never goes quiet** (`yes`, a build log) would never pass 3 and could not be typed
+  into, not even Ctrl-C. So 300 ms after 1 and 2 hold, the fence comes down once the engine has
+  parsed what it has. The screen then moves as the program writes, as on any busy pane.
+- **Keys and pastes while it is up** are held as the bytes they were encoded to, in order.
+  - When the fence comes down with nothing received since it went up, over a screen the user saw,
+    the screen was exact: the held bytes go out, in order, through the one input queue. This is
+    the common case (an idle shell, an agent waiting) and feels local.
+  - As soon as anything arrives (a byte, a resize, a snapshot, any message) they are dropped,
+    with one notice: "The pane changed. Nothing was sent." Key bytes depend on terminal modes
+    that may have changed with the screen, so they are never sent to another one.
+  - They live 1 s at most, counted from the first; then they are dropped the same way.
+  - After a drop, every later key of the same fence is dropped too, silently: the rest of a line
+    whose start was dropped must not arrive alone. At most one notice per fence, and none when
+    nothing was typed.
+  - A pane that shows nothing yet has no screen to type at: keys typed before its first screen
+    are dropped, and so are keys typed during a fresh start, whose snapshot replaces the screen.
+- **Input still queued when it goes up** (typed without a connection, or behind a request that
+  is out) waits for it in the queue: sent if the screen was exact, dropped with the notice
+  otherwise. A request that had left is never sent again, as always.
+- **Dropped while it is up, never held**: mouse and wheel reports, focus reports and the keys a
+  tap or a drag makes (`engineSendReport`, `TerminalStream.send(report:)`), silently; server
+  actions bound to keys, forwarded keys, palette runs and Insert Path, with the notice;
+  `sendOnce` (the watch) is told it never left. A file send waits for the fence and then goes:
+  the user picked a file, not a place on the screen (`whenCurrent`).
+- **Always allowed**: scrolling, selection, copy, find, opening links, menus.
+- **Look**: the screen as it was, with no dimming and no badge. Only the cursor is hollow, as an
+  unfocused pane's. The engine holds the screen on show and draws what arrived as one frame when
+  the fence comes down ([ghostty-engine.md](ghostty-engine.md), The catch-up hold), for 1 s at
+  most; after that the screen follows the bytes while the fence stays up. A pane that opens at
+  the size it will keep draws its first screen at once.
+- A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
+- A `resize` from another client counts as "Resized elsewhere" only on a current stream or after
+  our own resize has come by: a size from before our resize can arrive after the claim's answer.
+
+## Parking
+
+A pane that leaves the screen (a pane or tab switch) parks instead of stopping, so coming back
+is not a cold start.
+
+- **What parking does** (`TerminalHost.park`, 0.5 s after the pane left its window, as a fold
+  moves a pane within that): the host, its terminal with screen and scrollback, the stream's
+  resume token, byte count and place in the stream stay. The data socket is dropped without a
+  status 1000 close (the server keeps the stream for its resume window, 60 s), the input queue
+  is dropped (nothing sent is sent again), the drawables are freed, find closes, and no timer or
+  ping runs. A parked pane uses no CPU and no network.
+- **Coming back**: the same host is on screen in its first frame with its last screen and no
+  loader. The fence goes up, and one RESUME starts at once, with no ticket and no control
+  connection; only the missed bytes arrive. Typed on an idle pane, keys arrive as the fence
+  comes down; on a pane that changed they are dropped with the notice.
+- **If the RESUME is refused or its window has passed**: a fresh start, which keeps the old
+  screen until the new snapshot begins; the fence stays up throughout.
+- **Claim grace**: a parked pane keeps its fit claim for 10 s after it left the screen
+  (`LeaveTiming.claimGrace`), so going back and forth between two panes resizes neither and the
+  screen can be exact. On the Mac the pane stays phone-sized for those 10 s; then it gets its
+  size back as before, and a later return claims again beside its RESUME. Going to the
+  background still releases every claim at once.
+- **How many** (`TerminalHostPool`, `ParkPolicy`): the 4 panes parked last, within 96 MB of
+  terminal memory together by the engine's own figure (`GhosttyCore.memoryBytes`, read when a
+  pane parks). The oldest goes first. Panes on screen don't count.
+- **All of them go** on a memory warning, when the app comes back after 10 minutes in the
+  background, when the user leaves their server or it is removed, and when their session closes
+  (`ParkWatcher`). A pane let go stops as before: status 1000, claim released.
 
 ## Fit and mirror
 
 - Fit: after layout settles (120 ms), `session.own_block` (take), then `terminal.resize` to the
-  largest grid that fits (`TerminalLayout.fitGrid`, at least 12×4). Leaving the pane,
-  backgrounding the app, or switching to mirror calls `session.disown_block`, and the Mac gets
-  its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
+  largest grid that fits (`TerminalLayout.fitGrid`, at least 12×4), while the stream starts
+  beside it. Backgrounding the app or switching to mirror calls `session.disown_block` at once,
+  and leaving the pane does 10 s later (Parking, claim grace); the Mac then gets its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
   tap to fit here". Until then it shows the server's grid as mirror does. A pinch there fits the
   pane here too (Gestures).
 - The software keyboard covers a fitted pane; it doesn't resize it. The grid stays the one that
@@ -180,6 +270,7 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   engine reflows its lines as the server reflows its own, so nothing is read again.
 - `TerminalHostPool` keeps each pane's `TerminalHost` alive while a fold or unfold swaps the view
   tree. The new `PaneView` takes the host over, so the stream, screen and keyboard focus carry over.
+  It also keeps the panes that left the screen last (Parking).
 
 ## Input
 
@@ -193,8 +284,11 @@ the first call's response before you send the second").
   typed while a request is out goes together as the next write. An action waits for the text
   typed before it, and text typed after it waits for the action, at most 1.5 s (a Lua action can
   run for seconds).
-- **Held while offline.** Without a control connection nothing is sent and nothing is lost; the
-  queue goes out, in order, when `RexControl` is connected again.
+- **Held while offline.** Without a control connection nothing is sent; the queue waits. When
+  `RexControl` is connected again it goes out, in order, once the stream has caught up and only
+  if the screen it was typed at is still exact (The catch-up fence); otherwise it is dropped
+  with the fence's notice.
+- **Nothing leaves behind the fence.** The queue is not pumped while the fence is up.
 - **Never sent twice.** What happens to a request that fails:
   - it never left this client (no connection, or the socket didn't take the message;
     `RexError.neverSent`): it stays first in the queue and is sent when the connection is back;
@@ -204,8 +298,8 @@ the first call's response before you send the second").
     user can see and retype. It is dropped, with everything queued behind it (typed on the
     assumption that it had arrived), and the user gets a notice ("The connection dropped while
     sending. Check the pane before typing that again.").
-- **`stop()` drops the queue**, `restart()` keeps it. A pane that was closed or left must not
-  receive old keys when it is opened again; a stream that reconnects must not lose them.
+- **`stop()` and `park()` drop the queue.** A pane that was closed or left must not receive old
+  keys when it is opened again. `restart()` leaves it to the fence, whose new snapshot drops it.
 - **UTF-8 only.** `data` is a JSON string, so bytes that aren't valid UTF-8 can't be typed.
   `send` drops such a call whole and returns false, rather than type U+FFFD in their place. In
   practice that is a legacy X10 mouse report beyond column 95, where the column is one raw byte
@@ -594,7 +688,8 @@ The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Ta
   has a tiled one; a tab with only floats takes it beside its focused (else front) float
   (`MoveAnchor`). When the call returns the session's view is read at once (`reloadView`, no
   80 ms wait) and the target tab opens in the same update as the layout that holds the pane, so
-  the pane's terminal, stream and fit claim carry over (well inside `scheduleStop`'s 0.5 s). If
+  the pane's terminal, stream and fit claim carry over (well inside `scheduleStop`'s 0.5 s, before
+  the pane would park). If
   no view shows it there within 2 s the tab stays; if this tab is gone too, a notice says
   "Moved the pane to <tab>." with Open. A full target: "That tab can't take another pane."
 - **Move to New Tab** (hidden for a tab's only pane): `session.new_window` with `focus: false`
@@ -674,7 +769,8 @@ and shows them again, and never moves or resizes one (`Features/Tab/TabPresentat
   float or a page a swipe away as not. Jumping to an agent in a minimized float shows the float
   again first.
 - **Fit.** A float claims the grid of the frame it is drawn at (grown or narrowed), as a split
-  pane does; one no longer drawn lets go after 0.5 s (`scheduleStop`).
+  pane does; one no longer drawn parks after 0.5 s (`scheduleStop`) and lets its claim go 10 s
+  after it left (Parking).
 - **Compatibility.** Drawing is data-driven: no `layers`, a null `layer_id` (an ID from the
   layer's first block, stable across raises) and an unknown kind (floating) or state (normal)
   all draw; a float without usable bounds is skipped. Minimize, the rows, the keys and the raise

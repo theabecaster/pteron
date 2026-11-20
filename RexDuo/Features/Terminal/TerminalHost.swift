@@ -1424,8 +1424,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // Parked before its first screen came: still nothing to draw.
         showLoader()
         term.restoreDrawables()
-        PerfProbe.active?.mounted(self, kind: .parked)  // PERF
         stream.unpark()
+        PerfProbe.active?.mounted(self, kind: .parked)  // PERF
     }
 
     /// The pool lets the pane go for good.
