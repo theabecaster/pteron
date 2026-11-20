@@ -80,11 +80,23 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
   the patch has been uploaded yet, so Apple's own check has not seen it.
 - Third-party licence notices ship in the bundle as `Acknowledgements.txt`.
 
-The app embeds one extension, `RexDuoWidgets.appex` (the controls; [glance.md](glance.md)), with
-its own App ID, `dev.abrahamgonzalez.rexduo.widgets`. It needs no capability and no App Group.
+The app embeds one extension, `RexDuoWidgets.appex` (the widgets and the controls;
+[glance.md](glance.md)), with its own App ID, `dev.abrahamgonzalez.rexduo.widgets`.
 Automatic signing with `-allowProvisioningUpdates` registers the App ID and makes its profile at
 the first device build or archive, if the signing account may; otherwise register the identifier
-in the developer portal first. No device build or archive with the extension has been made yet.
+in the developer portal first.
+
+Both App IDs carry the App Group `group.dev.abrahamgonzalez.rexduo`, where the app writes the
+snapshot the widgets read, and the extension's also carries Data Protection (Complete), which
+hides what the widgets mark as private while the phone is locked. The entitlements files ask for
+them (`RexDuo/RexDuo.entitlements`, `RexDuoWidgets/RexDuoWidgets.entitlements`). With automatic
+signing and `-allowProvisioningUpdates`, Xcode registers the group, turns the capabilities on
+for both App IDs and makes new profiles at the next device build or archive, if the signing
+account may edit identifiers; a build that stops with "Provisioning profile doesn't include the
+application-groups entitlement" (or the data protection one) means it could not, and the group
+and the capabilities are then set in the developer portal by hand (Identifiers → App Groups,
+then each App ID's App Groups and Data Protection). A simulator build doesn't check any of this.
+No device build or archive with the App Group has been made yet.
 The build number given on the command line applies to the extension too, which App Store Connect
 requires to match the app's.
 

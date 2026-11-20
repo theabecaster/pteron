@@ -138,7 +138,7 @@ struct LaunchArtTests {
 
     @Test func theSilhouetteSitsInsideTheArtWithRoomForTheHolesMargin() {
         let box = LaunchArt.silhouette.boundingBoxOfPath
-        let margin = LaunchSplashView.Metric.holeMargin
+        let margin = LaunchSplashView.holeMargin
         #expect(box.minX >= margin && box.minY >= margin)
         #expect(LaunchArt.size.width - box.maxX >= margin && LaunchArt.size.height - box.maxY >= margin)
     }

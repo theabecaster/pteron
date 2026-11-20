@@ -46,6 +46,7 @@ struct RootView: View {
             .overlay(alignment: .top) { NoticeBanner(theme: theme) }
             .background(CommandListener { handle($0) })
             .background(WaitingWatcher())
+            .background(GlanceWatcher())
             .background(VerticalBarObserver { e in if barEdge != e { barEdge = e } })
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)

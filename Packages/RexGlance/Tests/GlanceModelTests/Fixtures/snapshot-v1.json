@@ -1,0 +1,24 @@
+{
+  "v": 1,
+  "asOf": "2026-11-19T12:04:00Z",
+  "palette": {
+    "dark": {"appearance": "dark", "bg": "#22272e", "fg": "#adbac7", "accent": "#539bf5",
+             "ansi": ["#545d68", "#f47067", "#57ab5a", "#c69026", "#539bf5", "#b083f0"]},
+    "light": {"appearance": "light", "bg": "#ffffff", "fg": "#1f2328", "accent": "#0969da",
+              "ansi": ["#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df"]}
+  },
+  "machines": [{
+    "id": "00000000-0000-0000-0000-0000000000A1", "name": "studio", "link": "live",
+    "counts": {"waiting": 2, "error": 0, "working": 3, "done": 1, "idle": 4},
+    "waiting": [{
+      "session": "session:1", "window": "window:1", "block": "block:1",
+      "kind": "claude", "name": "Claude", "symbol": "asterisk", "why": "question",
+      "place": "api › work", "since": "2026-11-19T11:52:00Z", "record": "claude-1",
+      "msg": "Which database should I use?"
+    }, {
+      "session": "session:2", "window": "window:2", "block": "block:2",
+      "name": "Program", "symbol": "cpu",
+      "place": "", "since": "2026-11-19T12:01:00Z", "record": ""
+    }]
+  }]
+}

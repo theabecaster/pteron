@@ -299,10 +299,19 @@ final class AppModel {
 
     /// The phone's network. Nil in tests and the test host.
     @ObservationIgnored let network: NetworkWatch?
+    /// Writes the snapshot the widgets read. It does nothing in tests, the test host and test
+    /// launches (`GlanceWriter.Mode`).
+    @ObservationIgnored let glance: GlanceWriter
 
-    /// `connect: false` builds no servers (unit tests and the test host).
-    init(prefs: Prefs, connect: Bool = true) {
+    /// `connect: false` builds no servers (unit tests and the test host). With `connect`, the
+    /// servers are built here and none is started: `sceneVisible()` starts them. `glance`: the
+    /// snapshot's writer; without one, a writer that is on only in the app's own launches.
+    init(prefs: Prefs, connect: Bool = true, glance: GlanceWriter? = nil) {
         self.prefs = prefs
+        let mode = connect ? GlanceWriter.Mode.current() : .off
+        // The App Group's container is looked up at the writer's first read or write, off the
+        // main thread, not here on the launch path.
+        self.glance = glance ?? GlanceWriter(mode: mode, parts: .init(reload: GlanceReload.all)) { GlanceStore.shared() }
         // One fetcher for the release list: the installs use it, and so does the one check that
         // tells every computer's row which Beacon version is the latest.
         let fetcher = HelperReleaseFetcher.standard()
@@ -329,6 +338,14 @@ final class AppModel {
             return server.sessions.first?.id
         }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
+        self.glance.source = { [weak self] in
+            guard let self else { return [] }
+            var only: String?
+            if case .live(let label) = self.glance.mode { only = label }
+            return GlanceSource.machines(self.servers, since: self.firstSeenWaiting(), only: only)
+        }
+        self.glance.palette = { [weak self] in self.map { GlanceSource.palette($0.prefs) } ?? .standard }
+        self.glance.anyLive = { [weak self] in self?.servers.contains { GlanceSource.link($0) == .live } ?? false }
         if connect { rebuildServers() }
         #if DEBUG
         // `-settings <page>` (testing): open Settings at launch, at that page.
@@ -372,7 +389,34 @@ final class AppModel {
             return
         }
         #endif
-        for s in servers { s.start() }
+        // Before the first scene shows, nothing connects (`sceneVisible`).
+        guard mayConnect else { return }
+        for s in servers { startServer(s) }
+    }
+
+    // MARK: Connecting only once a scene shows
+
+    /// True from the first scene phase that shows the app. Until then no server is started.
+    @ObservationIgnored private(set) var mayConnect = false
+    /// Starts a server's connection. Tests record the calls instead.
+    @ObservationIgnored var startServer: @MainActor (ServerConnection) -> Void = { $0.start() }
+
+    /// The app's scene is on its way to the screen (its first `.inactive` or `.active` phase):
+    /// start every server, once. A launch iOS makes in the background, to prewarm the app or
+    /// later to hand it a message, has no scene and so never gets here: it opens no connection
+    /// to any server, which would otherwise tell each Beacon that the phone is in use.
+    func sceneVisible() {
+        guard !mayConnect else { return }
+        mayConnect = true
+        #if DEBUG
+        // To check on a simulator when the servers were started: `eventMessage CONTAINS "SCENE_VISIBLE"`.
+        NSLog("SCENE_VISIBLE servers=%d", servers.count)
+        #endif
+        for s in servers { startServer(s) }
+        #if DEBUG
+        // `-glanceDemo <scenario>`: a made-up snapshot for the widgets, written once.
+        Task { await glance.writeDemo() }
+        #endif
     }
 
     func openSettings(at page: SettingsPage) {
@@ -520,6 +564,7 @@ final class AppModel {
         inBackground = false
         for s in servers { s.resume(fromBackground: fromBackground) }
         push.becameActive()
+        glance.becameActive()
     }
 
     /// Set from the background until the app is active again, so a return from Control Center or
@@ -531,6 +576,14 @@ final class AppModel {
     func enteredBackground() {
         inBackground = true
         for s in servers { s.enteredBackground() }
+        // The widgets get what is known now. iOS suspends the app right after, so the write
+        // runs inside a background task, and through the same writer as every other write.
+        // With the writer off there is nothing to write and no task is taken.
+        let task = glance.mode == .off ? nil : BackgroundTask(name: "glance_snapshot") {}
+        Task {
+            await glance.flush()
+            task?.end()
+        }
     }
 
     // MARK: Opening a pane from a push or toast
@@ -567,21 +620,42 @@ final class AppModel {
 
     // MARK: Links (controls)
 
-    /// A `rexduo:` link from a control: `DeepLink` lists them. Links only navigate, and a URL of
-    /// another scheme does nothing. A link that arrives before the app's first screen is up
-    /// waits for `releaseLinks()`, as a tapped push waits in `AppDelegate`.
+    /// A `rexduo:` link from a control or a widget: `DeepLink` lists them, and `PaneLink` is the
+    /// one that names a pane. Links only navigate, and a URL of another scheme does nothing. A
+    /// link that arrives before the app's first screen is up waits for `releaseLinks()`, as a
+    /// tapped push waits in `AppDelegate`.
     func openLink(_ url: URL) {
-        guard let link = DeepLink(url) else { return }
+        let link: Link
+        if let pane = PaneLink(url) {
+            link = .pane(pane)
+        } else if let plain = DeepLink(url) {
+            link = .plain(plain)
+        } else {
+            return
+        }
         #if DEBUG
         // To check on a simulator that a link reached the app: `eventMessage CONTAINS "OPEN_LINK"`.
-        NSLog("OPEN_LINK %@ %@", link.rawValue, linksReleased ? "run" : "queued")
+        NSLog("OPEN_LINK %@ %@", link.name, linksReleased ? "run" : "queued")
         #endif
         guard linksReleased else {
-            // `open` asks for nothing, so it never replaces a jump that is waiting.
-            if link != .open { pendingLink = link }
+            // `open` asks for nothing, so it never replaces a link that is waiting.
+            if link != .plain(.open) { pendingLink = link }
             return
         }
         run(link)
+    }
+
+    /// A link the app takes.
+    enum Link: Equatable {
+        case plain(DeepLink)
+        case pane(PaneLink)
+
+        var name: String {
+            switch self {
+            case .plain(let l): l.rawValue
+            case .pane: PaneLink.host
+            }
+        }
     }
 
     /// The app's first screen is up (`AppDelegate.attach`): run the link that waited, if any.
@@ -592,12 +666,29 @@ final class AppModel {
         run(link)
     }
 
-    private func run(_ link: DeepLink) {
+    private func run(_ link: Link) {
         switch link {
-        case .open:
+        case .plain(.open):
             // The app is in front, which is all it asks. The tab, a sheet and the agent board stay.
             break
-        case .waiting:
+        case .plain(.pair):
+            // Only onto the bare app: a sheet or a cover that is up stays, and the link is dropped.
+            guard !showSettings, !showPairing, helperSetup.active == nil else { return }
+            pairingStart = nil
+            showPairing = true
+        case .pane(let pane):
+            // One link at a time; a new one replaces it.
+            jump?.cancel()
+            jump = Task { [weak self] in
+                guard let self else { return }
+                let step = await self.openPane(link: pane)
+                #if DEBUG
+                NSLog("OPEN_PANE %@", String(describing: step))
+                #else
+                _ = step
+                #endif
+            }
+        case .plain(.waiting):
             // One jump at a time; a new one replaces it.
             jump?.cancel()
             jump = Task { [weak self] in
@@ -613,7 +704,7 @@ final class AppModel {
     }
 
     @ObservationIgnored private var linksReleased = false
-    @ObservationIgnored private var pendingLink: DeepLink?
+    @ObservationIgnored private var pendingLink: Link?
     @ObservationIgnored private var jump: Task<Void, Never>?
     /// The tab `autoSelect()` last put on screen, and how many times it has put one there. A
     /// wait that gives up when the person opens something tells the two apart by them: only a
@@ -669,8 +760,48 @@ final class AppModel {
     /// In a test launch (`-autoOpen <label>`) a link jumps only to agents in the session with that
     /// label, so a test never opens, focuses or resizes a pane in anyone's real session.
     private static func mayJump(to key: AgentKey, on server: ServerConnection) -> Bool {
+        mayOpen(session: key.sessionID, on: server)
+    }
+
+    private static func mayOpen(session: String, on server: ServerConnection) -> Bool {
         guard let label = UserDefaults.standard.string(forKey: "autoOpen") else { return true }
-        return server.sessions.contains { $0.id == key.sessionID && $0.label == label }
+        return server.sessions.contains { $0.id == session && $0.label == label }
+    }
+
+    /// Opens the pane a widget's row names, as a tapped push for it would: its pane is focused
+    /// on the server and its tab is requested, which puts sheets and the agent board away.
+    /// `OpenPaneLink` holds the rules: the server must be one of the app's, by id, and the pane
+    /// one the app has loaded or one the snapshot lists as waiting, for which this waits until
+    /// its session has loaded. Anything else does nothing. Returns the step that ended it.
+    @discardableResult
+    func openPane(link: PaneLink, clock: OpenWaiting.Clock = .system, poll: TimeInterval = 0.1) async -> OpenPaneLink.Step {
+        let wait = OpenPaneLink(began: clock.now(), before: selection)
+        let landings = autoSelects
+        // Read once: what the widget showed when it was tapped.
+        let listed = await glance.current()?.machines.first { $0.id == link.server }?.waiting
+            .contains { $0.block == link.block && $0.session == link.session } ?? false
+        while true {
+            let server = servers.first { $0.id.uuidString == link.server }
+            let view = server?.views[link.session]
+            let loaded = server.map { s in
+                Self.mayOpen(session: link.session, on: s) && view?.windowContaining(block: link.block) != nil
+            } ?? false
+            let step = wait.step(OpenPaneLink.World(serverKnown: server != nil, loaded: loaded, inSnapshot: listed),
+                                 now: clock.now(), selection: selection, autoSelected: autoSelects > landings ? autoSelected : nil)
+            switch step {
+            case .wait:
+                await clock.sleep(poll)
+                if Task.isCancelled { return .nothing(.replaced) }
+            case .open:
+                // The tab that holds the pane now, whatever tab the link named.
+                guard let server, openPane(server, session: link.session, window: nil, block: link.block) else {
+                    return .nothing(.unknownPane)
+                }
+                return step
+            case .nothing:
+                return step
+            }
+        }
     }
 
     /// `-autoOpen <session label>` launch argument (testing): open that session's first tab.

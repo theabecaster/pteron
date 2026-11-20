@@ -3,7 +3,7 @@
 ## Layers
 
 App → Features → State → RexKit. Features also use DesignSystem. Nothing points back up.
-The app and its extension both use `GlanceModel`, which uses nothing of ours.
+The app and its extension both use `Packages/RexGlance`, which uses nothing of ours.
 
 | Layer | Owns | Doesn't |
 |---|---|---|
@@ -11,8 +11,9 @@ The app and its extension both use `GlanceModel`, which uses nothing of ours.
 | `RexDuo/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` and its `PushReconciler` | build views |
 | `RexDuo/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
 | `RexDuo/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
-| `Packages/RexGlance` (`GlanceModel`) | what the app shares with its extensions: `DeepLink`, the links that open the app | import anything but Foundation (no RexKit, no SwiftUI) |
-| `RexDuoWidgets` (app extension) | the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; run app logic (a control only opens the app with a link) |
+| `Packages/RexGlance` (`GlanceModel`) | what the app shares with its extensions: the links that open the app (`DeepLink`, `PaneLink`), the snapshot of the agents and everything decided from it (`GlanceSnapshot`, `GlanceSummary`, `GlanceSince`, `GlanceFreshness`, `GlanceDigest`, `WriteThrottle`, `GlanceStore`) | import anything but Foundation (no RexKit, no SwiftUI) |
+| `Packages/RexGlance` (`GlanceUI`) | what the widgets draw with: colors from a snapshot's palette, the ring, the type | import anything but SwiftUI and `GlanceModel` (no WidgetKit, no UIKit, so a watch target can use it) |
+| `RexDuoWidgets` (app extension) | the agents widget (Home Screen and Lock Screen), the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; connect to anything; write the snapshot (it only reads it) |
 
 `Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
 the app; it speaks the same control protocol over Rex's Unix socket.
@@ -20,7 +21,7 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 ## Data flow
 
 1. `RexDuoApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
-2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions).
+2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions). None connects until a scene shows (Launch, below).
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
    loads block metadata (program status, title, process), hosts and the keymap. The first
    sync with a server process also reads the creator list.
@@ -44,8 +45,49 @@ Three things from outside put a tab on screen, and all end in `AppModel.openRequ
   with the rules in `OpenWaiting` ([glance.md](glance.md)). `rexduo://open` only brings the app
   forward.
 
+- a link from a widget's row: `onOpenURL` → `AppModel.openLink` → `openPane(link:)`, with the
+  rules in `OpenPaneLink`.
+
 Targets (`project.yml`): `RexDuo` (the app; it embeds `RexDuoWidgets`, so every build and test
-of the app builds the extension), `RexDuoWidgets`, `RexDuoTests`.
+of the app builds the extension), `RexDuoWidgets`, `RexDuoTests` (which also compiles the
+widgets' views, `RexDuoWidgets/Views`, to draw them).
+
+## Launch
+
+A launch opens no connection until the app is on its way to the screen.
+
+- `AppModel.init` builds every `ServerConnection` and starts none.
+- `RexDuoApp` reads one thing, the scene phase, and `ScenePhases` says what each phase asks:
+  `.inactive` → `AppModel.sceneVisible()`; `.active` → `sceneVisible()`, then the resync and the
+  helpers' "in front" as before; `.background` → the background steps.
+- `sceneVisible()` starts every server, once (`mayConnect`). After it, `rebuildServers()`
+  starts a new server at once; before it, a changed server list starts nothing.
+- A launch iOS makes in the background (prewarming, and later a message from a watch or a
+  notification action) has no scene, so it gets no visible phase: no server is started, no
+  helper hears that the phone is in front ([notifications.md](notifications.md), In front),
+  and no snapshot is written.
+- The app reads no other launch state. `UIApplication.applicationState` is not usable for
+  this: SwiftUI runs `App.init` before `UIApplicationMain`, where it reads as active, and
+  `didFinishLaunching` reports background for an ordinary launch too.
+- A Debug build logs one `SCENE_VISIBLE servers=<n>` line when the servers are started.
+
+## The snapshot for the widgets
+
+The agents widget can't reach Rex, so the app tells it what it knows through one file
+([glance.md](glance.md), The snapshot).
+
+- **One writer per file.** `glance/snapshot.json` in the App Group is written only by the app:
+  `GlanceWriter` (owned by `AppModel`) builds it on the main actor and `SnapshotFileWriter`, an
+  actor, writes it. Every write carries a number, and one that arrives after a newer one has
+  landed is dropped. The extension only reads. A later writer (a watch, a notification
+  extension) gets a file of its own.
+- **When.** `GlanceWatcher`, a zero-size view beside `WaitingWatcher`, reads only what is
+  already coalesced (`waitingAgentIDs`, each server's `agentKeys`, its link, the two themes)
+  and tells the writer that something changed. `WriteThrottle` turns that into writes and into
+  reloads of the widgets' timeline. Going to the background writes once more, inside a
+  `BackgroundTask`.
+- **Off** in the test host and in every test launch (`GlanceWriter.Mode`), so made-up or
+  throwaway state never replaces what the widgets know.
 
 ## Offline
 

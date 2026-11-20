@@ -1,11 +1,13 @@
 import SwiftUI
 import WidgetKit
 
-/// The app's extension for the system's glance surfaces. For now: the two controls for Control
-/// Center, the Lock Screen and the Action button.
+/// The app's extension for the system's glance surfaces: the agents widget for the Home Screen
+/// and the Lock Screen, and the two controls for Control Center, the Lock Screen and the Action
+/// button.
 @main
 struct RexDuoWidgetsBundle: WidgetBundle {
     var body: some Widget {
+        GlanceWidget()
         OpenControl()
         WaitingControl()
     }

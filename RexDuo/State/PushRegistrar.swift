@@ -141,9 +141,10 @@ final class PushRegistrar {
     @ObservationIgnored private var started = false
     /// The master switch's question to iOS is under way. iOS may take as long as the person does.
     @ObservationIgnored private var asking = false
-    /// The app is in front. A connection that resumes keeps its client id, so the helper still
-    /// thinks it's in the background until told otherwise.
-    @ObservationIgnored private var inFront = true
+    /// The app is in front: false until `becameActive()` first says so, so a launch that never
+    /// reaches the screen tells no helper that the phone is in use. A connection that resumes
+    /// keeps its client id, so the helper still thinks it's in the background until told otherwise.
+    @ObservationIgnored private var inFront = false
     /// `-pushToken <hex>` (debug builds): use this token and skip the permission check, to test
     /// sign-up in a simulator.
     @ObservationIgnored private let tokenOverride: String?

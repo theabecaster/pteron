@@ -163,6 +163,8 @@ final class HelperStandIn: HelperChannel {
         var dropped: Set<String> = []
         /// Every action asked for, in order; `set_push_paused` with the value it carried.
         var calls: [String] = []
+        /// What each `push_presence` said: the app is in front, or not.
+        var presence: [Bool] = []
         /// How long the helper takes to answer, so that a switch can move while it does.
         var latency: UInt64 = 0
         /// The helper's version, as its status says it.
@@ -302,6 +304,7 @@ final class HelperStandIn: HelperChannel {
             return .success([:])
         case "push_presence":
             c.calls.append(action)
+            c.presence.append(args.bool("active") ?? false)
             return .success(["registered": c.secret != nil])
         case "send_test":
             c.calls.append(action)

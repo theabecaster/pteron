@@ -91,11 +91,27 @@ builds.
   "Reconnecting…", not "All quiet"), `states` (every state), `long` (long names, messages and places), `churn` (states
   that change every 0.3 s, for the once-a-second reorder). Use it with `-simulateDuo folded` or
   `foldedLandscape`, in Light and Dark Mode.
-- Links: `xcrun simctl openurl <id> rexduo://waiting` (or `rexduo://open`) fires a control's link.
-  A Debug build logs `OPEN_LINK <link> run|queued` for each link and `OPEN_WAITING <step>` when a
-  jump ends, and `OPEN_LINK <link> refused` when a control's intent could not open its URL. With `-autoOpen <label>` a link jumps only to agents in that session. `openurl`
+- Links: `xcrun simctl openurl <id> rexduo://waiting` (or `rexduo://open`, `rexduo://pair`,
+  `rexduo://pane?…`) fires a control's or a widget's link.
+  A Debug build logs `OPEN_LINK <link> run|queued` for each link, `OPEN_WAITING <step>` when a
+  jump ends, `OPEN_PANE <step>` when a pane link ends, and `OPEN_LINK <link> refused` when a control's intent could not open its URL. With `-autoOpen <label>` a link jumps only to agents in that session. `openurl`
   starts a stopped app without launch arguments; [glance.md](glance.md), Testing, has the safe
   way to test a cold launch.
+- `-glanceDemo <scenario>`: write a made-up snapshot for the widgets and reload them, once, when
+  the app's scene shows (`GlanceDemo` in `Packages/RexGlance`). Scenarios: `quiet`, `working`,
+  `one`, `several`, `many` (11 waiting: "+N more"), `machines`, `stale` (one of three machines
+  down), `offline`, `aging` (ten minutes old), `old` (three hours old), `long`, `unpaired`,
+  `light-in-dark` (the light theme in both slots), `newer` (a file from a later, incompatible
+  app), `none` (no file). Use it with `-autoOpen zz-none`, so the app opens nothing; it logs
+  `GLANCE_DEMO <scenario>`. Without it, a test launch (`-servers`, `-boardDemo`, `-autoOpen`,
+  `-simulateOffline`) writes no snapshot at all.
+- `-glanceLive YES` with `-autoOpen <label>`: write the real snapshot in a test launch, with
+  only the agents of the session with that label, so no other session's name reaches the file.
+  A Debug build logs `GLANCE_WRITE seq=<n> bytes=<n>` for each write. The file is in the
+  simulator's App Group container: `xcrun simctl get_app_container <id>
+  dev.abrahamgonzalez.rexduo group.dev.abrahamgonzalez.rexduo`, then `glance/snapshot.json`.
+- No argument: a Debug build logs `SCENE_VISIBLE servers=<n>` when it starts its servers, at the
+  first scene phase that shows the app (docs/architecture.md, Launch).
 - `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
   keyboard. `-settings main|addServer|darkTheme|lightTheme`: open Settings at that page.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",

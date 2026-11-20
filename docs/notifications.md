@@ -601,7 +601,8 @@ The helper opens no ports; everything goes through Rex.
    HMAC-SHA256 keyed by the setup code over `rexduo-setup-register-v1`, the `push_secret` and
    the `device_id`, joined by `\n` (`SetupSeal`). No other registration carries it.
 6. It reports `push_presence {active}` on background and foreground, so the helper skips phones
-   that show their own notifications.
+   that show their own notifications. It says `true` only once the app is active on screen
+   ("In front" below).
 7. It pauses and resumes with `set_push_paused {paused}` when the master switch or the
    computer's switch is turned off or on. The helper keeps the registration and sends a paused
    phone nothing; `helper_status` reports `paused`, and `send_test` answers the error `paused`.
@@ -655,8 +656,15 @@ contract. Their pure parts are in `PushSupport.swift` (tested in
   so a resync on the same connection costs nothing, and a new connection has the helper prove
   its key and take the secret again. While the master switch is off and nothing waits to be
   told, nothing is called.
-- Presence: `push_presence` false on background (inside a background task) and true on
-  foreground and after each registration, since a resumed connection keeps its client id.
+- Presence: `push_presence` false on background (inside a background task, `State/BackgroundTask.swift`)
+  and true on foreground and after each registration made while the app is in front, since a
+  resumed connection keeps its client id.
+- **In front.** `PushRegistrar.inFront` starts false, and only `becameActive()` sets it, which
+  `RexDuoApp` calls at the `.active` scene phase. So a launch that never reaches the screen
+  tells no helper that the phone is in use, and the helper goes on sending its pushes. There
+  is no gap either way: a registration that ends before the app is active is followed by the
+  `push_presence true` that `becameActive()` sends, and one that ends after sends its own.
+  Such a launch also opens no connection at all ([architecture.md](architecture.md), Launch).
 - iOS turning notifications off changes nothing on the phone, at the gateway or on a helper:
   the choices and the sign-up stay, and iOS shows nothing meanwhile.
 - An install from before the gateway needs nothing from the user: on its next connect it

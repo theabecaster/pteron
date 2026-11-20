@@ -65,7 +65,12 @@ struct RexDuoApp: App {
                     .agentToasts()
                     .environment(model)
                     .environment(prefs)
-                    .onAppear { appDelegate.attach(model) }
+                    // A view that appears is a scene on screen: the servers start here too, in
+                    // case no change of phase ever arrives (`sceneVisible` acts once).
+                    .onAppear {
+                        model.sceneVisible()
+                        appDelegate.attach(model)
+                    }
                     // Links from the controls (`rexduo:`, navigation only). The test host and
                     // the offline screens take none.
                     .onOpenURL { model.openLink($0) }
@@ -74,16 +79,20 @@ struct RexDuoApp: App {
         .commands {
             if !Self.isTestHost { AppShortcutCommands(model: model) }
         }
-        .onChange(of: phase) { _, p in
+        // `initial`: the phase the scene starts in counts too (old and new are then the same).
+        .onChange(of: phase, initial: true) { old, p in
             guard !Self.isTestHost else { return }
-            switch p {
-            case .active:
-                readSystemScheme()
-                model.foregroundResumed()
-            case .background:
-                model.enteredBackground()
-                model.push.enteredBackground()
-            default: break
+            for step in ScenePhases.steps(for: p, initial: old == p) {
+                switch step {
+                case .sceneVisible:
+                    model.sceneVisible()
+                case .foreground:
+                    readSystemScheme()
+                    model.foregroundResumed()
+                case .background:
+                    model.enteredBackground()
+                    model.push.enteredBackground()
+                }
             }
         }
     }

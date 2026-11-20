@@ -1024,6 +1024,58 @@ struct NotificationChoiceTests {
         return s
     }
 
+    // MARK: In front
+
+    /// A launch that never reaches the screen registers (a helper's push arrived, say) and must
+    /// not tell the helper that the phone is in use: it would hold the pushes back.
+    @Test func aRegistrationBeforeTheAppIsActiveSaysNothingAboutBeingInFront() async {
+        let s = make([server])
+        s.push.start()
+        await s.world.eventually { s.helpers[server].secret != nil }
+        await s.world.quiet()
+        #expect(s.helpers[server].presence.isEmpty)
+        // The app reaches the screen: now the helper hears it.
+        s.push.becameActive()
+        await s.world.eventually { !s.helpers[server].presence.isEmpty }
+        await s.world.quiet()
+        #expect(s.helpers[server].presence == [true])
+    }
+
+    /// The app is active before the registrar has started (the connection opens first, the
+    /// sign-up later): nothing is sent then, and the registration that follows says "in front".
+    @Test func becomingActiveBeforeTheRegistrarStartsStillSaysInFrontOnceItRegisters() async {
+        let s = make([server])
+        s.push.becameActive()
+        await s.world.quiet()
+        #expect(s.helpers[server].presence.isEmpty)
+        s.push.start()
+        await s.world.eventually { !s.helpers[server].presence.isEmpty }
+        await s.world.quiet()
+        #expect(s.helpers[server].secret != nil && s.helpers[server].presence == [true])
+    }
+
+    @Test func aRegistrationAfterTheAppIsActiveSaysItIsInFront() async {
+        let s = make([server])
+        s.push.start()
+        // Active before the helper holds the phone: nobody to tell yet.
+        s.push.becameActive()
+        #expect(s.helpers[server].presence.isEmpty)
+        await s.world.eventually { !s.helpers[server].presence.isEmpty }
+        await s.world.quiet()
+        #expect(s.helpers[server].secret != nil && s.helpers[server].presence == [true])
+    }
+
+    @Test func goingToTheBackgroundSaysSo() async {
+        let s = make([server])
+        s.push.start()
+        s.push.becameActive()
+        await s.world.eventually { !s.helpers[server].presence.isEmpty }
+        await s.world.quiet()
+        s.push.enteredBackground()
+        await s.world.eventually { s.helpers[server].presence.count == 2 }
+        #expect(s.helpers[server].presence == [true, false])
+    }
+
     @Test func aNewServerIsOnAndTheChoicesPersist() {
         let s = make()
         #expect(s.prefs.notificationsOff.isEmpty && s.prefs.helperSeen.isEmpty && s.prefs.helpersToTell.isEmpty)

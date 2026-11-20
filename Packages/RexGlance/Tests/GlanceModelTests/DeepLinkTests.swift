@@ -10,6 +10,7 @@ import Testing
     @Test func buildsAndParsesBothWays() {
         #expect(DeepLink.open.url.absoluteString == "rexduo://open")
         #expect(DeepLink.waiting.url.absoluteString == "rexduo://waiting")
+        #expect(DeepLink.pair.url.absoluteString == "rexduo://pair")
         for l in DeepLink.allCases { #expect(DeepLink(l.url) == l) }
     }
 
@@ -21,7 +22,7 @@ import Testing
 
     @Test func anUnknownHostOrPathBecomesOpen() {
         for s in ["rexduo://", "rexduo:", "rexduo:waiting", "rexduo:///waiting", "rexduo://settings",
-                  "rexduo://pane", "rexduo://pair", "rexduo://waiting/now", "rexduo://waiting//",
+                  "rexduo://pane", "rexduo://pair/now", "rexduo://pairing", "rexduo://waiting/now", "rexduo://waiting//",
                   "rexduo://open/waiting", "rexduo://waiting.example.com", "rexduo://waitingx",
                   "rexduo://user@waiting", "rexduo://user:pw@waiting", "rexduo://waiting:80",
                   "rexduo://%77aiting", "rexduo://%77aiting/%2e%2e"] {
@@ -77,5 +78,37 @@ import Testing
                   "rex://waiting", "tel:waiting", "waiting", "//waiting", "/open"] {
             #expect(link(s) == nil, "\(s)")
         }
+    }
+
+    // MARK: Pane links
+
+    private func pane(_ s: String) -> PaneLink? { URL(string: s).flatMap(PaneLink.init) }
+
+    @Test func aPaneLinkBuildsAndParsesBothWays() throws {
+        let p = PaneLink(server: "0A0B0C0D-0000-4000-8000-000000000001", session: "session:1f", window: "window:2 a", block: "block:3&x=y")
+        #expect(PaneLink(p.url) == p)
+        #expect(p.url.scheme == "rexduo" && p.url.host() == "pane")
+        // To the list of plain links it is an unknown one, which does nothing.
+        #expect(DeepLink(p.url) == .open)
+        #expect(pane("REXDUO://PANE?server=a&session=b&window=c&block=d") == PaneLink(server: "a", session: "b", window: "c", block: "d"))
+        // Any order.
+        #expect(pane("rexduo://pane?block=d&window=c&session=b&server=a") == PaneLink(server: "a", session: "b", window: "c", block: "d"))
+    }
+
+    @Test func aPaneLinkNeedsAllFourValuesOnceAndNothingElse() {
+        for s in ["rexduo://pane", "rexduo://pane?", "rexduo://pane?server=a&session=b&window=c",
+                  "rexduo://pane?server=a&session=b&window=c&block=", "rexduo://pane?server=a&session=b&window=c&block",
+                  "rexduo://pane?server=a&session=b&window=c&block=d&extra=1",
+                  "rexduo://pane?server=a&server=z&window=c&block=d", "rexduo://pane?server=a&session=b&window=c&window=d",
+                  "rexduo://pane/x?server=a&session=b&window=c&block=d", "rexduo://user@pane?server=a&session=b&window=c&block=d",
+                  "rexduo://pane:80?server=a&session=b&window=c&block=d", "rexduo://pane?server=a&session=b&window=c&block=d#f",
+                  "rexduo://panes?server=a&session=b&window=c&block=d", "rexduo://%70ane?server=a&session=b&window=c&block=d",
+                  "https://pane?server=a&session=b&window=c&block=d", "javascript://pane?server=a&session=b&window=c&block=d",
+                  "rexduo://waiting?server=a&session=b&window=c&block=d",
+                  "rexduo://pane?server=a&session=b&window=c&block=" + String(repeating: "x", count: 201)] {
+            #expect(pane(s) == nil, "\(s)")
+        }
+        // The longest value still taken.
+        #expect(pane("rexduo://pane?server=a&session=b&window=c&block=" + String(repeating: "x", count: 200)) != nil)
     }
 }

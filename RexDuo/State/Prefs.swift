@@ -175,6 +175,10 @@ final class Prefs {
     // white by contrast, refreshes at most every 24 ms, needles under 3 characters searched after
     // 300 ms, at most 1 KB of needle, 2,048 pages converted per refresh (`GhosttyFind`,
     // `FindQuery`), and the hand-over in `FindHandover.shipped`.
+    // The widgets have no settings either: one widget, configured by its size; they take the two
+    // themes chosen here; the snapshot is written within 0.5 s for a new waiting agent and 2 s
+    // for anything else, reloaded at most once in 10 s and restamped every 15 min
+    // (`WriteThrottle`); it reads as current for 2 min and dims after an hour (`GlanceFreshness`).
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0

@@ -20,7 +20,8 @@ settings:
 packages:
   RexKit:
     path: Packages/RexKit
-  # What the app shares with its extensions (Foundation only): the links that open the app.
+  # What the app shares with its extensions: the links that open the app and the snapshot the
+  # widgets read (GlanceModel, Foundation only), and what the widgets draw with (GlanceUI, SwiftUI only).
   RexGlance:
     path: Packages/RexGlance
 targets:
@@ -39,7 +40,11 @@ targets:
         product: RexKit
       - package: RexGlance
         product: GlanceModel
-      # The controls. Embedded in the app (PlugIns), so every build and test of the app builds it.
+      # Not drawn with in the app: linked so the app's tests can hold the widgets' colors to the app's.
+      - package: RexGlance
+        product: GlanceUI
+      # The widgets and the controls. Embedded in the app (PlugIns), so every build and test of
+      # the app builds it.
       - target: RexDuoWidgets
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
@@ -100,6 +105,9 @@ targets:
       properties:
         aps-environment: development
         com.apple.developer.usernotifications.time-sensitive: true
+        # Where the app writes the snapshot its widgets read (GlanceStore.appGroup).
+        com.apple.security.application-groups:
+          - group.dev.abrahamgonzalez.rexduo
     settings:
       base:
         # Keep the bundle id: App Store Connect and the APNs topic depend on it.
@@ -111,9 +119,10 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         # libghostty-vt's simdutf and highway are C++.
         OTHER_LDFLAGS: "-lc++"
-  # The controls for Control Center, the Lock Screen and the Action button. They only open the
-  # app with a link (RexDuoWidgets/OpenLinkIntent.swift), so the extension links neither RexKit
-  # nor GhosttyVt, and the Ghostty check stays on the app.
+  # The agents widget (Home Screen and Lock Screen) and the controls for Control Center, the Lock
+  # Screen and the Action button. The widget reads the snapshot the app writes to the App Group;
+  # the controls only open the app with a link (RexDuoWidgets/OpenLinkIntent.swift). So the
+  # extension links neither RexKit nor GhosttyVt, and the Ghostty check stays on the app.
   RexDuoWidgets:
     type: app-extension
     platform: iOS
@@ -122,8 +131,25 @@ targets:
     dependencies:
       - package: RexGlance
         product: GlanceModel
+      - package: RexGlance
+        product: GlanceUI
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
+    # The App Group it reads the snapshot from, and Data Protection Complete.
+    # What hides a name, a place or a message is `.privacySensitive()` on its view: the system
+    # draws those views redacted where it asks for privacy. The entitlement doesn't redact
+    # anything. It makes Complete the default protection of files the extension itself creates
+    # (it creates none; the app writes the snapshot, readable after the first unlock), and it
+    # tells the system that this widget's content is protected while the phone is locked. That
+    # iOS then shows the redacted views on a locked phone is checked on a device
+    # (docs/glance.md, Privacy); a simulator has no passcode. This file's comments are the only
+    # ones: XcodeGen writes the .entitlements file from the properties below.
+    entitlements:
+      path: RexDuoWidgets/RexDuoWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.dev.abrahamgonzalez.rexduo
+        com.apple.developer.default-data-protection: NSFileProtectionComplete
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.widgets
@@ -141,6 +167,8 @@ targets:
       - path: RexDuoTests
       # The control server the protocol tests run against, shared with the app's tests.
       - path: Packages/RexKit/Tests/RexKitTests/FakeRexServer.swift
+      # The widgets' views, which the tests draw in every size, state and rendering mode.
+      - path: RexDuoWidgets/Views
     dependencies:
       - target: RexDuo
     settings:

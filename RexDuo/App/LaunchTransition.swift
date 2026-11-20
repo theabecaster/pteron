@@ -79,10 +79,14 @@ private struct LaunchSplashAnchor: UIViewRepresentable {
 /// around a point deep inside Glide's head until the app fills the screen. Without Metal in time, the
 /// flat cutout folds forward about its bottom edge and drops past the viewer instead.
 final class LaunchSplashView: UIView {
-    enum Metric {
+    /// The clear space the hole's bitmap keeps around the art, in points. The art's outline has to
+    /// leave at least this much room inside its own bounds, which a test holds it to; that is why
+    /// this one number is not in `Metric` with the rest.
+    static let holeMargin: CGFloat = 6
+
+    private enum Metric {
         /// Hole bitmap pixels per point: sharp up to a few times zoom; past that the edges move fast.
         static let holeScale: CGFloat = 8
-        static let holeMargin: CGFloat = 6
         static let perspective: CGFloat = 1 / 500
     }
 
@@ -160,7 +164,7 @@ final class LaunchSplashView: UIView {
         cover.addSublayer(depth)
         // Drawn off the main thread: it isn't needed before the peel, a few hundred ms from now.
         let outline = Shared(LaunchArt.silhouette)
-        let size = LaunchArt.size, margin = Metric.holeMargin * 2, scale = Metric.holeScale
+        let size = LaunchArt.size, margin = Self.holeMargin * 2, scale = Metric.holeScale
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let drawn = Shared(LaunchHoleDepth.image(silhouette: outline.value, size: size, margin: margin, scale: scale))
             DispatchQueue.main.async { self?.depth.contents = drawn.value }
@@ -208,7 +212,7 @@ final class LaunchSplashView: UIView {
         // scale; the border overlaps the bitmap's edge so no seam shows. Scaling pivots on the
         // inscribed circle's centre, so the solid inside of Glide is what ends up covering the screen.
         let border = hypot(bounds.width, bounds.height)
-        let m = Metric.holeMargin
+        let m = Self.holeMargin
         let t = cover.transform
         cover.transform = CATransform3DIdentity
         cover.bounds = CGRect(x: 0, y: 0, width: art.width + 2 * (m + border), height: art.height + 2 * (m + border))
@@ -241,7 +245,7 @@ final class LaunchSplashView: UIView {
     /// art). The outline is stroked back in by 0.75 pt so the hole's anti-aliased edge stays under the
     /// art's edge on the first frame.
     private static func holeImage(color: UIColor) -> CGImage? {
-        let m = Metric.holeMargin * 2
+        let m = Self.holeMargin * 2
         let size = CGSize(width: LaunchArt.size.width + 2 * m, height: LaunchArt.size.height + 2 * m)
         let format = UIGraphicsImageRendererFormat()
         format.scale = Metric.holeScale
