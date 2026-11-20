@@ -243,6 +243,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane holds its screen while its stream catches up, until the server's size is known
     /// to be the one it shows (`streamFence`, `streamResized`).
     private var holdsForCatchUp = false
+    /// Our own resize has come back in the stream since the claim was last asked for.
+    private var ownResizeSeen = false
     /// `stop()` is ending the stream: its fence goes without the stream having caught up.
     private var stoppingStream = false
     private static let lostText = "Resized elsewhere · tap to fit here"
@@ -1534,6 +1536,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             guard backgroundedAt == nil else { return }
             // Under the board the pane keeps the size it has; `setCovered(false)` lays out again.
             guard !covered else { return }
+            // The stream starts beside the claim, not after it: a snapshot needs no size from
+            // this client. The fence holds input until both are done, and the screen holds
+            // still until the resize has landed (`streamFence`, `streamResized`).
+            if !started { started = true; stream.start() }
             let want = fitGrid()
             // A new size needs no redraw from the server: the terminal reflows as the server's
             // does (both are Ghostty), and the stream carries the resize.
@@ -1553,6 +1559,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Asks for the pane at this size. Until that ends (`claimed`, a release, a loss) a raised
     /// fence stays up: the resize will change the screen.
     private func requestClaim(_ size: (Int, Int)) {
+        ownResizeSeen = false
         stream.setClaimPending(true)
         claim.request(cols: size.0, rows: size.1)
     }
@@ -1644,14 +1651,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { term }
 
     /// The pane is ours at this size (`FitClaim.onClaimed`: still wanted, never after a release).
-    /// Once started, the stream carries the resize and the program's redraw; nothing to reload.
+    /// The stream carries the resize and the program's redraw; nothing to reload.
     private func claimed(cols: Int, rows: Int) {
         claimedSize = (cols, rows)
         stream.setClaimPending(false)
-        if !started {
-            started = true
-            stream.start()
-        }
     }
 
     // MARK: TerminalSink
@@ -1711,7 +1714,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // The terminal keeps stream order itself: output fed before this is parsed at the old size.
         serverSize = (cols, rows)
         let wasFitted = fitted
-        if sizing == .fit, let c = claimedSize, c != (cols, rows), owner != stream.control.clientID {
+        if owner == stream.control.clientID { ownResizeSeen = true }
+        // While the stream catches up, a size from before our own resize can still arrive (the
+        // snapshot's, or one the pane had while it was parked): that is not another client
+        // taking the pane. After our own resize has come by, or on a current stream, it is.
+        let later = ownResizeSeen || !stream.isFenced
+        if sizing == .fit, let c = claimedSize, c != (cols, rows), owner != stream.control.clientID, later {
             // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
             claimedSize = nil
             lostOwnership = true

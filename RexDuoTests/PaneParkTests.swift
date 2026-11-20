@@ -260,6 +260,58 @@ final class PaneParkTests: XCTestCase {
         return host
     }
 
+    // MARK: The parallel start
+
+    func testTheStreamStartsWhileTheClaimIsStillOnItsWay() {
+        let pool = TerminalHostPool()
+        let transport = FakeFitTransport()
+        transport.held = ["own"]
+        let host = pooledHost(pool, key(1), transport: transport, sizing: .fit)
+        host.frame = window.bounds
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(host.isCatchingUp, "started at the first layout, behind its fence")
+        XCTAssertTrue(eventually { transport.waitingKinds == ["own"] })
+        XCTAssertTrue(host.stream.isClaimPending, "the fence waits for the resize")
+        XCTAssertFalse(transport.calls.contains { $0.hasPrefix("resize") })
+        transport.held = []
+        transport.finishAll()
+        XCTAssertTrue(eventually { !host.stream.isClaimPending })
+        XCTAssertEqual(transport.calls.count, 2, "own, then one resize")
+        host.removeFromSuperview()
+    }
+
+    func testASizeFromBeforeOurResizeIsNotAnotherClientTakingThePane() {
+        let pool = TerminalHostPool()
+        let transport = FakeFitTransport()
+        let host = claimedHost(pool, transport)
+        let mine = host.claimWanted ?? (cols: 0, rows: 0)
+        XCTAssertTrue(host.isCatchingUp)
+        // The snapshot's size, sent before the server ran our resize, arrives after the claim's answer.
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        XCTAssertNil(host.statusChipText, "not resized elsewhere: ours is still to come")
+        // Our own resize comes by; from here on another client's is news.
+        host.streamResized(cols: mine.cols, rows: mine.rows, owner: nil)
+        XCTAssertNil(host.statusChipText)
+        host.streamResized(cols: 120, rows: 40, owner: "client:mac")
+        XCTAssertEqual(host.statusChipText, "Resized elsewhere · tap to fit here")
+        host.removeFromSuperview()
+    }
+
+    func testAPaneInTheBackgroundOrUnderTheBoardStartsNothing() {
+        let pool = TerminalHostPool()
+        let transport = FakeFitTransport()
+        let host = pooledHost(pool, key(1), transport: transport, sizing: .fit)
+        host.setCovered(true)
+        host.frame = window.bounds
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        pause(0.1)
+        XCTAssertFalse(host.isCatchingUp)
+        XCTAssertEqual(transport.calls, [])
+        host.removeFromSuperview()
+    }
+
     func testAParkedPaneKeepsItsClaimForTheGraceThenGivesItBack() {
         let pool = TerminalHostPool()
         let transport = FakeFitTransport()
