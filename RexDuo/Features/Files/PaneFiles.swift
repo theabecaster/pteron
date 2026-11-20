@@ -156,14 +156,16 @@ final class PaneFiles {
     /// Asks the server for each method nobody has an answer for, each on its own. The creator
     /// list answers first when it can; a probe that gave no answer is asked again as
     /// `ServerCapabilities.shouldProbe` allows (once more per connection, a minute later).
-    func checkSupport() {
-        guard server.phase == .online, let block else { return }
+    /// Returns the methods it started asking about now.
+    @discardableResult
+    func checkSupport() -> Set<FileMethod> {
+        guard server.phase == .online, let block else { return [] }
         let host = block.hostID
         let caps = server.capabilities
         let serial = server.connectionSerial
         if case .unknown = caps.creators, !(creatorWaitOver && creatorWaitSerial == serial) {
             // The list is on its way. If it never comes, ask anyway.
-            guard creatorWaitSerial != serial else { return }
+            guard creatorWaitSerial != serial else { return [] }
             creatorWaitSerial = serial
             creatorWaitOver = false
             Task { @MainActor [weak self] in
@@ -172,12 +174,14 @@ final class PaneFiles {
                 self.creatorWaitOver = true
                 self.checkSupport()
             }
-            return
+            return []
         }
         let remote = !server.isLocal(block)
+        var asked: Set<FileMethod> = []
         for method in FileMethod.allCases where server.has(method, host: host) == nil && !probing.contains(method)
             && caps.shouldProbe(method: method.full, host: host) {
             probing.insert(method)
+            asked.insert(method)
             Task { @MainActor in
                 let answer = await FileProbe.ask(method, control: self.server.control, sessionID: self.sessionID,
                                                  blockID: self.blockID, remote: remote)
@@ -185,6 +189,7 @@ final class PaneFiles {
                 self.server.capabilities.record(method: method.full, host: host, answer, serial: serial)
             }
         }
+        return asked
     }
 
     // MARK: Destination

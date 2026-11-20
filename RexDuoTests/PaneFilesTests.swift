@@ -24,23 +24,33 @@ final class PaneFilesTests: XCTestCase {
         return .result(["creators": [creator]])
     }
 
+    /// Waits until `condition` holds, checking it every 10 ms up to `seconds` worth of checks. The
+    /// limit counts checks, not the clock: a run the system stalls for a while waits longer
+    /// instead of giving up before the work it waits for had a chance to run.
     private func eventually(seconds: Double = 3, _ condition: () -> Bool) async -> Bool {
-        let end = Date().addingTimeInterval(seconds)
-        while Date() < end {
+        for _ in 0..<Int(seconds * 100) {
             if condition() { return true }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         return condition()
     }
 
-    /// A connected rig with session 1 in view, and the files of its first pane.
+    /// A connected rig with session 1 in view, and the files of its first pane. It waits for the
+    /// first sync and the creator list itself (`Rig.settle` goes on after five seconds on the
+    /// clock, finished or not), so a test starts from a pane whose server is known.
     private func pane(revision: Int? = 18, creators: FakeRexServer.Reply,
                       script: ((Rig) -> Void)? = nil) async throws -> (Rig, PaneFiles) {
         let rig = try await Rig(revision: revision, creators: creators)
         script?(rig)
         await rig.connect()
         await rig.server.attach("session:1")
-        let files = PaneFiles(server: rig.server, sessionID: "session:1", blockID: "block:1a")
+        let server = rig.server
+        let ready = await eventually(seconds: 10) {
+            server.phase == .online && server.synced && server.creatorsTask == nil && server.capabilities.creators != .unknown
+                && server.blockInfo(session: "session:1", block: "block:1a") != nil
+        }
+        XCTAssertTrue(ready, "the sync and the creator list finished: \(server.phase), \(server.capabilities.creators)")
+        let files = PaneFiles(server: server, sessionID: "session:1", blockID: "block:1a")
         return (rig, files)
     }
 
@@ -207,11 +217,11 @@ final class PaneFilesTests: XCTestCase {
             defer { rig.stop() }
             XCTAssertEqual(files.support, FileSupport(), "nobody knows yet")
             XCTAssertFalse(files.showsAttachKey)
-            files.checkSupport()
+            XCTAssertEqual(files.checkSupport(), Set(FileMethod.allCases), "\(c.missing): each method is asked")
             let answered = await eventually { files.support == c.expect }
             XCTAssertTrue(answered, "\(c.missing): \(files.support)")
-            files.checkSupport()
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            // Every method has its answer, so its one call came and went; asking again sends nothing.
+            XCTAssertEqual(files.checkSupport(), [], "\(c.missing): answered methods are not asked again")
             for m in [Self.upload, Self.download, Self.list] { XCTAssertEqual(rig.fake.count(m), 1, m) }
             let args = rig.fake.calls(Self.list).first?.obj("args") ?? [:]
             XCTAssertEqual(args.str("path"), "/")
