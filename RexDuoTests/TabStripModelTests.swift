@@ -90,7 +90,8 @@ struct TabChipTests {
         #expect(SessionChip(name: "work", machine: nil, waiting: 3).spoken == "Session work, 3 agents waiting")
         // A session without a name reads as the title bar says it.
         #expect(SessionChip(name: "", machine: nil, waiting: 0).name == "session")
-        #expect(SessionChip.none.spoken == "Sessions")
+        #expect(SessionChip.none().spoken == "Sessions")
+        #expect(SessionChip.none(form: .glyph).form == .glyph && one.form == .name)
     }
 }
 
@@ -257,6 +258,7 @@ struct SessionPopoverTests {
         #expect(footer.map(\.title) == ["Go to Anything…", "Agents", "Settings", "Use Sidebar"])
         #expect(footer.map(\.count) == [0, 2, 0, 0])
         #expect(footer.allSatisfy { !$0.symbol.isEmpty })
+        #expect(SessionPopover(machines: [], current: nil).firstFooterID == "f:Go to Anything…")
         let p = SessionPopover(machines: [], current: nil, waiting: 2)
         #expect(p.rows == footer.map { SessionPopover.Row.footer($0) })
         #expect(!p.rows.contains { $0.id.contains("Change Session") })

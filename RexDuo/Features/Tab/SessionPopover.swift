@@ -140,6 +140,11 @@ struct SessionPopover: Equatable {
     /// added, then the footer.
     var rows: [Row]
 
+    /// The footer's first row, which is set apart from the list above it.
+    var firstFooterID: String? {
+        rows.first { if case .footer = $0 { true } else { false } }?.id
+    }
+
     /// - Parameters:
     ///   - current: the tab on screen.
     ///   - waiting: every agent waiting for the user, on any machine: the Agents row's count.

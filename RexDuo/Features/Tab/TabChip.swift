@@ -158,31 +158,42 @@ struct SessionChip: Equatable {
     var machine: String?
     /// Agents waiting for the user in this session: the chip's dot.
     var waiting: Int
+    /// The name, or a glyph in a narrow strip (`StripLayout.session`).
+    var form: StripLayout.SessionForm
+    /// A session is on screen. Without one the chip says "Sessions".
+    private(set) var hasSession = true
 
     /// Shown where no session is on screen.
-    static let none = SessionChip(name: "Sessions", machine: nil, waiting: 0)
+    static func none(form: StripLayout.SessionForm = .name) -> SessionChip {
+        var chip = SessionChip(name: "Sessions", machine: nil, waiting: 0, form: form)
+        chip.hasSession = false
+        return chip
+    }
 
     static let hint = "Double-tap to change session."
 
     /// What VoiceOver reads: "Session work, studio".
     var spoken: String {
-        var s = self == .none ? name : "Session \(name)"
+        var s = hasSession ? "Session \(name)" : name
         if let machine { s += ", \(machine)" }
         if waiting > 0 { s += waiting == 1 ? ", 1 agent waiting" : ", \(waiting) agents waiting" }
         return s
     }
 
-    init(name: String, machine: String?, waiting: Int) {
+    init(name: String, machine: String?, waiting: Int, form: StripLayout.SessionForm = .name) {
         self.name = name.isEmpty ? "session" : name
         self.machine = machine
         self.waiting = waiting
+        self.form = form
     }
 
     /// The chip of the session on screen. Reads only the session's name and the agent index.
     @MainActor
-    static func of(_ sessionID: String, server: ServerConnection, servers: Int) -> SessionChip {
+    static func of(_ sessionID: String, server: ServerConnection, servers: Int,
+                   form: StripLayout.SessionForm = .name) -> SessionChip {
         SessionChip(name: server.views[sessionID]?.label ?? "", machine: servers > 1 ? server.config.name : nil,
-                    waiting: server.agentKeys.filter { $0.sessionID == sessionID && $0.state == "blocked" }.count)
+                    waiting: server.agentKeys.filter { $0.sessionID == sessionID && $0.state == "blocked" }.count,
+                    form: form)
     }
 }
 

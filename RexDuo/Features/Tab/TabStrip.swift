@@ -83,13 +83,13 @@ struct TabStrip<PaneMenu: View>: View {
     private func part(_ part: StripLayout.Part, _ layout: StripLayout, _ session: SessionView?) -> some View {
         switch part {
         case .session:
-            SessionChipLabel(target: target, form: layout.session, theme: theme)
+            SessionChipSlot(target: target, form: layout.session, theme: theme, onAction: actions.sessions)
         case .chips:
             if let target, let session {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: StripLayout.gap) {
                         ForEach(session.windows) { w in
-                            TabChipView(server: target.server, session: session, window: w, active: w.id == target.windowID,
+                            TabChipSlot(server: target.server, session: session, window: w, active: w.id == target.windowID,
                                         block: target.block, layout: layout, theme: theme, actions: actions)
                         }
                     }
@@ -144,42 +144,33 @@ private struct PaneCount: View {
     }
 }
 
-/// The session chip's label. Its own view, so the session's name and its waiting count are read
-/// here and not by the strip.
-private struct SessionChipLabel: View {
+/// The session chip and its popover. Its own view, so the session's name, its waiting count
+/// and, while the popover is open, every server's sessions are read here and not by the strip.
+private struct SessionChipSlot: View {
     @Environment(AppModel.self) private var model
     let target: StripTarget?
     let form: StripLayout.SessionForm
     let theme: TermTheme
+    let onAction: (SessionPopover.Action) -> Void
+    @State private var open = false
 
     var body: some View {
-        let chip = target.map { SessionChip.of($0.sessionID, server: $0.server, servers: model.servers.count) } ?? .none
-        HStack(spacing: 4) {
-            switch form {
-            case .name:
-                Text(chip.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(theme.chrome.tertiary)
-            case .glyph:
-                Image(systemName: "rectangle.stack")
+        let chip = target.map { SessionChip.of($0.sessionID, server: $0.server, servers: model.servers.count, form: form) }
+            ?? .none(form: form)
+        SessionChipView(chip: chip, theme: theme) { open = true }
+            .popover(isPresented: $open, arrowEdge: .top) {
+                SessionPopoverView(popover: SessionPopover(model), theme: theme) { action in
+                    open = false
+                    onAction(action)
+                }
+                .presentationCompactAdaptation(.popover)
             }
-            if chip.waiting > 0 {
-                Circle().fill(theme.chrome.blocked).frame(width: 6, height: 6)
-            }
-        }
-        .padding(.horizontal, 6)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(chip.spoken)
     }
 }
 
 /// One tab chip. It builds its `TabChip` in its own body, so a status or title change in one
 /// tab draws only that chip again.
-private struct TabChipView: View {
+private struct TabChipSlot: View {
     let server: ServerConnection
     let session: SessionView
     let window: WindowInfo
@@ -195,62 +186,7 @@ private struct TabChipView: View {
         #endif
         let chip = TabChip.of(window, in: session, server: server, active: active, block: block, strip: layout)
         let width = active ? layout.activeChip : layout.chip
-        HStack(spacing: 0) {
-            Button { actions.pick(chip.id) } label: { label(chip) }
-                .buttonStyle(.plain)
-                .accessibilityLabel(chip.spoken)
-                .accessibilityAddTraits(active ? .isSelected : [])
-            if chip.showsClose {
-                Button { actions.chip(.close, chip.id) } label: {
-                    Image(systemName: TabChip.Action.close.symbol)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(theme.chrome.secondary)
-                        .frame(width: StripLayout.hit)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(TabChip.Action.close.title)
-            }
-        }
-        .frame(minWidth: width.lowerBound, maxWidth: width.upperBound, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 8).fill(active ? theme.chrome.rowSelected : .clear).padding(.vertical, 4))
-    }
-
-    private func label(_ chip: TabChip) -> some View {
-        HStack(spacing: 5) {
-            ForEach(Array(chip.icons.enumerated()), id: \.offset) { _, icon in
-                ZStack {
-                    TabRowLabel.tile(icon.agent).fill(TabRowLabel.tint(icon.agent, theme).opacity(0.9))
-                    Image(systemName: icon.agent?.symbol ?? "terminal")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(theme.bg)
-                }
-                .frame(width: 14, height: 14)
-            }
-            title(chip)
-            switch chip.badge {
-            case .status(let state): StatusBadge(state: state, theme: theme)
-            case .ring(let progress): ProgressRing(progress: progress, theme: theme)
-            }
-            if chip.waking { WakingMark() }
-        }
-        .padding(.horizontal, 8)
-        .frame(minWidth: StripLayout.chipMin, maxHeight: .infinity)
-        .contentShape(Rectangle())
-    }
-
-    /// The active chip's title takes what the chip has; any other is cut at `inactiveTitleMax`.
-    @ViewBuilder
-    private func title(_ chip: TabChip) -> some View {
-        let text = Text(chip.title)
-            .font(.subheadline.weight(active ? .semibold : .regular))
-            .lineLimit(1)
-            .truncationMode(chip.title.contains("/") ? .middle : .tail)
-        if active {
-            text
-        } else {
-            text.frame(maxWidth: StripLayout.inactiveTitleMax).fixedSize()
-        }
+        TabChipView(chip: chip, theme: theme, onTap: { actions.pick(chip.id) }, onAction: { actions.chip($0, chip.id) })
+            .frame(minWidth: width.lowerBound, maxWidth: width.upperBound, maxHeight: .infinity)
     }
 }
