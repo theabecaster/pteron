@@ -201,6 +201,7 @@ final class StreamInputTests: XCTestCase {
         // Opened again later: only what is typed now goes out.
         s.start()
         _ = await eventually { link.count("data.connect") == 1 }
+        await catchUp(s, link)
         XCTAssertTrue(s.send(text: "x"))
         _ = await eventually { !link.written.isEmpty }
         await settle()
@@ -220,6 +221,7 @@ final class StreamInputTests: XCTestCase {
         link.disconnect()
         link.connect()
         s.start()
+        await catchUp(s, link)
         s.send(text: "c")
         _ = await eventually { link.written.count == 2 }
         await settle()
@@ -227,17 +229,22 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(notices, [])
     }
 
-    func testRestartKeepsQueuedInput() async {
-        let link = FakeLink(connected: false)
+    func testRestartDropsQueuedInputWithItsNewSnapshot() async {
+        let link = FakeLink()
         let (s, _) = stream(link)
         s.start()
+        await catchUp(s, link)
+        // Typed at a current screen, with no connection to send it on.
+        link.disconnect()
         s.send(text: "a")
         s.restart()
-        s.send(text: "b")
         link.connect()
-        _ = await eventually { !link.written.isEmpty }
+        _ = await eventually { link.sockets.count == 2 }
+        // The fresh stream's snapshot replaces the screen "a" was typed at.
+        await catchUp(s, link)
         await settle()
-        XCTAssertEqual(link.written, ["ab"])
+        XCTAssertEqual(link.written, [])
+        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
     }
 
     // MARK: Bytes

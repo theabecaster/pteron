@@ -6,6 +6,8 @@ import Foundation
 @MainActor
 protocol StreamLink: AnyObject {
     var isConnected: Bool { get }
+    /// This client's id on the control connection: the `owner` of a pane it resized.
+    var clientID: String? { get }
     /// See `RexControl.observeConnected`.
     func observeConnected(_ body: @escaping @MainActor () -> Bool)
     /// Throws a `RexError`: with `neverSent` when the request never left, with the server's code

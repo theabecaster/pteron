@@ -215,7 +215,8 @@ final class StreamReconnectTests: XCTestCase {
         let live = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
         XCTAssertTrue(live)
         XCTAssertTrue(link.sockets[1].isResume)
-        XCTAssertEqual(log.asked, [.milliseconds(400)])
+        // One pause before the one RESUME; the rest are the fence's short waits.
+        XCTAssertEqual(log.asked.filter { $0 > .milliseconds(300) }, [.milliseconds(400)])
         XCTAssertEqual(sink.statuses, [.connecting, .live, .reconnecting, .live])
     }
 

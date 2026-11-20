@@ -24,6 +24,7 @@ final class FakeLink: StreamLink {
     }
 
     private(set) var isConnected: Bool
+    var clientID: String? = "client:test"
     private var observers: [@MainActor () -> Bool] = []
     /// Every call that reached the "server", in order.
     private(set) var calls: [Call] = []
@@ -235,8 +236,9 @@ final class SleepLog {
     /// Runs after a wait is recorded.
     var onSleep: ((Duration) -> Void)?
     /// Waits that really pass: by default the hold after a key-bound action (`actionHold`), which
-    /// would otherwise let typing overtake every action at once.
-    var real: Set<Duration> = [.milliseconds(1500)]
+    /// would otherwise let typing overtake every action at once, and the fence's two limits (how
+    /// long held keys live, and its cap), which would otherwise end every fence at once.
+    var real: Set<Duration> = [.milliseconds(1500), .seconds(1), .milliseconds(300)]
 
     func attach(to stream: TerminalStream) {
         // The stream keeps the log alive.
@@ -259,4 +261,32 @@ func makeStream(link: FakeLink, sink: TerminalSink) -> (TerminalStream, SleepLog
     let log = SleepLog()
     log.attach(to: s)
     return (s, log)
+}
+
+/// Bytes as the server puts them on a terminal data socket.
+@MainActor
+enum Wire {
+    /// The smallest whole snapshot: the envelope, READY and FINISH.
+    static let snapshot: [UInt8] = Snapshots.envelope + Snapshots.record(tag: 5) + Snapshots.record(tag: 6)
+
+    static func message(_ json: String) -> [UInt8] {
+        Array("\u{1b}_rex1;\(FakeLink.nonce);\(json)\u{1b}\\".utf8)
+    }
+
+    static func resize(cols: Int = 80, rows: Int = 24, owner: String = "client:mac") -> [UInt8] {
+        message("{\"type\":\"resize\",\"cols\":\(cols),\"rows\":\(rows),\"owner\":\"\(owner)\"}")
+    }
+
+    /// What starts every fresh stream: the snapshot, then the server's size.
+    static let opening: [UInt8] = snapshot + resize()
+}
+
+/// Gives a started stream its snapshot and waits until its fence is down: the screen is current.
+@MainActor
+func catchUp(_ stream: TerminalStream, _ link: FakeLink) async {
+    let has = await eventually { !link.sockets.isEmpty }
+    XCTAssertTrue(has, "no data socket")
+    link.sockets.last?.push(Wire.opening)
+    let down = await eventually { !stream.isFenced }
+    XCTAssertTrue(down, "the fence stayed up")
 }

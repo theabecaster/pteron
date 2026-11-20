@@ -316,6 +316,18 @@ public protocol TerminalSink: AnyObject {
     @MainActor func streamTheme(_ theme: JSONObject)
     @MainActor func streamExited(code: Int?)
     @MainActor func streamStatus(_ status: TerminalStream.Status)
+    /// The catch-up fence went up or came down (`TerminalStream.isFenced`). While it is up the
+    /// screen may be behind the program, and typed input is held, not sent. `screen` is false
+    /// when it goes up over a pane that has shown nothing yet.
+    @MainActor func streamFence(_ up: Bool, screen: Bool)
+    /// Calls `done` once everything passed to the sink so far has been parsed into the screen.
+    /// A sink that parses as it is fed calls it at once.
+    @MainActor func streamWhenParsed(_ done: @escaping @MainActor () -> Void)
+}
+
+public extension TerminalSink {
+    @MainActor func streamFence(_ up: Bool, screen: Bool) {}
+    @MainActor func streamWhenParsed(_ done: @escaping @MainActor () -> Void) { done() }
 }
 
 /// Streams one terminal block's output over `GET /api/data` (subprotocol rex.data.terminal.v1)
@@ -361,6 +373,10 @@ public protocol TerminalSink: AnyObject {
 ///   30 s, back to 3 s after the next WELCOME. It reports `.failed` meanwhile.
 ///
 /// `stop()` and `restart()` end whatever was waiting: every wait checks `gen` when it wakes.
+///
+/// The catch-up fence. Input goes out only while the screen is known to be current. From a
+/// start, a drop, a wake or a restart until the stream has caught up (`CatchUpFence` has the
+/// rules), typed bytes are held and everything else is dropped; the sink hears `streamFence`.
 @MainActor
 public final class TerminalStream {
     public enum Status: Equatable { case connecting, live, reconnecting, ended(String), failed(String) }
@@ -453,7 +469,18 @@ public final class TerminalStream {
     static let attachRetryLimit = 8
     private var attachRetries = 0
     /// Every wait goes through here, so tests can see the waits and skip them.
-    var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) } {
+        didSet { fence.sleep = sleep }
+    }
+
+    /// Holds input while the screen may be behind the program (`CatchUpFence`).
+    let fence = CatchUpFence()
+    /// The screen may be behind the program: typed input is held and everything else dropped.
+    public var isFenced: Bool { fence.isUp }
+    /// What the user is told when the fence dropped input.
+    public static let fenceDroppedMessage = "The pane changed. Nothing was sent."
+    /// True once the sink has been given a screen (a snapshot or a screen read).
+    private var hasScreen = false
 
     public convenience init(control: RexControl, sessionID: String, blockID: String) {
         self.init(control: control, link: control, sessionID: sessionID, blockID: blockID)
@@ -470,13 +497,50 @@ public final class TerminalStream {
             self.controlConnected()
             return true
         }
+        wireFence()
     }
+
+    /// The fence's four ties to the stream.
+    private func wireFence() {
+        fence.onChange = { [weak self] up in
+            guard let self else { return }
+            self.sink?.streamFence(up, screen: self.hasScreen)
+            // What waited in the queue behind the fence goes now.
+            if !up { self.pump() }
+        }
+        fence.onStale = { [weak self] in
+            guard let self, !self.inputQueue.isEmpty else { return false }
+            self.dropQueue(ended: true)
+            return true
+        }
+        // Held keys go out through the same queue as any typed key.
+        fence.onFlush = { [weak self] bytes in self?.enqueueText(bytes) }
+        fence.onDropped = { [weak self] in self?.onActionFailed?(Self.fenceDroppedMessage) }
+        fence.drained = { [weak self] done in
+            guard let sink = self?.sink else { return done() }
+            sink.streamWhenParsed(done)
+        }
+    }
+
+    /// The host asked the server for a new size for this pane (true), or that ended: the pane
+    /// was resized, the claim was given up, or another client took it. While one is on its way
+    /// a raised fence stays up: the resize changes the screen.
+    public func setClaimPending(_ pending: Bool) { fence.setClaimPending(pending) }
+
+    /// Runs `body` once the screen is current: now if the fence is down, else when it comes
+    /// down. Never, if the stream stops first.
+    public func whenCurrent(_ body: @escaping @MainActor () -> Void) { fence.whenDown(body) }
+
+    /// The caller dropped input of its own because the fence is up (a mouse report says
+    /// nothing; a typed path or a key's action tells the user, once per fence).
+    public func noteFenceDrop() { fence.noteDropped() }
 
     public func start() {
         stopped = false
         failedStarts = 0
         attachRetries = 0
         control.streamStarted(self)
+        fence.raise(exact: false)
         Task { await self.fullStart() }
     }
 
@@ -491,6 +555,8 @@ public final class TerminalStream {
         failedStarts = 0
         attachRetries = 0
         dropInput()
+        fence.reset()
+        hasScreen = false
         // A write still out ends on its own; a read waiting for this pane's input waits no more.
         hasPendingInput = false
         control.inputActivity.remove(ObjectIdentifier(self))
@@ -509,6 +575,7 @@ public final class TerminalStream {
 
     /// Re-read the whole screen and open a fresh stream. Queued input is kept.
     public func restart() {
+        fence.raise(exact: hasScreen)
         gen += 1
         live = false
         waitingForControl = false
@@ -537,12 +604,14 @@ public final class TerminalStream {
         let myGen = gen, sleep = self.sleep, timeout = wakeTimeout
         let id = ObjectIdentifier(socket)
         unansweredPing = id
+        // Until the socket answers, nobody knows what the program wrote meanwhile.
+        fence.raise(exact: hasScreen)
         Task { [weak self] in
             let answered = (try? await socket.ping()) != nil
             guard let self, self.unansweredPing == id else { return }
             self.unansweredPing = nil
             // The waiting `receive` fails with the socket and handles the drop.
-            if !answered { self.drop(socket, gen: myGen) }
+            if !answered { self.drop(socket, gen: myGen) } else if myGen == self.gen, self.live { self.fence.arrived() }
         }
         Task { [weak self] in
             await sleep(timeout)
@@ -668,6 +737,8 @@ public final class TerminalStream {
         if case .end(let complete) = part {
             if ok, complete {
                 snapshotState = .none
+                hasScreen = true
+                fence.arrived()
                 return true
             }
         } else if ok {
@@ -698,9 +769,12 @@ public final class TerminalStream {
                 serverCols = max(size.int("columns") ?? serverCols, 2)
                 serverRows = max(size.int("rows") ?? serverRows, 2)
                 owner = size.str("owner")
+                fence.changed()
                 sink?.streamReset(cols: serverCols, rows: serverRows)
                 sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
                 sink?.streamSnapshot(screen)
+                hasScreen = true
+                if live { fence.arrived() }
             } catch {
                 guard myGen == gen, mySeq == resyncSeq, !stopped else { return }
                 restart()
@@ -736,9 +810,11 @@ public final class TerminalStream {
                 owner = size.str("owner")
                 let initial = try await readScreen()
                 guard myGen == gen, !stopped else { return }
+                fence.changed()
                 sink?.streamReset(cols: serverCols, rows: serverRows)
                 sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
                 sink?.streamSnapshot(initial)
+                hasScreen = true
             }
 
             // 2. Ticket, then the data WebSocket.
@@ -902,6 +978,9 @@ public final class TerminalStream {
         attachRetries = 0
         live = true
         sink?.streamStatus(.live)
+        // A resume goes on where it stopped, and a stream without a snapshot was just seeded:
+        // what comes now is new. A snapshot arrives first otherwise (`handleSnapshot`).
+        if !fresh || !collectSnapshot { fence.arrived() }
     }
 
     /// Reads the socket until it fails or the stream moves on (`gen`). While reading is paused
@@ -948,15 +1027,23 @@ public final class TerminalStream {
         consuming = true
         defer { consuming = false }
         // In order: a resize applies between the bytes written before and after it.
+        let fence = self.fence
         filter!.process(chunk, snapshot: { part in
             guard self.gen == myGen else { return false }
+            fence.changed()
             return self.handleSnapshot(part, sink: sink)
         }, output: { out in
             guard self.gen == myGen else { return }
+            fence.changed()
             // While a resync reads the screen, this output is dropped (see `resync()`).
             if !self.resyncing { sink?.streamFeed(out) }
         }, message: { m in
             guard self.gen == myGen else { return }
+            if m.str("type") == "resize", let me = self.link.clientID, m["owner"] as? String == me {
+                fence.resizeEchoed()
+            } else {
+                fence.changed()
+            }
             // The first message follows the snapshot. If the snapshot went unused, the screen
             // is read from here.
             if self.snapshotState == .refused {
@@ -985,9 +1072,13 @@ public final class TerminalStream {
         let code = socket.closeCode
         if code == 4000 {
             token = nil
+            // Keys held for a pane that is gone are dropped, and say so.
+            if fence.heldCount > 0 { fence.noteDropped() }
+            fence.reset()
             sink?.streamStatus(.ended("pane closed"))
             return
         }
+        fence.raise(exact: hasScreen)
         sink?.streamStatus(.reconnecting)
         droppedAt = .now
         // 1013: the server dropped the stream (e.g. too much output piled up); a resume can't work.
@@ -1103,22 +1194,45 @@ public final class TerminalStream {
     public func send(_ bytes: [UInt8]) -> Bool {
         guard !bytes.isEmpty else { return true }
         guard !stopped, let text = String(bytes: bytes, encoding: .utf8) else { return false }
+        // Behind the fence the bytes wait, and go out only if the screen was exact.
+        if fence.hold(bytes) { return true }
+        append(text)
+        return true
+    }
+
+    /// Bytes for the program that describe a place or a state of the screen, not a key: a
+    /// mouse or wheel report, a focus report, a tap that moves the cursor. They are right only
+    /// for the screen they were made on, so behind the fence they are dropped, never held.
+    /// Returns false when they were dropped.
+    @discardableResult
+    public func send(report bytes: [UInt8]) -> Bool {
+        guard !fence.isUp else { return false }
+        return send(bytes)
+    }
+
+    /// Held keys the fence lets through: checked as UTF-8 when they were typed.
+    private func enqueueText(_ bytes: [UInt8]) {
+        guard !stopped, let text = String(bytes: bytes, encoding: .utf8) else { return }
+        append(text)
+    }
+
+    private func append(_ text: String) {
         if case .text(let have)? = inputQueue.last {
             inputQueue[inputQueue.count - 1] = .text(have + text)
         } else {
             inputQueue.append(.text(text))
         }
         pump()
-        return true
     }
 
     @discardableResult
     public func send(text: String) -> Bool { send(Array(text.utf8)) }
 
-    /// Sends the next item, unless one is out, the queue is empty or there is no connection
-    /// (`controlConnected()` pumps again).
+    /// Sends the next item, unless one is out, the queue is empty, there is no connection
+    /// (`controlConnected()` pumps again) or the fence is up (it pumps when it comes down).
     private func pump() {
-        guard !inFlight, !stopped, !inputQueue.isEmpty, link.isConnected else { return }
+        // Nothing leaves while the screen may be behind: the queue waits for the fence.
+        guard !inFlight, !stopped, !inputQueue.isEmpty, link.isConnected, !fence.isUp else { return }
         // In flight first, so the stream never looks idle between the two.
         inFlight = true
         let item = inputQueue.removeFirst()
@@ -1243,10 +1357,14 @@ public final class TerminalStream {
     }
 
     /// Empties the queue. Input that goes once or not at all is told that it never left.
-    private func dropQueue() {
+    private func dropQueue(ended: Bool = false) {
         let dropped = inputQueue
         inputQueue.removeAll()
-        for case .work(let work) in dropped { work.once?(.unsent) }
+        for case .work(let work) in dropped {
+            work.once?(.unsent)
+            // The fence dropped it while the stream goes on: whoever waits for it hears.
+            if ended, work.once == nil { work.ended?(false) }
+        }
     }
 
     /// How input that goes once or not at all ended (`sendOnce`).
@@ -1277,7 +1395,8 @@ public final class TerminalStream {
     /// sent later, when what it answered may be gone. `ended` is told once how it went.
     public func sendOnce(text: String, within limit: Duration = .seconds(4),
                          ended: @escaping @MainActor (Delivery) -> Void) {
-        guard !stopped, link.isConnected, !text.isEmpty else { ended(.unsent); return }
+        // Behind the fence it is not sent later either: what it answered may be gone.
+        guard !stopped, link.isConnected, !text.isEmpty, !fence.isUp else { ended(.unsent); return }
         let latest = ContinuousClock.now + limit
         var work = Work(action: nil) { [sessionID, blockID, link] in
             guard ContinuousClock.now <= latest else { throw RexError.unsent("too late") }
@@ -1316,6 +1435,12 @@ public final class TerminalStream {
             ended?(false)
             return
         }
+        // An action acts on the pane as it is now, which the screen may not show: dropped.
+        if fence.isUp {
+            fence.noteDropped()
+            ended?(false)
+            return
+        }
         var work = Work(action: palette ? (title ?? action) : action) { [sessionID, blockID, link] in
             var p: JSONObject = ["action": action, "origin": origin.rawValue, "session_id": sessionID, "block_id": blockID]
             if let args, !args.isEmpty { p["args"] = args }
@@ -1329,6 +1454,10 @@ public final class TerminalStream {
 
     /// Sends a key to the server's Lua key bindings (`client.key`); unhandled, it reaches this pane.
     public func forward(key: JSONObject) {
+        if fence.isUp {
+            fence.noteDropped()
+            return
+        }
         enqueue(Work(action: nil) { [sessionID, blockID, link] in
             _ = try await link.call("client.key", ["session_id": sessionID, "block_id": blockID, "key": key])
         })
