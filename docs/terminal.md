@@ -237,7 +237,9 @@ Around that:
   without animation and only if it changed, and the palette's hold (`PadHold`) ends with a fresh
   measure rather than the value it kept.
 - Key bar Return: pinned in every layout (`KeyBarLayout.pinned`), at the end of the keys' capsule
-  past a hairline, next to the hide key, so it never scrolls away. A tap sends what the bar's
+  past a hairline, next to the hide key (or, beside the Duo's vertical bar, 6 pt short of the
+  bar's column, which has Hide Keyboard; [duo-layout.md](duo-layout.md), Key bar), so it never
+  scrolls away. A tap sends what the bar's
   Enter always sent: CR, ESC CR with alt, CR with ctrl (as Ctrl-M), and with cmd the
   `cmd+enter` binding. It never repeats. Held for half a second (`KeyCap.holdDelay`, with a
   medium haptic) it sends Shift-Return through the engine's encoder, as a hardware Shift-Return:

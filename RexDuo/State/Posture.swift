@@ -179,6 +179,10 @@ extension EnvironmentValues {
     /// The edge of the system's vertical bar (iPhone Duo: the outer screen, and the inner screen in
     /// landscape). Nil where bars are horizontal. Toolbar items go there instead of the title bar.
     @Entry var verticalBarEdge: HorizontalEdge? = nil
+    /// That bar's column, in screen coordinates: the window's safe-area inset on its edge, as
+    /// tall as the window (`KeyBarPlacement.column`). The key bar beside the keyboard ends short
+    /// of it. Nil without a vertical bar.
+    @Entry var verticalBarColumn: CGRect? = nil
 }
 
 #if DEBUG

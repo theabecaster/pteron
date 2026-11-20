@@ -101,7 +101,7 @@ extension TerminalHost: FindBarOwner {
             bar.apply(theme: theme)
             f.model.attach(bar)
         }
-        f.accessory.barEdge = keyBar.barEdge
+        f.accessory.barColumn = keyBar.barColumn
         f.accessory.crease = keyBar.crease
         f.overlay.isHidden = true
         f.overlayPan.cancelsTouchesInView = false
@@ -589,9 +589,9 @@ extension TerminalHost: FindBarOwner {
         f.overlay.content.apply(theme: t)
     }
 
-    func setFindSurroundings(barEdge: NSDirectionalRectEdge?, crease: CGRect?) {
+    func setFindSurroundings(barColumn: CGRect?, crease: CGRect?) {
         guard let f = finder else { return }
-        f.accessory.barEdge = barEdge
+        f.accessory.barColumn = barColumn
         f.accessory.crease = crease
     }
 

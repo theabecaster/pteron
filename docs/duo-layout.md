@@ -165,23 +165,41 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   - **Reorder** (`BoardOrderThrottle`). Agents that change state quickly reorder the tiles at
     most once a second, with a spring; a tile that comes or goes fades at once.
 - **Vertical bar.** Where `verticalBarEdge` reports a bar, the navigation bar shows and its items
-  go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. The tab's title,
+  go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. While the active
+  pane's key bar is up, Hide Keyboard takes All Tabs' place (`TabActions`). The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
-- **Key bar.** The keyboard runs under the vertical bar, so the key bar has a safe-area inset there.
-  Where the bar sits beside it, the hide key moves into that column as a glass circle in line with
-  the bar's items (the whole column takes the tap), and the keys scroll across the full width
-  (`KeyBarPlacement`). Elsewhere the hide key stays at the bar's end. Either way the pinned Return
-  closes the keys' capsule on the hide key's side, so it sits next to the keyboard's own return,
-  with the pinned attach key before it; both stay clear of a vertical crease in every posture
-  (`PinnedAttachKeyTests`). With a vertical crease, the key
-  that would sit on it moves 12 pt past it, with the bar scrolled to its start.
+- **Hide Keyboard.** The key bar's hide key, moved into the vertical bar beside the keyboard. It
+  shows while the pane's key bar does, over the software keyboard or alone for a hardware one,
+  and does what the hide key does: the software keyboard resigns, the bar alone goes quiet and
+  hardware keys still type. The pane's host says when its key bar is up with the hide key in the
+  bar (`TerminalHost.barHidesKeyboard`), never a keyboard notification alone; the notification
+  only gives the swap the keyboard's animation, so it happens with the keyboard. With the
+  keyboard up the bar has room for three items (the outer screen, either way up): a fourth, in
+  any placement or priority, sends Pane Actions or the sidebar toggle into the system's "…"
+  menu. So Hide Keyboard takes All Tabs' place, in place, and nothing else moves; All Tabs comes
+  back when the key bar goes, and while typing it stays in the Pane Actions menu's first section
+  and in the title menu. VoiceOver finds one of the two in the bar, and one Hide Keyboard in
+  every state: the item, or without a vertical bar the key bar's own.
+- **Key bar.** The keyboard keeps its full width and runs under the vertical bar; only the key
+  bar's own views keep out of the bar's column. That column is the app window's safe-area inset
+  on the bar's edge (`KeyBarPlacement.column`), read with the edge on every change of the traits
+  behind it, the safe area and the layout (`VerticalBarObserver`), so a rotation or a fold moves
+  it, and handed to each pane's key bar in screen coordinates. Beside it the key bar draws no
+  hide key, its keys' capsule ends 6 pt short of the column, as at a screen edge, and it takes no
+  touch in the column, which belongs to the bar's items. The find bar in the keyboard's accessory
+  slot ends short of it the same way and keeps Done, which closes find. Without a vertical bar
+  (iPhones, the inner screen in portrait, tabletop) the hide key stays at the bar's end as
+  before. Either way the pinned Return closes the keys' capsule on the trailing side, so it sits
+  next to the keyboard's own return, with the pinned attach key before it; both stay clear of a
+  vertical crease in every posture (`PinnedAttachKeyTests`, `KeyBarColumnTests`). With a vertical
+  crease, the key that would sit on it moves 12 pt past it, with the bar scrolled to its start.
 - **Key bar look.** The iOS 26 keyboard is a glass panel with rounded top corners, so the bar has no
   background of its own. The keys sit bare in a glass capsule tinted with the keyboard's color, 6 pt
   from the sides like the keyboard's keys, with 4 pt of air above and below. At the bar's end the
-  hide key is a matching glass circle; in the vertical bar's column it is plain glass, like that
-  bar's items. A pressed key or an active ctrl/alt shows a pill. With a hardware keyboard the bar
-  still shows on its own at the bottom, for esc, ctrl and the arrows; its hide key puts it away.
+  hide key is a matching glass circle. A pressed key or an active ctrl/alt shows a pill. With a
+  hardware keyboard the bar still shows on its own at the bottom, for esc, ctrl and the arrows;
+  its hide key, or Hide Keyboard in the vertical bar, puts it away.
 - **Keyboard room.** The root ignores SwiftUI's keyboard safe area and pads its bottom by
   `KeyboardInset`, computed from the keyboard's last reported frame and the root's frame on every
   keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment

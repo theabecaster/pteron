@@ -19,7 +19,8 @@ protocol FindBarOwner: FindFieldOwner {
 
 /// The find bar's content, shared by both bars: a glass capsule with the field (the count inside
 /// its trailing edge), Next (chevron.up, older) and Previous (chevron.down, newer), and Done in a
-/// glass circle where the key bar has its hide key. It copies the key bar's glass and sizes.
+/// glass circle where the key bar has its hide key with no vertical bar beside it. It copies the
+/// key bar's glass and sizes, and like the key bar ends short of the vertical bar's column.
 @MainActor
 final class FindBarContent: UIView, UITextFieldDelegate {
     weak var owner: (any FindBarOwner)? {
@@ -35,8 +36,6 @@ final class FindBarContent: UIView, UITextFieldDelegate {
     private var theme: TermTheme = ThemeStore.fallback
     private var countText: String?
 
-    /// Where Done sits: at the bar's end, or in the vertical bar's column (`KeyBarPlacement`).
-    var donePlacement = KeyBarPlacement.HideKey.inBar { didSet { if donePlacement != oldValue { setNeedsLayout() } } }
     var compact = false { didSet { if compact != oldValue { setNeedsLayout() } } }
 
     override init(frame: CGRect) {
@@ -117,29 +116,27 @@ final class FindBarContent: UIView, UITextFieldDelegate {
     private var keyHeight: CGFloat { compact ? KeyBar.compactKeyHeight : KeyBar.keyHeight }
 
     /// The bar's content in `bounds`, centered in `rowHeight` from the top (the accessory's row
-    /// above the bottom safe area).
-    func layout(rowHeight: CGFloat, leftInset: CGFloat = 0, rightInset: CGFloat = 0) {
+    /// above the bottom safe area). Done always sits at the bar's end: it closes find, which the
+    /// vertical bar's Hide Keyboard doesn't. With the vertical bar's `column` beside the keyboard
+    /// (in this view's coordinates) the capsule, Done and Done's tap end short of it.
+    func layout(rowHeight: CGFloat, leftInset: CGFloat = 0, rightInset: CGFloat = 0, column: CGRect? = nil) {
         let h = keyHeight + 2 * KeyBar.ring
         let size = FindBarPlacement.size(width: bounds.width)
-        var lo = leftInset + KeyBar.sideInset, hi = bounds.width - rightInset - KeyBar.sideInset
+        let reach = KeyBarPlacement.reach(width: bounds.width, column: column)
+        let span = KeyBarPlacement.span(width: bounds.width, leftInset: leftInset, rightInset: rightInset,
+                                        sideInset: KeyBar.sideInset, column: column)
+        var lo = span.lowerBound, hi = span.upperBound
         let rtl = effectiveUserInterfaceLayoutDirection == .rightToLeft
-        switch donePlacement {
-        case .strip(let column, let midX):
-            doneButton.diameter = compact ? KeyBar.compactStripKeySize : KeyBar.stripKeySize
-            doneButton.frame = column
-            doneButton.keyMidX = midX - column.minX
-        case .inBar:
-            doneButton.diameter = h
-            if rtl {
-                doneButton.frame = CGRect(x: 0, y: 0, width: lo + h + KeyBar.hideGap / 2, height: rowHeight)
-                doneButton.keyMidX = lo + h / 2
-                lo += h + KeyBar.hideGap
-            } else {
-                let edge = hi - h - KeyBar.hideGap / 2
-                doneButton.frame = CGRect(x: edge, y: 0, width: bounds.width - edge, height: rowHeight)
-                doneButton.keyMidX = hi - h / 2 - edge
-                hi -= h + KeyBar.hideGap
-            }
+        doneButton.diameter = h
+        if rtl {
+            doneButton.frame = CGRect(x: reach.lowerBound, y: 0, width: lo + h + KeyBar.hideGap / 2 - reach.lowerBound, height: rowHeight)
+            doneButton.keyMidX = lo + h / 2 - reach.lowerBound
+            lo += h + KeyBar.hideGap
+        } else {
+            let edge = hi - h - KeyBar.hideGap / 2
+            doneButton.frame = CGRect(x: edge, y: 0, width: reach.upperBound - edge, height: rowHeight)
+            doneButton.keyMidX = hi - h / 2 - edge
+            hi -= h + KeyBar.hideGap
         }
         capsule.frame = CGRect(x: lo, y: ((rowHeight - h) / 2).rounded(), width: max(hi - lo, h), height: h)
         Glass.round(capsule, radius: h / 2)
@@ -254,7 +251,8 @@ final class FindDoneButton: UIControl {
 final class FindAccessoryBar: UIInputView {
     let content = FindBarContent()
     private var heightConstraint: NSLayoutConstraint?
-    var barEdge: NSDirectionalRectEdge? { didSet { if barEdge != oldValue { setNeedsLayout() } } }
+    /// The vertical bar's column, in screen coordinates, as the key bar has it (`KeyBar.barColumn`).
+    var barColumn: CGRect? { didSet { if barColumn != oldValue { setNeedsLayout() } } }
     var crease: CGRect?
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
 
@@ -307,11 +305,20 @@ final class FindAccessoryBar: UIInputView {
     override func layoutSubviews() {
         super.layoutSubviews()
         content.frame = bounds
-        content.donePlacement = KeyBarPlacement.hideKey(barEdge: barEdge, rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft,
-                                                        width: bounds.width, height: bounds.height,
-                                                        leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right)
         content.layout(rowHeight: max(bounds.height - safeAreaInsets.bottom, KeyBar.keyHeight),
-                       leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right)
+                       leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right, column: localColumn)
+    }
+
+    /// The vertical bar's column in the bar's coordinates; nil without one, or out of a window.
+    private var localColumn: CGRect? {
+        guard let barColumn, let screen = window?.windowScene?.screen else { return nil }
+        return convert(barColumn, from: screen.coordinateSpace)
+    }
+
+    /// A touch in the vertical bar's column is the bar's, as on the key bar.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let c = localColumn, point.x >= c.minX, point.x < c.maxX { return nil }
+        return super.hitTest(point, with: event)
     }
 }
 

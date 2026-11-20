@@ -141,6 +141,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private(set) var keyboardQuiet = false
     /// An input view with no height: the system keyboard's place, empty.
     let quietInputView = UIView(frame: .zero)
+    /// The key bar is up with its hide key in the vertical bar (`KeyBar.hidesInVerticalBar`): the
+    /// terminal has the keyboard and shows the key bar, over the software keyboard or alone for
+    /// a hardware one. The tab's toolbar then has Hide Keyboard for this pane (`HideKeyboardItem`).
+    private(set) var barHidesKeyboard = false
+    /// Told each time `barHidesKeyboard` changes.
+    var onBarHidesKeyboard: ((Bool) -> Void)?
     /// A sheet, an alert or a menu covered the pane while it had the keyboard, and the pane
     /// gave it up; it takes it back when the cover goes.
     var resignedUnderCover = false
@@ -272,6 +278,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         term.keyHook = { [weak self] key in self?.handleKey(key) ?? false }
         term.keyboardFocusHook = { [weak self] focused in self?.keyboardFocusChanged(focused) }
+        // Quiet, find's bar in the accessory slot, the key bar back: whatever swaps the accessory.
+        term.inputAccessoryHook = { [weak self] in self?.refreshBarHidesKeyboard() }
         term.alternateScreenHook = { [weak self] alternate in self?.alternateScreenChanged(alternate) }
         term.readingHook = { [weak self] in self?.readingBegan() }
         term.scrollPlaceHook = { [weak self] place in self?.scrollPlaceChanged(place) }
@@ -991,6 +999,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             keyRepeat.stop()
             findHandOverAbandoned()
         }
+        refreshBarHidesKeyboard()
+    }
+
+    /// Works `barHidesKeyboard` out again, and says when it changed.
+    private func refreshBarHidesKeyboard() {
+        let up = keyBar.hidesInVerticalBar && term.isFirstResponder && term.inputAccessoryView === keyBar
+        guard up != barHidesKeyboard else { return }
+        barHidesKeyboard = up
+        onBarHidesKeyboard?(up)
     }
 
     /// Being first responder and showing a keyboard are two things. Quiet: the terminal's input
@@ -1121,7 +1138,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if term.isFirstResponder || now - lostKeyboardAt < 0.05 || field { movedWithKeyboardAt = now }
     }
 
-    /// The key bar's hide key: the keyboard and the bar go away until the next tap on the pane.
+    /// The key bar's hide key, or the vertical bar's Hide Keyboard in its place
+    /// (`HideKeyboardItem`): the keyboard and the bar go away until the next tap on the pane.
     /// With a hardware keyboard the terminal stays first responder, quietly, so its keys still
     /// type into this pane; without one there is nothing left to type with and it resigns.
     func hideKeyboard() {
@@ -1210,12 +1228,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
     }
 
-    /// What the key bar lays itself out around: the system's vertical bar edge (nil where bars are
-    /// horizontal) and a vertical crease in window coordinates (nil without one).
-    func setKeyBarSurroundings(barEdge: NSDirectionalRectEdge?, crease: CGRect?) {
-        keyBar.barEdge = barEdge
+    /// What the key bar lays itself out around: the system's vertical bar's column in screen
+    /// coordinates (nil where bars are horizontal) and a vertical crease in window coordinates
+    /// (nil without one). With the column, the bar's hide key is the vertical bar's.
+    func setKeyBarSurroundings(barColumn: CGRect?, crease: CGRect?) {
+        keyBar.barColumn = barColumn
         keyBar.crease = crease
-        setFindSurroundings(barEdge: barEdge, crease: crease)
+        setFindSurroundings(barColumn: barColumn, crease: crease)
+        refreshBarHidesKeyboard()
     }
 
     func setFontSize(_ s: CGFloat) {

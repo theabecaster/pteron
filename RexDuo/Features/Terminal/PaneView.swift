@@ -41,7 +41,7 @@ struct PaneHostView: UIViewRepresentable {
     @Environment(Prefs.self) private var prefs
     @Environment(AppModel.self) private var model: AppModel?
     @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
-    @Environment(\.verticalBarEdge) private var barEdge
+    @Environment(\.verticalBarColumn) private var barColumn
     @Environment(\.division) private var division
     @Environment(\.rootOrigin) private var rootOrigin
 
@@ -105,7 +105,7 @@ struct PaneHostView: UIViewRepresentable {
         // After a reconnect the server is asked again whether it takes files.
         if server.phase == .online { host.refreshFiles() }
         let crease = division.flatMap { $0.isVertical ? $0.frame.offsetBy(dx: rootOrigin.x, dy: rootOrigin.y) : nil }
-        host.setKeyBarSurroundings(barEdge: barEdge.map { $0 == .leading ? .leading : .trailing }, crease: crease)
+        host.setKeyBarSurroundings(barColumn: barColumn, crease: crease)
     }
 
     static func dismantleUIView(_ c: Container, coordinator: ()) {
@@ -185,6 +185,10 @@ final class TerminalHostPool {
     /// (`AttachMenuItem`), so a new pane redraws them and nothing else.
     private(set) var hostsChanged = 0
 
+    /// The vertical bar's Hide Keyboard item: the pane whose key bar it hides now. Only the tab's
+    /// toolbar reads it, where the system has a vertical bar.
+    let hideKeyboard = HideKeyboardItem()
+
     /// The agent board covers every pane (`TerminalHost.setCovered`), the ones made later too.
     @ObservationIgnored private(set) var covered = false
     /// A hardware key reached a pane. The hosts are told only while someone listens.
@@ -238,11 +242,14 @@ final class TerminalHostPool {
         if covered { host.setCovered(true) }
         host.onKeyPress = onKeyPress
         host.takeOwedKeyboard = { [weak self] in self?.takeOwed(key) }
+        host.onBarHidesKeyboard = { [weak self] shown in self?.hideKeyboard.set(key, shown: shown) }
+        if host.barHidesKeyboard { hideKeyboard.set(key, shown: true) }
         host.onStopped = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
             self.hosts[key] = nil
             self.hostsChanged &+= 1
             self.containers[key] = nil
+            self.hideKeyboard.set(key, shown: false)
         }
     }
 

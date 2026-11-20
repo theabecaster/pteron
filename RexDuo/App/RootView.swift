@@ -23,6 +23,8 @@ struct RootView: View {
     @State private var keyboardPad: CGFloat = 0
     /// Where the system puts its vertical bar, if it has one here.
     @State private var barEdge: HorizontalEdge?
+    /// That bar's column, in screen coordinates, for the key bar beside the keyboard.
+    @State private var barColumn: CGRect?
     /// The crease book mode lays out against, once the fold has held still.
     @State private var creaseSettle = CreaseSettle()
     /// Book mode collapsing the inline sidebar and bringing it back.
@@ -47,7 +49,10 @@ struct RootView: View {
             .background(CommandListener { handle($0) })
             .background(WaitingWatcher())
             .background(GlanceWatcher())
-            .background(VerticalBarObserver { e in if barEdge != e { barEdge = e } })
+            .background(VerticalBarObserver { e, column in
+                if barEdge != e { barEdge = e }
+                if barColumn != column { barColumn = column }
+            })
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)
@@ -218,6 +223,7 @@ struct RootView: View {
             .environment(\.rootOrigin, geo.frame(in: .global).origin)
             .environment(\.bookCrease, creaseSettle.crease(division))
             .environment(\.verticalBarEdge, barEdge)
+            .environment(\.verticalBarColumn, barColumn)
             .onChange(of: arr.inline, initial: true) { _, new in inline = new }
             .task(id: CreaseSettle.live(division)) { await settleCrease(division) }
             // The tab was measured after a launch in book mode, or the window is wide again.
@@ -569,9 +575,12 @@ struct NoticeBanner: View {
 
 /// Reports where the system puts its vertical bar (`UITraitCollection.verticalBarEdge`, iOS 27.1+), or
 /// nil where bars are horizontal. The trait gives the system's preferred edge whether or not a bar
-/// shows yet, so the navigation bar can be shown only where it turns vertical.
+/// shows yet, so the navigation bar can be shown only where it turns vertical. With the edge it
+/// reports the bar's column, in screen coordinates (`KeyBarPlacement.column`), which the key bar
+/// beside the keyboard ends short of. Both are read again on every change of the traits behind
+/// the edge, the safe area and the layout: a rotation or a fold, not once.
 struct VerticalBarObserver: UIViewRepresentable {
-    let onChange: (HorizontalEdge?) -> Void
+    let onChange: (HorizontalEdge?, CGRect?) -> Void
 
     func makeUIView(context: Context) -> Probe { Probe() }
 
@@ -581,14 +590,14 @@ struct VerticalBarObserver: UIViewRepresentable {
     }
 
     final class Probe: UIView {
-        var onChange: (HorizontalEdge?) -> Void = { _ in }
+        var onChange: (HorizontalEdge?, CGRect?) -> Void = { _, _ in }
 
         override init(frame: CGRect) {
             super.init(frame: frame)
             isUserInteractionEnabled = false
-            registerForTraitChanges([UITraitHorizontalSizeClass.self, UITraitVerticalSizeClass.self]) { (v: Probe, _) in
-                v.report()
-            }
+            var traits: [UITrait] = [UITraitHorizontalSizeClass.self, UITraitVerticalSizeClass.self, UITraitLayoutDirection.self]
+            if #available(iOS 27.1, *) { traits += UITraitCollection.systemTraitsAffectingVerticalBarEdge }
+            registerForTraitChanges(traits) { (v: Probe, _) in v.report() }
         }
 
         required init?(coder: NSCoder) { fatalError() }
@@ -603,8 +612,20 @@ struct VerticalBarObserver: UIViewRepresentable {
             report()
         }
 
+        override func safeAreaInsetsDidChange() {
+            super.safeAreaInsetsDidChange()
+            report()
+        }
+
+        /// Measured and reported after this layout pass: the window's insets are settled by then,
+        /// and the report changes SwiftUI state.
         func report() {
             guard window != nil else { return }
+            DispatchQueue.main.async { [weak self] in self?.measure() }
+        }
+
+        private func measure() {
+            guard let window, let screen = window.windowScene?.screen else { return }
             var edge: HorizontalEdge?
             if #available(iOS 27.1, *) {
                 switch traitCollection.verticalBarEdge {
@@ -613,9 +634,10 @@ struct VerticalBarObserver: UIViewRepresentable {
                 default: edge = nil
                 }
             }
-            let send = onChange
-            // Reported after this layout pass: it changes SwiftUI state.
-            DispatchQueue.main.async { send(edge) }
+            let column = KeyBarPlacement.column(edge: edge.map { $0 == .leading ? .leading : .trailing },
+                                                rightToLeft: traitCollection.layoutDirection == .rightToLeft,
+                                                bounds: window.bounds, insets: window.safeAreaInsets)
+            onChange(edge, column.map { window.convert($0, to: screen.coordinateSpace) })
         }
     }
 }

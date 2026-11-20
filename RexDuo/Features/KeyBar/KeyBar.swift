@@ -19,8 +19,10 @@ import UIKit
 /// - The attach key is pinned too, just before Return, where the pane's server takes files: sending
 ///   a photo or a file never scrolls out of sight. A tap only opens its menu; nothing is sent
 ///   until a row of it is picked.
-/// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key moves into
-///   its column and the keys get the bar's width. Keys stay off a vertical crease (`KeyBarPlacement`).
+/// - Where the system's vertical bar sits beside the keyboard (iPhone Duo), the hide key is that
+///   bar's Hide Keyboard item (`HideKeyboardItem`): the bar draws none, and its keys end short of
+///   the bar's column, which keeps its own touches. Keys stay off a vertical crease
+///   (`KeyBarPlacement`).
 /// - Since iOS 26 the keyboard is a glass panel with rounded top corners. The bar draws no
 ///   background of its own: the keys sit in a glass capsule and the hide key in a glass circle,
 ///   floating above the keyboard and inset as far as its keys, as the system's own bars float.
@@ -45,8 +47,11 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     var attachMenu: (() -> UIMenu)?
     /// The attach key shows only where the pane's server takes files.
     var attachAvailable = false { didSet { if attachAvailable != oldValue { rebuild() } } }
-    /// The edge of the system's vertical bar, nil where bars are horizontal.
-    var barEdge: NSDirectionalRectEdge? { didSet { if barEdge != oldValue { setNeedsLayout() } } }
+    /// The system's vertical bar's column beside the keyboard, in screen coordinates
+    /// (`VerticalBarObserver`). Nil where bars are horizontal: the hide key is then the bar's own.
+    var barColumn: CGRect? { didSet { if barColumn != oldValue { setNeedsLayout() } } }
+    /// The vertical bar has the hide key: this bar shows none.
+    var hidesInVerticalBar: Bool { KeyBarPlacement.hideKey(column: barColumn) == .verticalBar }
     /// A vertical crease, in the terminal's window coordinates. Nil without one.
     var crease: CGRect? { didSet { if crease != oldValue { setNeedsLayout() } } }
 
@@ -58,9 +63,6 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     /// Under a short window (landscape iPhone) the bar is thinner, to leave rows for the panes.
     static let compactBarHeight: CGFloat = 42
     static let compactKeyHeight: CGFloat = 34
-    /// The hide key's glass circle in the vertical bar's column, near the size of the bar's own items.
-    static let stripKeySize: CGFloat = 48
-    static let compactStripKeySize: CGFloat = 38
     /// The capsule's margin around the keys, so a pressed key's pill sits concentric in it.
     static let ring: CGFloat = 2
     /// The capsule's and the hide key's distance from the bar's sides: in line with the keyboard's
@@ -176,13 +178,23 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     required init?(coder: NSCoder) { fatalError() }
 
     override func layoutSubviews() {
-        placement = KeyBarPlacement.hideKey(barEdge: barEdge, rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft,
-                                            width: bounds.width, height: bounds.height,
-                                            leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right)
+        placement = KeyBarPlacement.hideKey(column: barColumn)
         layoutGlass()
         super.layoutSubviews()
         keepKeysOffCrease()
         reportFrame(force: false)
+    }
+
+    /// The vertical bar's column in the bar's coordinates; nil without one, or out of a window.
+    private var localColumn: CGRect? {
+        guard let barColumn, let screen = window?.windowScene?.screen else { return nil }
+        return convert(barColumn, from: screen.coordinateSpace)
+    }
+
+    /// A touch in the vertical bar's column is the bar's: the key bar doesn't take it.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let c = localColumn, point.x >= c.minX, point.x < c.maxX { return nil }
+        return super.hitTest(point, with: event)
     }
 
     // MARK: Where the bar is
@@ -226,26 +238,23 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         abs(a.minX - b.minX) < 1 && abs(a.minY - b.minY) < 1 && abs(a.maxX - b.maxX) < 1 && abs(a.maxY - b.maxY) < 1
     }
 
-    /// Places the capsule and the hide key: in the vertical bar's column when there is one beside
-    /// the keyboard, else at the bar's end. Both are centered in the bar, above any bottom safe area
-    /// it is given.
+    /// Places the capsule and the hide key, centered in the bar above any bottom safe area it is
+    /// given. Where the vertical bar sits beside the keyboard the capsule ends short of its column
+    /// and the hide key is the vertical bar's; elsewhere the hide key is at the bar's end.
     private func layoutGlass() {
         let h = keyHeight + 2 * Self.ring
         let rowHeight = max(bounds.height - safeAreaInsets.bottom, h)
-        var lo = safeAreaInsets.left + Self.sideInset
-        var hi = bounds.width - safeAreaInsets.right - Self.sideInset
+        let span = KeyBarPlacement.span(width: bounds.width, leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right,
+                                        sideInset: Self.sideInset, column: localColumn)
+        var lo = span.lowerBound
+        var hi = span.upperBound
         switch placement {
-        case .strip(let column, let midX):
-            // Tinted like the vertical bar's items beside it.
-            hideKey.tintColor = theme.uiCursor
-            hideKey.keyboardTinted = false
-            hideKey.diameter = compact ? Self.compactStripKeySize : Self.stripKeySize
-            hideKey.frame = column
-            hideKey.keyMidX = midX - column.minX
+        case .verticalBar:
+            hideKey.isHidden = true
         case .inBar:
             // The circle sits at the bar's end; all of the bar past half the gap takes its tap.
+            hideKey.isHidden = false
             hideKey.tintColor = theme.uiFG
-            hideKey.keyboardTinted = true
             hideKey.diameter = h
             if effectiveUserInterfaceLayoutDirection == .rightToLeft {
                 let edge = lo + h + Self.hideGap / 2
@@ -711,18 +720,15 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     }
 }
 
-/// The hide key: a glass circle with a tinted symbol, at the bar's end or in the vertical bar's
-/// column in line with that bar's items. Its whole frame, larger than the circle, is its touch target.
+/// The hide key: a glass circle with a tinted symbol at the bar's end, tinted like the keyboard.
+/// Its whole frame, larger than the circle, is its touch target.
 @MainActor
 private final class GlassHideKey: UIControl {
     var onTouchDown: (() -> Void)?
     var onFire: (() -> Void)?
-    var diameter: CGFloat = KeyBar.stripKeySize { didSet { if diameter != oldValue { setNeedsLayout() } } }
+    var diameter: CGFloat = KeyBar.keyHeight + 2 * KeyBar.ring { didSet { if diameter != oldValue { setNeedsLayout() } } }
     /// The circle's center, from the control's left edge.
     var keyMidX: CGFloat = 0 { didSet { if keyMidX != oldValue { setNeedsLayout() } } }
-
-    /// Tinted like the keyboard at the bar's end; plain like the vertical bar's items in its column.
-    var keyboardTinted = true { didSet { if keyboardTinted != oldValue { Glass.makeGlass(glass, keyboardTinted: keyboardTinted) } } }
 
     private let glass = UIVisualEffectView()
     private let icon = UIImageView()

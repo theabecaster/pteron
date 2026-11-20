@@ -692,14 +692,26 @@ struct WindowScreen: View {
     /// Where the system has a vertical bar, the sidebar toggle and the tab's actions are toolbar items
     /// there (Apple: navigation at the top, then actions, each with a title and a symbol). The title
     /// and status stay in the title bar: text and custom views stay off the vertical axis.
+    /// While the active pane's key bar is up, Hide Keyboard (the key bar's hide key, which the bar
+    /// beside the keyboard takes in; `HideKeyboardItem`) takes All Tabs' place, which has no room
+    /// then, and All Tabs comes back when the key bar goes (`TabActions.verticalBar`). The swap
+    /// rides the keyboard's animation, and nothing else in the bar moves.
     @ToolbarContentBuilder
     private func barItems(_ theme: TermTheme, _ p: TabPresentation?) -> some ToolbarContent {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
+            let key = TerminalHostPool.Key(server: server.id, session: sessionID, block: b)
+            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane == key)
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if zoomedHere {
-                    Button { toggleZoom() } label: { Label("Unzoom", systemImage: "arrow.down.right.and.arrow.up.left") }
+                if items.contains(.unzoom) {
+                    Button { toggleZoom() } label: { Label(TabAction.unzoom.title, systemImage: TabAction.unzoom.symbol) }
                 }
-                Button { openOverview() } label: { Label("All Tabs", systemImage: "square.on.square") }
+                if items.contains(.hideKeyboard) {
+                    Button { pool?.host(for: key)?.hideKeyboard() } label: {
+                        Label(TabAction.hideKeyboard.title, systemImage: TabAction.hideKeyboard.symbol)
+                    }
+                } else {
+                    Button { openOverview() } label: { Label(TabAction.allTabs.title, systemImage: TabAction.allTabs.symbol) }
+                }
                 paneMenu(w, block: b, p)
             }
         }
@@ -786,10 +798,10 @@ struct WindowScreen: View {
     private func paneMenu(_ w: WindowInfo, block: String, _ p: TabPresentation?) -> some View {
         Menu {
             Section {
-                Button { split(vertical: false) } label: { Label("Split Right", systemImage: "rectangle.split.2x1") }
-                Button { split(vertical: true) } label: { Label("Split Down", systemImage: "rectangle.split.1x2") }
-                Button { newTab() } label: { Label("New Tab", systemImage: "plus.square") }
-                Button { openOverview() } label: { Label("All Tabs", systemImage: "square.on.square") }
+                // All Tabs among them: it is here while Hide Keyboard has its place in the bar.
+                ForEach(TabActions.paneMenuFirstSection, id: \.self) { a in
+                    Button { runFirstSection(a) } label: { Label(a.title, systemImage: a.symbol) }
+                }
             }
             Section {
                 if canZoom(w, p) {
@@ -819,10 +831,20 @@ struct WindowScreen: View {
                 Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
             }
         } label: {
-            // Not an ellipsis: Apple keeps that symbol for the system's overflow menu.
-            Label("Pane Actions", systemImage: "square.split.2x2")
+            Label(TabAction.paneActions.title, systemImage: TabAction.paneActions.symbol)
         }
-        .accessibilityLabel("Pane Actions")
+        .accessibilityLabel(TabAction.paneActions.title)
+    }
+
+    /// The Pane Actions menu's first section (`TabActions.paneMenuFirstSection`).
+    private func runFirstSection(_ a: TabAction) {
+        switch a {
+        case .splitRight: split(vertical: false)
+        case .splitDown: split(vertical: true)
+        case .newTab: newTab()
+        case .allTabs: openOverview()
+        default: break
+        }
     }
 
     /// The live host of a pane of this tab, if it is on screen.

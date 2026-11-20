@@ -66,8 +66,13 @@ final class GhosttyTerminalView: UIView {
     }
     override var inputAccessoryView: UIView? {
         get { storedInputAccessoryView }
-        set { storedInputAccessoryView = newValue }
+        set {
+            storedInputAccessoryView = newValue
+            inputAccessoryHook?()
+        }
     }
+    /// Called after `inputAccessoryView` is set.
+    var inputAccessoryHook: (() -> Void)?
     // END input
 
     // Selection: stored state for GhosttyTerminalView+Selection.swift.

@@ -3,57 +3,94 @@ import Testing
 import UIKit
 @testable import RexDuo
 
-/// Where the key bar's hide key goes (`KeyBarPlacement.hideKey`) and how keys keep off a crease.
+/// Where the key bar's hide key goes (`KeyBarPlacement.hideKey`), the vertical bar's column the
+/// keys end short of, and how keys keep off a crease.
 struct KeyBarPlacementTests {
-    private func hide(_ edge: NSDirectionalRectEdge?, width: CGFloat = 466, left: CGFloat = 0, right: CGFloat = 0,
-                      rtl: Bool = false) -> KeyBarPlacement.HideKey {
-        KeyBarPlacement.hideKey(barEdge: edge, rightToLeft: rtl, width: width, height: 50, leftInset: left, rightInset: right)
+    // MARK: The vertical bar's column
+
+    /// The outer screen in portrait: 466 pt wide, the bar's 84 pt on the trailing edge.
+    private let folded = CGRect(x: 0, y: 0, width: 466, height: 678)
+    private let trailingBar = UIEdgeInsets(top: 0, left: 0, bottom: 34, right: 84)
+    /// The outer screen on its side with the bar on the left (`foldedLandscapeBarLeft`).
+    private let sideways = CGRect(x: 0, y: 0, width: 678, height: 466)
+    private let leadingBar = UIEdgeInsets(top: 0, left: 84, bottom: 34, right: 0)
+
+    private func column(_ edge: NSDirectionalRectEdge?, rtl: Bool = false, bounds: CGRect? = nil,
+                        insets: UIEdgeInsets) -> CGRect? {
+        KeyBarPlacement.column(edge: edge, rightToLeft: rtl, bounds: bounds ?? folded, insets: insets)
     }
 
-    private let rightColumn = KeyBarPlacement.HideKey.strip(column: CGRect(x: 382, y: 0, width: 84, height: 50), midX: 418)
-    private let leftColumn = KeyBarPlacement.HideKey.strip(column: CGRect(x: 0, y: 0, width: 84, height: 50), midX: 48)
-
-    @Test func foldedDuoPutsItInTheVerticalBarsColumn() {
-        // Outer screen: 466 pt wide, the vertical bar's 84 pt on the trailing edge. The whole column
-        // takes touches; the key sits in line with the bar's items, 48 pt from the edge.
-        #expect(hide(.trailing, right: 84) == rightColumn)
+    @Test func theColumnIsTheWindowsInsetOnTheBarsEdge() {
+        #expect(column(.trailing, insets: trailingBar) == CGRect(x: 382, y: 0, width: 84, height: 678))
+        // The inner screen in landscape: the same bar beside a wider window.
+        #expect(column(.trailing, bounds: CGRect(x: 0, y: 0, width: 951, height: 669), insets: trailingBar)
+            == CGRect(x: 867, y: 0, width: 84, height: 669))
     }
 
-    @Test func unfoldedLandscapeAlsoHasTheColumn() {
-        #expect(hide(.trailing, width: 951, right: 84)
-            == .strip(column: CGRect(x: 867, y: 0, width: 84, height: 50), midX: 903))
-    }
-
-    @Test func aLeadingBarPutsItOnTheLeft() {
-        // Split View on the left half: the bar sits on the outer (leading) edge.
-        #expect(hide(.leading, width: 475, left: 84)
-            == .strip(column: CGRect(x: 0, y: 0, width: 84, height: 50), midX: 48))
+    @Test func aLeadingBarHasItsColumnOnTheLeft() {
+        // foldedLandscapeBarLeft, and Split View on the left half (the bar on the outer edge).
+        #expect(column(.leading, bounds: sideways, insets: leadingBar) == CGRect(x: 0, y: 0, width: 84, height: 466))
+        #expect(column(.leading, bounds: CGRect(x: 0, y: 0, width: 475, height: 669), insets: leadingBar)
+            == CGRect(x: 0, y: 0, width: 84, height: 669))
     }
 
     @Test func rightToLeftMirrorsTheEdge() {
-        #expect(hide(.trailing, left: 84, rtl: true) == leftColumn)
-        #expect(hide(.leading, right: 84, rtl: true) == rightColumn)
+        #expect(column(.trailing, rtl: true, bounds: sideways, insets: leadingBar) == CGRect(x: 0, y: 0, width: 84, height: 466))
+        #expect(column(.leading, rtl: true, insets: trailingBar) == CGRect(x: 382, y: 0, width: 84, height: 678))
     }
 
-    @Test func noVerticalBarKeepsItInTheBar() {
-        // Regular iPhone portrait, and landscape, whose insets are the sensor housing, not a bar.
-        #expect(hide(nil, width: 402) == .inBar)
-        #expect(hide(nil, width: 874, left: 62, right: 62) == .inBar)
+    @Test func noBarOrNoInsetOnItsEdgeHasNoColumn() {
+        // A regular iPhone: no bar, also in landscape, whose insets are the sensor housing.
+        #expect(column(nil, insets: UIEdgeInsets(top: 62, left: 0, bottom: 34, right: 0)) == nil)
+        #expect(column(nil, bounds: CGRect(x: 0, y: 0, width: 874, height: 402),
+                       insets: UIEdgeInsets(top: 0, left: 62, bottom: 20, right: 62)) == nil)
+        // The trait reports a bar, but the window has no inset on that side.
+        #expect(column(.trailing, insets: .zero) == nil)
+        #expect(column(.trailing, insets: leadingBar) == nil)
     }
 
-    @Test func aBarWithoutAColumnBesideTheKeyboardKeepsItInTheBar() {
-        // The trait reports a bar, but the keyboard runs under it (no inset), or the column is too
-        // narrow to tap, or the inset is on the other side.
-        #expect(hide(.trailing, right: 0) == .inBar)
-        #expect(hide(.trailing, right: 30) == .inBar)
-        #expect(hide(.trailing, left: 84) == .inBar)
+    @Test func theHideKeyIsTheVerticalBarsOnlyWithAColumn() {
+        #expect(KeyBarPlacement.hideKey(column: nil) == .inBar)
+        #expect(KeyBarPlacement.hideKey(column: CGRect(x: 382, y: 0, width: 84, height: 678)) == .verticalBar)
     }
 
-    @Test func theColumnMustBeTappable() {
-        // A full touch target beside the edge margin.
-        let least = KeyBarPlacement.minStripWidth + KeyBarPlacement.stripEdgeMargin
-        #expect(hide(.trailing, right: least) != .inBar)
-        #expect(hide(.trailing, right: least - 1) == .inBar)
+    // MARK: Where the keys go
+
+    private func span(_ width: CGFloat = 466, left: CGFloat = 0, right: CGFloat = 0, column: CGRect? = nil) -> ClosedRange<CGFloat> {
+        // The key bar's side inset.
+        KeyBarPlacement.span(width: width, leftInset: left, rightInset: right, sideInset: 6, column: column)
+    }
+
+    @Test func withoutAColumnTheKeysGoWhereTheyAlwaysWent() {
+        // iPhone portrait and landscape: 6 pt inside the bar's insets.
+        #expect(span(402) == 6...396)
+        #expect(span(874, left: 62, right: 62) == 68...806)
+    }
+
+    @Test func aTrailingColumnEndsTheKeysShortOfIt() {
+        let bar = CGRect(x: 382, y: -400, width: 84, height: 678)
+        // The keyboard runs under the bar and gives the key bar no inset: the keys stop 6 pt short.
+        #expect(span(column: bar) == 6...376)
+        // The keyboard gives the key bar the inset as well: the same place, whichever says it.
+        #expect(span(right: 84, column: bar) == 6...376)
+    }
+
+    @Test func aLeadingColumnStartsTheKeysPastIt() {
+        let bar = CGRect(x: 0, y: -200, width: 84, height: 466)
+        #expect(span(678, column: bar) == 90...672)
+        #expect(span(678, left: 84, column: bar) == 90...672)
+    }
+
+    @Test func aColumnOffTheBarBoundsNothing() {
+        // A stale frame during a rotation.
+        #expect(span(column: CGRect(x: 466, y: 0, width: 84, height: 678)) == 6...460)
+        #expect(span(column: CGRect(x: -84, y: 0, width: 84, height: 678)) == 6...460)
+    }
+
+    @Test func nothingThatTakesTouchesReachesIntoTheColumn() {
+        #expect(KeyBarPlacement.reach(width: 466, column: nil) == 0...466)
+        #expect(KeyBarPlacement.reach(width: 466, column: CGRect(x: 382, y: 0, width: 84, height: 678)) == 0...382)
+        #expect(KeyBarPlacement.reach(width: 678, column: CGRect(x: 0, y: 0, width: 84, height: 466)) == 84...678)
     }
 
     // MARK: Crease

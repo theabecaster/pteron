@@ -198,13 +198,18 @@ struct TabMenu: View {
             }
             .frame(maxHeight: min(CGFloat(max(windows.count, 1)) * 44, 264))
             Divider().overlay(theme.chrome.divider)
-            row("All Tabs", "square.on.square") { later(onOverview) }
-            // After the menu has closed, so the palette's field can take the keyboard.
-            row("Go to Anything…", "magnifyingglass", key: KeyLabel.for(action: "pane.go_to", in: server.keymap)) {
-                later(onGoTo)
+            // All Tabs among them: it is here while Hide Keyboard has its place in the vertical bar.
+            ForEach(TabActions.titleMenu, id: \.self) { a in
+                switch a {
+                case .allTabs: row(a.title, a.symbol) { later(onOverview) }
+                // After the menu has closed, so the palette's field can take the keyboard.
+                case .goTo:
+                    row(a.title, a.symbol, key: KeyLabel.for(action: "pane.go_to", in: server.keymap)) { later(onGoTo) }
+                case .newTab: row(a.title, a.symbol) { close(); onNewTab() }
+                case .rename: row(a.title, a.symbol) { later(onRename) }
+                default: EmptyView()
+                }
             }
-            row("New Tab", "plus.square") { close(); onNewTab() }
-            row("Rename Tab…", "pencil") { later(onRename) }
             Divider().overlay(theme.chrome.divider)
             Label("Swipe the title sideways to switch tabs", systemImage: "arrow.left.and.right")
                 .font(.caption2)
