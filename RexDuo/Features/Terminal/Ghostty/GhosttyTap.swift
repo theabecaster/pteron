@@ -89,8 +89,10 @@ final class GhosttyTapState {
     static let repeatInterval: CFTimeInterval = 0.5
     static let repeatDistance: CGFloat = 40
 
-    /// Opens a link. `UIApplication.open` by default; tests put their own here.
-    var open: (URL) -> Void = { UIApplication.shared.open($0) }
+    /// Opens a link. `asked`: the user just confirmed it (`LinkOpenPolicy`), so whatever opens
+    /// it doesn't ask again. `UIApplication.open` by default; a pane's link router
+    /// (`PanePorts`) and tests put their own here.
+    var open: (URL, _ asked: Bool) -> Void = { url, _ in UIApplication.shared.open(url) }
     /// Asks before a link opens that `LinkOpenPolicy` doesn't open at once. Nil: the view shows
     /// an alert (`TerminalPrompt`). Tests put their own here.
     var ask: ((URL, LinkOpenPolicy.LinkQuestion, @escaping @MainActor (Bool) -> Void) -> Void)?
@@ -125,11 +127,11 @@ extension GhosttyTerminalView {
             let label = probe.link?.explicit == true ? core.hyperlinkLabel(atViewportCol: cell.col, row: cell.row) : nil
             switch LinkOpenPolicy.decide(target: link, label: label) {
             case .open(let url):
-                taps.open(url)
+                taps.open(url, false)
                 used = true
             case .ask(let url, let question):
                 let open = taps.open
-                let answer: @MainActor (Bool) -> Void = { if $0 { open(url) } }
+                let answer: @MainActor (Bool) -> Void = { if $0 { open(url, true) } }
                 if let ask = taps.ask {
                     ask(url, question, answer)
                 } else {

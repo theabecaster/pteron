@@ -292,6 +292,17 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var noticeTexts: [String: NoticeText] = [:]
     /// How many of each block's notices wait out `noticeWait` now.
     @ObservationIgnored var noticesInWait: [String: Int] = [:]
+    /// Each on-screen pane's listening ports (`ServerConnection+Ports.swift`). Its own table, so a
+    /// change re-renders only the pane menu row that reads the pane.
+    @ObservationIgnored let ports = BlockBoxTable<PortList>()
+    /// `ports_changed` lists since the last flush, newest per block.
+    @ObservationIgnored var pendingPorts: [String: PortList] = [:]
+    /// Panes on screen whose ports are followed.
+    @ObservationIgnored var portWatch: [String: PortWatch] = [:]
+    /// When `block_created` named each block that hasn't reached a view yet.
+    @ObservationIgnored var createdAt: [String: Date] = [:]
+    /// The app's forwards to dev servers; set by `AppModel`.
+    @ObservationIgnored weak var forward: PortForward?
 
     static let phaseGrace: Double = 1.0
     /// "Trying…" stays up at least this long, so a fast failure still reads as an attempt.
@@ -363,6 +374,8 @@ final class ServerConnection: Identifiable {
         }
         // No method reads a progress bar back: a dropped report clears it until the next one.
         router.on(blockEvent: "progress_report") { [weak self] _, bid in self?.dropProgress(bid) }
+        // The list is read back, for a pane on screen only.
+        router.on(blockEvent: "ports_changed") { [weak self] _, bid in self?.portsDropped(bid) }
     }
 
     // MARK: Connection
@@ -375,6 +388,7 @@ final class ServerConnection: Identifiable {
             connectionSerial += 1
             // Nothing reads the bars back, and reports from before may be stale.
             resetProgress()
+            resetPorts()
             capabilities.connected(serial: connectionSerial, revision: control.negotiatedRevision,
                                    serverRevision: control.serverRevision, features: control.features)
             // The bootstrap's lists win over a drag's order from before.
@@ -693,6 +707,7 @@ final class ServerConnection: Identifiable {
             // A sync means events may have been missed, a bar's removal among them: bars with
             // no report since the sync began go. A bar reported during the sync is live and stays.
             clearProgressBoxes(notSeenSince: progressMark)
+            portsSynced()
             // Sessions and tabs are in: the app can show them while metadata loads.
             if !synced, control.state == .connected {
                 synced = true
@@ -712,6 +727,7 @@ final class ServerConnection: Identifiable {
             await keymap.load()
             lastError = nil
             push?.serverReady(self)
+            forward?.serverSynced(self)
             setupSignals?(.ready)
         } catch {
             lastError = error.localizedDescription
@@ -745,6 +761,8 @@ final class ServerConnection: Identifiable {
                 return
             }
             self.capabilities.creatorsLoaded(r, serial: serial)
+            // Panes on screen read their ports once the server is known to list them.
+            self.fillWatchedPorts()
         }
     }
 
@@ -774,8 +792,10 @@ final class ServerConnection: Identifiable {
 
     func apply(view: SessionView) {
         guard !hiddenSessions().contains(view.sessionID) else { return }
-        if let old = views[view.sessionID], old.revision > view.revision { return }
+        let old = views[view.sessionID]
+        if let old, old.revision > view.revision { return }
         views[view.sessionID] = view
+        createdBlocksShown(view, old: old)
         if let i = sessions.firstIndex(where: { $0.id == view.sessionID }) {
             if sessions[i].label != view.label { sessions[i].label = view.label }
         } else {

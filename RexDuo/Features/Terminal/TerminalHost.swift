@@ -93,6 +93,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         didSet { share?.host = self }
     }
 
+    /// The pane's ports: followed while it is on screen, and its tapped links routed
+    /// (`PanePorts`). Nil where the pane has no server (a replay): links open as they always did.
+    var ports: PanePorts? {
+        didSet {
+            ports?.view = self
+            if let ports {
+                term.taps.open = { [weak ports] url, asked in ports?.open(url, asked: asked) }
+                if window != nil { ports.watch() }
+            }
+        }
+    }
+
     /// The pane's size with the software keyboard down, from the layout around it; nil when
     /// that isn't known. The grid is fitted to its height while the keyboard covers the pane.
     private var restSize: CGSize?
@@ -1217,6 +1229,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             yieldContentSwipeBack()
             // Moved by a fold or unfold while it had the keyboard, or a hardware keyboard is attached.
             reclaimKeyboard(afterMove: true)
+            ports?.watch()
         }
     }
 
@@ -1269,6 +1282,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         claim.release()
         started = false
         files?.close()
+        ports?.unwatch()
     }
 
     override func layoutSubviews() {
@@ -1533,6 +1547,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
             if isActive { FilesTest.run(on: self) }  // `-filesTest` (testing, FilesTest.swift)
             if isActive { ShareTest.run(on: self) }  // `-shareTest` (testing, ShareTest.swift)
+            if isActive { PortsTest.run(on: self) }  // `-portsTest` (testing, PortsTest.swift)
             if isActive { KeyboardTest.run(on: self) }  // `-keyboardTest` (testing, KeyboardTest.swift)
             if isActive { FindScript.run(on: self) }  // `-findScript` (testing, spike S1, FindScript.swift)
             // `-typeTest <text>` (Debug builds, testing): types into the live shell.

@@ -25,6 +25,12 @@ final class ServerEventsTests: XCTestCase {
             private let lock = NSLock()
             private var ids = ["session:1", "session:2"]
             private var process = "instance-1"
+            private var more: [String] = []
+            /// Blocks added to session 1's view, newest last.
+            var extra: [String] {
+                get { lock.withLock { more } }
+                set { lock.withLock { more = newValue } }
+            }
             var value: [String] {
                 get { lock.withLock { ids } }
                 set { lock.withLock { ids = newValue } }
@@ -53,7 +59,8 @@ final class ServerEventsTests: XCTestCase {
             fake.onRequest { r in
                 switch r.method {
                 case "session.attach", "session.view":
-                    return .result(["view": ServerEventsTests.view(r.payload.str("session_id") ?? "")])
+                    let sid = r.payload.str("session_id") ?? ""
+                    return .result(["view": ServerEventsTests.view(sid, extra: sid == "session:1" ? listed.extra : [])])
                 case "session.bootstrap":
                     return .result(ServerEventsTests.bootstrap(listed.value, instance: listed.instance))
                 case "session.list":
@@ -74,6 +81,8 @@ final class ServerEventsTests: XCTestCase {
         }
 
         func setSessions(_ ids: [String]) { listed.value = ids }
+        /// Places another pane in session 1's first tab, in a newer view.
+        func setViewExtra(_ block: String) { listed.extra.append(block) }
         /// The server process the next bootstrap names (`instance_id`).
         func setInstance(_ id: String) { listed.instance = id }
 
@@ -94,18 +103,18 @@ final class ServerEventsTests: XCTestCase {
         }
     }
 
-    nonisolated static func view(_ sid: String) -> JSONObject {
+    nonisolated static func view(_ sid: String, extra: [String] = []) -> JSONObject {
         let n = sid.split(separator: ":").last.map(String.init) ?? "0"
         func block(_ id: String) -> JSONObject {
             ["block_id": id, "creator_name": terminal, "flavor": "\(terminal).shell", "host_id": "host-a", "label": "shell"]
         }
         return [
-            "session_id": sid, "label": "label \(sid)", "revision": 3, "active_window_id": "window:\(n)",
+            "session_id": sid, "label": "label \(sid)", "revision": 3 + extra.count, "active_window_id": "window:\(n)",
             "windows": [[
                 "window_id": "window:\(n)", "label": "tab", "focused_block_id": "block:\(n)a",
                 "layers": [[
                     "kind": "tiled", "layer_id": "layer:\(n)", "bounds": [0, 0, 1, 1],
-                    "blocks": [block("block:\(n)a"), block("block:\(n)b")],
+                    "blocks": [block("block:\(n)a"), block("block:\(n)b")] + extra.map(block),
                     "layout": ["rect": [0, 0, 1, 1], "split": [
                         "split_id": "split:\(n)", "direction": "horizontal", "ratio": 0.5,
                         "before": ["block_id": "block:\(n)a", "rect": [0, 0, 0.5, 1]],

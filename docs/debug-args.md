@@ -161,6 +161,12 @@ builds.
   `moveTo:<n>`, `newTab`, `balance`, `closeOthers` (confirmed), `tab:+1`, `tab:-1`, `dragTab:<gap>`,
   `dragSession:<gap>`, `wait:<s>`. After each it logs `PANES_STATE` with the session's tabs, their
   panes and split ratios, the tab shown and the pane shown. Only in a `zz-` session you made.
+- `-portsTest '<step>;<step>…'`: drive ports in the active pane once it is live
+  (`Features/Ports/PortsTest.swift` lists the steps): `list`, `menu:<port>`, `link:<url>`,
+  `yes:<url>`, `no:<url>`, `fetch:<path>`, `parallel:<n>`, `done`, `wait:<s>`. It logs
+  `PORTS_LIST`, `PORTS_ROUTE`, `PORTS_FETCH`, and the forward logs `PORTS_LISTEN`,
+  `PORTS_NEW_BLOCK`, `PORTS_CONN <end>`, `PORTS_CLOSE`, `PORTS_SWEEP`. It makes a tunnel block, so
+  use a `zz-` session with a test server started in it.
 - `-forceStatus '<text>'`: every pane shows its status chip with this text once it opens and each
   time it is live, to look at the chip over any output. With `-replay <file>` it needs no server.
 - `-tapTest col,row[;col,row…]`: tap those cells as a focused finger would, `-tapTestAfter` seconds

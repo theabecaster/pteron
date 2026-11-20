@@ -471,7 +471,7 @@ final class GhosttyTapRoutingTests: XCTestCase {
     func testTheNextTapOfADoubleTapIsLeftToTheSelection() {
         let (view, sink) = make("see https://text.example/z ok\r\n\r\n\(esc)]133;A;cl=line\(bel)$ \(esc)]133;B\(bel)echo hello world and more")
         var opened: [URL] = []
-        view.taps.open = { opened.append($0) }
+        view.taps.open = { url, _ in opened.append(url) }
         // The shell hasn't moved its cursor yet: a second tap must not send the keys again.
         XCTAssertTrue(tap(view, col: 4, row: 2))
         XCTAssertFalse(tap(view, col: 4, row: 2, after: 0.2))
@@ -494,7 +494,7 @@ final class GhosttyTapRoutingTests: XCTestCase {
     func testATapOnALinkOpensItOnlyOnAFocusedPane() {
         let (view, sink) = make("\(esc)]8;;https://osc8.example/a?b=c\(esc)\\link\(esc)]8;;\(esc)\\ and https://text.example/z ok")
         var opened: [URL] = []
-        view.taps.open = { opened.append($0) }
+        view.taps.open = { url, _ in opened.append(url) }
         XCTAssertFalse(tap(view, col: 1, row: 0, focused: false), "the first tap on a pane only focuses it")
         XCTAssertFalse(tap(view, col: 1, row: 0, shift: true))
         XCTAssertEqual(opened, [])
@@ -509,7 +509,7 @@ final class GhosttyTapRoutingTests: XCTestCase {
     func testAMouseTrackingProgramKeepsItsClicksExceptOnAHyperlink() {
         let (view, sink) = make("\(esc)[?1000h\(esc)[?1006h\(esc)]8;;https://osc8.example/\(esc)\\link\(esc)]8;;\(esc)\\ https://text.example/")
         var opened: [URL] = []
-        view.taps.open = { opened.append($0) }
+        view.taps.open = { url, _ in opened.append(url) }
         XCTAssertFalse(tap(view, col: 8, row: 0), "the address in the text is the program's to click")
         XCTAssertTrue(tap(view, col: 1, row: 0))
         XCTAssertEqual(opened.map(\.absoluteString), ["https://osc8.example/"])

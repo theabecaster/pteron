@@ -86,6 +86,7 @@ How a row is verified:
 | 50a | OSC 9;4 progress: a ring in the tab row and overview card | RexKit `TermProgressTests`, `AlertEventsTests`, `TabBadgeTests`, `BlockBoxTableTests`; live (`printf '\e]9;4;1;40\a'` in a `zz-` pane) | Rex sends it as the `progress_report` block event; the terminal engine never sees it. No ring in the title bar or for a pane with an OSC 7501 record; gone 15 s after the last report ([sidebar.md](sidebar.md), Progress rings). |
 | 50b | OSC 9 / 777 desktop notification: a notice toast | `AlertEventsTests`, `NoticeToastTests`, `NoticeFilterTests`, `AlertCopyTests`; live (`printf '\e]9;zz probe\a'` with the pane off screen, then on screen) | The `desktop_notification` block event. Off screen only, never for an agent's pane ([notifications.md](notifications.md)). |
 | 50c | Share output: selection, screen, All Output | `ShareTests`, `ShareCompatibilityTests`, RexKit `StreamInputTests` (pending input); live in a `zz-` pane (below, Share) | Share… is last in the edit menu with a selection; Share ▸ in the pane menu holds Plain and Styled, each Screen and All Output. Styled documents run nothing, keep only web and mail links, and use the theme's colors and Menlo. All Output reads in 64–256 KiB chunks, one at a time, waiting for typed input ([terminal.md](terminal.md), Share). |
+| 50d | Ports: open a pane's dev server | RexKit `PortsTests`, `TunnelRelayTests`, `CallInOrderTests`; `PortsTests`, `PortForwardTests`; live (`-portsTest` against a macOS and a Linux server; below, Ports) | The pane menu's ports row and tapped loopback links open the page through a dial tunnel; only the opened port is forwarded; debugger ports never open; offline a notice, never Safari. The tunnel block closes on Done, before the background, and on the next sync after a kill; `rex forward ls` is empty after ([terminal.md](terminal.md), Ports). |
 | 51 | Backpressure | `TerminalBackpressureTests`, RexKit `StreamBackpressureTests`, `GhosttyCoreTests.testABacklogAboveTheMarkSignalsAndClears` | Above 4 MB of unparsed output the stream stops reading its data socket; below 1 MB it goes on, in order. Input and control calls are not held. Not run live against a real flood. |
 
 ## Taps: links, prompt clicks, OSC 52 (rows 29 to 31)
@@ -214,6 +215,22 @@ once with fit:
    at the edges. Drop: the row moves at once and stays. The same for a session row. Press without
    moving: the menu, as before. Swipe: the actions, as before. With VoiceOver: Move Up, Move Down.
 7. `-sidebarFoldBench 3` before and after: no slower.
+
+## Ports (about 10 minutes)
+
+In a `zz-ports` session, with `python3 -m http.server 8765 --bind 127.0.0.1` in a pane:
+
+1. The pane menu's last row above Close reads `localhost:8765` with the program under it. Open it:
+   the directory listing loads. `rex forward ls` shows one `Pteron #<tag>` forward. Done: it goes.
+2. `printf 'http://localhost:8765/ http://127.0.0.1:9229/ http://localhost:3999/\n'`: the first
+   opens at once, the second is refused with a notice, the third asks first.
+3. Open the page, go to the Home Screen and back: `rex forward ls` is empty in the background, and
+   a reload works after the return.
+4. Open the page, kill the app from the switcher, open it again: `rex forward ls` is empty once
+   the server has synced.
+5. Stop the server, reload: the page fails at once; start it again, reload: it loads.
+6. On a device only: no Local Network prompt, and a Vite page with HMR still reloads after
+   15 minutes idle.
 
 ## Manual script (about 5 minutes)
 

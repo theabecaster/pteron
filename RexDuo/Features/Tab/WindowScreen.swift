@@ -652,6 +652,7 @@ struct WindowScreen: View {
                 PaneMenuItems(server: server, sessionID: sessionID, window: w, block: block,
                               onSwap: { swap(with: $0) }, onMove: { moveToTab($0) }, onMoveToNewTab: { moveToNewTab() },
                               onBalance: { balance() }, onCloseOthers: { requestCloseOthers() })
+                PortsMenuRow(server: server, sessionID: sessionID, block: block) { host(block)?.ports?.open($0) }
             }
             Section {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }

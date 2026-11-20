@@ -18,6 +18,7 @@ import Foundation
 ///   from the start, with its batch, under a new batch ID.
 /// - Download: after the WELCOME the server sends the file as binary messages and closes with 1000
 ///   at its end. Closing with 1000 cancels it.
+/// - A dial tunnel's connections use the same subprotocol with other rules: `TunnelRelay`.
 public enum BytesStream {
     public static let subprotocol = "rex.data.bytes.v1"
     /// The largest message the server takes in an upload.

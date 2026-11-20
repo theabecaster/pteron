@@ -31,6 +31,7 @@ extension ServerConnection {
                 for b in w.allBlocks {
                     forgetBlockAlerts(b.id)
                     paneNames.remove(b.id)
+                    forgetPorts(b.id)
                 }
             }
             sessions.removeAll { $0.id == id }
@@ -91,17 +92,22 @@ extension ServerConnection {
                 if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].label = l }
             }
         case "block_created":
+            // A tunnel of the open browser is detached: no view changes.
+            guard !ownTunnel(p.str("block_id"), session: sid) else { return }
             touchedSessions.insert(sid)
             refreshView(sid)
-            if let bid = p.str("block_id") {
-                Task { try? await Task.sleep(nanoseconds: 300_000_000); await loadMeta([(sid, bid)]) }
-            }
+            // Its metadata is read once the view holds it (`createdBlocksShown`).
+            if let bid = p.str("block_id") { noteCreated(bid) }
         case "block_event":
             handleBlockEvent(sessionID: sid, p)
         case "window_created", "window_closed", "window_label_changed", "active_window_changed", "block_closed", "block_owner_changed":
+            if type == "block_closed" || type == "block_owner_changed", let bid = p.str("block_id"), forward?.owns(bid) == true {
+                return
+            }
             if type == "block_closed", let bid = p.str("block_id") {
                 forgetBlockAlerts(bid)
                 paneNames.remove(bid)
+                forgetPorts(bid)
             }
             touchedSessions.insert(sid)
             refreshView(sid)
@@ -147,6 +153,9 @@ extension ServerConnection {
             // it is in the background.
             receiveNotice(sid, bid, e)
             return
+        case "ports_changed":
+            receivePorts(bid, e)
+            return
         default:
             return
         }
@@ -174,6 +183,7 @@ extension ServerConnection {
     /// ago stays on screen a little longer, so badges don't flicker; a new "blocked" shows at once.
     func flush() {
         flushTask = nil
+        flushPorts()
         let now = Date()
         var wait: Double?
         for (bid, m) in pendingMeta {

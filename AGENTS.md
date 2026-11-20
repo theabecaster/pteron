@@ -64,7 +64,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection;
-  docs/terminal.md, Files).
+  docs/terminal.md, Files), Ports (a computer's dev server in Safari's view through a Rex dial
+  tunnel: the pane menu's row and tapped `localhost` links; docs/terminal.md, Ports).
 - `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
 - `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass.

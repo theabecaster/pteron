@@ -312,6 +312,8 @@ final class AppModel {
     @ObservationIgnored let glance: GlanceWriter
     /// Sends each written snapshot on to the watch. It only sends, and knows nothing of this model.
     @ObservationIgnored let bridge: GlanceBridge
+    /// Opens computers' dev servers on the phone, one browser at a time.
+    @ObservationIgnored let forward = PortForward()
 
     /// `connect: false` builds no servers (unit tests and the test host). With `connect`, the
     /// servers are built here and none is started: `sceneVisible()` starts them. `glance`: the
@@ -387,7 +389,10 @@ final class AppModel {
         #endif
         let old = Dictionary(uniqueKeysWithValues: servers.map { ($0.config.id, $0) })
         // A server that is gone from the list: its helper's secret must stop working.
-        for id in old.keys where !configs.contains(where: { $0.id == id }) { push.serverRemoved(id) }
+        for id in old.keys where !configs.contains(where: { $0.id == id }) {
+            push.serverRemoved(id)
+            if let s = old[id] { forward.serverRemoved(s) }
+        }
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
@@ -395,6 +400,7 @@ final class AppModel {
                                      deviceID: push.deviceID)
             helperSetup.attach(s)
             s.agentsKnown = { [weak self] in self?.tidy.request() }
+            s.forward = forward
             return s
         }
         #if DEBUG
@@ -582,6 +588,7 @@ final class AppModel {
         let fromBackground = inBackground
         inBackground = false
         for s in servers { s.resume(fromBackground: fromBackground) }
+        forward.becameActive()
         push.becameActive()
         glance.becameActive()
         tidy.becameActive()
@@ -606,6 +613,8 @@ final class AppModel {
     /// The app went to the background: a connection that drops from now on is waking up when the
     /// app returns, not a problem (`ForegroundWake`).
     func enteredBackground() {
+        // First: its background task must begin before anything else is queued.
+        forward.enteredBackground()
         inBackground = true
         tidy.enteredBackground()
         for s in servers { s.enteredBackground() }

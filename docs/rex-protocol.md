@@ -82,13 +82,16 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   [sidebar.md](sidebar.md), Reorder).
 - Other: `block.close`, `hosts.list`, `block_creator.list`, `data.connect`, `client.keymap`,
   `client.action`, `client.key`, `client.reply`.
+- Ports: `session.new_block` (dial tunnels), `session.list_blocks` (the sweep),
+  `com.superlogical.terminal.ports`. Several `block.close` go through `RexControl.callInOrder`,
+  which sends them in one turn, in order.
 - Before a server is added (`ServerPreview`, one short connection that attaches to nothing):
   `server.status` (owner, session count), `server.version` (platform), `server.whoami` (account,
   this device's login), `session.list`, `client.list` (is a helper there).
 - Terminal block: `size`, `format` (`vt` with the `extra_*` flags for the screen, `text` for tab
   previews, `text` with `trim` and `unwrap` or `html` for Share's All Output), `blob_read`,
   `write`, `resize`, `clear`, `title`, `process`, `program_status`, `upload_begin`,
-  `download_begin`.
+  `download_begin`, `ports`.
 
 ## Ordered calls
 
@@ -169,7 +172,8 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
 - `block_event` names: `title_changed`, `pwd_changed`, `process_changed`,
   `program_status_changed`, `program_status_removed`, `bell`, `child_exited`,
   `desktop_notification` (a notice toast, [notifications.md](notifications.md)), `progress_report`
-  (a progress ring, [sidebar.md](sidebar.md)).
+  (a progress ring, [sidebar.md](sidebar.md)), `ports_changed` (a pane's ports, for panes on
+  screen only; [terminal.md](terminal.md), Ports).
 
 ### Progress and notices (terminal block events)
 
@@ -237,3 +241,24 @@ can perform (`KeyActions`) and its default layer (`KeyDefaults`), keeps single-k
 re-reads on `keymap_changed`. Bindings to actions the app lacks fall through to the next binding
 or the terminal; config-file and block actions run on the server with `client.action`; keys bound
 to Lua functions go to `client.key`.
+
+## Ports and dial tunnels (revisions 14 and 15)
+
+`com.superlogical.terminal.ports` (revision 15; `revision_too_low` below) answers `status` (ok,
+partial, unsupported; anything else counts as partial), `ports[]` (`port`, `address` as an IP
+literal, `protocol`, `first_seen_at`, `pid` when known), `processes[]` and `truncated`. It doesn't
+wake an idle terminal: read it once, then follow the `ports_changed` block event, which carries
+the same reply. A `ports_changed` also reaches a revision-13 connection to a newer server, so
+the event is never a gate. A truncated reply keeps the entries that came; the app reads no blob.
+
+A dial tunnel is a block of flavor `com.superlogical.tunnel.dial` (listed by
+`block_creator.list` for the server's host), made with `session.new_block` and options `host`,
+`port` and `client_address`. It starts detached, owned by the client that made it, and is in no
+view; `session.list_blocks` lists it (`placement` detached), and so does `rex forward ls`. Its
+`block_created`, `block_owner_changed` and `block_closed` reach every attached client. Rex never
+removes one, and it survives a server restart without an owner, so its maker closes it
+(`block.close`). Each TCP connection is a data connection: `data.connect` with `data_ref_id`
+`conn:<uuid>` and subprotocol `rex.data.bytes.v1`, then HELLO and WELCOME, then bytes both ways
+(`TunnelRelay` records the rules: at most 64 KiB per message from the client, an empty message
+is a half-close, 1001 with no bytes is a refused target, 4000 a closed block, 4006 not the
+owner). The same holds on macOS and Linux servers (preview.21, revision 18).

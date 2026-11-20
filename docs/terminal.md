@@ -505,3 +505,69 @@ The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Ta
   method hides only the commands that use it, at once; the tap that found it shows the usual
   failure notice. Below 13 nothing shows, keys fall through and the pane menu is as before. An
   open menu is a snapshot: each item checks again at the tap and only bumps if the server can't.
+
+## Ports
+
+A program in a local pane that listens on a TCP port (`npm run dev` on `localhost:5173`) opens on
+the phone, in Safari's view inside the app, through a Rex dial tunnel. Servers bound to
+127.0.0.1 only work too. No port opens on the computer, and the phone listens on its own
+loopback only while the page is up. Nothing shows on a pane, and nothing runs for a pane that
+isn't on screen (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`,
+`Features/Ports/`).
+
+- **Where.** The pane menu's last row in the section above Close: `localhost:5173` with the
+  program under it for one web port, `Ports ▸` for two or more, nothing for none. A tapped
+  loopback link (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`) in a local pane opens through Rex:
+  at once when a program in the pane listens on that port, else after "Open localhost:3000 from
+  <computer>?". A link the link policy already asked about isn't asked again. Debugger ports
+  (9229, 9222, 9230) never open. Offline a notice says so; such a link never goes to Safari,
+  which would reach the phone itself. Every other link, and every link on a server without
+  tunnels or in a remote pane, opens as before.
+- **Ports.** A pane that comes on screen reads `terminal.ports` once per connection; then
+  `ports_changed` (the whole list each time) keeps it, applied in the 150 ms metadata flush and
+  written only when the list changed. An event for a pane that isn't on screen is dropped after
+  its `block_id`. A dropped `ports_changed` reads the list again for a pane on screen. Web ports
+  are every port but debuggers, SSH, mail, DNS, databases, queues and caches, by number and by
+  program (`PortRules`). The dial address is the program's loopback address; `0.0.0.0` dials
+  127.0.0.1 and `::` dials ::1.
+- **The browser.** `SFSafariViewController`, on `http://localhost:<port>/` from the menu, or the
+  tapped link's scheme, host and path. The phone listens on 127.0.0.1 on the same port when it
+  is free and above 1024, else on a free one, and forwards **only the opened port**. A page on
+  one port that calls an API on another (a frontend on 5173 and its API on 3000) can't reach the
+  second: open that one on its own. `[::1]` links open as `localhost`, since the phone listens on
+  IPv4 only. "Open in Safari" in its menu leaves the app's forward behind and fails. Done or a
+  swipe down ends the forward.
+- **Why not WKWebView.** The ports plan's spike (P0) tried a `WKWebView` with a loopback HTTP
+  CONNECT proxy (`WKWebsiteDataStore.proxyConfigurations`, iOS 17). WebKit sent `localhost`
+  through the proxy, but never `127.0.0.1` or `[::1]`, with or without `matchDomains`: loopback
+  IP literals always go direct, to the phone. So `WKWebView` can't forward every port, and the app
+  uses Safari's view with one listener.
+- **The tunnel.** One dial block (`session.new_block`, `com.superlogical.tunnel.dial`, options
+  `host`, `port`, `client_address`), detached, in the pane's session, labeled `Pteron #<tag>`,
+  made on the browser's first connection. The tag is 8 hex characters in the Keychain, this
+  device only, never synchronized. Each browser connection is a data connection of its own
+  (`data.connect`, `conn:<uuid>`, `rex.data.bytes.v1`), at most 16 at once; more wait for a slot.
+  Connections made while the server isn't synced wait for it, up to 30 s. A refused target
+  resets the browser's connection. A block a new client ID can't use (after a long drop) is
+  dropped and a new one made; a 4006 before any byte came back sends the request again, once, on
+  a new block. A server that is full (`conflict`) shows one notice per browser.
+- **Cleanup.** Rex never removes a tunnel block. Every block made is remembered in UserDefaults,
+  and a session where one is about to be made is marked first. On each sync of a server with
+  remembered blocks or a mark, and before each `new_block`, the sweep lists the session's blocks
+  and closes every dial block with this phone's label that no open browser uses, whoever owns it.
+  When the app goes to the background (not merely inactive), a background task begins at once,
+  then `block.close` goes for the browser's block (it ends the open streams with 4000) before the
+  listener and the connections close; back in front with the page still up, the phone listens on
+  the same port again and a new block is made when the page connects. A server removed in
+  Settings has its blocks closed if it is connected, else forgotten.
+- **Gates** (per server, re-read on every connection). Ports need revision 15 (`terminal.ports`)
+  and no `method_not_found` from it. Tunnels need revision 14 and the dial flavor in the creator
+  list for the server's host. The row needs both and a local pane (`isLocal`: the block names the
+  server's host or none; on a server that names none, only blocks that name none). Without ports,
+  a tapped link still opens through Rex and always asks; without tunnels nothing changes. A gate
+  that closes while a page is up stops the listener with one notice; when it opens again the
+  phone listens again.
+- **Metadata of new panes.** `block_created` no longer starts a fixed 300 ms metadata read: the
+  read starts when the block reaches a view, no sooner than 300 ms after the event. A detached
+  tunnel never reaches one, so it costs no terminal calls. This app's tunnel events
+  (`block_created` while it makes one, `block_owner_changed`, `block_closed`) read no view.

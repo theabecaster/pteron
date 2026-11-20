@@ -95,7 +95,7 @@ final class TerminalPromptTests: XCTestCase {
         var opened: [String] = []
         var asked: [(String, LinkOpenPolicy.LinkQuestion)] = []
         var answers: [@MainActor (Bool) -> Void] = []
-        view.taps.open = { opened.append($0.absoluteString) }
+        view.taps.open = { url, _ in opened.append(url.absoluteString) }
         view.taps.ask = { url, question, answer in
             asked.append((url.absoluteString, question))
             answers.append(answer)
@@ -131,7 +131,7 @@ final class TerminalPromptTests: XCTestCase {
     func testOnlyWebAddressesAreFoundInPlainText() {
         let view = makeView("tel:+15551234567 file:///etc/passwd mailto:a@b.co")
         var opened = 0, asked = 0
-        view.taps.open = { _ in opened += 1 }
+        view.taps.open = { _, _ in opened += 1 }
         view.taps.ask = { _, _, _ in asked += 1 }
         for (i, col) in [3, 20, 40].enumerated() { XCTAssertFalse(tap(view, col: col, at: Double(10 * (i + 1)))) }
         XCTAssertEqual(opened + asked, 0)

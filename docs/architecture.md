@@ -162,6 +162,11 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - Models and pure helpers (`APCFilter`, `DataFrame`, `TerminalLayout`, `SplitGeometry`) are
   value types.
 - Reconnects bump a generation counter; every socket callback checks it before touching state.
+- Ports' relay (`TunnelRelay`) runs off the main actor: after `data.connect` the bytes go between
+  the phone's loopback connection (Network, on its own queue) and the tunnel's data connection
+  (its own URLSession per open page, with a background delegate queue), 64 KiB at a time, each
+  read waiting for the send before it. Only the slot count and the block's state are on the main
+  actor.
 
 ## Where new code goes
 
