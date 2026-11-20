@@ -111,6 +111,13 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   view has that much more room at the bottom: dragging down brings the covered rows into view,
   then the scrollback, in one motion. Typing returns to the bottom. A view in the scrollback
   doesn't move when the keyboard shows or hides.
+  - A view left among the covered rows stays there while nothing is written and while a finger
+    or the scroll's momentum holds it. The next output takes it back to the pin, so a server's
+    log and the cursor never stream on under the key bar (a slight drag, then letting go). A view
+    in the scrollback stays where it is under output, as before.
+  - Whether a view at the bottom follows is decided against the pin of the frame that applies
+    the scroll, so a cover change in the same frame (the keyboard's top measured again, the emoji
+    keyboard) can't leave the shift short of the pin.
   - On the alternate screen (an editor, a pager) the grid fits above the keyboard, as its rows
     can't be scrolled: one resize when the program enters or leaves that screen with the
     keyboard up, and one when the keyboard shows or hides while it is there.

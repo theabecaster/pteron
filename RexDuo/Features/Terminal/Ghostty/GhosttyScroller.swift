@@ -282,7 +282,16 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         toldReading = false
         updateIndicator()
+        core.scroll.setTouching(true)
     }
+
+    // While a finger or the momentum holds the view, output leaves a shift among the covered rows
+    // where it is; once they let go it returns to the pin (`GhosttyScrollState`, "The cover").
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { core.scroll.setTouching(false) }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { core.scroll.setTouching(false) }
 
     /// A finger took the view a row or more into the scrollback while the keyboard covers it:
     /// the user is reading, and the view says so once for the drag (`readingHook`).
@@ -308,6 +317,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             surface.setContentOffset(surface.contentOffset, animated: false)
             applying = false
             animating = false
+            core.scroll.setTouching(false)
         }
         lastRequest = core.scrollViewport(request)
     }

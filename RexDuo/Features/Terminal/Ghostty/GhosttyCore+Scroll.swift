@@ -91,8 +91,11 @@ enum GhosttyScrollMath {
 /// the difference (`bounce`, the same shift a rubber band at the bottom uses). While the
 /// viewport follows the active area and the user has not scrolled the covered rows back into
 /// view, the render thread holds that shift at the pin (`GhosttyScrollMath.pin`), so the row the
-/// program writes on stays above the keyboard as the screen fills. Those moves count in `rebase`
-/// like any other move the terminal makes by itself.
+/// program writes on stays above the keyboard as the screen fills. A shift the user left short of
+/// the pin holds while nothing is written, or while a finger or the scroll's momentum holds the
+/// view (`setTouching`); output after that goes back to the pin, so the newest rows and the cursor
+/// never stream on under the keyboard. Those moves count in `rebase` like any other move the
+/// terminal makes by itself.
 ///
 /// `@unchecked Sendable`: `lock` guards the block marked so. The render-side block is only
 /// touched inside `GhosttyCore.lockFrame` (terminal and render state locks held), which only one
@@ -154,6 +157,7 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// Pixels the find bar covers at the view's bottom, apart from the keyboard's cover.
     private var findInsetWanted = 0
     private var findInsetTaken = 0
+    private var touchingWanted = false
     private var latest = Snapshot()
     private var sent = Snapshot()
     private var publishScheduled = false
@@ -180,10 +184,17 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// The shift that keeps the last row with content above the cover (last frame's).
     private var pin = 0
     private var following = true
+    /// A finger or the scroll's momentum holds the view, as of this frame.
+    private var touching = false
     private var frameActive = true
     private var frameRows = 0
     /// This frame's request was a position from the scroll view: its shift is the user's.
     private var positioned = false
+    /// This frame's request set the shift at the bottom (a position there, or lines through the
+    /// covered rows). Whether the shift follows the screen again is decided against this
+    /// frame's pin, in `finishFrame`: the last frame's is stale when the cover changed in this
+    /// one, and a shift read against it stopped following for good.
+    private var shiftedAtBottom = false
     private var frameSnapshot = Snapshot()
     /// Pixels the grid is drawn shifted up this frame: sub-row offset plus rubber band.
     private(set) var renderFraction = 0
@@ -226,6 +237,14 @@ final class GhosttyScrollState: @unchecked Sendable {
     func setCover(px: Int) {
         lock.lock()
         coverWanted = max(0, px)
+        lock.unlock()
+    }
+
+    /// A finger or the scroll's momentum holds the view: output leaves a shift short of the pin
+    /// where it is until it lets go (see "The cover"). Doesn't ask for a frame.
+    func setTouching(_ on: Bool) {
+        lock.lock()
+        touchingWanted = on
         lock.unlock()
     }
 
@@ -291,6 +310,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         coverTaken = wanted
         let insetWanted = findInsetWanted
         findInsetTaken = insetWanted
+        touching = touchingWanted
         lock.unlock()
         if wanted != cover || insetWanted != findInset {
             cover = wanted
@@ -302,6 +322,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         movedViewport = false
         appliedReveal = false
         positioned = false
+        shiftedAtBottom = false
         if let request {
             let before = (bar.offset, active)
             // What the scroll view's offset stands for: the row position plus the shift.
@@ -319,13 +340,17 @@ final class GhosttyScrollState: @unchecked Sendable {
                 bounce = r.bounce
                 positioned = true
                 // At the pin or past it the shift follows the screen again; short of it, the
-                // user is looking at the covered rows and it stays where they left it.
+                // user is looking at the covered rows and it stays where they left it until
+                // output arrives with nothing holding the view (`finishFrame`, which also decides
+                // again with this frame's pin).
                 following = r.bottom && bounce >= pin - 1
+                shiftedAtBottom = r.bottom
             case .lines(let n):
                 if active, cover > 0, n > 0 || bounce > 0 {
                     // At the bottom, lines go through the covered rows first.
                     bounce = min(max(bounce + n * cell, 0), cover)
                     following = bounce >= pin - 1
+                    shiftedAtBottom = true
                     keepsShift = true
                 } else if n != 0 {
                     scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA) { $0.delta = n }
@@ -406,21 +431,46 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// viewport follows the screen, and keeps it inside a cover that became smaller. Runs where
     /// `prepareFrame` does (render side), before the frame builder reads `renderBounce`.
     /// `contentRows`: the screen's rows from the top through the last one with content or the
-    /// cursor.
-    func finishFrame(contentRows: Int) {
+    /// cursor. `output`: the terminal changed since the last frame (its rows are dirty).
+    func finishFrame(contentRows: Int, output: Bool) {
         guard covered > 0 || coverChanged else { return }
+        let newCover = coverChanged
         coverChanged = false
         guard frameActive else { return }
         pin = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
-        guard !positioned else { return }
-        let shift = following ? pin : min(bounce, covered)
-        guard shift != bounce else { return }
-        rebase += shift - bounce
-        bounce = shift
-        renderBounce = shift
-        frameSnapshot.bounce = shift
-        frameSnapshot.rebase = rebase
-        publish(frameSnapshot)
+        var changed = false
+        if shiftedAtBottom {
+            // Decided against this frame's pin: the request was read with the last frame's.
+            let follows = bounce >= pin - 1
+            if follows != following {
+                following = follows
+                frameSnapshot.following = follows
+                changed = true
+            }
+        } else if !following, output, !positioned, !touching {
+            // Output below a shift the user left among the covered rows, now that nothing holds
+            // the view: back to the pin, so what is written shows above the keyboard.
+            following = true
+            frameSnapshot.following = true
+            changed = true
+        }
+        // A position holds the user's shift, unless the cover changed under it: then both apply,
+        // and a view that follows goes to the new pin in this frame, not the next.
+        let shift: Int
+        if positioned, !(newCover && following) {
+            shift = bounce
+        } else {
+            shift = following ? pin : min(bounce, covered)
+        }
+        if shift != bounce {
+            rebase += shift - bounce
+            bounce = shift
+            renderBounce = shift
+            frameSnapshot.bounce = shift
+            frameSnapshot.rebase = rebase
+            changed = true
+        }
+        if changed { publish(frameSnapshot) }
     }
 
     /// The fraction can only show while a row below the viewport was captured.

@@ -949,13 +949,14 @@ extension GhosttyScrollTests {
         let end = s.maxRow * cell
         // The scroll view, having applied the rebase, is at the last position plus the cover.
         // A drag down by two rows shows two of the covered rows; the viewport stays at the bottom.
+        core.scroll.setTouching(true)
         core.scrollViewport(.position(px: end + 2 * cell, rebaseSeen: s.rebase))
         XCTAssertTrue(frame.update(core: core))
         s = core.scroll.snapshot
         XCTAssertTrue(s.active)
         XCTAssertEqual(s.bounce, 2 * cell)
         XCTAssertFalse(s.following)
-        // Output doesn't pull the view back.
+        // Output doesn't pull the view back from under the finger.
         core.feed(lines(101...105))
         core.sync()
         _ = frame.update(core: core)
@@ -1024,6 +1025,160 @@ extension GhosttyScrollTests {
         XCTAssertTrue(s.active)
         XCTAssertEqual(s.bounce, 3 * cell)
         XCTAssertTrue(s.following)
+    }
+
+    /// The cursor's row, as drawn, ends at or above the cover's edge.
+    private func assertCursorAboveCover(_ core: GhosttyCore, _ frame: GhosttyFrameBuilder, cover: Int, _ message: String,
+                                        file: StaticString = #filePath, line: UInt = #line) {
+        let cell = core.scroll.snapshot.cellHeight
+        let bottom = (core.cursorPosition.y + 1) * cell - frame.scrollOffset
+        XCTAssertLessThanOrEqual(bottom, core.gridSize.rows * cell - cover, message, file: file, line: line)
+    }
+
+    func testACoverChangeAndAPositionInOneFrameKeepFollowing() {
+        // Seven lines and the cursor's row on ten: two blank rows. A cover of four rows shifts by two.
+        let (core, frame) = make(7)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        XCTAssertEqual(s.bounce, 2 * cell)
+        // The keyboard's top is measured again a row lower. The scroll view, settling a snapshot
+        // from before onto the smaller cover, asks for the bottom in the same frame.
+        core.scroll.setCover(px: cell)
+        core.scrollViewport(.position(px: s.position + cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.following, "the bottom of the new cover still follows the screen")
+        // Output streams, a line a frame, and the keyboard's top goes back up: the cursor's row
+        // stays above the cover all along.
+        for i in 8...20 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            assertCursorAboveCover(core, frame, cover: cell, "after line \(i)")
+        }
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        for i in 21...30 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            assertCursorAboveCover(core, frame, cover: 4 * cell, "after line \(i)")
+        }
+        XCTAssertEqual(core.scroll.snapshot.bounce, 4 * cell)
+        XCTAssertTrue(core.scroll.snapshot.following)
+    }
+
+    func testLinesInTheFrameOfACoverChangeKeepFollowing() {
+        let (core, frame) = make(7)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        XCTAssertEqual(core.scroll.snapshot.bounce, 2 * cell)
+        // Up one line (into the blank covered rows) while the cover shrinks to two rows: the
+        // shift is one row, and with no blank row above the new cover's edge that is the pin.
+        core.scroll.setCover(px: 2 * cell)
+        core.scrollViewport(.lines(-1))
+        _ = frame.update(core: core)
+        XCTAssertTrue(core.scroll.snapshot.following)
+        for i in 8...20 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            assertCursorAboveCover(core, frame, cover: 2 * cell, "after line \(i)")
+        }
+    }
+
+    func testOutputBringsALetGoViewInTheCoveredRowsBackAboveTheCover() {
+        // The reproduction: a slight drag into the covered rows, let go, while a server logs.
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        core.scroll.setTouching(true)
+        core.scrollViewport(.position(px: s.position + 3 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        core.scroll.setTouching(false)
+        // Let go with nothing written: the view stays where the finger left it.
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertFalse(s.following)
+        XCTAssertEqual(s.bounce, 3 * cell)
+        // The next line returns to the pin in its own frame, and every line after shows above
+        // the cover, the cursor's row with it.
+        for i in 101...110 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            assertCursorAboveCover(core, frame, cover: 4 * cell, "after line \(i)")
+        }
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.following)
+        XCTAssertEqual(s.bounce, 4 * cell)
+    }
+
+    func testOutputLeavesAViewInTheScrollbackStill() {
+        // Reading in the scrollback with the keyboard's cover: output never moves the view,
+        // with or without a finger on it. Only input or a jump returns it.
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        core.scrollViewport(.position(px: 40 * cell, rebaseSeen: core.scroll.snapshot.rebase))
+        _ = frame.update(core: core)
+        let before = core.scroll.snapshot
+        let top = core.rowText(0)
+        for i in 101...110 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+        }
+        let s = core.scroll.snapshot
+        XCTAssertFalse(s.active)
+        XCTAssertFalse(s.following)
+        XCTAssertEqual(s.offset, before.offset)
+        XCTAssertEqual(s.bounce, 0)
+        XCTAssertEqual(s.rebase, before.rebase)
+        XCTAssertEqual(core.rowText(0), top)
+    }
+
+    func testWithoutACoverOutputMovesNoShift() {
+        // A pane with no cover (mirror, the alternate screen fitted above the keyboard) has no
+        // shift for output to set.
+        let (core, frame) = make(100)
+        for i in 101...110 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            XCTAssertEqual(core.scroll.snapshot.bounce, 0)
+            XCTAssertEqual(frame.scrollOffset, 0)
+        }
+        core.feed(Array("\u{1b}[?1049h".utf8))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, 0)
+    }
+
+    func testAShiftThatFollowsOnlyMovesWhenTheContentCrossesTheCover() {
+        // No jitter: while lines stream onto a short screen the shift changes only when the last
+        // row with content passes the cover's edge, one row at a time, and never back.
+        let (core, frame) = make(1)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var shifts: [Int] = []
+        for i in 2...30 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            shifts.append(frame.scrollOffset)
+            assertCursorAboveCover(core, frame, cover: 4 * cell, "after line \(i)")
+        }
+        XCTAssertEqual(shifts, shifts.sorted(), "never back")
+        XCTAssertTrue(zip(shifts, shifts.dropFirst()).allSatisfy { $1 - $0 == 0 || $1 - $0 == cell }, "a row at a time")
+        XCTAssertEqual(shifts.last, 4 * cell)
     }
 
     func testTheSnapshotSaysWhichScreenTheProgramIsOn() {
