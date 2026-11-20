@@ -16,11 +16,16 @@ final class NavigationSwitchTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
         prefs = Prefs(defaults: defaults)
+        // `-focus none`: a pane on screen doesn't take the keyboard. Left to itself it does, and
+        // the keyboard comes up some time later and draws the tab again, in either mode: these
+        // tests count what a change of mode and a change of title draw, and nothing else.
+        UserDefaults.standard.set("none", forKey: "focus")
         window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
     }
 
     override func tearDown() async throws {
+        UserDefaults.standard.removeObject(forKey: "focus")
         window.isHidden = true
         window.rootViewController = nil
         window = nil
