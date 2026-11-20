@@ -50,7 +50,11 @@ final class FakeRexServer: @unchecked Sendable {
         }
         let params = NWParameters.tcp
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
-        listener = try NWListener(using: params, on: .any)
+        // On the loopback address alone, where `start()` sends the client. A listener on every
+        // address can be given a port that another program already holds on 127.0.0.1, and a
+        // connection to 127.0.0.1 then reaches that program instead of this server.
+        params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
+        listener = try NWListener(using: params)
         listener.newConnectionHandler = { [weak self] c in
             guard let self else { return }
             self.connections.append(c)
