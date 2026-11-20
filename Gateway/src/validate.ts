@@ -134,20 +134,33 @@ function holdTags(field: unknown): string[] | undefined {
   return field as string[];
 }
 
-/** What a payload field may hold: a string of at most this many characters, or one of these words. */
-type Rule = number | readonly string[];
+/**
+ * What a payload field may hold: a string of at most this many characters, one of these
+ * words, or a string of this form.
+ */
+type Rule = number | readonly string[] | RegExp;
 
 /*
  * The payload the helper sends (Relay/src/push.rs, `PushMessage::payload`), field by field.
  * A payload may hold these and nothing else, and every one of them is a string. The title
  * and body lengths are the ones the helper cuts its text to; the other fields are names and
- * ids.
+ * ids. `record` and `fp` name the wait a blocked agent's push is about (the status record's
+ * id and the wait's fingerprint), for the app's Enter and Interrupt; only a push of the
+ * category `AGENT_BLOCKED_ACT` carries them.
  */
-const PAYLOAD_FIELDS: Record<string, Rule> = { server: 512, session_id: 256, window_id: 256, block_id: 256 };
+const PAYLOAD_FIELDS: Record<string, Rule> = {
+  server: 512,
+  session_id: 256,
+  window_id: 256,
+  block_id: 256,
+  // The `u` flag makes the pattern count characters (code points), not UTF-16 units.
+  record: /^[^\p{Cc}]{1,128}$/u,
+  fp: /^[0-9a-f]{16}$/,
+};
 const APS_FIELDS: Record<string, Rule> = {
   sound: ["default"],
   "thread-id": 256,
-  category: ["AGENT_BLOCKED", "AGENT_DONE", "NOTICE"],
+  category: ["AGENT_BLOCKED", "AGENT_BLOCKED_ACT", "AGENT_DONE", "NOTICE"],
   "interruption-level": ["passive", "active", "time-sensitive"],
 };
 const ALERT_FIELDS: Record<string, Rule> = { title: 120, subtitle: 256, body: 1000 };
@@ -172,6 +185,8 @@ function fieldsProblem(object: Record<string, unknown>, rules: Record<string, Ru
     if (typeof value !== "string") return `${name}.${key} must be a string.`;
     if (typeof rule === "number") {
       if (value.length > rule && characters(value) > rule) return `${name}.${key} must be at most ${rule} characters.`;
+    } else if (rule instanceof RegExp) {
+      if (!rule.test(value)) return `${name}.${key} is not in the form the gateway passes on.`;
     } else if (!rule.includes(value)) {
       return `${name}.${key} must be one of: ${rule.join(", ")}.`;
     }

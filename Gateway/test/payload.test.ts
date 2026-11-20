@@ -61,6 +61,20 @@ const BLOCKED_BARE = {
   collapse_id: "01a1-b1",
 };
 
+/**
+ * A blocked agent from a helper that also names the wait (`record`, `fp`), which the app
+ * needs for its Enter and Interrupt: the category with the actions.
+ */
+const BLOCKED_ACT = {
+  ...BLOCKED,
+  payload: {
+    ...BLOCKED.payload,
+    aps: { ...BLOCKED.payload.aps, category: "AGENT_BLOCKED_ACT" },
+    record: "claude",
+    fp: "c3a1f0e29b7d4658",
+  },
+};
+
 /** A finished agent: passive, no sound, priority 5. */
 const DONE = {
   payload: {
@@ -107,6 +121,8 @@ describe("the payload the helper sends", () => {
   it.each([
     ["a blocked agent", BLOCKED],
     ["a blocked agent without a subtitle or a tab", BLOCKED_BARE],
+    ["a blocked agent with the wait it is about", BLOCKED_ACT],
+    ["a record id of 128 characters", { ...BLOCKED_ACT, payload: { ...BLOCKED_ACT.payload, record: "é".repeat(128) } }],
     ["a finished agent", DONE],
     ["a notice", NOTICE],
     ["the longest title and body", LONGEST],
@@ -138,6 +154,8 @@ describe("the payload the helper sends", () => {
       session_id: "s".repeat(256),
       window_id: "w".repeat(256),
       block_id: "b".repeat(256),
+      record: "r".repeat(128),
+      fp: "f".repeat(16),
     };
     expect((await gw.push(device.push_secret, { payload, push_type: "alert" })).status).toBe(200);
   });
@@ -221,6 +239,7 @@ describe("anything else in a payload", () => {
 
     ["a category the app does not have", aps({ category: "OTHER" })],
     ["a category in another case", aps({ category: "agent_blocked" })],
+    ["a category that only starts like one of them", aps({ category: "AGENT_BLOCKED_ACTION" })],
     ["an empty category", aps({ category: "" })],
     ["the interruption level critical", aps({ "interruption-level": "critical" })],
     ["an interruption level in another case", aps({ "interruption-level": "Passive" })],
@@ -238,6 +257,8 @@ describe("anything else in a payload", () => {
     ["a session id that is null", { ...payload, session_id: null }],
     ["a window id that is an object", { ...payload, window_id: { id: "window:w1" } }],
     ["a block id that is an array", { ...payload, block_id: ["block:01a1-b1"] }],
+    ["a record that is a number", { ...payload, record: 7 }],
+    ["a fingerprint that is a number", { ...payload, fp: 1234567890123456 }],
 
     ["a title of 121 characters", alert({ title: "t".repeat(121) })],
     ["a subtitle of 257 characters", alert({ subtitle: "s".repeat(257) })],
@@ -250,6 +271,17 @@ describe("anything else in a payload", () => {
     ["a session id of 257 characters", { ...payload, session_id: "s".repeat(257) }],
     ["a window id of 257 characters", { ...payload, window_id: "w".repeat(257) }],
     ["a block id of 257 characters", { ...payload, block_id: "b".repeat(257) }],
+    ["a record of 129 characters", { ...payload, record: "r".repeat(129) }],
+    ["an empty record", { ...payload, record: "" }],
+    ["a record with a control character", { ...payload, record: "claude\u0000" }],
+    ["a record with a line break", { ...payload, record: "claude\n2" }],
+    ["a fingerprint of 15 characters", { ...payload, fp: "c3a1f0e29b7d465" }],
+    ["a fingerprint of 17 characters", { ...payload, fp: "c3a1f0e29b7d46580" }],
+    ["a fingerprint in capitals", { ...payload, fp: "C3A1F0E29B7D4658" }],
+    ["a fingerprint that is not hex", { ...payload, fp: "g3a1f0e29b7d4658" }],
+    ["a fingerprint with a line break after it", { ...payload, fp: "c3a1f0e29b7d4658\n" }],
+    ["an empty fingerprint", { ...payload, fp: "" }],
+    ["a key beside the record and the fingerprint", { ...payload, record: "claude", fp: "c3a1f0e29b7d4658", action: "enter" }],
 
     ["no aps", without(payload, "aps")],
     ["an aps that is an array", { ...payload, aps: [payload.aps] }],
@@ -289,5 +321,8 @@ describe("anything else in a payload", () => {
   it("does not say what the refused value was", async () => {
     const response = await gw.push(device.push_secret, { ...BLOCKED, payload: aps({ category: "SECRET-WORD" }) });
     expect(await response.text()).not.toContain("SECRET-WORD");
+    const record = await gw.push(device.push_secret, { ...BLOCKED, payload: { ...payload, record: "SECRET\u0001WORD" } });
+    expect(record.status).toBe(400);
+    expect(await record.text()).not.toContain("SECRET");
   });
 });
