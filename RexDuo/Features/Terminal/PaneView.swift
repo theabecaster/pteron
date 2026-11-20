@@ -62,7 +62,7 @@ struct PaneHostView: UIViewRepresentable {
         }
         let p = prefs
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
-        stream.onActionFailed = { Notice.shared.show($0) }
+        stream.showsNotices()
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
         host.files = PaneFiles(server: server, sessionID: sessionID, blockID: blockID)
@@ -282,7 +282,7 @@ final class TerminalHostPool {
     /// Keeps the panes off screen within `limits`, parked and warm together: the parked ones
     /// are the older.
     private func trim() {
-        let sized = (parked + warm).map { (key: $0, bytes: hosts[$0]?.term.core.memoryBytes ?? 0) }
+        let sized = (parked + warm).map { (key: $0, bytes: hosts[$0]?.keptBytes ?? 0) }
         for old in ParkPolicy.evictions(sized, limits: limits) { hosts[old]?.evict() }
     }
 
@@ -451,5 +451,14 @@ struct ParkWatcher: View {
                 pool.expensiveNetwork = { expensive }
                 pool.settleWarm()
             }
+    }
+}
+
+extension TerminalStream {
+    /// Where a pane's stream says what it could not do: a failure in the error style, and input
+    /// the catch-up fence dropped in the neutral one, since nothing failed.
+    func showsNotices() {
+        onActionFailed = { Notice.shared.show($0) }
+        onFenceNotice = { Notice.shared.show($0, style: .neutral) }
     }
 }

@@ -95,3 +95,17 @@ struct WarmRate {
         return false
     }
 }
+
+/// Whether a warm pane that comes back on screen needs the catch-up fence.
+enum WarmReturn {
+    /// A mirror pane never: its screen is the stream's, and nothing about it changes. A
+    /// fitted pane that still holds its claim, at the size that fits and that the server has,
+    /// neither: it was streamed at that size the whole time. Only a claim that is about to be
+    /// made (the grace ran out, another client took the pane, the pane fits another grid now)
+    /// will change the screen.
+    static func fences(fit: Bool, claimed: (Int, Int)?, server: (Int, Int), fits: (Int, Int)) -> Bool {
+        guard fit else { return false }
+        guard let claimed else { return true }
+        return claimed != fits || server != fits
+    }
+}

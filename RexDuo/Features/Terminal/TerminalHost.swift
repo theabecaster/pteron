@@ -178,6 +178,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// the screen is current the moment the pane is back (`warm`). The pool decides which panes.
     private(set) var isWarm = false
     private var warmRate = WarmRate()
+    /// Back from warm, until the first layout has decided whether a claim follows.
+    private var returnedWarm = false
+    /// The terminal's memory by the engine's figure, read once as the pane left the screen
+    /// (and again if a warm pane parks): the pool's bound adds these up without asking the
+    /// engine again.
+    private(set) var keptBytes = 0
     /// Off screen for `leaveTiming.settle`. The pool answers with `warm()` or `park()`; without
     /// a pool the pane parks.
     var onLeft: (() -> Void)?
@@ -1418,6 +1424,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         stoppingStream = true
         stream.park()
         stoppingStream = false
+        keptBytes = term.core.memoryBytes
         term.releaseDrawables()
         files?.close()
         ports?.unwatch()
@@ -1430,6 +1437,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func warm() {
         guard !isWarm, !isParked else { return }
         isWarm = true
+        keptBytes = term.core.memoryBytes
         stopKeyRepeats()
         closeFind(giveBack: false)
         term.releaseDrawables()
@@ -1444,9 +1452,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         isWarm = false
         onUnparked?()
         term.restoreDrawables()
-        let fenced = sizing == .fit || isCatchingUp
-        PerfProbe.active?.mounted(self, kind: .warm, current: !fenced)  // PERF
-        if sizing == .fit { stream.returned() }
+        PerfProbe.active?.mounted(self, kind: .warm)  // PERF
+        // Only a claim about to be made changes the screen of a pane that streamed all along
+        // (`WarmReturn`). A claim that lapsed is known now, and the fence goes up at once.
+        // Whether the pane fits another grid is known at the layout that comes in this turn,
+        // when the pane has its place (`layoutTerminal`): then the fence goes up there.
+        if sizing == .fit, claimedSize == nil, !lostOwnership { stream.returned() }
+        returnedWarm = true
+    }
+
+    /// Whether this pane, coming back from warm now, would be fenced (`WarmReturn`).
+    var warmReturnFences: Bool {
+        WarmReturn.fences(fit: sizing == .fit, claimed: claimedSize, server: serverSize, fits: fitGrid())
     }
 
     /// The parked pane is on screen again: its last screen is drawn in its first frame, and its
@@ -1580,6 +1597,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     private func layoutTerminal() {
         positionTerm()
+        // Back from warm: this layout decides whether a claim follows, once.
+        let back = returnedWarm
+        returnedWarm = false
         switch sizing {
         case .fit:
             guard !lostOwnership else { return }
@@ -1600,11 +1620,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 // with another size: ask again for this one, which supersedes it (and sends nothing
                 // for a size in place). With no hold the claim works as it always did.
                 if findHold != nil, claim.isSettling { requestClaim(want) }
+                // Back from warm with its claim held at this size: current as it comes.
+                if back, !stream.isFenced { PerfProbe.active?.caughtUp(self) }  // PERF
                 return
             }
+            // A warm pane whose claim lapsed, or that fits another grid now: fenced until the
+            // resize has landed.
+            if back { stream.returned() }
             requestClaim(want)
         case .mirror:
             if !started { startStream() }
+            if back, !stream.isFenced { PerfProbe.active?.caughtUp(self) }  // PERF
         }
     }
 
@@ -1866,7 +1892,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             DispatchQueue.main.asyncAfter(deadline: .now() + fenceStatusDelay, execute: work)
         } else {
             if transientStatus == Self.reconnectingText { hideStatus() }
-            if !stoppingStream { PerfProbe.active?.caughtUp(self) }  // PERF
+            if !stoppingStream {
+                // A focus report dropped behind the fence goes now, ahead of any held keys.
+                term.sayFocus()
+                PerfProbe.active?.caughtUp(self)  // PERF
+            }
         }
     }
 
@@ -1991,7 +2021,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// A mouse, wheel or focus report, or the keys of a tap: dropped while the stream catches
     /// up, because the place it names may be another by now.
-    func engineSendReport(_ bytes: [UInt8]) {
+    @discardableResult
+    func engineSendReport(_ bytes: [UInt8]) -> Bool {
         stream.send(report: bytes)
     }
 

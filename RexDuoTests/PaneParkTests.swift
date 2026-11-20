@@ -403,6 +403,69 @@ final class PaneParkTests: XCTestCase {
         XCTAssertNil(pool.host(for: key(1)))
     }
 
+    // MARK: A warm fitted pane's return
+
+    func testOnlyAClaimThatWillFollowFencesAWarmReturn() {
+        let fits = (60, 40)
+        XCTAssertFalse(WarmReturn.fences(fit: false, claimed: nil, server: (80, 24), fits: fits), "mirror")
+        XCTAssertFalse(WarmReturn.fences(fit: true, claimed: fits, server: fits, fits: fits), "the claim is held at this size")
+        XCTAssertTrue(WarmReturn.fences(fit: true, claimed: nil, server: fits, fits: fits), "the grace ran out")
+        XCTAssertTrue(WarmReturn.fences(fit: true, claimed: (50, 40), server: (50, 40), fits: fits), "another grid fits now")
+        XCTAssertTrue(WarmReturn.fences(fit: true, claimed: fits, server: (120, 50), fits: fits), "the server has another size")
+    }
+
+    func testAWarmFittedPaneInsideItsGraceComesBackWithNoFenceAndNoClaim() throws {
+        let pool = warmPool()
+        let transport = FakeFitTransport()
+        let host = claimedHost(pool, transport)
+        host.leaveTiming.claimGrace = 30
+        let size = try XCTUnwrap(host.claimWanted)
+        host.streamResized(cols: size.cols, rows: size.rows, owner: nil)
+        let calls = transport.calls
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isWarm })
+        XCTAssertFalse(host.warmReturnFences, "streamed at the claimed size the whole time")
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        pause(0.3)
+        XCTAssertEqual(transport.calls, calls, "nothing is claimed again")
+        XCTAssertFalse(host.stream.isClaimPending)
+        host.removeFromSuperview()
+    }
+
+    func testAWarmFittedPaneWhoseClaimLapsedIsFencedOnReturn() throws {
+        let pool = warmPool()
+        let transport = FakeFitTransport()
+        let host = claimedHost(pool, transport)
+        let size = try XCTUnwrap(host.claimWanted)
+        host.streamResized(cols: size.cols, rows: size.rows, owner: nil)
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isWarm })
+        XCTAssertTrue(eventually { transport.calls.contains("disown") }, "the grace ran out")
+        XCTAssertTrue(host.warmReturnFences)
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(host.stream.isClaimPending, "claimed again, and the fence waits for it")
+        host.removeFromSuperview()
+    }
+
+    func testThePoolCountsTheMemoryReadWhenThePaneLeft() {
+        let pool = warmPool()
+        let host = pooledHost(pool, key(1))
+        XCTAssertEqual(host.keptBytes, 0)
+        showAndLeaveWarm(host)
+        let kept = host.keptBytes
+        XCTAssertGreaterThan(kept, 0)
+        XCTAssertEqual(kept, host.term.core.memoryBytes)
+        // What a warm pane takes in afterwards is counted when it parks, not on every leave.
+        let chunk = [UInt8](repeating: 0x61, count: 400_000)
+        for _ in 0..<8 { chunk.withUnsafeBufferPointer { host.term.feed(buffer: $0) } }
+        host.term.core.sync()
+        XCTAssertEqual(host.keptBytes, kept)
+        host.park()
+        XCTAssertEqual(host.keptBytes, host.term.core.memoryBytes)
+    }
+
     // MARK: Warm panes
 
     func testTheLimitIsTwoOneOnAnExpensiveNetworkAndNoneWhenThePhoneSaves() {

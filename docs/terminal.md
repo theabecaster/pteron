@@ -115,7 +115,8 @@ from a program state the user has not seen.
   the park and fresh restart. Raising it again while it is up is still the same fence.
 - **Down**, only when all of these hold:
   1. the stream has arrived: the WELCOME of a RESUME, the end of a fresh stream's snapshot (or
-     the screen read that stands in for it), or the pong of a wake;
+     the screen read that stands in for it), or the pong of a wake. A stream whose snapshot
+     is still coming in has not arrived, whatever else answers meanwhile;
   2. no fit claim is on its way (`TerminalStream.setClaimPending`, set by the host from the
      request until the resize has returned, the claim is released or the pane is lost);
   3. no byte and no Rex message came for 40 ms, or for 60 ms once our own `resize` came back in
@@ -131,20 +132,29 @@ from a program state the user has not seen.
   - As soon as anything arrives (a byte, a resize, a snapshot, any message) they are dropped,
     with one notice: "The pane changed. Nothing was sent." Key bytes depend on terminal modes
     that may have changed with the screen, so they are never sent to another one.
-  - They live 1 s at most, counted from the first; then they are dropped the same way.
+  - They live 1 s at most, counted from the first; then they are dropped though nothing came,
+    and the notice says that instead: "Not sent: the pane was still reconnecting."
+  - Both notices are in the neutral style (`TerminalStream.onFenceNotice`): nothing failed.
   - After a drop, every later key of the same fence is dropped too, silently: the rest of a line
     whose start was dropped must not arrive alone. At most one notice per fence, and none when
     nothing was typed.
   - A pane that shows nothing yet has no screen to type at: keys typed before its first screen
-    are dropped, and so are keys typed during a fresh start, whose snapshot replaces the screen.
+    are dropped ("Not sent: the pane was still reconnecting."), and so are keys typed during a
+    fresh start, whose snapshot replaces the screen.
 - **Input still queued when it goes up** (typed without a connection, or behind a request that
   is out) waits for it in the queue: sent if the screen was exact, dropped with the notice
   otherwise. A request that had left is never sent again, as always.
 - **Dropped while it is up, never held**: mouse and wheel reports, focus reports and the keys a
   tap or a drag makes (`engineSendReport`, `TerminalStream.send(report:)`), silently; server
   actions bound to keys, forwarded keys, palette runs and Insert Path, with the notice;
-  `sendOnce` (the watch) is told it never left. A file send waits for the fence and then goes:
-  the user picked a file, not a place on the screen (`whenCurrent`).
+  `sendOnce` (the watch) is told it never left.
+- **Made up for when it comes down**: the focus report. A program that asked for focus reports
+  and was last told otherwise learns that the pane has the keyboard, ahead of any held keys
+  (`GhosttyTerminalView.sayFocus`).
+- **A file send** waits for the fence and then goes: the user picked a file, not a place on the
+  screen (`whenCurrent`). It waits 10 s at most; if the pane is still behind then, or leaves
+  the screen or closes first, the notice says "Not sent: <files>. The pane was still
+  reconnecting." with Retry.
 - **Always allowed**: scrolling, selection, copy, find, opening links, menus.
 - **Look**: the screen as it was, with no dimming and no badge. Only the cursor is hollow, as an
   unfocused pane's. The engine holds the screen on show and draws what arrived as one frame when
@@ -178,8 +188,9 @@ is not a cold start.
   size back as before, and a later return claims again beside its RESUME. Going to the
   background still releases every claim at once.
 - **How many** (`TerminalHostPool`, `ParkPolicy`): the 4 panes parked last, within 96 MB of
-  terminal memory together by the engine's own figure (`GhosttyCore.memoryBytes`, read when a
-  pane parks). The oldest goes first. Panes on screen don't count.
+  terminal memory together by the engine's own figure (`GhosttyCore.memoryBytes`, read once
+  when a pane leaves the screen and again if a warm pane parks: `TerminalHost.keptBytes`). The
+  oldest goes first. Panes on screen don't count.
 - **Warm panes** (`WarmPolicy`, `TerminalHost.warm`): the 2 panes left last don't park. Their
   streams go on off screen, parsed and never drawn (no drawables, no find, no timers of their
   own), so the screen is current the moment one is back: no RESUME, no round trip. They count
@@ -189,10 +200,12 @@ is not a cold start.
     (`NWPath.isExpensive`) one stays warm, not two.
   - A warm pane that writes more than 64 KB/s on average over 2 s parks (`WarmRate`, checked as
     bytes arrive, no timer): a build log is not followed unseen.
-  - A warm pane in mirror mode comes back with no fence: its screen is the stream's own and
-    nothing about it changes. A fitted one still gets the fence (`TerminalStream.returned`),
-    which comes down after the usual quiet 40 ms when its claim is still held, or after the new
-    claim's resize when the grace had run out.
+  - A warm pane comes back with no fence when nothing about it will change (`WarmReturn`): a
+    mirror pane always, and a fitted pane that still holds its claim at the size that fits,
+    inside its 10 s grace. It streamed at that size the whole time, so what is typed goes at
+    once, also on a pane that keeps writing. A fitted pane whose claim lapsed, or that fits
+    another grid now, is fenced (`TerminalStream.returned`) until the new claim's resize has
+    landed and the stream is quiet.
   - A warm pane whose stream drops reconnects as a pane on screen does, behind its fence.
 - **All of them go** on a memory warning, when the app comes back after 10 minutes in the
   background, when the user leaves their server or it is removed, and when their session closes

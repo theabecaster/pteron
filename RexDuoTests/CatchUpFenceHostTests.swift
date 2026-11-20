@@ -2,6 +2,7 @@ import Metal
 import RexKit
 import XCTest
 @testable import RexDuo
+@testable import RexKit
 
 /// What a pane does while its stream catches up (`CatchUpFence`, RexKit): it keeps its screen
 /// and shows the catch-up as one frame, its cursor is hollow, and reports are not sent.
@@ -215,6 +216,61 @@ final class CatchUpFenceHostTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { waited.fulfill() }
         wait(for: [waited], timeout: 2)
         XCTAssertNotEqual(host.statusChipText, "Reconnecting…", "an opening pane is not reconnecting because of its fence")
+        stream.stop()
+    }
+
+    // MARK: What the fence dropped without a word, and how the rest is said
+
+    func testAFocusReportDroppedBehindTheFenceGoesWhenItComesDown() {
+        let (host, stream) = makeHost()
+        // The program asks for focus reports.
+        host.term.feed(text: "\u{1b}[?1004h")
+        host.term.core.sync()
+        stream.start()
+        XCTAssertTrue(stream.isFenced)
+        // The pane takes the keyboard while its stream catches up.
+        host.term.focusNow = true
+        host.term.sayFocus()
+        XCTAssertFalse(stream.hasPendingInput, "a report never leaves behind the fence")
+        XCTAssertFalse(host.term.focusSaid)
+        // The fence comes down (no connection in this test: what is sent waits in the queue).
+        stream.fence.reset()
+        XCTAssertTrue(stream.hasPendingInput, "the program learns that the pane has the keyboard")
+        XCTAssertTrue(host.term.focusSaid)
+        stream.stop()
+    }
+
+    func testNoFocusReportWhenTheProgramAlreadyKnows() {
+        let (host, stream) = makeHost()
+        host.term.feed(text: "\u{1b}[?1004h")
+        host.term.core.sync()
+        // Unfocused, as the program was last told: a fence that comes and goes says nothing.
+        stream.start()
+        stream.fence.reset()
+        XCTAssertFalse(stream.hasPendingInput)
+        // A program that never asked is told nothing either.
+        let (other, plain) = makeHost()
+        plain.start()
+        other.term.focusNow = true
+        other.term.sayFocus()
+        plain.fence.reset()
+        XCTAssertFalse(plain.hasPendingInput)
+        stream.stop()
+        plain.stop()
+    }
+
+    func testWhatTheFenceDroppedIsSaidInTheNeutralStyle() {
+        let (host, stream) = makeHost()
+        Notice.shared.dismiss()
+        stream.showsNotices()
+        stream.start()
+        host.insertPath("~/notes.txt ")
+        XCTAssertEqual(Notice.shared.message, "Not sent: the pane was still reconnecting.")
+        XCTAssertEqual(Notice.shared.style, .neutral)
+        Notice.shared.dismiss()
+        stream.onActionFailed?("Couldn't run Clear.")
+        XCTAssertEqual(Notice.shared.style, .error, "a failure keeps its own style")
+        Notice.shared.dismiss()
         stream.stop()
     }
 }

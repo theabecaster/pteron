@@ -83,6 +83,12 @@ final class PaneFiles {
     var insertText: ((String) -> Void)?
     /// Runs its argument once the pane's stream has caught up: at once when it is current.
     var whenCurrent: ((@escaping @MainActor () -> Void) -> Void)?
+    /// How long a send waits for that before it is given up, and the wait itself (tests skip it).
+    var currentWait: Duration = .seconds(10)
+    var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// The files waiting for the pane to be current.
+    private var waiting: (id: Int, files: [StagedFile])?
+    private var waitSerial = 0
     /// Whether the pane's program asked for bracketed paste.
     var bracketedPaste: () -> Bool = { false }
     /// Asks before an insert into a program that didn't ask for text. Nil: an alert. Tests put
@@ -354,7 +360,10 @@ final class PaneFiles {
     // MARK: Open
 
     /// The pane let go of its stream (closed, or long off screen): stop a download and drop its copy.
-    func close() { opener.close() }
+    func close() {
+        opener.close()
+        notSent()
+    }
 
     /// Whether the pane's host can send files here: Open, Preview, Share and Save.
     var canOpen: Bool { support.download == true }
@@ -406,8 +415,43 @@ final class PaneFiles {
             return
         }
         // The user picked files, not a place on the screen: they go once the pane is current.
-        let go: @MainActor () -> Void = { [sender, weak view] in sender.send(files, over: view) }
-        if let whenCurrent { whenCurrent(go) } else { go() }
+        guard let whenCurrent else { return sender.send(files, over: view) }
+        guard waiting == nil else {
+            FileStaging.discard(files)
+            Notice.shared.show("Wait for the files on their way to finish.")
+            return
+        }
+        waitSerial += 1
+        let id = waitSerial
+        waiting = (id, files)
+        whenCurrent { [weak self] in
+            guard let self, self.waiting?.id == id else { return }
+            self.waiting = nil
+            self.sender.send(files, over: self.view)
+        }
+        guard waiting?.id == id else { return }
+        // Not for ever: a pane that stays behind says so, and the user sends again when it is back.
+        let wait = currentWait, sleep = self.sleep
+        Task { @MainActor [weak self] in
+            await sleep(wait)
+            guard let self, self.waiting?.id == id else { return }
+            self.notSent()
+        }
+    }
+
+    /// The files that waited for the pane to be current don't go: the pane left the screen,
+    /// closed, or stayed behind for `currentWait`. Said as any send that didn't happen, with Retry.
+    private func notSent() {
+        guard let (_, files) = waiting else { return }
+        waiting = nil
+        let retry = Notice.Action(title: "Retry") { [weak self] in
+            if let self { self.send(files) } else { FileStaging.discard(files) }
+        }
+        Notice.shared.show(Self.notSentText(files.map(\.name)), style: .neutral, action: retry)
+    }
+
+    static func notSentText(_ names: [String]) -> String {
+        "Not sent: \(SendTarget.what(names)). The pane was still reconnecting."
     }
 
     func cancel() { sender.cancel() }

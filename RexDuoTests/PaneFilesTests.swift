@@ -125,6 +125,65 @@ final class PaneFilesTests: XCTestCase {
         XCTAssertFalse(AttachMenuItem.shows(nil), "no host on screen: no row")
     }
 
+    // MARK: A send that waits for the pane to be current
+
+    private func stagedFile(_ name: String = "notes.txt") -> StagedFile {
+        StagedFile(url: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent(name),
+                   name: name, size: 3)
+    }
+
+    /// A pane that takes files, whose stream never says it is current.
+    private func waitingPane() async throws -> (Rig, PaneFiles, () -> Void) {
+        let (rig, files) = try await pane(creators: Self.creators(["write", "upload_begin", "download_begin", "list_dir"]))
+        files.checkSupport()
+        var wake: [CheckedContinuation<Void, Never>] = []
+        files.whenCurrent = { _ in }
+        files.sleep = { _ in await withCheckedContinuation { wake.append($0) } }
+        Notice.shared.dismiss()
+        return (rig, files, { wake.forEach { $0.resume() }; wake = [] })
+    }
+
+    func testASendWaitingForAPaneThatLeavesSaysNotSent() async throws {
+        let (rig, files, wake) = try await waitingPane()
+        defer { rig.stop(); wake() }
+        files.send([stagedFile()])
+        XCTAssertNil(Notice.shared.message, "it waits")
+        files.close()
+        XCTAssertEqual(Notice.shared.message, "Not sent: notes.txt. The pane was still reconnecting.")
+        XCTAssertEqual(Notice.shared.style, .neutral)
+        XCTAssertEqual(Notice.shared.actionTitle, "Retry")
+        Notice.shared.dismiss()
+        files.close()
+        XCTAssertNil(Notice.shared.message, "said once")
+    }
+
+    func testASendThatWaitsTooLongSaysNotSent() async throws {
+        let (rig, files, wake) = try await waitingPane()
+        defer { rig.stop() }
+        XCTAssertEqual(files.currentWait, .seconds(10))
+        files.send([stagedFile("a.png")])
+        await Task.yield()
+        XCTAssertNil(Notice.shared.message)
+        wake()
+        let said = await eventually { Notice.shared.message == PaneFiles.notSentText(["a.png"]) }
+        XCTAssertTrue(said)
+        Notice.shared.dismiss()
+    }
+
+    func testASendThatWentIsNotCalledLateAfterTheWait() async throws {
+        let (rig, files, wake) = try await waitingPane()
+        defer { rig.stop() }
+        var current: (@MainActor () -> Void)?
+        files.whenCurrent = { current = $0 }
+        files.send([stagedFile()])
+        current?()
+        wake()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNotEqual(Notice.shared.message, PaneFiles.notSentText(["notes.txt"]))
+        files.cancel()
+        Notice.shared.dismiss()
+    }
+
     /// A creator for another host says nothing about this pane's: each method is asked, once.
     func testWithoutAnAnswerEachMethodIsProbedOnItsOwn() async throws {
         let cases: [(missing: Set<String>, expect: FileSupport)] = [

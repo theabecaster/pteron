@@ -114,6 +114,10 @@ final class GhosttyTerminalView: UIView {
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
     private var gridEpoch = 0
+    /// Whether the pane has the keyboard, and what the program was last told about it
+    /// (`sayFocus`).
+    var focusNow = false
+    var focusSaid = false
     private var restoreEpoch = -1
     private var inForeground = true
     /// Something opaque lies over the pane (the agent board): nothing is drawn and no key is

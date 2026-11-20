@@ -144,9 +144,24 @@ extension GhosttyTerminalView {
     /// report isn't typing: it doesn't scroll the view.
     private func focusChanged(_ focused: Bool) {
         renderer.setFocused(focused)
-        let report = core.input.focusReport(gained: focused)
-        if !report.isEmpty { engineDelegate?.engineSendReport(report) }
+        focusNow = focused
+        sayFocus()
         keyboardFocusHook?(focused)
+    }
+
+    /// Tells the program whether the pane has the keyboard, if it asked for focus reports and
+    /// was last told otherwise. A report that could not leave (the stream was catching up) is
+    /// made up for by the next call: the host calls this when the stream is current again.
+    func sayFocus() {
+        let focused = focusNow
+        guard focused != focusSaid else { return }
+        let report = core.input.focusReport(gained: focused)
+        guard !report.isEmpty else {
+            // A program that doesn't ask is told nothing, now or later for this change.
+            focusSaid = focused
+            return
+        }
+        if engineDelegate?.engineSendReport(report) ?? false { focusSaid = focused }
     }
 
     override func willMove(toWindow newWindow: UIWindow?) {
