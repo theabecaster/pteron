@@ -207,6 +207,9 @@ struct ComputerFacts: Equatable, Sendable {
     /// The person's choice for this computer. A computer is on until it is turned off.
     var choice = true
     var online = true
+    /// The app can run Beacon's installer there (`HelperOffer.installable`). Where it can't, the
+    /// row says how Beacon is doing all the same, and offers nothing that would run the installer.
+    var installable = true
     var helper = Helper.running
     var setup: Setup?
     /// Another helper answers than the one this phone trusted.
@@ -282,7 +285,31 @@ struct ComputerStatus: Equatable, Sendable {
     /// Connecting, the result
     /// of a test, Update available, healthy, which shows the helper's version. No line holds
     /// the computer's name: the row's title is the name.
+    ///
+    /// On a computer the app can't run the installer on, the row is the same less what would run
+    /// it there: Reinstall, Remove (which takes the secret back and then needs the installer to
+    /// stop Beacon), Repair, Update (whose fallback is the installer) and a Retry of an install
+    /// or a removal.
     static func make(_ f: ComputerFacts) -> ComputerStatus {
+        let status = rowState(f)
+        guard !f.installable else { return status }
+        return status.withoutInstaller(retriesInstaller: f.removal == .failed || f.setup?.isFailure == true)
+    }
+
+    /// The menu entries that run the installer on the computer.
+    static let installerItems: Set<NotificationMenuItem> = [.reinstall, .remove]
+    /// The buttons that may run the installer on the computer. Retry does when it repeats an
+    /// install or a removal.
+    static let installerFixes: Set<NotificationFix> = [.repair, .update]
+
+    private func withoutInstaller(retriesInstaller: Bool) -> ComputerStatus {
+        var s = self
+        s.menu.removeAll { Self.installerItems.contains($0) }
+        if let fix, Self.installerFixes.contains(fix) || (fix == .retry && retriesInstaller) { s.fix = nil }
+        return s
+    }
+
+    private static func rowState(_ f: ComputerFacts) -> ComputerStatus {
         func problem(_ text: String) -> NotificationLine { NotificationLine(text: text, tint: .warning) }
         func working(_ text: String) -> NotificationLine { NotificationLine(text: text, tint: .none, spinner: true) }
         let installed = f.helper != .notInstalled
@@ -426,6 +453,10 @@ extension ComputerFacts.Setup {
         case .connected: return .connecting
         }
     }
+}
+
+extension ComputerFacts.Setup {
+    var isFailure: Bool { if case .failed = self { true } else { false } }
 }
 
 // MARK: - Too many tries

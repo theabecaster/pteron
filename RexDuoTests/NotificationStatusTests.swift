@@ -642,6 +642,68 @@ struct NotificationStatusTests {
         #expect(HelperRemoval.succeeded(exitCode: 0) && !HelperRemoval.succeeded(exitCode: nil))
     }
 
+    // MARK: Where the installer can run
+
+    /// Every state a row of a computer with Beacon can be in.
+    private var everyState: [ComputerFacts] {
+        [facts(), facts { $0.version = "" }, facts { $0.choice = false }, facts { $0.online = false },
+         facts { $0.setup = .failed(.download) }, facts { $0.setup = .working(.installing) }, facts { $0.setup = .manual },
+         facts { $0.changed = true }, facts { $0.updating = true }, facts { $0.tooOld = true }, facts { $0.updateAvailable = true },
+         facts { $0.helper = .notRunning }, facts { $0.full = true }, facts { $0.link = .repairing }, facts { $0.link = .failed },
+         facts { $0.link = .pending; $0.limit = RateLimit(retryAt: nil, now: Date()) }, facts { $0.test = .sent },
+         facts { $0.removal = .failed }, facts { $0.removal = .removing }]
+    }
+
+    @Test func onlyMacAndLinuxComputersCanRunTheInstaller() {
+        #expect(HelperOffer.installable(platform: "darwin_arm64") && HelperOffer.installable(platform: "linux_amd64"))
+        #expect(HelperOffer.installable(platform: "Linux_arm64"))
+        for other in ["windows_amd64", "windows_arm64", "freebsd_amd64", "darwin", "", nil] {
+            #expect(!HelperOffer.installable(platform: other))
+            // The same rule as the install offer.
+            #expect(HelperOffer.decide(platform: other, hasHelper: false, owner: nil, viewer: nil, running: false) == .none)
+        }
+    }
+
+    @Test func aMacOrLinuxRowOffersReinstallAndRemove() {
+        for platform in ["darwin_arm64", "linux_amd64"] {
+            let installable = HelperOffer.installable(platform: platform)
+            #expect(ComputerStatus.make(facts { $0.installable = installable }).menu == [.sendTest, .showDetails, .reinstall, .remove])
+            #expect(ComputerStatus.make(facts { $0.installable = installable; $0.helper = .notRunning }).fix == .repair)
+            #expect(ComputerStatus.make(facts { $0.installable = installable; $0.tooOld = true }).fix == .update)
+            for f in everyState {
+                var g = f
+                g.installable = installable
+                #expect(ComputerStatus.make(g) == ComputerStatus.make(f))
+            }
+        }
+    }
+
+    @Test func anotherSystemsRowShowsBeaconButOffersNothingThatRunsTheInstaller() {
+        for platform in ["windows_amd64", "plan9_386", nil] {
+            let installable = HelperOffer.installable(platform: platform)
+            #expect(!installable)
+            for f in everyState {
+                var g = f
+                g.installable = installable
+                let shown = ComputerStatus.make(g), mac = ComputerStatus.make(f)
+                // The same state, said the same way.
+                #expect(shown.line == mac.line && shown.switchOn == mac.switchOn && shown.switchEnabled == mac.switchEnabled)
+                // Nothing that would type the installer there: no Reinstall or Remove, no Repair
+                // or Update, no Retry of an install or a removal.
+                #expect(shown.menu.allSatisfy { !ComputerStatus.installerItems.contains($0) })
+                #expect(shown.menu == mac.menu.filter { $0 != .reinstall && $0 != .remove })
+                if let fix = shown.fix { #expect(![.repair, .update].contains(fix)) }
+                if f.removal == .failed || f.setup == .failed(.download) { #expect(shown.fix == nil) }
+            }
+            let healthy = ComputerStatus.make(facts { $0.installable = installable })
+            #expect(healthy.line == line("Version 0.3.1", .secondary) && healthy.menu == [.sendTest, .showDetails])
+            // Retry of the link to the notification service is the phone's own, and stays.
+            #expect(ComputerStatus.make(facts { $0.installable = installable; $0.link = .failed }).fix == .retry)
+            #expect(ComputerStatus.make(facts { $0.installable = installable; $0.helper = .notRunning }).fix == nil)
+            #expect(ComputerStatus.make(facts { $0.installable = installable; $0.choice = false }).menu == [.showDetails])
+        }
+    }
+
     #if DEBUG
     // MARK: Screenshots
 
@@ -1482,5 +1544,34 @@ struct NotificationChoiceTests {
         #expect(s.gateway.lines.last == "DELETE /v1/devices/\(device)/secrets/\(secret)")
         // The other computer's secret and the device stay.
         #expect(s.gateway.devices[device]?.secrets.count == 1 && s.world.store.value?.servers[other.uuidString]?.pushSecret != nil)
+    }
+
+    /// Reinstall, Repair and Remove type the installer into a tab on the computer, and Remove
+    /// takes the secret back first. On a computer of another system none of them is offered,
+    /// and a call from elsewhere (a script, a stale menu) runs nothing and takes nothing back.
+    @Test func theInstallerIsAskedForOnlyOnAMacOrLinuxComputer() async {
+        let cases: [(platform: String?, runs: Bool)] = [("darwin_arm64", true), ("linux_amd64", true),
+                                                        ("windows_amd64", false), ("haiku_x86", false), (nil, false)]
+        for (platform, runs) in cases {
+            let s = await signedUp([server])
+            let computer = ServerConnection(config: ServerConfig(id: server, name: "Studio", url: "http://127.0.0.1:1"),
+                                            prefs: s.prefs, notifier: AgentNotifier(), deviceID: "a1b2c3d4")
+            computer.platform = platform
+            s.push.servers = { [computer] }
+            final class Asked { var kinds: [SetupState.Kind] = [] }
+            let asked = Asked()
+            s.push.presentSetup = { _, kind in asked.kinds.append(kind) }
+            let requests = s.gateway.seen.count
+            let menu = s.push.status(for: server)?.menu ?? []
+            #expect(menu.contains(.reinstall) == runs && menu.contains(.remove) == runs)
+
+            s.push.reinstall(server)
+            s.push.fix(.repair, for: server)
+            s.push.removeHelper(from: server)
+            await s.world.quiet()
+            #expect(asked.kinds == (runs ? [.reinstall, .repair] : []))
+            // The secret stays where it was, at the gateway and with Beacon.
+            #expect(s.push.removals[server] == nil && s.gateway.seen.count == requests && s.helpers[server].secret != nil)
+        }
     }
 }

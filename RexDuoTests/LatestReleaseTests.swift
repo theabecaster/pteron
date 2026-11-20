@@ -137,8 +137,11 @@ struct LatestReleaseTests {
         for (index, version) in versions.enumerated() {
             let name = index == 0 ? "Studio" : "Laptop"
             world.helpers.add(ids[index], name: name).version = version
-            servers.append(ServerConnection(config: ServerConfig(id: ids[index], name: name, url: "https://\(name.lowercased())-rex.tail1.ts.net"),
-                                            prefs: world.prefs, notifier: model.notifier, deviceID: "abcd1234"))
+            let server = ServerConnection(config: ServerConfig(id: ids[index], name: name, url: "https://\(name.lowercased())-rex.tail1.ts.net"),
+                                          prefs: world.prefs, notifier: model.notifier, deviceID: "abcd1234")
+            // A Mac and a Linux computer, where the installer can run.
+            server.platform = index == 0 ? "darwin_arm64" : "linux_amd64"
+            servers.append(server)
         }
         world.defaults.set(PushWorld.token, forKey: "pushToken.last")
         world.prefs.pushEnabled = true

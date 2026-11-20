@@ -120,6 +120,8 @@ final class HelperSetupRun: Identifiable {
         } catch {
             return send(.fail(.interrupted))
         }
+        // The installer is a shell script: on any other system nothing is typed there.
+        guard HelperOffer.installable(platform: version.str("platform")) else { return send(.fail(.unsupportedComputer)) }
         guard SetupBlock.supported(version: version, creators: creators) else { return send(.fail(.manual)) }
         guard let script = env.script() else { return send(.fail(.release)) }
 
@@ -674,6 +676,7 @@ final class HelperSetupCenter {
         let control = server.control
         guard control.state == .connected, !isRunning(server.id),
               let version = try? await control.call("server.version"),
+              HelperOffer.installable(platform: version.str("platform")),
               let creators = try? await control.call("block_creator.list"),
               SetupBlock.supported(version: version, creators: creators),
               let script = SetupScript.bundled() else { return nil }

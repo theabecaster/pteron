@@ -287,6 +287,7 @@ final class PushRegistrar {
             link = .pending
         }
         return ComputerFacts(name: s.config.name, choice: !prefs.notificationsOff.contains(id), online: !s.showsOffline,
+                             installable: HelperOffer.installable(platform: s.platform),
                              helper: helper, setup: install,
                              // While an install runs there, it decides who the helper is.
                              changed: helpers[id] == .identityChanged && setup?.isRunning(id) != true,
@@ -441,14 +442,14 @@ final class PushRegistrar {
             if removals[id] == .failed {
                 removeHelper(from: id)
             } else if setup?.failures[id] != nil {
-                presentSetup(id, .install)
+                runInstaller(id, .install)
             } else {
                 reconciler.trigger(id, by: .person)
             }
         case .update:
             update(id)
         case .repair:
-            presentSetup(id, .repair)
+            runInstaller(id, .repair)
         case .trust:
             break
         }
@@ -472,7 +473,15 @@ final class PushRegistrar {
     /// "Reinstall Beacon" in a row's menu.
     func reinstall(_ id: UUID) {
         guard !simulated else { return }
-        presentSetup(id, .reinstall)
+        runInstaller(id, .reinstall)
+    }
+
+    /// Opens the install sheet for a repair or a reinstall, or for another try of an install,
+    /// only on a computer the app can run the installer on (`HelperOffer.installable`). On any
+    /// other the row offers none of them, and nothing is typed there.
+    private func runInstaller(_ id: UUID, _ kind: SetupState.Kind) {
+        guard HelperOffer.installable(platform: server(id)?.platform) else { return }
+        presentSetup(id, kind)
     }
 
     /// "Send Test Notification": the computer's helper sends one notification to this phone. The
@@ -541,7 +550,10 @@ final class PushRegistrar {
     /// computer, then the phone forgets the helper and the computer's switch goes off
     /// (`HelperRemoval`). A script that fails leaves the row at "Couldn't remove Beacon".
     func removeHelper(from id: UUID) {
-        guard !simulated, let s = server(id), removals[id] != .removing, s.control.state == .connected else { return }
+        // The secret is taken back only where the installer can then stop and remove the helper:
+        // on another system the helper would keep running without it.
+        guard !simulated, let s = server(id), HelperOffer.installable(platform: s.platform), removals[id] != .removing,
+              s.control.state == .connected else { return }
         // From here the computer is not signed up again until the removal is over.
         removals[id] = .removing
         setup?.cancel(id)
@@ -750,7 +762,7 @@ final class PushRegistrar {
     private func update(_ id: UUID) {
         guard !updating.contains(id) else { return }
         guard HelperUpdate.route(reported: versions[id]) == .bySelf, let relay = reconciler.relay(id) else {
-            return presentSetup(id, .repair)
+            return runInstaller(id, .repair)
         }
         let before = shownVersion(id)
         updating.insert(id)
@@ -758,7 +770,7 @@ final class PushRegistrar {
             let done = await updateBySelf(id, relay: relay, from: before)
             updating.remove(id)
             // The computer may have left the app, or its Beacon been removed, meanwhile.
-            if !done, channel.computers.contains(id), removals[id] == nil { presentSetup(id, .repair) }
+            if !done, channel.computers.contains(id), removals[id] == nil { runInstaller(id, .repair) }
         }
     }
 

@@ -387,13 +387,22 @@ enum HelperOffer: Equatable {
     /// already under way.
     case none
 
+    /// Whether the app can run Beacon's installer on a computer of this platform
+    /// (`server.version`'s, such as `darwin_arm64`): macOS and Linux. The installer is a shell
+    /// script, so install, repair, reinstall and removal are each offered and run only where this
+    /// holds. A platform not known yet is a no.
+    static func installable(platform: String?) -> Bool {
+        guard let platform = platform?.lowercased() else { return false }
+        return platform.hasPrefix("darwin_") || platform.hasPrefix("linux_")
+    }
+
     /// - `platform`: `server.version`'s, such as `darwin_arm64`.
     /// - `hasHelper`: a helper is connected on the server's own machine.
     /// - `owner`, `viewer`: the logins `ServerIdentity` reads; only two known, different logins
     ///   mean someone else's computer.
     /// - `running`: an install for this server is under way.
     static func decide(platform: String?, hasHelper: Bool, owner: String?, viewer: String?, running: Bool) -> HelperOffer {
-        guard let platform = platform?.lowercased(), platform.hasPrefix("darwin_") || platform.hasPrefix("linux_") else { return .none }
+        guard installable(platform: platform) else { return .none }
         guard !hasHelper, !running else { return .none }
         if let owner, let viewer, owner.caseInsensitiveCompare(viewer) != .orderedSame { return .askOwner }
         return .install

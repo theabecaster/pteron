@@ -116,7 +116,8 @@ the current release:
 Settings → Notifications: one switch for notifications and one per computer. A computer's row
 says when its Beacon needs something, with one button for it, and its menu has **Send Test
 Notification**, **Show Details** (Beacon's version and the computer's system), **Reinstall
-Beacon** and **Remove Beacon…**.
+Beacon** and **Remove Beacon…**. Reinstall and Remove run the installer, so they are only on a
+Mac or Linux computer's menu.
 
 ## Updates
 

@@ -159,6 +159,13 @@ computer is back, Offline, Remove failed, off, Beacon changed, an install, Updat
 old, Beacon isn't running, Too many computers, Reconnecting or Couldn't reconnect, Too many
 tries, Connecting, the result of a test, Update available, the version.
 
+On a computer the app can't run the installer on (a platform other than `darwin_*` or
+`linux_*`, or one not known yet: `HelperOffer.installable`, the same rule as the install offer),
+the row shows Beacon's state as above, less everything that would run the installer there:
+Reinstall Beacon, Remove Beacon…, Repair, Update, and Retry of an install or a removal. Remove
+is not offered as a phone-only "Forget": it takes the phone's secret back first, and only the
+installer then stops Beacon, which would otherwise keep running without it.
+
 No status line holds the computer's name: the row's title is the name, right above the line.
 The name is in the confirms, in the title of Show Details and in the install sheet, where no
 title stands beside the words.
