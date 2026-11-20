@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where system tools live, in the order they are tried. The last one is NixOS.
-pub const DIRS: [&str; 5] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"];
+/// Where system tools live, in the order they are tried: the system's own list.
+use crate::platform::TOOL_DIRS as DIRS;
 
 /// The first of `dirs` that holds a regular file called `name` (a link to one counts).
 pub fn find_in(dirs: &[&Path], name: &str) -> Option<PathBuf> {
@@ -36,15 +36,6 @@ pub fn async_command(program: impl AsRef<Path>) -> Option<tokio::process::Comman
     self::program(program.as_ref()).map(tokio::process::Command::new)
 }
 
-/// The user this process runs as.
-pub fn uid() -> u32 {
-    extern "C" {
-        fn geteuid() -> u32;
-    }
-    // Safe: geteuid takes nothing, touches no memory of ours and cannot fail.
-    unsafe { geteuid() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +46,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tool_is_the_first_regular_file_of_that_name_in_the_listed_folders() {
         let dir = temp("find");
@@ -100,7 +92,8 @@ mod tests {
         let needle = ["Command::", "new"].concat();
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut seen = 0;
-        for entry in std::fs::read_dir(&src).unwrap() {
+        let files = [src.clone(), src.join("platform")].map(|dir| std::fs::read_dir(dir).unwrap());
+        for entry in files.into_iter().flatten() {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;

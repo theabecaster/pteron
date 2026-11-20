@@ -8,6 +8,7 @@
 //!    else its Tailscale HTTPS URL.
 
 use crate::config::home;
+use crate::platform::{is_executable, Os};
 use crate::util::Json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -110,20 +111,12 @@ fn percent_decode(s: &str) -> String {
 
 /// Rex's default local socket on this OS.
 pub fn default_socket() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        home().join("Library/Application Support/rex/server.sock")
-    } else {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                let uid = std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(1000);
-                PathBuf::from(format!("/run/user/{uid}"))
-            }
-            #[cfg(not(unix))]
-            PathBuf::from("/tmp")
-        });
-        runtime.join("rex/server.sock")
+    match crate::platform::OS {
+        Os::Mac => home().join("Library/Application Support/rex/server.sock"),
+        Os::Linux => {
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(crate::platform::fallback_runtime_dir);
+            runtime.join("rex/server.sock")
+        }
     }
 }
 
@@ -149,16 +142,6 @@ pub fn cli_candidates() -> Vec<PathBuf> {
         "/usr/bin/rex".into(),
     ]);
     paths
-}
-
-fn is_executable(p: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    p.is_file()
 }
 
 pub async fn find() -> Option<Endpoint> {

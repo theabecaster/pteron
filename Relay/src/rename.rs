@@ -372,7 +372,7 @@ mod mac {
             &World {
                 launch_services: &launch_services,
                 signature_ok: &signature_ok,
-                old_gone: &|| old_pid.is_none_or(|pid| !service::pid_alive(pid)),
+                old_gone: &|| old_pid.is_none_or(|pid| !crate::platform::process_alive(pid)),
                 runs_new: &service::runs_new,
                 exit_wait: EXIT_TIMEOUT,
                 wait: CONFIRM_TIMEOUT,
@@ -429,7 +429,7 @@ mod mac {
             return false;
         }
         let agents = service::agents();
-        let moving = UpdateLock::busy(state_dir, service::pid_alive);
+        let moving = UpdateLock::busy(state_dir, crate::platform::process_alive);
         match agents.at_start(service::own_label(), moving) {
             AtStart::DropEarlier => {
                 agents.drop_earlier();
@@ -446,7 +446,7 @@ mod mac {
     fn step_aside(state_dir: &Path) {
         let Some(exe) = own_exe() else { return };
         // Whoever holds the lock is at work on the job already.
-        let Ok(lock) = UpdateLock::acquire(state_dir, service::pid_alive) else { return };
+        let Ok(lock) = UpdateLock::acquire(state_dir, crate::platform::process_alive) else { return };
         if let Err(e) = spawn_job(&exe, &job_args(None, state_dir), state_dir) {
             return keeps_label(&e);
         }
@@ -482,8 +482,8 @@ mod mac {
             let said: fn(&str) = if moves.is_some() { stays } else { keeps_label };
             let asked = Instant::now();
             let lock = loop {
-                let quiet = !installer_busy(&state_dir, crate::util::now() as u64, service::pid_alive);
-                match quiet.then(|| UpdateLock::acquire(&state_dir, service::pid_alive)) {
+                let quiet = !installer_busy(&state_dir, crate::util::now() as u64, crate::platform::process_alive);
+                match quiet.then(|| UpdateLock::acquire(&state_dir, crate::platform::process_alive)) {
                     Some(Ok(lock)) => break lock,
                     _ if asked.elapsed() >= QUIET_WAIT => return said("an update or an install was running"),
                     _ => std::thread::sleep(Duration::from_secs(15)),
@@ -575,7 +575,7 @@ mod mac {
         };
         let state_dir = crate::config::default_state_dir();
         let _ = std::fs::create_dir_all(&state_dir);
-        let Ok(_lock) = UpdateLock::acquire(&state_dir, service::pid_alive) else {
+        let Ok(_lock) = UpdateLock::acquire(&state_dir, crate::platform::process_alive) else {
             stays("an update is running");
             return None;
         };
@@ -788,6 +788,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_copy_set_aside_under_an_earlier_name_goes_only_when_its_signature_is_ours() {
         for was in generations() {
@@ -829,6 +830,7 @@ mod tests {
 
     /// A Mac that had the app under both earlier names: whichever of them the move is about,
     /// the other one goes too once the helper runs from the new place.
+    #[cfg(unix)]
     #[test]
     fn an_app_left_under_the_other_earlier_name_goes_with_the_move() {
         for (was, other) in [(generations()[0], generations()[1]), (generations()[1], generations()[0])] {
@@ -962,6 +964,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_a_real_folder_in_an_applications_folder_is_moved() {
         for was in generations() {
@@ -986,6 +989,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_app_already_under_the_new_name_decides_which_one_stays() {
         for was in generations() {

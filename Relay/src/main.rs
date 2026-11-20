@@ -17,6 +17,7 @@ mod label;
 mod legacy;
 mod net;
 mod notice;
+mod platform;
 mod policy;
 mod presence;
 mod push;
@@ -189,7 +190,7 @@ fn version_line(args: &[String]) -> Option<String> {
 /// `install`'s options, checked: the server address to add and the setup code to keep, or
 /// the message that refuses them. It looks at the socket and takes the code out of its file,
 /// which it removes; it changes nothing else.
-fn checked_install(args: &[String], uid: u32) -> Result<(Option<String>, Option<String>), String> {
+fn checked_install(args: &[String], uid: platform::UserId) -> Result<(Option<String>, Option<String>), String> {
     let options = setup::parse_install(args)?;
     // Read first: the file is gone after this run whatever the other option turns out to be.
     let nonce = options.nonce_file.as_deref().map(|path| setup::read_nonce_file(std::path::Path::new(path), uid)).transpose();
@@ -201,7 +202,7 @@ fn checked_install(args: &[String], uid: u32) -> Result<(Option<String>, Option<
 /// checked before anything is written or started, so a refused one leaves the computer as it
 /// was but for the code's file.
 fn install(args: &[String]) -> i32 {
-    let (server, nonce) = match checked_install(args, tools::uid()) {
+    let (server, nonce) = match checked_install(args, platform::user_id()) {
         Ok(checked) => checked,
         Err(e) => {
             eprintln!("{e}");
@@ -442,18 +443,11 @@ async fn run(o: RunOptions) -> i32 {
 
     // On SIGINT/SIGTERM, close the connections to Rex with a close frame so the server drops
     // this client at once instead of keeping it as "lost" for 60 s.
-    use tokio::signal::unix::{signal, SignalKind};
-    let (mut int, mut term) = match (signal(SignalKind::interrupt()), signal(SignalKind::terminate())) {
-        (Ok(i), Ok(t)) => (i, t),
-        _ => {
-            info!("could not install signal handlers");
-            return 1;
-        }
+    let Ok(mut stop) = platform::stop_signal() else {
+        info!("could not install signal handlers");
+        return 1;
     };
-    tokio::select! {
-        _ = int.recv() => {}
-        _ = term.recv() => {}
-    }
+    stop.wait().await;
     info!("stopping");
     relay.stop();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -536,13 +530,14 @@ mod tests {
         assert_eq!(version_line(&args(&["--json", "--json"])), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_refuses_bad_options_before_it_does_anything() {
         use std::os::unix::fs::PermissionsExt;
         let nonce = "ab".repeat(32);
         let dir = std::env::temp_dir().join(format!("main-install-{}-{}", std::process::id(), util::now() as u64 % 100_000));
         std::fs::create_dir_all(&dir).unwrap();
-        let uid = tools::uid();
+        let uid = platform::user_id();
         let file = dir.join("code");
         let path = file.to_str().unwrap();
         let write = |content: &str| {

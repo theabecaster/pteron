@@ -55,7 +55,7 @@ pub fn status_path() -> PathBuf {
 
 pub fn running() -> Option<Running> {
     let v: Value = serde_json::from_slice(&std::fs::read(status_path()).ok()?).ok()?;
-    read_status(&v).filter(|r| pid_alive(r.pid))
+    read_status(&v).filter(|r| crate::platform::process_alive(r.pid))
 }
 
 /// What a status.json says, whether or not its helper is still alive.
@@ -73,13 +73,6 @@ fn read_status(v: &Value) -> Option<Running> {
         update: v["latest_version"].as_str().filter(|_| v["update_available"].as_bool() == Some(true)).map(String::from),
         update_error: v["last_error"].as_str().map(String::from),
     })
-}
-
-pub fn pid_alive(pid: u64) -> bool {
-    if Path::new("/proc/self").exists() {
-        return Path::new(&format!("/proc/{pid}")).exists();
-    }
-    quiet("/bin/kill", &["-0", &pid.to_string()])
 }
 
 /// Modification time of a file in seconds, to tell an updated binary from the running one.
@@ -168,11 +161,7 @@ fn install_binary() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let tmp = dir.join(format!(".{NAME}.new"));
     std::fs::copy(&exe, &tmp).map_err(|e| format!("could not copy to {}: {e}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-    }
+    let _ = crate::platform::make_executable(&tmp);
     // Renaming over a running binary is fine on Unix: the old process keeps its copy.
     std::fs::rename(&tmp, &target).map_err(|e| format!("could not install {}: {e}", target.display()))?;
     Ok(target)
@@ -187,7 +176,7 @@ fn tilde(p: &Path) -> String {
 
 // MARK: Linux (systemd --user)
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn unit_path_for(name: &str) -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -196,12 +185,12 @@ fn unit_path_for(name: &str) -> PathBuf {
         .join(format!("systemd/user/{name}.service"))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn unit_path() -> PathBuf {
     unit_path_for(NAME)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn systemctl(args: &[&str]) -> bool {
     let mut a = vec!["--user"];
     a.extend_from_slice(args);
@@ -209,31 +198,31 @@ fn systemctl(args: &[&str]) -> bool {
 }
 
 /// True if the systemd user service is set up.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn installed() -> bool {
     unit_path().exists()
 }
 
 /// Restarts the background service, so it runs the binary that is on disk now. The unit names
 /// the one path the binary has, so `_program` is for the Mac.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn restart_into(_program: &Path) -> bool {
     systemctl(&["restart", NAME])
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn user() -> String {
     std::env::var("USER").ok().or_else(|| output("id", &["-un"])).unwrap_or_default()
 }
 
 /// The arguments that ask `loginctl` whether `user`'s services outlive their last session.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn linger_query(user: &str) -> [&str; 5] {
     ["show-user", user, "-p", "Linger", "--value"]
 }
 
 /// What `loginctl` printed for that question: `yes` or `no`. Anything else is no answer.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn parse_linger(printed: &str) -> Option<bool> {
     match printed.trim() {
         "yes" => Some(true),
@@ -242,14 +231,14 @@ fn parse_linger(printed: &str) -> Option<bool> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn linger() -> Option<bool> {
     output("loginctl", &linger_query(&user())).and_then(|v| parse_linger(&v))
 }
 
 /// Whether the helper keeps running after logout, for `helper_status`. None when `loginctl`
 /// is missing or doesn't say.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub async fn linger_state() -> Option<bool> {
     let loginctl = crate::tools::program(Path::new("loginctl"))?;
     let printed = crate::discovery::run(&loginctl, &linger_query(&user())).await?;
@@ -263,7 +252,7 @@ pub async fn linger_state() -> Option<bool> {
 }
 
 /// Stops and removes the service and binary of the helper's old name (legacy.rs).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn stop_legacy() -> Vec<String> {
     let old = crate::legacy::OLD_NAME;
     let mut notes = vec![];
@@ -285,14 +274,14 @@ pub fn stop_legacy() -> Vec<String> {
 /// stay inside the word, with `\` and `"` escaped as systemd's quoting has them, and `%`
 /// and `$` doubled, because a single one starts a specifier or a variable. None for a path a unit file can't hold:
 /// one that is not text, or has a control character in it.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn unit_word(path: &Path) -> Option<String> {
     let text = path.to_str().filter(|t| !t.chars().any(char::is_control))?;
     Some(format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%").replace('$', "$$")))
 }
 
 /// The systemd user unit that runs the helper at `bin`.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(target_os = "linux", test))]
 fn unit_text(bin: &Path) -> Option<String> {
     Some(format!(
         "[Unit]\n\
@@ -310,7 +299,7 @@ fn unit_text(bin: &Path) -> Option<String> {
 
 /// `config_changed` is for the Mac, which restarts a running helper only when it has to; here
 /// the service is always restarted.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn install(_config_changed: bool) -> i32 {
     for note in crate::legacy::migrate() {
         say!("Moving from the old name: {note}");
@@ -358,7 +347,7 @@ pub fn install(_config_changed: bool) -> i32 {
     if r.is_some() { 0 } else { 1 }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn status() -> i32 {
     let r = running();
     say!("{}", describe(&r));
@@ -380,7 +369,7 @@ pub fn status() -> i32 {
     if r.is_some() { 0 } else { 3 }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn uninstall() -> i32 {
     systemctl(&["disable", "--now", "--quiet", NAME]);
     let _ = std::fs::remove_file(unit_path());
@@ -527,14 +516,13 @@ pub(crate) fn write_agent(path: &Path, label: &str, program: &Path) -> Result<bo
 #[cfg(any(target_os = "macos", test))]
 fn write_new(tmp: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     match std::fs::remove_file(tmp) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
     // Made for this account alone; the mode it ends with is set on the open file.
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(tmp)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    let mut file = crate::platform::create_private(tmp)?;
+    crate::platform::make_readable(&file)?;
     file.write_all(text.as_bytes())?;
     file.sync_all()
 }
@@ -647,7 +635,7 @@ fn start_agent(restart: bool) -> Result<(), String> {
     // The label is moved while no update is at work on the job.
     let lock = if agents.has_earlier() {
         let _ = std::fs::create_dir_all(&state_dir);
-        crate::update::UpdateLock::acquire(&state_dir, pid_alive).ok()
+        crate::update::UpdateLock::acquire(&state_dir, crate::platform::process_alive).ok()
     } else {
         None
     };
@@ -836,16 +824,6 @@ pub fn open_app(opening: Opening) -> i32 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_process_is_alive_until_it_has_ended() {
-        assert!(pid_alive(u64::from(std::process::id())));
-        let mut child = crate::tools::command("sh").unwrap().args(["-c", "exit 0"]).spawn().unwrap();
-        let pid = u64::from(child.id());
-        assert!(pid_alive(pid));
-        child.wait().unwrap();
-        assert!(!pid_alive(pid));
-    }
-
     fn running(update: Option<&str>, error: Option<&str>) -> Option<Running> {
         Some(Running {
             pid: 1,
@@ -906,6 +884,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_unit_names_the_helper_as_one_quoted_word() {
         let plain = unit_text(Path::new("/home/alex/.local/bin/rex-duo-helper")).unwrap();
@@ -987,6 +966,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_launch_agent_is_written_beside_its_place_and_renamed_into_it() {
         use std::os::unix::fs::PermissionsExt;

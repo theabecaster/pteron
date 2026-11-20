@@ -23,12 +23,11 @@ impl HelperKey {
     /// A file that is there but can't be used is an error for the same reason.
     pub fn load_or_create(path: &Path) -> Result<HelperKey, String> {
         use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         match std::fs::read(path) {
             Ok(data) => {
                 let pair = Ed25519KeyPair::from_pkcs8(&data).map_err(|_| format!("{} is not an ed25519 key", path.display()))?;
                 // Tighten a file that was copied around with wider permissions.
-                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                let _ = crate::platform::make_private(path);
                 Ok(HelperKey { pair })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -38,12 +37,7 @@ impl HelperKey {
                     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
                 }
                 // `create_new`: private from the moment it exists, and never over another key.
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(path)
-                    .map_err(|e| format!("could not create {}: {e}", path.display()))?;
+                let mut f = crate::platform::create_private(path).map_err(|e| format!("could not create {}: {e}", path.display()))?;
                 f.write_all(made.as_ref()).and_then(|()| f.sync_all()).map_err(|e| format!("could not write {}: {e}", path.display()))?;
                 Ok(HelperKey { pair })
             }
@@ -197,6 +191,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_key_file_is_made_once_private_and_reused() {
         use std::os::unix::fs::PermissionsExt;

@@ -1,0 +1,7 @@
+# These files are read by their bytes: the fixtures are signed and hashed, and the scripts and
+# the key file are compiled into the program and its tests (include_str!). Every checkout
+# gets them with LF line endings, whatever the system.
+fixtures/** text eol=lf
+setup.sh text eol=lf
+release.sh text eol=lf
+update-key.pub text eol=lf

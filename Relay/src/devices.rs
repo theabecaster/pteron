@@ -154,14 +154,12 @@ pub struct DeviceStore {
     stamp: Option<Stamp>,
 }
 
-/// Inode, size and modification time. Every write goes through a rename, so the inode alone
-/// changes with each one.
-type Stamp = (u64, u64, std::time::SystemTime);
+/// What tells one version of a file from the next. Every write goes through a rename, which
+/// alone changes it.
+type Stamp = crate::platform::FileStamp;
 
 fn stamp(path: &Path) -> Option<Stamp> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.ino(), m.len(), m.modified().ok()?))
+    crate::platform::file_stamp(path)
 }
 
 /// The most refused secrets remembered. Past it the oldest goes: by then the phone has long
@@ -187,17 +185,10 @@ pub(crate) fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) {
 fn try_write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
     let write = || -> std::io::Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        let _ = std::fs::remove_file(&tmp);
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        f.write_all(&serde_json::to_vec_pretty(value)?)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        crate::platform::write_private_with(path, |f| {
+            f.write_all(&serde_json::to_vec_pretty(value)?)?;
+            Ok(())
+        })
     };
     write().map_err(|e| {
         let why = format!("could not write {}: {e}", path.display());
@@ -580,6 +571,7 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_file_has_the_new_shape_and_only_its_owner_reads_it() {
         use std::os::unix::fs::PermissionsExt;
@@ -837,6 +829,7 @@ mod tests {
         assert!(s.refused(&b, 1120.0));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_refused_secret_is_remembered_by_hash_only() {
         let path = temp_store("dropped");

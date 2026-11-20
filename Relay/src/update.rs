@@ -546,11 +546,12 @@ impl Place {
     }
 
     /// The place for a path the old program was told (`finish-update --place`).
-    fn at(os: &str, path: PathBuf) -> Place {
-        if os == "macos" {
-            Place::MacApp(path)
-        } else {
-            Place::LinuxBinary(path)
+    /// None on a system that has no such place.
+    fn at(os: &str, path: PathBuf) -> Option<Place> {
+        match os {
+            "macos" => Some(Place::MacApp(path)),
+            "linux" => Some(Place::LinuxBinary(path)),
+            _ => None,
         }
     }
 
@@ -791,13 +792,7 @@ async fn fetch_small(origin: Origin, url: &str, limit: usize) -> Result<Vec<u8>,
 /// Downloads to a new file `dest`, readable by this user only, and keeps it only if its size
 /// and SHA-256 are the expected ones.
 async fn download_to(url: &str, allowed: &HostRule, dest: &Path, size: u64, sha256: &str) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(dest)
-        .map_err(|e| format!("could not create {}: {e}", dest.display()))?;
+    let file = crate::platform::create_private(dest).map_err(|e| format!("could not create {}: {e}", dest.display()))?;
     let mut out = Checked::new(file, size);
     let got = tokio::time::timeout(DOWNLOAD_TIMEOUT, fetch(url, allowed, &mut |chunk: &[u8]| out.write(chunk)))
         .await
@@ -914,9 +909,8 @@ fn unpack_and_check_mac(zip: &Path, into: &Path, version: &str) -> Result<PathBu
 /// Puts a checked binary in place of the installed one, which stays as `<name>.previous`
 /// until the new one is confirmed.
 fn swap_linux(new: &Path, place: &Place) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
     let (installed, previous) = (place.path(), place.previous());
-    std::fs::set_permissions(new, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    crate::platform::make_executable(new).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&previous);
     // A second name for the running file, so it survives the rename over its first name.
     if std::fs::hard_link(installed, &previous).is_err() {
@@ -1026,12 +1020,9 @@ async fn stage_and_swap(origin: Origin, place: &Place, trusted: Vec<[u8; 32]>, v
             tokio::task::spawn_blocking(work).await.map_err(joined)?
         }
         Place::MacApp(_) => {
-            use std::os::unix::fs::DirBuilderExt;
             let scratch = Scratch(place.dir().join(format!(".rex-duo-helper-update-{pid}")));
             let _ = std::fs::remove_dir_all(&scratch.0);
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(&scratch.0)
+            crate::platform::create_private_dir(&scratch.0)
                 .map_err(|e| Fault::new(Problem::Install, format!("could not create {}: {e}", scratch.0.display())))?;
             let zip = scratch.0.join("download.zip");
             download_to(&asset.url, &origin.host_ok, &zip, asset.size, &asset.sha256).await.map_err(download)?;
@@ -1102,7 +1093,7 @@ fn real_finish(place: &Place, version: &str, old_pid: Option<u64>) -> Result<(),
         &Effects {
             // After a swap the program is the new version's; after a roll back, the old one's.
             restart: &|| service::restart_into(&place.program()),
-            old_gone: &|| old_pid.is_none_or(|pid| !service::pid_alive(pid)),
+            old_gone: &|| old_pid.is_none_or(|pid| !crate::platform::process_alive(pid)),
             running_version: &|| service::running().map(|r| r.version),
             exit_wait: EXIT_TIMEOUT,
             wait: CONFIRM_TIMEOUT,
@@ -1182,14 +1173,16 @@ fn finisher_plist(program: &Path, args: &[OsString]) -> String {
 }
 
 /// The command that starts the finisher outside the helper's own service. `domain` and
-/// `plist` are only used on a Mac.
-fn finisher_start(os_name: &str, program: &Path, args: &[OsString], domain: &str, plist: &Path) -> (&'static str, Vec<OsString>) {
-    if os_name == "macos" {
-        ("/bin/launchctl", vec![os("bootstrap"), os(domain), os(plist)])
-    } else {
-        let mut a = vec![os("--user"), os("--collect"), os("--quiet"), os("--"), os(program)];
-        a.extend(args.iter().cloned());
-        ("systemd-run", a)
+/// `plist` are only used on a Mac. None on a system that has no such command.
+fn finisher_start(os_name: &str, program: &Path, args: &[OsString], domain: &str, plist: &Path) -> Option<(&'static str, Vec<OsString>)> {
+    match os_name {
+        "macos" => Some(("/bin/launchctl", vec![os("bootstrap"), os(domain), os(plist)])),
+        "linux" => {
+            let mut a = vec![os("--user"), os("--collect"), os("--quiet"), os("--"), os(program)];
+            a.extend(args.iter().cloned());
+            Some(("systemd-run", a))
+        }
+        _ => None,
     }
 }
 
@@ -1240,9 +1233,11 @@ pub(crate) fn spawn_job(program: &Path, args: &[OsString], state_dir: &Path) -> 
         std::fs::write(&plist, finisher_plist(program, args)).map_err(|e| format!("could not write {}: {e}", plist.display()))?;
         (domain, plist)
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let (domain, plist) = (String::new(), PathBuf::new());
-    let (starter, starter_args) = finisher_start(std::env::consts::OS, program, args, &domain, &plist);
+    let Some((starter, starter_args)) = finisher_start(std::env::consts::OS, program, args, &domain, &plist) else {
+        return Err("could not start the restart step: this system has no way to".into());
+    };
     match tool(starter, &starter_args) {
         Ok((true, _)) => Ok(()),
         Ok((false, said)) => Err(format!("could not start the restart step ({starter} failed: {})", said.trim().chars().take(200).collect::<String>())),
@@ -1270,7 +1265,10 @@ pub fn finish_command(args: &[String]) -> i32 {
         let _ = crate::util::log_to_file(crate::config::default_log_file());
         forget_job(&state_dir);
     }
-    let place = Place::at(std::env::consts::OS, PathBuf::from(path));
+    let Some(place) = Place::at(std::env::consts::OS, PathBuf::from(path)) else {
+        eprintln!("finish-update has nothing to finish on this system");
+        return 2;
+    };
     // Released when this function returns, whether the update held or was rolled back.
     let _lock = UpdateLock::adopt(&state_dir);
     info!("update: restarting into {version}");
@@ -1725,7 +1723,7 @@ impl Updater {
     }
 
     async fn install_locked(&self, place: &Place, builtin: Vec<[u8; 32]>, version: &str, asset: &Asset, restart: Restart) -> Result<(), Fault> {
-        let lock = UpdateLock::acquire(&self.state_dir, service::pid_alive).map_err(|e| Fault::new(Problem::Busy, e))?;
+        let lock = UpdateLock::acquire(&self.state_dir, crate::platform::process_alive).map_err(|e| Fault::new(Problem::Busy, e))?;
         let trusted = load_trust(&self.state_dir, builtin).keys();
         let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH).unwrap_or_default();
         stage_and_swap(RELEASES, place, trusted, version, platform, asset).await?;
@@ -2136,6 +2134,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_key_is_handed_over_only_by_a_trusted_manifest() {
         use std::os::unix::fs::PermissionsExt;
@@ -2465,6 +2464,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn linux_swap_keeps_the_old_binary_and_rolls_back() {
         use std::os::unix::fs::PermissionsExt;
@@ -2771,14 +2771,14 @@ mod tests {
         // Linux: a transient unit of its own. The program and each argument are separate
         // words after `--`, never a shell string.
         let bin = Place::LinuxBinary("/home/u/.local/bin/rex-duo-helper".into());
-        let (starter, words) = finisher_start("linux", &bin.previous_binary(), &args, "", Path::new(""));
+        let (starter, words) = finisher_start("linux", &bin.previous_binary(), &args, "", Path::new("")).unwrap();
         assert_eq!(starter, "systemd-run");
         assert_eq!(words[..5], ["--user", "--collect", "--quiet", "--", "/home/u/.local/bin/rex-duo-helper.previous"].map(os));
         assert_eq!(words[5..], args[..]);
 
         // Mac: a launchd job of its own, loaded from a plist.
         let plist_path = state.join(FINISHER_PLIST);
-        let (starter, words) = finisher_start("macos", &program, &args, "gui/501", &plist_path);
+        let (starter, words) = finisher_start("macos", &program, &args, "gui/501", &plist_path).unwrap();
         assert_eq!(starter, "/bin/launchctl");
         assert_eq!(words, [os("bootstrap"), os("gui/501"), os(&plist_path)]);
         let (clearer, words) = finisher_clear("gui/501");
@@ -2970,6 +2970,7 @@ mod tests {
     }
 
     /// What an unzipped download must look like before any other check looks at it.
+    #[cfg(unix)]
     #[test]
     fn a_download_holds_the_app_alone_as_a_real_folder_of_an_allowed_name() {
         let dir = temp("sole");
@@ -3087,8 +3088,12 @@ mod tests {
         let needle = concat!("Rex ", "DUO");
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut seen = 0;
-        for entry in std::fs::read_dir(&src).unwrap() {
+        let files = [src.clone(), src.join("platform")].map(|dir| std::fs::read_dir(dir).unwrap());
+        for entry in files.into_iter().flatten() {
             let path = entry.unwrap().path();
+            if path.is_dir() {
+                continue;
+            }
             let text = std::fs::read_to_string(&path).unwrap();
             for (n, line) in text.lines().enumerate() {
                 // Comments may name an earlier app. Only what is in quotes can reach a person.
@@ -3445,6 +3450,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_older_malformed_or_oversized_command_result_is_ignored() {
         let dir = temp("ignored");
@@ -3526,6 +3532,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_command_result_is_private_and_written_whole() {
         use std::os::unix::fs::PermissionsExt;

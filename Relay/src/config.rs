@@ -1,6 +1,7 @@
 //! Optional `config.json` in the state directory, and where that directory is.
 
 use crate::discovery::Endpoint;
+use crate::platform::{Os, OS};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -77,23 +78,21 @@ pub fn default_state_dir() -> PathBuf {
 
 /// The state folder for an app name (macOS) or a binary name (Linux).
 pub fn state_dir(mac_name: &str, linux_name: &str) -> PathBuf {
-    if cfg!(target_os = "macos") {
-        home().join("Library/Application Support").join(mac_name)
-    } else {
-        std::env::var_os("XDG_STATE_HOME")
+    match OS {
+        Os::Mac => home().join("Library/Application Support").join(mac_name),
+        Os::Linux => std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home().join(".local/state"))
-            .join(linux_name)
+            .join(linux_name),
     }
 }
 
 /// The log file for `run --log-file` (the Mac's background job; Linux uses the journal).
 pub fn default_log_file() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        home().join("Library/Logs").join(format!("{EARLIER_NAME}.log"))
-    } else {
-        default_state_dir().join("helper.log")
+    match OS {
+        Os::Mac => home().join("Library/Logs").join(format!("{EARLIER_NAME}.log")),
+        Os::Linux => default_state_dir().join("helper.log"),
     }
 }
 

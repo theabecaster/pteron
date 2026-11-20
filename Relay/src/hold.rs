@@ -746,6 +746,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn both_files_survive_a_restart_and_a_recheck_drops_what_no_longer_waits() {
         use std::os::unix::fs::PermissionsExt;

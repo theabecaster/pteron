@@ -37,15 +37,7 @@ impl Sense for System {
     }
 
     fn process(&self, pid: u32) -> Option<Process> {
-        #[cfg(target_os = "macos")]
-        {
-            mac::process(pid)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = pid;
-            None
-        }
+        crate::platform::process(pid)
     }
 
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
@@ -112,7 +104,7 @@ pub fn watch_power() -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
 #[cfg(target_os = "macos")]
 mod mac {
     use super::Power;
-    use crate::desk::{Process, Reading, Session, SLEEP_GRACE};
+    use crate::desk::{Reading, Session, SLEEP_GRACE};
     use std::ffi::{c_char, c_void};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::OnceLock;
@@ -122,7 +114,6 @@ mod mac {
 
     const UTF8: u32 = 0x0800_0100;
     const SINT64: isize = 4;
-    const PROC_PIDTBSDINFO: i32 = 3;
     // iokit_common_msg(…): sys_iokit | sub_iokit_common | message.
     const CAN_SYSTEM_SLEEP: u32 = 0xE000_0270;
     const SYSTEM_WILL_SLEEP: u32 = 0xE000_0280;
@@ -169,8 +160,6 @@ mod mac {
     // libSystem.
     extern "C" {
         fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> *mut c_void;
-        fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
-        fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, size: i32) -> i32;
     }
 
     /// A CF object this code made or copied, released when it goes.
@@ -261,49 +250,6 @@ mod mac {
         Reading { idle: idle(), session: session(), display_asleep: display_asleep() }
     }
 
-    /// `struct proc_bsdinfo` of <sys/proc_info.h>, as far as Beacon reads it.
-    #[repr(C)]
-    struct BsdInfo {
-        flags: u32,
-        status: u32,
-        xstatus: u32,
-        pid: u32,
-        ppid: u32,
-        uid: u32,
-        gid: u32,
-        ruid: u32,
-        rgid: u32,
-        svuid: u32,
-        svgid: u32,
-        rfu_1: u32,
-        comm: [u8; 16],
-        name: [u8; 32],
-        nfiles: u32,
-        pgid: u32,
-        pjobc: u32,
-        e_tdev: u32,
-        e_tpgid: u32,
-        nice: i32,
-        start_tvsec: u64,
-        start_tvusec: u64,
-    }
-
-    pub fn process(pid: u32) -> Option<Process> {
-        let pid = i32::try_from(pid).ok()?;
-        let mut path = vec![0u8; 4096];
-        // Safe: the buffer is as long as the size given, and the kernel writes at most that.
-        let n = unsafe { proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
-        if n <= 0 {
-            return None;
-        }
-        path.truncate(n as usize);
-        // Safe: an all-zero BsdInfo is valid (integers only); the kernel fills at most `size`.
-        let mut info: BsdInfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<BsdInfo>() as i32;
-        let got = unsafe { proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, (&mut info as *mut BsdInfo).cast(), size) };
-        (got == size && info.pid == pid as u32).then(|| Process { path: String::from_utf8_lossy(&path).into_owned(), uid: info.uid, ppid: info.ppid })
-    }
-
     struct Watch {
         events: tokio::sync::mpsc::UnboundedSender<Power>,
         root: AtomicU32,
@@ -356,24 +302,5 @@ mod mac {
             IONotificationPortSetDispatchQueue(port, queue);
         }
         Some(rx)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn the_struct_matches_the_kernels() {
-            // sizeof(struct proc_bsdinfo) on every macOS Beacon supports.
-            assert_eq!(std::mem::size_of::<BsdInfo>(), 136);
-        }
-
-        #[test]
-        fn this_process_is_read_as_itself() {
-            let me = process(std::process::id()).expect("this process");
-            assert_eq!(me.uid, crate::tools::uid());
-            assert!(me.path.starts_with('/'), "{}", me.path);
-            assert!(process(0x7fff_fff0).is_none());
-        }
     }
 }

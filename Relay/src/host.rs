@@ -9,7 +9,7 @@ pub const OS_LIMIT: usize = 64;
 pub fn os() -> String {
     #[cfg(target_os = "macos")]
     return macos(product_version().as_deref());
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     return linux(std::fs::read_to_string("/etc/os-release").ok().as_deref());
 }
 
@@ -33,7 +33,7 @@ pub fn macos(version: Option<&str>) -> String {
 }
 
 /// `PRETTY_NAME` of an os-release file, or "Linux" when the file or the name is missing.
-#[cfg_attr(not(any(not(target_os = "macos"), test)), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 pub fn linux(os_release: Option<&str>) -> String {
     let name = os_release.and_then(pretty_name).map(|n| clean(&n, OS_LIMIT)).unwrap_or_default();
     if name.is_empty() {

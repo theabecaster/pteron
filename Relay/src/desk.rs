@@ -154,20 +154,14 @@ impl Desk {
     }
 }
 
-/// A process as the kernel describes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Process {
-    pub path: String,
-    pub uid: u32,
-    pub ppid: u32,
-}
+pub use crate::platform::Process;
 
 /// True when `c` is a Rex desktop app that runs on this computer for this user: a connected
 /// `app` client that is not on iOS, whose process (`principal.pid`) is the main program of an
 /// app bundle (`….app/Contents/MacOS/<name>`), runs as `uid`, and was started by launchd
 /// (parent pid 1), as an app the person opened is. The Mac app of another computer reaches this
 /// server through SSH: its process here is a bridge started by sshd, so it doesn't count.
-pub fn is_local_desktop_app(c: &ClientSnapshot, uid: u32, process: &dyn Fn(u32) -> Option<Process>) -> bool {
+pub fn is_local_desktop_app(c: &ClientSnapshot, uid: crate::platform::UserId, process: &dyn Fn(u32) -> Option<Process>) -> bool {
     let desktop = c.kind.as_deref() == Some("app")
         && c.platform.as_deref().is_some_and(|p| !p.is_empty() && p != "ios")
         && c.connection_state.as_deref() == Some("connected");

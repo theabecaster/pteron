@@ -1214,7 +1214,7 @@ impl Relay {
     /// one server) that runs here for this user.
     fn desk_here(&self, clients: &[ClientSnapshot]) -> bool {
         let present = self.desk_present();
-        let uid = crate::tools::uid();
+        let uid = crate::platform::user_id();
         let app_here = clients.iter().any(|c| is_local_desktop_app(c, uid, &|pid| self.sense.process(pid)));
         debug!("desk: a desktop app here shows this server: {app_here}");
         present && app_here
@@ -1624,7 +1624,7 @@ impl Relay {
     /// user, on any server watched, while someone is at the computer. None while nobody is, it
     /// sleeps, or no such app runs (then the computer is not even read).
     async fn desk_labels(&self) -> Vec<String> {
-        let uid = crate::tools::uid();
+        let uid = crate::platform::user_id();
         let mut labels: Vec<String> = vec![];
         #[cfg(test)]
         if let Some(l) = self.labels_in_test.lock().unwrap().clone() {
@@ -3438,6 +3438,7 @@ mod tests {
 
     /// devices.json in a state folder that can't be written: no change is answered as made,
     /// and the helper keeps the registrations the file has.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_change_that_could_not_be_saved_is_refused_and_nothing_changes() {
         use std::os::unix::fs::PermissionsExt;
@@ -4119,7 +4120,7 @@ mod tests {
     async fn the_desk_counts_only_with_a_person_there_and_a_desktop_app_of_theirs_running_here() {
         let (r, sense, _, dir) = desk_relay("desk-here", vec![canned(200, "{}")]).await;
         capture_log();
-        let me = crate::tools::uid();
+        let me = crate::platform::user_id();
         sense.processes.lock().unwrap().extend([
             (100, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 1 }),
             (200, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 4242 }),

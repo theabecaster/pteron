@@ -60,7 +60,8 @@ mod tests {
     fn the_name_is_spelled_out_in_this_file_alone() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = vec![];
-        for entry in std::fs::read_dir(&src).unwrap() {
+        let files = [src.clone(), src.join("platform")].map(|dir| std::fs::read_dir(dir).unwrap());
+        for entry in files.into_iter().flatten() {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "rs") {
                 let count = std::fs::read_to_string(&path).unwrap().matches(APP).count();

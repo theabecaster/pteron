@@ -16,6 +16,7 @@
 use crate::config::DISCOVER;
 use crate::discovery::Endpoint;
 use crate::identity::is_challenge;
+use crate::platform::{SocketCheck, UserId};
 use crate::util::base64;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -71,8 +72,7 @@ pub fn is_nonce(s: &str) -> bool {
 
 /// The address to store for `--server`, when it is one `install` takes: the `unix://` address
 /// of a socket that is there and belongs to the user `uid`, or an `https://` address.
-pub fn check_server(addr: &str, uid: u32) -> Result<String, String> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+pub fn check_server(addr: &str, uid: UserId) -> Result<String, String> {
     let addr = addr.trim();
     let refuse = |why: &str| Err(format!("--server: {why}. Nothing was changed."));
     if addr.is_empty() || addr.len() > 1024 || addr.chars().any(|c| c.is_control() || c.is_whitespace()) {
@@ -80,11 +80,11 @@ pub fn check_server(addr: &str, uid: u32) -> Result<String, String> {
     }
     let scheme = addr.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
     match (scheme.as_deref(), Endpoint::parse(addr)) {
-        (Some("unix"), Some(Endpoint::Unix(path))) => match std::fs::metadata(&path) {
-            Err(_) => refuse("there is no socket at that path"),
-            Ok(m) if !m.file_type().is_socket() => refuse("that path is not a socket"),
-            Ok(m) if m.uid() != uid => refuse("that socket belongs to another user"),
-            Ok(_) => Ok(addr.to_string()),
+        (Some("unix"), Some(Endpoint::Unix(path))) => match crate::platform::check_socket(&path, uid) {
+            SocketCheck::Missing => refuse("there is no socket at that path"),
+            SocketCheck::NotSocket => refuse("that path is not a socket"),
+            SocketCheck::OtherUser => refuse("that socket belongs to another user"),
+            SocketCheck::Ours => Ok(addr.to_string()),
         },
         (Some("https"), Some(Endpoint::Url { .. })) if !addr.contains('@') => Ok(addr.to_string()),
         _ => refuse("it takes unix:///path/to/server.sock or https://host"),
@@ -140,25 +140,8 @@ pub fn add_server(config: &Path, addr: &str) -> Result<bool, String> {
     let discovered = Endpoint::parse(addr).is_some_and(|e| e.same(&default));
     match merge_server(current.as_deref(), addr, discovered)? {
         None => Ok(false),
-        Some(text) => write_private(config, text.as_bytes()).map(|()| true).map_err(|e| format!("could not write config.json: {e}")),
+        Some(text) => crate::platform::write_private(config, text.as_bytes()).map(|()| true).map_err(|e| format!("could not write config.json: {e}")),
     }
-}
-
-/// Writes through a temporary file that only this user can read from the moment it exists,
-/// then renames it into place: a reader sees the old file or the whole new one.
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)
 }
 
 // MARK: --setup-nonce-file
@@ -167,7 +150,7 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// code has one copy, the helper's own. The file has to be a regular file (not a link to
 /// one) that belongs to the user `uid` and that no one else can open, of at most 128 bytes:
 /// 64 lowercase hex digits, with or without one newline after them.
-pub fn read_nonce_file(path: &Path, uid: u32) -> Result<String, String> {
+pub fn read_nonce_file(path: &Path, uid: UserId) -> Result<String, String> {
     let code = nonce_in_file(path, uid);
     let _ = std::fs::remove_file(path);
     code.ok_or_else(|| {
@@ -175,14 +158,10 @@ pub fn read_nonce_file(path: &Path, uid: u32) -> Result<String, String> {
     })
 }
 
-fn nonce_in_file(path: &Path, uid: u32) -> Option<String> {
+fn nonce_in_file(path: &Path, uid: UserId) -> Option<String> {
     use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
-    let named = std::fs::symlink_metadata(path).ok().filter(|m| m.file_type().is_file())?;
-    let file = std::fs::File::open(path).ok()?;
-    // What was opened is the file that was looked at by name.
-    let m = file.metadata().ok().filter(|m| m.dev() == named.dev() && m.ino() == named.ino())?;
-    if !m.is_file() || m.uid() != uid || m.mode() & 0o077 != 0 || m.len() > MAX_NONCE_FILE {
+    let (file, m) = crate::platform::open_owned_private(path, uid)?;
+    if m.len() > MAX_NONCE_FILE {
         return None;
     }
     let mut data = Vec::new();
@@ -218,15 +197,14 @@ impl Record {
 
     fn write(&self, state_dir: &Path) -> std::io::Result<()> {
         let record = json!({"nonce": self.nonce, "expires_at": self.expires_at, "proofs": self.proofs});
-        write_private(&state_dir.join(NONCE_FILE), record.to_string().as_bytes())
+        crate::platform::write_private(&state_dir.join(NONCE_FILE), record.to_string().as_bytes())
     }
 }
 
 /// Held while the code's file is read and written, by `install` and by the running helper:
 /// each sees what the other wrote, whole, and neither writes over it.
 fn lock(state_dir: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(state_dir.join(LOCK_FILE))?;
+    let file = crate::platform::open_private(&state_dir.join(LOCK_FILE))?;
     file.lock()?;
     Ok(file)
 }
@@ -374,16 +352,18 @@ mod tests {
     }
 
     /// A file with these bytes and this mode, as the setup script leaves one.
+    #[cfg(unix)]
     fn code_file(path: &Path, content: &[u8], mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(path, content).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_code_is_read_from_a_private_file_which_is_then_removed() {
         let dir = temp("file");
-        let uid = crate::tools::uid();
+        let uid = crate::platform::user_id();
         let file = dir.join("code");
         // With one newline after it, or none.
         for content in [format!("{NONCE}\n"), NONCE.to_string()] {
@@ -445,6 +425,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_server_is_a_socket_of_this_user_or_an_https_address() {
         use std::os::unix::fs::MetadataExt;
@@ -452,7 +433,7 @@ mod tests {
         let sock = dir.join("server.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let uid = std::fs::metadata(&sock).unwrap().uid();
-        assert_eq!(uid, crate::tools::uid());
+        assert_eq!(uid, crate::platform::user_id());
         let addr = format!("unix://{}", sock.display());
         assert_eq!(check_server(&addr, uid).as_deref(), Ok(addr.as_str()));
         assert_eq!(check_server(&format!(" {addr}\n"), uid).as_deref(), Ok(addr.as_str()));
@@ -572,6 +553,7 @@ mod tests {
     const DEVICE: &str = "a1b2c3d4";
     const SEAL: &str = "uFBNieeZhse8TXl8fRQiixoD7UCeYMg3k+hrGw9CICM=";
 
+    #[cfg(unix)]
     #[test]
     fn a_code_is_kept_private_and_makes_three_proofs_for_each_requester() {
         use std::os::unix::fs::PermissionsExt;

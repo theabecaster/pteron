@@ -5,6 +5,7 @@
 //! every 120 s and tungstenite answers; a local server that goes away closes the socket.
 
 use crate::discovery::Endpoint;
+use crate::platform::Os;
 use crate::util::Json;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -35,7 +36,11 @@ impl Default for Identity {
     fn default() -> Self {
         Identity {
             kind: "other".into(),
-            platform: if cfg!(target_os = "macos") { "macos" } else { "linux" }.into(),
+            platform: match crate::platform::OS {
+                Os::Mac => "macos",
+                Os::Linux => "linux",
+            }
+            .into(),
             name: "rex-push-relay".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             label: "rex-push-relay".into(),
@@ -81,14 +86,9 @@ pub struct Welcome {
 pub async fn open(ep: &Endpoint, me: &Identity, reconnect_token: Option<&str>) -> Result<(Ws, Welcome), String> {
     let (io, url): (Box<dyn Io>, String) = match ep {
         Endpoint::Unix(path) => {
-            #[cfg(unix)]
-            {
-                let s = tokio::net::UnixStream::connect(path).await.map_err(|e| format!("{}: {e}", path.display()))?;
-                // Any host name works over the socket.
-                (Box::new(s), "ws://localhost/api/control".into())
-            }
-            #[cfg(not(unix))]
-            return Err(format!("unix sockets are not supported here: {}", path.display()));
+            let s = crate::platform::connect_local(path).await.map_err(|e| format!("{}: {e}", path.display()))?;
+            // Any host name works over the socket.
+            (Box::new(s), "ws://localhost/api/control".into())
         }
         Endpoint::Url { secure, host, port, .. } => {
             let authority = if (*secure && *port == 443) || (!*secure && *port == 80) { host.clone() } else { format!("{host}:{port}") };

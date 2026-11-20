@@ -192,7 +192,8 @@ how Pteron knows it.
   shows no dialog of its own: the person is at their phone.
 - Beacon starts every other program by its full path. System tools (`systemctl`,
   `loginctl`, `systemd-run`, `notify-send`, `id`) are looked up in `/usr/bin`, `/bin`,
-  `/usr/sbin`, `/sbin` and `/run/current-system/sw/bin`, never on `PATH` (`src/tools.rs`).
+  `/usr/sbin`, `/sbin` and `/run/current-system/sw/bin`, never on `PATH` (`src/tools.rs`;
+  the folders are `TOOL_DIRS` in `src/platform/unix.rs`).
 - Either way only one Beacon runs per user (a lock in the state folder), and it writes
   `status.json` there for `status` and the Mac dialog.
 - **Upgrading from the old name** (`src/legacy.rs` lists it): on first run Beacon stops the
