@@ -243,6 +243,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane holds its screen while its stream catches up, until the server's size is known
     /// to be the one it shows (`streamFence`, `streamResized`).
     private var holdsForCatchUp = false
+    /// Glide, while the pane has nothing to draw yet (`GlideLoader`). Nil once it has a screen.
+    private(set) var loader: GlideLoader?
+    /// The pane has been given a screen: a restored snapshot or a screen read.
+    private var hasScreen = false
+    /// A pane that opens says "Connecting…" under its loader, and only after this long.
+    var connectingDelay: TimeInterval = 2.5
+    /// Reduce Motion. Tests put their own here.
+    var reduceMotion: () -> Bool = { UIAccessibility.isReduceMotionEnabled }
+    var loaderTiming = GlideLoaderTiming()
     /// Our own resize has come back in the stream since the claim was last asked for.
     private var ownResizeSeen = false
     /// `stop()` is ending the stream: its fence goes without the stream having caught up.
@@ -1261,6 +1270,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyBar.apply(theme: t)
         applyFindTheme(t)
         jumpButton.apply(tint: t.uiFG, accent: t.uiCursor)
+        loader?.apply(tint: t.uiFG)
         selectionUI?.apply(tint: t.uiCursor, rim: t.uiBG)  // SELECTION UI (nil during init)
     }
 
@@ -1389,6 +1399,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func park() {
         guard !isParked else { return }
         isParked = true
+        loader?.removeFromSuperview()
+        loader = nil
         stopKeyRepeats()
         // Find closes with the pane, as when it stops.
         closeFind(giveBack: false)
@@ -1409,6 +1421,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func unpark() {
         isParked = false
         onUnparked?()
+        // Parked before its first screen came: still nothing to draw.
+        showLoader()
         term.restoreDrawables()
         PerfProbe.active?.mounted(self, kind: .parked)  // PERF
         stream.unpark()
@@ -1445,6 +1459,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func stop() {
         isParked = false
+        loader?.removeFromSuperview()
+        loader = nil
+        hasScreen = false
         graceWork?.cancel()
         graceWork = nil
         stopKeyRepeats()
@@ -1468,6 +1485,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     override func layoutSubviews() {
         super.layoutSubviews()
         if zoomer.transform == .identity { zoomer.frame = bounds }
+        placeLoader()
         if !statusLabel.isHidden { layoutStatus() }
         layoutFind()
         placeJumpButton()
@@ -1539,7 +1557,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // The stream starts beside the claim, not after it: a snapshot needs no size from
             // this client. The fence holds input until both are done, and the screen holds
             // still until the resize has landed (`streamFence`, `streamResized`).
-            if !started { started = true; stream.start() }
+            if !started { startStream() }
             let want = fitGrid()
             // A new size needs no redraw from the server: the terminal reflows as the server's
             // does (both are Ghostty), and the stream carries the resize.
@@ -1552,8 +1570,48 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             }
             requestClaim(want)
         case .mirror:
-            if !started { started = true; stream.start() }
+            if !started { startStream() }
         }
+    }
+
+    /// The pane opens: its stream starts, and Glide stands in until the first screen is there.
+    private func startStream() {
+        started = true
+        showLoader()
+        stream.start()
+    }
+
+    // MARK: The loader
+
+    /// Only over a pane with nothing to draw. It is invisible for its first 400 ms, so a pane
+    /// that opens fast never shows it.
+    private func showLoader() {
+        guard loader == nil, !hasScreen else { return }
+        let l = GlideLoader(tint: theme.uiFG, still: reduceMotion(), timing: loaderTiming)
+        loader = l
+        insertSubview(l, belowSubview: statusLabel)
+        placeLoader()
+    }
+
+    private func placeLoader() {
+        guard let loader else { return }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        if loader.center != center { loader.center = center }
+    }
+
+    /// The first screen can be drawn: the loader fades out. While the screen is still held for
+    /// a resize on its way, it stays until the hold ends.
+    private func screenArrived() {
+        hasScreen = true
+        if !holdsForCatchUp { endLoader() }
+    }
+
+    private func endLoader() {
+        guard let l = loader else { return }
+        loader = nil
+        l.dismiss()
+        // A "Connecting…" that sat under it has no place left.
+        if !statusLabel.isHidden { layoutStatus() }
     }
 
     /// Asks for the pane at this size. Until that ends (`claimed`, a release, a loss) a raised
@@ -1594,6 +1652,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// The status chip is down.
     var statusChipHidden: Bool { statusLabel.isHidden }
+    var statusChipFrame: CGRect { statusLabel.frame }
     /// The chip's text, for tests.
     var statusChipText: String? { statusLabel.isHidden ? nil : statusLabel.text }
 
@@ -1685,7 +1744,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 return true
             }
             // One contiguous copy, made while the parts are freed (`SnapshotBuffer.take`).
-            return term.restoreSnapshot(snapshot.take()) { [weak self] in self?.stream.snapshotRestoreFailed() }
+            let taken = term.restoreSnapshot(snapshot.take()) { [weak self] in self?.stream.snapshotRestoreFailed() }
+            if taken { term.whenParsed { [weak self] in self?.screenArrived() } }
+            return taken
         }
         return true
     }
@@ -1694,6 +1755,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func streamSnapshot(_ text: String) {
         PerfProbe.active?.seedReceived(text.utf8.count, host: self)  // PERF
         term.feed(text: text)
+        term.whenParsed { [weak self] in self?.screenArrived() }
         PerfProbe.active?.seedParsed(host: self)  // PERF
     }
 
@@ -1745,6 +1807,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         fenceStatusWork = nil
         holdsForCatchUp = up
         term.setCatchingUp(up, hold: up)
+        if !up, hasScreen { endLoader() }
         if up {
             // A pane with nothing to show says so itself ("Connecting…").
             guard screen else { return }
@@ -1765,6 +1828,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func endCatchUpHold() {
         holdsForCatchUp = false
         term.setCatchingUp(stream.isFenced, hold: false)
+        if hasScreen { endLoader() }
     }
 
     func streamWhenParsed(_ done: @escaping @MainActor () -> Void) { term.whenParsed(done) }
@@ -1812,7 +1876,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5 + wait) { [weak self] in self?.term.send(txt: text) }
             }
             #endif
-        case .connecting: showStatus("Connecting…", after: Self.statusDelay)
+        // A pane that opens has Glide; its words come later, and under it.
+        case .connecting: showStatus("Connecting…", after: loader != nil ? connectingDelay : Self.statusDelay)
         // A failure retries on its own; to the user it is still reconnecting.
         case .reconnecting, .failed: showStatus("Reconnecting…", after: Self.statusDelay)
         case .ended(let m): showStatus(m)
@@ -1860,7 +1925,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func layoutStatus() {
         let fit = statusLabel.sizeThatFits(CGSize(width: bounds.width - 24, height: 22))
         let w = min(fit.width + 20, bounds.width - 24)
-        statusLabel.frame = CGRect(x: (bounds.width - w) / 2, y: 8, width: w, height: 22)
+        // Under the loader while there is one; else the chip's place at the top.
+        let y = loader.map { $0.frame.maxY + 12 } ?? 8
+        statusLabel.frame = CGRect(x: (bounds.width - w) / 2, y: y, width: w, height: 22)
         statusLabel.layer.cornerRadius = 11
         statusLabel.layer.borderWidth = 1 / max(1, traitCollection.displayScale)  // one pixel
     }
