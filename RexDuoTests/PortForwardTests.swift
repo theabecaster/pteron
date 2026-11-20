@@ -336,7 +336,14 @@ final class PortForwardTests: XCTestCase {
         server.closeError = ["block:a": RexError(code: "not_found", message: "", status: 404),
                              "block:b": RexError(code: "internal", message: "", status: 500)]
         f.serverSynced(server)
-        await settle { server.calls.count == 5 }
+        // Each session is listed, then this phone's blocks in it are closed. The fake lists the
+        // same blocks for every session, and a failed close leaves them listed.
+        await settle { server.calls.count == 6 }
+        XCTAssertEqual(server.calls, [
+            "session.list_blocks session:1", "inOrder block.close,block.close block:a,block:b",
+            "session.list_blocks session:2", "inOrder block.close,block.close block:a,block:b",
+            "session.list_blocks session:3", "inOrder block.close,block.close block:a,block:b",
+        ])
         XCTAssertEqual(ledger.blocks(server: server.id, session: "session:1"), [], "no longer listed")
         XCTAssertEqual(ledger.blocks(server: server.id, session: "session:2"), [], "not_found")
         XCTAssertEqual(ledger.blocks(server: server.id, session: "session:3"), ["block:b"], "any other failure: next time")
@@ -676,9 +683,14 @@ final class PortForwardTests: XCTestCase {
         return await task.value
     }
 
-    private func settle(_ seconds: Double = 3, _ condition: @MainActor () -> Bool) async {
+    /// Waits until `condition` holds, and fails the test if it still doesn't after `seconds`.
+    private func settle(_ seconds: Double = 3, file: StaticString = #filePath, line: UInt = #line,
+                        _ condition: @MainActor () -> Bool) async {
         let end = Date().addingTimeInterval(seconds)
-        while !condition(), Date() < end { try? await Task.sleep(for: .milliseconds(10)) }
+        while !condition() {
+            guard Date() < end else { return XCTFail("still not settled after \(seconds) s", file: file, line: line) }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 }
 
