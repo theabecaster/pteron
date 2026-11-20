@@ -48,7 +48,51 @@ there and installs it with `devicectl`; the build log is `build/install-duo.log`
 `VIA=<ssh host> scripts/install-duo.sh` does the same on that host (after `sync-macdesk.sh`) for
 when the phone is paired there.
 
+## The gate
+
+`scripts/gate.sh` is the check before a release, run on the developer's Mac. It creates a fresh
+simulator (`GATE_DEVICE`, default iPhone 17 Pro, on the newest plain iOS runtime or
+`GATE_RUNTIME`), runs the app's tests and a Release build on it, fails on any warning from our
+code, and runs `scripts/check-brand.sh`. It prints the test summary and the failure lines, then
+deletes the simulator and `build/` (only its own folders there when `build/` was there before).
+When a step fails it copies the two logs to a temporary folder first and prints the path, and it
+exits 1.
+
 ## TestFlight
+
+```sh
+scripts/testflight.sh notes.txt               # ship this checkout as build `date +%y%m%d%H%M`
+scripts/testflight.sh notes.txt --build 42    # a chosen build number
+scripts/testflight.sh notes.txt --dry-run     # print the steps; changes nothing
+```
+
+`scripts/testflight.sh <notes-file> [--build N] [--skip-upload] [--dry-run]` makes the whole
+release, from the checkout it is in (normally main, committed):
+
+1. It loads `.asc.env` from the main checkout (`ASC_ENV` overrides; a worktree finds it through the
+   shared repository) and prints none of it.
+2. It copies the tree with `sync-macdesk.sh` and runs `ship-macdesk.sh <build>` on the build Mac
+   as below. It first checks that App Store Connect has no build with that number.
+3. It polls App Store Connect every 30 s until the build is `VALID` (up to 45 minutes), and stops
+   on `INVALID` or `FAILED`.
+4. It sets the build's "What to Test" text (`whatsNew`, at most 4000 characters) from the notes file.
+5. It submits the build to Beta App Review, unless it is already submitted, and polls every 60 s
+   until `APPROVED` (up to 2 hours), stopping on `REJECTED`.
+6. It adds the build to the testers' group, with up to 5 tries 30 s apart: the group can refuse a
+   build for a short time after approval.
+
+- The app and the group are `APP_ID` and `GROUP_ID` at the top of the script;
+  `TESTFLIGHT_APP_ID` and `TESTFLIGHT_GROUP_ID` override them.
+- `--skip-upload --build N` starts at step 3 with a build already uploaded, for a run that
+  stopped after the upload (a review that took over 2 hours, a failed group add).
+- `--dry-run` uploads, submits and changes nothing. It checks the notes, the key, the app, the group
+  and the build number with read-only App Store Connect calls, and prints the steps.
+- The notes come from a file, read once at the start; never edit the script for a release. zsh
+  reads a script while it runs it, so the script copies itself to a temporary file and runs that
+  copy: an edit, pull or branch switch during the 1–3 hours of a run does not change it.
+- `asc.mjs` cuts a response at 4000 characters, so each call asks only for the fields it reads.
+
+By hand, the upload alone is:
 
 ```sh
 scripts/sync-macdesk.sh
