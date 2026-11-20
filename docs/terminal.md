@@ -210,6 +210,20 @@ Around that:
 - Paste goes through the engine's `pasteText`, so programs that asked for bracketed paste get it.
 - Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt/cmd tap for one key, double-tap to lock; the
   "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`.
+- Keyboard room: the root keeps clear of the keyboard's last reported frame
+  ([duo-layout.md](duo-layout.md), Keyboard room) and, while the keyboard is up, of the key bar's
+  own top. The keyboard is sometimes reported last without its accessory, after an input-mode
+  switch (ES/EN, emoji) or when a sheet, menu or the palette hands it back, and the pane then ran
+  one key bar too tall, the line being typed behind the bar. So the bar reports itself when it
+  enters or leaves a window, is shown or hidden, or moves by a point or more (`KeyBar.frameChanged`),
+  and `KeyboardInsetReader` reads its frame live and pads by the larger of the two
+  (`KeyboardInset.padding(…keyBar:…)`). Only while the keyboard is shown or showing, and only a bar
+  in a window of this scene that the keyboard's top reaches and that sits above the root's bottom:
+  hiding, the palette's or find's keyboard (no key bar), a floating keyboard and a bar beside the
+  root (Split View, the Duo's other side) leave the keyboard's frame in charge. The padding is
+  measured again 0.3 s after the keyboard's last frame change and on each input-mode change,
+  without animation and only if it changed, and the palette's hold (`PadHold`) ends with a fresh
+  measure rather than the value it kept.
 - Key bar Return: pinned in every layout (`KeyBarLayout.pinned`), at the end of the keys' capsule
   past a hairline, next to the hide key, so it never scrolls away. A tap sends what the bar's
   Enter always sent: CR, ESC CR with alt, CR with ctrl (as Ctrl-M), and with cmd the

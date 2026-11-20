@@ -6,7 +6,9 @@ import UIKit
 /// no pane: the field taking the keyboard from a terminal takes the key bar's 44 pt with it, and
 /// opening with the keyboard down raises it. Each new value waits aside and is applied when
 /// the hold ends: at the first keyboard change after the keyboard was handed back (or 300 ms),
-/// or at once when the root changes width, which resizes the panes anyway.
+/// or at once when the root changes width, which resizes the panes anyway. A channel that can be
+/// measured again (`remeasure`) is, instead of taking the value kept aside: that value may be a
+/// report from the hand-back, before the key bar was back above the keys.
 @MainActor
 final class PadHold {
     /// The root's keyboard pad, and under `-simulateDuo` the simulated keyboard's height.
@@ -24,6 +26,9 @@ final class PadHold {
     private var end: DispatchWorkItem?
     /// Writes a channel's value; set by the view that owns it.
     var apply: [Channel: (CGFloat) -> Void] = [:]
+    /// Measures a channel afresh and writes it, in place of the value kept aside; set by the view
+    /// that measures it (`KeyboardInsetReader`).
+    var remeasure: [Channel: () -> Void] = [:]
 
     func begin() {
         end?.cancel()
@@ -67,7 +72,8 @@ final class PadHold {
         releasing = false
         let values = stored
         stored = [:]
-        for (c, v) in values { apply[c]?(v) }
+        for (c, v) in values where remeasure[c] == nil { apply[c]?(v) }
+        for measure in remeasure.values { measure() }
         NotificationCenter.default.post(name: Self.ended, object: self)
     }
 }

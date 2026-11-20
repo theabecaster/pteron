@@ -41,7 +41,7 @@ struct RootView: View {
         let theme = prefs.theme(for: scheme)
         rootContent(theme)
             .ignoresSafeArea(.keyboard)
-            .background(KeyboardInsetReader { setKeyboardPad($0) }.ignoresSafeArea())
+            .background(KeyboardInsetReader(padHold: model.palette.padHold) { setKeyboardPad($0) }.ignoresSafeArea())
             .environment(hostPool)
             .overlay(alignment: .top) { NoticeBanner(theme: theme) }
             .background(CommandListener { handle($0) })

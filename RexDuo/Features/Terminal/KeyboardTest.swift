@@ -4,8 +4,9 @@ import UIKit
 /// `-keyboardTest '<step>;<step>…'` (Debug builds, testing): shows and hides the software keyboard
 /// over the active pane once it is live, where a script can't tap. Steps run a second apart, and
 /// each logs the pane's grid, how much of it the keyboard covers, where it is scrolled, the
-/// jump-to-bottom button's state and whether the terminal is first responder (`KEYBOARD_TEST` in
-/// the log):
+/// jump-to-bottom button's state and whether the terminal is first responder, then the keyboard's
+/// last reported end frame, the key bar's frame, the pane's bottom (all on screen) and the input
+/// mode's language (`KEYBOARD_TEST` in the log):
 ///
 /// - `up`: show the software keyboard, as a tap on the pane does, even with a hardware keyboard.
 /// - `down`: put it away, as the key bar's hide key does.
@@ -18,10 +19,19 @@ import UIKit
 @MainActor
 enum KeyboardTest {
     private static var ran = false
+    /// The keyboard's last reported end frame, in screen coordinates.
+    private static var keyboardEnd: CGRect = .null
 
     static func run(on host: TerminalHost) {
         guard !ran, let script = UserDefaults.standard.string(forKey: "keyboardTest") else { return }
         ran = true
+        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardDidChangeFrameNotification,
+                     UIResponder.keyboardWillHideNotification, UIResponder.keyboardDidHideNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { n in
+                let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .null
+                MainActor.assumeIsolated { keyboardEnd = end }
+            }
+        }
         let steps = script.split(separator: ";").map(String.init)
         Task { @MainActor [weak host] in
             try? await Task.sleep(for: .seconds(2))
@@ -63,6 +73,17 @@ enum KeyboardTest {
               step, host.term.cols, host.term.rows, host.bounds.height, host.term.bounds.height, host.term.scroller.cover,
               s.offset, s.maxRow, s.fraction + s.bounce, s.active ? 1 : 0, s.following ? 1 : 0,
               host.jumpButton.shown ? 1 : 0, host.jumpButton.unseen ? 1 : 0, host.term.isFirstResponder ? 1 : 0)
+        // Where the keyboard said it is, where the key bar is and where the pane ends: with the
+        // keyboard up the pane ends at or above the bar's top.
+        let bar = host.keyBar
+        let barFrame = bar.window.map { w in bar.convert(bar.bounds, to: w.screen.coordinateSpace) }
+        let paneBottom = host.window.map { w in host.convert(host.bounds, to: w.screen.coordinateSpace).maxY } ?? -1
+        NSLog("KEYBOARD_TEST %@ kb=%@ bar=%@ paneBottom=%.0f mode=%@", step, rect(keyboardEnd),
+              barFrame.map(rect) ?? "none", paneBottom, host.term.textInputMode?.primaryLanguage ?? "none")
+    }
+
+    private static func rect(_ r: CGRect) -> String {
+        r.isNull ? "null" : String(format: "%.0f,%.0f,%.0fx%.0f", r.minX, r.minY, r.width, r.height)
     }
 }
 #endif

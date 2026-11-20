@@ -186,6 +186,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   `KeyboardInset`, computed from the keyboard's last reported frame and the root's frame on every
   keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment
   (both panes' key bars during a pane swipe) and leave a band of chrome above the key bar.
+  While the keyboard is up the key bar's own top is a floor, for reports without it
+  ([terminal.md](terminal.md), Input, Keyboard room).
   The panes' frames follow that room, but a fitted terminal's grid doesn't: the keyboard covers
   it ([terminal.md](terminal.md), Fit and mirror).
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.

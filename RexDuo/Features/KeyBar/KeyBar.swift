@@ -180,6 +180,48 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         layoutGlass()
         super.layoutSubviews()
         keepKeysOffCrease()
+        reportFrame(force: false)
+    }
+
+    // MARK: Where the bar is
+
+    /// The bar's frame on screen changed by a point or more, it came into a window or left one, or
+    /// it was shown or hidden (object: the bar). `KeyboardInsetReader` keeps the root clear of the
+    /// bar's top while the keyboard is up, whatever the keyboard's own frame says.
+    static let frameChanged = Notification.Name("RexDuo.keyBarFrameChanged")
+    /// The frame last reported, in screen coordinates; nil out of a window or hidden.
+    private var reportedFrame: CGRect?
+    /// How many times the bar reported itself. Internal for tests.
+    private(set) var frameReports = 0
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        reportFrame(force: true)
+    }
+
+    override var isHidden: Bool {
+        didSet { if isHidden != oldValue { reportFrame(force: true) } }
+    }
+
+    /// Reports only a change: the root's padding lays the root out again, and that must not
+    /// make the bar report again.
+    private func reportFrame(force: Bool) {
+        let frame = window.flatMap { w in isHidden ? nil : convert(bounds, to: w.screen.coordinateSpace) }
+        if !force {
+            switch (frame, reportedFrame) {
+            case (nil, nil): return
+            case let (f?, r?) where Self.same(f, r): return
+            default: break
+            }
+        }
+        reportedFrame = frame
+        frameReports += 1
+        NotificationCenter.default.post(name: Self.frameChanged, object: self)
+    }
+
+    /// Within a point on every edge.
+    static func same(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) < 1 && abs(a.minY - b.minY) < 1 && abs(a.maxX - b.maxX) < 1 && abs(a.maxY - b.maxY) < 1
     }
 
     /// Places the capsule and the hide key: in the vertical bar's column when there is one beside

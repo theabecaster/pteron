@@ -102,7 +102,9 @@ pane on the Mac. So while the palette is open `PadHold` keeps the root's keyboar
 the keyboard goes back to whoever had it (`KeyboardRecord`: shown, quiet, none, or the find
 field); a pick of another pane owes that pane the keyboard for 2 s
 (`TerminalHostPool.owe`). The hold ends at the first keyboard change after that, or 300 ms, and
-at once when the root changes width.
+at once when the root changes width. It ends with a fresh measure of the keyboard's room
+(`PadHold.remeasure`), not the value it kept: that can be a report from the hand-back, before the
+key bar was back above the keys.
 
 ## Measurements
 
