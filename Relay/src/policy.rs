@@ -2,11 +2,12 @@
 //! Pure state machines, so they are unit-tested. Time is seconds since 1970 (`util::now`).
 
 use crate::util::Json;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Where an event came from: one block on one server.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockRef {
     pub server: String,
     pub session_id: String,
@@ -56,7 +57,7 @@ pub enum RelayEvent {
     BlockClosed(BlockRef),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PushCategory {
     Blocked,
     Done,
@@ -73,8 +74,9 @@ impl PushCategory {
     }
 }
 
-/// A push the policy decided to send, before it's dressed with tab and session names.
-#[derive(Clone, Debug, PartialEq)]
+/// A push the policy decided to send, before it's dressed with tab and session names. A held
+/// one is kept in parked.json as it is (`hold.rs`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PushIntent {
     pub category: PushCategory,
     pub block: BlockRef,

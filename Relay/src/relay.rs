@@ -8,12 +8,15 @@
 
 use crate::auth::{is_device_id, Gateways, Requester};
 use crate::brand::{APP, BEACON};
-use crate::devices::{is_app_open, secret_hash, ClientSnapshot, Device, DeviceStore, Strikes};
+use crate::desk::{is_local_desktop_app, Desk, Edge, Moment, Switch, NOTICE_MEMORY, NOTICE_WAIT, POLL, SLEEP_GRACE};
+use crate::devices::{is_app_claimed, is_app_open, secret_hash, ClientSnapshot, Device, DeviceStore, Strikes};
 use crate::discovery::{self, Endpoint};
 use crate::gateway::{describe, SendResult, Sender};
+use crate::hold::{Holds, Parked, SendKind, Verdict};
 use crate::identity::HelperKey;
+use crate::idle::{Power, Sense};
 use crate::notice;
-use crate::policy::{BlockRef, Decision, PushIntent, PushPolicy, RateLimiter, RelayEvent, StatusReport};
+use crate::policy::{BlockRef, Decision, PushCategory, PushIntent, PushPolicy, RateLimiter, RelayEvent, StatusReport};
 use crate::push::{BlockContext, PushMessage};
 use crate::rex::{self, Conn, Identity};
 use crate::update::{Asset, Plan, Restart, Updater};
@@ -158,6 +161,12 @@ struct ServerState {
     latest_revision: HashMap<String, i64>,
     /// App clients that said they went to the background (`push_presence {active: false}`).
     backgrounded: HashSet<String>,
+    /// App clients that said they are in front (`push_presence {active: true}`), and when.
+    /// What counts while the desk switch is on (`devices::is_app_claimed`).
+    claims: HashMap<String, Moment>,
+    /// "<session>|<block>" -> when the pane last lost an OSC 7501 record (`desk::mono`), kept
+    /// `desk::NOTICE_MEMORY`: its desktop notifications still count as a status pane's.
+    status_removed_at: HashMap<String, f64>,
 }
 
 pub struct Server {
@@ -177,6 +186,8 @@ impl Server {
 pub struct Options {
     pub dry_run: bool,
     pub label: Option<String>,
+    /// The client name to connect under instead of `rex-push-relay` (a dry run only).
+    pub name: Option<String>,
     pub debounce: f64,
     pub burst: f64,
     pub per_minute: f64,
@@ -189,6 +200,10 @@ pub struct Options {
     pub state_dir: PathBuf,
     /// This computer's system as `helper_status` names it (`host::os`), read once at start.
     pub os: String,
+    /// Idle time, lock, display and processes, for desk presence (`idle::System`).
+    pub sense: Arc<dyn Sense>,
+    /// Away after this long without input (`desk::AWAY_AFTER`; shorter in a dry run, to try it).
+    pub away_after: f64,
 }
 
 /// How long an answer about this computer (notification permission, lingering) is reused.
@@ -247,6 +262,20 @@ pub struct Relay {
     due_task: Mutex<Option<JoinHandle<()>>>,
     status_path: PathBuf,
     stopping: AtomicBool,
+    /// Desk presence (desk.rs). Everything below acts only while the switch is on.
+    switch: Mutex<Switch>,
+    desk: Mutex<Desk>,
+    holds: Mutex<Holds>,
+    sense: Arc<dyn Sense>,
+    away_after: f64,
+    /// The look at the desk every `hold_poll` (`POLL`) runs, while a question is held.
+    hold_running: Mutex<bool>,
+    hold_poll: Mutex<Duration>,
+    /// Sleep and wake are watched, from the first time the switch is on.
+    power_watched: AtomicBool,
+    /// Whether a desk shows a server, as a test has it (no Rex to ask).
+    #[cfg(test)]
+    shown_in_test: Mutex<Option<bool>>,
 }
 
 impl Relay {
@@ -260,6 +289,9 @@ impl Relay {
         let mut identity = Identity::default();
         if let Some(l) = o.label.filter(|l| !l.is_empty()) {
             identity.label = l;
+        }
+        if let Some(n) = o.name.filter(|n| !n.is_empty()) {
+            identity.name = n;
         }
         Arc::new(Relay {
             servers: watch
@@ -280,12 +312,23 @@ impl Relay {
             last_push: Mutex::new(HashMap::new()),
             tests: Mutex::new(HashMap::new()),
             os: o.os,
-            state_dir: o.state_dir,
+            state_dir: o.state_dir.clone(),
             dry_run: o.dry_run,
             identity,
             due_task: Mutex::new(None),
             status_path: o.status_path,
             stopping: AtomicBool::new(false),
+            switch: Mutex::new(Switch::load(&o.state_dir)),
+            desk: Mutex::new(Desk::default()),
+            // A dry run holds in memory only, so it never touches what the real helper holds.
+            holds: Mutex::new(Holds::load((!o.dry_run).then_some(o.state_dir.as_path()))),
+            sense: o.sense,
+            away_after: o.away_after,
+            hold_running: Mutex::new(false),
+            hold_poll: Mutex::new(POLL),
+            power_watched: AtomicBool::new(false),
+            #[cfg(test)]
+            shown_in_test: Mutex::new(None),
         })
     }
 
@@ -307,10 +350,16 @@ impl Relay {
             if let Some(r) = relay.upgrade() {
                 if !r.stopping.load(Ordering::SeqCst) {
                     r.write_status();
+                    // A check may have brought a new desk switch.
+                    r.desk_on();
                 }
             }
         });
         self.write_status();
+        if self.desk_on() {
+            info!("desk presence is on");
+        }
+        self.watch_restored();
         tokio::spawn(self.updater.clone().run_timer());
         // A setup code is gone 30 minutes after `install` stored it, asked for or not.
         let state_dir = self.state_dir.clone();
@@ -408,6 +457,7 @@ impl Relay {
                                     Ok(()) => {
                                         srv.st.lock().unwrap().ready = true;
                                         relay.write_status();
+                                        relay.recheck_held(&srv).await;
                                     }
                                     Err(e) => {
                                         info!("[{}] setup failed: {e}", srv.host());
@@ -479,6 +529,7 @@ impl Relay {
         let live: HashSet<String> = app_clients(s).await?.into_iter().map(|c| c.client_id).collect();
         let st = &mut *s.st.lock().unwrap();
         st.backgrounded.retain(|c| live.contains(c));
+        st.claims.retain(|c, _| live.contains(c));
         info!("[{}] watching {} session(s) as {}; offering its actions to {APP}", st.host, st.sessions.len(), st.name);
         Ok(())
     }
@@ -503,11 +554,15 @@ impl Relay {
                     st.sessions.remove(id);
                     st.views.remove(id);
                     st.latest_revision.remove(id);
+                    let prefix = format!("{id}|");
+                    st.status_removed_at.retain(|k, _| !k.starts_with(&prefix));
                 }
             }
             Some("client_left") => {
                 if let Some(id) = p.str("client_id") {
-                    s.st.lock().unwrap().backgrounded.remove(id);
+                    let mut st = s.st.lock().unwrap();
+                    st.backgrounded.remove(id);
+                    st.claims.remove(id);
                 }
             }
             Some("client_perform_requested") => {
@@ -540,6 +595,7 @@ impl Relay {
             }
             Some("block_closed") => {
                 if let Some(b) = p.str("block_id") {
+                    s.st.lock().unwrap().status_removed_at.remove(&format!("{sid}|{b}"));
                     let r = self.block_ref(s, sid, b);
                     self.decide(RelayEvent::BlockClosed(r));
                 }
@@ -573,6 +629,13 @@ impl Relay {
                             .and_then(|v| v.as_array())
                             .map(|a| a.iter().filter_map(|i| i.as_str().map(String::from)).collect())
                             .unwrap_or_default();
+                        {
+                            // Any record, the installer's too: an agent's pane stays one for a while.
+                            let mut st = s.st.lock().unwrap();
+                            let now = crate::desk::mono();
+                            st.status_removed_at.retain(|_, at| now - *at < NOTICE_MEMORY);
+                            st.status_removed_at.insert(format!("{sid}|{b}"), now);
+                        }
                         self.decide(RelayEvent::StatusRemoved(r, ids));
                     }
                     "desktop_notification" => {
@@ -593,6 +656,7 @@ impl Relay {
     }
 
     fn decide(self: &Arc<Self>, e: RelayEvent) {
+        self.unhold(&e);
         let d = self.policy.lock().unwrap().decide(e, now());
         match d {
             Decision::Push(i) => {
@@ -635,6 +699,9 @@ impl Relay {
             debug!("no push: notifications are paused on every registered phone");
             return;
         }
+        if intent.category == PushCategory::Notice && self.desk_on() && !self.notice_worth_a_push(&s, &intent).await {
+            return;
+        }
         let ctx = context(&s, &intent.block).await;
         let msg = PushMessage::compose(&intent, &ctx);
         // The words of a push stay out of the log; a dry run shows them, that is what it is for.
@@ -651,7 +718,15 @@ impl Relay {
             return;
         }
         let (clients, background) = self.presence_snapshot().await;
-        self.deliver(&msg, devices, &clients, &background, now()).await;
+        if self.desk_on() {
+            let here = match app_clients(&s).await {
+                Ok(on_server) => self.desk_here(&on_server),
+                Err(_) => false,
+            };
+            self.deliver_desk(&intent, &msg, devices, &clients, here, Moment::now()).await;
+        } else {
+            self.deliver(&msg, devices, &clients, &background, now()).await;
+        }
     }
 
     /// True when phones are registered and each of them is paused.
@@ -782,14 +857,26 @@ impl Relay {
             "unregister_push" => self.unregister(args, requester, identity),
             "push_presence" => {
                 let background = args.bool("active") == Some(false);
+                let desk = self.switch.lock().unwrap().on();
                 if !requester.client_id.is_empty() {
                     let mut st = s.st.lock().unwrap();
+                    let id = requester.client_id.clone();
+                    // With desk presence on, the app renews its claim every minute: no news, so
+                    // only a change is logged. Off, every call is logged as before.
+                    let renewal = desk && !background && !st.backgrounded.contains(&id) && st.claims.contains_key(&id);
                     if background {
-                        st.backgrounded.insert(requester.client_id.clone());
+                        st.backgrounded.insert(id.clone());
+                        st.claims.remove(&id);
                     } else {
-                        st.backgrounded.remove(&requester.client_id);
+                        st.backgrounded.remove(&id);
+                        st.claims.insert(id, Moment::now());
                     }
-                    info!("presence from {who}: {}", if background { "background" } else { "foreground" });
+                    let line = format!("presence from {who}: {}", if background { "background" } else { "foreground" });
+                    if renewal {
+                        debug!("{line}");
+                    } else {
+                        info!("{line}");
+                    }
                 }
                 Ok(json!({"registered": self.registered(requester, identity)}))
             }
@@ -801,6 +888,11 @@ impl Relay {
                 let mut status = self.updater.status();
                 let own = self.own_device(requester, identity);
                 status["registered"] = json!(own.is_some());
+                // While desk presence is on, and to the phone that registered here only. Off, the
+                // answer is the one version 0.4.0 gave.
+                if own.is_some() && self.switch.lock().unwrap().on() {
+                    status["desk"] = json!("on");
+                }
                 status["paused"] = json!(own.is_some_and(|d| d.paused));
                 let facts = self.host_facts().await;
                 status["notices"] = json!(facts.notices);
@@ -1084,6 +1176,362 @@ impl Relay {
     }
 }
 
+// MARK: Desk presence (desk.rs, hold.rs, idle.rs)
+
+impl Relay {
+    /// The desk switch as the state folder holds it now (the updater writes it from the signed
+    /// release list). Turned on, sleep and wake are watched; turned off, every held question
+    /// goes out at once.
+    fn desk_on(self: &Arc<Self>) -> bool {
+        let now = Switch::load(&self.state_dir);
+        let was = std::mem::replace(&mut *self.switch.lock().unwrap(), now);
+        if now.on() {
+            self.watch_power();
+        }
+        if was != now {
+            info!("desk presence turned {}", now.as_str());
+            if let (false, Ok(rt)) = (now.on(), tokio::runtime::Handle::try_current()) {
+                let relay = self.clone();
+                rt.spawn(async move { relay.release(Some(SendKind::Off)).await });
+            }
+        }
+        now.on()
+    }
+
+    /// Someone is at this computer, at a Rex desktop app among `clients` (the app clients of
+    /// one server) that runs here for this user. Logs when the desk comes or goes, without
+    /// naming anything.
+    fn desk_here(&self, clients: &[ClientSnapshot]) -> bool {
+        let reading = self.sense.read();
+        let present = {
+            let mut desk = self.desk.lock().unwrap();
+            match desk.observe(&reading, self.away_after) {
+                Some(Edge::Arrived) => info!("desk present"),
+                Some(Edge::Left(why)) => info!("desk away ({why})"),
+                None => {}
+            }
+            desk.present()
+        };
+        let uid = crate::tools::uid();
+        let app_here = clients.iter().any(|c| is_local_desktop_app(c, uid, &|pid| self.sense.process(pid)));
+        debug!("desk: {reading:?}, a desktop app here shows this server: {app_here}");
+        present && app_here
+    }
+
+    /// Whether a desk shows server `s` now. A server that can't be asked shows none.
+    async fn here(&self, s: &Server) -> bool {
+        #[cfg(test)]
+        if let Some(shown) = *self.shown_in_test.lock().unwrap() {
+            return shown;
+        }
+        match app_clients(s).await {
+            Ok(clients) => self.desk_here(&clients),
+            Err(_) => false,
+        }
+    }
+
+    /// The live in-front claims of every server at dispatch time. A claim of a client the list
+    /// shows as lost is removed.
+    fn claims(&self, clients: &[ClientSnapshot]) -> HashMap<String, Moment> {
+        let lost: HashSet<&str> = clients.iter().filter(|c| c.connection_state.as_deref() == Some("lost")).map(|c| c.client_id.as_str()).collect();
+        let mut all = HashMap::new();
+        for s in &self.servers {
+            let mut st = s.st.lock().unwrap();
+            st.claims.retain(|id, _| !lost.contains(id.as_str()));
+            all.extend(st.claims.iter().map(|(k, v)| (k.clone(), *v)));
+        }
+        all
+    }
+
+    /// `deliver` while the desk switch is on: each phone's push goes through the rules of
+    /// hold.rs (`here`: someone is at a desk that shows the event's server), and the phone app counts
+    /// as open only while it holds a live claim.
+    async fn deliver_desk(self: &Arc<Self>, intent: &PushIntent, msg: &PushMessage, devices: Vec<Device>, clients: &[ClientSnapshot], here: bool, at: Moment) {
+        let msg = msg.clone().stacked();
+        let claims = self.claims(clients);
+        for d in devices {
+            let who = d.who();
+            if d.paused {
+                debug!("skip {who}: paused");
+                continue;
+            }
+            if is_app_claimed(&d, clients, &claims, at) {
+                info!("skip {who}: {APP} is open");
+                continue;
+            }
+            let verdict = self.holds.lock().unwrap().decide(&d.device_id, intent, here, at);
+            match verdict {
+                Verdict::Send(kind, collapse) => {
+                    let mut m = msg.clone();
+                    if collapse.is_some() {
+                        m.collapse_id = collapse;
+                    }
+                    self.send_one(&d, intent, &m, kind, at.wall).await;
+                }
+                Verdict::Park => {
+                    info!("holding {} for {who}: at the desk", msg.category.as_str());
+                    self.hold_watch();
+                }
+                Verdict::Updated => info!("holding {} for {who}: new words, the same wait", msg.category.as_str()),
+                Verdict::Drop(why) => info!("no {} to {who}: {why}", msg.category.as_str()),
+            }
+        }
+    }
+
+    /// One push to one phone at time `t`, through the rate limiter. True when the gateway took
+    /// it; then the phone shows it, and a question of that pane is no longer held.
+    async fn send_one(&self, d: &Device, intent: &PushIntent, m: &PushMessage, kind: SendKind, t: f64) -> bool {
+        let who = d.who();
+        if !self.limiter.lock().unwrap().allow(&d.device_id, t) {
+            info!("skip {who}: rate limited");
+            return false;
+        }
+        if !kind.may_hold() {
+            info!("push {} to {who}: {}", m.category.as_str(), kind.as_str());
+        }
+        let result = self.sender.send(m, d).await;
+        self.settle(d, &result, t);
+        let sent = matches!(result, SendResult::Sent(_));
+        if sent {
+            self.holds.lock().unwrap().sent(&d.device_id, intent, m.collapse_id.as_deref(), t);
+        }
+        sent
+    }
+
+    /// Starts the look at the desk every `POLL`, unless it runs. It ends when nothing is held.
+    /// Whether it runs is decided under one lock, here and where it ends (`hold_watch_ends`),
+    /// so a question held just as the last look found nothing either keeps it going or starts
+    /// a new one.
+    fn hold_watch(self: &Arc<Self>) {
+        {
+            let mut running = self.hold_running.lock().unwrap();
+            if *running {
+                return;
+            }
+            *running = true;
+        }
+        let relay = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let poll = *relay.hold_poll.lock().unwrap();
+                tokio::time::sleep(poll).await;
+                if relay.stopping.load(Ordering::SeqCst) {
+                    *relay.hold_running.lock().unwrap() = false;
+                    break;
+                }
+                if !relay.release(None).await && relay.hold_watch_ends() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// At start: questions held before a restart (parked.json) are watched from now, whether
+    /// or not Rex is back, since the cap needs no server. With the switch turned off
+    /// meanwhile, they go out now.
+    fn watch_restored(self: &Arc<Self>) {
+        if self.holds.lock().unwrap().parked().is_empty() {
+            return;
+        }
+        if self.switch.lock().unwrap().on() {
+            self.hold_watch();
+        } else {
+            let relay = self.clone();
+            tokio::spawn(async move { relay.release(Some(SendKind::Off)).await });
+        }
+    }
+
+    /// The last look found nothing held: the watch ends, unless a question was held since.
+    fn hold_watch_ends(&self) -> bool {
+        let mut running = self.hold_running.lock().unwrap();
+        if !self.holds.lock().unwrap().parked().is_empty() {
+            return false;
+        }
+        *running = false;
+        true
+    }
+
+    /// Sends the held questions that are due: with `force`, all of them, for that reason (sleep,
+    /// the switch turned off); else those held `HOLD_CAP` and those whose desk went away. One
+    /// that could not be sent stays held and is tried at the next look. Returns whether
+    /// anything is still held.
+    async fn release(self: &Arc<Self>, force: Option<SendKind>) -> bool {
+        {
+            // A phone that was unregistered or paused meanwhile is sent nothing.
+            let store = self.store();
+            self.holds.lock().unwrap().keep_devices(|id| store.get(id).is_some_and(|d| !d.paused));
+        }
+        let held: Vec<Parked> = self.holds.lock().unwrap().parked().to_vec();
+        if held.is_empty() {
+            return false;
+        }
+        let due = match force {
+            Some(kind) => held.into_iter().map(|p| (p, kind)).collect(),
+            None => {
+                let mut away: HashSet<String> = HashSet::new();
+                let names: HashSet<String> = held.iter().map(|p| p.intent.block.server.clone()).collect();
+                for name in names {
+                    let shown = match self.server_named(&name) {
+                        Some(s) => self.here(&s).await,
+                        None => false,
+                    };
+                    if !shown {
+                        away.insert(name);
+                    }
+                }
+                self.holds.lock().unwrap().due(Moment::now(), |server| away.contains(server))
+            }
+        };
+        let (clients, _) = self.presence_snapshot().await;
+        self.send_held(due, &clients).await;
+        !self.holds.lock().unwrap().parked().is_empty()
+    }
+
+    /// Sends held questions, each composed afresh with its pane's names. A phone whose app is
+    /// in front now (a live claim among `clients`) shows the question itself: it stays held,
+    /// and goes out once the app has left the front, if it still waits then.
+    async fn send_held(&self, due: Vec<(Parked, SendKind)>, clients: &[ClientSnapshot]) {
+        let claims = self.claims(clients);
+        let at = Moment::now();
+        // Turned off, nothing holds any more: everything goes now.
+        let on = self.switch.lock().unwrap().on();
+        for (p, kind) in due {
+            let Some(d) = self.store().get(&p.device_id).cloned() else { continue };
+            if on && is_app_claimed(&d, clients, &claims, at) {
+                debug!("still holding for {}: {APP} is open", d.who());
+                continue;
+            }
+            let ctx = match self.server_named(&p.intent.block.server) {
+                Some(s) => context(&s, &p.intent.block).await,
+                None => BlockContext::default(),
+            };
+            let m = PushMessage::compose(&p.intent, &ctx).stacked();
+            self.send_one(&d, &p.intent, &m, kind, now()).await;
+        }
+    }
+
+    /// A desktop notification (OSC 9 / 777) is pushed, while the switch is on, unless it is an
+    /// OSC 9;4 progress report an older Rex passed on, or its pane has an OSC 7501 record now
+    /// or lost one `desk::NOTICE_MEMORY` ago at most: that agent alerts through its status
+    /// already. Rex is asked after `desk::NOTICE_WAIT`, so a status that follows the notice
+    /// counts. A pane that runs an agent but reports no status, and a pane Rex can't tell
+    /// about, push as before.
+    async fn notice_worth_a_push(&self, s: &Server, intent: &PushIntent) -> bool {
+        if intent.text.as_deref().is_some_and(|t| t.starts_with("4;")) {
+            debug!("no push: a progress report, not a notification");
+            return false;
+        }
+        tokio::time::sleep(NOTICE_WAIT).await;
+        let b = &intent.block;
+        let key = format!("{}|{}", b.session_id, b.block_id);
+        let recent = s.st.lock().unwrap().status_removed_at.get(&key).is_some_and(|at| crate::desk::mono() - at < NOTICE_MEMORY);
+        let has_status = recent || {
+            let args = json!({"session_id": b.session_id, "block_id": b.block_id, "args": {}});
+            s.conn.call("com.superlogical.terminal.program_status", args).await.is_ok_and(|r| !r.arr("records").is_empty())
+        };
+        if has_status {
+            info!("no push: a notification from a pane that alerts through its status");
+        }
+        !has_status
+    }
+
+    fn server_named(&self, name: &str) -> Option<Arc<Server>> {
+        self.servers.iter().find(|s| s.st.lock().unwrap().name == name).cloned()
+    }
+
+    /// What an event says about held questions: an agent that left `blocked` (working, idle,
+    /// done, error), records removed, a pane closed. None of it waits any more.
+    fn unhold(&self, e: &RelayEvent) {
+        let mut holds = self.holds.lock().unwrap();
+        let gone = match e {
+            RelayEvent::Status(b, rep) if rep.state != "blocked" => holds.moved_on(b, Some(&rep.record_id)),
+            RelayEvent::StatusRemoved(b, ids) => holds.records_gone(b, ids),
+            RelayEvent::BlockClosed(b) => {
+                holds.closed(b);
+                0
+            }
+            _ => 0,
+        };
+        if gone > 0 {
+            info!("no longer holding {gone} question(s): the agent moved on");
+        }
+    }
+
+    /// After a (re)connect, or a restart that read parked.json: a held question of this server
+    /// whose agent no longer waits is dropped (its events may have been missed), asking Rex for
+    /// each pane's status; one Rex can't answer for stays. With the switch now off, the rest go
+    /// out at once; else the desk is watched.
+    async fn recheck_held(self: &Arc<Self>, s: &Server) {
+        let name = s.st.lock().unwrap().name.clone();
+        let held: Vec<Parked> = self.holds.lock().unwrap().parked().iter().filter(|p| p.intent.block.server == name).cloned().collect();
+        if held.is_empty() {
+            return;
+        }
+        // (session, block) -> the records that are blocked, or None when Rex didn't say.
+        let mut blocked: HashMap<(String, String), Option<HashSet<String>>> = HashMap::new();
+        for p in &held {
+            let key = (p.intent.block.session_id.clone(), p.intent.block.block_id.clone());
+            if blocked.contains_key(&key) {
+                continue;
+            }
+            let args = json!({"session_id": key.0, "block_id": key.1, "args": {}});
+            let records = s.conn.call("com.superlogical.terminal.program_status", args).await.ok().map(|r| {
+                r.arr("records").into_iter().filter(|rec| rec.str("state") == Some("blocked")).map(|rec| rec.str("id").unwrap_or("").to_string()).collect()
+            });
+            blocked.insert(key, records);
+        }
+        let gone = self.holds.lock().unwrap().recheck(&name, |p| {
+            let key = (p.intent.block.session_id.clone(), p.intent.block.block_id.clone());
+            blocked.get(&key).cloned().flatten().map(|ids| ids.contains(p.record()))
+        });
+        if gone > 0 {
+            info!("no longer holding {gone} question(s): the agent no longer waits");
+        }
+        if !self.desk_on() {
+            self.release(Some(SendKind::Off)).await;
+        } else if !self.holds.lock().unwrap().parked().is_empty() {
+            self.hold_watch();
+        }
+    }
+
+    /// Watches the computer's sleep and wake, once. On "will sleep" the desk is away: what is
+    /// held goes out before sleep is allowed, `SLEEP_GRACE` at most. On wake the desk is looked
+    /// at again.
+    fn watch_power(self: &Arc<Self>) {
+        if self.power_watched.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(mut events) = self.sense.watch_power() else { return };
+        let relay = Arc::downgrade(self);
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                let Some(r) = relay.upgrade() else { break };
+                match event {
+                    Power::WillSleep(done) => {
+                        if let Some(Edge::Left(why)) = r.desk.lock().unwrap().will_sleep() {
+                            info!("desk away ({why})");
+                        }
+                        if r.switch.lock().unwrap().on() {
+                            // A release cut off here, after the gateway took a push but before
+                            // `sent` unparked it, sends that question again after wake. The
+                            // copy has the same collapse id, so it replaces the first on the
+                            // phone: a duplicate request, not a duplicate notification.
+                            let _ = tokio::time::timeout(SLEEP_GRACE, r.release(Some(SendKind::Away))).await;
+                        }
+                        let _ = done.try_send(());
+                    }
+                    Power::PoweredOn => {
+                        r.desk.lock().unwrap().powered_on();
+                        if !r.holds.lock().unwrap().parked().is_empty() {
+                            r.hold_watch();
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 async fn app_clients(s: &Server) -> Result<Vec<ClientSnapshot>, rex::RexError> {
     let r = s.conn.call("client.list", json!({"kinds": ["app"]})).await?;
     Ok(r.arr("clients").into_iter().filter_map(ClientSnapshot::parse).collect())
@@ -1218,8 +1666,36 @@ mod tests {
         relay_watching(vec![], dir, dry_run, sender, gateways)
     }
 
+    /// The computer as a test has it: what a reading gives, and the processes there are.
+    #[derive(Default)]
+    struct TestSense {
+        reading: Mutex<crate::desk::Reading>,
+        processes: Mutex<HashMap<u32, crate::desk::Process>>,
+        /// The sleep and wake events the test sends, taken by the first watcher.
+        power: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Power>>>,
+    }
+
+    impl Sense for TestSense {
+        fn read(&self) -> crate::desk::Reading {
+            *self.reading.lock().unwrap()
+        }
+
+        fn process(&self, pid: u32) -> Option<crate::desk::Process> {
+            self.processes.lock().unwrap().get(&pid).cloned()
+        }
+
+        fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
+            self.power.lock().unwrap().take()
+        }
+    }
+
     /// `relay_with`, and one connection (never opened) per entry of `watch`.
     fn relay_watching(watch: Vec<Option<Endpoint>>, dir: &std::path::Path, dry_run: bool, sender: Sender, gateways: &[&str]) -> Arc<Relay> {
+        relay_sensing(watch, dir, dry_run, sender, gateways, Arc::new(TestSense::default()))
+    }
+
+    /// `relay_watching` on a computer the test controls.
+    fn relay_sensing(watch: Vec<Option<Endpoint>>, dir: &std::path::Path, dry_run: bool, sender: Sender, gateways: &[&str], sense: Arc<dyn Sense>) -> Arc<Relay> {
         let env = Env { dry_run, debug_build: true, keys: Ok(vec![[7u8; 32]]), place: Err("test".into()), service: false, writable: false };
         let config: Vec<String> = gateways.iter().map(|g| g.to_string()).collect();
         Relay::new(
@@ -1238,6 +1714,9 @@ mod tests {
                 key: Some(HelperKey::load_or_create(&dir.join("identity.key")).unwrap()),
                 state_dir: dir.to_path_buf(),
                 os: OS.into(),
+                name: None,
+                sense,
+                away_after: crate::desk::AWAY_AFTER,
             },
         )
     }
@@ -1742,7 +2221,21 @@ mod tests {
             DeviceStore::open_dry_run(dir.join("devices.json")),
             Sender::DryRun,
             Updater::with_env(env, false, &dir),
-            Options { dry_run: true, label: None, debounce: 30.0, burst: 10.0, per_minute: 10.0, status_path: dir.join("status.json"), gateways: Gateways::default(), key: None, state_dir: dir.clone(), os: OS.into() },
+            Options {
+                dry_run: true,
+                label: None,
+                name: None,
+                debounce: 30.0,
+                burst: 10.0,
+                per_minute: 10.0,
+                status_path: dir.join("status.json"),
+                gateways: Gateways::default(),
+                key: None,
+                state_dir: dir.clone(),
+                os: OS.into(),
+                sense: Arc::new(TestSense::default()),
+                away_after: crate::desk::AWAY_AFTER,
+            },
         );
         assert_eq!(r.servers.len(), 2);
         assert!(r.servers[0].fixed.is_none() && r.servers[1].fixed.as_ref() == Some(&named));
@@ -2815,6 +3308,526 @@ mod tests {
             let answer = status(&r, who).await;
             assert_eq!((&answer["devices"], &answer["other_phones"]), (&json!(3), &json!(others)), "{who:?}");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // MARK: Desk presence
+
+    const DESK_SERVER: &str = "https://rex.example.ts.net";
+    const T0: f64 = 1_800_000_000.0;
+    type SeenLog = Arc<Mutex<Vec<crate::net::testing::Seen>>>;
+
+    fn moment(s: f64) -> Moment {
+        Moment { wall: T0 + s, mono: Some(s) }
+    }
+
+    /// A relay that watches one server, `DESK_SERVER`, with Alex's phone registered at a test
+    /// gateway that answers `answers`, the desk switch on or off, and a computer the test controls.
+    async fn desk_relay(tag: &str, answers: Vec<crate::net::testing::Canned>, on: bool) -> (Arc<Relay>, Arc<TestSense>, SeenLog, PathBuf) {
+        let dir = temp(tag);
+        if on {
+            Switch::On.store(&dir, None);
+        }
+        let (base, seen) = serve(answers).await;
+        let sense = Arc::new(TestSense::default());
+        let r = relay_sensing(vec![None], &dir, false, Sender::Gateway, &[&base], sense.clone());
+        r.servers[0].st.lock().unwrap().name = DESK_SERVER.into();
+        r.store.lock().unwrap().register(phone("a1b2c3d4", &base)).unwrap();
+        (r, sense, seen, dir)
+    }
+
+    /// The same helper started again on the same folder, as after a restart.
+    fn restarted(dir: &std::path::Path, base: &str) -> Arc<Relay> {
+        let r = relay_sensing(vec![None], dir, false, Sender::Gateway, &[base], Arc::new(TestSense::default()));
+        r.servers[0].st.lock().unwrap().name = DESK_SERVER.into();
+        r
+    }
+
+    fn desk_event(category: PushCategory, record: &str) -> PushIntent {
+        let mut i = PushIntent::new(category, BlockRef { server: DESK_SERVER.into(), session_id: "session:1".into(), block_id: "block:b1".into() });
+        i.agent = Some("claude".into());
+        i.text = Some("Which database?".into());
+        if category != PushCategory::Notice {
+            i.record_id = Some(record.into());
+            i.state = Some(if category == PushCategory::Blocked { "blocked" } else { "done" }.into());
+        }
+        i
+    }
+
+    async fn desk_push(r: &Arc<Relay>, i: &PushIntent, here: bool, clients: &[ClientSnapshot], at: Moment) {
+        let msg = PushMessage::compose(i, &BlockContext::default());
+        r.deliver_desk(i, &msg, devices(r), clients, here, at).await;
+    }
+
+    fn bodies(seen: &SeenLog) -> Vec<Value> {
+        seen.lock().unwrap().iter().map(|q| serde_json::from_slice(&q.body).unwrap()).collect()
+    }
+
+    fn held(r: &Relay) -> usize {
+        r.holds.lock().unwrap().parked().len()
+    }
+
+    /// Waits for `n` requests, a second at most.
+    async fn requests(seen: &SeenLog, n: usize) -> usize {
+        for _ in 0..100 {
+            if seen.lock().unwrap().len() >= n {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        seen.lock().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn with_the_switch_off_a_push_is_what_it_was_and_nothing_new_is_written() {
+        let (r, _, seen, dir) = desk_relay("desk-off", vec![canned(200, "{}")], false).await;
+        assert!(!r.desk_on());
+        r.clone().dispatch(desk_event(PushCategory::Blocked, "")).await;
+        r.clone().dispatch(desk_event(PushCategory::Notice, "")).await;
+        let sent = bodies(&seen);
+        assert_eq!(sent.len(), 2);
+        // One stack per pane, and no collapse id on a notice: as version 0.4.0 sends them.
+        assert_eq!(sent[0]["payload"]["aps"]["thread-id"], "block:b1");
+        assert_eq!(sent[0]["collapse_id"], "b1");
+        assert_eq!(sent[1]["payload"]["aps"]["thread-id"], "block:b1");
+        assert!(sent[1].get("collapse_id").is_none());
+        for b in &sent {
+            assert!(b.get("hold_if_desk").is_none());
+        }
+        for f in [crate::desk::SWITCH_FILE, crate::hold::PARKED_FILE, crate::hold::DELIVERED_FILE] {
+            assert!(!dir.join(f).exists(), "{f}");
+        }
+        // The legacy rule for an open app: connected and not backgrounded, no claim needed.
+        let open = ClientSnapshot {
+            client_id: "client:a1b2c3d4".into(),
+            kind: Some("app".into()),
+            platform: Some("ios".into()),
+            label: Some("iPhone #a1b2c3d4".into()),
+            connection_state: Some("connected".into()),
+            ..Default::default()
+        };
+        r.deliver(&message("Hello"), devices(&r), &[open], &HashSet::new(), T0).await;
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn at_the_desk_a_question_waits_for_the_cap_and_the_cap_send_is_never_holdable() {
+        let (r, _, seen, dir) = desk_relay("desk-cap", vec![canned(200, "{}")], true).await;
+        let q = desk_event(PushCategory::Blocked, "");
+        desk_push(&r, &q, true, &[], moment(0.0)).await;
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (0, 1));
+        // Still there at the desk: nothing yet.
+        assert!(r.holds.lock().unwrap().due(moment(HOLD_CAP_TEST - 1.0), |_| false).is_empty());
+        let due = r.holds.lock().unwrap().due(moment(HOLD_CAP_TEST), |_| false);
+        assert_eq!(due.iter().map(|(_, k)| *k).collect::<Vec<_>>(), [SendKind::Cap]);
+        r.send_held(due, &[]).await;
+        let sent = bodies(&seen);
+        assert_eq!(sent.len(), 1);
+        // The request carries what any push carries, and nothing that could hold it again.
+        let mut keys: Vec<&str> = sent[0].as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["collapse_id", "expiration", "payload", "priority", "push_type"]);
+        assert_eq!(sent[0]["payload"]["aps"]["category"], "AGENT_BLOCKED");
+        assert_eq!(sent[0]["payload"]["aps"]["thread-id"], DESK_SERVER);
+        // Once per episode.
+        assert_eq!(held(&r), 0);
+        assert!(r.holds.lock().unwrap().due(moment(HOLD_CAP_TEST * 4.0), |_| true).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    const HOLD_CAP_TEST: f64 = crate::desk::HOLD_CAP;
+
+    #[tokio::test]
+    async fn when_the_desk_goes_a_held_question_goes_and_one_that_failed_is_tried_again() {
+        let (r, _, seen, dir) = desk_relay("desk-away", vec![canned(500, "boom"), canned(200, "{}")], true).await;
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], moment(0.0)).await;
+        // The release looks the server's desk up; this one can't be asked, so it is away.
+        assert!(r.release(None).await, "the send failed, so it is still held");
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (1, 1));
+        assert!(!r.release(None).await);
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (2, 0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn holding_takes_no_rate_limit_and_a_limited_release_stays_held() {
+        let (r, _, seen, dir) = desk_relay("desk-limit", vec![canned(200, "{}")], true).await;
+        for n in 0..12 {
+            let mut q = desk_event(PushCategory::Blocked, "");
+            q.block.block_id = format!("block:{n}");
+            desk_push(&r, &q, true, &[], moment(0.0)).await;
+        }
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (0, 12));
+        let due = r.holds.lock().unwrap().due(moment(HOLD_CAP_TEST), |_| false);
+        r.send_held(due, &[]).await;
+        // Ten go now (the burst); the other two wait for the next look rather than being lost.
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (10, 2));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn done_at_the_desk_replaces_the_question_the_phone_shows_even_after_a_restart() {
+        let (r, _, seen, dir) = desk_relay("desk-replace", vec![canned(200, "{}")], true).await;
+        let base = r.store.lock().unwrap().devices[0].gateway.clone();
+        // Away: the question goes, under its record's collapse id.
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r1"), false, &[], moment(0.0)).await;
+        let question = bodies(&seen)[0]["collapse_id"].clone();
+        assert!(question.is_string());
+        // Beacon updates itself and starts again; the person answers at the desk.
+        let r = restarted(&dir, &base);
+        desk_push(&r, &desk_event(PushCategory::Done, "r2"), true, &[], moment(60.0)).await;
+        let sent = bodies(&seen);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1]["collapse_id"], question);
+        assert_eq!(sent[1]["payload"]["aps"]["interruption-level"], "passive");
+        assert_eq!(sent[1]["payload"]["aps"]["category"], "AGENT_DONE");
+        // The phone shows "Finished" now: the next done at the desk adds nothing.
+        desk_push(&r, &desk_event(PushCategory::Done, "r2"), true, &[], moment(120.0)).await;
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn at_the_desk_notices_and_a_done_are_dropped_and_away_they_go_in_one_stack() {
+        let (r, _, seen, dir) = desk_relay("desk-drop", vec![canned(200, "{}")], true).await;
+        desk_push(&r, &desk_event(PushCategory::Notice, ""), true, &[], moment(0.0)).await;
+        desk_push(&r, &desk_event(PushCategory::Done, ""), true, &[], moment(1.0)).await;
+        assert_eq!(seen.lock().unwrap().len(), 0);
+        desk_push(&r, &desk_event(PushCategory::Notice, ""), false, &[], moment(2.0)).await;
+        let sent = bodies(&seen);
+        assert_eq!(sent[0]["payload"]["aps"]["thread-id"], DESK_SERVER);
+        assert_eq!(sent[0]["collapse_id"], "b1-n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn with_the_switch_on_only_a_live_claim_counts_as_open() {
+        let (r, _, seen, dir) = desk_relay("desk-claims", vec![canned(200, "{}")], true).await;
+        let ios = |state: &str| ClientSnapshot {
+            client_id: "client:a1b2c3d4".into(),
+            kind: Some("app".into()),
+            platform: Some("ios".into()),
+            label: Some("Alex's iPhone #a1b2c3d4".into()),
+            connection_state: Some(state.into()),
+            ..Default::default()
+        };
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let notice = desk_event(PushCategory::Notice, "");
+        // Connected but never claimed (a phone in a pocket, a Beacon that restarted): pushed.
+        desk_push(&r, &notice, false, &[ios("connected")], Moment::now()).await;
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let presence = |active: bool| {
+            let (r, alex) = (r.clone(), alex.clone());
+            async move { r.act(&r.servers[0], "push_presence", &json!({"active": active}), &alex).await }
+        };
+        assert_eq!(presence(true).await.0.unwrap(), json!({"registered": true}));
+        desk_push(&r, &notice, false, &[ios("connected")], Moment::now()).await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "claimed: open");
+        // (A claim's three minutes: devices.rs tests it, with the clock in hand.)
+        // `active: false` ends it.
+        presence(false).await.0.unwrap();
+        desk_push(&r, &notice, false, &[ios("connected")], Moment::now()).await;
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // Seen lost at dispatch: removed, not only skipped.
+        presence(true).await.0.unwrap();
+        desk_push(&r, &notice, false, &[ios("lost")], Moment::now()).await;
+        assert!(r.servers[0].st.lock().unwrap().claims.is_empty());
+        desk_push(&r, &notice, false, &[ios("connected")], Moment::now()).await;
+        assert_eq!(seen.lock().unwrap().len(), 4);
+        // The client left.
+        presence(true).await.0.unwrap();
+        r.handle(&r.servers[0], json!({"type": "client_left", "payload": {"client_id": "client:a1b2c3d4"}}));
+        assert!(r.servers[0].st.lock().unwrap().claims.is_empty());
+        // A restart starts with no claim.
+        presence(true).await.0.unwrap();
+        let base = r.store.lock().unwrap().devices[0].gateway.clone();
+        assert!(restarted(&dir, &base).servers[0].st.lock().unwrap().claims.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn claims_and_their_renewals_leave_what_the_phone_shows_so_a_done_still_replaces_it() {
+        let (r, _, seen, dir) = desk_relay("desk-renewed", vec![canned(200, "{}")], true).await;
+        capture_log();
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), false, &[], moment(0.0)).await;
+        let question = bodies(&seen)[0]["collapse_id"].clone();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        for _ in 0..3 {
+            r.act(&r.servers[0], "push_presence", &json!({"active": true}), &alex).await.0.unwrap();
+        }
+        r.act(&r.servers[0], "push_presence", &json!({"active": false}), &alex).await.0.unwrap();
+        desk_push(&r, &desk_event(PushCategory::Done, ""), true, &[], moment(60.0)).await;
+        let sent = bodies(&seen);
+        assert_eq!(sent.len(), 2);
+        assert_eq!((&sent[1]["collapse_id"], &sent[1]["payload"]["aps"]["category"]), (&question, &json!("AGENT_DONE")));
+        // On, a renewal is no news: one line for the claim, one for the background.
+        assert_eq!(captured_log().matches("presence from").count(), 2, "{}", captured_log());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn with_the_switch_off_every_presence_call_is_logged_as_before() {
+        let (r, _, _, dir) = desk_relay("desk-off-presence", vec![canned(200, "{}")], false).await;
+        capture_log();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        for _ in 0..3 {
+            r.act(&r.servers[0], "push_presence", &json!({"active": true}), &alex).await.0.unwrap();
+        }
+        assert_eq!(captured_log().matches("presence from Alex's iPhone #a1b2c3d4: foreground").count(), 3, "{}", captured_log());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn turning_the_switch_off_sends_what_is_held_at_once() {
+        let (r, _, seen, dir) = desk_relay("desk-turned-off", vec![canned(200, "{}")], true).await;
+        assert!(r.desk_on());
+        let alex = app("a1b2c3d4", Some(ALEX));
+        // On: the registered phone is told, and no one else.
+        assert_eq!(status(&r, &alex).await["desk"], "on");
+        assert!(status(&r, &app("ffff0000", Some(ALEX))).await.get("desk").is_none());
+        assert!(status(&r, &app("a1b2c3d4", Some(SAM))).await.get("desk").is_none());
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], moment(0.0)).await;
+        assert_eq!(held(&r), 1);
+        Switch::Off.store(&dir, None);
+        assert!(!r.desk_on());
+        assert_eq!(requests(&seen, 1).await, 1);
+        assert_eq!(held(&r), 0);
+        // Off: the answer of version 0.4.0, without the field.
+        assert!(status(&r, &alex).await.get("desk").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_restart_keeps_what_is_held_and_a_switch_turned_off_meanwhile_sends_it() {
+        let (r, _, seen, dir) = desk_relay("desk-restart", vec![canned(200, "{}")], true).await;
+        let base = r.store.lock().unwrap().devices[0].gateway.clone();
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], moment(0.0)).await;
+        drop(r);
+        // Restarted with the switch still on: held, and Rex couldn't be asked, so it stays.
+        let r = restarted(&dir, &base);
+        assert_eq!(held(&r), 1);
+        r.recheck_held(&r.servers[0]).await;
+        assert_eq!((held(&r), seen.lock().unwrap().len()), (1, 0));
+        // Turned off while the helper was down: sent once the server is back.
+        drop(r);
+        Switch::Off.store(&dir, None);
+        let r = restarted(&dir, &base);
+        r.recheck_held(&r.servers[0]).await;
+        assert_eq!(requests(&seen, 1).await, 1);
+        assert_eq!(held(&r), 0);
+        assert_eq!(restarted(&dir, &base).holds.lock().unwrap().parked().len(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_moves_on_holds_nothing_and_a_paused_phone_is_never_held_for() {
+        let (r, _, seen, dir) = desk_relay("desk-moved-on", vec![canned(200, "{}")], true).await;
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r1"), true, &[], moment(0.0)).await;
+        let b = desk_event(PushCategory::Blocked, "r1").block;
+        r.decide(RelayEvent::Status(b.clone(), StatusReport { record_id: "r1".into(), state: "working".into(), ..Default::default() }));
+        assert_eq!(held(&r), 0);
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r1"), true, &[], moment(1.0)).await;
+        r.decide(RelayEvent::StatusRemoved(b.clone(), vec!["r1".into()]));
+        assert_eq!(held(&r), 0);
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r1"), true, &[], moment(2.0)).await;
+        r.decide(RelayEvent::BlockClosed(b));
+        assert_eq!(held(&r), 0);
+        // Paused, at the desk or not: nothing composed, nothing held.
+        let alex = app("a1b2c3d4", Some(ALEX));
+        set_paused(&r, &alex, true).await.unwrap();
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r1"), true, &[], moment(3.0)).await;
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r2"), false, &[], moment(3.0)).await;
+        assert_eq!((held(&r), seen.lock().unwrap().len()), (0, 0));
+        // Held, then paused: the release drops it rather than send it.
+        set_paused(&r, &alex, false).await.unwrap();
+        desk_push(&r, &desk_event(PushCategory::Blocked, "r1"), true, &[], moment(4.0)).await;
+        set_paused(&r, &alex, true).await.unwrap();
+        assert!(!r.release(Some(SendKind::Away)).await);
+        assert_eq!((held(&r), seen.lock().unwrap().len()), (0, 0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_desk_counts_only_with_a_person_there_and_a_desktop_app_of_theirs_running_here() {
+        let (r, sense, _, dir) = desk_relay("desk-here", vec![canned(200, "{}")], true).await;
+        capture_log();
+        let me = crate::tools::uid();
+        let present = crate::desk::Reading {
+            idle: Some(3.0),
+            session: Some(crate::desk::Session { locked: false, on_console: true }),
+            display_asleep: Some(false),
+        };
+        sense.processes.lock().unwrap().extend([
+            (100, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 1 }),
+            (200, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 4242 }),
+        ]);
+        let mac = |pid: u32| ClientSnapshot {
+            client_id: format!("client:{pid}"),
+            kind: Some("app".into()),
+            platform: Some("macos".into()),
+            connection_state: Some("connected".into()),
+            pid: Some(pid),
+            ..Default::default()
+        };
+        // Nothing read yet: every reading unknown, away.
+        assert!(!r.desk_here(&[mac(100)]));
+        *sense.reading.lock().unwrap() = present;
+        assert!(r.desk_here(&[mac(100)]));
+        assert!(!r.desk_here(&[mac(200)]), "a Mac app reaching this server over SSH");
+        assert!(!r.desk_here(&[]), "no desktop app shows this server");
+        *sense.reading.lock().unwrap() = crate::desk::Reading { session: Some(crate::desk::Session { locked: true, on_console: true }), ..present };
+        assert!(!r.desk_here(&[mac(100)]));
+        let log = captured_log();
+        assert!(log.contains("desk present") && log.contains("desk away (screen locked)"), "{log}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn before_sleep_what_is_held_goes_out_and_sleep_is_then_allowed() {
+        let (r, sense, seen, dir) = desk_relay("desk-sleep", vec![canned(200, "{}")], true).await;
+        let (power, events) = tokio::sync::mpsc::unbounded_channel();
+        *sense.power.lock().unwrap() = Some(events);
+        assert!(r.desk_on(), "watches sleep and wake");
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], moment(0.0)).await;
+        let (done, allowed) = std::sync::mpsc::sync_channel(1);
+        power.send(Power::WillSleep(done)).unwrap();
+        let allowed = tokio::task::spawn_blocking(move || allowed.recv_timeout(Duration::from_secs(5))).await.unwrap();
+        assert!(allowed.is_ok(), "sleep is allowed");
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (1, 0));
+        // Woken: nobody is at the desk until a reading says so.
+        power.send(Power::PoweredOn).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!r.desk.lock().unwrap().present());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn with_the_switch_on_a_status_panes_notification_and_a_progress_report_are_not_pushed() {
+        let (r, _, seen, dir) = desk_relay("desk-notices", vec![canned(200, "{}")], true).await;
+        let notice = |text: &str| {
+            let mut i = desk_event(PushCategory::Notice, "");
+            i.text = Some(text.into());
+            i
+        };
+        // The pane lost its OSC 7501 record a moment ago (Claude's reminder after its turn).
+        r.handle_session_event(&r.servers[0], "session:1", &json!({"type": "block_event", "payload": {"block_id": "block:b1", "name": "program_status_removed", "payload": {"ids": [""]}}}));
+        r.clone().dispatch(notice("Claude is waiting for your input")).await;
+        // An OSC 9;4 progress report an older Rex passed on as a notification.
+        r.clone().dispatch(notice("4;1;42")).await;
+        assert_eq!(seen.lock().unwrap().len(), 0);
+        // Another pane with no status record (an agent that reports none, or a pane Rex can't
+        // tell about here): pushed, after the wait.
+        let mut other = notice("Build finished");
+        other.block.block_id = "block:b2".into();
+        let began = Instant::now();
+        r.clone().dispatch(other).await;
+        assert!(began.elapsed() >= NOTICE_WAIT);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // The pane closed: what it was is forgotten.
+        r.handle_session_event(&r.servers[0], "session:1", &json!({"type": "block_closed", "payload": {"block_id": "block:b1"}}));
+        assert!(r.servers[0].st.lock().unwrap().status_removed_at.is_empty());
+        // Off, as before: every notification is pushed at once, progress reports included.
+        Switch::Off.store(&dir, None);
+        r.clone().dispatch(notice("4;1;42")).await;
+        assert_eq!(requests(&seen, 2).await, 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_question_waits_while_the_app_is_in_front_unless_the_switch_went_off() {
+        let (r, _, seen, dir) = desk_relay("desk-in-front", vec![canned(200, "{}")], true).await;
+        let ios = ClientSnapshot {
+            client_id: "client:a1b2c3d4".into(),
+            kind: Some("app".into()),
+            platform: Some("ios".into()),
+            label: Some("Alex's iPhone #a1b2c3d4".into()),
+            connection_state: Some("connected".into()),
+            ..Default::default()
+        };
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], Moment::now()).await;
+        r.act(&r.servers[0], "push_presence", &json!({"active": true}), &app("a1b2c3d4", Some(ALEX))).await.0.unwrap();
+        let due = |r: &Relay| r.holds.lock().unwrap().due(Moment::now(), |_| true);
+        r.send_held(due(&r), std::slice::from_ref(&ios)).await;
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (0, 1), "the app shows it");
+        // Turned off: sent whatever the app does.
+        *r.switch.lock().unwrap() = Switch::Off;
+        r.send_held(due(&r), std::slice::from_ref(&ios)).await;
+        assert_eq!((seen.lock().unwrap().len(), held(&r)), (1, 0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A moment `left` seconds short of a question's cap, for one held now.
+    fn short_of_cap(left: f64) -> Moment {
+        Moment { wall: now() - crate::desk::HOLD_CAP + left, mono: Some(crate::desk::mono() - crate::desk::HOLD_CAP + left) }
+    }
+
+    async fn until(what: impl Fn() -> bool) -> bool {
+        for _ in 0..200 {
+            if what() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        what()
+    }
+
+    #[tokio::test]
+    async fn the_watch_ends_when_nothing_is_held_and_a_question_held_at_its_end_still_gets_its_cap() {
+        let (r, _, seen, dir) = desk_relay("desk-watch", vec![canned(200, "{}")], true).await;
+        *r.hold_poll.lock().unwrap() = Duration::from_millis(20);
+        // At the desk all along: only the cap releases a question.
+        *r.shown_in_test.lock().unwrap() = Some(true);
+        let running = |r: &Relay| *r.hold_running.lock().unwrap();
+        let mut second = desk_event(PushCategory::Blocked, "");
+        second.block.block_id = "block:b2".into();
+
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], short_of_cap(0.2)).await;
+        assert!(running(&r));
+        assert_eq!(requests(&seen, 1).await, 1, "the cap");
+        assert!(until(|| !running(&r)).await, "nothing held: the watch ends");
+
+        // The gap: a watch that found nothing and has not ended yet when a question is held.
+        // Holding sees it running and starts none; ending sees the question and goes on.
+        *r.hold_running.lock().unwrap() = true;
+        desk_push(&r, &second, true, &[], short_of_cap(0.2)).await;
+        assert!(!r.hold_watch_ends(), "a question was held meanwhile: the watch goes on");
+        assert!(running(&r));
+        // (That watch was only pretended; let a real one take over from here.)
+        *r.hold_running.lock().unwrap() = false;
+        r.hold_watch();
+        assert_eq!(requests(&seen, 2).await, 2, "the second question's cap still fires");
+        assert!(until(|| !running(&r)).await);
+        assert_eq!(held(&r), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn questions_held_before_a_restart_are_watched_from_the_start_without_rex() {
+        let (r, _, seen, dir) = desk_relay("desk-restored", vec![canned(200, "{}")], true).await;
+        let base = r.store.lock().unwrap().devices[0].gateway.clone();
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], short_of_cap(0.2)).await;
+        drop(r);
+        let r = restarted(&dir, &base);
+        *r.hold_poll.lock().unwrap() = Duration::from_millis(20);
+        *r.shown_in_test.lock().unwrap() = Some(true);
+        // No server is connected or set up: the cap fires all the same.
+        r.watch_restored();
+        assert_eq!(requests(&seen, 1).await, 1);
+        assert_eq!(held(&r), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_holds_in_memory_only() {
+        let dir = temp("desk-dry");
+        Switch::On.store(&dir, None);
+        let r = relay_watching(vec![None], &dir, true, Sender::DryRun, &[GATEWAY]);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        desk_push(&r, &desk_event(PushCategory::Blocked, ""), true, &[], moment(0.0)).await;
+        assert_eq!(held(&r), 1);
+        desk_push(&r, &desk_event(PushCategory::Blocked, "other"), false, &[], moment(1.0)).await;
+        assert!(!dir.join(crate::hold::PARKED_FILE).exists() && !dir.join(crate::hold::DELIVERED_FILE).exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

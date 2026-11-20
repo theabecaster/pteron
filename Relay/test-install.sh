@@ -337,16 +337,22 @@ grep -qF "docs/helper.md now names it." "$box/release.log" || fail "release.sh d
 ok "release.sh: writes the SHA-256 of install.sh between the markers of docs/helper.md"
 cp -R "$out" "$box/saved/release"
 
-# release.sh --resign: the recovery key signs the same list again and hands over a new key.
+# release.sh --resign: the recovery key signs the same list again, hands over a new key and
+# turns the desk switch on. setup.sh installs from this list below, so it reads a list with a
+# field it doesn't know.
 sleep 1
-( export NEXT_KEY="$NEXT" EXPIRES_DAYS=200; release recovery --resign > "$box/resign.log" 2>&1 ) || { cat "$box/resign.log" >&2; fail "release.sh --resign"; }
+( export NEXT_KEY="$NEXT" EXPIRES_DAYS=200; release recovery --resign --desk on > "$box/resign.log" 2>&1 ) || { cat "$box/resign.log" >&2; fail "release.sh --resign"; }
 grep -q "Nothing was published" "$box/resign.log" || fail "--resign did not say it published nothing"
-python3 - "$box/saved/release/manifest.json" "$out/manifest.json" "$NEXT" <<'PY' || fail "--resign changed more than the date and the next key"
-import json, sys
+grep -qxF "    Desk presence: on." "$box/resign.log" || fail "--resign --desk on did not say so"
+python3 - "$box/saved/release/manifest.json" "$out/manifest.json" "$NEXT" <<'PY' || fail "--resign changed more than the date, the next key and the desk switch"
+import json, re, sys
 before, after, next_key = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
 assert after["next_key"] == next_key and after["expires_at"] > before["expires_at"], after
+assert "desk" not in before and after["desk"] == "on", after
 for key in ("version", "min_version", "released_at", "assets"):
     assert after[key] == before[key], key
+assert set(after) == set(before) | {"desk", "signed_at"}, list(after)
+assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", after["signed_at"]), after
 PY
 verifies "$RECOVERY" "$out/manifest.json" "$out/manifest.json.sig" || fail "--resign did not sign with the key it was given"
 check_fixtures || fail "--resign did not write the fixtures again"
@@ -354,7 +360,29 @@ installer_check "$box/resign.log"
 doc_check || fail "--resign did not write the new SHA-256 into docs/helper.md"
 cp "$out/manifest.json" "$box/saved/resigned.json"
 cp "$out/manifest.json.sig" "$box/saved/resigned.json.sig"
-ok "release.sh --resign: new expiry and next_key, everything else unchanged, fixtures and install.sh written again"
+ok "release.sh --resign: new expiry, next_key and desk switch, everything else unchanged, fixtures and install.sh written again"
+
+# --resign --desk off turns it off again and keeps every other field; --resign alone keeps it.
+cp "$out/manifest.json" "$box/desk-on.json"
+release primary --resign --desk off > "$box/resign.log" 2>&1 || { cat "$box/resign.log" >&2; fail "release.sh --resign --desk off"; }
+release primary --resign > "$box/resign-plain.log" 2>&1 || { cat "$box/resign-plain.log" >&2; fail "release.sh --resign after --desk off"; }
+python3 - "$box/desk-on.json" "$out/manifest.json" <<'PY' || fail "--resign --desk off changed more than the date and the switch, or --resign alone dropped it"
+import json, sys
+before, after = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+assert after["desk"] == "off", after
+for key in set(before) - {"desk", "expires_at", "signed_at"}:
+    assert after[key] == before[key], key
+assert list(after) == list(before), (list(before), list(after))
+# Signed twice since, each time later than the last, even within one second.
+assert after["signed_at"] > before["signed_at"], (before["signed_at"], after["signed_at"])
+PY
+verifies "$PRIMARY" "$out/manifest.json" "$out/manifest.json.sig" || fail "--resign --desk off did not sign the list"
+for bad in maybe "" ON; do
+  if release primary --resign --desk "$bad" > "$box/refused.log" 2>&1; then fail "release.sh took --desk $bad"; fi
+  grep -qF -- "--desk takes on or off" "$box/refused.log" || fail "release.sh refused --desk $bad for another reason: $(cat "$box/refused.log")"
+done
+if release primary --resign --desk > "$box/refused.log" 2>&1; then fail "release.sh took --desk without a value"; fi
+ok "release.sh --resign --desk off: only the switch and the date change; --resign alone keeps the switch; anything but on or off is refused"
 
 # What release.sh itself refuses.
 if release stranger --skip-build > "$box/refused.log" 2>&1; then fail "release.sh signed with a key that is not in update-key.pub"; fi
@@ -374,6 +402,15 @@ grep -q '^  "min_version": "9.0.0",$' "$out/manifest.json" || fail "MIN_VERSION 
 sed -i '' 's/"min_version": "9.0.0"/"min_version": "9.8.7"/' "$out/manifest.json"
 manifest_check 45 || fail "EXPIRES_DAYS did not set the expiry"
 ok "release.sh: MIN_VERSION sets min_version and EXPIRES_DAYS the expiry"
+release primary --skip-build --desk on > "$box/release.log" 2>&1 || { cat "$box/release.log" >&2; fail "release.sh --desk on"; }
+python3 - "$out/manifest.json" <<'PY' || fail "a release with --desk on does not carry the switch after next_key"
+import json, sys
+m = json.load(open(sys.argv[1]))
+assert list(m) == ["version", "min_version", "released_at", "expires_at", "next_key", "desk", "signed_at", "assets"], list(m)
+assert m["desk"] == "on" and m["signed_at"] == m["released_at"], m
+PY
+grep -q '^  "desk": "on",$' "$out/manifest.json" || fail "the switch is not on a line of its own, as setup.sh reads the list"
+ok "release.sh --desk on: a new release carries the desk switch"
 # The app in the zip must be in a folder of the name it gives itself, which its Info.plist
 # and setup.sh give it too, and the zip must hold it alone.
 cp "$relay/dist/Beacon-macOS.zip" "$box/dist.zip"
@@ -1234,7 +1271,9 @@ PY
 
   # The list re-signed by the recovery key, with a next key in it.
   list "$box/saved/resigned.json" "$box/saved/resigned.json.sig"
-  accepted "the list re-signed by the recovery key"
+  # It carries "desk" and "signed_at", which setup.sh doesn't know and leaves alone.
+  grep -q '^  "desk": "on"' "$box/saved/resigned.json" || fail "the re-signed list has no desk switch for setup.sh to ignore"
+  accepted "the list re-signed by the recovery key, with a desk switch setup.sh does not read"
   list "$box/saved/resigned.json" "$saved/manifest.json.sig"
   refused "the old signature for the re-signed list" "signature doesn't match"
   restore_mirror

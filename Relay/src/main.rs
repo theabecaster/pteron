@@ -4,11 +4,14 @@
 mod auth;
 mod brand;
 mod config;
+mod desk;
 mod devices;
 mod discovery;
 mod gateway;
+mod hold;
 mod host;
 mod identity;
+mod idle;
 #[cfg(any(target_os = "macos", test))]
 mod label;
 mod legacy;
@@ -61,6 +64,11 @@ Options for run:
   --state-dir DIR    where config.json, devices.json and identity.key live
   --config FILE      config file (default <state-dir>/config.json)
   --log-file         log to the default log file instead of stdout
+
+Only with --dry-run, to try desk presence without the real helper noticing:
+  --idle-away SECS   count the desk as away after SECS without input (default 300)
+  --client-name NAME connect to Rex under NAME instead of rex-push-relay, so the
+                     phone app does not take this run for the helper
 "
 );
 
@@ -70,6 +78,8 @@ struct RunOptions {
     state_dir: PathBuf,
     config: Option<PathBuf>,
     log_file: bool,
+    idle_away: Option<f64>,
+    client_name: Option<String>,
 }
 
 fn main() {
@@ -260,7 +270,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 fn parse_run(args: &[String]) -> Result<RunOptions, String> {
     let env_dry = std::env::var("REX_DUO_DRY_RUN").is_ok_and(|v| !v.is_empty() && v != "0");
-    let mut o = RunOptions { dry_run: env_dry, servers: vec![], state_dir: default_state_dir(), config: None, log_file: false };
+    let mut o = RunOptions { dry_run: env_dry, servers: vec![], state_dir: default_state_dir(), config: None, log_file: false, idle_away: None, client_name: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{a} needs a value"));
@@ -271,8 +281,23 @@ fn parse_run(args: &[String]) -> Result<RunOptions, String> {
             "--state-dir" => o.state_dir = expand(&value()?),
             "--config" => o.config = Some(expand(&value()?)),
             "--log-file" => o.log_file = true,
+            "--idle-away" => {
+                let secs = value()?;
+                o.idle_away = Some(secs.parse::<f64>().ok().filter(|s| (1.0..=3600.0).contains(s)).ok_or(format!("--idle-away takes 1 to 3600 seconds, not {secs}"))?);
+            }
+            "--client-name" => {
+                let name = value()?;
+                if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                    return Err(format!("--client-name takes letters, digits, - and _, not {name:?}"));
+                }
+                o.client_name = Some(name);
+            }
             _ => return Err(format!("unknown option {a}")),
         }
+    }
+    // Both change what the real helper relies on: only a run that sends nothing takes them.
+    if !o.dry_run && (o.idle_away.is_some() || o.client_name.is_some()) {
+        return Err("--idle-away and --client-name are only for --dry-run".into());
     }
     Ok(o)
 }
@@ -349,6 +374,7 @@ async fn run(o: RunOptions) -> i32 {
         relay::Options {
             dry_run: o.dry_run,
             label: cfg.label.clone(),
+            name: o.client_name.clone(),
             debounce: cfg.debounce_seconds.unwrap_or(30.0),
             burst: cfg.rate_limit_burst.unwrap_or(10.0),
             per_minute: cfg.rate_limit_per_minute.unwrap_or(10.0),
@@ -361,6 +387,8 @@ async fn run(o: RunOptions) -> i32 {
             key,
             state_dir: o.state_dir.clone(),
             os: host::os(),
+            sense: std::sync::Arc::new(idle::System),
+            away_after: o.idle_away.unwrap_or(desk::AWAY_AFTER),
         },
     );
     relay.start();
@@ -407,6 +435,19 @@ mod tests {
         for command in [&["install"][..], &["run", "--dry-run"], &["phone-setup", "extra"], &["install", "phone-setup"], &["--dry-run"], &["status"]] {
             assert_eq!(opening(&args(command), true), None, "{command:?}");
         }
+    }
+
+    #[test]
+    fn the_desk_trial_options_are_for_a_dry_run_only() {
+        let o = parse_run(&args(&["--dry-run", "--idle-away", "5", "--client-name", "rex-push-relay-test"])).unwrap();
+        assert_eq!((o.idle_away, o.client_name.as_deref()), (Some(5.0), Some("rex-push-relay-test")));
+        assert!(parse_run(&args(&["--idle-away", "5"])).is_err());
+        assert!(parse_run(&args(&["--client-name", "x"])).is_err());
+        for bad in [&["--dry-run", "--idle-away", "0"][..], &["--dry-run", "--idle-away", "soon"], &["--dry-run", "--client-name", "a b"], &["--dry-run", "--client-name", ""]] {
+            assert!(parse_run(&args(bad)).is_err(), "{bad:?}");
+        }
+        let plain = parse_run(&args(&["--dry-run"])).unwrap();
+        assert_eq!((plain.idle_away, plain.client_name), (None, None));
     }
 
     #[test]

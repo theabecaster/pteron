@@ -133,6 +133,13 @@ Before a new version replaces the running one, Beacon checks it:
 
 If the new version doesn't start, Beacon puts the previous one back.
 
+The signed release list also carries the desk presence switch (`"desk": "on" | "off"`): while it
+is on, a Mac's Beacon holds the pushes its person would see at the computer anyway, until they
+leave or for 10 minutes at most (Relay/README.md, Desk presence). It is off until the owner turns
+it on with `Relay/release.sh --resign --desk on`, and a Beacon that never saw it keeps it off.
+Beacons learn a change at their next check, within about 12 hours; `rex-duo-helper update --check`
+or the app's update button makes one check now.
+
 ## What it sends, and where
 
 Beacon never holds an Apple key or your phone's notification token. Your phone registers with

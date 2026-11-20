@@ -277,9 +277,32 @@ and how to verify by hand.
 | Agent reports `done` or `error` | `AGENT_DONE` | passive |
 | Desktop notification (OSC 9 / 777) | `NOTICE` | active, sound |
 
-The helper doesn't filter agents' notices yet: a Claude OSC 9 next to its `blocked` status gives
-two pushes, as before. The app's toasts filter them (above); the helper gets the same filter with
-its next release.
+The helper filters notices from panes with an OSC 7501 status only while desk presence is on
+(below): until then a Claude OSC 9 next to its `blocked` status gives two pushes, as before. The
+app's toasts filter them (above).
+
+**Desk presence (ships off).** While the person sits at a Mac whose Rex app shows the agent's
+server, Beacon holds what they would see there anyway: a question waits until they leave or for
+10 minutes at most, and a `done` or a notice isn't pushed, except a `done` that replaces a
+question the phone shows. Its signed release list turns it on (`"desk": "on"`); until then
+Beacon behaves as 0.4.0 did. With it on, Pteron counts as in front only while it renews a claim
+(`push_presence {active: true}`, 3 minutes), a server's pushes share one stack (`thread-id` is
+the server's address), a pane's notices replace each other, and notices from a pane with an OSC
+7501 status (now, or until 10 s after it went) are dropped; an agent that reports no status
+still gets its notices pushed. `helper_status` carries `desk: "on"` for the phone that
+registered, only while it is on. Relay/README.md, Desk presence, has the rules, the files and
+the fixed choices. The app doesn't read `desk` yet, and renewing the claim every 60 s is the
+app's part of this (notify-app).
+
+Known limits of what Beacon remembers a phone shows (`delivered.json`):
+
+- It can't see the phone. When Pteron clears a question itself (notify-app's tidy on coming to
+  the front), Beacon still takes the question as shown, so the agent's `done` at the desk adds
+  one passive "Finished" to the list rather than replacing anything.
+- When an agent's OSC 7501 record is removed before its `done` (the agent quit), no `done`
+  comes: a question the phone shows stays there until Pteron opens.
+- An entry pushed out after 512 others, or lost with the state folder, leaves its question to
+  the same fate.
 
 The push decisions (debounce, rate limit, skip phones that are in front) are in
 `Relay/src/policy.rs` and `devices.rs`, tested with `cargo test`. The app doesn't share that

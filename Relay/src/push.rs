@@ -139,6 +139,34 @@ impl PushMessage {
     }
 }
 
+impl PushMessage {
+    /// What a push looks like while the desk switch is on: a server's pushes form one stack on
+    /// the phone (`thread-id` is the server's address, at most 256 bytes), and a pane's notices
+    /// replace each other (`collapse_id` "<block>-n"). A test notification stays as it is.
+    pub fn stacked(mut self) -> PushMessage {
+        if self.thread_id == TEST_THREAD {
+            return self;
+        }
+        if !self.server.is_empty() {
+            let mut end = self.server.len().min(256);
+            while !self.server.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.thread_id = self.server[..end].to_string();
+        }
+        if self.category == PushCategory::Notice && !self.block_id.is_empty() {
+            self.collapse_id = Some(notice_collapse_id(&self.block_id));
+        }
+        self
+    }
+}
+
+/// A pane's notices share this collapse id, so a second replaces the first (at most 42 bytes).
+pub fn notice_collapse_id(block_id: &str) -> String {
+    let short: String = block_id.replace("block:", "").chars().take(40).collect();
+    format!("{short}-n")
+}
+
 /// The thread id of a test notification. The app shows a notification of this thread even
 /// while it is open.
 pub const TEST_THREAD: &str = "rexduo-test";
@@ -318,6 +346,34 @@ mod tests {
             assert_eq!(computer_name(none), "this computer", "{none:?}");
         }
         assert_eq!(PushMessage::test("").payload()["aps"]["alert"]["body"], "Test notification from this computer");
+    }
+
+    #[test]
+    fn with_the_desk_switch_a_server_is_one_stack_and_a_panes_notices_replace_each_other() {
+        let ctx = BlockContext { tab_label: Some("ops".into()), ..Default::default() };
+        let mut n = PushIntent::new(PushCategory::Notice, block());
+        n.text = Some("Built".into());
+        let notice = PushMessage::compose(&n, &ctx).stacked();
+        assert_eq!(notice.payload()["aps"]["thread-id"], "https://rex.example.ts.net");
+        assert_eq!(notice.collapse_id.as_deref(), Some("01a1-b1-n"));
+        let mut b = PushIntent::new(PushCategory::Blocked, block());
+        b.record_id = Some("a".into());
+        let blocked = PushMessage::compose(&b, &ctx);
+        let collapse = blocked.collapse_id.clone();
+        let blocked = blocked.stacked();
+        assert_eq!((blocked.thread_id.as_str(), blocked.collapse_id), ("https://rex.example.ts.net", collapse));
+        // Off, as before: a pane per stack, no collapse id on a notice.
+        let plain = PushMessage::compose(&n, &ctx);
+        assert_eq!((plain.thread_id.as_str(), plain.collapse_id), ("block:01a1-b1", None));
+        // A test notification keeps its own thread; the app shows it while open.
+        let test = PushMessage::test("https://rex.example.ts.net");
+        assert_eq!(test.clone().stacked().payload(), test.payload());
+        // Long addresses and block ids stay within what APNs takes.
+        let mut long = PushIntent::new(PushCategory::Notice, BlockRef { server: format!("https://{}\u{e9}.ts.net", "a".repeat(300)), ..block() });
+        long.block.block_id = format!("block:{}", "f".repeat(80));
+        let m = PushMessage::compose(&long, &ctx).stacked();
+        assert!(m.thread_id.len() <= 256 && m.thread_id.starts_with("https://aaa"));
+        assert!(m.collapse_id.unwrap().len() <= 42);
     }
 
     #[test]

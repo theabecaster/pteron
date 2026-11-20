@@ -224,6 +224,9 @@ mod tests {
         assert_eq!(outcome(500, b"<html>", None), SendResult::Failed("gateway answered 500 error".into()));
         // Free text from the other end stays out of the log.
         assert_eq!(outcome(500, br#"{"error":"two words"}"#, None), SendResult::Failed("gateway answered 500 error".into()));
+        // A push the gateway held (a later gateway's 202 for `hold_if_desk`) reached no phone:
+        // not Sent, so nothing counts it as shown, and a held question stays held.
+        assert!(!matches!(outcome(202, br#"{"held":true,"retry_after":60}"#, None), SendResult::Sent(_)));
     }
 
     #[tokio::test]

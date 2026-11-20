@@ -2,6 +2,7 @@
 
 use crate::auth::is_device_id;
 use crate::debug;
+use crate::desk::{Moment, CLAIM_LIFE};
 use crate::info;
 use crate::net::Url;
 use crate::notice::SeenDevices;
@@ -407,6 +408,9 @@ pub struct ClientSnapshot {
     pub name: Option<String>,
     pub label: Option<String>,
     pub connection_state: Option<String>,
+    /// The process behind the connection, as the server saw it (`principal.pid` of a peer on
+    /// this machine). Desk presence reads it (`desk::is_local_desktop_app`).
+    pub pid: Option<u32>,
 }
 
 impl ClientSnapshot {
@@ -421,6 +425,11 @@ impl ClientSnapshot {
             name: s(&info, "name"),
             label: s(&info, "label"),
             connection_state: s(c, "connection_state"),
+            pid: c
+                .obj("principal")
+                .filter(|p| matches!(p.str("kind"), Some("peer" | "windows_peer")))
+                .and_then(|p| p.get("pid")?.as_u64())
+                .and_then(|p| u32::try_from(p).ok()),
         })
     }
 }
@@ -440,6 +449,20 @@ pub fn is_app_open(d: &Device, clients: &[ClientSnapshot], backgrounded: &HashSe
             && c.platform.as_deref() == Some("ios")
             && c.connection_state.as_deref() != Some("lost")
             && !backgrounded.contains(&c.client_id)
+            && device_id_from_label(c.label.as_deref()).is_some_and(|id| id == d.device_id)
+    })
+}
+
+/// `is_app_open` while the desk switch is on: the app counts as open only while it holds an
+/// in-front claim (`push_presence {active: true}`) younger than `desk::CLAIM_LIFE`. A
+/// connection alone doesn't count, so a phone in a pocket stops counting within minutes even
+/// when its app never said it went to the background.
+pub fn is_app_claimed(d: &Device, clients: &[ClientSnapshot], claims: &HashMap<String, Moment>, now: Moment) -> bool {
+    clients.iter().any(|c| {
+        c.kind.as_deref() == Some("app")
+            && c.platform.as_deref() == Some("ios")
+            && c.connection_state.as_deref() != Some("lost")
+            && claims.get(&c.client_id).is_some_and(|at| at.elapsed_to(&now) < CLAIM_LIFE)
             && device_id_from_label(c.label.as_deref()).is_some_and(|id| id == d.device_id)
     })
 }
@@ -480,6 +503,7 @@ mod tests {
             name: Some(crate::app_name!().into()),
             label: Some(label.into()),
             connection_state: Some(state.into()),
+            pid: None,
         }
     }
 
@@ -518,6 +542,32 @@ mod tests {
         .unwrap();
         assert_eq!(c.label.as_deref(), Some("iPhone #abcd1234"));
         assert_eq!(c.connection_state.as_deref(), Some("connected"));
+        assert_eq!(c.pid, None);
+        let mac = |principal: Value| ClientSnapshot::parse(&json!({"client_id": "client:2", "info": {"kind": "app", "platform": "macos"}, "principal": principal})).unwrap().pid;
+        assert_eq!(mac(json!({"kind": "peer", "transport": "unix", "uid": 501, "gid": 20, "pid": 16013})), Some(16013));
+        assert_eq!(mac(json!({"kind": "peer", "uid": 501})), None, "a peer without a pid");
+        assert_eq!(mac(json!({"kind": "tailscale", "pid": 7})), None, "only a peer's pid is a process here");
+        assert_eq!(mac(json!({"kind": "peer", "pid": -1})), None);
+        assert_eq!(mac(json!({"kind": "peer", "pid": "7"})), None);
+    }
+
+    #[test]
+    fn with_the_desk_switch_only_a_live_claim_is_open() {
+        let at = |s: f64| Moment { wall: 1000.0 + s, mono: Some(s) };
+        let c = [app("c1", "x #a1b2c3d4", "connected", "ios")];
+        let mut claims = HashMap::new();
+        // Connected alone is not open.
+        assert!(!is_app_claimed(&dev(), &c, &claims, at(0.0)));
+        claims.insert("c1".to_string(), at(0.0));
+        assert!(is_app_claimed(&dev(), &c, &claims, at(CLAIM_LIFE - 1.0)));
+        assert!(!is_app_claimed(&dev(), &c, &claims, at(CLAIM_LIFE)), "a claim lasts 3 minutes");
+        claims.insert("c1".to_string(), at(CLAIM_LIFE));
+        assert!(is_app_claimed(&dev(), &c, &claims, at(CLAIM_LIFE + 60.0)), "renewed");
+        assert!(!is_app_claimed(&dev(), &[app("c1", "x #a1b2c3d4", "lost", "ios")], &claims, at(CLAIM_LIFE + 60.0)));
+        assert!(!is_app_claimed(&dev(), &[app("c1", "x #ffff0000", "connected", "ios")], &claims, at(CLAIM_LIFE + 60.0)));
+        assert!(!is_app_claimed(&dev(), &[app("c1", "x #a1b2c3d4", "connected", "macos")], &claims, at(CLAIM_LIFE + 60.0)));
+        // A clock set back ends a claim rather than stretch it.
+        assert!(!is_app_claimed(&dev(), &c, &claims, Moment { wall: 0.0, mono: Some(CLAIM_LIFE + 1.0) }));
     }
 
     fn temp_store(tag: &str) -> PathBuf {

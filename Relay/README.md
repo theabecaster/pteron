@@ -358,6 +358,9 @@ a `size`, whatever its name, and picks its own by name.
 - `min_version`: a Beacon older than this reports `"update_required": true`.
 - `expires_at`: 180 days after signing (`EXPIRES_DAYS`). `Relay/release.sh --resign` signs the
   current list again with a new date, without building; do it before the date passes.
+- `desk` (optional): `"on"` or `"off"`, the desk presence switch (Desk presence), with
+  `signed_at` beside it: when the list was signed. Every reader ignores a field it doesn't
+  know, so older Beacons, the app and `setup.sh` read such a list as before.
 - `next_key` (handover): a manifest that passed steps 2 and 3 and names a base64 32-byte key
   adds that key to Beacon's trusted set, kept in `trusted_keys.json` (mode 0600) in the
   state folder. At most 4 are kept; a fifth pushes out the oldest. A `next_key` in a manifest
@@ -397,6 +400,7 @@ repository.
 ```sh
 ./release.sh                       # package, sign, write dist/release. Publishes nothing.
 ./release.sh --resign              # sign the current release list again, with a new expiry date
+./release.sh --resign --desk on    # the same, and turn desk presence on (off: --desk off)
 bash test-install.sh               # release.sh and setup.sh, on this Mac alone, with its own keys; ~2 min
 tests-setup/make-fixtures.sh       # write Relay/fixtures again (test data for the app and Beacon)
 ```
@@ -404,7 +408,9 @@ tests-setup/make-fixtures.sh       # write Relay/fixtures again (test data for t
 `release.sh` signs with `UPDATE_KEY`, which must be the primary or the recovery key of
 `update-key.pub`; `MIN_VERSION`, `NEXT_KEY` and `EXPIRES_DAYS` (default 180) set the manifest's
 `min_version` (default: the release; docs/release.md says when to set it), `next_key` and
-`expires_at`. Only `--publish` uploads. It makes the three Mac zips from the one in `dist`,
+`expires_at`. `--desk on|off` sets the manifest's `desk`: `--resign` keeps the value the list
+has unless `--desk` is given, and a new release carries it only with `--desk`, so give it in
+every release once it is on. Only `--publish` uploads. It makes the three Mac zips from the one in `dist`,
 and refuses an app that is not alone in that zip, that is not in a folder of the name its own
 binary gives (`brand`), or whose Info.plist or `setup.sh`'s `BEACON=` line say another name. It
 refuses when the keys in `setup.sh` differ from `update-key.pub`, and publishes `setup.sh` as the
@@ -467,7 +473,9 @@ set `ZIG=/path/to/zig` if zig isn't on PATH). The script:
 `run` takes `--dry-run` (log each push, priority, collapse id and payload, instead of sending
 it: no request goes to the gateway, and a dry run never updates; `REX_DUO_DRY_RUN=1` works too), `--verbose` (also log working/idle reports and every "no push"
 decision), `--server ADDR` (repeatable, `unix:///…` or `https://…`), `--state-dir`, `--config`,
-and `--log-file`.
+and `--log-file`. Only with `--dry-run`: `--idle-away SECS` (the desk is away after SECS
+without input instead of 300) and `--client-name NAME` (connect as NAME instead of
+`rex-push-relay`), to try desk presence (Desk presence).
 
 ## Config (optional)
 
@@ -695,7 +703,8 @@ several minutes until its keepalive pings fail, and the relay would keep skippin
 
 The relay keys this on the calling client's id, which Rex fills in and can't be faked. A
 reconnect with a new client id counts as foreground. Closing the control socket on background
-works too: the client then leaves at once.
+works too: the client then leaves at once. While desk presence is on (below), only a claim
+counts: send `{"active": true}` again at least every 3 minutes while in front.
 
 Result: `{"registered": true|false}`, whether the caller's phone (the device id in its label)
 has a registration here that the caller's identity made. `false` means register again; if the
@@ -739,7 +748,9 @@ is one of a few fixed sentences, never a path, an address or raw error text. `fa
 is when the first of the current run of failed checks ended, in seconds since 1970: a check
 fails when the release list could not be downloaded or was not accepted. It is null when the
 last check passed or none ran. `registered` is as in `push_presence`. `paused` is whether the
-caller's phone is paused here (step 5); false when it has no registration.
+caller's phone is paused here (step 5); false when it has no registration. `desk` (`"on"`, Desk
+presence) is there only while desk presence is on, and only when the caller's phone is
+registered here.
 
 `manifest_expires_at` is when the release list Beacon last accepted stops being valid
 (null until it has checked since it started). Within 30 days of that time Beacon also logs
@@ -811,6 +822,113 @@ every push. It has no `session_id`, `window_id` or `block_id`, and no collapse i
   `apns-collapse-id`), so a later state of the same block replaces the earlier notification.
 - The time-sensitive level needs the Time Sensitive Notifications capability in the app.
 - Categories `AGENT_BLOCKED`, `AGENT_DONE`, and `NOTICE` exist so the app can register actions.
+
+## Desk presence (ships off)
+
+While the person sits at a computer whose Rex app shows the agent's server, the pushes they
+would see there anyway are held, so the phone's Lock Screen doesn't fill up while they work.
+An urgent question still reaches the phone: when they leave, or after 10 minutes at most.
+
+**It is off until the release list turns it on.** The signed manifest carries `"desk": "on"`
+or `"off"` (`Relay/release.sh --resign --desk on|off`, Build and ship). Beacon reads it at
+its normal update check and keeps the last value it accepted in `desk.json` in the state
+folder, with the list's `signed_at`. A list without the field, one that is not accepted
+(expired, wrong signature, older), a value other than `on` or `off`, and a list not signed
+after the one that set the value last (or without `signed_at`) leave the value as it was, so
+an older signed list played back can't flip it; with none stored it is off. While it is off
+Beacon does exactly what version 0.4.0 did: none of the below runs, no OS reading is taken, no
+file of it is written, and `helper_status` and the log are as they were. Turned off, every
+held question is sent at once. A dry run never checks the list: write `{"desk": "on"}` into its `--state-dir` to try it.
+
+**At a desk** means all of these, read when an event comes (and every 30 s while a question is
+held); anything unknown means not at a desk:
+
+- macOS only. On Linux nothing is known, so pushes go out as before.
+- Input within the last 5 minutes (IOHIDSystem's `HIDIdleTime`, no permission needed).
+- The window server gives a session (`CGSessionCopyCurrentDictionary`), the screen is not
+  locked, this user has the console (not switched away from), and the main display is awake
+  (`CGDisplayIsAsleep`), so a dark wake or Power Nap never counts.
+- The agent's own Rex server has a connected Rex desktop app client (kind `app`, not iOS)
+  whose `principal.pid` is the main program of an app bundle (`….app/Contents/MacOS/…`), runs
+  as Beacon's user and was started by launchd. The Mac app of another computer reaches a
+  server through SSH as a bridge process that sshd started, so it doesn't count.
+- Not between "will sleep" and wake (`IORegisterForSystemPower`, on a dispatch queue of its
+  own). On "will sleep" Beacon sends what it holds and then allows the sleep, 3 s at most.
+
+| Event | Nobody at a desk | At a desk |
+|---|---|---|
+| `blocked` | push | **held**; pushed when the desk goes, or after 10 min held, once |
+| `blocked`, new words for the held record | push | the held text is updated; the 10 minutes run on |
+| `blocked`, new record of a held pane | push | held anew; its 10 minutes start now |
+| `blocked`, new record while the phone shows this pane's earlier question | push | **push** (it replaces the stale one) |
+| `done` / `error`, last thing the phone got for the pane was its question | push (passive) | **push (passive)**, under that question's collapse id, so it replaces it |
+| `done` / `error`, otherwise | push (passive) | dropped |
+| desktop notification | push | dropped |
+| test notification | push | push |
+| Pteron in front (a live claim, below) | skip | skip |
+
+A held question stops being held when its agent moves on (works, idles, finishes, its record
+is removed, the pane closes), when the phone is paused or unregistered, or when it is sent. One
+that could not be sent (rate limit, no network) stays held and is tried again 30 s later; so
+does one for a phone whose app is in front then, which goes once the app has left the front.
+Questions read back from `parked.json` at start are watched from then on, before Rex is
+reached, so their 10 minutes hold whatever Rex does.
+Holding takes no rate-limit token; only a send does. Sends that end a hold (10 minutes, the desk
+going, the switch going off) are never holdable anywhere else (`hold::SendKind::may_hold`), so
+a desk that wrongly looks present (Screen Sharing, a mouse jiggler, someone else at the Mac)
+delays a question by 10 minutes at most.
+
+Kept in the state folder, written as `devices.json` is (mode 0600, through a rename), never by a
+dry run:
+
+- `parked.json`: the held questions, each with the phone, the event and when it was held. After
+  a restart or a reconnect Beacon asks Rex (`terminal.program_status`) whether each one's agent
+  still waits and drops the ones that don't; one Rex can't answer for stays held. Times are
+  counted on both the wall clock and a monotonic one, and the longer count wins; a wall clock
+  set back makes a wait over. So no clock change or missed sleep lengthens a hold.
+- `delivered.json`: per phone and pane, what was last sent (category, record id, collapse id),
+  at most 512 entries, the oldest out. An entry changes when something new is sent for the pane
+  (a `done` replaces its question), and goes when its record is removed or the pane closes. An
+  agent that was answered and works again keeps it, so its `done` still replaces the question.
+
+A file that doesn't read in full is logged, kept as `parked.json.bad` (or `delivered.json.bad`)
+and read for what it can be; Beacon carries on.
+
+While it is on, three more things change:
+
+- **In front means a live claim.** `push_presence {active: true}` claims the front for 3
+  minutes; the app renews it (the phone app's notify change does that every 60 s). A
+  connection alone, or a claim older than 3 minutes, `{active: false}`, `client_left`, a
+  client the list shows as `lost` (removed then) and a Beacon restart all end it. A renewal is
+  logged only at `--verbose` (off, every call is logged, as before).
+- **One stack per server.** `thread-id` is the server's address (at most 256 bytes), and a
+  pane's notices share the collapse id `<block>-n`, so a second replaces the first.
+- **No notices from status panes.** A desktop notification is looked at after 1 s: from a
+  pane that has an OSC 7501 record now (`terminal.program_status`) or lost one less than 10 s
+  ago, it is not pushed; that agent says the same through its status. A pane that runs an
+  agent but reports no status, and one Rex can't tell about, push as before. An OSC 9;4
+  progress report an older Rex passes on as a notification is not pushed either.
+
+`helper_status` carries `"desk": "on"` while it is on, to the phone that registered here only.
+
+Fixed choices (`src/desk.rs`, `src/hold.rs`): away after 5 minutes without
+input; a hold lasts 10 minutes at most; the desk is read every 30 s while something is held; a
+claim lasts 3 minutes; sleep waits 3 s at most; at most 256 questions are held (past that one is
+sent); a notification waits 1 s, and a pane that lost a record counts as having one for 10 s.
+
+Idle time, lock and display state never leave the computer, and the log says "desk present" or
+"desk away (why)" with no names.
+
+To try it by hand, with the background Beacon left running: a dry run with its own state folder,
+under another client name so the phone app never takes it for the helper, and a short idle
+time.
+
+```sh
+mkdir -p /tmp/desk-try && echo '{"desk": "on"}' > /tmp/desk-try/desk.json
+rex-duo-helper run --dry-run --state-dir /tmp/desk-try --client-name rex-push-relay-test --idle-away 20
+```
+
+`--idle-away` and `--client-name` are refused without `--dry-run`.
 
 ## Debounce and rate limits
 
