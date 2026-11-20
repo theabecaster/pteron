@@ -224,6 +224,23 @@ final class StreamFenceTests: XCTestCase {
         XCTAssertEqual(notices, [message])
     }
 
+    func testHeldKeysAreBoundariesAndTheirDropClearsGuesses() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        let echo = StreamEchoTests.Recorder()
+        s.inputObserver = echo
+        s.writeObserver = echo
+        let socket = await dropAndWaitForResume(link, s)
+        s.send(text: "y")
+        XCTAssertEqual(echo.inputs, [.boundary(newLine: false)], "a key the fence holds is not queued now: a boundary")
+        socket.push(FakeLink.welcome())
+        socket.push(Array("changed".utf8))
+        _ = await eventually { !s.isFenced }
+        await settle()
+        XCTAssertEqual(echo.clears, [.fence], "the drop clears every guess, once")
+        XCTAssertEqual(link.written, [])
+    }
+
     func testAResizeDuringTheFenceDropsHeldKeys() async {
         let link = FakeLink()
         let (s, _, _) = await current(link)

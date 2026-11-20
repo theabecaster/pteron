@@ -106,8 +106,9 @@ public enum EchoClearReason: Equatable, Sendable {
     case stopped
 
     /// The input up to the clear will never be answered: the acknowledgement rule may count it
-    /// as answered. Not for `.unsent`, whose bytes still go out.
-    public var dropsInput: Bool { self != .unsent }
+    /// as answered. Not for `.unsent`, whose bytes still go out, nor for a reconnect, after
+    /// which the queue goes out.
+    public var dropsInput: Bool { self != .unsent && self != .reconnected }
 }
 
 /// Hears every input call, classified, before it is queued (`TerminalStream.inputObserver`).

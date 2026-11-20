@@ -37,6 +37,8 @@ public struct WriteRoundTrip: Sendable {
     public private(set) var srtt: Double?
     /// Samples since the last reset.
     public private(set) var samples = 0
+    /// The newest raw sample (ms).
+    public private(set) var last: Double?
     /// The last five raw samples, newest last.
     private var recent: [Double] = []
     /// When the glitches of the last `glitchWindow` happened.
@@ -49,6 +51,7 @@ public struct WriteRoundTrip: Sendable {
 
     public mutating func add(ms: Double, at now: Double) {
         samples += 1
+        last = ms
         let clamped = min(ms, Self.glitch)
         srtt = srtt.map { $0 + (clamped - $0) / 8 } ?? clamped
         recent.append(ms)
