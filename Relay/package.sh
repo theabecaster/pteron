@@ -36,7 +36,10 @@ IDENTITY="${IDENTITY:-Developer ID Application: Abraham Gonzalez (R2PVQ496X7)}"
 # notarytool auth. ASC_ISS (the issuer id) comes from the environment or $ASC_ENV.
 ASC_KEY_ID="${ASC_KEY_ID:-DWSFK499HH}"
 ASC_KEY="${ASC_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8}"
-ASC_ENV="${ASC_ENV:-$HOME/rexduo/.asc.env}"
+# Default: .asc.env at the top of the main checkout, whatever its folder is called; a worktree
+# finds it there too, through the repository they share.
+MAIN_CHECKOUT="$(cd "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd || echo "$HERE/..")"
+ASC_ENV="${ASC_ENV:-$MAIN_CHECKOUT/.asc.env}"
 
 ICON_SRC="$HERE/../Brand/BeaconIcon.icon"
 STAGE="$HERE/.stage"
