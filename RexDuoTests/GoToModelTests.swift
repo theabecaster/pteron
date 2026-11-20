@@ -155,6 +155,47 @@ final class GoToModelTests: XCTestCase {
         XCTAssertFalse(titles.contains("Balance Splits"))
     }
 
+    func testFilesCommandsShowOnlyWhereThePanesHostHasTheirMethod() {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1", "b2"])])])
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        let all = FilesCommand.allCases.map(\.title)
+        func rows(_ target: GoToTarget?) -> [GoToItem] { copy(m, target: target).items.filter { all.contains($0.title) } }
+        // Nothing known about the host: no row, exactly as before.
+        XCTAssertTrue(rows(t).isEmpty)
+        var meta = BlockMeta()
+        meta.foreground = "zsh"
+        s.meta["b1"] = meta
+        // Only list_dir: the browse rows.
+        s.capabilities.record(method: FileMethod.listDir.full, host: "host-a", .present, serial: s.capabilities.serial)
+        XCTAssertEqual(rows(t).map(\.title), ["Browse Files…", "Insert Path…"])
+        // And uploads: the two pickers too.
+        s.capabilities.record(method: FileMethod.upload.full, host: "host-a", .present, serial: s.capabilities.serial)
+        let four = rows(t)
+        XCTAssertEqual(four.map(\.title), ["Browse Files…", "Insert Path…", "Insert File…", "Insert Photo…"])
+        XCTAssertTrue(four.allSatisfy { $0.kind == .command && $0.category == "Pane" && $0.dimmed == nil && !$0.destructive })
+        XCTAssertTrue(four.allSatisfy { $0.keyLabel == nil }, "no key unless the keymap binds one")
+        let c = copy(m, target: t)
+        for (item, command) in zip(four, FilesCommand.allCases) {
+            XCTAssertEqual(item.id, .command(GoToCommands.appKey(command.action)))
+            guard case .files(let run)? = c.runs[item.id] else { return XCTFail(item.title) }
+            XCTAssertEqual(run, command)
+        }
+        // A key bound in the keymap shows on its row.
+        s.keymap.apply([KeyBinding(chord: KeyChord(spelling: "ctrl+cmd+i")!, action: "pane.insert_path", args: nil)] + KeyDefaults.resolved)
+        XCTAssertEqual(rows(t).first { $0.title == "Insert Path…" }?.keyLabel, "⌃⌘I")
+        // A pane running ssh keeps Browse and loses Insert Path.
+        meta.foreground = "ssh"
+        s.meta["b1"] = meta
+        XCTAssertEqual(rows(t).map(\.title), ["Browse Files…", "Insert File…", "Insert Photo…"])
+        // Another host of the same server answers for itself; no tab, no rows; offline, no rows.
+        XCTAssertFalse(s.offers(.browse, host: "host-b", block: "b1"))
+        XCTAssertTrue(rows(nil).isEmpty)
+        s.phase = .offline(ConnectionProblem(kind: .notAnswering, detail: "test"))
+        XCTAssertTrue(rows(t).isEmpty)
+    }
+
     func testBlockActionsShowOnlyWhereTheCreatorListsThem() {
         let m = model()
         let s = server(m)

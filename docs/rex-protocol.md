@@ -98,7 +98,7 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
 - Terminal block: `size`, `format` (`vt` with the `extra_*` flags for the screen, `text` for tab
   previews, `text` with `trim` and `unwrap` or `html` for Share's All Output), `blob_read`,
   `write`, `resize`, `clear`, `title`, `process`, `program_status`, `upload_begin`,
-  `download_begin`, `ports`.
+  `download_begin`, `list_dir`, `ports`.
 
 ## Ordered calls
 
@@ -124,6 +124,32 @@ it. `session.move` isn't ordered, so the app sends one at a time.
   `not_found`, after which the read starts over once.
 - Detection: the pane's creator on its host lists `format` and `blob_read` in `api.methods`. An
   unknown or failed creator list counts as present (both exist at revision 13). No probe call.
+
+## Folders (`list_dir`)
+
+The file browser lists folders with `com.superlogical.terminal.list_dir` (`DirLister`, RexKit),
+one call per folder shown.
+
+- **Request.** `path` (absolute, `~` or `~/…`, relative to the working directory of the
+  terminal's foreground process, or empty for that directory), `limit` 2000, `files: true`, and
+  `prefix` only when a filter asks for names past a cut listing. The start folder is the empty
+  path, so the server, not a reported `pwd`, says where the program is.
+- **Reply.** `path` (absolute, set on failure too), `home` (may be empty), `status` (`ok`,
+  `missing`, `not_dir`, `denied`; any other value shows as "Couldn't read this folder."),
+  `entries` (may be `null`; each has `name`, and `file` and `symlink` when true) in the
+  filesystem's order, and `truncated`. Sorting and hiding are the app's. Fields the app doesn't
+  know are ignored. Names are JSON strings, so a name that isn't valid UTF-8 can't arrive as it
+  is on disk.
+- **Detection, per host.** The same for `upload_begin`, `download_begin` and `list_dir`, each on
+  its own (`ServerConnection.has`): the terminal creator for the pane's `host_id` lists the method
+  in `api.methods`, or lists its methods without it; where the creator list says nothing (unknown,
+  failed, no creator for that host, no `api.methods`), one call per method asks (`FileProbe`):
+  uploads and downloads with a reference the server must refuse, `list_dir` with `path: "/"`,
+  `limit: 1`. `method_not_found` is no, `bad_request` or an answer is yes, and `not_found` (an
+  older server's word for a missing method, and every server's for a block that went) is no
+  answer: it is asked once more on the same connection after 60 s (`ServerCapabilities`), and
+  what needs the method stays hidden meanwhile. An unknown error from a remote host is no answer
+  either. No revision is checked: `list_dir` has the same arguments and result at revision 13.
 
 ## Files (`rex.data.bytes.v1`)
 

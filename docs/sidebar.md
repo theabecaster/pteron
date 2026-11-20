@@ -79,7 +79,7 @@ Sessions are what people look for, so their names are full contrast and semibold
   the record's app ("claude-code", "codex"), then by the foreground program's whole name
   (`claude`, `codex`, `opencode`, `cursor-agent`, `aider`, `amp`, `gemini`; a generic entry script
   such as `index.js` or Python's `__main__.py` takes its package's name,
-  `ServerConnection.processLabel`), then by the title: an agent's own format ("Claude Code…",
+  `ProcessNames.label`), then by the title: an agent's own format ("Claude Code…",
   "✳ …", a braille spinner before "Claude Code", "OpenCode", "Gemini - …"), or a command line
   whose first word is the agent's program, as a shell titles the pane (`claude --resume`, `aider
   --model x`), which over ssh is all there is. A path, a `user@host:path` title or a command that

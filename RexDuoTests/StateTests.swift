@@ -232,10 +232,10 @@ struct AgentNotifierTests {
 
 struct ProcessLabelTests {
     @Test func scriptThenArgv0ThenName() {
-        #expect(ServerConnection.processLabel(["script": "/usr/local/bin/claude", "name": "node"]) == "claude")
-        #expect(ServerConnection.processLabel(["argv0": "-zsh", "name": "zsh"]) == "zsh")
-        #expect(ServerConnection.processLabel(["invoked_path": "/opt/bin/codex"]) == "codex")
-        #expect(ServerConnection.processLabel(["name": "vim"]) == "vim")
-        #expect(ServerConnection.processLabel([:]) == "")
+        #expect(ProcessNames.label(["script": "/usr/local/bin/claude", "name": "node"]) == "claude")
+        #expect(ProcessNames.label(["argv0": "-zsh", "name": "zsh"]) == "zsh")
+        #expect(ProcessNames.label(["invoked_path": "/opt/bin/codex"]) == "codex")
+        #expect(ProcessNames.label(["name": "vim"]) == "vim")
+        #expect(ProcessNames.label([:]) == "")
     }
 }

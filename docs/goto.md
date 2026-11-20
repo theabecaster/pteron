@@ -46,6 +46,9 @@ from the field too (its ⌘ and ⌃ keys arrive as menu items, `AppShortcutComma
   tab every online one. One that needs arguments shows dimmed ("Needs arguments the phone can't
   fill in."). A key bound with fixed arguments is a row of its own, with that key.
 - Clear Terminal and Reset Terminal, where the target pane's creator lists the method.
+- The target pane's files: Browse Files…, Insert Path…, Insert File… and Insert Photo…, each
+  where the attach menu or its key would work for that pane (`ServerConnection.offers`;
+  docs/terminal.md, Files), with the key the keymap binds, if any.
 - Copy mode, dimmed ("Copy mode is only on the Mac."), only where the keymap binds one of its
   actions.
 

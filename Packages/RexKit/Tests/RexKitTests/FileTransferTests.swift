@@ -248,22 +248,6 @@ final class FileTransferTests: XCTestCase {
         XCTAssertEqual(FileUploader.failure(beginning: big), .tooLarge)
     }
 
-    func testSupportIsProbedWithoutReservingAnything() async {
-        let link = FakeLink()
-        let bad = RexError(code: "bad_request", message: "ref is not a UUID", status: 400)
-        link.failures[Self.upload] = [bad]
-        link.failures[Self.download] = [bad]
-        let yes = await FileUploader.probeSupport(link: link, sessionID: "s", blockID: "b")
-        XCTAssertEqual(yes, true)
-        link.failures[Self.upload] = [RexError(code: "method_not_found", message: "no", status: 404)]
-        let no = await FileUploader.probeSupport(link: link, sessionID: "s", blockID: "b")
-        XCTAssertEqual(no, false)
-        link.failures[Self.upload] = [RexError.unsent("not connected")]
-        let unknown = await FileUploader.probeSupport(link: link, sessionID: "s", blockID: "b")
-        XCTAssertNil(unknown)
-        XCTAssertTrue(link.sockets.isEmpty)
-    }
-
     // MARK: Download
 
     private func downloader(_ link: FakeLink) -> FileDownloader {

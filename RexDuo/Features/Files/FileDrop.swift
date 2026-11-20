@@ -35,7 +35,7 @@ final class PaneDrop: NSObject, UIDropInteractionDelegate {
     }
 
     private func accepts(_ session: UIDropSession) -> Bool {
-        DropRule.accepts(fromThisApp: session.localDragSession != nil, canSend: files?.supported == true,
+        DropRule.accepts(fromThisApp: session.localDragSession != nil, canSend: files?.support.upload == true,
                          hasFiles: session.hasItemsConforming(toTypeIdentifiers: DropRule.types.map(\.identifier)))
     }
 

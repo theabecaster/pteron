@@ -83,7 +83,7 @@ extension ServerConnection {
                 guard serial == connectionSerial, portWatch[bid] != nil else { return }
                 capabilities.record(method: Self.portsMethod, host: nil, .present, serial: serial)
                 pendingPorts[bid] = nil
-                ports.set(bid, PortList(r, label: Self.processLabel))
+                ports.set(bid, PortList(r, label: ProcessNames.label))
             } catch {
                 capabilities.record(method: Self.portsMethod, host: nil, error: error, targetExists: true, serial: serial)
                 if capabilities.probe(method: Self.portsMethod, host: nil) == false { ports.removeAll() }
@@ -94,7 +94,7 @@ extension ServerConnection {
     /// `ports_changed`: the whole list, for a pane on screen. Anything else is dropped unread.
     func receivePorts(_ bid: String, _ payload: JSONObject) {
         guard portWatch[bid] != nil, portsAvailable else { return }
-        pendingPorts[bid] = PortList(payload, label: Self.processLabel)
+        pendingPorts[bid] = PortList(payload, label: ProcessNames.label)
         scheduleFlush(after: Self.coalesce)
     }
 

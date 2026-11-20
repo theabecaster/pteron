@@ -24,6 +24,14 @@ enum GoToDebug {
                 try? await Task.sleep(for: .milliseconds(500))
                 model.goTo?.typeForTesting(q)
             }
+            // `-goToRun <seconds>`: runs the selected row, as Return does, that long after it opened.
+            let run = d.double(forKey: "goToRun")
+            if run > 0 {
+                try? await Task.sleep(for: .seconds(run))
+                NSLog("GOTO_RUN")
+                model.goTo?.runSelected()
+                return
+            }
             // `-goToClose <seconds>`: closes it again, as Esc does, that long after it opened.
             let close = d.double(forKey: "goToClose")
             guard close > 0 else { return }

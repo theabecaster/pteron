@@ -21,7 +21,7 @@ struct AgentDetectTests {
 
         var meta: BlockMeta {
             var m = BlockMeta()
-            m.foreground = foreground.map(ServerConnection.processLabel)
+            m.foreground = foreground.map(ProcessNames.label)
             m.title = title
             if let app { m.statuses["s"] = ProgramStatus(["state": "working", "app": app]) }
             return m
@@ -182,18 +182,18 @@ struct AgentDetectTests {
     }
 
     @Test func genericEntryScriptsAreNamedByTheirPackage() {
-        #expect(ServerConnection.processLabel(Self.cursorAgent) == "cursor-agent")
-        #expect(ServerConnection.processLabel(Self.claudeNpm) == "claude-code")
-        #expect(ServerConnection.processLabel(Self.claudeNpx) == "claude-code")
-        #expect(ServerConnection.processLabel(Self.geminiNpm) == "gemini-cli")
-        #expect(ServerConnection.processLabel(Self.geminiNpx) == "gemini-cli")
-        #expect(ServerConnection.processLabel(Self.codexNpx) == "codex.js")
-        #expect(ServerConnection.processLabel(Self.ampNpm) == "amp")
-        #expect(ServerConnection.processLabel(Self.aiderModule) == "aider")
-        #expect(ServerConnection.processLabel(Self.claudeNative) == "claude")
-        #expect(ServerConnection.processLabel(Self.claudeLinuxBare) == "2.1.329")
-        #expect(ServerConnection.processLabel(["name": "node", "script": "/srv/app/server.js"]) == "server.js")
-        #expect(ServerConnection.processLabel(["name": "node", "script": "index.js"]) == "index.js")
-        #expect(ServerConnection.processLabel(["name": "python3", "script": "/srv/tool/__main__.py"]) == "tool")
+        #expect(ProcessNames.label(Self.cursorAgent) == "cursor-agent")
+        #expect(ProcessNames.label(Self.claudeNpm) == "claude-code")
+        #expect(ProcessNames.label(Self.claudeNpx) == "claude-code")
+        #expect(ProcessNames.label(Self.geminiNpm) == "gemini-cli")
+        #expect(ProcessNames.label(Self.geminiNpx) == "gemini-cli")
+        #expect(ProcessNames.label(Self.codexNpx) == "codex.js")
+        #expect(ProcessNames.label(Self.ampNpm) == "amp")
+        #expect(ProcessNames.label(Self.aiderModule) == "aider")
+        #expect(ProcessNames.label(Self.claudeNative) == "claude")
+        #expect(ProcessNames.label(Self.claudeLinuxBare) == "2.1.329")
+        #expect(ProcessNames.label(["name": "node", "script": "/srv/app/server.js"]) == "server.js")
+        #expect(ProcessNames.label(["name": "node", "script": "index.js"]) == "index.js")
+        #expect(ProcessNames.label(["name": "python3", "script": "/srv/tool/__main__.py"]) == "tool")
     }
 }

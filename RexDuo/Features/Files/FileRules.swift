@@ -140,3 +140,34 @@ enum FileItemType {
         return types.first { ($0.conforms(to: .data) || $0.conforms(to: .content)) && !$0.conforms(to: .url) && !$0.conforms(to: .text) }
     }
 }
+
+/// A file with no extension (`Makefile`, `LICENSE`, a dotfile) gives Quick Look nothing to choose
+/// a viewer by. When it is small and reads as text, it is previewed as text.
+enum TextHint {
+    /// Larger files keep their name: Quick Look would lay out all of it as text.
+    static let maxSize: Int64 = 1_000_000
+    /// How much of the file is read to tell.
+    static let headBytes = 4096
+
+    /// Whether to preview as text: no extension, not empty, at most `maxSize`, and the head is
+    /// UTF-8 with no NUL. A character cut in two by the end of the head still counts.
+    static func applies(name: String, size: Int64, head: Data) -> Bool {
+        guard (name as NSString).pathExtension.isEmpty, size > 0, size <= maxSize, !head.isEmpty, !head.contains(0) else { return false }
+        if String(data: head, encoding: .utf8) != nil { return true }
+        // Only a head that was cut may end inside a character: at most three bytes of one.
+        guard head.count >= headBytes, Int64(head.count) < size else { return false }
+        return (1...3).contains { String(data: head.dropLast($0), encoding: .utf8) != nil }
+    }
+
+    /// Renames the downloaded copy to `<name>.txt` when the hint applies, and gives the new place.
+    /// Reads the head from disk: call it off the main actor.
+    static func renamed(_ url: URL) -> URL? {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        let head = (try? handle.read(upToCount: headBytes)) ?? Data()
+        try? handle.close()
+        guard applies(name: url.lastPathComponent, size: Int64(size), head: head) else { return nil }
+        let to = url.appendingPathExtension("txt")
+        return (try? FileManager.default.moveItem(at: url, to: to)) == nil ? nil : to
+    }
+}

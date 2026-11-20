@@ -75,13 +75,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var onCommand: ((RexCommand) -> Void)?
     /// The server's keymap; hardware keys bound in it run their action instead of reaching the terminal.
     var keymap: KeymapStore?
-    /// Sending files to this pane: the attach key, Paste of an image, drops. Nil where the pane
-    /// has no server (a replay).
+    /// This pane's files: the attach key, Paste of an image, drops, the file browser and Insert
+    /// Path. Nil where the pane has no server (a replay).
     var files: PaneFiles? {
         didSet {
             files?.view = self
             files?.installDrop(on: self)
             files?.onSupportChanged = { [weak self] in self?.refreshFiles() }
+            files?.insertText = { [weak self] text in self?.paste(text) }
+            files?.bracketedPaste = { [weak self] in self?.term.core.input.modes.bracketedPaste ?? false }
+            files?.keyboard = (capture: { [weak self] in self.map(KeyboardRecord.capture) ?? .none },
+                               retake: { [weak self] record in self?.retakeKeyboard(record) })
             keyBar.attachMenu = { [weak self] in self?.files?.menu() ?? UIMenu() }
             refreshFiles()
         }
@@ -592,7 +596,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         // A selection that names a file: Open brings it from the pane's computer into Quick Look.
         // Only a small one is read as text here, on the main thread (`PathGuess.isSmall`).
-        if term.hasActiveSelection, files?.supported == true, let e = term.core.selectionExtent,
+        if term.hasActiveSelection, files?.canOpen == true, let e = term.core.selectionExtent,
            PathGuess.isSmall(rows: e.endRow - e.startRow + 1, cols: e.cols, startCol: e.startCol, endCol: e.endCol,
                              clipped: e.startClipped || e.endClipped),
            let text = term.selectedText, files?.openablePath(in: text) != nil {
@@ -835,6 +839,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if term.hasActiveSelection, let s = term.selectedText, !s.isEmpty { UIPasteboard.general.string = s }
         case .paste:
             pasteFromClipboard()
+        case .files(let command):
+            // Where the pane's host doesn't have it, the key does nothing.
+            files?.run(command)
         case .selectAll:
             selectionUI.selectAll(showsMenu: false)  // SELECTION UI: with handles
             updateJumpButton()
@@ -1580,6 +1587,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         switch status {
         case .live:
             if lostOwnership { showStatus(Self.lostText) } else { hideStatus() }
+            // A new connection may be to a server that does other things with files.
+            refreshFiles()
             #if DEBUG
             if let s = Self.forcedStatus { showStatus(s) }  // `-forceStatus` (testing)
             if isActive { GhosttyTapTest.run(on: term) }  // `-tapTest` (testing, GhosttyTap.swift)
@@ -1700,9 +1709,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func openAttachMenu(open: Bool = true) { keyBar.openAttachMenu(open: open) }
     #endif
 
-    /// Shows the attach key once the server is known to take files.
+    /// Shows the attach key once the pane's host is known to take files or to list folders.
     func refreshFiles() {
         files?.checkSupport()
-        keyBar.attachAvailable = files?.supported == true
+        keyBar.attachAvailable = files?.showsAttachKey == true
     }
 }

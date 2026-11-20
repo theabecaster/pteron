@@ -91,6 +91,8 @@ enum GoToRun {
     /// A tab, with the pane to show when one fits; a session's row opens its active tab.
     case place(Selection, block: String?)
     case command(RexCommand)
+    /// The target pane's file browser, Insert Path, or a picker that sends a file or a photo.
+    case files(FilesCommand)
     /// A Lua or block action. With `onTarget`, on the target pane; else on the server alone.
     case server(serverID: UUID, name: String, args: JSONObject?, title: String, onTarget: Bool)
     /// Shown, not runnable (`GoToItem.dimmed`).

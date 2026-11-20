@@ -248,6 +248,18 @@ final class GoToCenter {
             remember(id)
             close()
             model.perform(c)
+        case .files(let c):
+            remember(id)
+            let target = s.target
+            close()
+            // Once the field has let go of the keyboard and the pane has it back: the browser
+            // then records who holds it, as it does from the attach menu.
+            DispatchQueue.main.async { [weak self] in
+                guard let t = target, let b = t.blockID,
+                      let host = self?.pool?.host(for: TerminalHostPool.Key(server: t.serverID, session: t.sessionID, block: b))
+                else { return }
+                host.files?.run(c)
+            }
         case .server(let serverID, let name, let args, let title, let onTarget):
             remember(id)
             let target = s.target

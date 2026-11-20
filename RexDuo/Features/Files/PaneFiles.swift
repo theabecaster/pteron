@@ -1,25 +1,104 @@
+import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import RexKit
 
-/// Files for one pane: the attach menu, Paste of an image or a file, and the send. Everything sent
-/// lands on the pane's computer and its path is typed into the pane, so every send starts from an
-/// explicit action and the menu says where it goes.
+/// What a pane's files offer by name: the attach menu's browse rows, the keymap's four actions
+/// (`pane.go_to_directory`, `pane.insert_path`, `pane.insert_file`, `pane.insert_photo`) and
+/// anything else that lists commands for a pane.
+enum FilesCommand: String, CaseIterable, Sendable {
+    case browse, insertPath, insertFile, insertPhoto
+
+    /// The Rex action a key is bound to.
+    var action: String {
+        switch self {
+        case .browse: return "pane.go_to_directory"
+        case .insertPath: return "pane.insert_path"
+        case .insertFile: return "pane.insert_file"
+        case .insertPhoto: return "pane.insert_photo"
+        }
+    }
+
+    static func forAction(_ name: String) -> FilesCommand? { allCases.first { $0.action == name } }
+
+    /// As a menu names it.
+    var title: String {
+        switch self {
+        case .browse: return "Browse Files…"
+        case .insertPath: return "Insert Path…"
+        case .insertFile: return "Insert File…"
+        case .insertPhoto: return "Insert Photo…"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .browse: return "folder"
+        case .insertPath: return "text.insert"
+        case .insertFile: return "doc"
+        case .insertPhoto: return "photo"
+        }
+    }
+
+    /// The file method the pane's host must have.
+    var needs: FileMethod {
+        switch self {
+        case .browse, .insertPath: return .listDir
+        case .insertFile, .insertPhoto: return .upload
+        }
+    }
+}
+
+/// The paths last inserted, newest first, per server and host.
+enum PathRecents {
+    static let limit = 8
+
+    static func key(server: UUID, host: String?) -> String { server.uuidString + "|" + (host ?? "") }
+
+    /// `path` at the front of its list, once; lists of servers that are no longer saved go.
+    static func adding(_ path: String, key: String, to all: [String: [String]], servers: [UUID]) -> [String: [String]] {
+        let kept = Set(servers.map(\.uuidString))
+        var out = all.filter { kept.contains(String($0.key.prefix(36))) || $0.key == key }
+        out[key] = Array(([path] + (out[key] ?? []).filter { $0 != path }).prefix(limit))
+        return out
+    }
+}
+
+/// Files for one pane: the attach menu, Paste of an image or a file, the send, the file browser
+/// and Insert Path. Everything sent lands on the pane's computer and its path is typed into the
+/// pane, so every send starts from an explicit action and the menu says where it goes.
 @MainActor
 final class PaneFiles {
     let server: ServerConnection
     let sessionID: String
     let blockID: String
-    /// The pane's view: pickers and questions show over it.
+    /// The pane's view: pickers, the browser and questions show over it.
     weak var view: UIView?
-    /// Called when it is known whether the server takes files.
+    /// Called when what the pane's host can do with files may have changed.
     var onSupportChanged: (() -> Void)?
+    /// Writes text into the pane as a paste does (`TerminalHost.paste`).
+    var insertText: ((String) -> Void)?
+    /// Whether the pane's program asked for bracketed paste.
+    var bracketedPaste: () -> Bool = { false }
+    /// Asks before an insert into a program that didn't ask for text. Nil: an alert. Tests put
+    /// their own here.
+    var confirmInsert: ((_ title: String, _ text: String, _ answer: @escaping @MainActor (Bool) -> Void) -> Void)?
+    /// Who holds the pane's keyboard, and how to give it back (`KeyboardRecord`).
+    var keyboard: (capture: () -> KeyboardRecord, retake: (KeyboardRecord) -> Void)?
 
     private let sender: FileSender
     private let opener: FileOpener
+    private let lister: DirLister
     private let picker = AttachPicker()
     private var drop: PaneDrop?
-    private var probing = false
+    private var probing: Set<FileMethod> = []
+    /// The creator list usually answers without a call: probes wait this long for it.
+    static let creatorWait: Duration = .seconds(3)
+    private var creatorWaitOver = false
+    private var creatorWaitSerial = -1
+    /// The browser, while it is up.
+    private(set) weak var browser: UIViewController?
+    private(set) weak var browserModel: BrowserModel?
 
     init(server: ServerConnection, sessionID: String, blockID: String) {
         self.server = server
@@ -27,31 +106,73 @@ final class PaneFiles {
         self.blockID = blockID
         sender = FileSender(control: server.control, sessionID: sessionID, blockID: blockID)
         opener = FileOpener(control: server.control, sessionID: sessionID, blockID: blockID)
+        lister = DirLister(control: server.control, sessionID: sessionID, blockID: blockID)
         sender.target = { [weak self] in self?.target ?? "this computer" }
         picker.onPicked = { [weak self] files in self?.send(files) }
         picker.prepare = { ImagePrep.prepare($0, original: $1) }
+        opener.onFolder = { [weak self] path in self?.browse(.browse, at: path) ?? false }
+        watchSupport()
     }
 
     // MARK: Support
 
-    /// Whether the server takes files, for this connection; nil until asked (`checkSupport`).
-    var supported: Bool? {
-        guard let s = server.fileSupport, s.serial == server.connectionSerial else { return nil }
-        return s.supported
+    private var block: BlockInfo? { server.blockInfo(session: sessionID, block: blockID) }
+
+    /// What the pane's host can do with files, each method on its own; nil while not known.
+    var support: FileSupport { server.fileSupport(host: block?.hostID) }
+
+    /// The attach key shows where there is something behind it: sending, or browsing.
+    var showsAttachKey: Bool {
+        let s = support
+        return s.upload == true || s.listDir == true
     }
 
-    /// Asks the server once per connection. An answer that couldn't be had is asked again later.
+    /// Follows the server's capabilities, so the attach key and its rows come and go when the
+    /// answer does (a creator list that arrives, a reconnect to another server version).
+    private func watchSupport() {
+        withObservationTracking {
+            _ = support
+            _ = server.phase
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.watchSupport()
+                self.onSupportChanged?()
+            }
+        }
+    }
+
+    /// Asks the server for each method nobody has an answer for, each on its own. The creator
+    /// list answers first when it can; a probe that gave no answer is asked again as
+    /// `ServerCapabilities.shouldProbe` allows (once more per connection, a minute later).
     func checkSupport() {
-        guard supported == nil, !probing, server.phase == .online else { return }
-        probing = true
+        guard server.phase == .online, let block else { return }
+        let host = block.hostID
+        let caps = server.capabilities
         let serial = server.connectionSerial
-        Task { @MainActor in
-            defer { self.probing = false }
-            guard let ok = await FileUploader.probeSupport(control: self.server.control, sessionID: self.sessionID,
-                                                           blockID: self.blockID) else { return }
-            guard serial == self.server.connectionSerial else { return }
-            self.server.fileSupport = (serial, ok)
-            self.onSupportChanged?()
+        if case .unknown = caps.creators, !(creatorWaitOver && creatorWaitSerial == serial) {
+            // The list is on its way. If it never comes, ask anyway.
+            guard creatorWaitSerial != serial else { return }
+            creatorWaitSerial = serial
+            creatorWaitOver = false
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.creatorWait)
+                guard let self, self.creatorWaitSerial == serial else { return }
+                self.creatorWaitOver = true
+                self.checkSupport()
+            }
+            return
+        }
+        let remote = !server.isLocal(block)
+        for method in FileMethod.allCases where server.has(method, host: host) == nil && !probing.contains(method)
+            && caps.shouldProbe(method: method.full, host: host) {
+            probing.insert(method)
+            Task { @MainActor in
+                let answer = await FileProbe.ask(method, control: self.server.control, sessionID: self.sessionID,
+                                                 blockID: self.blockID, remote: remote)
+                self.probing.remove(method)
+                self.server.capabilities.record(method: method.full, host: host, answer, serial: serial)
+            }
         }
     }
 
@@ -65,15 +186,33 @@ final class PaneFiles {
     private var machineName: String { machine ?? "this computer" }
 
     private var machine: String? {
-        let block = server.views[sessionID]?.windowContaining(block: blockID)?.block(blockID)
         if let host = block?.hostID, let label = server.hosts.first(where: { $0.id == host })?.label { return label }
         return server.config.name
     }
 
     // MARK: Menu
 
-    /// The attach menu, built when it opens so its title and Paste Image are current.
+    /// The attach menu, built when it opens so its title and Paste Image are current. The rows
+    /// for sending show where the host takes uploads, the browse rows where it lists folders.
     func menu() -> UIMenu {
+        var sections: [UIMenuElement] = []
+        if support.upload == true { sections.append(sendSection()) }
+        let browse = [FilesCommand.browse, .insertPath].filter(offers).map { c in
+            UIAction(title: c.title, image: UIImage(systemName: c.symbol)) { [weak self] _ in self?.run(c) }
+        }
+        if !browse.isEmpty { sections.append(UIMenu(options: .displayInline, children: browse)) }
+        if support.upload == true {
+            let original = UIAction(title: "Send Original", subtitle: "Photos as they are, with their location",
+                                    image: UIImage(systemName: "photo.badge.checkmark"),
+                                    state: sendOriginals ? .on : .off) { [weak self] _ in
+                self?.sendOriginals.toggle()
+            }
+            sections.append(UIMenu(options: .displayInline, children: [original]))
+        }
+        return UIMenu(children: sections)
+    }
+
+    private func sendSection() -> UIMenu {
         let board = UIPasteboard.general
         var items: [UIMenuElement] = []
         if ClipboardChoice.offersPasteImage(hasImage: board.hasImages || Self.hasFiles(board), canSend: true) {
@@ -84,8 +223,7 @@ final class PaneFiles {
         }
         items.append(UIAction(title: "Photos", subtitle: "Without location. Videos are sent as they are.",
                               image: UIImage(systemName: "photo")) { [weak self] _ in
-            guard let self, let view = self.view else { return }
-            self.picker.pickPhotos(over: view, original: self.sendOriginals)
+            self?.pickPhotos()
         })
         if AttachPicker.cameraAvailable {
             items.append(UIAction(title: "Camera", image: UIImage(systemName: "camera")) { [weak self] _ in
@@ -94,22 +232,46 @@ final class PaneFiles {
             })
         }
         items.append(UIAction(title: "Files", image: UIImage(systemName: "folder")) { [weak self] _ in
-            guard let self, let view = self.view else { return }
-            self.picker.pickFiles(over: view)
+            self?.pickFiles()
         })
-        let original = UIAction(title: "Send Original", subtitle: "Photos as they are, with their location",
-                                image: UIImage(systemName: "photo.badge.checkmark"),
-                                state: sendOriginals ? .on : .off) { [weak self] _ in
-            self?.sendOriginals.toggle()
+        return UIMenu(title: SendTarget.menuTitle(target), options: .displayInline, children: items)
+    }
+
+    /// The Photos picker, honoring Send Original. Its pick is sent to the pane.
+    func pickPhotos() {
+        guard support.upload == true, let view else { return }
+        picker.pickPhotos(over: view, original: sendOriginals)
+    }
+
+    /// The Files picker. Its pick is sent to the pane as it is.
+    func pickFiles() {
+        guard support.upload == true, let view else { return }
+        picker.pickFiles(over: view)
+    }
+
+    // MARK: Commands
+
+    /// Whether a command applies to this pane now: its host has the method, and for Insert Path
+    /// the pane's program is one a path can be written to.
+    func offers(_ command: FilesCommand) -> Bool {
+        server.offers(command, host: block?.hostID, block: blockID)
+    }
+
+    /// Runs a command, from the attach menu or a bound key. Nothing happens where it doesn't apply.
+    func run(_ command: FilesCommand) {
+        guard offers(command) else { return }
+        switch command {
+        case .browse: browse(.browse)
+        case .insertPath: browse(.insert)
+        case .insertFile: pickFiles()
+        case .insertPhoto: pickPhotos()
         }
-        let main = UIMenu(title: SendTarget.menuTitle(target), options: .displayInline, children: items)
-        return UIMenu(children: [main, UIMenu(options: .displayInline, children: [original])])
     }
 
     /// "Send Original": photos go untouched. Lasts until the app quits, like a picker's own choice.
     private var sendOriginals: Bool {
-        get { Prefs.shared.sendOriginalPhotos }
-        set { Prefs.shared.sendOriginalPhotos = newValue }
+        get { server.prefs.sendOriginalPhotos }
+        set { server.prefs.sendOriginalPhotos = newValue }
     }
 
     // MARK: Paste
@@ -118,7 +280,7 @@ final class PaneFiles {
     var pasteChoice: ClipboardChoice {
         let b = UIPasteboard.general
         return ClipboardChoice.paste(hasText: b.hasStrings, hasImage: b.hasImages, hasFiles: Self.hasFiles(b),
-                                     canSend: supported == true)
+                                     canSend: support.upload == true)
     }
 
     static func hasFiles(_ b: UIPasteboard) -> Bool { b.types.contains(UTType.fileURL.identifier) }
@@ -163,9 +325,12 @@ final class PaneFiles {
     /// The pane let go of its stream (closed, or long off screen): stop a download and drop its copy.
     func close() { opener.close() }
 
+    /// Whether the pane's host can send files here: Open, Preview, Share and Save.
+    var canOpen: Bool { support.download == true }
+
     /// The path selected text names, where the server can send files; the edit menu offers Open for it.
     func openablePath(in selection: String) -> String? {
-        guard supported == true else { return nil }
+        guard canOpen else { return nil }
         return PathGuess.path(in: selection)
     }
 
@@ -204,7 +369,7 @@ final class PaneFiles {
     }
 
     func send(_ files: [StagedFile]) {
-        guard supported == true else {
+        guard support.upload == true else {
             FileStaging.discard(files)
             Notice.shared.show("This computer's Rex can't take files. Update Rex there.")
             return
@@ -213,4 +378,122 @@ final class PaneFiles {
     }
 
     func cancel() { sender.cancel() }
+
+    // MARK: Browse and insert
+
+    /// What an insert into this pane would do now (`PathInsert.decide`).
+    var insertDecision: PathInsert.Decision {
+        PathInsert.decide(foreground: server.meta[blockID]?.foreground, bracketedPaste: bracketedPaste(),
+                          windows: server.platform?.hasPrefix("windows") == true)
+    }
+
+    private var recentsKey: String { PathRecents.key(server: server.config.id, host: block?.hostID) }
+
+    /// What the browser may do right now. It reads this each time it draws.
+    private var browserFacts: BrowserModel.Facts {
+        let s = support
+        // Without `list_dir` the listing on screen is only to read: nothing in it is fetched or inserted.
+        let lists = s.listDir == true
+        return BrowserModel.Facts(canList: lists, canFetch: lists && s.download == true,
+                                  insert: lists ? insertDecision : .unavailable,
+                                  paneOpen: block != nil && server.meta[blockID]?.exited != true,
+                                  online: server.phase == .online)
+    }
+
+    /// Shows the file browser over the pane, at `start` (empty: the folder the pane's program is
+    /// in). It takes the keyboard as any sheet does and gives it back, when it goes, to whoever
+    /// held it: the terminal shown or quiet, nobody, or the pane's find field. False when it
+    /// can't show.
+    @discardableResult
+    func browse(_ mode: BrowserModel.Mode, at start: String = "") -> Bool {
+        guard support.listDir == true, browser == nil, let view, var top = view.window?.rootViewController else { return false }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        let prefs = server.prefs
+        let record = keyboard?.capture()
+        var source: any DirSource = lister
+        #if DEBUG
+        source = DelayedFolders.wrap(lister)  // `-filesListDelay` (testing, FilesTest.swift)
+        #endif
+        let model = BrowserModel(mode: mode, machine: machineName, computer: machine, mac: server.platform?.hasPrefix("darwin") == true,
+                                 start: start, source: source, recents: prefs.pathRecents[recentsKey] ?? [],
+                                 showHidden: prefs.showHiddenFiles) { [weak self] in
+            self?.browserFacts ?? BrowserModel.Facts(canList: false, canFetch: false, paneOpen: false, online: false)
+        }
+        let sheet = BrowserSheet(rootView: PaneBrowser(model: model, prefs: prefs))
+        sheet.modalPresentationStyle = .pageSheet
+        sheet.sheetPresentationController?.detents = [.large()]
+        var insert: String?
+        model.onShowHidden = { prefs.showHiddenFiles = $0 }
+        model.onCopy = { UIPasteboard.general.string = $0 }
+        model.onPreview = { [weak self] path in
+            guard let self else { return }
+            self.opener.open(path, machine: self.machineName, over: self.view, textHint: true)
+        }
+        model.onShare = { [weak self] path in
+            guard let self else { return }
+            self.opener.export(path, machine: self.machineName, to: .share, over: self.view)
+        }
+        model.onSave = { [weak self] path in
+            guard let self else { return }
+            self.opener.export(path, machine: self.machineName, to: .files, over: self.view)
+        }
+        model.onClose = { [weak sheet] in sheet?.dismiss(animated: true) }
+        model.onInsert = { [weak sheet] path in
+            insert = path
+            sheet?.dismiss(animated: true)
+        }
+        sheet.onGone = { [weak self, weak model] in
+            guard let self else { return }
+            if let record { self.keyboard?.retake(record) }
+            if let path = insert { self.insert(path: path, cwd: model?.cwd, home: model?.current.home ?? "") }
+        }
+        browser = sheet
+        browserModel = model
+        top.present(sheet, animated: true)
+        return true
+    }
+
+    /// Writes a path into the pane: in the form and quoting `PathInsert` gives for the pane's
+    /// program as it is now, followed by a space, never by a line end. A program that didn't ask
+    /// for text is asked about first.
+    func insert(path: String, cwd: String?, home: String) {
+        let decision = insertDecision
+        guard decision.offered, support.listDir == true else { return }
+        switch PathInsert.text(for: path, cwd: cwd, home: home, quoting: decision.quoting) {
+        case .failure(let refusal):
+            Notice.shared.show(refusal.message)
+        case .success(let text):
+            let write: @MainActor () -> Void = { [weak self] in
+                guard let self else { return }
+                self.insertText?(text)
+                let prefs = self.server.prefs
+                prefs.pathRecents = PathRecents.adding(path, key: self.recentsKey, to: prefs.pathRecents,
+                                                       servers: prefs.servers.map(\.id))
+            }
+            if case .ask(let program) = decision {
+                let title = PathInsert.question(program: program)
+                let answer: @MainActor (Bool) -> Void = { yes in if yes { write() } }
+                if let confirmInsert {
+                    confirmInsert(title, text, answer)
+                } else if let view {
+                    TerminalPrompt.ask(over: view, title: title, message: text, confirm: "Insert", answer: answer)
+                }
+            } else {
+                write()
+            }
+        }
+    }
+}
+
+/// The browser's sheet. It says when it has gone, however it went: Done, a swipe down, an insert.
+private final class BrowserSheet: UIHostingController<PaneBrowser> {
+    var onGone: (() -> Void)?
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard isBeingDismissed || presentingViewController == nil else { return }
+        let gone = onGone
+        onGone = nil
+        gone?()
+    }
 }

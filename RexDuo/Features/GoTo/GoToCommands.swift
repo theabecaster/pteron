@@ -56,6 +56,17 @@ enum GoToCommands {
                 .command(c))
         }
 
+        // The target pane's files: the browser, Insert Path and the two pickers, each only where
+        // the attach menu or its key would work for that pane (`ServerConnection.offers`).
+        if let s = targetServer, s.phase == .online, let block, block.isTerminal {
+            for c in FilesCommand.allCases where s.offers(c, host: block.hostID, block: block.id) {
+                order += 1
+                add(GoToItem(id: .command(appKey(c.action)), kind: .command, title: c.title, subtitle: "Pane", order: order,
+                             symbol: c.symbol, keyLabel: KeyLabel.for(action: c.action, in: keymap), category: "Pane"),
+                    .files(c))
+            }
+        }
+
         let several = servers.count > 1
         // The configuration file's actions: the target's server, or with no tab every online one.
         // An offline server's actions are hidden: they could only fail.

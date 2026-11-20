@@ -141,9 +141,6 @@ final class ServerConnection: Identifiable {
     /// Counts successful connections, so per-connection work (push registration) can tell a new
     /// connection from a resync.
     @ObservationIgnored private(set) var connectionSerial = 0
-    /// Whether this server takes files (`upload_begin`, `download_begin`), asked once per
-    /// connection by the first pane that needs it (`PaneFiles.checkSupport`).
-    @ObservationIgnored var fileSupport: (serial: Int, supported: Bool)?
     /// What this server can do: its API revision, its creators, and what probes found.
     @ObservationIgnored let capabilities = ServerCapabilities()
     /// What to read again when the server drops an oversized event (`recover(dropped:)`).
@@ -842,7 +839,7 @@ final class ServerConnection: Identifiable {
 
     private func readProcess(_ sid: String, _ bid: String) async -> String?? {
         guard let r = try? await control.blockCall("com.superlogical.terminal.process", session: sid, block: bid) else { return nil }
-        return .some(r.obj("foreground").map(Self.processLabel))
+        return .some(r.obj("foreground").map(ProcessNames.label))
     }
 
     /// Reads status, title and process for the blocks and replaces what we had for them. What a
@@ -867,38 +864,6 @@ final class ServerConnection: Identifiable {
                 meta[bid] = cur
             }
         }
-    }
-
-    /// The foreground program's name: its script, else the path it was started by, else its
-    /// process name. Used to tell agents (`AgentKind.fromProgram`).
-    nonisolated static func processLabel(_ fg: JSONObject) -> String {
-        if let s = fg.str("script"), !s.isEmpty { return scriptLabel(s) }
-        if let a = fg.str("invoked_path") ?? fg.str("argv0"), !a.isEmpty {
-            return (a.trimmingCharacters(in: CharacterSet(charactersIn: "-")) as NSString).lastPathComponent
-        }
-        return fg.str("name") ?? ""
-    }
-
-    /// A script's file name, except for a generic entry point (`index.js`, `cli.js`, `main.js`,
-    /// Python's `__main__.py` for `python -m`), which is named by the package that holds it:
-    /// `cursor-agent/versions/<v>/index.js` is cursor-agent, `@anthropic-ai/claude-code/cli.js` is
-    /// claude-code, `site-packages/aider/__main__.py` is aider.
-    nonisolated static func scriptLabel(_ path: String) -> String {
-        let parts = path.split(separator: "/").map(String.init)
-        guard let file = parts.last else { return "" }
-        let stem = (file as NSString).deletingPathExtension.lowercased()
-        let ext = (file as NSString).pathExtension.lowercased()
-        let generic = (["index", "cli", "main", "entry"].contains(stem) && ["js", "mjs", "cjs", "ts"].contains(ext))
-            || (stem == "__main__" && ext == "py")
-        guard generic else { return file }
-        let skipped: Set<String> = ["dist", "build", "lib", "bin", "src", "bundle", "out", "versions", "current",
-                                    "node_modules", "package"]
-        for dir in parts.dropLast().reversed() {
-            let l = dir.lowercased()
-            if skipped.contains(l) || l.hasPrefix("@") || l.first?.isNumber == true { continue }
-            return dir
-        }
-        return file
     }
 
     // MARK: Actions

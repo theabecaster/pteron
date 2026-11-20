@@ -88,6 +88,9 @@ enum AppAction {
     /// Type a key into the pane (`pane.send_key`), e.g. `ctrl+u`.
     case sendKey(KeyChord)
     case copy, paste, selectAll
+    /// The pane's files: the browser, Insert Path, and the pickers that send a file or a photo
+    /// (`PaneFiles.run`). The pane runs it where its host can; elsewhere the key does nothing.
+    case files(FilesCommand)
     case pageUp, pageDown
     case promptPrevious, promptNext
     /// A configuration-file or block action, run by the server (`client.action`).
@@ -113,6 +116,7 @@ enum AppAction {
             default: return .command(.moveTab(1))
             }
         }
+        if let c = FilesCommand.forAction(name) { return .files(c) }
         switch name {
         case "client.tab.new": return .command(.newTab)
         case "client.tab.close": return .command(.closeTab)
@@ -226,6 +230,10 @@ enum KeyActions {
         Info(name: "pane.move_to_tab", title: "Move Pane to Tab…", category: "Pane", repeats: false),
         Info(name: "pane.move_to_new_tab", title: "Move Pane to New Tab", category: "Pane", repeats: false),
         Info(name: "pane.go_to", title: "Go to Anything…", category: "Pane", repeats: false),
+        Info(name: "pane.go_to_directory", title: "Go to Directory…", category: "Pane", repeats: false),
+        Info(name: "pane.insert_path", title: "Insert Path…", category: "Pane", repeats: false),
+        Info(name: "pane.insert_file", title: "Insert File…", category: "Pane", repeats: false),
+        Info(name: "pane.insert_photo", title: "Insert Photo…", category: "Pane", repeats: false),
         Info(name: "pane.send_key", title: "Send Key", category: "Pane", repeats: true),
         Info(name: "pane.copy", title: "Copy", category: "Pane", repeats: false),
         Info(name: "pane.paste", title: "Paste", category: "Pane", repeats: false),

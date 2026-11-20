@@ -154,13 +154,24 @@ builds.
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
   `send:<Mac path>|<Mac path>`, `sendOriginal:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.
   The files land on the pane's computer and their paths are typed, so use a `zz-` session.
+  The file browser: `browse`, `insert`, `browseAt:<path>` open it; then `go:<path>`,
+  `enter:<name>`, `up`, `filter:<text>`, `hidden`, `tap:<name>`, `insertPath:<name>`,
+  `insertHere`, `share:<name>`, `save:<name>`, `select:<n>`, `refresh`, `done`.
+  `run:<action>` runs `pane.go_to_directory`, `pane.insert_path`, `pane.insert_file` or
+  `pane.insert_photo` as a bound key does, and `lose:<method>` records that the pane's host
+  lacks `list_dir`, `upload_begin` or `download_begin`. The browser lists the folder the
+  session's shell is in, and inserts type into that shell: start the `zz-` session in a folder
+  made for the test (`rex new zz-test -c <folder>`).
+- `-filesListDelay <seconds>`: every listing of the file browser waits that long first, to see
+  it while it loads.
 - `-shareTest '<step>;<step>…'`: drive sharing in the active pane once it is live
   (`Features/Files/ShareTest.swift` lists the steps): `screen`, `styledScreen`, `all`, `styledAll`
   (each with `:bar:leading` or `:bar:trailing` to point at that edge), `selection`, `cancel`,
   `dismiss`, `wait:<s>`. Each sheet logs `SHARE_ITEM <text|file> <bytes> <path>`.
 - `-goTo anything|sessions|commands`: open the palette two seconds after the first tab shows,
   as its key would; `-goToQuery <text>` types that text into it half a second later
-  (`Features/GoTo/GoToDebug.swift`); `-goToClose <seconds>` closes it again that long after it
+  (`Features/GoTo/GoToDebug.swift`); `-goToRun <seconds>` runs the selected row that long after it opened, as Return does (with a
+  `zz-` session only: the row acts on the pane); `-goToClose <seconds>` closes it again that long after it
   opened, as Esc does. Use them with `-autoOpen zz-…` for a screenshot or a no-resize check.
 - `-panesTest '<step>;<step>…'`: run Arrange's commands on the tab on screen, two seconds apart,
   through the same paths as the menu and the keys (`Features/Tab/PanesTest.swift`): `swap`,

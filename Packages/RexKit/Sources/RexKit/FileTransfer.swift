@@ -336,31 +336,6 @@ public final class FileUploader {
         if e.code == "client" { return .lost(e.message) }
         return .refused(e.message)
     }
-
-    /// Whether the server takes uploads and downloads, or nil when it couldn't be told (no
-    /// connection). Asks with a reference the server must refuse, so nothing is reserved: a server
-    /// with the methods answers `bad_request`, one without `method_not_found`.
-    public static func probeSupport(control: RexControl, sessionID: String, blockID: String) async -> Bool? {
-        await probeSupport(link: control, sessionID: sessionID, blockID: blockID)
-    }
-
-    static func probeSupport(link: any StreamLink, sessionID: String, blockID: String) async -> Bool? {
-        let asks: [(String, JSONObject)] = [
-            ("com.superlogical.terminal.upload_begin", ["ref": "upload:probe", "name": "probe", "size": 0]),
-            ("com.superlogical.terminal.download_begin", ["ref": "download:probe", "path": "/"]),
-        ]
-        for (method, args) in asks {
-            do {
-                _ = try await link.call(method, ["session_id": sessionID, "block_id": blockID, "args": args])
-            } catch let e as RexError {
-                if e.code == "method_not_found" { return false }
-                if e.code == "client" { return nil }
-            } catch {
-                return nil
-            }
-        }
-        return true
-    }
 }
 
 /// Hands a download's bytes to its `write` on a serial queue, in order, and keeps the first error.

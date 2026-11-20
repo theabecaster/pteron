@@ -308,7 +308,8 @@ current one stands out, and Next and Previous step through the pane's screen and
 A pane takes files as the Rex Mac app's terminal takes a dropped file: they are copied to the
 pane's computer and the server types their paths into the pane as if pasted. Enter is never sent,
 so it works in a shell and in an agent alike. The reverse, Open, brings a file the terminal names
-to the phone. The wire rules are in [rex-protocol.md](rex-protocol.md), Files.
+to the phone, and the file browser lists the folders of the pane's computer. The wire rules are
+in [rex-protocol.md](rex-protocol.md), Folders and Files.
 
 - **Sending.** The key bar's attach key (paperclip, after Paste) opens a menu titled with where the
   files go: the agent working in the pane (OSC 7501), else the pane's computer. It offers Paste
@@ -353,8 +354,13 @@ to the phone. The wire rules are in [rex-protocol.md](rex-protocol.md), Files.
 - **Typing during a send.** The server types the paths itself, outside the input queue. Keys typed
   while a batch is on its way reach the pane first and the paths land after them. The app never
   sends keys for the paths; the progress notice is the cue to wait.
-- **Support.** The attach key shows only where the server has `upload_begin`, asked once per
-  connection (`FileUploader.probeSupport`). Without it Paste stays text-only and Open isn't offered.
+- **Support.** Each of `upload_begin`, `download_begin` and `list_dir` is known per host, on its
+  own (`ServerConnection.fileSupport`; [rex-protocol.md](rex-protocol.md), Folders): two panes
+  of one tab can differ when one is on a remote host with an older Rex. The attach key shows
+  where the pane's host takes uploads or lists folders. Its sending rows, Paste Image, drops and
+  the two insert keys need `upload_begin`; Open, Preview, Share and Save need `download_begin`;
+  the browser and Insert Path need `list_dir`. Without a method its rows are absent and nothing
+  says so; a host with none shows no attach key.
 - **Open.** When a small selection (at most 4 rows and about 1 KB, all in view, checked before its
   text is read) reads as a path (`PathGuess`: absolute, `~`, relative, or a name with an
   extension; shell escapes and quotes undone, `:line:column` dropped, a wrapped path joined), the
@@ -364,6 +370,61 @@ to the phone. The wire rules are in [rex-protocol.md](rex-protocol.md), Files.
   to Files. The copy is deleted when Quick Look goes; none is kept for later, so nothing is left
   when the pane closes or the app goes to the background. Not found, a folder, a device and an
   unreadable file each get a plain message.
+- **Browse.** "Browse Files…" in the attach menu, under the sending rows, and in the palette's
+  commands (as are Insert Path…, Insert File… and Insert Photo…; [goto.md](goto.md)), opens a sheet over
+  the pane with the folder the pane's program is in (`PaneBrowser`, `BrowserModel`): folders
+  first, names as Finder orders them, hidden files out until "Show Hidden Files" in the title's
+  menu (⇧⌘.), which also has the parent folders, Home and Copy Path. A tap opens a folder or
+  previews a file in Quick Look, by the same download as Open; a file with no extension that
+  reads as text, up to 1 MB, is shown as text (`TextHint`). A long press offers Preview, Insert
+  Path, Copy Path, Share… and Save to Files…, which keep the file's own name. The filter matches
+  anywhere in a name; a filter that starts with `/` or `~` is a path, and Return goes there. A
+  folder with more than 2,000 entries says "Showing the first N. Search to find others.", and
+  its filter also asks the server for names that start with the text, 250 ms after the last
+  key. Each folder keeps its listing while the sheet is up; pulling down lists it again, and so
+  does coming back from the background. Selecting a folder's path in the terminal and choosing
+  Open opens the browser there. With a hardware keyboard: ↑ ↓ move, Return opens, Space
+  previews, ⌘↑ goes up, ⌘↓ opens, Esc closes.
+- **Off the main thread.** A listing is read out of its reply, sorted and filtered on other
+  threads, and the newest request wins; the main thread only swaps the rows in. Rows are a lazy
+  stack identified by position, so a filter keystroke updates the rows on screen in place.
+- **What the browser says.** One line and at most one button: an empty folder, "Only hidden
+  files here." (Show Hidden Files), a folder Rex may not read (on macOS, under Desktop, Documents
+  or Downloads, with where to allow it) or that is gone (Go Up), and a lost connection (Retry;
+  it lists again by itself when the connection is back). If a reconnect lands on a server
+  without `list_dir`, or the pane closes, the listing on screen stays to read with a line above
+  it, nothing in it can be opened or inserted, and nothing is sent.
+- **Insert Path.** "Insert Path…" opens the same browser in insert mode: a tap on a file writes
+  its path into the pane and closes the sheet, the bottom button inserts the folder on screen,
+  and "Recent" lists the last 8 paths inserted on that server and host. What is written, and
+  whether, is decided by `PathInsert` from the foreground program's name and bracketed paste
+  only, never from a title, a status record or a reported directory:
+  - `ssh`, `mosh`, `tmux`, `screen`, a container tool and the like in the foreground: Insert
+    isn't offered, and the browser says whose files it shows (`ProcessNames.remoteWrappers`).
+  - A shell (`sh bash zsh fish dash ksh mksh`): the path escaped for a shell (`ShellEscape`,
+    RexKit: a backslash before each character a shell reads as syntax, every `~` but a leading
+    `~/`, and a leading `=`). A macOS test reads the escaped names back through zsh (plain,
+    `extendedglob`, `equals`, `magicequalsubst`), bash, bash `--posix`, dash, ksh and sh, and
+    through fish where it is installed.
+  - An agent by its program name, or any program that asked for bracketed paste: the path as
+    it is.
+  - Anything else: "htop isn't taking text. Insert anyway?" first, then the path as it is.
+  - The path is relative to the program's folder when under it (`./-x` for a name that starts
+    with a dash), `~/…` under home, absolute otherwise, followed by a space. Enter is never
+    sent. A name with a control character or a direction mark isn't inserted. Scalars go out as
+    listed, with no normalization. It goes through `TerminalHost.paste`, so it is bracketed
+    where the program asked. A Windows server has Browse only.
+  - Known limits: a cursor inside an open quote gets the escaped text literally; under `sudo
+    -s`, `~/` means root's home.
+- **Keys.** The Mac's `pane.go_to_directory` (browse), `pane.insert_path`, `pane.insert_file`
+  (the Files picker) and `pane.insert_photo` (the Photos picker, honoring Send Original) are
+  declared with the Mac's titles and no default key, so a key bound in init.lua does on the
+  phone what it does on the Mac, where the pane's host has the method; elsewhere the key does
+  nothing. They are pane actions (`AppAction.files`, `FilesCommand`): they run while a terminal
+  has the keyboard, and not from the find field.
+- **The keyboard** goes back, when the browser closes, to whoever held it: the terminal shown
+  or quiet, nobody, or the pane's find field (`KeyboardRecord`). With a hardware keyboard the
+  sheet makes the key bar leave, as the Settings sheet does.
 - **Temporary copies** live in the app's `tmp/Outgoing` and `tmp/Incoming`; a finished send or a
   closed preview removes its own, and launch removes what is left.
 - `-filesTest` drives all of this in the simulator, which can't tap through a picker

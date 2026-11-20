@@ -164,6 +164,11 @@ final class Prefs {
     /// "Send Original" in the attach menu: photos go as they are, location included, instead of
     /// converted, downscaled and stripped. Not saved: each run starts with the private choice.
     @ObservationIgnored var sendOriginalPhotos = false
+    /// "Show Hidden Files" in the file browser. Not saved: each run starts with them hidden.
+    @ObservationIgnored var showHiddenFiles = false
+    /// The paths last inserted with Insert Path, newest first, per server and host
+    /// (`PathRecents`): the browser's "Recent" in insert mode.
+    @ObservationIgnored var pathRecents: [String: [String]] { didSet { d.set(pathRecents, forKey: "pathRecents") } }
     /// The system's Light or Dark Mode, which `RexDuoApp` reads each time the app becomes active.
     /// Views can't read it from the environment: the root forces the app's scheme to the theme's own.
     var systemScheme: ColorScheme
@@ -193,6 +198,14 @@ final class Prefs {
     // the places, 3 waiting and 8 recent ones; recents weigh up to +30% and halve every 3 days
     // (`GoToRanker`, `GoToRecents`); a run's notice after 1.5 s for at most 6 s, and questions
     // only from the phone's own runs within 10 s (`GoToCenter`, `PaletteOrigins`).
+    // The file browser has no settings: it opens in the folder the pane's program is in; hidden
+    // files are hidden until "Show Hidden Files", which lasts until the app quits; folders come
+    // first and names sort as in Finder; one call lists at most 2,000 entries and a filter asks
+    // the server 250 ms after the last key only while a listing is cut short (`DirLister.limit`,
+    // `FolderModel.searchDelay`); the last 8 inserted paths are kept per server and host
+    // (`PathRecents.limit`); a file without an extension previews as text up to 1 MB
+    // (`TextHint`). Insert Path writes a path relative to the program's folder, else `~/…`, else
+    // absolute, escaped for a shell and as it is elsewhere, and never a line end (`PathInsert`).
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0
@@ -234,6 +247,7 @@ final class Prefs {
         helpersToTell = ids("helpersToTell")
         sidebarWidths = d.dictionary(forKey: "sidebarWidths") as? [String: Double] ?? [:]
         sidebarCollapsed = Set(d.stringArray(forKey: "sidebarCollapsed") ?? [])
+        pathRecents = d.dictionary(forKey: "pathRecents") as? [String: [String]] ?? [:]
         sidebarMode = d.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) ?? .sessions
         lastSelection = d.data(forKey: "lastSelection").flatMap { try? JSONDecoder().decode(Selection.self, from: $0) }
         goToRecents = d.data(forKey: "goToRecents").flatMap { try? JSONDecoder().decode([GoToRecent].self, from: $0) } ?? []

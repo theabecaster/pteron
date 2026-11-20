@@ -127,7 +127,7 @@ extension ServerConnection {
         case "pwd_changed":
             m.pwd = e.str("pwd")
         case "process_changed":
-            if let fg = e.obj("foreground") { m.foreground = Self.processLabel(fg) } else { m.foreground = nil }
+            if let fg = e.obj("foreground") { m.foreground = ProcessNames.label(fg) } else { m.foreground = nil }
         case "program_status_changed":
             let id = e.str("id") ?? ""
             let prev = m.statuses[id]?.state

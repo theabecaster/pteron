@@ -84,16 +84,42 @@ enum PathGuess {
 /// folder, with progress and Cancel, then shows it in Quick Look, which offers Share and Save to
 /// Files. The copy lives only as long as Quick Look shows it: it is deleted when Quick Look goes,
 /// and whatever is left when the pane closes. Launch clears the folder too.
+///
+/// The file browser also sends a file straight to the share sheet or to Save to Files
+/// (`export`), by the same download; that copy goes when the sheet or the picker does.
 @MainActor
-final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency QLPreviewControllerDelegate {
+final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency QLPreviewControllerDelegate,
+    UIDocumentPickerDelegate {
     nonisolated static let limit: Int64 = 100_000_000
+
+    /// Where a downloaded file goes.
+    enum Destination: Equatable {
+        /// Quick Look. `textHint`: a file with no extension that reads as text is shown as text.
+        case preview(textHint: Bool)
+        case share
+        /// Save to Files.
+        case files
+
+        /// The notice's verb while it downloads.
+        var verb: String {
+            switch self {
+            case .preview: return "Opening"
+            case .share: return "Getting"
+            case .files: return "Saving"
+            }
+        }
+    }
 
     private let control: RexControl
     private let sessionID: String
     private let blockID: String
     private var downloader: FileDownloader?
-    /// The copy Quick Look shows.
-    private var showing: URL?
+    /// The copy Quick Look shows, and the name its title carries.
+    private var showing: PreviewFile?
+    /// The copy the share sheet or Save to Files holds.
+    private var exporting: URL?
+    /// The path named a folder. True when the folder was shown instead (the file browser).
+    var onFolder: ((String) -> Bool)?
 
     init(control: RexControl, sessionID: String, blockID: String) {
         self.control = control
@@ -109,7 +135,16 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
         cancel()
     }
 
-    func open(_ path: String, machine: String, over view: UIView?) {
+    func open(_ path: String, machine: String, over view: UIView?, textHint: Bool = false) {
+        fetch(path, machine: machine, to: .preview(textHint: textHint), over: view)
+    }
+
+    /// Downloads `path` and hands it to the share sheet or to Save to Files, under its own name.
+    func export(_ path: String, machine: String, to destination: Destination, over view: UIView?) {
+        fetch(path, machine: machine, to: destination, over: view)
+    }
+
+    private func fetch(_ path: String, machine: String, to destination: Destination, over view: UIView?) {
         guard downloader == nil else { return Notice.shared.show("Wait for the file on its way to finish.") }
         let d = FileDownloader(control: control, sessionID: sessionID, blockID: blockID)
         downloader = d
@@ -122,20 +157,25 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                     try file.write(data)
                 }, progress: { got, size in
                     let f = size > 0 ? min(Double(got) / Double(size), 1) : 0
-                    Notice.shared.showProgress("Opening \(name) · \(Int(f * 100))%", fraction: f, cancel: cancel)
+                    Notice.shared.showProgress("\(destination.verb) \(name) · \(Int(f * 100))%", fraction: f, cancel: cancel)
                 })
                 self.downloader = nil
                 file.close()
                 guard case .downloaded(let info) = outcome else { return }
                 let url = try file.url ?? Self.empty(named: info.name)
                 Notice.shared.dismiss()
-                self.show(url, over: view)
+                switch destination {
+                case .preview(let hint): await self.show(url, textHint: hint, over: view)
+                case .share, .files: self.hand(url, to: destination, over: view)
+                }
             } catch {
                 self.downloader = nil
                 file.close()
                 if let url = file.url { Self.delete(url) }
                 let f = error as? FileDownloader.Failure ?? .lost(error.localizedDescription)
-                let retry = Notice.Action(title: "Retry") { self.open(path, machine: machine, over: view) }
+                // A folder is something to browse, where the pane's computer lists folders.
+                if f == .folder, destination == .preview(textHint: false), self.onFolder?(path) == true { return }
+                let retry = Notice.Action(title: "Retry") { self.fetch(path, machine: machine, to: destination, over: view) }
                 switch f {
                 case .cancelled: Notice.shared.show(PathGuess.message(f, path: path, machine: machine), style: .neutral)
                 case .lost: Notice.shared.show(PathGuess.message(f, path: path, machine: machine), action: retry)
@@ -157,7 +197,13 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
     }
 
-    private func show(_ url: URL, over view: UIView?) {
+    private static func top(over view: UIView?) -> UIViewController? {
+        guard var top = view?.window?.rootViewController else { return nil }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        return top
+    }
+
+    private func show(_ url: URL, textHint: Bool, over view: UIView?) async {
         #if DEBUG
         // `FILES_OPENED <name> <bytes> <sha256>` in the system log, to check against the computer's copy.
         if let data = try? Data(contentsOf: url) {
@@ -165,10 +211,13 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
             NSLog("FILES_OPENED %@ %ld %@", url.lastPathComponent, data.count, hex)
         }
         #endif
-        guard var top = view?.window?.rootViewController else { return Self.delete(url) }
-        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-        if let old = showing { Self.delete(old) }
-        showing = url
+        // A name without an extension gives Quick Look nothing to go by: text is shown as text,
+        // from a copy named `.txt`, under the file's own name.
+        var shown = url
+        if textHint, let hinted = await Task.detached(operation: { TextHint.renamed(url) }).value { shown = hinted }
+        guard let top = Self.top(over: view) else { return Self.delete(shown) }
+        if let old = showing { Self.delete(old.url) }
+        showing = PreviewFile(url: shown, title: url.lastPathComponent)
         let preview = QLPreviewController()
         preview.dataSource = self
         preview.delegate = self
@@ -178,14 +227,64 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
 
     func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> any QLPreviewItem {
-        (showing ?? URL(fileURLWithPath: "/dev/null")) as NSURL
+        showing ?? PreviewFile(url: URL(fileURLWithPath: "/dev/null"), title: "")
     }
 
     /// Quick Look went (after a Share or a Save to Files, if any): the copy goes too.
     func previewControllerDidDismiss(_ controller: QLPreviewController) {
-        if let url = showing { Self.delete(url) }
+        if let old = showing { Self.delete(old.url) }
         showing = nil
     }
+
+    // MARK: Share and Save to Files
+
+    private func hand(_ url: URL, to destination: Destination, over view: UIView?) {
+        guard let top = Self.top(over: view) else { return Self.delete(url) }
+        if let old = exporting { Self.delete(old) }
+        exporting = url
+        if destination == .share {
+            let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            sheet.completionWithItemsHandler = { [weak self] _, _, _, _ in
+                Task { @MainActor in self?.exported(url) }
+            }
+            // On a wide window the sheet is a popover: it points at the middle of what it is over.
+            sheet.popoverPresentationController?.sourceView = top.view
+            sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 1, height: 1)
+            sheet.popoverPresentationController?.permittedArrowDirections = []
+            top.present(sheet, animated: true)
+        } else {
+            let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+            picker.delegate = self
+            top.present(picker, animated: true)
+        }
+    }
+
+    private func exported(_ url: URL) {
+        Self.delete(url)
+        if exporting == url { exporting = nil }
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if let url = exporting { exported(url) }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        if let url = exporting { exported(url) }
+    }
+}
+
+/// What Quick Look shows: the copy, under the file's own name.
+private final class PreviewFile: NSObject, QLPreviewItem {
+    let url: URL
+    let title: String
+
+    init(url: URL, title: String) {
+        self.url = url
+        self.title = title
+    }
+
+    var previewItemURL: URL? { url }
+    var previewItemTitle: String? { title }
 }
 
 /// A download's file, made at its first bytes. Written only on the download's writer queue, one

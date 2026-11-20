@@ -35,7 +35,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 ## Map
 
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
-  `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`). Foundation only,
+  `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`), file transfer,
+  folder listing (`DirLister`) and `ShellEscape`. Foundation only,
   so it tests on macOS.
 - `Packages/RexGlance`: what the app shares with its extensions (docs/glance.md). `GlanceModel`
   holds `Brand` (the product's names), the `rexduo:` links that open the app (`DeepLink`,
@@ -63,8 +64,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `Selection/` the touch selection UI, `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline,
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
-  `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection;
-  docs/terminal.md, Files), Ports (a computer's dev server in Safari's view through a Rex dial
+  `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection, the file
+  browser of a pane and Insert Path; docs/terminal.md, Files), Ports (a computer's dev server in Safari's view through a Rex dial
   tunnel: the pane menu's row and tapped `localhost` links; docs/terminal.md, Ports), GoTo (Go to
   Anything, Change Session and the command palette, and the questions of actions the phone ran;
   docs/goto.md).
