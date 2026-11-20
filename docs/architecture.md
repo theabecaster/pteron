@@ -123,6 +123,36 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   server among several is a line in the sidebar). Over a tab whose server dropped, it dims the stale
   tab and blocks touches. `SignalStatic` is Core Animation only (one noise texture, discrete
   `contentsRect` jumps, looping keyframes), off while not in a window, still with Reduce Motion.
+- A `*.ts.net` server out of reach while this iPhone has no Tailscale address says "Tailscale isn't
+  connected on this iPhone." and offers Get Tailscale (`TailscaleApp`) instead of Open Settings.
+  Every other case is worded without naming a product.
+
+## First run
+
+`Features/Onboarding` is a short setup guide for an install with no computer yet.
+
+- Who sees it: `AppModel.init` decides once (`FirstRun.start`): no server and
+  `Prefs.onboardingDone` false. An update that finds servers sets the flag in `Prefs.init`, before
+  the first frame, so existing users never see it. Test launches (`-servers`, `-autoOpen`,
+  `-boardDemo`, `-simulateOffline`) and the test host never do. An existing user pays one saved flag.
+- Where: `OnboardingCover`, one modifier in `RootView`, lays it over the root while
+  `AppModel.guide` is set, so the launch peel opens onto it. Otherwise nothing of it exists.
+- Steps (`OnboardingModel`): the welcome (Glide over `SignalStatic`, Get Started, I Have a Pairing
+  Code); two cards (what the app is, answering agents), paged with a spring, each with one motion
+  the first time it shows; the checklist: Tailscale on this iPhone, Tailscale turned on in Rex
+  (Mac or Linux), the pairing code, then Scan Code, Enter Address or Not Now. Back and Skip are in
+  the bar. Steps cross-fade; Reduce Motion keeps only the fades. Each screen lays out like the
+  offline screen (`OfflineLayout`): two pages on the unfolded Duo, nothing on the crease.
+- The Tailscale tick reads `NetworkWatch`, with no polling of its own (`PrivateNetwork`: IPv4
+  100.64.0.0/10 only on a `utun` tunnel, since a cellular network can hand out that range;
+  IPv6 fd7a:115c:a1e0::/48 anywhere). It only tells, and nothing waits for it. Get Tailscale shows
+  the App Store page in the app (`SKStoreProductViewController`; Safari where it can't load).
+- It asks for no permission: the scanner asks for the camera when Scan Code opens it, and the
+  Beacon offer after pairing asks for notifications.
+- It ends with Not Now (`closeGuide`, for good) or a computer added (`addServer`, Settings' Add
+  Server; `Prefs.servers` marks the first run done). The `rexduo://pair` link opens pairing and
+  sets the guide aside for that run. Setup Guide, on the empty state and in Settings → About,
+  opens the checklist again.
 
 ## Pairing
 

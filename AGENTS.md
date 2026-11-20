@@ -64,7 +64,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
-  (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline,
+  (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline, Onboarding (the
+  first-run guide and Setup Guide's checklist; docs/architecture.md, First run),
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection, the file
   browser of a pane and Insert Path; docs/terminal.md, Files), Ports (a computer's dev server in Safari's view through a Rex dial

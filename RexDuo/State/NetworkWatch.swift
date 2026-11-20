@@ -53,7 +53,9 @@ final class NetworkWatch {
 }
 
 /// Whether the phone looks like it's on a Tailscale network: an interface that's up with an address
-/// in Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48).
+/// in Tailscale's ranges. IPv6 fd7a:115c:a1e0::/48 is Tailscale's own and counts on any interface.
+/// IPv4 100.64.0.0/10 counts only on a tunnel (`utun*`, where the Tailscale app puts it): it is also
+/// the carrier-grade NAT range, which a cellular network can give the phone itself.
 enum PrivateNetwork {
     nonisolated static func isConnected() -> Bool {
         var head: UnsafeMutablePointer<ifaddrs>?
@@ -67,7 +69,7 @@ enum PrivateNetwork {
             switch Int32(sa.pointee.sa_family) {
             case AF_INET:
                 let a = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-                if isTailnet(ipv4: a) { return true }
+                if isTailnet(interface: String(cString: p.pointee.ifa_name), ipv4: a) { return true }
             case AF_INET6:
                 let bytes = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { s in
                     withUnsafeBytes(of: s.pointee.sin6_addr) { Array($0) }
@@ -78,6 +80,11 @@ enum PrivateNetwork {
             }
         }
         return false
+    }
+
+    /// An IPv4 address of the interface `name`: Tailscale's only on a tunnel.
+    nonisolated static func isTailnet(interface name: String, ipv4 a: UInt32) -> Bool {
+        name.hasPrefix("utun") && isTailnet(ipv4: a)
     }
 
     /// 100.64.0.0/10, the carrier-grade NAT range Tailscale assigns from.

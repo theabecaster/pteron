@@ -121,10 +121,18 @@ final class Prefs {
     /// them on, and kept as chosen while iOS has notifications turned off.
     var pushEnabled: Bool { didSet { d.set(pushEnabled, forKey: "pushEnabled") } }
     var servers: [ServerConfig] {
-        didSet { if let data = try? JSONEncoder().encode(servers) { d.set(data, forKey: "servers") } }
+        didSet {
+            if let data = try? JSONEncoder().encode(servers) { d.set(data, forKey: "servers") }
+            // A computer added any way at all (pairing, an address, a link) ends the first run.
+            if !servers.isEmpty, !onboardingDone { onboardingDone = true }
+        }
     }
 
     // MARK: Remembered state
+
+    /// The first-run guide was left, or is not needed: an install that has a server, or had one
+    /// (set before the first frame when an update finds servers). Setup Guide opens it again.
+    var onboardingDone: Bool { didSet { d.set(onboardingDone, forKey: "onboardingDone") } }
 
     /// Servers whose "Get notifications from <Name>?" page was answered with Skip. Pairing never
     /// asks again for them; Settings → Notifications still has Install.
@@ -224,6 +232,8 @@ final class Prefs {
     // legible (`WindowScreen.splitsFit`); agent status always shows in the sidebar; haptics follow
     // iOS's System Haptics; in-app banners for waiting agents are always on; sidebar text follows
     // Dynamic Type.
+    // The first-run guide has no settings: it shows once, to an install with no server, until Not
+    // Now or a computer is added; its checklist starts on Mac; it has no timers, badges or sounds.
     // Progress rings and notice toasts have no switch either: rings apply at most every 0.5 s and
     // go 15 s after the last report (`ServerConnection.progressFlush`, `progressStale`); a notice
     // waits 1 s for an agent status and counts a pane as an agent's 10 s after its last record
@@ -261,6 +271,12 @@ final class Prefs {
         // A fresh install has no servers and opens on pairing. In a simulator, `-servers` adds some
         // for one run (docs/debug-args.md).
         servers = d.data(forKey: "servers").flatMap { try? JSONDecoder().decode([ServerConfig].self, from: $0) } ?? []
+        // An update that finds servers never shows the first-run guide, and never will.
+        onboardingDone = d.bool(forKey: "onboardingDone")
+        if !onboardingDone, !servers.isEmpty {
+            onboardingDone = true
+            d.set(true, forKey: "onboardingDone")
+        }
     }
 
     /// Carries removed settings over to what they mean now, then clears their keys.

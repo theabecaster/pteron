@@ -294,6 +294,21 @@ final class AppModel {
     @ObservationIgnored private(set) lazy var palette = GoToCenter(model: self)
     /// The "Pair via QR Code" scanner, opened from the screen shown when there are no servers.
     var showPairing = false
+    /// The setup guide while it covers the app (`OnboardingCover`), and where it starts: the
+    /// welcome on a first run, the checklist from Setup Guide. Nil the rest of the time.
+    var guide: OnboardingStart?
+
+    /// Setup Guide (the empty state, Settings → About): the checklist, over the app.
+    func openGuide() {
+        showSettings = false
+        guide = .checklist
+    }
+
+    /// Not Now, or a computer was added: the guide goes, and the first run is over for good.
+    func closeGuide() {
+        guide = nil
+        if !prefs.onboardingDone { prefs.onboardingDone = true }
+    }
     @ObservationIgnored private var landing: Task<Void, Never>?
     /// A computer picked from the sidebar's known hosts: the scanner opens straight at its check.
     var pairingStart: PairingStart?
@@ -394,6 +409,8 @@ final class AppModel {
         self.glance.anyLive = { [weak self] in self?.servers.contains { GlanceSource.link($0) == .live } ?? false }
         connectActions(mode)
         if connect { rebuildServers() }
+        // Read once, here: an existing user pays one saved flag at launch.
+        if connect { guide = FirstRun.start(done: prefs.onboardingDone, servers: servers.count) }
         #if DEBUG
         // `-settings <page>` (testing): open Settings at launch, at that page.
         if connect, SettingsPage.debugLaunch != nil { showSettings = true }
@@ -480,11 +497,13 @@ final class AppModel {
     // MARK: Adding a server
 
     /// Saves a server, unless one at the same address is already saved. True when it was saved.
+    /// The setup guide, if it is up, goes: the new computer's tab is what comes next.
     @discardableResult
     func addServer(_ config: ServerConfig) -> Bool {
         if let url = ServerConfig.url(from: config.url), PairingCode.existing(url, in: prefs.servers) != nil { return false }
         prefs.servers.append(config)
         rebuildServers()
+        closeGuide()
         return true
     }
 
@@ -777,6 +796,9 @@ final class AppModel {
             guard !showSettings, !showPairing, helperSetup.active == nil else { return }
             pairingStart = nil
             showPairing = true
+            // Straight to pairing: the guide steps aside for this run (a cancel lands on the
+            // empty state), and adding the computer ends the first run (`Prefs.servers`).
+            guide = nil
         case .pane(let pane):
             // One link at a time; a new one replaces it.
             jump?.cancel()

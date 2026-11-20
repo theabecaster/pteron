@@ -217,6 +217,8 @@ struct RootView: View {
                                 pool: hostPool, keyboardHeight: keyboardHeight, theme: theme))
             // The palette, over the tab and the sidebar, while it is open; nothing while closed.
             .modifier(GoToOverlay(theme: theme, narrow: !arr.inline, division: division, keyboardPad: keyboardHeight))
+            // The setup guide, over everything, while it shows (first run, Setup Guide).
+            .modifier(OnboardingCover())
             // A new width resizes the panes anyway: the palette's hold on the keyboard's room ends.
             .onChange(of: geo.size.width) { _, _ in model.palette.padHold.endNow() }
             .environment(\.division, division)
@@ -482,6 +484,10 @@ struct EmptyState: View {
                 PrimaryButton(title: "Pair via QR Code", busy: false, theme: theme) { model.showPairing = true }
                 Button("Enter Address") { model.openSettings(at: .addServer) }
                     .font(.subheadline.weight(.medium))
+                    .frame(minWidth: 200, minHeight: 44)
+                Button("Setup Guide") { model.openGuide() }
+                    .font(.footnote)
+                    .foregroundStyle(theme.chrome.secondary)
                     .frame(minWidth: 200, minHeight: 44)
             } else if !sidebarVisible {
                 Button("Show Sidebar") { sidebarVisible = true }

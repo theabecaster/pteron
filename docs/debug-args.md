@@ -8,6 +8,13 @@ builds.
 - `-sizing mirror`: keep the Mac's pane sizes instead of fitting panes to the phone.
 - `-servers 'Name=https://…,Other=http://127.0.0.1:8765'`: use these servers instead of the saved
   ones. A missing `.ts.net` host, a closed port or a 403 shows the real offline screens.
+- The first-run guide (architecture.md, First run) shows on a fresh install by itself; none of
+  the test launches above shows it. `-onboardingDone NO` brings it back for one run on an install
+  with no server that left it (Release too: it is the saved flag's key). `-guideStep
+  tour|agents|connect` opens it at the first card, the second card or the checklist;
+  `-guideComputer linux` picks Linux on the checklist; `-guideDemo YES` plays it through by
+  itself (Get Started, Continue, Continue, Linux, Back, Skip, Not Now), for a recording. With
+  `-simulateNetwork offPrivate` the Tailscale step shows unticked.
 - `-simulateOffline <kind>`: every server shows that offline screen and none connects. Kinds:
   `noInternet`, `offPrivateNetwork`, `hostNotFound`, `notAnswering`, `notAllowed`, `insecure`,
   `updateServer`, `updateApp`, `badAddress`, `unknown`. `-simulateRetrying YES` holds Try Again in "Trying…".

@@ -19,6 +19,11 @@ struct OfflineCopy: Equatable {
         case .noInternet:
             return OfflineCopy(symbol: "wifi.slash", title: "No connection",
                                message: "This iPhone is offline right now. \(Brand.appName) reconnects as soon as a network is back.")
+        case .offPrivateNetwork where TailscaleApp.isTailnetAddress(address):
+            // A Tailscale address and no Tailscale here: the one thing to fix is on this iPhone.
+            return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
+                               message: "Tailscale isn't connected on this iPhone.",
+                               hint: "Turn it on in the Tailscale app, signed in as on the computer.")
         case .offPrivateNetwork:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
                                message: "Can't reach \(server) from this network.",
@@ -79,18 +84,22 @@ struct OfflineCopy: Equatable {
 
 /// The second button, when the problem has one.
 enum OfflineAction: Equatable {
-    /// iOS Settings, where Wi-Fi, cellular and VPNs live; or the app's server list.
-    case openSettings, serverSettings
+    /// iOS Settings, where Wi-Fi, cellular and VPNs live; or the app's server list; or the
+    /// Tailscale app's App Store page, in the app.
+    case openSettings, serverSettings, getTailscale
 
     var title: String {
         switch self {
         case .openSettings: return "Open Settings"
         case .serverSettings: return "Server Settings"
+        case .getTailscale: return "Get Tailscale"
         }
     }
 
-    static func secondary(for kind: ConnectionProblem.Kind) -> OfflineAction? {
+    /// `address`: the server's, as saved.
+    static func secondary(for kind: ConnectionProblem.Kind, address: String = "") -> OfflineAction? {
         switch kind {
+        case .offPrivateNetwork where TailscaleApp.isTailnetAddress(address): return .getTailscale
         case .noInternet, .offPrivateNetwork: return .openSettings
         case .hostNotFound, .insecure: return .serverSettings
         case .badAddress, .notAllowed, .notAnswering, .updateServer, .updateApp, .unknown: return nil
@@ -288,7 +297,7 @@ struct OfflineScreen: View {
                     Haptic.tap()
                     server.retryNow()
                 }
-                if let a = OfflineAction.secondary(for: problem.kind) {
+                if let a = OfflineAction.secondary(for: problem.kind, address: server.config.url) {
                     Button(a.title) { perform(a) }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.accent)
@@ -355,18 +364,21 @@ struct OfflineScreen: View {
         case .openSettings:
             if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }
         case .serverSettings: model.showSettings = true
+        case .getTailscale: TailscaleApp.showInAppStore()
         }
     }
 }
 
 /// The filled capsule button. Busy swaps the title for a spinner and `busyTitle` in the same frame,
-/// so nothing around it moves.
+/// so nothing around it moves. 200 × 46 pt; large text makes it taller and wider, wrapping.
 struct PrimaryButton: View {
     let title: String
     var busyTitle: String = ""
     let busy: Bool
     let theme: TermTheme
     let action: () -> Void
+    /// Room around the title, growing with it.
+    @ScaledMetric(relativeTo: .body) private var inset: CGFloat = 10
 
     var body: some View {
         // Taps while busy do nothing. Not `.disabled`, which would fade "Trying…" past legibility.
@@ -381,7 +393,9 @@ struct PrimaryButton: View {
             }
             .font(.body.weight(.semibold))
             .foregroundStyle(theme.bg)
-            .frame(width: 200, height: 46)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, inset).padding(.vertical, inset * 0.8)
+            .frame(minWidth: 200, minHeight: 46)
             .background(Capsule().fill(theme.accent.opacity(busy ? 0.85 : 1)))
             .contentShape(Capsule())
         }

@@ -139,12 +139,27 @@ struct ConnectionProblemTests {
             == "This iPhone is on a private network, but your Mac isn't on it.")
     }
 
-    @Test func copyNeverNamesAVPNApp() {
+    /// Tailscale is named only where the server's address is a Tailscale one and the phone is off
+    /// Tailscale: there the fix is on this iPhone. Every other case words it as before.
+    @Test func copyNamesTailscaleOnlyForATailscaleAddressOffTheTailnet() {
         for kind in ConnectionProblem.Kind.allCases {
-            let c = OfflineCopy.of(kind, server: "Studio", address: "x")
-            for text in [c.title, c.message, c.hint ?? ""] {
-                #expect(!text.localizedCaseInsensitiveContains("tailscale"))
-                #expect(!text.contains("ts.net"))
+            for address in ["x", "http://192.168.1.20:8765"] {
+                let c = OfflineCopy.of(kind, server: "Studio", address: address)
+                for text in [c.title, c.message, c.hint ?? ""] {
+                    #expect(!text.localizedCaseInsensitiveContains("tailscale"))
+                    #expect(!text.contains("ts.net"))
+                }
+                #expect(OfflineAction.secondary(for: kind, address: address) != .getTailscale)
+            }
+            let tailnet = "https://studio-rex.tail1234.ts.net"
+            let c = OfflineCopy.of(kind, server: "Studio", address: tailnet)
+            if kind == .offPrivateNetwork {
+                #expect(c.message == "Tailscale isn't connected on this iPhone.")
+                #expect(OfflineAction.secondary(for: kind, address: tailnet) == .getTailscale)
+            } else {
+                // A bad address quotes the address, so only its title stays the same.
+                if kind != .badAddress { #expect(c == OfflineCopy.of(kind, server: "Studio", address: "x")) }
+                #expect(OfflineAction.secondary(for: kind, address: tailnet) == OfflineAction.secondary(for: kind))
             }
         }
     }

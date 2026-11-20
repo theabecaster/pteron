@@ -16,19 +16,25 @@ Open the link on your iPhone. It installs TestFlight first if you don't have it.
 
 ## Set up
 
-1. **Turn on Rex's Tailscale serving on your computer.** Pteron reaches Rex over Tailscale, a
-   private network that links your devices. In a terminal on the computer, run
-   `rex server tailscale on` and sign in to Tailscale if Rex asks (`rex server status` shows the
-   sign-in link). This lasts until the Rex server restarts; to keep it on, start the server with
-   `--tailscale`.
-2. **Put your iPhone on the same tailnet.** Install Tailscale on the iPhone and sign in with the
-   same account as the computer. Rex only lets in devices signed in to that account.
-3. **Add the computer in Pteron.** On a fresh install the sidebar offers **Pair via QR Code**,
-   and Settings → Servers → Add Server has it too. On the computer, run
-   `rex server tailscale pair` and point the camera at the code it shows. Pteron checks the
-   computer, shows its name, account and sessions, and **Add & Open** takes you to its active
-   tab. You can also type the computer's address (such as `studio-rex.your-tailnet.ts.net`)
-   under **Or Enter Its Address**.
+Pteron connects to your computer privately, through Tailscale, a private network that links
+your devices. On first launch a short guide walks through these steps; **Setup Guide** (on the
+empty screen, and in Settings → About) opens its checklist again.
+
+1. **Tailscale on this iPhone.** Install Tailscale (**Get Tailscale** opens it in the App Store),
+   sign in, then turn it on. Rex only lets in devices signed in to the same account as the
+   computer. The guide ticks this step once the iPhone has a Tailscale address.
+2. **Turn on Tailscale in Rex.** The computer needs no Tailscale app: Rex serves through its own.
+   - Mac: in Rex, Settings → Server → Tailscale → **Serve over Tailscale**.
+   - Linux: run `rex server tailscale on`. If it asks you to sign in, `rex server status` shows
+     the link. This lasts until the Rex server restarts; to keep it on, start the server with
+     `--tailscale`.
+
+   Sign in with the same account as on the iPhone.
+3. **Show the pairing code, then tap Scan Code.** On a Mac, in Rex: Settings → Server → Remote
+   Address → **Pair**; anywhere, `rex server tailscale pair`. Pteron checks the computer, shows
+   its name, account and sessions, and **Add & Open** takes you to its active tab. You can also
+   type the computer's address (such as `studio-rex.your-tailnet.ts.net`) with **Enter Address**,
+   or in Settings → Servers → Add Server under **Or Enter Its Address**.
 
 Repeat step 3 for each computer. A computer that Rex already knows about shows up under
 **Not added** in the sidebar, with an **Add** button.

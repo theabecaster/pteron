@@ -106,6 +106,8 @@ struct SettingsView: View {
 
                 Section {
                     LabeledContent("Version", value: Self.version)
+                    // The first-run checklist again, for another computer or a second look.
+                    Button("Setup Guide") { model.openGuide() }
                     NavigationLink(value: SettingsPage.acknowledgements) { Text("Acknowledgements") }
                         .id(SettingsAnchor.end)
                 } header: {
@@ -302,6 +304,7 @@ struct AddServerView: View {
         let n = name.trimmingCharacters(in: .whitespaces)
         prefs.servers.append(ServerConfig(name: n.isEmpty ? ServerConfig.name(for: url) : n, url: url.absoluteString))
         model.rebuildServers()
+        model.closeGuide()
         dismiss()
     }
 }
