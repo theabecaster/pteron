@@ -39,6 +39,10 @@ final class PortActions {
         var only: @MainActor () -> String? = { UserDefaults.standard.string(forKey: "autoOpen") }
         /// Types the Ctrl-C, once: through the pane's own input queue when it is on screen, else
         /// as one call. `mayWrite` is asked as the last thing before the text is handed over.
+        /// The connected computers and their ports. Nil: the model's servers, as held now.
+        var machines: (@MainActor () -> [PortAddress.Machine])?
+        /// Opens a web address that isn't a computer's own in the system's browser.
+        var openURL: @MainActor (URL) -> Void = { UIApplication.shared.open($0) }
         var write: @MainActor (ServerConnection, _ session: String, _ block: String, _ limit: TimeInterval,
                                _ mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery = { server, sid, bid, limit, may in
             await LiveActionChannel(server).write("\u{3}", session: sid, block: bid, within: limit, mayWrite: may)
@@ -92,12 +96,85 @@ final class PortActions {
 
     // MARK: Actions
 
-    /// Opens the port's page in the app, as the pane menu's row does.
-    func open(_ server: ServerConnection, _ row: PortRow) {
+    /// Opens the port's page in the app, as the pane menu's row does. With `address`, at the
+    /// path someone typed, shown as they typed it.
+    func open(_ server: ServerConnection, _ row: PortRow, as address: PortAddress? = nil) {
         let pane = PanePorts(server: server, sessionID: row.sessionID, blockID: row.blockID)
         pane.view = presenter()
         pane.notify = { [parts] in parts.notify($0, nil) }
-        pane.open(row.entry)
+        pane.typed = { [weak self] text, browser in self?.go(text, from: browser) }
+        if let address { pane.open(row.entry, as: address) } else { pane.open(row.entry) }
+    }
+
+    // MARK: A typed address
+
+    /// Which page a browser shows: the machine and its port.
+    static func source(_ server: UUID, port: Int) -> String { "\(server.uuidString):\(port)" }
+
+    /// The connected computers and their ports, as the app holds them now: no call is made.
+    func machines() -> [PortAddress.Machine] {
+        if let given = parts.machines { return given() }
+        return (model?.servers ?? []).map {
+            PortAddress.Machine(id: $0.id, name: $0.config.name,
+                                online: $0.phase == .online && $0.control.state == .connected, rows: $0.portRows)
+        }
+    }
+
+    func matches(_ address: PortAddress) -> [PortAddress.Match] {
+        PortAddress.matches(address, in: machines())
+    }
+
+    /// What Go in the browser's address line did, for tests.
+    enum Went: Equatable {
+        case notAnAddress, elsewhere(URL), nothing, moved, opened(UUID), asked([PortAddress.Match])
+    }
+
+    /// Go in the browser's address line. One computer listens there: its page opens. Several:
+    /// a list asks which. None: a notice. An address that isn't a computer's own leaves for the
+    /// system's browser and is never loaded here.
+    @discardableResult
+    func go(_ text: String, from browser: PreviewBrowser) -> Went {
+        switch PortAddress.parse(text) {
+        case nil:
+            browser.say("That isn't an address. Try localhost:3000.")
+            return .notAnAddress
+        case .elsewhere(let url):
+            parts.openURL(url)
+            return .elsewhere(url)
+        case .local(let address):
+            let found = matches(address)
+            guard let first = found.first else {
+                browser.say(PortAddress.nothing(address))
+                return .nothing
+            }
+            if found.count == 1 { return show(first, address, in: browser) }
+            let sheet = UIAlertController(title: address.shown, message: nil, preferredStyle: .actionSheet)
+            for m in found {
+                sheet.addAction(UIAlertAction(title: m.title, style: .default) { [weak self, weak browser] _ in
+                    if let self, let browser { self.show(m, address, in: browser) }
+                })
+            }
+            sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            sheet.popoverPresentationController?.sourceView = browser.navigationController?.navigationBar ?? browser.view
+            browser.present(sheet, animated: true)
+            return .asked(found)
+        }
+    }
+
+    /// Shows the chosen computer's page: in the open browser when it is the same server, else
+    /// in a new one once this one has gone.
+    @discardableResult
+    private func show(_ match: PortAddress.Match, _ address: PortAddress, in browser: PreviewBrowser) -> Went {
+        if browser.page.source == Self.source(match.serverID, port: address.port) {
+            browser.move(to: address)
+            return .moved
+        }
+        browser.close { [weak self] in
+            guard let self, let server = self.model?.server(match.serverID),
+                  let row = self.row(server, id: match.row.id) else { return }
+            self.open(server, row, as: address)
+        }
+        return .opened(match.serverID)
     }
 
     func copyLink(_ server: ServerConnection, _ row: PortRow) {

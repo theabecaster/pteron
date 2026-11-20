@@ -10,6 +10,8 @@ struct PreviewPage: Equatable {
     var shown: String
     /// The scheme of the address as the user knows it.
     var scheme = "http"
+    /// Which computer's port this is (`PortActions.source`), for an address typed later.
+    var source: String?
 }
 
 /// What the preview browser shows and copies for a page. Pure, so it is tested
@@ -34,6 +36,23 @@ enum PreviewAddress {
     static func link(_ current: URL?, _ page: PreviewPage) -> String {
         guard isOwn(current, page) else { return current?.absoluteString ?? "" }
         return "\(page.scheme)://\(page.shown)\(current.map(rest) ?? "/")"
+    }
+
+    /// The address line's text while it is edited: the address as shown and the path on screen.
+    static func editing(_ current: URL?, _ page: PreviewPage) -> String {
+        guard isOwn(current, page) else { return current?.absoluteString ?? "" }
+        let r = current.map(rest) ?? "/"
+        return page.shown + (r == "/" ? "" : r)
+    }
+
+    /// Where the same server's page at another path loads: the listener that is open, never
+    /// the address typed.
+    static func load(_ rest: String, _ page: PreviewPage) -> URL? {
+        guard var c = URLComponents(url: page.load, resolvingAgainstBaseURL: false) else { return nil }
+        c.percentEncodedPath = ""
+        c.percentEncodedQuery = nil
+        c.fragment = nil
+        return c.url.flatMap { URL(string: $0.absoluteString + (rest.hasPrefix("/") ? rest : "/" + rest)) }
     }
 
     static func errorTitle(_ current: URL?, _ page: PreviewPage) -> String {
@@ -77,7 +96,8 @@ enum PreviewAddress {
 
 /// The app's own browser for a computer's dev server: one `WKWebView`, made when the page opens
 /// and let go when it closes, under a small bar: Done, the page's title over the computer's
-/// address, a menu (Copy Link, Share), and back, forward and reload.
+/// address, a menu (Copy Link, Share), and back, forward and reload. A tap on the address edits
+/// it, as in Safari: Go opens the dev server typed, on whichever computer runs it.
 ///
 /// It has no button that leaves for an address only this app can reach. Downloads go to the
 /// share sheet, a link for a new window opens here, a sign-in a server asks for gets a small
@@ -85,9 +105,13 @@ enum PreviewAddress {
 /// down closes it, and the pane that had the keyboard gets it back.
 @MainActor
 final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate,
-    UIAdaptivePresentationControllerDelegate {
-    let page: PreviewPage
+    UIAdaptivePresentationControllerDelegate, UITextFieldDelegate {
+    private(set) var page: PreviewPage
     private let onClose: () -> Void
+    /// Go in the address line, with the text typed.
+    private let onAddress: (@MainActor (String, PreviewBrowser) -> Void)?
+    private var titleStack: UIStackView?
+    private var addressField: UITextField?
     private var closed = false
     private(set) var webView: WKWebView?
     private var observers: [NSKeyValueObservation] = []
@@ -115,8 +139,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// The one shown now; it keeps itself alive while up.
     private static var current: PreviewBrowser?
 
-    init(page: PreviewPage, onClose: @escaping () -> Void) {
+    init(page: PreviewPage, onAddress: (@MainActor (String, PreviewBrowser) -> Void)? = nil, onClose: @escaping () -> Void) {
         self.page = page
+        self.onAddress = onAddress
         self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
     }
@@ -126,10 +151,11 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     /// Shows the page over `view`'s window. False when there is no window to present from.
     @discardableResult
-    static func present(_ page: PreviewPage, over view: UIView?, onClose: @escaping () -> Void) -> Bool {
+    static func present(_ page: PreviewPage, over view: UIView?, onAddress: (@MainActor (String, PreviewBrowser) -> Void)? = nil,
+                        onClose: @escaping () -> Void) -> Bool {
         guard var top = view?.window?.rootViewController else { return false }
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-        let browser = PreviewBrowser(page: page, onClose: onClose)
+        let browser = PreviewBrowser(page: page, onAddress: onAddress, onClose: onClose)
         if let view, let holder = UIResponder.rexCurrentFirstResponder() as? UIView, holder.isDescendant(of: view) {
             browser.keyboardHolder = holder
         }
@@ -199,6 +225,12 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         stack.axis = .vertical
         stack.alignment = .center
         stack.isAccessibilityElement = true
+        if onAddress != nil {
+            stack.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(editAddress)))
+            stack.accessibilityHint = "Edits the address"
+            stack.accessibilityTraits = .button
+        }
+        titleStack = stack
         navigationItem.titleView = stack
         navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.done() })
         let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: makeMenu())
@@ -269,11 +301,114 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     deinit { gone?() }
 
+    // MARK: The address line
+
+    /// The title becomes a field holding the address as shown. Go hands the text on; leaving
+    /// the field any other way puts the title back.
+    @objc func editAddress() {
+        guard onAddress != nil, addressField == nil else { return }
+        let field = UITextField(frame: CGRect(x: 0, y: 0, width: max(200, view.bounds.width - 150), height: 36))
+        field.text = PreviewAddress.editing(failed ?? webView?.url, page)
+        field.font = .preferredFont(forTextStyle: .subheadline)
+        field.adjustsFontForContentSizeCategory = true
+        field.borderStyle = .roundedRect
+        field.keyboardType = .URL
+        field.returnKeyType = .go
+        field.autocapitalizationType = .none
+        field.autocorrectionType = .no
+        field.smartDashesType = .no
+        field.spellCheckingType = .no
+        field.clearButtonMode = .whileEditing
+        field.accessibilityLabel = "Address"
+        field.delegate = self
+        addressField = field
+        navigationItem.titleView = field
+        field.becomeFirstResponder()
+    }
+
+    /// The whole address is selected, so typing replaces it, as in Safari. On the next turn:
+    /// a selection made while the field takes the keyboard doesn't hold.
+    func textFieldDidBeginEditing(_ textField: UITextField) {
+        DispatchQueue.main.async { [weak textField] in
+            guard let f = textField, f.isFirstResponder else { return }
+            f.selectedTextRange = f.textRange(from: f.beginningOfDocument, to: f.endOfDocument)
+        }
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        let text = textField.text ?? ""
+        textField.resignFirstResponder()
+        if !text.trimmingCharacters(in: .whitespaces).isEmpty { onAddress?(text, self) }
+        return false
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        guard addressField === textField else { return }
+        addressField = nil
+        navigationItem.titleView = titleStack
+        refresh()
+    }
+
+    /// What `say` showed, newest last (tests read it).
+    private(set) var said: [String] = []
+    private weak var sayLabel: UIView?
+
+    /// One quiet line over the page for a few seconds: why what was typed opened nothing. The
+    /// app's own notices sit under this sheet, where nobody would see them.
+    func say(_ text: String) {
+        said.append(text)
+        guard isViewLoaded else { return }
+        sayLabel?.removeFromSuperview()
+        let label = UILabel()
+        label.text = text
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = .label
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemThickMaterial))
+        pill.layer.cornerRadius = 14
+        pill.layer.cornerCurve = .continuous
+        pill.clipsToBounds = true
+        pill.isUserInteractionEnabled = false
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        pill.contentView.addSubview(label)
+        view.addSubview(pill)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: pill.contentView.topAnchor, constant: 10),
+            label.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: -10),
+            label.leadingAnchor.constraint(equalTo: pill.contentView.leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: -14),
+            pill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            pill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            pill.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -32),
+        ])
+        sayLabel = pill
+        pill.alpha = 0
+        UIView.animate(withDuration: 0.2) { pill.alpha = 1 }
+        UIAccessibility.post(notification: .announcement, argument: text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak pill] in
+            UIView.animate(withDuration: 0.3, animations: { pill?.alpha = 0 }, completion: { _ in pill?.removeFromSuperview() })
+        }
+    }
+
+    /// The same server's page at another path, shown under the address as typed.
+    func move(to address: PortAddress) {
+        page.shown = address.shown
+        page.scheme = address.scheme
+        failed = nil
+        errorView.isHidden = true
+        if let url = PreviewAddress.load(address.rest, page) { webView?.load(URLRequest(url: url)) }
+        refresh()
+    }
+
     // MARK: What the chrome shows (tests read these)
 
     var shownTitle: String? { titleLabel.text }
     var shownHost: String? { hostLabel.text }
     var shownError: String? { errorView.isHidden ? nil : errorTitle.text }
+    var editedText: String? { addressField?.text }
 
     // MARK: Actions
 
@@ -299,8 +434,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         present(sheet, animated: true)
     }
 
-    private func done() {
-        (navigationController ?? self).dismiss(animated: true)
+    private func done(then: (() -> Void)? = nil) {
+        (navigationController ?? self).dismiss(animated: true, completion: then)
         finish()
     }
 
@@ -308,8 +443,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         MainActor.assumeIsolated { finish() }
     }
 
-    /// Closes the page as Done does, for a caller that isn't a tap.
-    func close() { done() }
+    /// Closes the page as Done does, for a caller that isn't a tap. `then` runs once it is gone.
+    func close(then: (() -> Void)? = nil) { done(then: then) }
 
     /// The page is gone: the web view is let go, so its process can end, and the forward closes.
     private func finish() {

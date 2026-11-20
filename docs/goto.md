@@ -54,6 +54,13 @@ from the field too (its ⌘ and ⌃ keys arrive as menu items, `AppShortcutComma
 - The ports of every connected machine's Ports group: "Open localhost:3000 · Next.js", with
   the folder under it. It opens the page in the app, as the sidebar's row does; a port that
   closed meanwhile says "Nothing listens on that port now." (docs/terminal.md, Ports).
+- A typed address, in Go to Anything only: `localhost:3000`, `127.0.0.1:3000/admin` or `:3000`
+  (also `[::1]:3000` and `0.0.0.0:3000`, with or without `http://` or `https://`) puts one row
+  a connected machine that listens there above the other results, "Desk · Next.js · anchor"
+  over the address typed. Return opens the selected one, at the path typed. With none, one
+  dimmed row says "Nothing is running on localhost:3000 on your computers." A bare number is
+  not an address. The rows come from the port lists the app holds (`PortAddress`), on the main
+  actor, with no call: about 7 µs a keystroke with ten machines of ten ports in a debug build.
 - Copy mode, dimmed ("Copy mode is only on the Mac."), only where the keymap binds one of its
   actions.
 

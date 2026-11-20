@@ -63,6 +63,8 @@ final class GoToModel {
     @ObservationIgnored private(set) var rebuilds = 0
 
     @ObservationIgnored private(set) var runs: [GoToItemID: GoToRun] = [:]
+    /// What the rows of a typed address run (`addressRows`).
+    @ObservationIgnored private(set) var typedRuns: [GoToItemID: GoToRun] = [:]
     @ObservationIgnored private var items: [GoToItem] = []
     @ObservationIgnored private let searcher = GoToSearcher()
     @ObservationIgnored private var generation = 0
@@ -234,14 +236,51 @@ final class GoToModel {
             apply(emptyRows())
             return
         }
+        // A typed address lists the machines that listen there, first and at once.
+        let typed = addressRows(q)
+        let kept = rows.filter { !Self.isTyped($0.id) }
+        if !typed.isEmpty || kept.count != rows.count { apply(typed + kept) }
         let boosts = GoToRecents.boosts(model?.prefs.goToRecents ?? [], now: Date())
         let scope = scope, index = loading
         Task { [weak self, searcher] in
             await index?.value
             let hits = await searcher.search(q, scope: scope, boosts: boosts)
             guard let self, !self.closed, gen == self.generation else { return }
-            self.apply(hits.compactMap { self.row($0) })
+            self.apply(typed + hits.compactMap { self.row($0) })
         }
+    }
+
+    private static func isTyped(_ id: GoToItemID) -> Bool {
+        if case .other(let s) = id { return s.hasPrefix("address:") }
+        return false
+    }
+
+    /// The rows of a typed address (`localhost:3000`, `:3000/admin`), in Go to Anything only:
+    /// one for each connected machine that listens there, or one that says none does. Read from
+    /// the port lists the app holds; no call is made.
+    private func addressRows(_ q: String) -> [Row] {
+        typedRuns = [:]
+        guard let model else { return [] }
+        let (rows, runs) = Self.addressRows(q, scope: scope) { model.ports.matches($0) }
+        typedRuns = runs
+        return rows
+    }
+
+    static func addressRows(_ q: String, scope: GoToScope,
+                            matches: (PortAddress) -> [PortAddress.Match]) -> ([Row], [GoToItemID: GoToRun]) {
+        guard scope == .anything, case .local(let address) = PortAddress.parse(q) else { return ([], [:]) }
+        let found = matches(address)
+        guard !found.isEmpty else {
+            return ([Row(id: .other("address:none"), title: PortAddress.nothing(address), subtitle: "", symbol: "globe",
+                         dimmed: true, kind: "Command")], [:])
+        }
+        var runs: [GoToItemID: GoToRun] = [:]
+        let rows = found.map { m in
+            let id = GoToItemID.other("address:\(m.id)")
+            runs[id] = .address(serverID: m.serverID, row: m.row.id, address)
+            return Row(id: id, title: m.title, subtitle: address.text, symbol: "globe", kind: "Command")
+        }
+        return (rows, runs)
     }
 
     private func emptyRows() -> [Row] {

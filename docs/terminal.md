@@ -1027,6 +1027,17 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
     view. A server that asks for a name and password (Basic or Digest) gets a small form, kept
     for the session only. A load that fails shows "Couldn't load localhost:3000" with Retry.
     Light and dark come from the page's own CSS.
+  - A tap on the address edits it, as in Safari: the field holds the address as shown and the
+    path on screen, and Go resolves it with `PortAddress`, which reads only the port lists the
+    app already holds (no call, no network). The forms are `localhost:3000`, `127.0.0.1:3000`,
+    `:3000`, `[::1]:3000` and `0.0.0.0:3000`, with or without `http://` or `https://`, and a
+    path and query are kept. One connected computer listens there: its page opens (in place
+    when it is the server on screen). Several: a list asks which, one row a computer ("Desk ·
+    Next.js · anchor"). None: "Nothing is running on localhost:3000 on your computers." A
+    computer that is offline is left out. The address shown afterwards is the one typed. An
+    address that isn't a computer's own (`example.com`, another machine's IP) is never loaded
+    here: it opens in the system's browser. The same port on two computers is two rows in the
+    Ports group, and a tap there opens that one with no question.
   - What Safari's view gave and this one doesn't: Reader, the saved passwords' AutoFill bar,
     content blockers and Safari's cookies. None matters for a dev server's page.
 - **Why one listener.** The ports plan's spike (P0) tried a `WKWebView` with a loopback HTTP

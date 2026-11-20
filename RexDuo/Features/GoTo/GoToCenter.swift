@@ -223,7 +223,7 @@ final class GoToCenter {
     /// Runs the row `id`: goes there, or runs the command. A dimmed row does nothing.
     func run(_ id: GoToItemID) {
         guard let s = model.goTo else { return }
-        guard let run = s.runs[id] ?? GoToRun.place(for: id, in: model) else {
+        guard let run = s.runs[id] ?? s.typedRuns[id] ?? GoToRun.place(for: id, in: model) else {
             // A session that closed since the copy.
             remember(nil, removing: id)
             close()
@@ -277,6 +277,14 @@ final class GoToCenter {
             close()
             // Once the pane has the keyboard back, so the page gives it back to the pane when it closes.
             DispatchQueue.main.async { [weak self] in self?.model.ports.open(server, row) }
+        case .address(let serverID, let rowID, let address):
+            guard let server = model.server(serverID), let row = model.ports.row(server, id: rowID) else {
+                close()
+                Notice.shared.show(PortAddress.nothing(address), style: .neutral)
+                return
+            }
+            close()
+            DispatchQueue.main.async { [weak self] in self?.model.ports.open(server, row, as: address) }
         case .server(let serverID, let name, let args, let title, let onTarget):
             remember(id)
             let target = s.target

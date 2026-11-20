@@ -100,6 +100,9 @@ enum GoToRun {
     case server(serverID: UUID, name: String, args: JSONObject?, title: String, onTarget: Bool)
     /// A port of a machine's Ports group (`PortRow.id`): its page opens in the app.
     case port(serverID: UUID, row: String)
+    /// A typed address (`localhost:3000/admin`) on the machine that listens there: its page
+    /// opens at that path, shown as typed.
+    case address(serverID: UUID, row: String, PortAddress)
     /// Shown, not runnable (`GoToItem.dimmed`).
     case none
 

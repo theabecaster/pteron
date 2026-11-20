@@ -28,6 +28,8 @@ final class PanePorts {
     var ask: ((String, @escaping @MainActor (Bool) -> Void) -> Void)?
     /// Opens the page, once the forward listens. Tests put their own here.
     var present: ((URL) -> Void)?
+    /// An address typed into the open browser's address line (`PortActions.go`).
+    var typed: (@MainActor (String, PreviewBrowser) -> Void)?
     private var watching = false
 
     init(server: ServerConnection, sessionID: String, blockID: String) {
@@ -126,6 +128,20 @@ final class PanePorts {
         browse(LocalhostLink(port: entry.port, dialHost: entry.dialHost))
     }
 
+    /// A port someone named by typing its address: the page opens at the path typed, and shows
+    /// the address as typed.
+    func open(_ entry: PortEntry, as address: PortAddress) {
+        guard server.phase == .online else {
+            notify("\(server.config.name) is offline, so \(address.shown) can't open.")
+            return
+        }
+        var link = LocalhostLink(port: entry.port, dialHost: entry.dialHost)
+        link.scheme = address.scheme
+        link.rest = address.rest
+        link.shown = address.shown
+        browse(link)
+    }
+
     // MARK: Browser
 
     private func browse(_ link: LocalhostLink) {
@@ -144,8 +160,9 @@ final class PanePorts {
             if let present { return present(url) }
             let opened = forward.forward
             // The chrome names the address as the user knows it, never the phone's own listener.
-            let page = PreviewPage(load: url, shown: link.shown, scheme: link.scheme)
-            guard PreviewBrowser.present(page, over: view, onClose: { forward.close(opened) }) else {
+            let page = PreviewPage(load: url, shown: link.shown, scheme: link.scheme,
+                                   source: PortActions.source(server.id, port: link.port))
+            guard PreviewBrowser.present(page, over: view, onAddress: typed, onClose: { forward.close(opened) }) else {
                 forward.close(opened)
                 notify("Couldn't open \(link.name): its pane is no longer on screen. Show the pane, then try again.")
                 return
