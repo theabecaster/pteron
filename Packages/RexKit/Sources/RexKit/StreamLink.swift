@@ -42,7 +42,10 @@ extension RexControl: StreamLink {
         let task = session.webSocketTask(with: base.appendingPathComponent("api/data"), protocols: [subprotocol])
         task.maximumMessageSize = 1 << 20
         task.resume()
-        return URLSessionStreamSocket(task)
+        let socket = URLSessionStreamSocket(task)
+        // Only terminal streams: a file's or a tunnel's bytes are not what the delay measures.
+        guard !linkDelay.isZero, subprotocol == "rex.data.terminal.v1" else { return socket }
+        return DelayedStreamSocket(socket, delay: linkDelay)
     }
 }
 

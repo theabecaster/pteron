@@ -63,6 +63,19 @@ struct PerfReplayInfo: Sendable {
 /// **Memory** (`memory`): `phys_footprint` at the window's start, the highest value a 50 ms
 /// timer saw from there on, at the window's end, and 2 s after it (`idle`).
 ///
+/// **Mounts** (`mounts`): every time a pane comes on screen, with how it came. `cold`: a new
+/// host, which starts a stream and restores its snapshot. `parked`: a host kept from an earlier
+/// visit, with its last screen. `resumed`: a host on screen as the app comes back to the
+/// foreground. For each, milliseconds after the mount (the host entering its window; for
+/// `resumed`, the return to the foreground):
+/// - `firstFrameMs`: the first frame that shows the pane's content: the restored snapshot for a
+///   cold mount, the kept screen otherwise.
+/// - `currentMs`: the first frame that shows the screen as current as the stream can say.
+///   The restored snapshot is that for a cold mount; nothing says it for the other kinds.
+/// `-perfSwitch <n>` adds a phase that switches between a tab's panes n times, as a swipe does,
+/// `-perfSwitchEvery` seconds apart (default 1.5); `mounts.cold`, `.parked` and `.resumed` then
+/// hold the medians over that phase's mounts.
+///
 /// ## A frame that shows a state
 ///
 /// "The frame that shows the state at time T" has to be decided without guessing, because a
@@ -143,6 +156,19 @@ final class PerfProbe: Sendable {
         var power = PerfSystem.power()
     }
 
+    /// How a pane came on screen (`mounted`).
+    enum MountKind: String, Sendable, CaseIterable { case cold, parked, resumed }
+
+    private struct Mount: Sendable {
+        var kind: MountKind
+        var core: ObjectIdentifier
+        var at: Double
+        /// Made during the switch phase (`-perfSwitch`).
+        var switched: Bool
+        var frame: Target?
+        var current: Target?
+    }
+
     /// Everything more than one thread touches.
     private struct State: Sendable {
         var core: GhosttyCore?
@@ -184,6 +210,8 @@ final class PerfProbe: Sendable {
         var launchPeelFrames: [String: Double] = [:]
         /// Where its frames skipped refreshes: "<ms after the start>+<refreshes skipped>", in order.
         var launchPeelHitchesAt = ""
+        var mounts: [Mount] = []
+        var switching = false
 
         func sample(_ now: Double) -> Sample {
             Sample(at: now, cpu: PerfSystem.processCPUSeconds(), mainCPU: PerfSystem.threadCPUSeconds(mainThread),
@@ -236,6 +264,8 @@ final class PerfProbe: Sendable {
         /// The scroll phase's fling, driven from the display link: its start, length and travel.
         var fling: (start: Double, seconds: Double, bottom: CGFloat, travel: CGFloat)?
         var flingDone: CheckedContinuation<Void, Never>?
+        /// Switches to the next (+1) or previous (-1) pane of the tab on screen (`setSwitcher`).
+        var switcher: (@MainActor (Int) -> Void)?
     }
 
     @MainActor private var main = MainState()
@@ -339,6 +369,25 @@ final class PerfProbe: Sendable {
         if let core = first { DispatchQueue.main.async { self.holdsWhenParsed(.firstOutput, core: core) } }
     }
 
+    // MARK: Mounts
+
+    /// A pane came on screen: `TerminalHost` entered a window, or the app came back with it there.
+    @MainActor
+    func mounted(_ host: TerminalHost, kind: MountKind) {
+        let now = Self.clock()
+        let core = ObjectIdentifier(host.term.core)
+        state.withLock { s in
+            var m = Mount(kind: kind, core: core, at: now, switched: s.switching)
+            // A host that has a screen shows it in its next frame.
+            if kind != .cold { m.frame = Target(at: now) }
+            s.mounts.append(m)
+        }
+    }
+
+    /// The tab screen's pane switch, for the switch phase.
+    @MainActor
+    func setSwitcher(_ switcher: @escaping @MainActor (Int) -> Void) { main.switcher = switcher }
+
     // MARK: Replay
 
     @MainActor
@@ -421,7 +470,18 @@ final class PerfProbe: Sendable {
     // MARK: Hooks in the engine
 
     /// The snapshot's terminal was swapped in (GhosttyTerminalView, on the feed queue).
-    func ghosttyRestored(_ core: GhosttyCore) { ghosttyHolds(.restored, core: core) }
+    func ghosttyRestored(_ core: GhosttyCore) {
+        let now = Self.clock(), id = ObjectIdentifier(core)
+        let mounted = state.withLock { s in
+            guard let i = s.mounts.lastIndex(where: { $0.core == id }), s.mounts[i].frame == nil else { return false }
+            s.mounts[i].frame = Target(at: now)
+            // A fresh snapshot is the screen as it is now.
+            s.mounts[i].current = Target(at: now)
+            return true
+        }
+        ghosttyHolds(.restored, core: core)
+        if mounted { core.onDirty?() }
+    }
 
     /// Marks the state the core holds once it has parsed everything fed so far.
     private func holdsWhenParsed(_ mark: Mark, core: GhosttyCore) {
@@ -443,7 +503,15 @@ final class PerfProbe: Sendable {
     /// `presented` is false when it found nothing new to draw.
     func ghosttyPass(_ renderer: GhosttyRenderer, built: Double, presented: Bool) {
         let now = Self.clock()
+        let id = ObjectIdentifier(renderer.core)
         let closed = state.withLock { s in
+            // The mounts of every pane, newest first; older ones than a decided one are decided.
+            for i in s.mounts.indices.reversed() where s.mounts[i].core == id {
+                var open = false
+                if let t = s.mounts[i].frame, t.shown == nil { open = true; if t.at <= built { s.mounts[i].frame?.shown = max(now, t.at) } }
+                if let t = s.mounts[i].current, t.shown == nil { open = true; if t.at <= built { s.mounts[i].current?.shown = max(now, t.at) } }
+                if !open { break }
+            }
             guard s.core === renderer.core else { return false }
             s.passes += 1
             s.buildSeconds += renderer.lastBuildSeconds
@@ -584,7 +652,8 @@ final class PerfProbe: Sendable {
         let d = UserDefaults.standard
         let idle = d.double(forKey: "perfIdle"), scroll = d.double(forKey: "perfScroll")
         let steps = d.integer(forKey: "findSteps")
-        guard idle > 0 || scroll > 0 || steps > 0 else { return }
+        let switches = d.integer(forKey: "perfSwitch")
+        guard idle > 0 || scroll > 0 || steps > 0 || switches > 0 else { return }
         // The transition must not land in a phase (5 s at most: one that never ends isn't waited for).
         for _ in 0..<50 {
             let waiting = state.withLock { $0.launchSteps["splash"] != nil && $0.launchSteps["done"] == nil }
@@ -594,6 +663,7 @@ final class PerfProbe: Sendable {
         if steps > 0 { main.phases["find"] = await findPhase(steps: steps) }
         if idle > 0 { main.phases["idle"] = await idlePhase(seconds: idle) }
         if scroll > 0 { main.phases["scroll"] = await scrollPhase(seconds: scroll) }
+        if switches > 0 { await switchPhase(count: switches, every: d.double(forKey: "perfSwitchEvery")) }
     }
 
     /// What a phase measures from its start to its end.
@@ -710,6 +780,23 @@ final class PerfProbe: Sendable {
         out["presents"] = Self.hitchJSON(presents, window: window)
         out["mainLink"] = Self.hitchJSON(link, window: window)
         return out
+    }
+
+    /// `-perfSwitch <n>`: n pane switches, forward and back in turn, `every` seconds apart, each
+    /// through the tab screen's own switch. The mounts it causes are the result (`mounts`).
+    @MainActor
+    private func switchPhase(count: Int, every: Double) async {
+        guard let switcher = main.switcher else {
+            state.withLock { if $0.error == nil { $0.error = "no tab to switch panes in" } }
+            return
+        }
+        let pause = UInt64((every > 0 ? every : 1.5) * 1e9)
+        state.withLock { $0.switching = true }
+        for i in 0..<count {
+            switcher(i % 2 == 0 ? 1 : -1)
+            try? await Task.sleep(nanoseconds: pause)
+        }
+        state.withLock { $0.switching = false }
     }
 
     /// One step of the fling: up and back down, the speed a smooth cosine, so it starts and
@@ -831,6 +918,8 @@ final class PerfProbe: Sendable {
             out["launch"] = launch
         }
 
+        if !s.mounts.isEmpty { out["mounts"] = mountsJSON(s.mounts, switched: s.mounts.contains { $0.switched }) }
+
         // The window: the flow when output was fed, else pane open to the first frame.
         let start = s.flowSample ?? s.openSample
         guard let start, let to = s.windowEnd ?? (s.error != nil ? now : nil) else { return out }
@@ -899,6 +988,30 @@ final class PerfProbe: Sendable {
         out["ghosttyRender"] = ["termLockWaitWorstMs": ms(Double(lockWaitNs) / 1e9),
                                 "passes": s.passes, "buildMs": ms(s.buildSeconds), "buildWorstMs": ms(s.buildWorst),
                                 "encodeMs": ms(s.encodeSeconds), "encodeWorstMs": ms(s.encodeWorst)]
+        return out
+    }
+
+    /// Every mount, and per kind the medians over the switch phase's mounts (over all of them
+    /// when the run had no such phase).
+    private static func mountsJSON(_ mounts: [Mount], switched: Bool) -> JSONObject {
+        func ms(_ seconds: Double) -> Double { (seconds * 1e6).rounded() / 1e3 }
+        func since(_ m: Mount, _ t: Target?) -> Double? { t?.shown.map { ms($0 - m.at) } }
+        var out: JSONObject = ["list": mounts.map { m -> JSONObject in
+            ["kind": m.kind.rawValue, "switched": m.switched, "firstFrameMs": since(m, m.frame) ?? NSNull() as Any,
+             "currentMs": since(m, m.current) ?? NSNull() as Any]
+        }]
+        for kind in MountKind.allCases {
+            let mine = mounts.filter { $0.kind == kind && $0.switched == switched }
+            guard !mine.isEmpty else { continue }
+            var stats: JSONObject = ["count": mine.count]
+            for (name, pick) in [("firstFrameMs", { (m: Mount) in since(m, m.frame) }), ("currentMs", { (m: Mount) in since(m, m.current) })] {
+                let values = mine.compactMap(pick)
+                guard !values.isEmpty else { continue }
+                stats[name] = PerfMedian.of(values)
+                stats[name.replacingOccurrences(of: "Ms", with: "WorstMs")] = values.max() ?? 0
+            }
+            out[kind.rawValue] = stats
+        }
         return out
     }
 

@@ -43,6 +43,10 @@ const cell = (s) => (s ? `${num(s.median)} (${num(s.min)}â€“${num(s.max)})` : 'â
 
 const live = runs.live;
 delete runs.live;
+// Pane switches on real panes (run.sh --switch), by the simulated round trip.
+const switches = Object.keys(runs).filter((s) => /^switch\d+$/.test(s)).sort((a, b) => a.slice(6) - b.slice(6));
+const switchRuns = Object.fromEntries(switches.map((s) => [s, runs[s]]));
+for (const s of switches) delete runs[s];
 const scenarios = Object.keys(runs);
 
 // column title, path, and a second path shown beside it
@@ -93,6 +97,20 @@ if (live) {
     ['snapshot bytes', 'firstFrame.snapshotBytes'],
     ['peak MB', 'memory.peakMB'],
   ]);
+}
+
+if (switches.length) {
+  // Milliseconds after the pane came on screen; each cell the median of the runs' own medians.
+  table(`### Pane switches, fit mode (${switchRuns[switches[0]].length} runs of 10 switches; the number is the simulated round trip in ms)`,
+    switches.map((s) => [s, switchRuns[s]]), [
+      ['cold: first frame', 'mounts.cold.firstFrameMs'],
+      ['cold: current', 'mounts.cold.currentMs'],
+      ['cold mounts', 'mounts.cold.count'],
+      ['parked: first frame', 'mounts.parked.firstFrameMs'],
+      ['parked: current', 'mounts.parked.currentMs'],
+      ['parked mounts', 'mounts.parked.count'],
+      ['peak MB', 'memory.peakMB'],
+    ]);
 }
 
 // Budgets (scripts/bench/budgets.mjs): the median of a scenario's runs against a fixed limit.

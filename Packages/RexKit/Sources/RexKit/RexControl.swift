@@ -63,6 +63,8 @@ public final class RexControl {
 
     /// Which of this connection's terminal streams have typed input on its way.
     public let inputActivity = InputActivity()
+    /// Testing: a simulated round-trip time for calls and terminal data sockets (`LinkDelay`).
+    public var linkDelay = LinkDelay.none
 
     public var onEvent: ((_ seq: Int, _ event: JSONObject) -> Void)?
     public var onStateChange: ((State) -> Void)?
@@ -473,6 +475,8 @@ public final class RexControl {
     }
 
     public func callAny(_ method: String, _ payload: JSONObject? = nil) async throws -> Any {
+        let delay = linkDelay
+        if !delay.isZero { try? await Task.sleep(for: delay.oneWay) }
         // `neverSent`: a caller that must not repeat a request (typed input) may send this one again.
         guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
         // A method newer than this connection's revision: the answer is known, so don't ask.
@@ -480,6 +484,7 @@ public final class RexControl {
         let reply = try await withCheckedThrowingContinuation { (c: CheckedContinuation<DecodedJSON, Error>) in
             send(method, payload, on: t) { c.resume(with: $0) }
         }
+        if !delay.isZero { try? await Task.sleep(for: delay.oneWay) }
         return reply.value
     }
 

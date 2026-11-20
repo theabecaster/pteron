@@ -100,3 +100,12 @@ struct PerfHitchStats: Equatable {
         return s
     }
 }
+
+/// The median of a run's values: the middle one, or the mean of the two in the middle.
+enum PerfMedian {
+    static func of(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let v = values.sorted(), mid = v.count / 2
+        return v.count % 2 == 1 ? v[mid] : (v[mid - 1] + v[mid]) / 2
+    }
+}

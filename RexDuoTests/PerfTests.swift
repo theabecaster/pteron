@@ -130,6 +130,13 @@ final class PerfTests: XCTestCase {
         XCTAssertEqual(cut.hitches, 1)
     }
 
+    func testMedianIsTheMiddleValueOrTheMeanOfTheTwoInTheMiddle() {
+        XCTAssertEqual(PerfMedian.of([]), 0)
+        XCTAssertEqual(PerfMedian.of([7]), 7)
+        XCTAssertEqual(PerfMedian.of([9, 1, 5]), 5)
+        XCTAssertEqual(PerfMedian.of([4, 1, 3, 2]), 2.5)
+    }
+
     func testBusyTimeIsCutToTheWindow() {
         let slices = [PerfWindow(from: 0.0, to: 0.5), PerfWindow(from: 0.9, to: 1.1), PerfWindow(from: 1.5, to: 1.6),
                       PerfWindow(from: 1.9, to: 2.4), PerfWindow(from: 3, to: 4)]

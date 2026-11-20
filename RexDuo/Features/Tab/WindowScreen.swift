@@ -190,6 +190,10 @@ struct WindowScreen: View {
         .onChange(of: window?.visibleFloating.last?.id) { _, front in
             if let r = raised, r.layer == front { raised = nil }
         }
+        #if DEBUG || BENCH
+        // `-perfSwitch <n>` (testing): the probe switches panes as a swipe does.
+        .onAppear { PerfProbe.active?.setSwitcher { dir in if let w = window { switchPane(w, by: dir) } } }
+        #endif
         #if DEBUG
         .onAppear { PanesTest.run(panesTestActions) }
         .onAppear { GoToDebug.launch(model) }

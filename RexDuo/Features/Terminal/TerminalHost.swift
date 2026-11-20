@@ -1177,6 +1177,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if backgroundedAt != nil, started, window != nil {
             quietUntil = CACurrentMediaTime() + ForegroundWake.grace
             stream.wake()
+            PerfProbe.active?.mounted(self, kind: .resumed)  // PERF
         } else {
             quietUntil = 0
         }
@@ -1299,6 +1300,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         } else {
             stopWork?.cancel()
             stopWork = nil
+            if !started { PerfProbe.active?.mounted(self, kind: .cold) }  // PERF
             // Claim again what was paused, if the size still isn't the one that fits.
             lastBounds = .zero
             setNeedsLayout()

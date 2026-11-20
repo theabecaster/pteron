@@ -2,8 +2,8 @@
 # Runs the terminal benchmark in a simulator, prints the report and checks it against the
 # budgets in scripts/bench/budgets.mjs. Exit status 1 when a budget is passed or a run failed.
 #
-#   scripts/bench/run.sh <simulator id> [--live <session label>] [--runs N] [--only a,b]
-#                        [--out <dir>] [--fresh] [--skip-build]
+#   scripts/bench/run.sh <simulator id> [--live <session label>] [--switch <session label>]
+#                        [--runs N] [--only a,b] [--out <dir>] [--fresh] [--skip-build]
 #
 # Builds the app once (Release), then for every scenario and run launches it with
 # `-replay <file> -perfLog <name>`, waits for the result file in the app's Documents/perf and
@@ -25,6 +25,13 @@
 # throwaway session of your own (`rex session new zz-…`). Mirror sizing never claims or
 # resizes the pane.
 #
+# --switch <session label> measures pane switches on real panes, in fit mode: the session's
+# first tab must hold two panes side by side (`rex split`), which a phone shows one at a time.
+# Each run opens the tab and switches between the two panes 10 times, 1.5 s apart, as a swipe
+# does: 3 runs with no added delay (`switch0`) and 3 with a simulated round trip of 150 ms
+# (`switch150`, `-netDelay`). Fit mode claims and resizes both panes, so the session must be a
+# throwaway one of your own.
+#
 # The app is terminated after every run and when the script ends or is interrupted, which also
 # drops its connection to the server.
 #
@@ -32,13 +39,14 @@
 set -euo pipefail
 
 self=$0   # inside a function, $0 is the function's name
-usage() { sed -n '2,30p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,37p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
-live=""; runs=3; only=""; out=""; build=1; fresh=0
+live=""; switch=""; runs=3; only=""; out=""; build=1; fresh=0
 while [[ $# -gt 0 ]]; do
   case $1 in
     --live) live=$2; shift 2 ;;
+    --switch) switch=$2; shift 2 ;;
     --runs) runs=$2; shift 2 ;;
     --only) only=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
@@ -163,20 +171,42 @@ for run in $(seq 1 $runs); do
   done
 done
 
-if [[ -n $live ]]; then
-  session=$(rex ls --json | LABEL=$live python3 -c 'import json,os,sys
-print(next((s["session_id"] for s in json.load(sys.stdin)["sessions"] if s["label"] == os.environ["LABEL"]), ""))')
-  [[ -n $session ]] || { echo "no session labelled $live" >&2; exit 1; }
-  # A Release build starts with no servers; hand it this Mac's for the run (a launch argument).
+# The id of the session with this label on this Mac's server; empty when there is none.
+session_id() {
+  rex ls --json | LABEL=$1 python3 -c 'import json,os,sys
+print(next((s["session_id"] for s in json.load(sys.stdin)["sessions"] if s["label"] == os.environ["LABEL"]), ""))'
+}
+# A Release build starts with no servers; hand it this Mac's for the run (a launch argument).
+bench_servers() {
+  local host
   host=$(rex whoami --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["tailscale"]["dns_name"])')
-  servers=$(HOST=$host python3 -c 'import json,os
+  HOST=$host python3 -c 'import json,os
 s = json.dumps([{"id": "00000000-0000-4000-8000-0000000000BE", "name": "bench", "url": "https://" + os.environ["HOST"]}])
-print("<" + s.encode().hex() + ">")')
+print("<" + s.encode().hex() + ">")'
+}
+
+if [[ -n $live ]]; then
+  session=$(session_id "$live")
+  [[ -n $session ]] || { echo "no session labelled $live" >&2; exit 1; }
+  servers=$(bench_servers)
   # The same content before every launch: 3000 lines of scrollback and a prompt.
   rex send -s "$session" $'clear; seq 1 3000\n'
   sleep 2
   for run in $(seq 1 5); do
     run_one "live__${run}" 45 -autoOpen "$live" -sizing mirror -servers "$servers"
+  done
+fi
+
+if [[ -n $switch ]]; then
+  [[ $switch == zz-* ]] || { echo "--switch takes a throwaway session whose label starts with zz-" >&2; exit 1; }
+  [[ -n $(session_id "$switch") ]] || { echo "no session labelled $switch" >&2; exit 1; }
+  servers=$(bench_servers)
+  for run in $(seq 1 $runs); do
+    for delay in 0 150; do
+      [[ -z $only || ",$only," == *",switch$delay,"* ]] || continue
+      run_one "switch${delay}__${run}" 90 -autoOpen "$switch" -servers "$servers" \
+        -perfSwitch 10 -netDelay $delay
+    done
   done
 fi
 

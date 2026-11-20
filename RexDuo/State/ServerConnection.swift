@@ -363,6 +363,12 @@ final class ServerConnection: Identifiable {
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)))
         keymap = KeymapStore(control: control)
+        #if DEBUG || BENCH
+        // `-netDelay <ms>` (testing): a simulated round-trip time on this server's calls and
+        // terminal streams (docs/debug-args.md).
+        let delay = UserDefaults.standard.integer(forKey: "netDelay")
+        if delay > 0 { control.linkDelay = LinkDelay(roundTrip: .milliseconds(delay)) }
+        #endif
         control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
         control.onStateChange = { [weak self] st in self?.controlChanged(st) }
         control.onReconnected = { [weak self] _ in
