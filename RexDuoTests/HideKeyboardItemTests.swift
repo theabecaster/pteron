@@ -55,6 +55,23 @@ struct HideKeyboardItemTests {
         #expect(item.pane == a)
     }
 
+    @Test func theBarOrdersItsItemsByTheItem() async {
+        // What the tab's toolbar asks `TabActions` for: Hide Keyboard last, below Pane Actions,
+        // only for the pane that has the item; All Tabs first again once it goes.
+        let item = HideKeyboardItem()
+        func bar(_ pane: TerminalHostPool.Key) -> [TabAction] {
+            TabActions.verticalBar(zoomed: false, hidesKeyboard: item.pane == pane)
+        }
+        #expect(bar(a) == [.allTabs, .paneActions])
+        item.set(a, shown: true)
+        await turns()
+        #expect(bar(a) == [.paneActions, .hideKeyboard])
+        #expect(bar(b) == [.allTabs, .paneActions], "another pane's bar has no item")
+        item.set(a, shown: false)
+        await turns()
+        #expect(bar(a) == [.allTabs, .paneActions])
+    }
+
     @Test func itMovesWithTheKeyboardsOwnAnimation() {
         // The keyboard's own curve (7) is a spring; the named curves are themselves.
         #expect(HideKeyboardItem.animation(duration: 0.25, curve: 7) == HideKeyboardItem.keyboardSpring)

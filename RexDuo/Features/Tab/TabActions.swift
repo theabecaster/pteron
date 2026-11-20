@@ -45,10 +45,12 @@ enum TabAction: Hashable, CaseIterable {
 enum TabActions {
     /// The tab's items in the system's vertical bar, top to bottom, after the sidebar toggle. With
     /// the keyboard up the bar has room for three items in all. So while the pane's key bar is up
-    /// with its hide key in the bar (`HideKeyboardItem`), Hide Keyboard takes All Tabs' place:
-    /// nothing moves into the bar's overflow menu and Pane Actions keeps its place.
+    /// with its hide key in the bar (`HideKeyboardItem`), Hide Keyboard replaces All Tabs and goes
+    /// last, after Pane Actions: the lowest item, nearest the keyboard (the bar is a column on
+    /// either side, the keyboard below its end). Nothing moves into the bar's overflow menu where
+    /// three items fit, and with the key bar gone the order is All Tabs, Pane Actions again.
     static func verticalBar(zoomed: Bool, hidesKeyboard: Bool) -> [TabAction] {
-        (zoomed ? [.unzoom] : []) + [hidesKeyboard ? .hideKeyboard : .allTabs, .paneActions]
+        (zoomed ? [.unzoom] : []) + (hidesKeyboard ? [.paneActions, .hideKeyboard] : [.allTabs, .paneActions])
     }
 
     /// The vertical bar's first item, which the root draws with no tab on screen too: the

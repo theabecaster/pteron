@@ -703,9 +703,9 @@ struct WindowScreen: View {
     /// there (Apple: navigation at the top, then actions, each with a title and a symbol). The title
     /// and status stay in the title bar: text and custom views stay off the vertical axis.
     /// While the active pane's key bar is up, Hide Keyboard (the key bar's hide key, which the bar
-    /// beside the keyboard takes in; `HideKeyboardItem`) takes All Tabs' place, which has no room
-    /// then, and All Tabs comes back when the key bar goes (`TabActions.verticalBar`). The swap
-    /// rides the keyboard's animation, and nothing else in the bar moves.
+    /// beside the keyboard takes in; `HideKeyboardItem`) replaces All Tabs, which has no room then,
+    /// and goes last, below Pane Actions, nearest the keyboard; All Tabs comes back when the key
+    /// bar goes (`TabActions.verticalBar`). The swap rides the keyboard's animation.
     @ToolbarContentBuilder
     private func barItems(_ theme: TermTheme, _ p: TabPresentation?) -> some ToolbarContent {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
@@ -715,14 +715,15 @@ struct WindowScreen: View {
                 if items.contains(.unzoom) {
                     Button { toggleZoom() } label: { Label(TabAction.unzoom.title, systemImage: TabAction.unzoom.symbol) }
                 }
+                if items.contains(.allTabs) {
+                    Button { openOverview() } label: { Label(TabAction.allTabs.title, systemImage: TabAction.allTabs.symbol) }
+                }
+                paneMenu(w, block: b, p)
                 if items.contains(.hideKeyboard) {
                     Button { pool?.host(for: key)?.hideKeyboard() } label: {
                         Label(TabAction.hideKeyboard.title, systemImage: TabAction.hideKeyboard.symbol)
                     }
-                } else {
-                    Button { openOverview() } label: { Label(TabAction.allTabs.title, systemImage: TabAction.allTabs.symbol) }
                 }
-                paneMenu(w, block: b, p)
             }
         }
     }
