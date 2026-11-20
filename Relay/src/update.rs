@@ -28,6 +28,9 @@ use std::time::{Duration, Instant, SystemTime};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Every file of a release, and the manifest, lives under this address. Nothing else is fetched.
+/// The repository is now `theabecaster/pteron`; this keeps its earlier name on purpose. GitHub
+/// redirects it, every shipped Beacon and app asks for it, and every manifest lists its files
+/// under it. Never create a repository named `rexduo` again: that would end the redirect.
 pub const RELEASE_PREFIX: &str = "https://github.com/theabecaster/rexduo/releases/download/";
 pub const MANIFEST_URL: &str = "https://github.com/theabecaster/rexduo/releases/download/helper-latest/manifest.json";
 /// GitHub answers a release download with a redirect to its file servers. A redirect to any

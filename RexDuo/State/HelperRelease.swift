@@ -132,6 +132,9 @@ struct ReleaseTrust: Equatable {
 /// signed and read, and when a list is accepted. They mirror `Relay/src/update.rs`, so the phone
 /// and the helper agree on what a release is.
 enum HelperRelease {
+    /// The repository is now `theabecaster/pteron`. This keeps its earlier name on purpose: GitHub
+    /// redirects it on github.com, and shipped Beacons accept only manifests listed under it
+    /// (`RELEASE_PREFIX` in `Relay/src/update.rs`).
     static let base = "https://github.com/theabecaster/rexduo/releases/download/"
     static let manifestURL = base + "helper-latest/manifest.json"
     static let signatureURL = manifestURL + ".sig"

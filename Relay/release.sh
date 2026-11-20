@@ -58,7 +58,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-REPO="${REPO:-theabecaster/rexduo}"
+REPO="${REPO:-theabecaster/pteron}"
 UPDATE_KEY="${UPDATE_KEY:-$HOME/.config/rexduo/helper-update.key}"
 OPENSSL="${OPENSSL:-}"
 PUBLISH=0
@@ -96,7 +96,9 @@ fi
 VERSION="$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' Cargo.toml | head -n 1)"
 [[ -n "$VERSION" ]] || die "no version in Cargo.toml"
 TAG="helper-v$VERSION"
-BASE="https://github.com/$REPO/releases/download"
+# The manifest lists files under the repository's earlier name, which GitHub redirects: Beacons
+# 0.3.0 to 0.5.0 and the app accept only addresses under it (RELEASE_PREFIX in src/update.rs).
+BASE="https://github.com/theabecaster/rexduo/releases/download"
 MIN_VERSION="${MIN_VERSION:-$VERSION}"
 [[ "$MIN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "MIN_VERSION must look like 1.2.3"
 NEXT_KEY="${NEXT_KEY:-}"

@@ -950,7 +950,7 @@ struct NotificationStatusTests {
         // where to get the program, under its real name, then what to do with it on each system.
         #expect(NotificationCopy.manualTitle == "Install by Hand")
         #expect(NotificationCopy.manualSteps == [
-            "On the computer, download \(Brand.beaconName) from github.com/theabecaster/rexduo/releases.",
+            "On the computer, download \(Brand.beaconName) from github.com/theabecaster/pteron/releases.",
             "Mac: drag \(Brand.beaconName) to Applications and open it once.",
             "Linux: run rex-duo-helper install.",
         ])

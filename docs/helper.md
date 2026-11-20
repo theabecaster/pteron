@@ -17,7 +17,7 @@ computer you own with a recent Rex. To install by hand instead:
 
 1. Download `Beacon-macOS.zip` (`Rex-DUO-Beacon.zip` in a release before 0.4.0) from the
    newest "Pteron Beacon" release at
-   <https://github.com/theabecaster/rexduo/releases>.
+   <https://github.com/theabecaster/pteron/releases>.
 2. Unzip it and drag **Pteron Beacon** to Applications.
 3. Open it once. It asks to send notifications (for the one "Pteron connected" notice per phone),
    then runs in the background and starts again at login.
@@ -86,7 +86,7 @@ the name is out; until then, update the app before removing Beacon from it.
 ## Linux
 
 ```sh
-curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh
+curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh
 ```
 
 The script downloads the newest release for x86_64 or aarch64, checks its signature, puts
@@ -153,7 +153,7 @@ tab on the computer that stops Beacon and deletes it. By hand, on a Mac or on Li
 same script does it when it gets the two arguments `3 -`:
 
 ```sh
-curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh -s -- 3 -
+curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh -s -- 3 -
 ```
 
 It downloads nothing and runs nothing as an administrator. It stops Beacon's background

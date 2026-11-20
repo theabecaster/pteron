@@ -678,7 +678,7 @@ enum NotificationCopy {
 
     /// "How": installing the helper by hand, one step per line.
     static let manualSteps = [
-        "On the computer, download \(Brand.beaconName) from github.com/theabecaster/rexduo/releases.",
+        "On the computer, download \(Brand.beaconName) from github.com/theabecaster/pteron/releases.",
         "Mac: drag \(Brand.beaconName) to Applications and open it once.",
         "Linux: run rex-duo-helper install.",
     ]

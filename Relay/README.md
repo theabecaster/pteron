@@ -52,7 +52,7 @@ path (step 4).
 `install.sh`; run without arguments, it reads the release list itself:
 
 ```sh
-curl -fsSL https://github.com/theabecaster/rexduo/releases/download/helper-latest/install.sh | sh
+curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh
 ```
 
 On Linux it checks the release list's signature with openssl 3. macOS's own `openssl` does not
@@ -214,7 +214,7 @@ open in between. Idle: about 3.5 MB of memory and no CPU.
 ## Updates
 
 Beacon updates itself from the releases of this repository
-(`github.com/theabecaster/rexduo`). It looks once between 0 and 10 minutes after it starts, then
+(`github.com/theabecaster/pteron`). It looks once between 0 and 10 minutes after it starts, then
 about every 12 hours, and installs a newer version when it finds one. `"auto_update": false`
 in `config.json` turns that timer off; `rex-duo-helper update` and the app's update button
 still work.
@@ -252,7 +252,8 @@ What happens, in order. Any step that fails stops the update and leaves the inst
 as it was:
 
 1. Get `helper-latest/manifest.json` and `manifest.json.sig` over HTTPS. Only addresses under
-   `https://github.com/theabecaster/rexduo/releases/download/` are asked for, and a redirect is
+   `https://github.com/theabecaster/rexduo/releases/download/` are asked for (the repository's
+   earlier name, which GitHub redirects to `theabecaster/pteron`), and a redirect is
    followed only to `github.com`, `objects.githubusercontent.com` or
    `release-assets.githubusercontent.com`, over HTTPS.
 2. Verify the manifest's signature. The signature file holds one or more base64 ed25519
