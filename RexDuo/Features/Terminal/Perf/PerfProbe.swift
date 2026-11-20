@@ -471,7 +471,9 @@ final class PerfProbe: Sendable {
 
     @MainActor
     private func install(_ now: Double) {
+        #if DEBUG || BENCH
         GhosttyCore.measuresLockWait.store(true, ordering: .relaxed)
+        #endif
         main.ticks.reserveCapacity(1 << 14)
         main.busy.reserveCapacity(1 << 16)
         main.sliceStart = now
@@ -887,7 +889,14 @@ final class PerfProbe: Sendable {
         out["memory"] = ["startMB": mb(start.footprint), "peakMB": mb(max(s.peak, end.footprint)), "endMB": mb(end.footprint),
                          "idleMB": mb(idle)]
         // The renderer's own timers, for tuning: row rebuild and encode, per pass.
-        out["ghosttyRender"] = ["termLockWaitWorstMs": ms(Double(GhosttyCore.lockWaitWorstNs.load(ordering: .relaxed)) / 1e9),
+        // The render thread's longest wait for termLock is measured only where the probe runs
+        // (Debug and the benchmark's BENCH build); a shipped Release build reports 0.
+        #if DEBUG || BENCH
+        let lockWaitNs = GhosttyCore.lockWaitWorstNs.load(ordering: .relaxed)
+        #else
+        let lockWaitNs = 0
+        #endif
+        out["ghosttyRender"] = ["termLockWaitWorstMs": ms(Double(lockWaitNs) / 1e9),
                                 "passes": s.passes, "buildMs": ms(s.buildSeconds), "buildWorstMs": ms(s.buildWorst),
                                 "encodeMs": ms(s.encodeSeconds), "encodeWorstMs": ms(s.encodeWorst)]
         return out
