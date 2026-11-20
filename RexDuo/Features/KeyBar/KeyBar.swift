@@ -3,12 +3,14 @@ import UIKit
 /// The row of extra keys above the software keyboard. Keys come from Settings (`Prefs.keyBarLayout`).
 ///
 /// - Keys send on release; a horizontal drag scrolls the bar instead.
-/// - Arrows and PgUp/PgDn auto-repeat while held.
+/// - Arrows and PgUp/PgDn auto-repeat while held, until the finger moves off (`RepeatSlop`).
 /// - ctrl / alt / cmd: tap = next key only, double-tap = locked until tapped again.
 /// - With cmd on, the next key (a bar key or a key typed on the system keyboard) is never typed: it
 ///   runs through Rex's keymap as that key pressed with ⌘ on a hardware keyboard does
 ///   (`onShortcut`), with ctrl and alt if they are on. A key nothing is bound to does nothing.
-/// - The "arrows" key is a trackpad: press and drag to send arrow keys.
+/// - The "arrows" key is a trackpad, as the space bar is on the iOS keyboard: hold it still for
+///   0.3 s, or drag up or down from it, and drag to send arrow keys. A quick sideways swipe that
+///   starts on it scrolls the bar and sends nothing (`TrackpadEngage`).
 /// - Return (`KeyBarLayout.pinned`) never scrolls: it closes the keys' capsule, past a divider,
 ///   next to the hide key. It sends as any bar key does, modifiers and cmd included, and never
 ///   repeats. Held for `KeyCap.holdDelay` it sends Shift-Return instead, as a hardware keyboard
@@ -86,7 +88,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private var stackLeading: NSLayoutConstraint?
     private var creaseGap: (index: Int, extra: CGFloat)?
     private static let spacing: CGFloat = 6
-    private var caps: [KeyCap] = []
+    private(set) var caps: [KeyCap] = []
     private var theme: TermTheme = ThemeStore.fallback
     private(set) var ctrl: ModState = .off { didSet { syncModifiers() } }
     private(set) var alt: ModState = .off { didSet { syncModifiers() } }
@@ -340,6 +342,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         cap.onRepeat = { [weak self] in self?.emit(key) }
         cap.onRepeatEnd = { [weak self] in self?.usedModifiers() }
         cap.onDrag = { [weak self] dx, dy in self?.trackpad(dx: dx, dy: dy) }
+        cap.onEngage = { [weak self] in self?.trackpadEngaged() }
         return cap
     }
 
@@ -534,6 +537,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         guard let t = terminal, t.isComposing else { return false }
         t.commitComposition()
         return true
+    }
+
+    /// The trackpad key took the drag: the tick its steps play, once, as the space bar's trackpad does.
+    private func trackpadEngaged() {
+        tick.selectionChanged()
+        tick.prepare()
     }
 
     private func trackpad(dx: Int, dy: Int) {
@@ -767,10 +776,12 @@ private final class GlassHideKey: UIControl {
     }
 }
 
-/// Lets keys scroll the bar on a sideways drag, except the trackpad key, which keeps its touch.
-private final class KeyScroll: UIScrollView {
+/// Lets keys scroll the bar on a sideways drag, except the trackpad key once it has taken the
+/// drag (`TrackpadEngage`): a swipe that starts on it before then scrolls like any other.
+/// Internal for tests.
+final class KeyScroll: UIScrollView {
     override func touchesShouldCancel(in view: UIView) -> Bool {
-        if let cap = view as? KeyCap, cap.kind == .trackpad { return false }
+        if let cap = view as? KeyCap, cap.kind == .trackpad, cap.trackpadEngaged { return false }
         return true
     }
 }
@@ -788,6 +799,8 @@ final class KeyCap: UIControl {
     var onRepeatEnd: (() -> Void)?
     /// Trackpad steps since the last call: +x = right, +y = down.
     var onDrag: ((Int, Int) -> Void)?
+    /// The trackpad key took the drag (`TrackpadEngage`).
+    var onEngage: (() -> Void)?
     /// Runs once when the key is held for `holdDelay` with the finger on it; the release then
     /// sends nothing. Nil: holding is a slow tap. Only for a key that doesn't repeat.
     var onHold: (() -> Void)?
@@ -805,6 +818,10 @@ final class KeyCap: UIControl {
     private var held = false
     private var anchor: CGPoint = .zero
     private var dragged = false
+    /// The trackpad key's touch: whether it has taken the drag yet. Set by tracking; internal for tests.
+    var engage: TrackpadEngage?
+    /// The trackpad key has the drag: the bar's scroll leaves it alone.
+    var trackpadEngaged: Bool { engage?.engaged ?? false }
 
     /// Points of finger travel per arrow key on the trackpad.
     static let stepX: CGFloat = 14
@@ -856,7 +873,7 @@ final class KeyCap: UIControl {
         isAccessibilityElement = true
         accessibilityLabel = KeyBar.names[key] ?? KeyBar.titles[key] ?? key
         accessibilityTraits = kind == .trackpad ? .adjustable : .keyboardKey
-        if kind == .trackpad { accessibilityHint = "Press and drag to send arrow keys" }
+        if kind == .trackpad { accessibilityHint = "Hold, then drag to send arrow keys" }
         if kind == .modifier { accessibilityHint = "Tap for the next key, double-tap to lock" }
         configure()
     }
@@ -908,7 +925,8 @@ final class KeyCap: UIControl {
             fill = kind == .modifier && modState == .locked
                 ? theme.uiCursor.withAlphaComponent(0.75)
                 : theme.uiFG.withAlphaComponent(theme.isDark ? 0.34 : 0.24)
-            if kind == .trackpad { border = theme.uiCursor }
+            // The trackpad's ring shows once it has the drag.
+            if kind == .trackpad, trackpadEngaged { border = theme.uiCursor }
         }
         face.backgroundColor = fill
         face.layer.borderColor = border.cgColor
@@ -944,14 +962,28 @@ final class KeyCap: UIControl {
         held = false
         dragged = false
         anchor = touch.location(in: self)
+        if kind == .trackpad { engage = TrackpadEngage(start: anchor, at: CACurrentMediaTime()) }
         onTouchDown?()
-        if kind == .repeating { scheduleRepeat(after: 0.4) } else if onHold != nil { scheduleHold() }
+        if kind == .trackpad {
+            scheduleEngage()
+        } else if kind == .repeating {
+            scheduleRepeat(after: 0.4)
+        } else if onHold != nil {
+            scheduleHold()
+        }
         return true
     }
 
     override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
         if kind == .trackpad {
             let p = touch.location(in: self)
+            if var e = engage, !e.engaged {
+                let now = e.move(to: p, at: CACurrentMediaTime())
+                engage = e
+                guard now else { return true }
+                engaged()
+            }
+            guard trackpadEngaged else { return true }
             let nx = Int(((p.x - anchor.x) / Self.stepX).rounded(.towardZero))
             let ny = Int(((p.y - anchor.y) / Self.stepY).rounded(.towardZero))
             if nx != 0 || ny != 0 {
@@ -962,14 +994,47 @@ final class KeyCap: UIControl {
             }
             return true
         }
-        isHighlighted = bounds.insetBy(dx: -24, dy: -24).contains(touch.location(in: self))
+        let p = touch.location(in: self)
+        isHighlighted = bounds.insetBy(dx: -24, dy: -24).contains(p)
+        // A finger that starts to swipe stops the repeat; the release then sends what a tap does.
+        if kind == .repeating, repeatTimer != nil,
+           !RepeatSlop.keepsRepeating(from: anchor, to: p, highlighted: isHighlighted) {
+            stopRepeat()
+        }
         return true
+    }
+
+    /// The trackpad's still hold, from touch-down, on the repeat's timer: the trackpad never repeats.
+    private func scheduleEngage() {
+        repeatTimer?.invalidate()
+        let t = Timer(timeInterval: TrackpadEngage.holdDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.engageTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        repeatTimer = t
+    }
+
+    private func engageTick() {
+        repeatTimer = nil
+        guard isTracking, var e = engage else { return }
+        let now = e.hold(at: CACurrentMediaTime())
+        engage = e
+        if now { engaged() }
+    }
+
+    /// The trackpad has the drag: steps count from the engage point, with the tick and the ring.
+    private func engaged() {
+        guard case .engaged(let at) = engage?.state else { return }
+        anchor = at
+        restyle()
+        onEngage?()
     }
 
     override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
         stopRepeat()
         let inside = touch.map { bounds.insetBy(dx: -24, dy: -24).contains($0.location(in: self)) } ?? false
         isHighlighted = false
+        endEngage()
         if kind == .trackpad {
             if dragged { onFire?() }
         } else if repeated {
@@ -982,8 +1047,15 @@ final class KeyCap: UIControl {
     override func cancelTracking(with event: UIEvent?) {
         stopRepeat()
         isHighlighted = false
+        endEngage()
         if repeated { onRepeatEnd?() }
         if kind == .trackpad, dragged { onFire?() }
+    }
+
+    private func endEngage() {
+        guard engage != nil else { return }
+        engage = nil
+        restyle()
     }
 
     private func scheduleRepeat(after delay: TimeInterval) {

@@ -209,7 +209,19 @@ Around that:
 
 - Paste goes through the engine's `pasteText`, so programs that asked for bracketed paste get it.
 - Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt/cmd tap for one key, double-tap to lock; the
-  "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`.
+  "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`. Keys send on release, and
+  a sideways drag scrolls the bar and cancels the key under it.
+- Key bar trackpad (✥): it takes a drag as the space bar's trackpad does on the iOS keyboard
+  (`TrackpadEngage`). It engages after a still hold of 0.3 s (within 10 pt), or at once when the
+  first 10 pt of travel is mostly up or down (more than 1.5 times as far as sideways). Engaging
+  plays the tick its steps play and draws its cursor-colored ring; one arrow per 14 pt across or
+  18 pt up or down, counted from where the finger rested at the hold, or from the touch-down for a
+  vertical drag. A quick sideways swipe that starts on it scrolls the bar and sends nothing: an
+  immediate sideways drag no longer moves the cursor, so hold first. A tap sends nothing, as
+  before.
+- Key bar repeat: arrows and PgUp/PgDn repeat while held, and stop once the finger moves more
+  than 10 pt from where it went down or off the key (`RepeatSlop`). The release then sends what a
+  tap does if nothing repeated yet.
 - Keyboard room: the root keeps clear of the keyboard's last reported frame
   ([duo-layout.md](duo-layout.md), Keyboard room) and, while the keyboard is up, of the key bar's
   own top. The keyboard is sometimes reported last without its accessory, after an input-mode
