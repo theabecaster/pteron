@@ -16,7 +16,8 @@ import RexKit
 /// - A secret is taken back only by "Remove Beacon", by "Trust" of a changed Beacon, and when
 ///   the computer is removed from the app.
 /// - On background and foreground: `push_presence`, so the helper skips pushes while the app
-///   shows its own toasts.
+///   shows its own toasts. While the app is in front it says so again every minute
+///   (`PresenceRenewal`), since a helper keeps "in front" for three minutes only.
 ///
 /// Which Beacon version is the latest is the app's to say: `release` reads the signed release
 /// list once for every computer, and each row compares its Beacon's version against that one
@@ -78,6 +79,9 @@ final class PushRegistrar {
         var now: @MainActor () -> Date = { Date() }
         var sleep: @MainActor (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         var random = PushRandom.system
+        /// The wait between two repeats of "the app is in front" (`PresenceRenewal`). Apart from
+        /// `sleep`, so a test can hold this one wait and let the others pass.
+        var renewalSleep: @MainActor (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
     }
 
     typealias Helper = PushReconciler.Helper
@@ -131,6 +135,10 @@ final class PushRegistrar {
     /// about notifications, so the install can finish.
     @ObservationIgnored private var settingUp: Set<UUID> = []
     @ObservationIgnored private var addressRetry: Task<Void, Never>?
+    /// When "the app is in front" is said again, and the wait that says it.
+    @ObservationIgnored private var renewal = PresenceRenewal()
+    @ObservationIgnored private var renewalTask: Task<Void, Never>?
+    @ObservationIgnored private let renewalSleep: @MainActor (TimeInterval) async -> Void
     #if DEBUG
     /// `-simulateNotifications <name>`: fixed rows for screenshots. Nothing is signed up.
     @ObservationIgnored private let simulation: NotificationSimulation?
@@ -169,6 +177,7 @@ final class PushRegistrar {
         self.channel = channel
         now = parts.now
         sleep = parts.sleep
+        renewalSleep = parts.renewalSleep
         reconciler = PushReconciler(gateway: parts.gateway, store: parts.store, channel: channel, prefs: prefs,
                                     phone: PushReconciler.Phone(deviceID: deviceID, environment: environment, deviceName: system.deviceName),
                                     now: parts.now, sleep: parts.sleep, random: parts.random)
@@ -184,6 +193,7 @@ final class PushRegistrar {
         #endif
         reconciler.intent = { [weak self] in self?.intent(for: $0) ?? .waiting }
         reconciler.registered = { [weak self] in self?.helperRegistered($0, version: $1) }
+        reconciler.ownership = { [weak self] in self?.ownership(of: $0) }
         #if DEBUG
         if let script = defaults.string(forKey: "notificationsScript") {
             Task { [weak self] in await self?.run(script: script) }
@@ -325,6 +335,7 @@ final class PushRegistrar {
     /// notifications allowed again, every computer comes back as it was chosen.
     func becameActive() {
         inFront = true
+        renewPresence()
         guard started else { return }
         sendPresence(active: true)
         Task {
@@ -350,6 +361,9 @@ final class PushRegistrar {
 
     func enteredBackground() {
         inFront = false
+        renewal.stop()
+        renewalTask?.cancel()
+        renewalTask = nil
         sendPresence(active: false)
     }
 
@@ -855,6 +869,32 @@ final class PushRegistrar {
                                                           timeout: 5000) else { return }
         // Only while in front: on the way to the background iOS is about to suspend the app.
         if active, r.bool("registered") == false, reconciler.relay(id) == relay { reconciler.helperLost(id) }
+    }
+
+    /// From now until the app leaves the front, each helper that holds this phone hears every
+    /// `PresenceRenewal.every` that the app is still in front. The first claim of a stay is not
+    /// sent here: `becameActive()` sends it, and a registration sends its own.
+    private func renewPresence() {
+        renewal.start(at: now())
+        renewalTask?.cancel()
+        // The wait holds on to the sleeper, not to this object.
+        let sleep = renewalSleep
+        renewalTask = Task { [weak self] in
+            while let wait = self?.renewal.wait(at: self?.now() ?? Date()) {
+                await sleep(wait)
+                guard let self, !Task.isCancelled else { return }
+                if self.renewal.renew(at: self.now()) { self.sendPresence(active: true) }
+            }
+        }
+    }
+
+    /// Whether a computer is the person's own, for the gateway's flag on its secret
+    /// (`PushReconciler.ownership`). Nil while the computer has not said who owns it and who
+    /// this phone is, or when either is not an account login: then nothing is claimed.
+    private func ownership(of id: UUID) -> Bool? {
+        guard let identity = server(id)?.identity else { return nil }
+        if identity.isConfirmedOwn { return true }
+        return identity.belongsToSomeoneElse ? false : nil
     }
 
     /// Tells each helper that holds this phone whether the app is in front. Going to the

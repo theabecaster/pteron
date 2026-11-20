@@ -285,11 +285,14 @@ enum SetupSeal {
 /// The arguments of `register_push`.
 enum PushRegistration {
     /// `setup` is where the server's install stands and `code` that install's setup code. The
-    /// seal is added only for the helper that showed the install's proof.
+    /// seal is added only for the helper that showed the install's proof. `presenceKey` is the
+    /// phone's presence key, given only for a computer confirmed as the person's own; without
+    /// it the argument is left out, and a helper that held a key lets it go.
     static func arguments(gateway: String, secret: String, environment: String, deviceName: String, deviceID: String,
-                          setup: HelperAdmission.Setup = .none, code: String? = nil) -> JSONObject {
+                          setup: HelperAdmission.Setup = .none, code: String? = nil, presenceKey: PresenceKey? = nil) -> JSONObject {
         var args: JSONObject = ["gateway": gateway, "push_secret": secret, "environment": environment,
                                 "device_name": deviceName, "device_id": deviceID]
+        if let presenceKey { args["presence_key"] = presenceKey.wireValue }
         if setup == .proven(sameKey: true), let code, let seal = SetupSeal.make(code: code, secret: secret, device: deviceID) {
             args["setup_seal"] = seal
         }

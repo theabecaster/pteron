@@ -229,6 +229,27 @@ struct ServerIdentityTests {
         #expect(ServerIdentity.login(" alex@example.com ") == "alex@example.com")
     }
 
+    @Test func onlyTwoKnownEqualLoginsAreConfirmedOwn() {
+        // The same account, in another case.
+        #expect(identity().isConfirmedOwn)
+        let other = #"{"tailscale":{"account":{"login_name":"sam@example.com"}}}"#
+        #expect(!identity(status: other).isConfirmedOwn)
+        // Unknown owner, unknown viewer, a local connection: not confirmed, and not someone else's.
+        #expect(!identity(status: "{}").isConfirmedOwn)
+        #expect(!identity(whoami: nil).isConfirmedOwn)
+        #expect(!identity(whoami: #"{"principal":{"kind":"peer","login_name":"alex@example.com"},"account":"alex"}"#).isConfirmedOwn)
+        // A tagged server has no owner, and a tagged device isn't a person.
+        let tagged = #"{"tailscale":{"account":{"login_name":"alex@example.com"},"tags":["tag:rex"]}}"#
+        #expect(!identity(status: tagged).isConfirmedOwn)
+        let runner = #"{"principal":{"kind":"tailscale","login_name":"alex@example.com","tags":["tag:ci"]},"account":"alex"}"#
+        #expect(!identity(whoami: runner).isConfirmedOwn)
+        // A name that isn't an account login is never a match, even with itself.
+        let device = #"{"tailscale":{"account":{"login_name":"tagged-devices"}}}"#
+        let same = #"{"principal":{"kind":"tailscale","login_name":"tagged-devices"},"account":"alex"}"#
+        #expect(!identity(status: device, whoami: same).isConfirmedOwn)
+        #expect(!ServerIdentity().isConfirmedOwn)
+    }
+
     // MARK: Over a connection
 
     private let me = ClientInfo(name: "test", version: "0", label: "test")

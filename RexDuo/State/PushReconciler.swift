@@ -151,6 +151,11 @@ final class PushReconciler {
     /// whether the app is in front. The second value is the version the helper gave in its
     /// answer to the registration (`helper_version`), nil when it only resumed or gave none.
     @ObservationIgnored var registered: @MainActor (UUID, String?) -> Void = { _, _ in }
+    /// Whether a computer is the person's own: true only when its owner and this phone's login
+    /// are both known and equal, false when both are known and differ, nil when it can't be
+    /// told. It is the `presence` flag of the computer's secret at the gateway; nil sends none.
+    /// Only true gives the computer's helper the phone's presence key (`register_push`).
+    @ObservationIgnored var ownership: @MainActor (UUID) -> Bool? = { _ in nil }
 
     @ObservationIgnored private let gateway: PushGateway?
     @ObservationIgnored private let store: RegistrationStore
@@ -190,6 +195,9 @@ final class PushReconciler {
     @ObservationIgnored private var orphans: Set<String>?
     /// Computers whose helper has shown its key on a connection since launch, or that have none.
     @ObservationIgnored private var examined: Set<UUID> = []
+    /// The `presence` flag last sent with each computer's secret since launch, and whether the
+    /// gateway took the request (`flagOwnership`).
+    @ObservationIgnored private var flags: [UUID: SentFlag] = [:]
     /// The end of the orphans' wait, once a computer is listed.
     @ObservationIgnored private var orphanDeadline: Task<Void, Never>?
 
@@ -212,8 +220,17 @@ final class PushReconciler {
         var offeredKey: String?
         /// How often the helper said it holds nothing for this phone after it took the secret.
         var lost = 0
+        /// Whether the registration this helper took on this connection was one for a computer
+        /// of the person's own, which carries the presence key. Nil before any.
+        var keyed: Bool?
 
         init(connection: Int) { self.connection = connection }
+    }
+
+    private struct SentFlag: Equatable {
+        var secretID: String
+        var presence: Bool
+        var taken: Bool
     }
 
     /// Why a step did not finish.
@@ -326,6 +343,8 @@ final class PushReconciler {
         failures = [:]
         // A computer the gateway has no room for stays as it is until the person asks.
         if stopped != full { stopped = stopped.intersection(full) }
+        // A flag the gateway did not take is sent once more in this stay.
+        flags = flags.filter { $0.value.taken }
         reconcileAll()
     }
 
@@ -354,6 +373,7 @@ final class PushReconciler {
         }
         running.insert(id)
         let outcome = await step(id)
+        if outcome == .settled { await flagOwnership(id) }
         running.remove(id)
         settle(id, outcome)
         watchOrphans()
@@ -539,6 +559,7 @@ final class PushReconciler {
         full.remove(id)
         examined.remove(id)
         failures[id] = nil
+        flags[id] = nil
         pending.removeValue(forKey: id)?.cancel()
         setups[id] = nil
         provenKeys[id] = nil
@@ -765,10 +786,15 @@ final class PushReconciler {
         if setups[id] != nil, provenKeys[id] == nil { return .settled }
         // The computer is on: a pause that never reached its helper is over.
         if prefs.helpersToTell.contains(id) { prefs.helpersToTell.remove(id) }
+        // Whether the computer is confirmed as the person's own, read once for this run.
+        let own = ownership(id) == true
+        // The helper holds the secret from a registration made before that was known, or
+        // before it changed: it is registered once more, with the presence key or without it.
+        let rekey = link.held != nil && link.keyed != own
         // Nothing is missing: no request and no write anywhere.
         if let r = record, r.holds(token: token, environment: phone.environment), let entry = r.servers[key],
            entry.unconfirmed != true, let secret = entry.pushSecret, link.relay != nil, link.held == secret, link.paused != true,
-           setups[id] == nil || setupRegistered.contains(id) {
+           setups[id] == nil || setupRegistered.contains(id), !rekey {
             return .settled
         }
 
@@ -781,7 +807,7 @@ final class PushReconciler {
         guard link === links[id], channel.connection(id) == link.connection else { return .settled }
 
         // The helper took this secret on this connection and was paused since: it only resumes.
-        if setups[id] == nil, let entry = record?.servers[key], entry.unconfirmed != true, let held = link.held,
+        if setups[id] == nil, !rekey, let entry = record?.servers[key], entry.unconfirmed != true, let held = link.held,
            held == entry.pushSecret, link.paused == true, link.pauses, let known = link.relay {
             switch await channel.perform(id, relay: known, action: "set_push_paused", args: ["paused": false], timeout: 5000) {
             case .success:
@@ -800,7 +826,7 @@ final class PushReconciler {
 
         // The helper proved its key and took the computer's secret on this connection. Only the
         // gateway is missing something (the phone's address was dead): it gets the secret again.
-        if setups[id] == nil, let held = link.held, held == record?.servers[key]?.pushSecret, link.paused != true {
+        if setups[id] == nil, !rekey, let held = link.held, held == record?.servers[key]?.pushSecret, link.paused != true {
             switch await secret(id, label: SecretLabel.make(channel.name(id))) {
             case .success(let sent) where sent == held: return .settled
             case .success: break
@@ -889,15 +915,19 @@ final class PushReconciler {
 
         // 5. The helper holds it and is not paused.
         // The seal goes along only while the install the proof was shown for is still the one running.
+        // The presence key goes along only for a computer of the person's own; every other
+        // registration is sent without it.
         var args = PushRegistration.arguments(gateway: address, secret: secret, environment: phone.environment,
                                               deviceName: phone.deviceName(), deviceID: phone.deviceID,
-                                              setup: setup, code: setups[id] == setupCode ? setupCode : nil)
+                                              setup: setup, code: setups[id] == setupCode ? setupCode : nil,
+                                              presenceKey: own ? presenceKey() : nil)
         args["paused"] = false
         switch await channel.perform(id, relay: relay, action: "register_push", args: args, timeout: 5000) {
         case .success(let r):
             guard link === links[id] else { return .settled }
             link.held = secret
             link.paused = false
+            link.keyed = own
             if setup == .proven(sameKey: true), setups[id] != nil { setupRegistered.insert(id) }
             return holds(id, link, pushEnabled: r.bool("push_enabled") ?? true, version: r.str("helper_version"))
         case .failure(let f):
@@ -979,6 +1009,15 @@ final class PushReconciler {
             do { try store.save(r) } catch { throw GatewayError.storeFailed }
         }
         return r
+    }
+
+    /// The phone's presence key: the stored one, or a new one that is written before it is
+    /// handed to anyone. Nil when there is no record or the new key can't be stored; a key that
+    /// would not be there after the next launch is never sent.
+    private func presenceKey() -> PresenceKey? {
+        if let key = record?.presenceKey { return key }
+        guard let made = PresenceKey.make(random) else { return nil }
+        return (try? edit { if $0.presenceKey == nil { $0.presenceKey = made } })?.presenceKey
     }
 
     /// `key` becomes the pin of a computer's helper. The secret the helper before it held is
@@ -1099,10 +1138,12 @@ final class PushReconciler {
             return .failure(.gateway(.storeFailed))
         }
         if let waitUntil { return .failure(.wait(waitUntil)) }
+        // Whose computer it is goes along, when that is known.
+        let presence = ownership(id)
         var sent = (secret: secret, record: saved)
         do {
             do {
-                try await gateway.putSecret(sent.record, secretID: secretID, pushSecret: sent.secret, label: label)
+                try await gateway.putSecret(sent.record, secretID: secretID, pushSecret: sent.secret, label: label, presence: presence)
             } catch GatewayError.secretConflict {
                 // The gateway holds this value in another row. A fresh one under the same id,
                 // written before it is sent, and one more request.
@@ -1115,7 +1156,7 @@ final class PushReconciler {
                 // The entry went away meanwhile (the computer was removed): nothing is sent for it.
                 guard again.servers[key]?.pushSecret == fresh else { return .failure(.helper) }
                 sent = (fresh, again)
-                try await gateway.putSecret(again, secretID: secretID, pushSecret: fresh, label: label)
+                try await gateway.putSecret(again, secretID: secretID, pushSecret: fresh, label: label, presence: presence)
             }
         } catch GatewayError.unknownRegistration {
             // The gateway no longer has the device: it is made again first.
@@ -1127,6 +1168,7 @@ final class PushReconciler {
             return .failure(.gateway(error as? GatewayError ?? .unavailable(retryAfter: nil)))
         }
         answered()
+        if let presence { flags[id] = SentFlag(secretID: secretID, presence: presence, taken: true) }
         let confirmedValue = sent.secret
         do {
             let confirmed = try edit(saved.device) {
@@ -1138,6 +1180,33 @@ final class PushReconciler {
         } catch {
             return .failure(.gateway(.storeFailed))
         }
+    }
+
+    /// A secret the gateway confirmed before the app knew whose computer it is for, or before
+    /// that changed, has no flag or the wrong one: the same secret goes to the gateway once
+    /// more with the flag, which writes only the flag there. Once per computer and launch for
+    /// each answer of `ownership`, and never while that is unknown, while the computer is
+    /// turned off, or while the gateway asked the phone to wait. It is no part of signing up:
+    /// a request that fails changes nothing here or in Settings, and is made again in the
+    /// app's next stay in front.
+    private func flagOwnership(_ id: UUID) async {
+        let key = id.uuidString
+        guard let gateway, case .on = intent(id), let presence = ownership(id), waitUntil == nil,
+              let r = record, r.unconfirmed != true, let entry = r.servers[key], entry.unconfirmed != true,
+              let secretID = entry.secretID, let secret = entry.pushSecret else { return }
+        let flag = SentFlag(secretID: secretID, presence: presence, taken: true)
+        guard flags[id]?.secretID != secretID || flags[id]?.presence != presence else { return }
+        flags[id] = SentFlag(secretID: secretID, presence: presence, taken: false)
+        guard (try? await gateway.putSecret(r, secretID: secretID, pushSecret: secret,
+                                            label: SecretLabel.make(channel.name(id)), presence: presence)) != nil else { return }
+        // The computer left the app while the request was on its way, and its secret was
+        // taken back: the request may have stored it again, so it is deleted once more.
+        guard record?.servers[key]?.secretID == secretID else {
+            flags[id] = nil
+            if (try? edit(r.device) { $0.retired = ($0.retired ?? []) + [secretID] }) != nil { await deleteRetired() }
+            return
+        }
+        if flags[id]?.secretID == secretID, flags[id]?.presence == presence { flags[id] = flag }
     }
 
     /// The gateway no longer has this phone's device, or the phone's address was dead: the

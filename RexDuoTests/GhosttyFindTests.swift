@@ -146,10 +146,15 @@ struct GhosttyFindTests {
         #expect(r.selected == nil)
     }
 
+    /// The core this test makes is the one it watches: it must be gone once the test lets go of
+    /// it, with find open and a pass just run, and its `deinit` is what frees the find handle
+    /// and the terminal. `GhosttyCore.liveTerminals` counts every terminal in the process, the
+    /// ones other suites hold while this runs among them, so it is not compared here.
     @Test func closingWhileAPassRunsAndFreeingTheCoreWithFindOpenAreClean() {
-        let live = GhosttyCore.liveTerminals.load(ordering: .relaxed)
+        weak var freed: GhosttyCore?
         do {
             let c = core(lines: (1...2000).map { "row \($0) error" })
+            freed = c
             let find = c.makeFind()
             find.open()
             find.setNeedle(needle("e"))
@@ -158,8 +163,9 @@ struct GhosttyFindTests {
             find.setNeedle(needle("error"))
             _ = wait(find) { $0.total > 0 }
         }
+        // A pass that was running holds the core until it ends.
         GhosttyFind.queue.sync {}
-        #expect(GhosttyCore.liveTerminals.load(ordering: .relaxed) == live)
+        #expect(freed == nil, "something holds the core")
     }
 
     @Test func perPageRowsEqualOneConversionPerMatch() {

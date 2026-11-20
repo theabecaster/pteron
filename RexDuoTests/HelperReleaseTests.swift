@@ -158,6 +158,17 @@ struct HelperReleaseTests {
         #expect(m.expiresAt == HelperRelease.timestamp("2027-06-01T00:00:00Z"))
     }
 
+    /// A newer `release.sh` may add fields. The parser reads the ones it knows and ignores the
+    /// rest, so such a list is accepted, and reads the same as the list without them.
+    @Test func keysTheParserDoesNotKnowAreIgnored() throws {
+        let plain = try accept(list()).get()
+        for extra in [["desk": "on", "signed_at": "2027-01-02T00:00:00Z"], ["desk": "off"], ["desk": 7, "signed_at": NSNull()],
+                      ["some_later_field": ["nested": true]]] as [[String: Any]] {
+            let data = list { o in for (key, value) in extra { o[key] = value } }
+            #expect(try accept(data).get() == plain, "\(extra.keys.sorted())")
+        }
+    }
+
     @Test func aListSignedByAnotherKeyIsRefused() {
         let data = list()
         #expect(fault(accept(data, signature: signature(data, by: other))) == .untrusted)

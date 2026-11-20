@@ -47,6 +47,63 @@ struct GatewayRegistration: Codable, Equatable {
     /// (`revoked`) or had been (`ended`). `PushRecord.adopt` says what each means now.
     var revoked: Bool?
     var ended: Bool?
+    /// This phone's presence key, made the first time a computer of the person's own is
+    /// registered and kept from then on. It goes only to those computers' helpers
+    /// (`register_push`), never to the gateway. A new registration starts without one.
+    var presenceKey: PresenceKey?
+}
+
+/// The phone's presence key: 32 random bytes, written as base64url without padding (43
+/// characters), the one spelling the helper takes (`PresenceKey::parse`, Relay/src/presence.rs).
+/// The helpers on the person's own computers name a desk by a tag made with it, so the gateway
+/// can match what two of them say without learning which desk it is.
+///
+/// It is a secret of this phone. Its text is reached only through `wireValue`, for the one
+/// call that hands it over; every description of it, and of anything that holds it, says
+/// `<redacted>`.
+struct PresenceKey: Equatable, Sendable {
+    static let byteCount = 32
+    static let length = 43
+
+    /// The key as it is sent and stored.
+    let wireValue: String
+
+    /// Nil unless `text` is 32 bytes in base64url without padding, spelled the one way they
+    /// have.
+    init?(_ text: String) {
+        guard text.utf8.count == Self.length,
+              text.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F }),
+              let bytes = Data(base64Encoded: text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "="),
+              bytes.count == Self.byteCount, PushKeys.text(bytes) == text else { return nil }
+        wireValue = text
+    }
+
+    /// A new key from the system's random source.
+    static func make(_ random: PushRandom) -> PresenceKey? {
+        PresenceKey(PushKeys.text(random.bytes(byteCount)))
+    }
+}
+
+extension PresenceKey: Codable {
+    init(from decoder: Decoder) throws {
+        let text = try decoder.singleValueContainer().decode(String.self)
+        guard let key = PresenceKey(text) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "not a presence key"))
+        }
+        self = key
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(wireValue)
+    }
+}
+
+extension PresenceKey: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "PresenceKey(<redacted>)" }
+    var debugDescription: String { description }
+    /// No children: a dump of whatever holds the key shows the description above and nothing more.
+    var customMirror: Mirror { Mirror(self, children: [:], displayStyle: .struct) }
 }
 
 extension GatewayRegistration {
@@ -63,6 +120,9 @@ extension GatewayRegistration {
         servers = try c.decodeIfPresent([String: ServerPush].self, forKey: .servers) ?? [:]
         retired = try c.decodeIfPresent([String].self, forKey: .retired)
         ended = try c.decodeIfPresent(Bool.self, forKey: .ended)
+        // Absent in an item from before the key. One that is not a key counts as none, so the
+        // rest of the item still reads and a new key is made when it is next needed.
+        presenceKey = (try? c.decodeIfPresent(PresenceKey.self, forKey: .presenceKey)) ?? nil
     }
 
     /// The gateway holds this device with this token and environment.
@@ -261,7 +321,7 @@ struct PushGateway: Sendable {
 
     // MARK: Requests
 
-    static func request(_ method: String, _ base: URL, path: String, bearer: String? = nil, body: [String: String]? = nil) -> URLRequest {
+    static func request(_ method: String, _ base: URL, path: String, bearer: String? = nil, body: [String: Any]? = nil) -> URLRequest {
         var r = URLRequest(url: base.appendingPathComponent(path))
         r.httpMethod = method
         r.cachePolicy = .reloadIgnoringLocalCacheData
@@ -338,9 +398,22 @@ struct PushGateway: Sendable {
     /// Stores one helper's secret under an id, both chosen by the phone. `label` is what the
     /// gateway lists it under. The gateway writes nothing when it already holds this secret
     /// under the id.
-    func putSecret(_ registration: GatewayRegistration, secretID: String, pushSecret: String, label: String) async throws {
+    ///
+    /// `presence` flags the secret's computer as one of the person's own (true) or as someone
+    /// else's (false); nil sends no flag, and the gateway keeps the one it holds. A gateway
+    /// that does not know the field ignores it.
+    func putSecret(_ registration: GatewayRegistration, secretID: String, pushSecret: String, label: String,
+                   presence: Bool? = nil) async throws {
         try await send(Self.request("PUT", base, path: "v1/devices/" + registration.device + "/secrets/" + secretID,
-                                    bearer: registration.ownerKey, body: ["label": label, "push_secret": pushSecret]))
+                                    bearer: registration.ownerKey,
+                                    body: Self.secretBody(pushSecret: pushSecret, label: label, presence: presence)))
+    }
+
+    /// The body that stores a secret: `presence` only when it is known, as a JSON boolean.
+    static func secretBody(pushSecret: String, label: String, presence: Bool?) -> [String: Any] {
+        var body: [String: Any] = ["label": label, "push_secret": pushSecret]
+        if let presence { body["presence"] = presence }
+        return body
     }
 
     /// One helper's secret stops working. Fine when it is already gone.

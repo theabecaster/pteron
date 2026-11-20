@@ -290,6 +290,10 @@ final class AppModel {
     var settingsStart: SettingsPage?
     @ObservationIgnored let prefs: Prefs
     @ObservationIgnored let notifier = AgentNotifier()
+    /// Clears delivered notifications about agents that no longer wait. Tests put a stand-in's.
+    @ObservationIgnored var tidy = NotificationTidier() {
+        didSet { connectTidy() }
+    }
     /// Push registration with each server's Beacon.
     @ObservationIgnored let push: PushRegistrar
     /// Installing Beacon on a server from here.
@@ -338,6 +342,7 @@ final class AppModel {
             return server.sessions.first?.id
         }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
+        connectTidy()
         self.glance.source = { [weak self] in
             guard let self else { return [] }
             var only: String?
@@ -376,6 +381,7 @@ final class AppModel {
             let s = ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, network: network,
                                      deviceID: push.deviceID)
             helperSetup.attach(s)
+            s.agentsKnown = { [weak self] in self?.tidy.request() }
             return s
         }
         #if DEBUG
@@ -565,6 +571,19 @@ final class AppModel {
         for s in servers { s.resume(fromBackground: fromBackground) }
         push.becameActive()
         glance.becameActive()
+        tidy.becameActive()
+    }
+
+    /// What the tidier reads of the servers: where each is, and which of its agents wait, once
+    /// every agent's state has been read on a live connection.
+    private func connectTidy() {
+        tidy.servers = { [weak self] in
+            (self?.servers ?? []).map { s in
+                let known = s.agentsCurrent && s.control.state == .connected
+                return NotificationTidy.Server(url: s.config.url, hostName: s.hostName,
+                                               waiting: known ? Set(s.agentKeys.filter { $0.state == "blocked" }.map(\.blockID)) : nil)
+            }
+        }
     }
 
     /// Set from the background until the app is active again, so a return from Control Center or
@@ -575,6 +594,7 @@ final class AppModel {
     /// app returns, not a problem (`ForegroundWake`).
     func enteredBackground() {
         inBackground = true
+        tidy.enteredBackground()
         for s in servers { s.enteredBackground() }
         // The widgets get what is known now. iOS suspends the app right after, so the write
         // runs inside a background task, and through the same writer as every other write.

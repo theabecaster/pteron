@@ -447,7 +447,8 @@ A helper holds no Apple key and never sees a phone's APNs token, so it can be a 
    hash of the key.
 2. For each server the phone chooses a secret and the id it is stored under, sends them
    (`PUT /v1/devices/{id}/secrets/{secret_id}`, labelled with the server's name) and hands that
-   server's helper the gateway's address and the secret (`register_push`).
+   server's helper the gateway's address and the secret (`register_push`). With the secret it
+   says whose computer that is, when it knows (`presence`, "Whose computer" below).
 3. For each notification the helper posts the payload to the gateway with its secret. The gateway
    adds the APNs topic and the provider token and passes it to Apple, sandbox or production as
    the phone registered. A secret can reach one phone and nothing else.
@@ -470,8 +471,9 @@ them holds a lease. Only a secret the phone flagged as one of its own computers
 (`"presence": true` on the secret's `PUT`) takes part; clearing the flag or deleting the secret
 removes the phone's leases. There is no switch: a Beacon or an app that sends none of this
 gets the gateway as before. Beacon writes the leases and names the desks
-(Relay/README.md, Desk presence); the app's part, the key and the flag, comes with its own
-release. Gateway/README.md, Desk presence, has the rules.
+(Relay/README.md, Desk presence); the app gives the key and sends the flag ("Whose computer"
+below).
+Gateway/README.md, Desk presence, has the rules.
 
 The API, limits and deploy steps are in `Gateway/README.md`; `PushGateway`
 (`State/PushGateway.swift`) is the phone's side, tested in `RexDuoTests/PushGatewayTests.swift`.
@@ -613,6 +615,9 @@ The helper opens no ports; everything goes through Rex.
    During an install from the app, after the setup proof, it adds `setup_seal`: base64 of
    HMAC-SHA256 keyed by the setup code over `rexduo-setup-register-v1`, the `push_secret` and
    the `device_id`, joined by `\n` (`SetupSeal`). No other registration carries it.
+   For a computer confirmed as the person's own it adds `presence_key`, the phone's presence
+   key ("Whose computer" below); every other registration leaves the argument out, and a helper
+   that held a key lets it go.
 6. It reports `push_presence {active}` on background and foreground, so the helper skips phones
    that show their own notifications. It says `true` only once the app is active on screen
    ("In front" below).
@@ -672,6 +677,15 @@ contract. Their pure parts are in `PushSupport.swift` (tested in
 - Presence: `push_presence` false on background (inside a background task, `State/BackgroundTask.swift`)
   and true on foreground and after each registration made while the app is in front, since a
   resumed connection keeps its client id.
+- **Renewal.** A helper keeps "in front" for 3 minutes after it was last told
+  (`CLAIM_LIFE` in `Relay/src/desk.rs`), so a phone whose `false` never arrived stops counting
+  by itself. While the app is in front it therefore sends `push_presence {active: true}` again
+  every 60 s to each helper that holds the phone, which leaves room for two lost calls.
+  `becameActive()` starts the repeats, whether or not the registrar has started, and
+  `enteredBackground()` ends them before it sends `false`; nothing is repeated in the
+  background. `PresenceRenewal` (`State/PresenceRenewal.swift`) holds the timing, with the
+  clock passed in (`RexDuoTests/PresenceRenewalTests.swift`). A helper from before the claim
+  takes each repeat as the same news again.
 - **In front.** `PushRegistrar.inFront` starts false, and only `becameActive()` sets it, which
   `RexDuoApp` calls at the `.active` scene phase. So a launch that never reaches the screen
   tells no helper that the phone is in use, and the helper goes on sending its pushes. There
@@ -686,6 +700,79 @@ contract. Their pure parts are in `PushSupport.swift` (tested in
   the installer.
 - `project.yml` gives the app `aps-environment` (development; export for App Store Connect switches
   it to production) and `com.apple.developer.usernotifications.time-sensitive`.
+
+### Whose computer
+
+The gateway keeps one flag per secret, `presence`: the secret's computer is one of the person's
+own. The app sends it with the secret's `PUT` as a JSON boolean, and only when it can tell:
+
+| What the server says | `presence` |
+|---|---|
+| Its owner's login and this phone's login are both known and equal, without case | `true` |
+| Both are known and differ | `false` |
+| Either is unknown: a tagged server, a local connection, a name that is not a login, no answer yet | not sent |
+
+`ServerIdentity.isConfirmedOwn` (RexKit) is the first row. It is stricter than the offer to
+install Beacon, which only holds back when the two logins are known to differ. A request
+without the field leaves the gateway's flag as it is, and a gateway that does not know the
+field ignores it.
+
+A secret the gateway confirmed before the app knew the owner has no flag yet. Once per launch
+and computer, when sign-up has nothing left to do and the answer is known, the reconciler sends
+the same secret once more with the flag (`PushReconciler.flagOwnership`); the gateway writes
+only the flag, or nothing when it holds it already. A change of the answer is sent once in the
+same way. This is no part of signing up: a request that fails changes nothing in Settings and
+is made again the next time the app comes to the front. A computer that is turned off is not
+flagged. `RexDuoTests/PushOwnershipTests.swift` counts the requests.
+
+**The presence key.** The helpers on the person's own computers name a desk to the gateway by
+a tag, and the tag is made with a key only those helpers and the phone hold, so the gateway
+can match what two of them say without being told which desk it is. The phone makes the key:
+32 bytes from the system's random source, written as base64url without padding (43 characters,
+`PresenceKey` in `State/PushGateway.swift`; the helper reads it with `PresenceKey::parse`,
+`Relay/src/presence.rs`).
+
+- It is made the first time a computer of the person's own is registered, written to the
+  store before it is sent, and reused from then on. It lives in the registration's Keychain
+  item with the owner key and the secrets (`KeychainItem`: readable after the first unlock,
+  this device only, never in iCloud Keychain). A registration that starts over starts without
+  a key, and the next own computer to register gets a new one.
+- It goes to a helper in `register_push`, and only for the first row of the table above: the
+  same answer that sends `presence: true` (`PushReconciler.ownership`). It never goes to the
+  gateway.
+- A helper that was registered before the answer was known, or before it changed, is
+  registered once more on that connection: with the key when the computer is the person's
+  own, without it otherwise, which takes the key away from a helper that held one. A paused
+  computer is left paused and gets this with the registration that resumes it.
+- A helper from before the key ignores the argument.
+- The key has one way out, `PresenceKey.wireValue`, used for that call. Every description of
+  it and of the record that holds it reads `<redacted>`.
+
+`RexDuoTests/PresenceKeyTests.swift` covers all of this with stand-ins.
+
+### Clearing notifications that no longer hold
+
+A push about an agent stays in Notification Center after the agent was answered at the
+computer. While the app is in front, `NotificationTidier` (`State/NotificationTidy.swift`)
+removes the ones that say nothing true any more, with `removeDeliveredNotifications`. It shows
+and plays nothing.
+
+- Only `AGENT_BLOCKED` and `AGENT_DONE` are ever removed. A `NOTICE` is its only copy and
+  always stays, and so does the test notification.
+- On a server whose agents' states have all been read on a live connection
+  (`ServerConnection.agentsCurrent`), a question or a "finished" goes when the agent in its
+  pane does not wait now; a pane that is gone counts as not waiting. The pane is the payload's
+  `block_id`, whatever the notification's identifier is.
+- A notification from a server that is no longer in the app goes too, but only while every
+  server of the app is known: one that is not connected has not said its name yet, so the
+  push may be its own.
+- Anything that can't be told stays: no `server` or `block_id` in the payload, a server that
+  is offline or still loading.
+
+A pass runs when the app becomes active, when a server's agents have just been read, and when
+an agent changes state while they are known, at most once a second, and never in the
+background. Opening a pane starts no pass of its own: the rule reads only the agents' states,
+so the pass that follows a change of state already covers a pane the person opened and answered. `NotificationTidy.stale` is the rule (`RexDuoTests/NotificationTidyTests.swift`).
 
 ### Tapping a push
 

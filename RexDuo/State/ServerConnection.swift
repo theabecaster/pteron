@@ -180,6 +180,9 @@ final class ServerConnection: Identifiable {
     /// the tabs are in and the states are not. Until this is true, "no agent is waiting here" is
     /// not known. Read by `AppModel.openWaiting`, which polls it; no view observes it.
     @ObservationIgnored private(set) var agentsCurrent = false
+    /// Every agent's state has just been read, or one changed while they were all known.
+    /// AppModel sets it, to clear notifications that no longer hold (`NotificationTidier`).
+    @ObservationIgnored var agentsKnown: (@MainActor () -> Void)?
     /// Counts what makes the agent states stale, so a sync that began before the latest one
     /// doesn't call them current.
     @ObservationIgnored private var agentsStale = 0
@@ -280,7 +283,9 @@ final class ServerConnection: Identifiable {
             guard let self else { return }
             self.agentKeysPending = false
             let keys = self.currentAgentKeys()
-            if keys != self.agentKeys { self.agentKeys = keys }
+            guard keys != self.agentKeys else { return }
+            self.agentKeys = keys
+            if self.agentsCurrent { self.agentsKnown?() }
         }
     }
 
@@ -611,6 +616,7 @@ final class ServerConnection: Identifiable {
         let keys = currentAgentKeys()
         if keys != agentKeys { agentKeys = keys }
         agentsCurrent = true
+        agentsKnown?()
     }
 
     /// Reads the whole server state and replaces the local copy with it.

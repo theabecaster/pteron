@@ -92,6 +92,14 @@ public struct ServerIdentity: Equatable, Sendable {
         guard let owner, let viewer else { return false }
         return owner.caseInsensitiveCompare(viewer) != .orderedSame
     }
+
+    /// The server's owner and this device's login are both known and the same account, compared
+    /// without case. False when either is unknown (a tagged server, a local connection, a name
+    /// that isn't a login): unlike `belongsToSomeoneElse`, only a match counts.
+    public var isConfirmedOwn: Bool {
+        guard let owner, let viewer else { return false }
+        return owner.caseInsensitiveCompare(viewer) == .orderedSame
+    }
 }
 
 /// Reads a server's identity over one short control connection: hello, five read-only calls, a

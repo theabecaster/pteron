@@ -16,6 +16,8 @@ final class GatewayStandIn {
         var dead = false
         /// Push secrets by their id.
         var secrets: [String: String] = [:]
+        /// The `presence` flag of each secret, by its id: the phone's own computer or not.
+        var presence: [String: Bool] = [:]
     }
 
     /// What to do with the next request in place of answering it.
@@ -34,6 +36,8 @@ final class GatewayStandIn {
         var path: String
         var bearer: String?
         var body: [String: String]
+        /// The request's `presence`, when it carried one as a JSON boolean.
+        var presence: Bool?
         var at: Date
 
         var line: String { "\(method) \(path)" }
@@ -51,6 +55,9 @@ final class GatewayStandIn {
     var turns: [Turn] = []
     /// Every request is refused with 503.
     var down = false
+    /// The gateway reads a secret's `presence` flag. Off: one from before the flag, which
+    /// ignores the field.
+    var knowsPresence = true
     var now: () -> Date = { Date() }
 
     var lines: [String] { seen.map(\.line) }
@@ -74,8 +81,11 @@ final class GatewayStandIn {
         let method = request.httpMethod ?? ""
         let path = request.url?.path ?? ""
         let bearer = request.value(forHTTPHeaderField: "Authorization").map { String($0.dropFirst("Bearer ".count)) }
-        let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: String] ?? [:]
-        seen.append(Seen(method: method, path: path, bearer: bearer, body: body, at: now()))
+        let json = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any] ?? [:]
+        let body = json.compactMapValues { $0 as? String }
+        // Only a JSON boolean is a flag, as at the gateway.
+        let presence = (json["presence"] as? NSNumber).flatMap { CFGetTypeID($0) == CFBooleanGetTypeID() ? $0.boolValue : nil }
+        seen.append(Seen(method: method, path: path, bearer: bearer, body: body, presence: presence, at: now()))
         if down { return (503, "{}", [:], false) }
         var lost = false
         if !turns.isEmpty {
@@ -87,11 +97,11 @@ final class GatewayStandIn {
                 return (status, body, retryAfter.map { ["Retry-After": String($0)] } ?? [:], false)
             }
         }
-        let (status, text) = answer(method, path.split(separator: "/").map(String.init), bearer ?? "", body)
+        let (status, text) = answer(method, path.split(separator: "/").map(String.init), bearer ?? "", body, presence)
         return (status, text, [:], lost)
     }
 
-    private func answer(_ method: String, _ parts: [String], _ key: String, _ body: [String: String]) -> (Int, String) {
+    private func answer(_ method: String, _ parts: [String], _ key: String, _ body: [String: String], _ presence: Bool?) -> (Int, String) {
         guard parts.count >= 3, parts[0] == "v1", parts[1] == "devices" else { return (404, "{}") }
         let id = parts[2]
         if parts.count == 3, method == "PUT" {
@@ -123,16 +133,27 @@ final class GatewayStandIn {
             guard let secret = body["push_secret"], secret.count == 43, secretID.count == 16, body["label"]?.isEmpty == false else {
                 return (400, #"{"error":"invalid_request"}"#)
             }
-            if device.secrets[secretID] == secret { return (200, #"{"secret_id":"\#(secretID)"}"#) }
+            // The same secret with the flag as stored, or with no flag, which keeps the stored one.
+            if device.secrets[secretID] == secret {
+                guard knowsPresence, let presence, presence != (device.presence[secretID] ?? false) else {
+                    return (200, #"{"secret_id":"\#(secretID)"}"#)
+                }
+                device.presence[secretID] = presence
+                devices[id] = device
+                writes += 1
+                return (200, #"{"secret_id":"\#(secretID)"}"#)
+            }
             let elsewhere = devices.contains { other, d in d.secrets.contains { $0.value == secret && !(other == id && $0.key == secretID) } }
             if elsewhere { return (409, #"{"error":"conflict"}"#) }
             let replaced = device.secrets[secretID] != nil
             device.secrets[secretID] = secret
+            if knowsPresence, let presence { device.presence[secretID] = presence }
             devices[id] = device
             writes += 1
             return (replaced ? 200 : 201, #"{"secret_id":"\#(secretID)"}"#)
         case "DELETE":
             if device.secrets.removeValue(forKey: secretID) != nil { writes += 1 }
+            device.presence[secretID] = nil
             devices[id] = device
             return (204, "")
         default:
@@ -165,6 +186,9 @@ final class HelperStandIn: HelperChannel {
         var calls: [String] = []
         /// What each `push_presence` said: the app is in front, or not.
         var presence: [Bool] = []
+        /// The presence key the helper holds, and the one each registration carried, in order.
+        var presenceKey: String?
+        var presenceKeys: [String?] = []
         /// How long the helper takes to answer, so that a switch can move while it does.
         var latency: UInt64 = 0
         /// The helper's version, as its status says it.
@@ -287,6 +311,9 @@ final class HelperStandIn: HelperChannel {
             // Left out, a registration with the secret the helper holds keeps its pause.
             c.paused = args.bool("paused") ?? (c.paused && c.secret == secret)
             c.secret = secret
+            // A registration without the key takes away one the helper held.
+            c.presenceKey = args.str("presence_key")
+            c.presenceKeys.append(c.presenceKey)
             var reply: JSONObject = ["registered": true, "push_enabled": true]
             if c.registrationSaysVersion { reply["helper_version"] = c.version }
             return .success(reply)
