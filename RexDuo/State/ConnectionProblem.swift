@@ -8,6 +8,8 @@ struct NetworkSnapshot: Equatable, Sendable {
     var onPrivateNetwork: Bool?
     /// The interfaces the path can use, so a switch from Wi-Fi to cellular counts as a change.
     var route = ""
+    /// The path is cellular or a hotspot (`NWPath.isExpensive`).
+    var expensive = false
 
     static let unknown = NetworkSnapshot(reachable: true, onPrivateNetwork: nil)
 }

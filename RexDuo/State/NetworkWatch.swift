@@ -20,7 +20,8 @@ final class NetworkWatch {
         monitor.pathUpdateHandler = { [weak self] path in
             // On the monitor's queue: the interface scan stays off the main thread.
             let snap = NetworkSnapshot(reachable: path.status == .satisfied, onPrivateNetwork: PrivateNetwork.isConnected(),
-                                       route: path.availableInterfaces.map(\.name).joined(separator: ","))
+                                       route: path.availableInterfaces.map(\.name).joined(separator: ","),
+                                       expensive: path.isExpensive)
             Task { @MainActor in self?.apply(snap) }
         }
         monitor.start(queue: DispatchQueue(label: "dev.abrahamgonzalez.rexduo.network", qos: .utility))

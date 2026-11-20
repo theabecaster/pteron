@@ -218,7 +218,9 @@ builds.
   1.5), and the result's `mounts` holds every pane mount (cold, parked or resumed) with its time
   to the first frame and to the current screen; with `-autoOpen zz-…` only, since fit mode
   claims the panes. `-perfSwitchType <text>` types the text into each pane as it comes back from
-  the park and records when the server answered the write. `-findTest <needle>` opens find on the replay's pane before the
+  the park and records when the server answered the write; `-perfSwitchWalk YES` goes back for
+  the first half of the switches and forward for the second, which in a tab of n / 2 + 1 panes
+  ends on the last one with all the others visited. `-findTest <needle>` opens find on the replay's pane before the
   first byte, and `-findSteps <n>` then steps n matches 100 ms apart after the replay (a `find`
   phase). `-perfClean YES` deletes `Documents/perf` and `Documents/bench`
   and quits. `-peelLeadIn <seconds>` and `-drawables 2` are A/B switches for the device

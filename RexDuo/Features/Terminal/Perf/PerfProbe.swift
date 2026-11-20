@@ -65,8 +65,8 @@ struct PerfReplayInfo: Sendable {
 ///
 /// **Mounts** (`mounts`): every time a pane comes on screen, with how it came. `cold`: a new
 /// host, which starts a stream and restores its snapshot. `parked`: a host kept from an earlier
-/// visit, with its last screen. `resumed`: a host on screen as the app comes back to the
-/// foreground. For each, milliseconds after the mount (the host entering its window; for
+/// visit, with its last screen. `warm`: a host kept from an earlier visit whose stream went on
+/// unseen. `resumed`: a host on screen as the app comes back to the foreground. For each, milliseconds after the mount (the host entering its window; for
 /// `resumed`, the return to the foreground):
 /// - `firstFrameMs`: the first frame that shows the pane's content: the restored snapshot for a
 ///   cold mount, the kept screen otherwise.
@@ -159,7 +159,7 @@ final class PerfProbe: Sendable {
     }
 
     /// How a pane came on screen (`mounted`).
-    enum MountKind: String, Sendable, CaseIterable { case cold, parked, resumed }
+    enum MountKind: String, Sendable, CaseIterable { case cold, parked, warm, resumed }
 
     private struct Mount: Sendable {
         var kind: MountKind
@@ -377,14 +377,16 @@ final class PerfProbe: Sendable {
     // MARK: Mounts
 
     /// A pane came on screen: `TerminalHost` entered a window, or the app came back with it there.
+    /// `current`: the screen it comes with is the program's now, with no fence to wait for.
     @MainActor
-    func mounted(_ host: TerminalHost, kind: MountKind) {
+    func mounted(_ host: TerminalHost, kind: MountKind, current: Bool = false) {
         let now = Self.clock()
         let core = ObjectIdentifier(host.term.core)
         state.withLock { s in
             var m = Mount(kind: kind, core: core, at: now, switched: s.switching)
             // A host that has a screen shows it in its next frame.
             if kind != .cold { m.frame = Target(at: now) }
+            if current { m.current = Target(at: now) }
             s.mounts.append(m)
         }
         typeOnMount(host, kind: kind)
@@ -395,7 +397,7 @@ final class PerfProbe: Sendable {
     /// typing at once. The mount records when the server answered the write, if it ever left.
     @MainActor
     private func typeOnMount(_ host: TerminalHost, kind: MountKind) {
-        guard kind == .parked, state.withLock({ $0.switching }),
+        guard kind == .parked || kind == .warm, state.withLock({ $0.switching }),
               let text = UserDefaults.standard.string(forKey: "perfSwitchType"), !text.isEmpty else { return }
         let id = ObjectIdentifier(host.term.core)
         let index = state.withLock { s -> Int in
@@ -408,7 +410,10 @@ final class PerfProbe: Sendable {
                 if s.mounts.indices.contains(index), s.mounts[index].core == id, s.mounts[index].written == nil { s.mounts[index].written = now }
             }
         }
-        host.term.send(txt: text.replacingOccurrences(of: "\\n", with: "\r"))
+        // In the next turn: the host is still on its way back (its stream resumes after this).
+        DispatchQueue.main.async { [weak host] in
+            host?.term.send(txt: text.replacingOccurrences(of: "\\n", with: "\r"))
+        }
     }
 
     /// The pane's stream caught up (its fence came down): its next frame is current.
@@ -700,9 +705,10 @@ final class PerfProbe: Sendable {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         if steps > 0 { main.phases["find"] = await findPhase(steps: steps) }
+        // Before the idle phase: with both, it measures what the panes left behind cost.
+        if switches > 0 { await switchPhase(count: switches, every: d.double(forKey: "perfSwitchEvery")) }
         if idle > 0 { main.phases["idle"] = await idlePhase(seconds: idle) }
         if scroll > 0 { main.phases["scroll"] = await scrollPhase(seconds: scroll) }
-        if switches > 0 { await switchPhase(count: switches, every: d.double(forKey: "perfSwitchEvery")) }
     }
 
     /// What a phase measures from its start to its end.
@@ -831,8 +837,12 @@ final class PerfProbe: Sendable {
         }
         let pause = UInt64((every > 0 ? every : 1.5) * 1e9)
         state.withLock { $0.switching = true }
+        // `-perfSwitchWalk YES`: back for the first half of the switches and forward for the
+        // second, instead of forward and back in turn. In a tab of count / 2 + 1 panes that ends
+        // on the last pane with every other one visited, whichever pane the tab opened on.
+        let walk = UserDefaults.standard.bool(forKey: "perfSwitchWalk")
         for i in 0..<count {
-            switcher(i % 2 == 0 ? 1 : -1)
+            switcher(walk ? (i < count / 2 ? -1 : 1) : (i % 2 == 0 ? 1 : -1))
             try? await Task.sleep(nanoseconds: pause)
         }
         state.withLock { $0.switching = false }

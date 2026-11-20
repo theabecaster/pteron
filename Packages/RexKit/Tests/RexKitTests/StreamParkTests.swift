@@ -221,4 +221,49 @@ final class StreamParkTests: XCTestCase {
         let down = await eventually { !s.isFenced }
         XCTAssertTrue(down, "the snapshot's end arrives over the resumed stream")
     }
+
+    // MARK: A stream that went on unseen
+
+    func testAReturnToARunningStreamIsFencedOnlyUntilItIsQuiet() async {
+        let link = FakeLink()
+        let (s, sink, _) = await current(link)
+        s.returned()
+        XCTAssertTrue(s.isFenced)
+        s.send(text: "ls\r")
+        let sent = await eventually { link.written == ["ls\r"] }
+        XCTAssertTrue(sent, "the screen was the stream's own: the keys go")
+        XCTAssertFalse(s.isFenced)
+        XCTAssertEqual(link.sockets.count, 1, "no resume, no ticket: the stream never stopped")
+        XCTAssertEqual(sink.statuses, [.connecting, .live])
+        XCTAssertEqual(notices, [])
+    }
+
+    func testAReturnWithAClaimOnItsWayWaitsForItAndDropsKeysWhenTheSizeChanges() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        s.setClaimPending(true)
+        s.returned()
+        s.send(text: "k")
+        await settle()
+        XCTAssertTrue(s.isFenced, "the lapsed claim is being made again")
+        link.sockets[0].push(Wire.resize(cols: 60, rows: 40, owner: "client:test"))
+        s.setClaimPending(false)
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        await settle()
+        XCTAssertEqual(link.written, [])
+        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+    }
+
+    func testAReturnToAStreamThatIsNotLiveChangesNothing() async {
+        let link = FakeLink()
+        let (s, sink, _) = await current(link)
+        link.plans = [.silent]
+        link.sockets[0].drop()
+        _ = await eventually { s.isFenced }
+        let before = sink.fence
+        s.returned()
+        XCTAssertEqual(sink.fence, before, "it is fenced already, until its resume")
+        XCTAssertTrue(s.isFenced)
+    }
 }

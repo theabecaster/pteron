@@ -384,6 +384,15 @@ scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
 - Replay runs use no server. `--live` opens the named session in mirror mode (no claim, no
   resize) after `seq 1 3000` in its pane. Use a throwaway session. Live numbers have no budget:
   they depend on the network and the server.
+- `--switch <zz- label>` measures pane switches on real panes in fit mode: the session's first
+  tab holds two panes side by side, and each run switches between them 10 times, 1.5 s apart,
+  with no added delay (`switch0`) and with a simulated round trip of 150 ms (`switch150`,
+  `-netDelay`). Every pane mount is recorded as cold (a new host), parked or warm (a host kept
+  from an earlier visit) with its time to the first frame and to the current screen (the fence
+  down, everything parsed and drawn), and a key is typed into each pane as it comes back, with
+  the time to the server's answer. Budget: a pane that comes back draws its first frame within
+  34 ms. `--warm <zz- label>` (three panes, the first two writing steadily) measures what two
+  panes streaming unseen cost the one on screen over 10 s: main-thread time, CPU, energy.
 - On the iPhone Duo: `scripts/bench/run-device.sh [--runs 5] [--only …] [--live zz-bench]`
   (header comment). It builds the `BENCH` Release on the build Mac, installs it, copies the scenarios
   into the app's Documents and launches the app once per run through `devicectl`. `--tag` and

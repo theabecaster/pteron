@@ -43,3 +43,55 @@ enum ParkPolicy {
         seconds >= limits.backgroundLife
     }
 }
+
+/// How many panes that left the screen keep streaming, unseen, so that coming back to one is
+/// not even a resume: they parse and never draw. Built for a phone: few, quiet ones only, and
+/// none when the phone has reasons to save.
+enum WarmPolicy {
+    /// What the limit depends on.
+    struct Facts: Equatable {
+        var foreground = true
+        var lowPower = false
+        /// `ProcessInfo.ThermalState` serious or critical.
+        var hot = false
+        /// A cellular network or a hotspot.
+        var expensive = false
+    }
+
+    /// Warm panes at most.
+    static let most = 2
+    /// A warm pane that writes more than this, on average over `rateWindow`, parks.
+    static let rateLimit = 64 * 1024
+    static let rateWindow: CFTimeInterval = 2
+
+    static func limit(_ facts: Facts) -> Int {
+        guard facts.foreground, !facts.lowPower, !facts.hot else { return 0 }
+        return facts.expensive ? 1 : most
+    }
+}
+
+/// The output of a warm pane, in windows of `WarmPolicy.rateWindow`: says when one passed the
+/// limit. No timer: it looks at the clock when bytes arrive.
+struct WarmRate {
+    private var start: CFTimeInterval = 0
+    private var bytes = 0
+
+    mutating func reset(at now: CFTimeInterval) {
+        start = now
+        bytes = 0
+    }
+
+    /// Counts `count` bytes that arrived at `now`. True when the window that just ended held
+    /// more than the limit allows.
+    mutating func add(_ count: Int, at now: CFTimeInterval) -> Bool {
+        if now - start >= WarmPolicy.rateWindow {
+            // The window ended before these bytes: judge it, and start the next one with them.
+            let over = Double(bytes) > Double(WarmPolicy.rateLimit) * (now - start)
+            start = now
+            bytes = count
+            return over
+        }
+        bytes += count
+        return false
+    }
+}

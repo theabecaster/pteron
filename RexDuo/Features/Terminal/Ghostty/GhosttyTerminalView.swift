@@ -337,6 +337,8 @@ final class GhosttyTerminalView: UIView {
     }
 
     private func updateDrawable() {
+        // Off screen without drawables: a layout there (a resize from the server) makes none.
+        guard !drawablesReleased else { return }
         let w = Int((bounds.width * displayScale).rounded()), h = Int((bounds.height * displayScale).rounded())
         guard w > 0, h > 0 else {
             // A layer with no area shows no drawable, so none would come back to its pool: the
@@ -352,6 +354,7 @@ final class GhosttyTerminalView: UIView {
     /// The pane is parked: its layer gives its drawables back (three of the pane's size in
     /// pixels) and nothing is drawn until `restoreDrawables()`.
     func releaseDrawables() {
+        drawablesReleased = true
         renderer.setDrawableSize(width: 0, height: 0)
         metalView.metalLayer.drawableSize = CGSize(width: 1, height: 1)
     }
@@ -360,7 +363,11 @@ final class GhosttyTerminalView: UIView {
     var metalLayerDrawableSize: CGSize { metalView.metalLayer.drawableSize }
 
     /// The parked pane is back: drawables at the view's size again, made as the first frame asks.
-    func restoreDrawables() { updateDrawable() }
+    func restoreDrawables() {
+        drawablesReleased = false
+        updateDrawable()
+    }
+    private var drawablesReleased = false
 
     override func didMoveToWindow() {
         super.didMoveToWindow()

@@ -180,6 +180,20 @@ is not a cold start.
 - **How many** (`TerminalHostPool`, `ParkPolicy`): the 4 panes parked last, within 96 MB of
   terminal memory together by the engine's own figure (`GhosttyCore.memoryBytes`, read when a
   pane parks). The oldest goes first. Panes on screen don't count.
+- **Warm panes** (`WarmPolicy`, `TerminalHost.warm`): the 2 panes left last don't park. Their
+  streams go on off screen, parsed and never drawn (no drawables, no find, no timers of their
+  own), so the screen is current the moment one is back: no RESUME, no round trip. They count
+  toward the 4 and the 96 MB; the parked panes are the older ones.
+  - Only in the foreground. Going to the background, Low Power Mode and a thermal state of
+    serious or worse park every warm pane at once; on a cellular network or a hotspot
+    (`NWPath.isExpensive`) one stays warm, not two.
+  - A warm pane that writes more than 64 KB/s on average over 2 s parks (`WarmRate`, checked as
+    bytes arrive, no timer): a build log is not followed unseen.
+  - A warm pane in mirror mode comes back with no fence: its screen is the stream's own and
+    nothing about it changes. A fitted one still gets the fence (`TerminalStream.returned`),
+    which comes down after the usual quiet 40 ms when its claim is still held, or after the new
+    claim's resize when the grace had run out.
+  - A warm pane whose stream drops reconnects as a pane on screen does, behind its fence.
 - **All of them go** on a memory warning, when the app comes back after 10 minutes in the
   background, when the user leaves their server or it is removed, and when their session closes
   (`ParkWatcher`). A pane let go stops as before: status 1000, claim released.

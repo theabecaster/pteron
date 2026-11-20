@@ -47,6 +47,9 @@ delete runs.live;
 const switches = Object.keys(runs).filter((s) => /^switch\d+$/.test(s)).sort((a, b) => a.slice(6) - b.slice(6));
 const switchRuns = Object.fromEntries(switches.map((s) => [s, runs[s]]));
 for (const s of switches) delete runs[s];
+// Two panes streaming unseen while the one on screen sits still (run.sh --warm).
+const warm = runs.warm;
+delete runs.warm;
 const scenarios = Object.keys(runs);
 
 // column title, path, and a second path shown beside it
@@ -109,11 +112,27 @@ if (switches.length) {
       ['parked: first frame', 'mounts.parked.firstFrameMs'],
       ['parked: current', 'mounts.parked.currentMs'],
       ['parked mounts', 'mounts.parked.count'],
-      ['key answered', 'mounts.parked.keyAnsweredMs'],
-      ['keys typed', 'mounts.parked.keysTyped'],
-      ['keys answered', 'mounts.parked.keysAnswered'],
+      ['parked: key answered', 'mounts.parked.keyAnsweredMs'],
+      ['parked: keys answered', 'mounts.parked.keysAnswered'],
+      ['warm: first frame', 'mounts.warm.firstFrameMs'],
+      ['warm: current', 'mounts.warm.currentMs'],
+      ['warm mounts', 'mounts.warm.count'],
+      ['warm: key answered', 'mounts.warm.keyAnsweredMs'],
+      ['warm: keys answered', 'mounts.warm.keysAnswered'],
       ['peak MB', 'memory.peakMB'],
     ]);
+}
+
+if (warm) {
+  table(`### Two warm panes streaming unseen, the pane on screen still for 10 s (${warm.length} runs)`, [['warm', warm]], [
+    ['main busy ms', 'idle.mainBusy.totalMs'],
+    ['worst main slice ms', 'idle.mainBusy.worstMs'],
+    ['CPU %', 'idle.cpu.percent'],
+    ['main wake-ups/s', 'idle.wakeups.mainPerSecond'],
+    ['energy mJ', 'idle.power.energyMJ'],
+    ['frames', 'idle.presents'],
+    ['cold mounts', 'mounts.cold.count'],
+  ]);
 }
 
 // Budgets (scripts/bench/budgets.mjs): the median of a scenario's runs against a fixed limit.
@@ -128,6 +147,14 @@ for (const s of Object.keys(budgets.scenarios)) {
     const got = stat(runs[s], p);
     if (!got) { verdicts.push([title[p] ?? p, s, 'no data', 'not in the results']); continue; }
     verdicts.push([title[p] ?? p, s, got.median <= limit ? 'pass' : 'FAIL', `${num(got.median)}, budget ${num(limit)}`]);
+  }
+}
+// Pane switches (run.sh --switch): checked only when they were run, since they need a server.
+for (const s of switches) {
+  for (const [p, limit] of Object.entries(budgets.switches[s] ?? {})) {
+    const got = stat(switchRuns[s], p);
+    if (!got) continue;
+    verdicts.push([budgets.switchTitles[p] ?? p, s, got.median <= limit ? 'pass' : 'FAIL', `${num(got.median)}, budget ${num(limit)}`]);
   }
 }
 for (const s of scenarios) if (!budgets.scenarios[s]) notes.push(`${s}: no budget in scripts/bench/budgets.mjs, not checked`);

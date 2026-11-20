@@ -188,6 +188,21 @@ final class TerminalHostPool {
     @ObservationIgnored private var containers: [Key: [Weak]] = [:]
     /// The parked panes, oldest first.
     @ObservationIgnored private(set) var parked: [Key] = []
+    /// The warm panes, oldest first: off screen with their streams running (`WarmPolicy`).
+    @ObservationIgnored private(set) var warm: [Key] = []
+    /// The network is cellular or a hotspot. `RootView` says; tests put their own here.
+    @ObservationIgnored var expensiveNetwork: () -> Bool = { false }
+    /// Low Power Mode and the thermal state. Tests put their own here.
+    @ObservationIgnored var power: () -> (lowPower: Bool, hot: Bool) = {
+        let p = ProcessInfo.processInfo
+        return (p.isLowPowerModeEnabled, p.thermalState == .serious || p.thermalState == .critical)
+    }
+    /// How many panes may be warm right now.
+    private var warmLimit: Int {
+        let p = power()
+        return WarmPolicy.limit(WarmPolicy.Facts(foreground: backgroundedAt == nil, lowPower: p.lowPower, hot: p.hot,
+                                                 expensive: expensiveNetwork()))
+    }
     @ObservationIgnored var limits = ParkLimits()
     /// The clock the time in the background is read from. Tests put their own here.
     @ObservationIgnored var now: () -> CFTimeInterval = { CACurrentMediaTime() }
@@ -203,7 +218,12 @@ final class TerminalHostPool {
             })
         }
         observe(UIApplication.didReceiveMemoryWarningNotification) { $0.evictParked() }
-        observe(UIApplication.didEnterBackgroundNotification) { $0.backgroundedAt = $0.now() }
+        observe(UIApplication.didEnterBackgroundNotification) {
+            $0.backgroundedAt = $0.now()
+            $0.settleWarm()
+        }
+        observe(.NSProcessInfoPowerStateDidChange) { $0.settleWarm() }
+        observe(ProcessInfo.thermalStateDidChangeNotification) { $0.settleWarm() }
         observe(UIApplication.willEnterForegroundNotification) { $0.cameBack() }
     }
 
@@ -214,9 +234,34 @@ final class TerminalHostPool {
         if ParkPolicy.expired(awayFor: now() - since, limits: limits) { evictParked() }
     }
 
-    /// Lets parked panes go: all of them, or those `stale` says have nowhere to come back to.
+    /// Lets the panes off screen go, parked and warm: all of them, or those `stale` says have
+    /// nowhere to come back to.
     func evictParked(where stale: (Key) -> Bool = { _ in true }) {
-        for key in parked where stale(key) { hosts[key]?.evict() }
+        for key in parked + warm where stale(key) { hosts[key]?.evict() }
+    }
+
+    /// A pane has been off screen for its settle time: it stays warm if the limit allows one
+    /// more, and the warm panes over the limit park, oldest first.
+    private func didLeave(_ key: Key) {
+        guard let host = hosts[key] else { return }
+        guard warmLimit > 0 else { return host.park() }
+        warm.removeAll { $0 == key }
+        warm.append(key)
+        host.warm()
+        settleWarm()
+        trim()
+    }
+
+    /// Parks the warm panes over the limit, which may have fallen to none (the background, Low
+    /// Power Mode, a hot phone) or to one (a cellular network). Also called when a network
+    /// change may have lowered it.
+    func settleWarm() {
+        let limit = warmLimit
+        while warm.count > limit, let oldest = warm.first {
+            hosts[oldest]?.park()
+            // `park` takes it off the list (`didPark`); a pane that is gone is taken off here.
+            if warm.first == oldest { warm.removeFirst() }
+        }
     }
 
     /// What the app shows changed: parked panes of a server the user left, of a server that is
@@ -228,9 +273,16 @@ final class TerminalHostPool {
     }
 
     private func didPark(_ key: Key) {
+        warm.removeAll { $0 == key }
         parked.removeAll { $0 == key }
         parked.append(key)
-        let sized = parked.map { (key: $0, bytes: hosts[$0]?.term.core.memoryBytes ?? 0) }
+        trim()
+    }
+
+    /// Keeps the panes off screen within `limits`, parked and warm together: the parked ones
+    /// are the older.
+    private func trim() {
+        let sized = (parked + warm).map { (key: $0, bytes: hosts[$0]?.term.core.memoryBytes ?? 0) }
         for old in ParkPolicy.evictions(sized, limits: limits) { hosts[old]?.evict() }
     }
 
@@ -304,9 +356,14 @@ final class TerminalHostPool {
             guard let self, let host, self.hosts[key] === host else { return }
             self.didPark(key)
         }
+        host.onLeft = { [weak self, weak host] in
+            guard let self, let host, self.hosts[key] === host else { host?.park(); return }
+            self.didLeave(key)
+        }
         host.onUnparked = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
             self.parked.removeAll { $0 == key }
+            self.warm.removeAll { $0 == key }
         }
         host.onStopped = { [weak self, weak host] in
             guard let self, let host, self.hosts[key] === host else { return }
@@ -315,6 +372,7 @@ final class TerminalHostPool {
             self.containers[key] = nil
             self.hideKeyboard.set(key, shown: false)
             self.parked.removeAll { $0 == key }
+            self.warm.removeAll { $0 == key }
         }
     }
 
@@ -387,6 +445,11 @@ struct ParkWatcher: View {
             .accessibilityHidden(true)
             .onChange(of: facts) { _, now in
                 pool.keep(selected: now.selected, servers: now.servers, sessions: now.sessions)
+            }
+            // On a cellular network or a hotspot one pane less stays warm.
+            .onChange(of: model.network?.snapshot.expensive ?? false, initial: true) { _, expensive in
+                pool.expensiveNetwork = { expensive }
+                pool.settleWarm()
             }
     }
 }

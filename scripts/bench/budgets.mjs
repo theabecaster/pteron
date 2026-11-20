@@ -33,3 +33,20 @@ export const scenarios = {
   'claude-find':  { 'mainBusy.totalMs': 250, 'presents.gapsOver25': 1 },
   'cap-find':     { 'mainBusy.totalMs': 10,  'presents.gapsOver25': 1, 'flow.drawnMs': 60 },
 };
+
+// Pane switches on real panes (run.sh --switch), by simulated round trip in ms. Checked only
+// when the switch runs were made. A pane that comes back from the park draws its last screen
+// in its first frame: two frames at 60 Hz at most.
+// A cold pane at 150 ms: the stream starts beside the fit claim, so at least two round trips
+// (300 ms) under the 1267 ms measured before that (3 runs, 1262 to 1280); measured 832.
+// A metric with no mounts of its kind in a run is not checked: which panes park and which stay
+// warm depends on the switching.
+export const switches = {
+  switch0:   { 'mounts.parked.firstFrameMs': 34, 'mounts.warm.firstFrameMs': 34 },
+  switch150: { 'mounts.parked.firstFrameMs': 34, 'mounts.warm.firstFrameMs': 34, 'mounts.cold.firstFrameMs': 967 },
+};
+export const switchTitles = {
+  'mounts.parked.firstFrameMs': 'parked pane: first frame ms',
+  'mounts.warm.firstFrameMs': 'warm pane: first frame ms',
+  'mounts.cold.firstFrameMs': 'cold pane: first frame ms',
+};

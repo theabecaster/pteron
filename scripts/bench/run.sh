@@ -3,7 +3,8 @@
 # budgets in scripts/bench/budgets.mjs. Exit status 1 when a budget is passed or a run failed.
 #
 #   scripts/bench/run.sh <simulator id> [--live <session label>] [--switch <session label>]
-#                        [--runs N] [--only a,b] [--out <dir>] [--fresh] [--skip-build]
+#                        [--warm <session label>] [--runs N] [--only a,b] [--out <dir>] [--fresh]
+#                        [--skip-build]
 #
 # Builds the app once (Release), then for every scenario and run launches it with
 # `-replay <file> -perfLog <name>`, waits for the result file in the app's Documents/perf and
@@ -32,6 +33,13 @@
 # (`switch150`, `-netDelay`). Fit mode claims and resizes both panes, so the session must be a
 # throwaway one of your own.
 #
+# --warm <session label> measures what two panes that stream unseen cost: the session's first
+# tab must hold exactly three panes side by side, the first two running a program that writes
+# steadily (under 64 KB/s, or they park). Each run walks to the first pane and back to the
+# third, which leaves the first two warm, then sits still for 10 s (`warm`: main-thread time,
+# CPU, energy). In mirror mode, so no claim is given back in those 10 s: the sidebar's update
+# for that is the app's, not the warm panes'.
+#
 # The app is terminated after every run and when the script ends or is interrupted, which also
 # drops its connection to the server.
 #
@@ -39,14 +47,15 @@
 set -euo pipefail
 
 self=$0   # inside a function, $0 is the function's name
-usage() { sed -n '2,37p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,43p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
-live=""; switch=""; runs=3; only=""; out=""; build=1; fresh=0
+live=""; switch=""; warm=""; runs=3; only=""; out=""; build=1; fresh=0
 while [[ $# -gt 0 ]]; do
   case $1 in
     --live) live=$2; shift 2 ;;
     --switch) switch=$2; shift 2 ;;
+    --warm) warm=$2; shift 2 ;;
     --runs) runs=$2; shift 2 ;;
     --only) only=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
@@ -197,6 +206,13 @@ if [[ -n $live ]]; then
   done
 fi
 
+# Before a launch that claims panes: time for the server to see the last launch's client gone
+# and give its panes back, so every run starts from the same state.
+settle() {
+  xcrun simctl terminate "$sim" $bundle >/dev/null 2>&1 || true
+  [[ -f "$out/results/$1.json" ]] || sleep 9
+}
+
 if [[ -n $switch ]]; then
   [[ $switch == zz-* ]] || { echo "--switch takes a throwaway session whose label starts with zz-" >&2; exit 1; }
   [[ -n $(session_id "$switch") ]] || { echo "no session labelled $switch" >&2; exit 1; }
@@ -204,9 +220,22 @@ if [[ -n $switch ]]; then
   for run in $(seq 1 $runs); do
     for delay in 0 150; do
       [[ -z $only || ",$only," == *",switch$delay,"* ]] || continue
+      settle "switch${delay}__${run}"
       run_one "switch${delay}__${run}" 90 -autoOpen "$switch" -servers "$servers" \
-        -perfSwitch 10 -netDelay $delay
+        -perfSwitch 10 -perfSwitchType x -netDelay $delay
     done
+  done
+fi
+
+if [[ -n $warm ]]; then
+  [[ $warm == zz-* ]] || { echo "--warm takes a throwaway session whose label starts with zz-" >&2; exit 1; }
+  [[ -n $(session_id "$warm") ]] || { echo "no session labelled $warm" >&2; exit 1; }
+  servers=$(bench_servers)
+  for run in $(seq 1 $runs); do
+    [[ -z $only || ",$only," == *",warm,"* ]] || continue
+    settle "warm__${run}"
+    run_one "warm__${run}" 90 -autoOpen "$warm" -servers "$servers" \
+      -sizing mirror -perfSwitch 4 -perfSwitchWalk YES -perfIdle 10
   done
 fi
 

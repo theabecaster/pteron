@@ -620,6 +620,16 @@ public final class TerminalStream {
         }
     }
 
+    /// A pane whose stream kept running while it was off screen is on screen again. The screen
+    /// it shows is the stream's, but its size may be about to change (a fit claim that lapsed is
+    /// claimed again), so the fence goes up as for any return, and comes down as soon as the
+    /// stream is quiet and no claim is on its way. A stream that is not live has it up already.
+    public func returned() {
+        guard !stopped, live else { return }
+        fence.raise(exact: hasScreen)
+        fence.arrived()
+    }
+
     deinit {
         // A stream that goes without `stop()` takes its input out of the count, so no read
         // waits on it.

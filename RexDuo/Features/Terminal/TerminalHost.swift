@@ -174,6 +174,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Parked: off screen with its screen, scrollback and place in the stream kept, and no
     /// socket, no drawables and no timers (`park`).
     private(set) var isParked = false
+    /// Warm: off screen like a parked pane, but its stream goes on and is parsed, unseen, so
+    /// the screen is current the moment the pane is back (`warm`). The pool decides which panes.
+    private(set) var isWarm = false
+    private var warmRate = WarmRate()
+    /// Off screen for `leaveTiming.settle`. The pool answers with `warm()` or `park()`; without
+    /// a pool the pane parks.
+    var onLeft: (() -> Void)?
     /// The pane parked itself; and it is back on screen.
     var onParked: (() -> Void)?
     var onUnparked: (() -> Void)?
@@ -1349,7 +1356,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             graceWork?.cancel()
             graceWork = nil
             if !started { PerfProbe.active?.mounted(self, kind: .cold) }  // PERF
-            if isParked { unpark() }
+            if isParked { unpark() } else if isWarm { unwarm() }
             // Claim again what was paused, if the size still isn't the one that fits.
             lastBounds = .zero
             setNeedsLayout()
@@ -1373,7 +1380,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             stopWork = nil
             guard window == nil else { return }
             if canPark, started {
-                park()
+                if let onLeft { onLeft() } else { park() }
             } else {
                 stop()
                 onStopped?()
@@ -1399,6 +1406,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func park() {
         guard !isParked else { return }
         isParked = true
+        isWarm = false
         loader?.removeFromSuperview()
         loader = nil
         stopKeyRepeats()
@@ -1416,6 +1424,31 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         onParked?()
     }
 
+    /// Keeps the pane's stream running off screen: parsed, never drawn. Everything a pane needs
+    /// only on screen goes, as when it parks. A warm pane that writes more than
+    /// `WarmPolicy.rateLimit` parks itself (`streamFeed`).
+    func warm() {
+        guard !isWarm, !isParked else { return }
+        isWarm = true
+        stopKeyRepeats()
+        closeFind(giveBack: false)
+        term.releaseDrawables()
+        files?.close()
+        ports?.unwatch()
+        warmRate.reset(at: CACurrentMediaTime())
+    }
+
+    /// The warm pane is on screen again, with the screen as it is now. A mirror pane needs no
+    /// fence: nothing about it changes. A fitted one may be about to claim its size again.
+    private func unwarm() {
+        isWarm = false
+        onUnparked?()
+        term.restoreDrawables()
+        let fenced = sizing == .fit || isCatchingUp
+        PerfProbe.active?.mounted(self, kind: .warm, current: !fenced)  // PERF
+        if sizing == .fit { stream.returned() }
+    }
+
     /// The parked pane is on screen again: its last screen is drawn in its first frame, and its
     /// stream resumes behind the fence.
     private func unpark() {
@@ -1424,8 +1457,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // Parked before its first screen came: still nothing to draw.
         showLoader()
         term.restoreDrawables()
-        stream.unpark()
         PerfProbe.active?.mounted(self, kind: .parked)  // PERF
+        stream.unpark()
     }
 
     /// The pool lets the pane go for good.
@@ -1459,6 +1492,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func stop() {
         isParked = false
+        isWarm = false
         loader?.removeFromSuperview()
         loader = nil
         hasScreen = false
@@ -1763,6 +1797,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         PerfProbe.active?.fed(bytes.count, host: self)  // PERF
         // The terminal copies the bytes and parses them on its own queue, in stream order.
         term.feed(buffer: bytes)
+        // A pane nobody sees may not cost much: one that writes a lot parks. After this chunk
+        // has been passed on whole, so the resume's byte count is exact.
+        if isWarm, warmRate.add(bytes.count, at: CACurrentMediaTime()) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isWarm, self.window == nil else { return }
+                self.park()
+            }
+        }
     }
 
     /// The engine's unparsed backlog crossed a mark (`GhosttyCore.isBackedUp`: on above 4 MB,
@@ -1794,6 +1836,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if holdsForCatchUp, !stream.isClaimPending, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
         applyLocalGrid(cols, rows)
+        // A pane off screen takes the size in its terminal, in stream order, and nothing else:
+        // its views are laid out when it is back (`didMoveToWindow`), not on the main thread
+        // while another pane is in use.
+        guard window != nil else { return }
         positionTerm()
     }
 

@@ -83,6 +83,30 @@ final class PaneParkTests: XCTestCase {
 
     // MARK: The pool
 
+    /// A pool that keeps no pane warm (as in Low Power Mode): every pane that leaves parks.
+    private func parkingPool() -> TerminalHostPool {
+        let pool = TerminalHostPool()
+        pool.power = { (lowPower: true, hot: false) }
+        return pool
+    }
+
+    /// A pool with its warm panes, and the phone's state as the test says.
+    private func warmPool(lowPower: Bool = false, hot: Bool = false, expensive: Bool = false) -> TerminalHostPool {
+        let pool = TerminalHostPool()
+        pool.power = { (lowPower: lowPower, hot: hot) }
+        pool.expensiveNetwork = { expensive }
+        return pool
+    }
+
+    /// Shows the host, takes it off screen and waits until the pool has decided about it.
+    private func showAndLeaveWarm(_ host: TerminalHost) {
+        host.frame = window.bounds
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isWarm || host.isParked })
+    }
+
     private func key(_ n: Int, server: UUID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!, session: String = "s") -> TerminalHostPool.Key {
         TerminalHostPool.Key(server: server, session: session, block: "b\(n)")
     }
@@ -110,7 +134,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAPaneThatLeavesTheScreenParksAndStaysInThePool() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let host = pooledHost(pool, key(1))
         showAndLeave(host)
         XCTAssertTrue(pool.host(for: key(1)) === host)
@@ -134,7 +158,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testThePoolKeepsTheFourParkedLast() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let hosts = (1...6).map { pooledHost(pool, key($0)) }
         for host in hosts { showAndLeave(host) }
         XCTAssertEqual(pool.parked, [key(3), key(4), key(5), key(6)])
@@ -145,7 +169,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAPaneOnScreenDoesNotCount() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let visible = pooledHost(pool, key(0))
         visible.frame = window.bounds
         window.addSubview(visible)
@@ -157,7 +181,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAReturningPaneLeavesTheParkAndAnotherReturnMakesItTheNewest() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let a = pooledHost(pool, key(1)), b = pooledHost(pool, key(2))
         showAndLeave(a)
         showAndLeave(b)
@@ -173,7 +197,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testTheMemoryBoundEvicts() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         pool.limits.bytes = 1
         let host = pooledHost(pool, key(1))
         host.frame = window.bounds
@@ -187,7 +211,7 @@ final class PaneParkTests: XCTestCase {
 
     // Hazard 8.
     func testAMemoryWarningLetsEveryParkedPaneGoAndKeepsTheOneOnScreen() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let visible = pooledHost(pool, key(0))
         visible.frame = window.bounds
         window.addSubview(visible)
@@ -201,7 +225,7 @@ final class PaneParkTests: XCTestCase {
 
     // Hazard 8.
     func testTenMinutesInTheBackgroundLetThemGoAndLessDoesNot() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         var clock: CFTimeInterval = 1000
         pool.now = { clock }
         showAndLeave(pooledHost(pool, key(1)))
@@ -217,7 +241,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testLeavingTheServerAndAClosedSessionLetTheirPanesGo() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let here = UUID(), there = UUID()
         showAndLeave(pooledHost(pool, key(1, server: here, session: "open")))
         showAndLeave(pooledHost(pool, key(2, server: here, session: "closed")))
@@ -229,7 +253,7 @@ final class PaneParkTests: XCTestCase {
     // MARK: What a parked pane keeps
 
     func testAParkedPaneKeepsItsScreenAndFreesItsDrawables() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let host = pooledHost(pool, key(1))
         host.frame = window.bounds
         window.addSubview(host)
@@ -263,7 +287,7 @@ final class PaneParkTests: XCTestCase {
     // MARK: The parallel start
 
     func testTheStreamStartsWhileTheClaimIsStillOnItsWay() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         transport.held = ["own"]
         let host = pooledHost(pool, key(1), transport: transport, sizing: .fit)
@@ -282,7 +306,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testASizeFromBeforeOurResizeIsNotAnotherClientTakingThePane() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = claimedHost(pool, transport)
         let mine = host.claimWanted ?? (cols: 0, rows: 0)
@@ -299,7 +323,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAPaneInTheBackgroundOrUnderTheBoardStartsNothing() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = pooledHost(pool, key(1), transport: transport, sizing: .fit)
         host.setCovered(true)
@@ -313,7 +337,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAParkedPaneKeepsItsClaimForTheGraceThenGivesItBack() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = claimedHost(pool, transport)
         host.removeFromSuperview()
@@ -325,7 +349,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAQuickReturnResizesNothing() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = claimedHost(pool, transport)
         let resized = transport.calls.first { $0.hasPrefix("resize") }
@@ -343,7 +367,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAReturnAfterTheGraceClaimsAgain() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = claimedHost(pool, transport)
         host.removeFromSuperview()
@@ -356,7 +380,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testTheBackgroundGivesAParkedPanesClaimBackAtOnce() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = claimedHost(pool, transport)
         host.leaveTiming.claimGrace = 30
@@ -368,7 +392,7 @@ final class PaneParkTests: XCTestCase {
     }
 
     func testAnEvictedPaneGivesItsClaimBack() {
-        let pool = TerminalHostPool()
+        let pool = parkingPool()
         let transport = FakeFitTransport()
         let host = claimedHost(pool, transport)
         host.leaveTiming.claimGrace = 30
@@ -377,5 +401,177 @@ final class PaneParkTests: XCTestCase {
         pool.evictParked()
         XCTAssertTrue(eventually(1) { transport.calls.contains("disown") })
         XCTAssertNil(pool.host(for: key(1)))
+    }
+
+    // MARK: Warm panes
+
+    func testTheLimitIsTwoOneOnAnExpensiveNetworkAndNoneWhenThePhoneSaves() {
+        typealias F = WarmPolicy.Facts
+        XCTAssertEqual(WarmPolicy.limit(F()), 2)
+        XCTAssertEqual(WarmPolicy.limit(F(expensive: true)), 1)
+        XCTAssertEqual(WarmPolicy.limit(F(foreground: false)), 0)
+        XCTAssertEqual(WarmPolicy.limit(F(lowPower: true)), 0)
+        XCTAssertEqual(WarmPolicy.limit(F(hot: true)), 0)
+        XCTAssertEqual(WarmPolicy.limit(F(lowPower: true, expensive: true)), 0)
+    }
+
+    func testAWindowOver64KBPerSecondIsTooBusy() {
+        var rate = WarmRate()
+        rate.reset(at: 100)
+        // 2 s at 60 KB/s: under the limit.
+        for i in 0..<20 { XCTAssertFalse(rate.add(6 * 1024, at: 100 + Double(i) * 0.1)) }
+        XCTAssertFalse(rate.add(6 * 1024, at: 102), "the window that ended held 120 KB in 2 s")
+        // The next 2 s at 70 KB/s.
+        for i in 1..<20 { XCTAssertFalse(rate.add(7 * 1024, at: 102 + Double(i) * 0.1)) }
+        XCTAssertTrue(rate.add(7 * 1024, at: 104), "130 KB in 2 s is over")
+    }
+
+    func testABurstInsideAWindowIsJudgedByItsAverage() {
+        var rate = WarmRate()
+        rate.reset(at: 0)
+        XCTAssertFalse(rate.add(100 * 1024, at: 0.1), "not before the window has ended")
+        XCTAssertFalse(rate.add(1, at: 2.0), "100 KB in 2 s is 50 KB/s")
+        XCTAssertFalse(rate.add(200 * 1024, at: 2.1))
+        XCTAssertTrue(rate.add(1, at: 4.2), "200 KB in 2.2 s is over")
+        // A pane that was silent for a long time and writes again is not judged by one chunk.
+        XCTAssertFalse(rate.add(100 * 1024, at: 60))
+        XCTAssertFalse(rate.add(1, at: 62.5))
+    }
+
+    func testTheTwoPanesLeftLastStayWarmAndTheOlderOnesPark() {
+        let pool = warmPool()
+        let hosts = (1...4).map { pooledHost(pool, key($0)) }
+        for host in hosts { showAndLeaveWarm(host) }
+        XCTAssertEqual(pool.warm, [key(3), key(4)])
+        XCTAssertEqual(pool.parked, [key(1), key(2)])
+        XCTAssertTrue(hosts[3].isWarm)
+        XCTAssertFalse(hosts[3].stream.isParked, "its stream goes on")
+        XCTAssertTrue(hosts[0].isParked)
+        XCTAssertTrue(hosts[0].stream.isParked)
+    }
+
+    func testWarmAndParkedTogetherStayWithinFour() {
+        let pool = warmPool()
+        let hosts = (1...6).map { pooledHost(pool, key($0)) }
+        for host in hosts { showAndLeaveWarm(host) }
+        XCTAssertEqual(pool.warm, [key(5), key(6)])
+        XCTAssertEqual(pool.parked, [key(3), key(4)])
+        XCTAssertNil(pool.host(for: key(1)))
+    }
+
+    func testOnAnExpensiveNetworkOnePaneStaysWarm() {
+        let pool = warmPool(expensive: true)
+        let hosts = (1...3).map { pooledHost(pool, key($0)) }
+        for host in hosts { showAndLeaveWarm(host) }
+        XCTAssertEqual(pool.warm, [key(3)])
+        XCTAssertEqual(pool.parked, [key(1), key(2)])
+    }
+
+    func testLowPowerModeAndAHotPhoneKeepNone() {
+        for pool in [warmPool(lowPower: true), warmPool(hot: true)] {
+            let host = pooledHost(pool, key(1))
+            showAndLeaveWarm(host)
+            XCTAssertTrue(host.isParked)
+            XCTAssertEqual(pool.warm, [])
+        }
+    }
+
+    func testTheBackgroundParksEveryWarmPane() {
+        let pool = warmPool()
+        let hosts = (1...2).map { pooledHost(pool, key($0)) }
+        for host in hosts { showAndLeaveWarm(host) }
+        XCTAssertEqual(pool.warm.count, 2)
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        XCTAssertEqual(pool.warm, [])
+        XCTAssertEqual(pool.parked, [key(1), key(2)])
+        XCTAssertTrue(hosts.allSatisfy { $0.isParked && $0.stream.isParked })
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    func testLowPowerModeComingOnParksTheWarmPanes() {
+        var low = false
+        let pool = TerminalHostPool()
+        pool.power = { (lowPower: low, hot: false) }
+        let host = pooledHost(pool, key(1))
+        showAndLeaveWarm(host)
+        XCTAssertTrue(host.isWarm)
+        low = true
+        NotificationCenter.default.post(name: .NSProcessInfoPowerStateDidChange, object: nil)
+        XCTAssertTrue(eventually { host.isParked })
+        XCTAssertEqual(pool.warm, [])
+    }
+
+    func testAWarmPaneThatWritesTooMuchParks() {
+        let pool = warmPool()
+        let host = pooledHost(pool, key(1))
+        showAndLeaveWarm(host)
+        XCTAssertTrue(host.isWarm)
+        let chunk = [UInt8](repeating: 0x61, count: 90 * 1024)
+        // 90 KB every second for a little over one window: 90 KB/s.
+        for _ in 0..<3 {
+            chunk.withUnsafeBufferPointer { host.streamFeed($0) }
+            pause(1.05)
+        }
+        chunk.withUnsafeBufferPointer { host.streamFeed($0) }
+        XCTAssertTrue(eventually { host.isParked }, "too busy to follow unseen")
+        XCTAssertEqual(pool.parked, [key(1)])
+        host.term.core.sync()
+        XCTAssertEqual(host.term.core.bytesParsed, 4 * chunk.count, "every byte it was given is in the terminal")
+    }
+
+    func testAQuietWarmPaneStaysWarmAndParsesWhatComes() {
+        let pool = warmPool()
+        let host = pooledHost(pool, key(1))
+        showAndLeaveWarm(host)
+        host.term.feed(text: "")
+        Array("unseen\r\n".utf8).withUnsafeBufferPointer { host.streamFeed($0) }
+        host.term.core.sync()
+        XCTAssertTrue(host.isWarm)
+        XCTAssertEqual(host.term.core.rowText(0), "unseen", "parsed while nobody looks")
+        XCTAssertEqual(host.term.metalLayerDrawableSize, CGSize(width: 1, height: 1), "and never drawn")
+    }
+
+    func testAResizeOffScreenReachesTheTerminalAndMakesNoDrawables() {
+        let pool = warmPool()
+        let host = pooledHost(pool, key(1))
+        showAndLeaveWarm(host)
+        let frame = host.term.frame
+        host.streamResized(cols: 100, rows: 30, owner: "client:other")
+        host.layoutIfNeeded()
+        host.term.core.sync()
+        XCTAssertEqual(host.term.core.cols, 100, "the bytes that follow are for this size")
+        XCTAssertEqual(host.term.core.rows, 30)
+        XCTAssertEqual(host.term.frame, frame, "no layout for a pane nobody sees")
+        XCTAssertEqual(host.term.metalLayerDrawableSize, CGSize(width: 1, height: 1))
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertGreaterThan(host.term.metalLayerDrawableSize.width, 1, "laid out and drawn when it is back")
+        host.removeFromSuperview()
+    }
+
+    func testAWarmMirrorPaneComesBackWithNoFence() {
+        let pool = warmPool()
+        let host = pooledHost(pool, key(1))
+        showAndLeaveWarm(host)
+        // The stream of this test never went live, so its start's fence is still up; a live one
+        // would be down. What matters here: coming back raises nothing and parks nothing.
+        let fenced = host.isCatchingUp
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertFalse(host.isWarm)
+        XCTAssertEqual(host.isCatchingUp, fenced)
+        XCTAssertFalse(host.stream.isParked)
+        XCTAssertEqual(pool.warm, [])
+        XCTAssertGreaterThan(host.term.metalLayerDrawableSize.width, 1)
+        host.removeFromSuperview()
+    }
+
+    func testAMemoryWarningLetsTheWarmPanesGoToo() {
+        let pool = warmPool()
+        for n in 1...2 { showAndLeaveWarm(pooledHost(pool, key(n))) }
+        NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        XCTAssertEqual(pool.warm, [])
+        XCTAssertNil(pool.host(for: key(1)))
+        XCTAssertNil(pool.host(for: key(2)))
     }
 }

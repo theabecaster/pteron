@@ -141,6 +141,8 @@ final class GlideLoaderTests: XCTestCase {
 
     func testAParkedPaneWithAScreenComesBackWithoutALoader() {
         let pool = TerminalHostPool()
+        // No pane stays warm here (as in Low Power Mode): the one that leaves parks.
+        pool.power = { (lowPower: true, hot: false) }
         let host = makeHost()
         pool.add(host, for: TerminalHostPool.Key(server: UUID(), session: "s", block: "b"))
         show(host)
@@ -156,6 +158,8 @@ final class GlideLoaderTests: XCTestCase {
 
     func testAPaneParkedBeforeItsFirstScreenComesBackWithOne() {
         let pool = TerminalHostPool()
+        // No pane stays warm here (as in Low Power Mode): the one that leaves parks.
+        pool.power = { (lowPower: true, hot: false) }
         let host = makeHost()
         pool.add(host, for: TerminalHostPool.Key(server: UUID(), session: "s", block: "b"))
         show(host)
