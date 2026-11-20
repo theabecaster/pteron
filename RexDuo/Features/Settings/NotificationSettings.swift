@@ -169,46 +169,55 @@ extension NotificationTint {
     }
 }
 
-/// One computer's cell: its name as the cell's title, the `…` button for its menu when it has
-/// one, and its switch; directly under the name the one status line, with its one button, when
-/// the computer has one. A cell with no line is as tall as any single-line cell of Settings. The
-/// name and the switch are one line of fixed height at the top of the cell, at the same distance
-/// from its top edge with a line under them or without, so neither moves when the line comes
-/// and goes.
+/// One computer's cell, in three lines from the top: its name with the `…` button for its menu,
+/// when it has one, and its switch; under the name the one status line, when the computer has
+/// one; under that the one button, when it has one, on a line of its own at the leading edge, so
+/// it never sits by the switch. A cell with no line is as tall as any single-line cell of
+/// Settings. The name and the switch are at the same distance from the cell's top edge whatever
+/// is under them, and the line starts at the same place with a button under it or without, so
+/// neither moves when the state changes; only the cell's bottom edge does.
 private struct ComputerNotificationRow: View {
     let row: ComputerRow
     let theme: TermTheme
     let setOn: (Bool) -> Void
     let fix: (NotificationFix) -> Void
     let choose: (NotificationMenuItem) -> Void
+    /// From the name's baseline to the middle of its capitals, where the `…` and the switch
+    /// centre, so they stay by the name's first line when it wraps.
+    @ScaledMetric(relativeTo: .subheadline) private var midline = 5
 
     var body: some View {
         let status = row.status
+        let midline = midline
         VStack(alignment: .leading, spacing: 0) {
-            // The switch with the name as its label, as the master switch above it, so both
-            // have the same height and the same place for the switch.
-            Toggle(isOn: Binding(get: { status.switchOn }, set: { setOn($0) })) {
-                HStack(spacing: 2) {
-                    Text(row.name)
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    if !status.menu.isEmpty {
-                        Menu { items(status.menu) } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(theme.chrome.secondary)
-                                .frame(width: 40, height: 40)
-                                .contentShape(Rectangle())
-                        }
-                        .menuOrder(.fixed)
-                        // A full-height touch target that leaves the row as tall as one without a menu.
-                        .padding(.vertical, -12)
-                        .accessibilityLabel("More for \(row.name)")
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                // A long name wraps rather than truncate; the switch stays at the trailing edge,
+                // where the master switch above has its own.
+                Text(row.name)
+                    .fontWeight(.medium)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !status.menu.isEmpty {
+                    Menu { items(status.menu) } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(theme.chrome.secondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
+                    .menuOrder(.fixed)
+                    // A full-height touch target that leaves the row as tall as one without a menu.
+                    .padding(.vertical, -12)
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + midline }
+                    .accessibilityLabel("More for \(row.name)")
                 }
+                // Outside the switch's label, so the `…` button is its own control for VoiceOver
+                // and the switch reads as the computer's name.
+                Toggle(row.name, isOn: Binding(get: { status.switchOn }, set: { setOn($0) }))
+                    .labelsHidden()
+                    .disabled(!status.switchEnabled)
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + midline }
             }
-            .disabled(!status.switchEnabled)
             if let line = status.line {
                 NotificationStatusLine(line: line, fix: status.fix, theme: theme, action: fix)
             }
@@ -224,40 +233,48 @@ private struct ComputerNotificationRow: View {
     }
 }
 
-/// The line under a switch: a spinner while the app is working on it, the words in the line's
-/// tint, and the one button, in the look of the section's inline buttons (semibold footnote in
-/// the accent colour, no border). Long words wrap to a second line and no further; the button
-/// keeps its size.
+/// The lines under a switch: the words in the line's tint, starting under the cell's title and
+/// wrapping as far as they need, with a spinner after them while the app is working on it; then
+/// the one button on a line of its own, in the look of the section's inline buttons (semibold
+/// footnote in the accent colour, no border), with a 44 pt touch target.
 private struct NotificationStatusLine: View {
     let line: NotificationLine
     let fix: NotificationFix?
     let theme: TermTheme
     let action: (NotificationFix) -> Void
+    /// From the words' baseline to the middle of their capitals, where the spinner centres.
+    @ScaledMetric(relativeTo: .footnote) private var midline = 4.5
 
     var body: some View {
-        HStack(spacing: 6) {
-            if line.spinner { ProgressView().controlSize(.mini) }
-            Text(line.text)
-                .font(.footnote)
-                .foregroundStyle(line.tint.color(in: theme))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            // Without a button the words still end where the switch above them begins.
-            Spacer(minLength: fix == nil ? 64 : 8)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(line.text)
+                    .font(.footnote)
+                    .foregroundStyle(line.tint.color(in: theme))
+                    .fixedSize(horizontal: false, vertical: true)
+                if line.spinner {
+                    let midline = midline
+                    ProgressView()
+                        .controlSize(.mini)
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + midline }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let fix {
                 Button(fix.title) { action(fix) }
                     .font(.footnote.weight(.semibold))
                     .buttonStyle(.borderless)
                     .foregroundStyle(theme.accent)
-                    .fixedSize()
-                    // The touch target of the section's inline buttons, without its height: the
-                    // line stays directly under the name whether or not it has a button.
-                    .frame(minHeight: 32)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
-                    .padding(.vertical, -8)
+                    // The target reaches 10 pt over the words above and into the cell's bottom
+                    // inset, so the button sits close under the line it answers.
+                    .padding(.vertical, -10)
+                    .padding(.top, 6)
             }
         }
-        .padding(.top, 5)
+        .padding(.top, 3)
     }
 }
 

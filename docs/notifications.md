@@ -64,7 +64,7 @@ except the one "Send Test Notification" asks for (thread id `rexduo-test`, `Push
 
 One master switch, "Notifications", in a group of its own with its line and the section's
 footer. Under it, while the switch is on, the group "Computers": one cell per computer, with
-its name as the cell's title, a switch, and directly under the name one status line. This section is the only place
+its name as the cell's title, a switch, and directly under the name one status line, with its button, when it has one, under that. This section is the only place
 that shows a computer's Beacon: its version, its state, its one button and its menu. In the
 app's words the program on the computer is "Pteron Beacon" where a screen first names it and
 "Beacon" after that, which is also the name it has on the computer (the Mac's prompts, Login
@@ -96,8 +96,12 @@ Rules:
    shows only when the menu has items. Items that cannot work in a state are left out.
 4. The app never asks at launch. The master switch asks iOS the first time it is turned on.
 5. A computer's cell with no line is as tall as any single-line cell of Settings: the name and
-   the switch. One with a line is taller by that line; a line too long for the window wraps to
-   a second line. The name and the switch sit at the same place in the cell either way.
+   the switch. One with a line is taller by that line, and one with a button taller again by
+   the button, which sits on a line of its own under the words at the leading edge, never
+   beside the switch, with a 44 pt touch target. Nothing truncates: a long name and a long line
+   wrap as far as they need, and the `…` button and the switch stay by the name's first line.
+   A spinner follows the words, so they start under the name. The name, the switch and the
+   line sit at the same place in the cell whatever is under them; only the bottom edge moves.
 6. A switch pauses and resumes. It never deletes anything: not the phone's registration, not a
    computer's secret, not a helper's key.
 

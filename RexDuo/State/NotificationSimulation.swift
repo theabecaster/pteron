@@ -91,7 +91,7 @@ struct NotificationSimulation: Equatable {
                             "Gallery", "Pantry"]
 
     /// A long computer name over the longest status lines: `long-names` shows how the name
-    /// truncates beside the menu and the switch, and how the lines wrap in a narrow window.
+    /// wraps beside the menu and the switch, and how the lines wrap in a narrow window.
     static let longName = "Design Studio MacBook Pro"
     static let longLines: [@Sendable (String) -> ComputerFacts] = [
         { ComputerFacts(name: $0, helper: .notInstalled, setup: .failed(.notAllowed)) },
