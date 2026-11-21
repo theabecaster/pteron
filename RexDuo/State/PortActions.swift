@@ -200,7 +200,7 @@ final class PortActions {
     /// parents, in the foreground's process group.
     func offersStop(_ server: ServerConnection, _ row: PortRow) -> Bool {
         guard server.phase == .online, server.control.state == .connected, status(server, row) != .stopping,
-              restarts[Self.key(server, row)] == nil else { return false }
+              restart(server, row) == nil else { return false }
         let meta = server.meta[row.blockID]
         return PortStop.verdict(entry: row.entry, foregroundPID: meta?.foregroundPID, agent: meta?.agentKind != nil,
                                 owner: owner(server, row)) == .allowed
@@ -210,7 +210,7 @@ final class PortActions {
     /// Beacon named the job, its command reads whole, and Stop's rule holds (`PortStop.restart`).
     func restartCommand(_ server: ServerConnection, _ row: PortRow) -> RestartCommand? {
         guard server.phase == .online, server.control.state == .connected, status(server, row) == nil,
-              restarts[Self.key(server, row)] == nil else { return nil }
+              restart(server, row) == nil else { return nil }
         let meta = server.meta[row.blockID]
         return PortStop.restart(entry: row.entry, foregroundPID: meta?.foregroundPID, agent: meta?.agentKind != nil, owner: owner(server, row))
     }
@@ -247,11 +247,19 @@ final class PortActions {
         return m.share
     }
 
+    /// The row's Restart, asked or under way. A question asked of a process that has since
+    /// gone is no question of the one that holds the port now: that row is a plain row, with
+    /// its own Stop and Restart.
+    private func restart(_ server: ServerConnection, _ row: PortRow) -> RestartMark? {
+        guard let r = restarts[Self.key(server, row)] else { return nil }
+        return r.run.step == .confirming && r.pid != row.entry.pid ? nil : r
+    }
+
     /// What the row shows beside its address.
     func note(_ server: ServerConnection, _ row: PortRow) -> Note? {
-        if let r = restarts[Self.key(server, row)] {
+        if let r = restart(server, row) {
             switch r.run.step {
-            case .confirming: if r.pid == row.entry.pid { return .confirm(r.command) }
+            case .confirming: return .confirm(r.command)
             case .failed: return .restartFailed
             case .done: break
             default: return .restarting

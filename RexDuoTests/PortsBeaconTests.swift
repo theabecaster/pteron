@@ -214,6 +214,27 @@ final class PortsBeaconServerTests: XCTestCase {
     }
 
     /// A server whose pane 1a runs `npm` (process 70) in front; `node` (process 7) holds 5173.
+    func testAQuestionLeftForAProcessThatWentDoesNotHoldTheNextOnesRow() async throws {
+        let r = try await rig()
+        let row = try await ready(r)
+        let w = World(), ports = actions(w)
+        await learned(ports, r, row, w)
+        ports.askRestart(r.server, row)
+        // The program ends by itself and another takes the port, in front of the pane.
+        sendPorts(r, [5173], pid: 8)
+        sendForeground(r, pid: 8, name: "node")
+        let changed = await eventually { r.server.portRow(row.id)?.entry.pid == 8 && r.server.meta["block:1a"]?.foregroundPID == 8 }
+        XCTAssertTrue(changed)
+        let next = try XCTUnwrap(r.server.portRow(row.id))
+        XCTAssertNil(ports.note(r.server, next), "the question was the other process's")
+        XCTAssertTrue(ports.offersStop(r.server, next), "and the row has its Stop")
+        let step = await ports.restartNow(r.server, next)
+        XCTAssertEqual(step, .confirming, "a tap that was on its way restarts nothing")
+        XCTAssertEqual(w.typed, [])
+        XCTAssertEqual(r.fake.calls(Self.write).count, 0)
+        r.stop()
+    }
+
     private func rig(foreground: JSONObject = ["pid": 70, "name": "npm"]) async throws -> Rig {
         let r = try await Rig(revision: 18, creators: .result(PortsTests.creators()))
         r.fake.reply(PortsTests.ports, PortsTests.reply([5173]))
