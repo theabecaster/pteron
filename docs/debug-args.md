@@ -81,7 +81,11 @@ builds.
   In a Debug build every `terminal.resize` fit mode sends logs one `FIT_RESIZE <block> <cols>x<rows>`
   line, to count what a fold costs: `xcrun simctl spawn <id> log show --last 1m --predicate
   'eventMessage CONTAINS "FIT_RESIZE"'`. `-simulateDuo unfolded,book -simulateDuoEvery 0.2` flips
-  faster than book mode settles and should log none.
+  faster than book mode settles and should log none. Each take before a resize logs
+  `FIT_OWN <block>` (a claim moment: the pane came on screen, the app came back, tap to fit), a
+  pane that finds another client has it logs `FIT_LOST <block> <why> server=<cols>x<rows>`
+  (`resize`, `unapplied`, `owner`, `refused`, `guard`), and the one claim a pane makes when it
+  finds itself at another grid with nothing claimed logs `FIT_GUARD`.
 - `-simulateTent <degrees|off>[,<degrees|off>…]`: the hinge reports these angles instead of the
   real ones, one after the other every `-simulateTentEvery` seconds (default 10); `off` is no
   hinge. `-simulateTent 90` shows the agent board after the one-second hold;

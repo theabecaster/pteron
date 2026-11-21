@@ -18,7 +18,14 @@ final class FakeFitTransport: FitClaimTransport {
     var calls: [String] { log.filter { !$0.hasSuffix(" done") } }
     var waitingKinds: [String] { waiting.map(\.kind) }
 
-    private func call(_ kind: String, _ entry: String) async {
+    /// The answers the next calls of a kind get, in order; `done` once they run out.
+    var answers: [String: [FitClaimAnswer]] = [:]
+    /// Waiting for the control connection (`whenConnected`).
+    private var connectWaiters: [@MainActor () -> Void] = []
+    var waitsForConnection: Bool { !connectWaiters.isEmpty }
+
+    @discardableResult
+    private func call(_ kind: String, _ entry: String) async -> FitClaimAnswer {
         log.append(entry)
         inFlight += 1
         mostInFlight = max(mostInFlight, inFlight)
@@ -29,11 +36,23 @@ final class FakeFitTransport: FitClaimTransport {
         }
         inFlight -= 1
         log.append(entry + " done")
+        guard var queued = answers[kind], !queued.isEmpty else { return .done }
+        let answer = queued.removeFirst()
+        answers[kind] = queued
+        return answer
     }
 
-    func own() async { await call("own", "own") }
-    func resize(cols: Int, rows: Int) async { await call("resize", "resize \(cols)x\(rows)") }
+    func own() async -> FitClaimAnswer { await call("own", "own") }
+    func resize(cols: Int, rows: Int) async -> FitClaimAnswer { await call("resize", "resize \(cols)x\(rows)") }
     func disown() async { await call("disown", "disown") }
+    func whenConnected(_ body: @escaping @MainActor () -> Void) { connectWaiters.append(body) }
+
+    /// The control connection is back.
+    func connect() {
+        let all = connectWaiters
+        connectWaiters = []
+        for body in all { body() }
+    }
 
     /// Lets the oldest waiting call of this kind return.
     func finish(_ kind: String) {
@@ -59,11 +78,152 @@ func settleMainActor(turns: Int = 40) async {
 final class FitClaimTests: XCTestCase {
     private let transport = FakeFitTransport()
     private var claimed: [String] = []
+    private var refused = 0
 
     private func makeClaim(settle: @escaping @MainActor () async -> Void = {}) -> FitClaim {
-        let claim = FitClaim(transport: transport, settle: settle)
+        let claim = FitClaim(transport: transport, settle: settle, notYetPause: {})
         claim.onClaimed = { [unowned self] cols, rows in self.claimed.append("\(cols)x\(rows)") }
+        claim.onRefused = { [unowned self] in self.refused += 1 }
         return claim
+    }
+
+    // MARK: Answers: nothing counts as claimed that the server didn't answer
+
+    func testAClaimWhoseTakeTheConnectionLostIsNotAnsweredAndGoesOnWithATakeWhenItIsBack() async {
+        // Back from the App Store: the socket died while the app was away, the take failed, and
+        // the claim answered "ours" all the same; the pane stayed at the Mac's width.
+        transport.answers = ["own": [.offline]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own"], "no resize on a connection that is gone")
+        XCTAssertEqual(claimed, [], "not answered: the server never said yes")
+        XCTAssertTrue(transport.waitsForConnection)
+        transport.connect()
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "own", "resize 80x24"])
+        XCTAssertEqual(claimed, ["80x24"])
+    }
+
+    func testAResizeTheConnectionLostIsSentAgainAfterATake() async {
+        transport.answers = ["resize": [.offline]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"])
+        XCTAssertEqual(claimed, [])
+        transport.connect()
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "own", "resize 80x24"],
+                       "the pane may have passed to another client while this one was away")
+        XCTAssertEqual(claimed, ["80x24"])
+    }
+
+    func testAReleaseWhileWaitingForTheConnectionSendsNoResize() async {
+        transport.answers = ["own": [.offline]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        claim.release()
+        await settleMainActor()
+        transport.connect()
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "disown"], "a take that may have landed is given back, and nothing resized")
+        XCTAssertEqual(claimed, [])
+    }
+
+    func testAReassertTakesThePaneAgainAndSendsTheSizeInPlace() async {
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        // The pane came back on screen, or the app came back: another client may have it.
+        claim.request(cols: 80, rows: 24, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "own", "resize 80x24"])
+        XCTAssertEqual(claimed, ["80x24", "80x24"])
+        // A refit of a pane that stayed on screen resizes under the claim it has.
+        claim.request(cols: 60, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "own", "resize 80x24", "resize 60x24"])
+    }
+
+    func testAReassertSupersededWhileItSettlesStillTakesFirst() async {
+        var waiting: [CheckedContinuation<Void, Never>] = []
+        let claim = makeClaim(settle: { await withCheckedContinuation { waiting.append($0) } })
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        waiting.removeFirst().resume()
+        await settleMainActor()
+        // Back on screen, and the keyboard moves before the layout settled.
+        claim.request(cols: 80, rows: 24, reassert: true)
+        claim.request(cols: 60, rows: 24)
+        await settleMainActor()
+        for c in waiting { c.resume() }
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "own", "resize 60x24"])
+    }
+
+    func testARefusedTakeEndsTheClaimSaysSoAndResizesNothing() async {
+        transport.answers = ["own": [.refused]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(refused, 1)
+        XCTAssertEqual(claimed, [])
+        XCTAssertFalse(claim.isClaiming)
+        XCTAssertEqual(transport.calls, ["own", "disown"], "never a resize after a no")
+    }
+
+    func testARefusedResizeEndsTheClaimAndGivesThePaneBack() async {
+        transport.answers = ["resize": [.refused]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(refused, 1)
+        XCTAssertEqual(claimed, [])
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "disown"])
+    }
+
+    func testAServerFromBeforeOwnershipIsResizedOnly() async {
+        transport.answers = ["own": [.unsupported]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"])
+        XCTAssertEqual(claimed, ["80x24"])
+        claim.request(cols: 80, rows: 24, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "resize 80x24"], "not asked again")
+        XCTAssertEqual(refused, 0)
+    }
+
+    func testASessionNotAttachedYetIsAskedAgainThenGivenUp() async {
+        transport.answers = ["own": [.notYet, .notYet]]
+        let claim = makeClaim()
+        claim.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "own", "own", "resize 80x24"])
+        XCTAssertEqual(claimed, ["80x24"])
+
+        let other = FakeFitTransport()
+        other.answers = ["own": Array(repeating: .notYet, count: FitClaim.notYetLimit + 1)]
+        let late = FitClaim(transport: other, settle: {}, notYetPause: {})
+        var gaveUp = false
+        late.onRefused = { gaveUp = true }
+        late.request(cols: 80, rows: 24)
+        await settleMainActor(turns: 200)
+        XCTAssertTrue(gaveUp)
+        XCTAssertEqual(other.calls.filter { $0 == "own" }.count, FitClaim.notYetLimit + 1)
+        XCTAssertFalse(other.calls.contains { $0.hasPrefix("resize") })
+    }
+
+    func testAnErrorSaysWhatItMeansForTheClaim() {
+        XCTAssertEqual(FitClaimAnswer(RexError.unsent("not connected")), .offline)
+        XCTAssertEqual(FitClaimAnswer(RexError.local("connection lost")), .offline)
+        XCTAssertEqual(FitClaimAnswer(RexError(code: "method_not_found", message: "")), .unsupported)
+        XCTAssertEqual(FitClaimAnswer(RexError(code: "not_found", message: "")), .unsupported)
+        XCTAssertEqual(FitClaimAnswer(RexError(code: "conflict", message: "stream is not attached")), .notYet)
+        XCTAssertEqual(FitClaimAnswer(RexError(code: "forbidden", message: "")), .refused)
     }
 
     func testAClaimOwnsThenResizesThenAnswers() async {
@@ -202,17 +362,19 @@ final class FitClaimTests: XCTestCase {
         XCTAssertEqual(other.calls, ["own", "disown"])
     }
 
-    func testAPaneAnotherClientTookIsNotGivenBack() async {
+    func testAPaneAnotherClientTookLeavesTheLineAndIsTakenAgainOnATap() async {
         let claim = makeClaim()
         claim.request(cols: 80, rows: 24)
         await settleMainActor()
         claim.lost()
         await settleMainActor()
-        XCTAssertEqual(transport.calls, ["own", "resize 80x24"], "not ours to disown")
+        // A disown from a client that isn't the owner changes nothing for the owner; it only
+        // keeps the pane from passing back to this phone when the owner gives it up.
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "disown"])
         // "Tap to fit here": owned again.
-        claim.request(cols: 80, rows: 24)
+        claim.request(cols: 80, rows: 24, reassert: true)
         await settleMainActor()
-        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "own", "resize 80x24"])
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "disown", "own", "resize 80x24"])
     }
 
     /// Requests, releases and pauses at every point of calls that return in any order: the

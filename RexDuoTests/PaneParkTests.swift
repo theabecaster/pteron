@@ -778,4 +778,241 @@ final class PaneParkTests: XCTestCase {
         XCTAssertTrue(drawnFits(host))
         host.removeFromSuperview()
     }
+
+    // MARK: Block ownership: another client has the pane
+
+    private static let lostText = "Resized elsewhere · tap to fit here"
+
+    /// The pane has a screen and its stream has caught up: nothing is on its way.
+    private func current(_ host: TerminalHost) {
+        host.streamSnapshot("$ ")
+        pause(0.1)
+        // Ends the stream's fence as a stream that caught up does; the host stays started.
+        host.stream.stop()
+        XCTAssertFalse(host.isCatchingUp)
+    }
+
+    private func tapChip(_ host: TerminalHost) {
+        host.perform(NSSelectorFromString("statusTapped"))
+    }
+
+    private func takes(_ transport: FakeFitTransport) -> Int { transport.calls.filter { $0 == "own" }.count }
+
+    func testAClaimTheServerAnsweredButKeptForLaterShowsTheChipAndNeverOverflows() throws {
+        // The owner's report: the Mac app owns the pane, so the phone's resize is answered and
+        // kept for later, and the stream keeps the Mac's size. The phone drew the Mac's grid
+        // 1:1, lines cut at the right edge, with no chip.
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = claimedHost(pool, transport)
+        host.fitCheckDelay = 0.1
+        XCTAssertTrue(eventually { !host.stream.isClaimPending })
+        // The snapshot's size, the Mac's, while the stream catches up: not news yet.
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        XCTAssertNil(host.statusChipText)
+        current(host)
+        XCTAssertTrue(eventually(1) { host.statusChipText == Self.lostText }, "the chip, never a silent overflow")
+        XCTAssertTrue(drawnFits(host), "the server's grid scaled to the pane")
+        XCTAssertTrue(eventually { transport.calls.last == "disown" }, "out of the line, nothing else")
+        let calls = transport.calls
+        pause(0.3)
+        XCTAssertEqual(transport.calls, calls, "not fought over")
+        host.removeFromSuperview()
+    }
+
+    func testTheChipTakesThePaneThenResizesIt() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        current(host)
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        XCTAssertEqual(host.statusChipText, Self.lostText)
+        XCTAssertTrue(eventually { transport.calls.last == "disown" })
+        let before = transport.calls.count
+        tapChip(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { transport.calls.count == before + 2 })
+        XCTAssertEqual(Array(transport.calls.suffix(2)).first, "own", "a take first: a resize from a non-owner only waits")
+        XCTAssertTrue(transport.calls.last?.hasPrefix("resize") ?? false)
+        XCTAssertNil(host.statusChipText)
+        host.removeFromSuperview()
+    }
+
+    func testAPaneBackOnScreenTakesItBeforeItResizes() throws {
+        // A claim moment. The phone took the pane once and then sent only resizes, which the
+        // server kept for later once the Mac app owned it: 34 resizes, never applied.
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        host.leaveTiming.claimGrace = 30
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isParked })
+        host.frame = CGRect(x: 0, y: 0, width: 200, height: 480)
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { resizes(transport).count == 2 })
+        XCTAssertEqual(takes(transport), 2, "taken again before the new size")
+        let n = transport.calls.count
+        XCTAssertEqual(transport.calls[n - 2], "own")
+        host.removeFromSuperview()
+    }
+
+    func testBackFromTheBackgroundAfterAnotherClientWidenedThePaneClaimsAgainAndFits() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        let mine = try XCTUnwrap(host.claimWanted)
+        host.fitCheckDelay = 0.1
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        XCTAssertTrue(eventually { transport.calls.contains("disown") })
+        // The Mac gets the pane back, wider, while the phone is away.
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { resizes(transport).count == 2 }, "the claim is sent again")
+        XCTAssertEqual(takes(transport), 2)
+        XCTAssertEqual(resizes(transport).last?.cols, mine.cols)
+        host.streamResized(cols: mine.cols, rows: mine.rows, owner: nil)
+        XCTAssertTrue(drawnFits(host))
+        XCTAssertNil(host.statusChipText)
+        host.removeFromSuperview()
+    }
+
+    func testATakeTheConnectionLostOnTheWayBackIsSentWhenItIsBack() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        XCTAssertTrue(eventually { transport.calls.contains("disown") })
+        transport.answers = ["own": [.offline]]
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { transport.waitsForConnection })
+        XCTAssertEqual(resizes(transport).count, 1, "nothing resized on a dead connection")
+        XCTAssertTrue(host.stream.isClaimPending, "not taken for claimed")
+        transport.connect()
+        XCTAssertTrue(eventually { resizes(transport).count == 2 })
+        XCTAssertTrue(eventually { !host.stream.isClaimPending })
+        host.removeFromSuperview()
+    }
+
+    func testARefusedClaimShowsTheChip() {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        transport.answers = ["own": [.refused]]
+        let host = pooledHost(pool, key(1), transport: transport, sizing: .fit)
+        host.frame = window.bounds
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { host.statusChipText == Self.lostText })
+        XCTAssertFalse(host.stream.isClaimPending)
+        XCTAssertFalse(transport.calls.contains { $0.hasPrefix("resize") })
+        host.removeFromSuperview()
+    }
+
+    func testAnotherOwnerInTheSessionsViewShowsTheChip() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        host.fitCheckDelay = 0.1
+        var owner = "client:phone"
+        host.ownClientID = { "client:phone" }
+        host.blockOwner = { owner }
+        current(host)
+        pause(0.3)
+        XCTAssertNil(host.statusChipText, "ours")
+        // The Mac app took the pane at the size the phone had: the size didn't change.
+        let mine = try XCTUnwrap(host.claimWanted)
+        owner = "client:mac"
+        host.streamResized(cols: mine.cols, rows: mine.rows, owner: "client:mac")
+        XCTAssertNil(host.statusChipText, "the same size is no news by itself")
+        XCTAssertTrue(eventually(1) { host.statusChipText == Self.lostText }, "the view names another owner")
+        XCTAssertTrue(drawnFits(host))
+        host.removeFromSuperview()
+    }
+
+    func testTwoClientsTakingTurnsMakeNoLoop() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        host.fitCheckDelay = 0.1
+        current(host)
+        for round in 0..<3 {
+            host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+            XCTAssertEqual(host.statusChipText, Self.lostText, "round \(round)")
+            XCTAssertTrue(eventually { transport.calls.last == "disown" })
+            let calls = transport.calls.count
+            pause(0.3)
+            XCTAssertEqual(transport.calls.count, calls, "the phone doesn't take it back by itself")
+            tapChip(host)
+            host.layoutIfNeeded()
+            XCTAssertTrue(eventually { transport.calls.count == calls + 2 }, "one take and one resize per tap")
+            let mine = try XCTUnwrap(resizes(transport).last)
+            host.streamResized(cols: mine.cols, rows: mine.rows, owner: nil)
+        }
+        pause(0.3)
+        XCTAssertEqual(takes(transport), 4, "the first claim and one per tap")
+        host.removeFromSuperview()
+    }
+
+    func testAPaneTheServerGivesBackAtTheSizeThatFitsIsOursAgain() throws {
+        // A dropped connection: the pane passes to the Mac and comes back when the phone
+        // reconnects, at the phone's size.
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        host.ownClientID = { "client:phone" }
+        let mine = try XCTUnwrap(host.claimWanted)
+        current(host)
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        XCTAssertEqual(host.statusChipText, Self.lostText)
+        XCTAssertTrue(eventually { transport.calls.last == "disown" })
+        let calls = transport.calls
+        host.streamResized(cols: mine.cols, rows: mine.rows, owner: "client:phone")
+        XCTAssertNil(host.statusChipText)
+        XCTAssertTrue(drawnFits(host))
+        pause(0.2)
+        XCTAssertEqual(transport.calls, calls, "nothing to send: it is in place")
+        // And given back as the app leaves, as any claim.
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        XCTAssertTrue(eventually { transport.calls.count == calls.count + 1 && transport.calls.last == "disown" })
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        host.removeFromSuperview()
+    }
+
+    func testAMirrorPaneScalesAnotherClientsSizeAndNeverOwns() {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = pooledHost(pool, key(1), transport: transport, sizing: .mirror)
+        host.frame = window.bounds
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        host.layoutIfNeeded()
+        pause(0.2)
+        XCTAssertTrue(drawnFits(host), "scaled to the pane's width")
+        XCTAssertEqual(transport.calls, [], "mirror never takes, resizes or gives back")
+        host.removeFromSuperview()
+    }
+}
+
+/// What a fitted pane on screen does when it looks at its grid.
+final class FitCheckTests: XCTestCase {
+    func testTheServersSizeIsTheOneClaimed() {
+        XCTAssertEqual(FitCheck.verdict(claimed: (40, 20), server: (40, 20), fits: (40, 20), foreignOwner: false, claimedOnce: false), .fine)
+    }
+
+    func testAClaimTheServerKeptForLaterOrAnotherOwnerIsElsewhere() {
+        XCTAssertEqual(FitCheck.verdict(claimed: (40, 20), server: (211, 57), fits: (40, 20), foreignOwner: false, claimedOnce: false), .elsewhere)
+        XCTAssertEqual(FitCheck.verdict(claimed: (40, 20), server: (40, 20), fits: (40, 20), foreignOwner: true, claimedOnce: false), .elsewhere)
+    }
+
+    func testNothingClaimedAtAnotherSizeClaimsOnceThenGivesUp() {
+        XCTAssertEqual(FitCheck.verdict(claimed: nil, server: (211, 57), fits: (40, 20), foreignOwner: false, claimedOnce: false), .claim)
+        XCTAssertEqual(FitCheck.verdict(claimed: nil, server: (211, 57), fits: (40, 20), foreignOwner: false, claimedOnce: true), .elsewhere)
+        XCTAssertEqual(FitCheck.verdict(claimed: nil, server: (40, 20), fits: (40, 20), foreignOwner: true, claimedOnce: false), .claim)
+        XCTAssertEqual(FitCheck.verdict(claimed: nil, server: (40, 20), fits: (40, 20), foreignOwner: false, claimedOnce: false), .fine)
+    }
 }

@@ -68,6 +68,10 @@ struct PaneHostView: UIViewRepresentable {
         stream.showsNotices()
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
+        // Read when the pane checks its fit (`TerminalHost.checkFit`), never per frame.
+        host.blockOwner = { [weak server, sessionID, blockID] in
+            server?.views[sessionID]?.windowContaining(block: blockID)?.block(blockID)?.owner
+        }
         host.files = PaneFiles(server: server, sessionID: sessionID, blockID: blockID)
         host.share = PaneShare(server: server, sessionID: sessionID, blockID: blockID)
         host.ports = PanePorts(server: server, sessionID: sessionID, blockID: blockID)

@@ -269,6 +269,22 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var loaderTiming = GlideLoaderTiming()
     /// Our own resize has come back in the stream since the claim was last asked for.
     private var ownResizeSeen = false
+    /// The next claim takes the pane before it sizes it (`FitClaim.request(reassert:)`): set
+    /// at every claim moment, when the pane comes on screen, the app comes back, or the user
+    /// taps to fit.
+    private var reassertNext = true
+    /// The pane's owner as the session's view last said; nil when unknown or when the server has
+    /// no owners. Read only by `checkFit`.
+    var blockOwner: (() -> String?)?
+    /// This client's id, for `blockOwner` and the `owner` of a size; nil: the control
+    /// connection's. Tests put their own here.
+    var ownClientID: (() -> String?)?
+    /// How long after a claim's answer, a size from the stream or the fence coming down the
+    /// pane looks at whether it shows the grid it fits (`checkFit`). Tests shorten it.
+    var fitCheckDelay: TimeInterval = 1
+    private var fitCheckWork: DispatchWorkItem?
+    /// `checkFit` claimed once already, and the server's grid hasn't matched since.
+    private var fitGuardUsed = false
     /// `stop()` is ending the stream: its fence goes without the stream having caught up.
     private var stoppingStream = false
     private static let lostText = "Resized elsewhere · tap to fit here"
@@ -289,6 +305,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         self.claim = claim ?? FitClaim(transport: StreamFitTransport(stream: stream))
         super.init(frame: .zero)
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
+        self.claim.onRefused = { [weak self] in self?.resizedElsewhere("refused") }
         term.engineDelegate = self
         keyBar.terminal = term
         keyBar.onPaste = { [weak self] in self?.pasteFromClipboard() }
@@ -1249,6 +1266,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         backgroundedAt = nil
         guard window != nil, sizing == .fit, !lostOwnership else { return }
+        // The claim was given back as the app left; another client may have the pane now.
+        reassertNext = true
         lastBounds = .zero
         setNeedsLayout()
     }
@@ -1263,6 +1282,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         lostOwnership = false
         hideStatus()
         claimedSize = nil
+        fitGuardUsed = false
+        reassertNext = true
         lastBounds = .zero
         setNeedsLayout()
     }
@@ -1375,7 +1396,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             graceWork = nil
             if !started { PerfProbe.active?.mounted(self, kind: .cold) }  // PERF
             if isParked { unpark() } else if isWarm { unwarm() }
-            // Claim again what was paused, if the size still isn't the one that fits.
+            // Claim again what was paused, if the size still isn't the one that fits, and take
+            // the pane first: another client may have it now.
+            reassertNext = true
             lastBounds = .zero
             setNeedsLayout()
             yieldContentSwipeBack()
@@ -1627,6 +1650,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             let want = fitGrid()
             // A new size needs no redraw from the server: the terminal reflows as the server's
             // does (both are Ghostty), and the stream carries the resize.
+            // A claim moment (on screen again, back from the background, tap to fit) takes the
+            // pane again before it sizes it; a refit of a pane that stayed resizes only.
+            let reassert = reassertNext
+            reassertNext = false
             if started, let c = claimedSize, c == want, serverSize == want {
                 // While find holds the fit, a request still settling would land after this layout
                 // with another size: ask again for this one, which supersedes it (and sends nothing
@@ -1639,7 +1666,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // A warm pane whose claim lapsed, or that fits another grid now: fenced until the
             // resize has landed.
             if back { stream.returned() }
-            requestClaim(want)
+            requestClaim(want, reassert: reassert)
         case .mirror:
             if !started { startStream() }
             if back, !stream.isFenced { PerfProbe.active?.caughtUp(self) }  // PERF
@@ -1688,10 +1715,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// Asks for the pane at this size. Until that ends (`claimed`, a release, a loss) a raised
     /// fence stays up: the resize will change the screen.
-    private func requestClaim(_ size: (Int, Int)) {
+    private func requestClaim(_ size: (Int, Int), reassert: Bool = false) {
         ownResizeSeen = false
         stream.setClaimPending(true)
-        claim.request(cols: size.0, rows: size.1)
+        claim.request(cols: size.0, rows: size.1, reassert: reassert)
     }
 
     private func releaseClaim() {
@@ -1786,6 +1813,65 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func claimed(cols: Int, rows: Int) {
         claimedSize = (cols, rows)
         stream.setClaimPending(false)
+        // Answered is not applied: a resize the server keeps for later leaves the pane at
+        // another client's size (`checkFit`).
+        scheduleFitCheck()
+    }
+
+    /// Another client has the pane: the claim ends, the pane shows the server's grid scaled to
+    /// its width, as mirror does, and the chip offers to fit it here. Never fought over.
+    private func resizedElsewhere(_ why: StaticString) {
+        #if DEBUG
+        NSLog("FIT_LOST %@ %@ server=%dx%d", stream.blockID, "\(why)", serverSize.0, serverSize.1)
+        #endif
+        fitCheckWork?.cancel()
+        fitCheckWork = nil
+        claimedSize = nil
+        lostOwnership = true
+        releaseFitHold(deferrable: false)
+        claim.lost()
+        stream.setClaimPending(false)
+        showStatus(Self.lostText)
+        guard window != nil else { return }
+        positionTerm()
+    }
+
+    /// Looks again in `fitCheckDelay`, from now (`checkFit`).
+    private func scheduleFitCheck() {
+        guard sizing == .fit, !lostOwnership else { return }
+        fitCheckWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.fitCheckWork = nil
+            self?.checkFit()
+        }
+        fitCheckWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + fitCheckDelay, execute: work)
+    }
+
+    /// A fitted pane on screen, with nothing on its way, must show the grid it fits (`FitCheck`).
+    /// Runs once, `fitCheckDelay` after a claim's answer, a size from the stream, or the fence
+    /// coming down; never per frame.
+    private func checkFit() {
+        guard sizing == .fit, !lostOwnership, started, hasScreen, window != nil, backgroundedAt == nil,
+              !covered, !isParked, !isWarm else { return }
+        // Something is still on its way; its end looks again.
+        guard !stream.isFenced, !stream.isClaimPending, !claim.isSettling else { return }
+        let me = ownClientID?() ?? stream.control.clientID
+        let foreign = blockOwner?().map { me != nil && $0 != me } ?? false
+        let want = fitGrid()
+        switch FitCheck.verdict(claimed: claimedSize, server: serverSize, fits: want, foreignOwner: foreign,
+                                claimedOnce: fitGuardUsed) {
+        case .fine:
+            if claimedSize != nil { fitGuardUsed = false }
+        case .elsewhere:
+            resizedElsewhere(claimedSize == nil ? "guard" : foreign ? "owner" : "unapplied")
+        case .claim:
+            fitGuardUsed = true
+            #if DEBUG
+            NSLog("FIT_GUARD %@ server=%dx%d fits=%dx%d", stream.blockID, serverSize.0, serverSize.1, want.0, want.1)
+            #endif
+            requestClaim(want, reassert: true)
+        }
     }
 
     // MARK: TerminalSink
@@ -1857,12 +1943,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // The terminal keeps stream order itself: output fed before this is parsed at the old size.
         serverSize = (cols, rows)
         let wasFitted = fitted
-        if owner == stream.control.clientID { ownResizeSeen = true }
+        let mine = owner == (ownClientID?() ?? stream.control.clientID)
+        if mine { ownResizeSeen = true }
         // While the stream catches up, a size from before our own resize can still arrive (the
         // snapshot's, or one the pane had while it was parked): that is not another client
         // taking the pane. After our own resize has come by, or on a current stream, it is.
         let later = ownResizeSeen || !stream.isFenced
-        let mine = owner == stream.control.clientID
         // Our resize's echo comes in the stream before the claim's answer: in between, nothing
         // is claimed yet, but a size another client sets after that echo is just as much news. Let
         // through, it would be the server's size under a claim that answers "ours" a moment later,
@@ -1871,12 +1957,22 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             && (claim.wanted.map { $0 != (cols, rows) } ?? false)
         if sizing == .fit, !mine, (claimedSize.map { $0 != (cols, rows) && later } ?? false) || pending {
             // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
-            claimedSize = nil
-            lostOwnership = true
-            releaseFitHold(deferrable: false)
-            claim.lost()
-            stream.setClaimPending(false)
-            showStatus(Self.lostText)
+            resizedElsewhere("resize")
+        } else if sizing == .fit, lostOwnership, mine, owner != nil, window != nil, backgroundedAt == nil,
+                  (cols, rows) == fitGrid() {
+            // The server gave the pane back at the size that fits here: after a dropped
+            // connection, the owner gets its panes back when it reconnects. Ours again.
+            #if DEBUG
+            NSLog("FIT_BACK %@ %dx%d", stream.blockID, cols, rows)
+            #endif
+            lostOwnership = false
+            hideStatus()
+            claim.adopt(cols: cols, rows: rows)
+            claimedSize = (cols, rows)
+        } else if sizing == .fit, !mine {
+            // Not news yet (a size from before our own, or nothing claimed): looked at again once
+            // the stream is current and nothing is on its way (`checkFit`).
+            scheduleFitCheck()
         }
         // A pane that opens at the size it will keep has no reflow to hide: show it at once.
         if holdsForCatchUp, !stream.isClaimPending, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
@@ -1912,6 +2008,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             DispatchQueue.main.asyncAfter(deadline: .now() + fenceStatusDelay, execute: work)
         } else {
             if transientStatus == Self.reconnectingText { hideStatus() }
+            // A size that came while the stream caught up counts from here (`checkFit`).
+            if !stoppingStream, sizing == .fit, serverSize != (claimedSize ?? fitGrid()) { scheduleFitCheck() }
             if !stoppingStream {
                 // A focus report dropped behind the fence goes now, ahead of any held keys.
                 term.sayFocus()

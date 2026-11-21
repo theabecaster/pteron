@@ -12,9 +12,10 @@ final class FindHostTests: XCTestCase {
     private final class Transport: FitClaimTransport {
         var calls: [String] = []
         var resizes: [String] { calls.filter { $0.hasPrefix("resize") } }
-        func own() async { calls.append("own") }
-        func resize(cols: Int, rows: Int) async { calls.append("resize \(cols)x\(rows)") }
+        func own() async -> FitClaimAnswer { calls.append("own"); return .done }
+        func resize(cols: Int, rows: Int) async -> FitClaimAnswer { calls.append("resize \(cols)x\(rows)"); return .done }
         func disown() async { calls.append("disown") }
+        func whenConnected(_ body: @escaping @MainActor () -> Void) {}
     }
 
     override func setUp() async throws {

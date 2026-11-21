@@ -232,6 +232,35 @@ is not a cold start.
   and leaving the pane does 10 s later (Parking, claim grace); the Mac then gets its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
   tap to fit here". Until then it shows the server's grid as mirror does. A pinch there fits the
   pane here too (Gestures).
+- Ownership. A pane follows its owner's size, and a resize from a client that isn't the owner
+  is answered and only kept for later ([rex-protocol.md](rex-protocol.md), Block ownership).
+  The Rex Mac app takes the panes it shows. So:
+  - Every claim moment takes the pane before it sizes it: the pane comes on screen (a first
+    view, a return from the park or from warm, a fold), the app comes back, the chip is tapped.
+    A refit of a pane that stayed on screen (the keyboard on the alternate screen, find's hold)
+    resizes under the claim it has, and a return inside the grace at the size in place sends
+    nothing (`FitClaim.request(reassert:)`). Before, the phone took a pane once and from then
+    on sent only resizes; once the Mac app had taken the pane, they were all kept for later
+    and the pane never took the phone's size.
+  - Nothing counts as claimed that the server didn't answer. A take or resize the connection
+    lost (back from the background, the socket died while the app was away) is asked again,
+    take first, once the control connection is back; until then the claim is on its way and
+    the fence waits for it. Before, a failed call still answered "ours", and the pane showed
+    the Mac's grid 1:1, cut at the right edge. `conflict` (the session not attached again yet
+    after a reconnect) is asked again 250 ms later, up to 8 times; a server's no ends the claim
+    with the chip; a server from before ownership (`method_not_found`) is resized only.
+  - Answered is not applied. 1 s after a claim's answer, a size from another client, or the
+    fence coming down (`checkFit`, `FitCheck`), a pane on screen with nothing on its way looks
+    at its grid: a claimed size the server doesn't have, or another owner named in the
+    session's view, shows the chip, with the server's grid scaled. A pane at another grid with
+    nothing claimed (no path should leave it so) claims once and logs `FIT_GUARD`; if that
+    doesn't hold either, the chip. Never per frame.
+  - Not fought over: a pane another client has never takes it back by itself, not at a later
+    claim moment either; the chip's tap or a pinch does. It also leaves the line (`disown_block`, which changes
+    nothing for the owner), so the pane never passes back to a phone that isn't asking. One
+    exception: a pane the server gives back at the size that fits here (an owner whose
+    connection dropped gets its panes back when it reconnects) is the phone's again, with no
+    call (`FIT_BACK`). Mirror never takes, resizes or gives back.
 - The software keyboard covers a fitted pane; it doesn't resize it. The grid stays the one that
   fits the pane with the keyboard down (`TerminalLayout.fitSize`, from the tab's canvas as
   measured with the keyboard down, `PaneLayout`), so a program on the main screen gets no

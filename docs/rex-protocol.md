@@ -62,6 +62,15 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
 - `session.create` leaves the new blocks without an owner at every revision (checked at hellos 0,
   13, 16 and 18 against a revision-18 server): a pane is owned once fit mode takes it
   (`session.own_block`), as before.
+- Block ownership (checked against a revision-18 server, 2026-11-21). A block follows its
+  owner's size. `terminal.resize` from a client that doesn't own the block answers `{}` and is
+  only kept for later: it applies when that client becomes the owner. `own_block` `take` makes
+  the caller the owner at once (its answer lists each block's owner) and every attached client
+  gets `block_owner_changed {block_id, owner, previous, reason}`. When the owner gives a block up
+  or leaves, it passes to the connected client in line that claimed it most recently; a
+  `disown_block` from a client that isn't the owner changes nothing for the owner and takes that
+  client out of the line. `session.view` names each block's `owner`. Fit mode relies on all of
+  it ([terminal.md](terminal.md), Fit and mirror).
 
 ## Messages
 
