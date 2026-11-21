@@ -393,8 +393,19 @@ impl Relay {
     /// changed the file).
     fn store(&self) -> MutexGuard<'_, DeviceStore> {
         let mut store = self.store.lock().unwrap();
-        store.sync();
+        // A phone that left the file since has no share any more.
+        if store.sync() {
+            self.shares.keep_devices(|id| store.get(id).is_some());
+        }
         store
+    }
+
+    /// From now on a share asks, before it takes a connection, whether its phone is still
+    /// registered, so one that `forget` removed is not served even when nothing else has
+    /// made Beacon read the file again. Weak, so the two don't keep each other alive.
+    fn watch_shares(self: &Arc<Self>) {
+        let relay = Arc::downgrade(self);
+        self.shares.watch_registrations(move |id| relay.upgrade().is_none_or(|r| r.store().get(id).is_some()));
     }
 
     pub fn start(self: &Arc<Self>) {
@@ -411,6 +422,7 @@ impl Relay {
             }
         });
         self.write_status();
+        self.watch_shares();
         self.watch_power();
         self.watch_restored();
         self.lease_watch();
@@ -1213,7 +1225,7 @@ impl Relay {
         };
         let bad = |m: &str| Err(error("bad_request", m));
         let Some(port) = args.int("port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0) else { return bad("port must be a port number") };
-        let Some(phone) = args.str("phone_ip").and_then(|a| a.parse::<std::net::IpAddr>().ok()) else { return bad("phone_ip must be the phone's Tailscale address") };
+        let Some(phone) = args.str("phone_ip").and_then(|a| a.parse::<std::net::IpAddr>().ok()).map(|ip| ip.to_canonical()) else { return bad("phone_ip must be the phone's Tailscale address") };
         // A pane's name is only held to tell its events from another's.
         let block = args.str("block").unwrap_or("");
         if block.len() > 200 {
@@ -1240,6 +1252,8 @@ impl Relay {
                     Refusal::NotListening => ("not_listening", "Nothing listens on that port right now."),
                     Refusal::Full => ("busy", "Too many pages are open this way. Close one and try again."),
                     Refusal::NoPort => ("failed", "This computer couldn't listen for the phone."),
+                    Refusal::NotYourPhone => ("not_your_phone", "Tailscale doesn't say that this phone is a device of this computer's own user."),
+                    Refusal::NotYourPort => ("refused", "That port doesn't open in a browser."),
                 };
                 info!("port_share from {who}: no share of port {port} ({code})");
                 Err(error(code, message))
@@ -4465,8 +4479,9 @@ mod tests {
         ] {
             assert_eq!(code(&r, &s, "port_share", &alex, &bad).await, "bad_request", "{bad}");
         }
-        // A debugger or a database is never shared, listening or not.
-        for port in [9229, 5432, 22] {
+        // The system's ports and the usual ports of debuggers and databases are refused,
+        // listening or not.
+        for port in [9229, 9225, 5432, 11434, 22, 443] {
             assert_eq!(code(&r, &s, "port_share", &alex, &json!({"port": port, "phone_ip": "127.0.0.1"})).await, "refused", "{port}");
         }
         assert_eq!(r.shares.count(), 0);
@@ -4526,6 +4541,43 @@ mod tests {
         r.stop();
         assert_eq!(r.shares.count(), 0);
         assert!(closed(format!("127.0.0.1:{}", opened["port"]).parse().unwrap()).await);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_phone_removed_with_forget_loses_its_shares() {
+        let dir = temp("share-forget");
+        let r = relay(&dir, false);
+        let s = named_server("https://rex.example.ts.net");
+        let dev = Dev::start().await;
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        r.store.lock().unwrap().register(phone("ffff0000", GATEWAY)).unwrap();
+        let (alex, other) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(ALEX)));
+        let ask = json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"});
+        let mine = r.act(&s, "port_share", &ask, &alex).await.0.unwrap();
+        let theirs = r.act(&s, "port_share", &ask, &other).await.0.unwrap();
+        assert_eq!(r.shares.count(), 2);
+        let forget = |id: &str| {
+            // What `rex-duo-helper forget <id>` does: another process writes the file.
+            let mut file = DeviceStore::open(dir.join("devices.json"));
+            assert!(file.remove(id).unwrap());
+        };
+        // The next time Beacon reads its registrations, for whatever reason, the share goes.
+        forget("a1b2c3d4");
+        assert_eq!(r.shares.count(), 2, "nothing has made Beacon look yet");
+        status(&r, &other).await;
+        assert_eq!(r.shares.count(), 1);
+        let at = |opened: &Value| format!("127.0.0.1:{}", opened["port"]).parse::<std::net::SocketAddr>().unwrap();
+        assert!(closed(at(&mine)).await);
+        // And when nothing makes it look, the share itself asks before it serves anyone.
+        r.watch_shares();
+        let (head, _) = exchange(at(&theirs), &get("/", &format!("desk.example.ts.net:{}", theirs["port"]))).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        forget("ffff0000");
+        assert_eq!(r.shares.count(), 1);
+        assert!(crate::share::testing::nothing(at(&theirs), &get("/", &format!("desk.example.ts.net:{}", theirs["port"]))).await);
+        assert_eq!(r.shares.count(), 0);
+        assert!(closed(at(&theirs)).await);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

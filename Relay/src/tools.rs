@@ -36,6 +36,27 @@ pub fn async_command(program: impl AsRef<Path>) -> Option<tokio::process::Comman
     self::program(program.as_ref()).map(tokio::process::Command::new)
 }
 
+/// Runs `command` and gives what it printed, whatever its exit status. None when it could
+/// not be started, took longer than `wait`, or printed more than `limit` bytes: it is
+/// stopped then, and nothing of what it printed is used. Its input and its errors go nowhere.
+pub async fn printed(mut command: tokio::process::Command, limit: usize, wait: std::time::Duration) -> Option<Vec<u8>> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    // Dropping the child, on any way out of here, ends it.
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().ok()?;
+    let out = child.stdout.take()?;
+    let mut bytes = vec![];
+    let read = async {
+        out.take(limit as u64 + 1).read_to_end(&mut bytes).await.ok()?;
+        if bytes.len() > limit {
+            return None;
+        }
+        child.wait().await.ok()
+    };
+    tokio::time::timeout(wait, read).await.ok()??;
+    Some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +104,29 @@ mod tests {
             assert!(command(refused).is_none() && async_command(refused).is_none());
         }
         assert_eq!(command("sh").unwrap().get_program(), sh.as_os_str());
+    }
+
+    #[tokio::test]
+    async fn what_a_program_prints_is_taken_whole_or_not_at_all() {
+        use std::time::Duration;
+        let sh = |script: &str| {
+            let mut c = async_command("sh").unwrap();
+            c.args(["-c", script]);
+            c
+        };
+        let long = Duration::from_secs(20);
+        assert_eq!(printed(sh("printf hello"), 64, long).await.as_deref(), Some(&b"hello"[..]));
+        // Its exit status plays no part, and what it writes to its errors is not read.
+        assert_eq!(printed(sh("printf out; printf err >&2; exit 3"), 64, long).await.as_deref(), Some(&b"out"[..]));
+        assert_eq!(printed(sh("exit 1"), 64, long).await.as_deref(), Some(&b""[..]));
+        // Exactly the limit is taken; one byte more and nothing is.
+        assert_eq!(printed(sh("printf 12345678"), 8, long).await.map(|b| b.len()), Some(8));
+        assert_eq!(printed(sh("printf 123456789"), 8, long).await, None);
+        // A program that never stops printing, and one that never ends, are stopped.
+        let began = std::time::Instant::now();
+        assert_eq!(printed(sh("while :; do printf xxxxxxxxxxxxxxxx; done"), 4096, long).await, None);
+        assert_eq!(printed(sh("sleep 30"), 64, Duration::from_millis(200)).await, None);
+        assert!(began.elapsed() < Duration::from_secs(10));
     }
 
     /// Reads the crate's own source: `tools.rs` is the one file that makes a command, so no

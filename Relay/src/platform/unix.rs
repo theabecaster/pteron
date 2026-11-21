@@ -184,27 +184,34 @@ pub fn invocation(pid: u32) -> Option<Invocation> {
     Some(Invocation { argv, truncated, cwd })
 }
 
-/// The arguments in what `KERN_PROCARGS2` gives: the count, the program's path, padding,
-/// then each argument ending in a NUL, then the environment, which is not read. None when
-/// the bytes are not that.
+/// The arguments in what `KERN_PROCARGS2` gives. The block is: the count of arguments (an
+/// int), the program's path with its NUL, NULs up to the next multiple of 8 bytes, then each
+/// argument with its NUL, then the environment in the same form.
+///
+/// Where the arguments begin is worked out from the path's length, never looked for: an
+/// argument may be empty, so a NUL says nothing about where one starts. Exactly the counted
+/// arguments are read from there and nothing after them, which is where the environment is.
+/// None when the block is not of that form in any way (no path, padding that is not NULs,
+/// fewer arguments than counted): then nothing of it is used.
 #[cfg(any(target_os = "macos", test))]
 fn procargs(buf: &[u8]) -> Option<(Vec<Vec<u8>>, bool)> {
     let count = usize::try_from(i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?)).ok()?;
-    let mut rest = &buf[4..];
-    // The program's path, and the NULs that pad it.
-    rest = &rest[rest.iter().position(|b| *b == 0)?..];
-    rest = &rest[rest.iter().position(|b| *b != 0).unwrap_or(rest.len())..];
-    let mut args = vec![];
-    let mut cut = false;
+    let path = buf[4..].iter().position(|b| *b == 0).filter(|len| *len > 0)?;
+    let start = 4 + (path + 1).div_ceil(8) * 8;
+    if buf.get(4 + path..start)?.iter().any(|b| *b != 0) {
+        return None;
+    }
+    let mut rest = &buf[start..];
+    let mut args = Vec::with_capacity(count.min(super::ARGS_MAX + 1));
     for _ in 0..count {
-        let Some(end) = rest.iter().position(|b| *b == 0) else {
-            cut = true;
-            break;
-        };
-        args.push(&rest[..end]);
+        let end = rest.iter().position(|b| *b == 0)?;
+        // More than is ever kept: the rest is counted off without being held.
+        if args.len() <= super::ARGS_MAX {
+            args.push(&rest[..end]);
+        }
         rest = &rest[end + 1..];
     }
-    Some(super::capped(args.into_iter(), cut))
+    Some(super::capped(args.into_iter(), false))
 }
 
 /// The last part of a program's path.
@@ -407,8 +414,10 @@ mod mac {
             return None;
         }
         let parsed = super::procargs(&block[..len]);
-        // The block holds the environment too: it is wiped, not just let go.
+        // The block holds the environment too: it is wiped, not just let go, and the wipe
+        // is one the compiler may not leave out.
         block.fill(0);
+        std::hint::black_box(&mut block);
         let (argv, truncated) = parsed?;
         Some(super::Invocation { argv, truncated, cwd: cwd(pid) })
     }
@@ -514,6 +523,32 @@ mod mac {
             assert!(invocation(child.id()).is_none() && invocation(0x7fff_fff0).is_none());
         }
 
+        /// What stands behind a child's arguments in the kernel's block.
+        const MARKER: &str = "BEACON_ENV_MARKER_never_read_out";
+
+        #[test]
+        fn a_child_started_under_any_name_gives_its_arguments_and_nothing_of_its_environment() {
+            use std::os::unix::process::CommandExt;
+            let dir = std::env::temp_dir().join(format!("pf-argv0-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // The program's path in every length around the boundary the arguments are
+            // aligned to, and its own name empty, plain, with spaces and long.
+            for extra in 0..9 {
+                let program = dir.join(format!("s{}", "x".repeat(extra)));
+                std::os::unix::fs::symlink("/bin/sleep", &program).unwrap();
+                for name in ["", "sleep", "two words", "a-name-longer-than-eight-bytes"] {
+                    let mut command = crate::tools::command(&program).unwrap();
+                    let mut child = command.arg0(name).arg("30").env_clear().env("FIRST", MARKER).env("SECOND", MARKER).spawn().unwrap();
+                    let read = invocation(child.id());
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    let read = read.unwrap_or_else(|| panic!("{program:?} as {name:?}"));
+                    assert_eq!((read.argv, read.truncated), (vec![name.as_bytes().to_vec(), b"30".to_vec()], false), "{program:?} as {name:?}");
+                }
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
         #[test]
         fn a_child_is_read_with_its_parent_and_its_group() {
             let mut child = crate::tools::command("sleep").unwrap().arg("30").spawn().unwrap();
@@ -547,6 +582,93 @@ pub async fn bind_tcp(addr: std::net::SocketAddr) -> std::io::Result<tokio::net:
     socket.set_keepalive(true)?;
     socket.bind(addr)?;
     socket.listen(128)
+}
+
+/// Whether a share may listen on the dev server's own port number when that is free on the
+/// tailnet address. On macOS a server that later asks for the number on every address still
+/// gets it (checked: the bind succeeds, and each keeps its own address). On Linux it would
+/// be refused while the share has the number on one address, so there a share always takes
+/// a port the system picks.
+#[cfg(target_os = "macos")]
+pub const SAME_PORT: bool = true;
+#[cfg(target_os = "linux")]
+pub const SAME_PORT: bool = false;
+
+/// How a quiet connection of a share is probed: after `KEEPALIVE_IDLE` seconds without a
+/// byte, every `KEEPALIVE_EVERY` seconds, and it ends after `KEEPALIVE_TRIES` probes without
+/// an answer. A phone that vanished is noticed in about a minute and a half.
+pub const KEEPALIVE_IDLE: u32 = 60;
+pub const KEEPALIVE_EVERY: u32 = 10;
+pub const KEEPALIVE_TRIES: u32 = 3;
+
+mod sockopt {
+    #[cfg(target_os = "macos")]
+    pub const NAMES: (i32, i32, i32, i32, i32) = (0xffff, 0x0008, 0x10, 0x101, 0x102);
+    #[cfg(target_os = "linux")]
+    pub const NAMES: (i32, i32, i32, i32, i32) = (1, 9, 4, 5, 6);
+    pub const TCP: i32 = 6;
+
+    extern "C" {
+        pub fn setsockopt(fd: i32, level: i32, name: i32, value: *const std::ffi::c_void, len: u32) -> i32;
+        #[cfg(test)]
+        pub fn getsockopt(fd: i32, level: i32, name: i32, value: *mut std::ffi::c_void, len: *mut u32) -> i32;
+    }
+}
+
+/// Turns the probing above on for one connection.
+pub fn keep_alive(stream: &tokio::net::TcpStream) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let (socket, keepalive, idle, every, tries) = sockopt::NAMES;
+    for (level, name, value) in [(socket, keepalive, 1), (sockopt::TCP, idle, KEEPALIVE_IDLE), (sockopt::TCP, every, KEEPALIVE_EVERY), (sockopt::TCP, tries, KEEPALIVE_TRIES)] {
+        let value = value as i32;
+        // Safe: the descriptor is the open stream's, and the value is an int of the length given.
+        if unsafe { sockopt::setsockopt(stream.as_raw_fd(), level, name, (&value as *const i32).cast(), 4) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// How many files and sockets Beacon asks to be allowed open at once. A service starts
+/// with as few as 256; the shares alone can hold 136 (64 connections, each with its
+/// connection on to the dev server, and 8 listeners).
+pub const FD_LIMIT: u64 = 1024;
+
+/// Raises this process's limit of open files to `FD_LIMIT`, or as near as the system lets
+/// it. Returns the limit as it is afterwards; None when the system would not say. It never
+/// lowers a limit, and a system that refuses is left as it was.
+#[cfg(target_pointer_width = "64")]
+pub fn raise_fd_limit() -> Option<u64> {
+    #[repr(C)]
+    struct Limit {
+        soft: u64,
+        hard: u64,
+    }
+    #[cfg(target_os = "macos")]
+    const NOFILE: i32 = 8;
+    #[cfg(target_os = "linux")]
+    const NOFILE: i32 = 7;
+    extern "C" {
+        fn getrlimit(resource: i32, limit: *mut Limit) -> i32;
+        fn setrlimit(resource: i32, limit: *const Limit) -> i32;
+    }
+    let mut limit = Limit { soft: 0, hard: 0 };
+    // Safe: the struct is the system's `rlimit` on a 64-bit system, and is ours to write to.
+    if unsafe { getrlimit(NOFILE, &mut limit) } != 0 {
+        return None;
+    }
+    let wanted = FD_LIMIT.min(limit.hard);
+    if limit.soft >= wanted {
+        return Some(limit.soft);
+    }
+    let raised = Limit { soft: wanted, hard: limit.hard };
+    // Safe: as above; the hard limit is left as it is.
+    Some(if unsafe { setrlimit(NOFILE, &raised) } == 0 { wanted } else { limit.soft })
+}
+
+#[cfg(not(target_pointer_width = "64"))]
+pub fn raise_fd_limit() -> Option<u64> {
+    None
 }
 
 // MARK: Tailscale and listening ports
@@ -653,12 +775,12 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// What the macOS kernel gives for a process: the count, the path, padding, the
-    /// arguments, then the environment.
+    /// What the macOS kernel gives for a process: the count, the path, NULs up to a multiple
+    /// of 8 bytes, the arguments, then the environment.
     fn block(count: i32, path: &str, args: &[&[u8]], env: &[&str]) -> Vec<u8> {
         let mut b = count.to_ne_bytes().to_vec();
         b.extend_from_slice(path.as_bytes());
-        b.extend_from_slice(&[0; 5]);
+        b.resize(4 + (path.len() + 1).div_ceil(8) * 8, 0);
         for part in args.iter().copied().chain(env.iter().map(|e| e.as_bytes())) {
             b.extend_from_slice(part);
             b.push(0);
@@ -675,16 +797,35 @@ mod tests {
         assert!(!truncated);
         // A count of none: the environment that follows is still not arguments.
         assert_eq!(procargs(&block(0, "/bin/sh", &[], &env)), Some((vec![], false)));
-        // The block ends before the count is met (a process caught while it starts, or one
-        // that wrote over its arguments): what is whole is kept, and flagged.
+        // An empty first argument (a program may be started under any name, also none): it
+        // is an argument, and what stands behind the last one is still the environment.
+        for path in ["/bin/sleep", "/bin/sh", "/usr/bin/a", "/usr/bin/ab", "/usr/bin/abc", "/usr/bin/abcd", "/usr/bin/abcde", "/usr/bin/abcdef", "/usr/bin/abcdefg", "/usr/bin/abcdefgh"] {
+            let (argv, truncated) = procargs(&block(2, path, &[b"", b"5"], &env)).unwrap();
+            assert_eq!((argv, truncated), (vec![vec![], b"5".to_vec()], false), "{path}");
+            let (argv, _) = procargs(&block(3, path, &[b"", b"", b""], &env)).unwrap();
+            assert_eq!(argv, vec![Vec::<u8>::new(); 3], "{path}");
+            let shown = format!("{:?}", procargs(&block(1, path, &[b""], &env)));
+            assert!(!shown.contains("API_TOKEN") && !shown.contains("PATH="), "{shown}");
+        }
+        // A count larger than the arguments there are would reach into the environment
+        // only as far as the block goes; a block that ends before the count is met is not
+        // used at all.
         let mut short = block(3, "/bin/sh", &[b"sh", b"-c"], &[]);
         short.extend_from_slice(b"half an argu");
-        assert_eq!(procargs(&short), Some((vec![b"sh".to_vec(), b"-c".to_vec()], true)));
+        assert_eq!(procargs(&short), None);
+        // Padding that is not NULs: not the form this reads.
+        let mut odd = block(1, "/bin/s", &[b"sh"], &env);
+        odd[4 + "/bin/s".len() + 1] = b'x';
+        assert_eq!(procargs(&odd), None);
+        // Many more arguments than are kept: counted off, cut at the limit.
+        let many: Vec<&[u8]> = vec![b"a"; crate::platform::ARGS_MAX + 50];
+        let (argv, truncated) = procargs(&block(many.len() as i32, "/bin/sh", &many, &env)).unwrap();
+        assert_eq!((argv.len(), truncated), (crate::platform::ARGS_MAX, true));
         // More than fits the limit.
         let big = vec![b'x'; crate::platform::ARGV_MAX];
         let (argv, truncated) = procargs(&block(3, "/bin/sh", &[b"sh", &big, b"after"], &env)).unwrap();
         assert_eq!((argv, truncated), (vec![b"sh".to_vec()], true));
-        for bad in [&b""[..], b"\x01\x00", b"\xff\xff\xff\xff/bin/sh\0sh\0", b"\x01\x00\x00\x00/bin/sh-without-an-end"] {
+        for bad in [&b""[..], b"\x01\x00", b"\xff\xff\xff\xff/bin/sh\0sh\0", b"\x01\x00\x00\x00/bin/sh-without-an-end", b"\x01\x00\x00\x00\0\0\0\0sh\0", b"\x01\x00\x00\x00/bin/sh\0"] {
             assert_eq!(procargs(bad), None, "{bad:?}");
         }
     }
@@ -844,6 +985,56 @@ mod tests {
         let _dialed = tokio::net::TcpStream::connect(addr).await.unwrap();
         listener.accept().await.unwrap();
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_connection_is_probed_after_a_minute_of_silence() {
+        use std::os::fd::AsRawFd;
+        let listener = bind_tcp("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let _dialed = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (taken, _) = listener.accept().await.unwrap();
+        keep_alive(&taken).unwrap();
+        let (socket, keepalive, idle, every, tries) = sockopt::NAMES;
+        let read = |level: i32, name: i32| {
+            let (mut value, mut len) = (0i32, 4u32);
+            // Safe: an int to write to, and its length.
+            assert_eq!(unsafe { sockopt::getsockopt(taken.as_raw_fd(), level, name, (&mut value as *mut i32).cast(), &mut len) }, 0);
+            value
+        };
+        assert!(read(socket, keepalive) != 0);
+        assert_eq!((read(sockopt::TCP, idle), read(sockopt::TCP, every), read(sockopt::TCP, tries)), (60, 10, 3));
+    }
+
+    #[test]
+    fn the_limit_of_open_files_is_raised_and_never_lowered() {
+        let first = raise_fd_limit();
+        if cfg!(target_pointer_width = "64") {
+            let now = first.expect("the system says its limit");
+            assert!(now > 0);
+            // Asking again changes nothing.
+            assert_eq!(raise_fd_limit(), Some(now));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_held_on_every_address_is_not_free_on_one_and_stays_free_for_whoever_asks_later() {
+        // A dev server told to serve the network listens on every address, IPv4 or both.
+        for everywhere in ["0.0.0.0:0", "[::]:0"] {
+            let Ok(held) = tokio::net::TcpListener::bind(everywhere).await else { continue };
+            let port = held.local_addr().unwrap().port();
+            let one: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            // `[::]` also holds the IPv4 addresses unless the system was told otherwise.
+            if everywhere == "0.0.0.0:0" || SAME_PORT {
+                assert_eq!(bind_tcp(one).await.map(|_| ()).map_err(|e| e.kind()), Err(std::io::ErrorKind::AddrInUse), "{everywhere}");
+            }
+        }
+        // The other way round, where a share may take the server's own number: a server
+        // that starts later and asks for it on every address still gets it.
+        if SAME_PORT {
+            let ours = bind_tcp("127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let port = ours.local_addr().unwrap().port();
+            assert!(tokio::net::TcpListener::bind(("0.0.0.0", port)).await.is_ok());
+        }
     }
 
     #[tokio::test]

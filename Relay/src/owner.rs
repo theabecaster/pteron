@@ -26,6 +26,16 @@ pub const DEPTH: usize = 32;
 
 /// How long the system's tool may take to name a port's holder.
 const WAIT: Duration = Duration::from_secs(5);
+/// How much it may print.
+const PRINT_LIMIT: usize = 64 * 1024;
+
+/// True when the process that listens on TCP `port` is one of the user Beacon runs as. The
+/// system's tool names only this user's processes, and the one it names is read again to be
+/// sure of whose it is.
+pub async fn listens_as_me(port: u16) -> bool {
+    let me = crate::platform::user_id();
+    listener(port).await.and_then(crate::platform::process).is_some_and(|p| p.uid == me)
+}
 
 /// One process of the chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,12 +127,10 @@ impl Link {
 /// The process that listens on TCP `port`, asked of the system's own tool
 /// (`platform::listener_query`). None when nothing of this user listens there.
 pub async fn listener(port: u16) -> Option<u32> {
-    use std::process::Stdio;
     let (tool, args) = crate::platform::listener_query(port);
     let mut command = crate::tools::async_command(tool)?;
-    command.args(args).stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
-    let output = tokio::time::timeout(WAIT, command.output()).await.ok()?.ok()?;
-    crate::platform::listener_pid(&String::from_utf8_lossy(&output.stdout))
+    command.args(args);
+    crate::platform::listener_pid(&String::from_utf8_lossy(&crate::tools::printed(command, PRINT_LIMIT, WAIT).await?))
 }
 
 #[cfg(test)]
@@ -317,7 +325,11 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(found, Some(std::process::id()));
         }
+        if found.is_some() {
+            assert!(listens_as_me(port).await);
+        }
         drop(l);
         assert_eq!(listener(port).await, None);
+        assert!(!listens_as_me(port).await);
     }
 }

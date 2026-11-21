@@ -222,10 +222,15 @@ ends (30 minutes after its last connection closed, 10 minutes after its port sto
 listening). While a connection is open and the port listens it has no timer at all, and
 nothing about a share is polled: it learns that its port went from Rex's `ports_changed` and
 `block_closed` events and from a connection that finds nothing there. Each connection holds
-two buffers of at most 64 KB (one head of up to 32 KB plus one 16 KB read, per direction), so
-a share's 32 connections hold at most about 4 MB however much passes through them.
-`tailscale status` runs once per `port_share`, and `lsof` or `ss` once per `port_owner` that
-names no `pid`; neither runs otherwise.
+two buffers of at most 64 KB (one head of up to 32 KB plus one 16 KB read, per direction), and
+all shares together have at most 64 connections, so they hold at most about 8 MB however much
+passes through them, and at most 136 sockets (two per connection and eight listeners). At
+start Beacon raises its limit of open files to 1024, or as near as the system allows; it
+starts all the same when it can't. A connection has one timer of its own while it waits for
+a request (30 s). A `port_share` that makes a new share runs `tailscale status`, `tailscale
+whois` and `lsof` or `ss` once each; a `port_owner` that names no `pid` runs `lsof` or `ss`
+once. Each has 5 s and a cap on what it may print (256 KB, 64 KB for `lsof` and `ss`); none
+runs otherwise.
 
 ## Updates
 
@@ -890,9 +895,10 @@ leaves the screen. For a page any browser on the phone can open, it asks Beacon 
 {"block": "block:12", "port": 3000, "phone_ip": "100.64.0.2"}
 ```
 
-- `port`: the port the dev server listens on, on this computer (1 to 65535).
+- `port`: the port the dev server listens on, on this computer: 80, or 1024 to 65535.
 - `phone_ip`: the phone's own Tailscale address, IPv4 or IPv6, as the phone reads it from its
-  Tailscale interface. It is the only address that may connect.
+  Tailscale interface. It is the only address that may connect. An IPv4 address written as
+  an IPv6 one (`::ffff:100.64.0.2`) is the IPv4 address.
 - `block`: the pane the server runs in (optional). Beacon uses it only to follow Rex's events
   about that pane.
 
@@ -906,19 +912,24 @@ Result:
 - `url` is what to open: the computer's MagicDNS name when its tailnet gives names, else its
   Tailscale address (then `url` equals `ip_url`). `ip_url` always names the address, for a
   phone that can't look the name up. An IPv6 address is in brackets.
-- `port` is the port the share listens on: the dev server's own number when nothing else
-  has it on the Tailscale address (`same_port: true`), else one the system picked. A server
-  that listens on every address of the computer holds its number there too, so its share gets
-  another one.
+- `port` is the port the share listens on. On a Mac it is the dev server's own number when
+  nothing else has it on the Tailscale address (`same_port: true`), else one the system
+  picked. A server that listens on every address of the computer (`0.0.0.0`, `[::]`) holds
+  its number there too, so its share gets another one. On Linux it is always one the system
+  picked: there a share on the server's number would keep a server that later asks for that
+  number on every address from starting. (On a Mac such a server still starts, and each
+  keeps its own address.)
 - Asking again for a port that is shared returns the same addresses and starts its idle time
   over. The same phone asking from another address gets a new share in the old one's place.
+  Requests are settled one at a time, so two at once for the same port make one share.
 
 Errors, each with a plain sentence as `message`:
 
 | `code` | When |
 |---|---|
 | `not_supported` | A Beacon before 0.7.0: it has no such action. Hide "Open in Browser". |
-| `refused` | The Rex server did not identify the caller, or the port is one that never opens in a browser (22, 25, 53, 2181, 3306, 5432, 5672, 6379, 9092, 9222, 9229, 9230, 11211, 27017). |
+| `refused` | The Rex server did not identify the caller; or the port is below 1024 and not 80; or it is a usual port of something that is no page for a phone (2181, 2375, 3306, 5432, 5672, 6379, 8001, 8384, 9092, 9222 to 9239, 11211, 11434, 27017); or what listens on it is not a process of the user Beacon runs as. |
+| `not_your_phone` | Tailscale does not say that `phone_ip` is a device of the same tailnet user as this computer: it is another user's, a tagged device, an address it does not know, or it did not answer. A computer that is itself a tagged device answers this for every phone. |
 | `not_registered` | The caller's phone has no registration here that the caller's identity made. |
 | `bad_request` | `port` is no port number, `phone_ip` is no Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), or `block` is longer than 200 characters. |
 | `not_available` | The computer doesn't run the regular Tailscale client, the client is not running, or it has no address of the kind `phone_ip` is. Hide "Open in Browser" for this computer. |
@@ -926,13 +937,23 @@ Errors, each with a plain sentence as `message`:
 | `busy` | Eight shares are open. |
 | `failed` | The system gave no port to listen on. |
 
+Whose port it is: Beacon asks the system which process listens on the port (`lsof` on a Mac,
+`ss` on Linux, as in step 9), reads that process, and makes a share only when it runs as the
+user Beacon runs as. Both tools name only that user's processes, so a port of another user
+or of the system has no listener as far as a share goes.
+
+Whose phone it is: before a new share is made, Beacon runs `tailscale whois --json
+<phone_ip>` and reads `Node.User`, `Node.Tags` and `UserProfile.ID`. The two ids have to
+agree with each other and with `Self.UserID` of this computer's own status, and neither
+device may be tagged.
+
 How Beacon reads Tailscale: it runs the client's own command line, `tailscale status --json
 --peers=false`, as the user it runs as, with a 5 s limit, once per `port_share`. It looks for it
 at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, `/usr/local/bin/tailscale` and
 `/opt/homebrew/bin/tailscale` on a Mac, and among the system tools and at
 `/usr/local/bin/tailscale` on Linux. It reads `BackendState` (must be `Running`),
 `Self.TailscaleIPs` (only addresses in Tailscale's two ranges count), `Self.DNSName`,
-`Self.HostName` and `CurrentTailnet.MagicDNSEnabled`. Nothing is changed and no other device
+`Self.HostName`, `Self.UserID`, `Self.Tags` and `CurrentTailnet.MagicDNSEnabled`. Nothing is changed and no other device
 is listed. Without that answer there is no share: no address is taken from the network
 interfaces, because an address in `100.64.0.0/10` on another network is not a tailnet.
 
@@ -946,7 +967,9 @@ What a share is:
 - **HTTP only, to one loopback port.** Each connection is piped to `127.0.0.1:<port>` or
   `[::1]:<port>` (the one that answered last is tried first; the share never connects to
   itself). What is not an HTTP/1.x request is answered `400` by the share and reaches
-  nothing; a head over 32 KB or 100 header lines gets `431`; `CONNECT` is refused.
+  nothing; a head over 32 KB or 100 header lines gets `431`. Also `400`: `CONNECT`, a first
+  line that names anything but a path (`GET http://…`, `OPTIONS *`), and `Transfer-Encoding`
+  in HTTP/1.0.
 - **The dev server sees a local visitor.** Dev servers turn away a request for a name they
   don't know (Vite's `server.allowedHosts`, Next.js's `allowedDevOrigins`,
   webpack-dev-server), so the share rewrites the head of each request and answer, and only
@@ -970,18 +993,31 @@ What a share is:
   Every other header and every body passes as it came. Bodies are streamed, never held
   whole: by `Content-Length`, in chunks (sizes, extensions and trailers untouched), or until
   the server closes (an event stream). A request whose body has two ends (`Content-Length`
-  with `Transfer-Encoding`, two different lengths) is answered `400`.
-- **WebSockets pass.** After a `101` answer both directions carry every byte untouched, so
-  live reload works.
-- **Limits.** Eight shares at once, whoever asked; 32 connections per share (one more is
-  closed at once); 64 requests waiting for their answer on one connection.
+  with `Transfer-Encoding`, two different lengths) is answered `400`. Chunk sizes are read
+  strictly (hex digits, then an extension or the line's end; no spaces): a body that is not
+  written so ends the connection, with a `400` when nothing has been answered on it yet.
+- **WebSockets pass.** After a `101` answer to a request that asked to change protocols,
+  both directions carry every byte untouched, so live reload works. A `101` nobody asked for
+  ends the connection and is not passed on.
+- **Limits.** Eight shares at once, whoever asked; 32 connections per share and 64 for all
+  shares together (one more is closed at once); 64 requests waiting for their answer on one
+  connection.
+- **Quiet connections.** A connection has 30 s to send its first request, and is closed
+  after 30 s between two requests with nothing asked and nothing being answered. One that
+  waits for an answer, receives one (an event stream) or carries a WebSocket is in use and
+  stays. Every connection is probed by the system after 60 s of silence, every 10 s, and
+  ends after three probes without an answer, so a phone that vanished holds nothing for
+  longer than about a minute and a half.
 
 When a share ends. Its listener and all its connections close:
 
-- 30 minutes after its last connection closed (`idle_seconds`). An open connection keeps
-  it; the system's TCP keepalive ends a connection whose phone vanished.
+- 30 minutes after its last connection closed (`idle_seconds`). A connection in use keeps
+  it; the probes above end one whose phone vanished.
 - 10 minutes after its port stopped listening (`waiting_seconds`), unless it listens again.
-- When the phone unregisters, or the gateway no longer knows it (`410`, the second `401`).
+- When the phone is no longer registered: it unregistered, the gateway no longer knows it
+  (`410`, the second `401`), or `rex-duo-helper forget` removed it. Beacon sees a `forget`
+  the next time it reads its registrations, and a share asks again before it takes a
+  connection, so a removed phone is never served.
 - When Beacon stops. A restarted Beacon has no shares.
 
 **The waiting page.** A share whose dev server stopped does not go at once. Beacon learns

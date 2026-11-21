@@ -266,13 +266,15 @@ impl DeviceStore {
 
     /// Reads devices.json again if something else wrote it since this process last did:
     /// `rex-duo-helper forget` removes a phone while the helper runs. Called before the
-    /// registrations are used.
-    pub fn sync(&mut self) {
+    /// registrations are used. True when it was read again.
+    pub fn sync(&mut self) -> bool {
         let now = stamp(&self.path);
-        if now != self.stamp {
-            self.devices = usable_devices(&read_json::<Vec<Value>>(&self.path));
-            self.stamp = now;
+        if now == self.stamp {
+            return false;
         }
+        self.devices = usable_devices(&read_json::<Vec<Value>>(&self.path));
+        self.stamp = now;
+        true
     }
 
     /// Drops registrations whose gateway `allowed` no longer takes (it left config.json).

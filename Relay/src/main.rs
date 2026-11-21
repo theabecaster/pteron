@@ -353,6 +353,8 @@ fn load_config(o: &RunOptions) -> Result<Config, String> {
 }
 
 async fn run(o: RunOptions) -> i32 {
+    // A service starts with few files allowed open; never a reason not to start.
+    let _ = platform::raise_fd_limit();
     if o.log_file {
         if let Err(e) = util::log_to_file(default_log_file()) {
             eprintln!("could not open the log file: {e}");

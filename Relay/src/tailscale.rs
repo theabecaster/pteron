@@ -7,6 +7,11 @@
 //! (`BackendState`) and whether the tailnet gives names (`CurrentTailnet.MagicDNSEnabled`).
 //! It runs when a phone asks for a share, never on a timer.
 //!
+//! Before a share is made for a phone's address, the client is also asked whose device that
+//! address is (`tailscale whois --json <address>`): a share is only for a device of the same
+//! tailnet user as this computer. A tagged device has no user, on either side, and gets none.
+//! Both commands have 5 s and may print 256 KB; past either, there is no answer.
+//!
 //! A computer where the command is missing, does not answer, or says anything but `Running`
 //! has no tailnet as far as Beacon goes: no address is guessed from the network interfaces,
 //! since an address in Tailscale's range on another network is not a tailnet.
@@ -16,8 +21,9 @@ use serde_json::Value;
 use std::net::IpAddr;
 use std::time::Duration;
 
-/// How long the command may take.
+/// How long a command may take, and how much it may print.
 const WAIT: Duration = Duration::from_secs(5);
+const PRINT_LIMIT: usize = 256 * 1024;
 
 /// True for an address Tailscale gives a device: `100.64.0.0/10` or `fd7a:115c:a1e0::/48`.
 pub fn is_tailnet(ip: IpAddr) -> bool {
@@ -37,6 +43,13 @@ pub struct Tailnet {
     pub machine: String,
     /// Its own addresses there. Never empty.
     pub ips: Vec<IpAddr>,
+    /// The tailnet user it belongs to. None for a tagged device, which belongs to no one.
+    pub user: Option<u64>,
+}
+
+/// True when a device's entry lists tags.
+fn tagged(device: &Value) -> bool {
+    device.get("Tags").and_then(Value::as_array).is_some_and(|tags| !tags.is_empty())
 }
 
 /// A device's full name, in lowercase without the dot at its end: two or more labels of
@@ -62,18 +75,42 @@ pub fn parse(json: &str) -> Option<Tailnet> {
     let full = me.str("DNSName").and_then(dns_name);
     let named = status.obj("CurrentTailnet").and_then(|t| t.bool("MagicDNSEnabled")) == Some(true);
     let machine = me.text("HostName").or_else(|| full.as_ref().and_then(|n| n.split('.').next().map(String::from))).unwrap_or_default();
-    Some(Tailnet { name: full.filter(|_| named), machine, ips })
+    let user = me.get("UserID").and_then(Value::as_u64).filter(|id| *id != 0 && !tagged(me));
+    Some(Tailnet { name: full.filter(|_| named), machine, ips, user })
+}
+
+/// The user a device belongs to, in what `tailscale whois --json` printed about its
+/// address. None when it names no device, the device is tagged, or the device's entry and
+/// the user's profile do not name the same user.
+pub fn whois_user(json: &str) -> Option<u64> {
+    let answer: Value = serde_json::from_str(json).ok()?;
+    let node = answer.obj("Node")?;
+    let user = node.get("User").and_then(Value::as_u64).filter(|id| *id != 0)?;
+    let profile = answer.obj("UserProfile")?.get("ID").and_then(Value::as_u64)?;
+    (user == profile && !tagged(node)).then_some(user)
+}
+
+/// The Tailscale client's command line on this computer.
+fn client() -> Option<tokio::process::Command> {
+    let program = crate::platform::TAILSCALE.iter().filter_map(|place| crate::tools::program(std::path::Path::new(place))).find(|p| crate::platform::is_executable(p))?;
+    crate::tools::async_command(program)
+}
+
+/// Asks the Tailscale client whose device `ip` is. None when it does not know the address,
+/// does not answer, or the device has no user.
+#[cfg_attr(test, allow(dead_code))] // tests never ask the real client
+pub async fn whois(ip: IpAddr) -> Option<u64> {
+    let mut command = client()?;
+    command.args(["whois", "--json", &ip.to_string()]);
+    whois_user(std::str::from_utf8(&crate::tools::printed(command, PRINT_LIMIT, WAIT).await?).ok()?)
 }
 
 /// Asks the Tailscale client now. None when this computer does not run it.
 #[cfg_attr(test, allow(dead_code))] // tests never ask the real client
 pub async fn read() -> Option<Tailnet> {
-    use std::process::Stdio;
-    let program = crate::platform::TAILSCALE.iter().filter_map(|place| crate::tools::program(std::path::Path::new(place))).find(|p| crate::platform::is_executable(p))?;
-    let mut command = crate::tools::async_command(program)?;
-    command.args(["status", "--json", "--peers=false"]).stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
-    let output = tokio::time::timeout(WAIT, command.output()).await.ok()?.ok()?;
-    parse(std::str::from_utf8(&output.stdout).ok()?)
+    let mut command = client()?;
+    command.args(["status", "--json", "--peers=false"]);
+    parse(std::str::from_utf8(&crate::tools::printed(command, PRINT_LIMIT, WAIT).await?).ok()?)
 }
 
 #[cfg(test)]
@@ -86,7 +123,7 @@ mod tests {
         json!({
             "Version": "1.90.0", "TUN": true, "BackendState": "Running",
             "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"],
-            "Self": {"HostName": "Desk", "DNSName": "desk.example.ts.net.", "OS": "macOS", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"], "Online": true},
+            "Self": {"HostName": "Desk", "DNSName": "desk.example.ts.net.", "OS": "macOS", "UserID": 1001, "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"], "Online": true},
             "MagicDNSSuffix": "example.ts.net",
             "CurrentTailnet": {"Name": "example", "MagicDNSSuffix": "example.ts.net", "MagicDNSEnabled": true},
             "Peer": null
@@ -110,7 +147,58 @@ mod tests {
     #[test]
     fn a_running_client_gives_the_name_and_both_addresses() {
         let t = parse(&status().to_string()).unwrap();
-        assert_eq!(t, Tailnet { name: Some("desk.example.ts.net".into()), machine: "Desk".into(), ips: vec![v4(), "fd7a:115c:a1e0::1".parse().unwrap()] });
+        assert_eq!(t, Tailnet { name: Some("desk.example.ts.net".into()), machine: "Desk".into(), ips: vec![v4(), "fd7a:115c:a1e0::1".parse().unwrap()], user: Some(1001) });
+        // A tagged computer belongs to no user, whatever id stands there.
+        let mut s = status();
+        s["Self"]["Tags"] = json!(["tag:server"]);
+        assert_eq!(parse(&s.to_string()).unwrap().user, None);
+        for none in [json!(0), Value::Null, json!("1001"), json!(-4)] {
+            let mut s = status();
+            s["Self"]["UserID"] = none.clone();
+            assert_eq!(parse(&s.to_string()).unwrap().user, None, "{none}");
+        }
+    }
+
+    /// What the client prints about an address, cut to what is read, with example values.
+    fn whois_answer(user: u64, profile: u64, tags: Option<Value>) -> Value {
+        let mut answer = json!({
+            "Node": {"ID": 5, "StableID": "nEXAMPLE", "Name": "phone.example.ts.net.", "User": user, "Addresses": ["100.64.0.2/32"]},
+            "UserProfile": {"ID": profile, "LoginName": "alex@example.com", "DisplayName": "Alex"},
+            "CapMap": {}
+        });
+        if let Some(tags) = tags {
+            answer["Node"]["Tags"] = tags;
+        }
+        answer
+    }
+
+    #[test]
+    fn an_address_belongs_to_the_user_the_client_names_for_it() {
+        // The phone of the same user as this computer (1001 above).
+        assert_eq!(whois_user(&whois_answer(1001, 1001, None).to_string()), Some(1001));
+        assert_eq!(whois_user(&whois_answer(1001, 1001, Some(json!([]))).to_string()), Some(1001));
+        // Another user's device: a user, but not this computer's.
+        assert_eq!(whois_user(&whois_answer(2002, 2002, None).to_string()), Some(2002));
+        // A tagged device has no user.
+        assert_eq!(whois_user(&whois_answer(1001, 1001, Some(json!(["tag:ci"]))).to_string()), None);
+        // The two places that name the user disagree, or one is missing.
+        assert_eq!(whois_user(&whois_answer(1001, 2002, None).to_string()), None);
+        assert_eq!(whois_user(&whois_answer(0, 0, None).to_string()), None);
+        // An address the client does not know: it prints an error and no JSON.
+        for none in ["", "peer not found", "{}", "null", "{\"Node\":null,\"UserProfile\":null}", "{\"Node\":{\"User\":1001}}", "{\"UserProfile\":{\"ID\":1001}}", "{\"Node\":{\"User\":\"1001\"},\"UserProfile\":{\"ID\":\"1001\"}}"] {
+            assert_eq!(whois_user(none), None, "{none:?}");
+        }
+    }
+
+    #[test]
+    fn the_same_user_is_this_computers_own_and_no_one_elses() {
+        let me = parse(&status().to_string()).unwrap();
+        let same = |answer: Value| crate::share::same_user(me.user, whois_user(&answer.to_string()));
+        assert!(same(whois_answer(1001, 1001, None)));
+        assert!(!same(whois_answer(2002, 2002, None)));
+        assert!(!same(whois_answer(1001, 1001, Some(json!(["tag:ci"])))));
+        // A computer that is tagged has no user for anyone to be the same as.
+        assert!(!crate::share::same_user(None, Some(1001)) && !crate::share::same_user(None, None) && !crate::share::same_user(Some(1001), None));
     }
 
     #[test]

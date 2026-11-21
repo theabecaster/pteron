@@ -152,13 +152,15 @@ What a share exposes, and to whom:
 - One port of the computer, as a web page, at the computer's Tailscale name or address
   (`http://desk.example.ts.net:3000`). Beacon listens on the Tailscale address only: nothing
   is opened on your Wi-Fi or to the internet.
-- Only the phone that asked can connect, by its own Tailscale address, and only a phone that
-  is registered with this Beacon can ask. A connection from any other device is closed
+- Only the phone that asked can connect, by its own Tailscale address. Only a phone that is
+  registered with this Beacon can ask, and Tailscale has to say that the phone is a device
+  of the same Tailscale user as the computer. A connection from any other device is closed
   unread.
 - Only web traffic passes (HTTP and WebSockets), and only to that one port. The dev server
   sees the request as a local one, so servers that only answer as `localhost` work.
-- Ports of debuggers, SSH, mail and databases are never shared.
-- At most eight shares exist at once.
+- Only a port that one of your own programs listens on is shared, from 1024 up (or 80).
+  The usual ports of debuggers, databases and the like are refused.
+- At most eight shares exist at once, with at most 64 connections between them.
 
 When it closes, by itself:
 
@@ -166,8 +168,8 @@ When it closes, by itself:
 - 10 minutes after the dev server stopped. Until then the address shows a small page that
   says nothing is running there, and it loads the real page again as soon as the server is
   back;
-- when the phone turns notifications from this computer off, and when Beacon stops or
-  restarts.
+- when the phone turns notifications from this computer off or is removed with
+  `rex-duo-helper forget`, and when Beacon stops or restarts.
 
 Beacon also answers the app's question of which processes are behind a port (their ids,
 names, process groups, the arguments they were started with and their folders, for your own

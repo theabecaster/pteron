@@ -10,15 +10,21 @@
 //! - it exists only on a computer that runs the regular Tailscale client (tailscale.rs), and
 //!   listens on that computer's Tailscale address alone, never on a LAN or public one;
 //! - it takes connections from one address: the tailnet address of the phone that asked,
-//!   which must be a registered phone of the caller. Anyone else is dropped before a byte is
-//!   read;
-//! - it reaches one port of the loopback, and only as HTTP;
-//! - at most `MAX_SHARES` exist at once, each with at most `MAX_CONNECTIONS` connections;
+//!   which must be a registered phone of the caller, and which the Tailscale client must say
+//!   is a device of the same tailnet user as this computer. Anyone else is dropped before a
+//!   byte is read;
+//! - it reaches one port of the loopback, and only as HTTP: a port from 1024 up (or 80), not
+//!   one of the usual ports of debuggers, databases and the like, and one that a process of
+//!   the user Beacon runs as listens on;
+//! - at most `MAX_SHARES` exist at once, each with at most `MAX_CONNECTIONS` connections,
+//!   and all of them together with at most `MAX_ALL_CONNECTIONS`;
 //! - it ends `IDLE` after its last connection closed, `WAITING` after its port stopped
-//!   listening, when the phone unregisters, and when Beacon stops.
+//!   listening, when the phone is no longer registered (it unregistered, the gateway dropped
+//!   it, or `forget` removed it), and when Beacon stops.
 //!
 //! Its address has the dev server's own port number when that is free on the Tailscale
-//! address, and a port the system picks otherwise.
+//! address and the system lets a share take it (`platform::SAME_PORT`: macOS), and a port
+//! the system picks otherwise.
 //!
 //! Nothing here polls. A share waits on its listener and on at most one timer, for the
 //! earlier of its two ends. It learns that its port stopped listening from Rex
@@ -31,7 +37,7 @@ use crate::util::Json;
 use crate::{debug, info};
 use serde_json::Value;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -44,17 +50,40 @@ pub const MAX_SHARES: usize = 8;
 /// The most connections of one share at once. A browser opens six to a host, and a page
 /// keeps one or two more for live reload.
 pub const MAX_CONNECTIONS: usize = 32;
+/// The most connections of all shares together. Each takes two sockets, so with the eight
+/// listeners the shares hold at most 136.
+pub const MAX_ALL_CONNECTIONS: usize = 64;
 /// A share ends this long after its last connection closed.
 pub const IDLE: Duration = Duration::from_secs(30 * 60);
 /// A share whose port stopped listening answers with the waiting page this long, then ends.
 pub const WAITING: Duration = Duration::from_secs(10 * 60);
 
-/// Ports that never get a share: debuggers (whoever reaches one runs code in the program),
-/// and SSH, mail, DNS, databases, queues and caches. The app shows no row for them either.
-const REFUSED_PORTS: [u16; 14] = [22, 25, 53, 2181, 3306, 5432, 5672, 6379, 9092, 9222, 9229, 9230, 11211, 27017];
+/// The usual ports of programs that are not web pages to open on a phone: debuggers (whoever
+/// reaches one runs code in the program), databases, queues, caches, the Docker and Kubernetes
+/// APIs, a local model server, a file-sync admin page. A share is refused for them.
+const REFUSED_PORTS: [u16; 14] = [2181, 2375, 3306, 5432, 5672, 6379, 8001, 8384, 9092, 9222, 9229, 9230, 11211, 11434];
+const REFUSED_MORE: [u16; 1] = [27017];
+/// The other ports debuggers take when the first is in use.
+const REFUSED_RANGES: [std::ops::RangeInclusive<u16>; 2] = [9223..=9228, 9231..=9239];
 
+/// True for a port no share is made for: every port below 1024 but 80 (the system's own
+/// services, which a user's program can't listen on anyway), and the usual ports above.
 pub fn is_refused_port(port: u16) -> bool {
-    REFUSED_PORTS.contains(&port)
+    (port < 1024 && port != 80) || REFUSED_PORTS.contains(&port) || REFUSED_MORE.contains(&port) || REFUSED_RANGES.iter().any(|r| r.contains(&port))
+}
+
+/// True when a phone's address belongs to the tailnet user this computer belongs to. A
+/// device without a user (a tagged one), on either side, is nobody's.
+pub fn same_user(mine: Option<u64>, phones: Option<u64>) -> bool {
+    mine.is_some() && mine == phones
+}
+
+/// Something asked of this computer, or the answer a test gives in its place.
+#[derive(Clone, Copy)]
+enum Asked<T> {
+    System,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fixed(T),
 }
 
 /// True when a `ports_changed` payload lists `port` over TCP.
@@ -70,6 +99,10 @@ pub struct Net {
     fixed: Option<Tailnet>,
     /// Whether a phone may have this address.
     phone: fn(IpAddr) -> bool,
+    /// The tailnet user a phone's address belongs to.
+    who: Asked<Option<u64>>,
+    /// Whether the port's listener is a process of this user.
+    holder: Asked<bool>,
     pub idle: Duration,
     pub waiting: Duration,
 }
@@ -77,14 +110,38 @@ pub struct Net {
 impl Net {
     #[cfg_attr(test, allow(dead_code))] // the tests put `loopback` in its place
     pub fn tailnet() -> Net {
-        Net { fixed: None, phone: tailscale::is_tailnet, idle: IDLE, waiting: WAITING }
+        Net { fixed: None, phone: tailscale::is_tailnet, who: Asked::System, holder: Asked::System, idle: IDLE, waiting: WAITING }
     }
 
     /// Loopback in the tailnet's place, for tests: the computer is `tailnet` and a phone
     /// may have any loopback address.
     #[cfg(test)]
     pub fn loopback(tailnet: Option<Tailnet>) -> Net {
-        Net { fixed: tailnet, phone: |ip| ip.is_loopback(), idle: IDLE, waiting: WAITING }
+        let who = Asked::Fixed(tailnet.as_ref().and_then(|t| t.user));
+        Net { fixed: tailnet, phone: |ip| ip.is_loopback(), who, holder: Asked::Fixed(true), idle: IDLE, waiting: WAITING }
+    }
+
+    /// The tailnet user `phone` belongs to, as the Tailscale client says.
+    async fn whois(&self, phone: IpAddr) -> Option<u64> {
+        match self.who {
+            Asked::Fixed(user) => user,
+            // A test never asks the real client.
+            #[cfg(test)]
+            Asked::System => {
+                let _ = phone;
+                None
+            }
+            #[cfg(not(test))]
+            Asked::System => tailscale::whois(phone).await,
+        }
+    }
+
+    /// Whether a process of this user listens on `port`.
+    async fn listens_as_me(&self, port: u16) -> bool {
+        match self.holder {
+            Asked::Fixed(mine) => mine,
+            Asked::System => crate::owner::listens_as_me(port).await,
+        }
     }
 
     /// `loopback` for a computer called `desk.example.ts.net` that has both loopback
@@ -92,7 +149,7 @@ impl Net {
     #[cfg(test)]
     pub fn testing() -> Net {
         let ips = vec![IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)];
-        Net::loopback(Some(Tailnet { name: Some("desk.example.ts.net".into()), machine: "desk".into(), ips }))
+        Net::loopback(Some(Tailnet { name: Some("desk.example.ts.net".into()), machine: "desk".into(), ips, user: Some(1001) }))
     }
 
     async fn read(&self) -> Option<Tailnet> {
@@ -146,6 +203,11 @@ pub enum Refusal {
     Full,
     /// The system gave no port.
     NoPort,
+    /// The Tailscale client does not say that the phone's address is a device of this
+    /// computer's own tailnet user.
+    NotYourPhone,
+    /// The port is one no share is made for, or its listener is not a process of this user.
+    NotYourPort,
 }
 
 /// What a share's connections and its timer both look at.
@@ -153,6 +215,8 @@ struct Live {
     state: Mutex<LiveState>,
     /// Wakes the share's task when its end moved.
     changed: Notify,
+    /// The connections of all shares together.
+    all: Arc<AtomicUsize>,
 }
 
 struct LiveState {
@@ -165,8 +229,8 @@ struct LiveState {
 }
 
 impl Live {
-    fn new() -> Live {
-        Live { state: Mutex::new(LiveState { open: 0, quiet_since: Instant::now(), waiting_since: None }), changed: Notify::new() }
+    fn new(all: Arc<AtomicUsize>) -> Live {
+        Live { state: Mutex::new(LiveState { open: 0, quiet_since: Instant::now(), waiting_since: None }), changed: Notify::new(), all }
     }
 
     /// When the share ends if nothing changes, and why. None while a connection is open and
@@ -198,6 +262,7 @@ impl Live {
 
     fn enter(self: &Arc<Self>) -> Entered {
         self.state.lock().unwrap().open += 1;
+        self.all.fetch_add(1, Ordering::SeqCst);
         self.changed.notify_one();
         Entered(self.clone())
     }
@@ -227,6 +292,7 @@ struct Entered(Arc<Live>);
 
 impl Drop for Entered {
     fn drop(&mut self) {
+        self.0.all.fetch_sub(1, Ordering::SeqCst);
         let mut st = self.0.state.lock().unwrap();
         st.open -= 1;
         if st.open == 0 {
@@ -245,19 +311,30 @@ struct Share {
     task: JoinHandle<()>,
 }
 
+/// Says whether a phone is still registered, by its device id.
+type Registered = Box<dyn Fn(&str) -> bool + Send + Sync>;
+
 pub struct Shares {
     net: Net,
     list: Mutex<Vec<Share>>,
     next: AtomicU64,
+    /// One request for a share is looked at at a time, so two for the same thing make one.
+    opening: tokio::sync::Mutex<()>,
+    /// The connections of all shares together.
+    all: Arc<AtomicUsize>,
+    /// Asked before a connection is taken. Not set: every phone counts as registered.
+    registered: Mutex<Option<Arc<Registered>>>,
 }
 
-/// A listener on `ip`: on `port` when nothing else has it there, else on a port the system
-/// picks.
-async fn listen(ip: IpAddr, port: u16) -> Option<TcpListener> {
-    match crate::platform::bind_tcp(SocketAddr::new(ip, port)).await {
-        Ok(listener) => Some(listener),
-        Err(_) => crate::platform::bind_tcp(SocketAddr::new(ip, 0)).await.ok(),
+/// A listener on `ip`: on `port` when the system lets a share take the dev server's own
+/// number and nothing else has it there, else on a port the system picks.
+async fn listen(ip: IpAddr, port: u16, same_port: bool) -> Option<TcpListener> {
+    if same_port {
+        if let Ok(listener) = crate::platform::bind_tcp(SocketAddr::new(ip, port)).await {
+            return Some(listener);
+        }
     }
+    crate::platform::bind_tcp(SocketAddr::new(ip, 0)).await.ok()
 }
 
 /// The addresses a share at `addr` is given out with.
@@ -269,7 +346,32 @@ fn opened(tailnet: &Tailnet, addr: SocketAddr, port: u16) -> Opened {
 
 impl Shares {
     pub fn new(net: Net) -> Arc<Shares> {
-        Arc::new(Shares { net, list: Mutex::new(vec![]), next: AtomicU64::new(1) })
+        Arc::new(Shares {
+            net,
+            list: Mutex::new(vec![]),
+            next: AtomicU64::new(1),
+            opening: tokio::sync::Mutex::new(()),
+            all: Arc::new(AtomicUsize::new(0)),
+            registered: Mutex::new(None),
+        })
+    }
+
+    /// From now on `registered` is asked before a share takes a connection: a share whose
+    /// phone it no longer knows ends instead.
+    pub fn watch_registrations(&self, registered: impl Fn(&str) -> bool + Send + Sync + 'static) {
+        *self.registered.lock().unwrap() = Some(Arc::new(Box::new(registered)));
+    }
+
+    /// True unless the registrations are watched and no longer hold `device`.
+    fn is_registered(&self, device: &str) -> bool {
+        // Not asked under the lock: the answer may close shares, which takes it.
+        let ask = self.registered.lock().unwrap().clone();
+        ask.is_none_or(|ask| ask(device))
+    }
+
+    /// Ends the shares of every phone `registered` does not hold.
+    pub fn keep_devices(&self, registered: impl Fn(&str) -> bool) -> usize {
+        self.close("the phone is no longer registered", |s| !registered(&s.ask.device))
     }
 
     pub fn count(&self) -> usize {
@@ -280,9 +382,16 @@ impl Shares {
     /// phone asking again for the same port gets the share it has, with its idle time
     /// starting over.
     pub async fn open(self: &Arc<Self>, ask: Ask) -> Result<Opened, Refusal> {
+        // An IPv4 address written as an IPv6 one is the IPv4 address.
+        let ask = Ask { phone: ask.phone.to_canonical(), ..ask };
+        if is_refused_port(ask.port) {
+            return Err(Refusal::NotYourPort);
+        }
         if !(self.net.phone)(ask.phone) {
             return Err(Refusal::BadPhone);
         }
+        // Until this request is settled the next one waits: it then finds the share made here.
+        let _one_at_a_time = self.opening.lock().await;
         let tailnet = self.net.read().await.ok_or(Refusal::NotAvailable)?;
         // The phone connects from an address of one kind, so the share listens on this
         // computer's address of that kind.
@@ -300,7 +409,16 @@ impl Shares {
         if self.count() >= MAX_SHARES {
             return Err(Refusal::Full);
         }
-        let listener = listen(local, ask.port).await.ok_or(Refusal::NoPort)?;
+        // The address has to be a device of this computer's own user, as Tailscale has it,
+        // and the port's listener a process of the user Beacon runs as.
+        if !same_user(tailnet.user, self.net.whois(ask.phone).await) {
+            return Err(Refusal::NotYourPhone);
+        }
+        if !self.net.listens_as_me(ask.port).await {
+            // Nothing there at all is said as that.
+            return Err(if Target::new(ask.port, SocketAddr::new(local, 0), None, "").dial().await.is_none() { Refusal::NotListening } else { Refusal::NotYourPort });
+        }
+        let listener = listen(local, ask.port, crate::platform::SAME_PORT).await.ok_or(Refusal::NoPort)?;
         let addr = listener.local_addr().map_err(|_| Refusal::NoPort)?;
         let target = Arc::new(Target::new(ask.port, addr, tailnet.name.as_deref(), &tailnet.machine));
         // A share is for a server that runs: what is not there now is not waited for.
@@ -313,8 +431,8 @@ impl Shares {
         if list.len() >= MAX_SHARES {
             return Err(Refusal::Full);
         }
-        let live = Arc::new(Live::new());
-        let task = tokio::spawn(serve(Arc::downgrade(self), id, listener, target, live.clone(), ask.phone, self.net.idle, self.net.waiting));
+        let live = Arc::new(Live::new(self.all.clone()));
+        let task = tokio::spawn(serve(Arc::downgrade(self), id, listener, target, live.clone(), ask.phone, ask.device.clone(), self.net.idle, self.net.waiting));
         info!("sharing port {} with one phone, on port {}", ask.port, addr.port());
         let found = opened(&tailnet, addr, ask.port);
         list.push(Share { id, ask, addr, live, task });
@@ -388,9 +506,15 @@ impl Shares {
     }
 }
 
+/// True when a connection from `peer` is one from `phone`: the same address, where an IPv4
+/// address written as an IPv6 one is the IPv4 address.
+fn is_phone(peer: IpAddr, phone: IpAddr) -> bool {
+    peer.to_canonical() == phone.to_canonical()
+}
+
 /// One share: takes the phone's connections and pipes each, until it ends.
 #[allow(clippy::too_many_arguments)]
-async fn serve(shares: Weak<Shares>, id: u64, listener: TcpListener, target: Arc<Target>, live: Arc<Live>, phone: IpAddr, idle: Duration, waiting: Duration) {
+async fn serve(shares: Weak<Shares>, id: u64, listener: TcpListener, target: Arc<Target>, live: Arc<Live>, phone: IpAddr, device: String, idle: Duration, waiting: Duration) {
     let mut connections = JoinSet::new();
     let why = loop {
         let end = live.end(idle, waiting);
@@ -403,14 +527,21 @@ async fn serve(shares: Weak<Shares>, id: u64, listener: TcpListener, target: Arc
                     Err(_) => break "its listener failed",
                 };
                 // Anyone but the phone it is for is dropped before a byte is read.
-                if peer.ip().to_canonical() != phone.to_canonical() {
+                if !is_phone(peer.ip(), phone) {
                     debug!("a connection to a shared port from another address was dropped");
                     continue;
                 }
-                if live.open() >= MAX_CONNECTIONS {
-                    debug!("a connection to a shared port was dropped: it has {MAX_CONNECTIONS} open");
+                if live.open() >= MAX_CONNECTIONS || live.all.load(Ordering::SeqCst) >= MAX_ALL_CONNECTIONS {
+                    debug!("a connection to a shared port was dropped: too many are open");
                     continue;
                 }
+                // `forget` may have removed the phone since: then this share is over, and
+                // the connection with it.
+                if shares.upgrade().is_some_and(|all| !all.is_registered(&device)) {
+                    break "the phone is no longer registered";
+                }
+                // A phone that vanished is noticed by the system's probes.
+                let _ = crate::platform::keep_alive(&stream);
                 let (entered, target, live) = (live.enter(), target.clone(), live.clone());
                 connections.spawn(async move {
                     let _entered = entered;
@@ -621,6 +752,11 @@ pub mod testing {
                     let _ = tokio::io::copy(&mut from, &mut to).await;
                     return;
                 }
+                // A server that changes protocols without being asked to.
+                ("GET", "/rogue") => {
+                    let _ = s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: other\r\nConnection: Upgrade\r\n\r\nnot http any more").await;
+                    return;
+                }
                 _ => s.write_all(&fixed("404 Not Found", "", "no such page")).await,
             };
             if sent.is_err() || header(&head, "connection").is_some_and(|c| c.eq_ignore_ascii_case("close")) {
@@ -650,6 +786,16 @@ pub mod testing {
         soon(s.read_to_end(&mut all)).await.unwrap();
         let end = all.windows(4).position(|w| w == b"\r\n\r\n").map_or(all.len(), |i| i + 4);
         (String::from_utf8_lossy(&all[..end]).into_owned(), all[end..].to_vec())
+    }
+
+    /// True when `request` sent to `to` gets nothing back: the connection is refused, or
+    /// ends without a byte.
+    pub async fn nothing(to: SocketAddr, request: &[u8]) -> bool {
+        let Ok(mut s) = soon(TcpStream::connect(to)).await else { return true };
+        let _ = s.write_all(request).await;
+        let mut all = vec![];
+        let _ = soon(s.read_to_end(&mut all)).await;
+        all.is_empty()
     }
 
     /// A `GET` that asks the server to close after its answer.
@@ -804,15 +950,29 @@ mod tests {
         let (head, _) = exchange(at(&opened), &get("/", &host(&opened))).await;
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         // Free: the dev server listens on ::1 alone, so 127.0.0.1 has the same number free.
+        // Where the system lets a share take it (macOS), it does; elsewhere (Linux) the
+        // share's port is always one the system picks.
         if has_v6().await {
             let dev = Dev::on(tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await.unwrap());
             let opened = all.open(ask(dev.port())).await.unwrap();
-            assert_eq!((opened.port, opened.same_port), (dev.port(), true));
-            assert_eq!(opened.url, format!("http://desk.example.ts.net:{}", dev.port()));
+            assert_eq!(opened.same_port, crate::platform::SAME_PORT);
+            assert_eq!(opened.port == dev.port(), crate::platform::SAME_PORT);
+            assert_eq!(opened.url, format!("http://desk.example.ts.net:{}", opened.port));
             // The share never connects to itself: the request arrives at the dev server.
             let (head, body) = exchange(at(&opened), &get("/", &host(&opened))).await;
             assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
             assert!(String::from_utf8_lossy(&body).starts_with(&format!("host=localhost:{}\n", dev.port())));
+        }
+        // A dev server that listens on every address of the computer, IPv4 or both kinds,
+        // holds its number on the share's address too: the share gets another.
+        for everywhere in ["0.0.0.0:0", "[::]:0"] {
+            let Ok(listener) = tokio::net::TcpListener::bind(everywhere).await else { continue };
+            let dev = Dev::on(listener);
+            let opened = all.open(Ask { device: format!("0000000{}", everywhere.len()), ..ask(dev.port()) }).await.unwrap();
+            assert!(opened.port != dev.port() && !opened.same_port, "{everywhere}: {opened:?}");
+            let (head, _) = exchange(at(&opened), &get("/", &host(&opened))).await;
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{everywhere}: {head}");
+            dev.stop().await;
         }
         // Nothing listens: there is nothing to share, and no listener is left behind.
         let gone = Dev::start().await;
@@ -1085,7 +1245,7 @@ mod tests {
         let all = shares();
         let opened = share(&all, &dev, ask(dev.port())).await;
         let name = host(&opened);
-        let (connections, requests) = (dev.seen.connections.load(Ordering::SeqCst), dev.seen.requests.load(Ordering::SeqCst));
+        let connections = dev.seen.connections.load(Ordering::SeqCst);
         // A head longer than the share holds.
         let long = format!("GET / HTTP/1.1\r\nHost: {name}\r\nCookie: {}\r\n\r\n", "c".repeat(proxy::HEAD_MAX));
         let (head, _) = exchange(at(&opened), long.as_bytes()).await;
@@ -1096,10 +1256,23 @@ mod tests {
             format!("GET / HTTP/1.1\r\nHost: {name}\r\nHost: localhost\r\n\r\n"),
             "SSH-2.0-OpenSSH_9.9\r\n\r\n".to_string(),
             "*1\r\n$4\r\nPING\r\n\r\n".to_string(),
+            format!("GET http://{name}/ HTTP/1.1\r\nHost: {name}\r\n\r\n"),
+            format!("POST /upload HTTP/1.0\r\nHost: {name}\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
         ] {
             let (head, _) = exchange(at(&opened), bad.as_bytes()).await;
             assert!(head.starts_with("HTTP/1.1 400 Bad Request\r\n") && head.contains("Connection: close"), "{bad:?}: {head}");
         }
+        // A body whose chunks are not written as HTTP writes them: the browser is told.
+        let before = dev.seen.connections.load(Ordering::SeqCst);
+        for body in ["5 \r\nhello\r\n0\r\n\r\n", "zz\r\n", "5\r\nhelloXX0\r\n\r\n"] {
+            let request = format!("POST /upload HTTP/1.1\r\nHost: {name}\r\nTransfer-Encoding: chunked\r\n\r\n{body}");
+            let (head, _) = exchange(at(&opened), request.as_bytes()).await;
+            assert!(head.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{body:?}: {head}");
+        }
+        // An answer that changes protocols when the request did not ask to: nothing of it
+        // reaches the browser.
+        assert!(nothing(at(&opened), &get("/rogue", &name)).await);
+        let (connections, requests) = (connections + dev.seen.connections.load(Ordering::SeqCst) - before, dev.seen.requests.load(Ordering::SeqCst));
         // A request for another host that was pointed at this address: the dev server's
         // own check would have refused it, so the share does.
         for foreign in ["evil.example", &format!("evil.example:{}", opened.port), &format!("localhost:{}", dev.port()), &format!("localhost:{}", opened.port)] {
@@ -1119,9 +1292,11 @@ mod tests {
         let dev = Dev::start().await;
         let all = shares();
         let opened = all.open(ask(dev.port())).await.unwrap();
-        // A connection is open, with nothing on it: the share stays, for hours.
-        let idle = TcpStream::connect(at(&opened)).await.unwrap();
-        until(|| all.connections() == 1).await;
+        // A live-reload socket is open, with nothing on it: the share stays, for hours.
+        let mut idle = TcpStream::connect(at(&opened)).await.unwrap();
+        idle.write_all(format!("GET /socket HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n", host(&opened)).as_bytes()).await.unwrap();
+        assert!(read_n(&mut idle, HANDSHAKE).await.starts_with(b"HTTP/1.1 101 "));
+        assert_eq!(all.connections(), 1);
         tokio::time::pause();
         tokio::time::advance(IDLE * 6).await;
         settle().await;
@@ -1340,6 +1515,227 @@ mod tests {
         let mut rest = vec![];
         let _ = soon(sockets[2].read_to_end(&mut rest)).await;
         assert!(rest.is_empty() && shut(at(&theirs)).await);
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_asks_for_nothing_is_not_kept() {
+        let dev = Dev::start().await;
+        let all = shares();
+        let opened = share(&all, &dev, ask(dev.port())).await;
+        let name = host(&opened);
+        let taken = dev.seen.connections.load(Ordering::SeqCst);
+        // Silent from the start, and silent after half a request.
+        let mut silent = TcpStream::connect(at(&opened)).await.unwrap();
+        let mut half = TcpStream::connect(at(&opened)).await.unwrap();
+        half.write_all(b"GET / HTTP/1.1\r\nHost: de").await.unwrap();
+        // One that got its answer and then asks for nothing more.
+        let mut done = TcpStream::connect(at(&opened)).await.unwrap();
+        done.write_all(format!("GET / HTTP/1.1\r\nHost: {name}\r\n\r\n").as_bytes()).await.unwrap();
+        answer(&mut done, &mut vec![]).await;
+        // One whose answer is still coming, however quiet it is (an event stream), and a
+        // live-reload socket: these are in use.
+        let mut events = TcpStream::connect(at(&opened)).await.unwrap();
+        events.write_all(format!("GET /events HTTP/1.1\r\nHost: {name}\r\n\r\n").as_bytes()).await.unwrap();
+        read_n(&mut events, b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: one\n\n".len()).await;
+        let mut socket = TcpStream::connect(at(&opened)).await.unwrap();
+        socket.write_all(format!("GET /socket HTTP/1.1\r\nHost: {name}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n").as_bytes()).await.unwrap();
+        read_n(&mut socket, HANDSHAKE).await;
+        until(|| all.connections() == 5).await;
+        tokio::time::pause();
+        tokio::time::advance(proxy::HEAD_WAIT - Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(all.connections(), 5, "a second short of the wait they are all there");
+        tokio::time::advance(Duration::from_secs(2)).await;
+        settle().await;
+        assert_eq!(all.connections(), 2, "the three that ask for nothing are closed");
+        tokio::time::advance(proxy::HEAD_WAIT * 20).await;
+        settle().await;
+        assert_eq!(all.connections(), 2);
+        tokio::time::resume();
+        for closed in [&mut silent, &mut half, &mut done] {
+            let mut rest = vec![];
+            let _ = soon(closed.read_to_end(&mut rest)).await;
+            assert!(rest.is_empty());
+        }
+        // The silent ones never reached the dev server.
+        assert_eq!(dev.seen.connections.load(Ordering::SeqCst), taken + 3);
+        // The two in use still work.
+        dev.seen.go.notify_one();
+        assert_eq!(read_n(&mut events, 11).await, b"data: two\n\n");
+        socket.write_all(b"ping").await.unwrap();
+        assert_eq!(read_n(&mut socket, 4).await, b"ping");
+        // With the socket closed and the stream over, the share's half hour runs.
+        drop((socket, events));
+        until(|| all.connections() == 0).await;
+        tokio::time::pause();
+        tokio::time::advance(IDLE + Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(all.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn all_shares_together_hold_at_most_sixty_four_connections() {
+        let dev = Dev::start().await;
+        let all = shares();
+        let mut opened = vec![];
+        for device in ["a1b2c3d4", "ffff0000", "0000aaaa"] {
+            opened.push(share(&all, &dev, Ask { device: device.into(), ..ask(dev.port()) }).await);
+        }
+        assert_eq!((MAX_ALL_CONNECTIONS, 2 * MAX_CONNECTIONS), (64, 64));
+        let mut held = vec![];
+        for _ in 0..MAX_CONNECTIONS {
+            held.push(TcpStream::connect(at(&opened[0])).await.unwrap());
+            held.push(TcpStream::connect(at(&opened[1])).await.unwrap());
+        }
+        until(|| all.connections() == MAX_ALL_CONNECTIONS).await;
+        // The third share has none of its own, and still gets none.
+        assert!(shut(at(&opened[2])).await);
+        assert_eq!(all.connections(), MAX_ALL_CONNECTIONS);
+        held.truncate(MAX_ALL_CONNECTIONS - 2);
+        until(|| all.connections() == MAX_ALL_CONNECTIONS - 2).await;
+        let (head, _) = exchange(at(&opened[2]), &get("/", &host(&opened[2]))).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        // Every share closed: nothing is counted any more.
+        drop(held);
+        all.close_all();
+        until(|| all.all.load(Ordering::SeqCst) == 0).await;
+    }
+
+    #[tokio::test]
+    async fn two_requests_for_the_same_share_at_once_make_one() {
+        let dev = Dev::start().await;
+        let all = shares();
+        let (a, b, c) = tokio::join!(all.open(ask(dev.port())), all.open(ask(dev.port())), all.open(ask(dev.port())));
+        let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
+        assert_eq!((&a, &b), (&b, &c));
+        assert_eq!(all.count(), 1);
+        // Also at the cap: eight requests at once for eight ports, and a ninth.
+        let mut devs = vec![];
+        for _ in 0..MAX_SHARES {
+            devs.push(Dev::start().await);
+        }
+        let mut asks = tokio::task::JoinSet::new();
+        for dev in &devs {
+            let (all, port) = (all.clone(), dev.port());
+            asks.spawn(async move { all.open(ask(port)).await });
+        }
+        let results = asks.join_all().await;
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), MAX_SHARES - 1);
+        assert_eq!(results.iter().filter(|r| **r == Err(Refusal::Full)).count(), 1);
+        assert_eq!(all.count(), MAX_SHARES);
+    }
+
+    #[tokio::test]
+    async fn a_phone_is_known_by_its_address_however_that_is_written() {
+        assert!(is_phone("127.0.0.1".parse().unwrap(), "127.0.0.1".parse().unwrap()));
+        // A connection that arrives on a socket of both kinds shows an IPv4 peer as an
+        // IPv6 one; it is the same phone. Any other address is not.
+        assert!(is_phone("::ffff:127.0.0.1".parse().unwrap(), "127.0.0.1".parse().unwrap()));
+        assert!(is_phone("100.64.0.2".parse().unwrap(), "::ffff:100.64.0.2".parse().unwrap()));
+        assert!(is_phone("fd7a:115c:a1e0::2".parse().unwrap(), "fd7a:115c:a1e0:0::2".parse().unwrap()));
+        for (peer, phone) in [("127.0.0.2", "127.0.0.1"), ("::1", "127.0.0.1"), ("::ffff:127.0.0.2", "127.0.0.1"), ("fd7a:115c:a1e0::3", "fd7a:115c:a1e0::2"), ("::ffff:100.64.0.3", "100.64.0.2")] {
+            assert!(!is_phone(peer.parse().unwrap(), phone.parse().unwrap()), "{peer} {phone}");
+        }
+        // A phone that gives its IPv4 address written as an IPv6 one gets a share on the
+        // computer's IPv4 address, which is where it will come from.
+        let dev = Dev::start().await;
+        let all = shares();
+        let opened = all.open(Ask { phone: "::ffff:127.0.0.1".parse().unwrap(), ..ask(dev.port()) }).await.unwrap();
+        assert_eq!(opened.ip_url, format!("http://127.0.0.1:{}", opened.port));
+        let (head, _) = exchange(at(&opened), &get("/", &host(&opened))).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        // A phone on IPv6: the share listens on the computer's IPv6 address, takes the
+        // phone from there, and is not there at all on IPv4.
+        if has_v6().await {
+            let opened = all.open(Ask { phone: IpAddr::V6(Ipv6Addr::LOCALHOST), device: "ffff0000".into(), ..ask(dev.port()) }).await.unwrap();
+            let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), opened.port);
+            let (head, body) = exchange(v6, &get("/", &format!("[::1]:{}", opened.port))).await;
+            assert!(head.starts_with("HTTP/1.1 200 OK") && body.starts_with(b"host=localhost:"), "{head}");
+            // (On IPv4 that number is nobody's, or the dev server's own.)
+            assert!(opened.port == dev.port() || soon(TcpStream::connect(at(&opened))).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_share_is_only_for_a_device_of_this_computers_own_user() {
+        let dev = Dev::start().await;
+        // Tailscale says the address is another user's device, a tagged one, or it knows
+        // no such address (or could not be asked): no share.
+        for theirs in [Some(2002), None] {
+            let all = Shares::new(Net { who: Asked::Fixed(theirs), ..Net::testing() });
+            assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotYourPhone), "{theirs:?}");
+            assert_eq!(all.count(), 0);
+        }
+        // This computer is a tagged one: it has no user for a phone to share.
+        let mut net = Net::testing();
+        net.fixed.as_mut().unwrap().user = None;
+        for phone in [Some(1001), None] {
+            let all = Shares::new(Net { who: Asked::Fixed(phone), ..net.clone() });
+            assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotYourPhone));
+        }
+        // A test never asks the real client: unasked, nobody is known.
+        let all = Shares::new(Net { who: Asked::System, ..Net::testing() });
+        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotYourPhone));
+        assert!(same_user(Some(1001), Some(1001)) && !same_user(Some(1001), Some(2002)));
+    }
+
+    #[tokio::test]
+    async fn only_a_port_this_user_listens_on_is_shared() {
+        // The system's ports, and the usual ports of what is no page for a phone.
+        for refused in [1, 22, 25, 53, 443, 631, 1023, 2181, 2375, 3306, 5432, 5672, 6379, 8001, 8384, 9092, 9222, 9223, 9225, 9228, 9229, 9230, 9231, 9239, 11211, 11434, 27017] {
+            assert!(is_refused_port(refused), "{refused}");
+        }
+        for fine in [80, 1024, 3000, 4321, 5173, 8000, 8080, 8443, 9000, 9221, 9240, 65535] {
+            assert!(!is_refused_port(fine), "{fine}");
+        }
+        let dev = Dev::start().await;
+        let all = shares();
+        assert_eq!(all.open(ask(443)).await, Err(Refusal::NotYourPort));
+        assert_eq!(all.open(ask(9229)).await, Err(Refusal::NotYourPort));
+        // Something listens there, but it is not a process of this user.
+        let others = Shares::new(Net { holder: Asked::Fixed(false), ..Net::testing() });
+        assert_eq!(others.open(ask(dev.port())).await, Err(Refusal::NotYourPort));
+        // Nothing listens there at all.
+        let gone = Dev::start().await;
+        let silent = gone.port();
+        gone.stop().await;
+        assert_eq!(others.open(ask(silent)).await, Err(Refusal::NotListening));
+        assert_eq!((all.count(), others.count()), (0, 0));
+        // Asked of the system itself: this test's own dev server is this user's.
+        let real = Shares::new(Net { holder: Asked::System, ..Net::testing() });
+        let (tool, _) = crate::platform::listener_query(dev.port());
+        if crate::tools::program(std::path::Path::new(tool)).is_some() {
+            let opened = real.open(ask(dev.port())).await.expect("the system names this process as the listener");
+            let (head, _) = exchange(at(&opened), &get("/", &host(&opened))).await;
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+            assert_eq!(real.open(ask(silent)).await, Err(Refusal::NotListening));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_is_no_longer_registered_is_not_served() {
+        let dev = Dev::start().await;
+        let all = shares();
+        let mine = all.open(ask(dev.port())).await.unwrap();
+        let theirs = all.open(Ask { device: "ffff0000".into(), ..ask(dev.port()) }).await.unwrap();
+        let gone = Arc::new(Mutex::new(Vec::<String>::new()));
+        let list = gone.clone();
+        all.watch_registrations(move |id| !list.lock().unwrap().iter().any(|g| g == id));
+        let (head, _) = exchange(at(&mine), &get("/", &host(&mine))).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        // The phone was removed behind Beacon's back, and nothing has told the share: its
+        // next connection gets nothing, and the share is over.
+        let taken = dev.seen.connections.load(Ordering::SeqCst);
+        gone.lock().unwrap().push("a1b2c3d4".into());
+        assert!(shut(at(&mine)).await);
+        until(|| all.count() == 1).await;
+        assert!(shut(at(&mine)).await, "its listener is closed");
+        assert_eq!(dev.seen.connections.load(Ordering::SeqCst), taken);
+        let (head, _) = exchange(at(&theirs), &get("/", &host(&theirs))).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        // Told outright which phones are left.
+        assert_eq!(all.keep_devices(|id| id == "a1b2c3d4"), 1);
+        assert_eq!(all.count(), 0);
     }
 
     /// The middle and the 95th of a hundred, in microseconds.

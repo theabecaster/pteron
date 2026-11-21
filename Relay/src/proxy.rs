@@ -44,6 +44,9 @@ pub const READ: usize = 16 * 1024;
 const MAX_HEADERS: usize = 100;
 /// The most requests of one connection that wait for their answer.
 const MAX_ASKED: usize = 64;
+/// How long a connection may take to send its first request, and how long one may stay
+/// open between two requests with nothing asked and nothing being answered.
+pub const HEAD_WAIT: Duration = Duration::from_secs(30);
 /// How long a connection to the loopback may take.
 const DIAL: Duration = Duration::from_secs(5);
 /// How long a connection the share has answered itself is read on, so the answer arrives
@@ -193,7 +196,6 @@ impl Chunked {
                         b'\n' if *digit => *self = if *size == 0 { Chunked::Trailer(true) } else { Chunked::Data(*size) },
                         b'\r' if *digit => {}
                         b';' if *digit => *ext = true,
-                        b' ' | b'\t' if *digit => {}
                         _ if *ext && b != b'\n' => {}
                         _ => {
                             let d = (b as char).to_digit(16).ok_or(Malformed)?;
@@ -329,8 +331,9 @@ pub fn request(head: &[u8], t: &Target) -> Result<(Vec<u8>, Asked, Framing), Rej
         _ => return Err(Reject::Bad),
     }
     let (Some(method), Some(path), Some(version)) = (req.method, req.path, req.version) else { return Err(Reject::Bad) };
-    // A tunnel through the share to anywhere is not what it is for.
-    if eq(method, "CONNECT") {
+    // A tunnel through the share to anywhere is not what it is for, and neither is a
+    // request that names another place in its first line: only a path of the dev server's.
+    if eq(method, "CONNECT") || !path.starts_with('/') {
         return Err(Reject::Bad);
     }
     let local = format!("localhost:{}", t.port);
@@ -372,7 +375,11 @@ pub fn request(head: &[u8], t: &Target) -> Result<(Vec<u8>, Asked, Framing), Rej
     // take the rewritten request for a local one, whoever sent the browser here.
     let Some(host) = host.filter(|h| t.is_shared(h)) else { return Err(Reject::Foreign) };
     out.extend_from_slice(b"\r\n");
-    // A body whose end two headers put in two places is no request to pass on.
+    // A body whose end two headers put in two places is no request to pass on, and neither
+    // is a chunked one in HTTP/1.0, which has no chunks.
+    if version == 0 && chunked.is_some() {
+        return Err(Reject::Bad);
+    }
     let body = match (chunked, content_length) {
         (Some(_), Some(_)) | (Some(false), _) => return Err(Reject::Bad),
         (Some(true), None) => Framing::Chunked(Chunked::new()),
@@ -507,7 +514,7 @@ impl<R: AsyncRead + Unpin> Reader<R> {
     /// Passes a body on to `to`, as it comes. `first` is written ahead of it, in one piece
     /// with as much of the body as is already here. False when the stream ended first.
     async fn pass<W: AsyncWrite + Unpin>(&mut self, mut first: Vec<u8>, mut body: Framing, to: &mut W) -> std::io::Result<bool> {
-        let bad = |_| std::io::Error::other("a body that is not what its head said");
+        let bad = |_| std::io::Error::new(std::io::ErrorKind::InvalidData, "a body that is not what its head said");
         loop {
             let (n, done) = body.take(&self.buf).map_err(bad)?;
             if first.is_empty() {
@@ -539,6 +546,21 @@ impl<R: AsyncRead + Unpin> Reader<R> {
 struct Between {
     /// The requests that went to the dev server and have no answer yet, oldest first.
     asked: Mutex<VecDeque<Asked>>,
+    /// An answer's body is on its way to the browser.
+    answering: AtomicBool,
+    /// Something of an answer has gone to the browser on this connection.
+    answered: AtomicBool,
+}
+
+/// How the browser's side of a connection ended.
+#[derive(Debug, PartialEq)]
+enum Up {
+    /// The browser closed after a whole request.
+    Closed,
+    /// The connection is of no more use.
+    Broken,
+    /// A request's body was not what its head said.
+    Malformed,
 }
 
 /// An answer the share gives itself, with nothing after it.
@@ -570,11 +592,12 @@ pub async fn serve(stream: TcpStream, t: &Target, watch: &dyn Watch) {
     let _ = stream.set_nodelay(true);
     let (from_phone, mut to_phone) = stream.into_split();
     let mut phone = Reader::new(from_phone);
-    // Nothing is asked of the dev server before the browser has asked for something.
-    let len = match phone.head().await {
-        Ok(len) => len,
-        Err(NoHead::TooLarge) => return answer(phone.io, to_phone, &plain("431 Request Header Fields Too Large")).await,
-        Err(_) => return,
+    // Nothing is asked of the dev server before the browser has asked for something, and
+    // a connection that asks for nothing is not kept.
+    let len = match tokio::time::timeout(HEAD_WAIT, phone.head()).await {
+        Ok(Ok(len)) => len,
+        Ok(Err(NoHead::TooLarge)) => return answer(phone.io, to_phone, &plain("431 Request Header Fields Too Large")).await,
+        Ok(Err(_)) | Err(_) => return,
     };
     let asked = match request(&phone.buf[..len], t) {
         Ok((_, asked, _)) => asked,
@@ -588,44 +611,67 @@ pub async fn serve(stream: TcpStream, t: &Target, watch: &dyn Watch) {
     };
     watch.source_back();
     let (from_server, mut to_server) = server.into_split();
-    let between = Between { asked: Mutex::new(VecDeque::new()) };
+    let between = Between { asked: Mutex::new(VecDeque::new()), answering: AtomicBool::new(false), answered: AtomicBool::new(false) };
     let (verdict, mut verdicts) = mpsc::unbounded_channel::<bool>();
-    let up = up(&mut phone, &mut to_server, t, &between, &mut verdicts);
-    let down = down(Reader::new(from_server), &mut to_phone, t, &between, verdict);
-    tokio::pin!(up, down);
-    tokio::select! {
-        _ = &mut down => {}
-        // The browser is done sending: what the dev server still answers goes out.
-        finished = &mut up => if finished {
-            down.await;
+    let malformed = {
+        let up = up(&mut phone, &mut to_server, t, &between, &mut verdicts);
+        let down = down(Reader::new(from_server), &mut to_phone, t, &between, verdict);
+        tokio::pin!(up, down);
+        tokio::select! {
+            _ = &mut down => false,
+            ended = &mut up => match ended {
+                // The browser is done sending: what the dev server still answers goes out.
+                Up::Closed => {
+                    down.await;
+                    false
+                }
+                Up::Broken => false,
+                Up::Malformed => true,
+            }
         }
+    };
+    // The first request's body was not what its head said, and nothing has been answered:
+    // the browser is told. Later in a connection it just ends.
+    if malformed && !between.answered.load(Ordering::SeqCst) {
+        answer(phone.io, to_phone, &plain("400 Bad Request")).await;
     }
 }
 
-/// The browser's side: each request, its head rewritten, to the dev server. True when the
-/// browser closed after a whole request; false when the connection is of no more use.
-async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, server: &mut W, t: &Target, between: &Between, verdicts: &mut mpsc::UnboundedReceiver<bool>) -> bool {
+/// The browser's side: each request, its head rewritten, to the dev server.
+async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, server: &mut W, t: &Target, between: &Between, verdicts: &mut mpsc::UnboundedReceiver<bool>) -> Up {
     loop {
-        let len = match phone.head().await {
-            Ok(len) => len,
-            Err(NoHead::Closed) => {
-                let _ = server.shutdown().await;
-                return true;
+        let len = loop {
+            match tokio::time::timeout(HEAD_WAIT, phone.head()).await {
+                Ok(Ok(len)) => break len,
+                Ok(Err(NoHead::Closed)) => {
+                    let _ = server.shutdown().await;
+                    return Up::Closed;
+                }
+                Ok(Err(_)) => return Up::Broken,
+                // Quiet for a while. A request that waits for its answer, or an answer
+                // that is still coming (an event stream), keeps the connection; one with
+                // nothing going on is closed, as a server closes an idle connection.
+                Err(_) => {
+                    if between.asked.lock().unwrap().is_empty() && !between.answering.load(Ordering::SeqCst) {
+                        return Up::Broken;
+                    }
+                }
             }
-            Err(_) => return false,
         };
-        let Ok((head, asked, body)) = request(&phone.buf[..len], t) else { return false };
+        let Ok((head, asked, body)) = request(&phone.buf[..len], t) else { return Up::Broken };
         phone.buf.drain(..len);
         let upgrade = asked.upgrade;
         {
             let mut waiting = between.asked.lock().unwrap();
             if waiting.len() >= MAX_ASKED {
-                return false;
+                return Up::Broken;
             }
             waiting.push_back(asked);
         }
-        if !matches!(phone.pass(head, body, server).await, Ok(true)) {
-            return false;
+        match phone.pass(head, body, server).await {
+            Ok(true) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Up::Malformed,
+            _ => return Up::Broken,
         }
         if upgrade {
             // The browser sends nothing more until it knows which protocol the rest is.
@@ -633,10 +679,10 @@ async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, 
                 Some(true) => {
                     let done = phone.pass_all(server).await.is_ok();
                     let _ = server.shutdown().await;
-                    return done;
+                    return if done { Up::Closed } else { Up::Broken };
                 }
                 Some(false) => {}
-                None => return false,
+                None => return Up::Broken,
             }
         }
     }
@@ -651,6 +697,12 @@ async fn down<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut server: Reader<R>
         let asked = if asked.host.is_empty() { Asked { host: t.shared[0].clone(), ..asked } } else { asked };
         let Ok((head, answer)) = response(&server.buf[..len], t, &asked) else { return };
         server.buf.drain(..len);
+        // A change of protocols nobody asked for is not passed on: the browser would read
+        // what follows as HTTP.
+        if answer.code == 101 && !asked.upgrade {
+            return;
+        }
+        between.answered.store(true, Ordering::SeqCst);
         if answer.interim() {
             if phone.write_all(&head).await.is_err() {
                 return;
@@ -669,7 +721,10 @@ async fn down<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut server: Reader<R>
         if asked.upgrade {
             let _ = verdict.send(false);
         }
-        if !matches!(server.pass(head, answer.body, phone).await, Ok(true)) {
+        between.answering.store(true, Ordering::SeqCst);
+        let whole = matches!(server.pass(head, answer.body, phone).await, Ok(true));
+        between.answering.store(false, Ordering::SeqCst);
+        if !whole {
             let _ = phone.shutdown().await;
             return;
         }
@@ -788,6 +843,14 @@ mod tests {
             b"GET /\r\n\r\n",
             b"GET / HTTP/2.0\r\nHost: a\r\n\r\n",
             b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+            // A first line that names a place instead of a path of the dev server's.
+            b"GET http://desk.example.ts.net:3000/ HTTP/1.1\r\nHost: desk.example.ts.net:3000\r\n\r\n",
+            b"GET http://other.example/ HTTP/1.1\r\nHost: desk.example.ts.net:3000\r\n\r\n",
+            b"GET //other.example/ HTTP/1.1\r\nHost: desk:3000\r\nX: a\x00b\r\n\r\n",
+            b"OPTIONS * HTTP/1.1\r\nHost: desk:3000\r\n\r\n",
+            b"GET example HTTP/1.1\r\nHost: desk:3000\r\n\r\n",
+            // HTTP/1.0 has no chunks.
+            b"POST /u HTTP/1.0\r\nHost: desk:3000\r\nTransfer-Encoding: chunked\r\n\r\n",
             b"GET / HTTP/1.1\r\nHost: a\r\nBad Header: x\r\n\r\n",
             b"GET / HTTP/1.1\r\nHost: a\r\n",
             // Two heads in what was taken for one.
@@ -921,7 +984,7 @@ mod tests {
             // Cut short, it has not ended.
             assert_eq!(chunked_end(&body[..body.len() - 1], 3), Ok(None));
         }
-        for bad in [&b"x\r\n"[..], b"\r\n", b"5\r\nhelloXX", b"5\r\nhello\rX", b"FFFFFFFFFFFFFFFFF\r\n", b"-1\r\n"] {
+        for bad in [&b"x\r\n"[..], b"\r\n", b"5\r\nhelloXX", b"5\r\nhello\rX", b"FFFFFFFFFFFFFFFFF\r\n", b"-1\r\n", b"5 \r\nhello\r\n", b" 5\r\nhello\r\n", b"5\t\r\nhello\r\n", b"1 0\r\n", b"0x5\r\nhello\r\n", b"+5\r\nhello\r\n"] {
             assert_eq!(chunked_end(bad, 1), Err(Malformed), "{:?}", String::from_utf8_lossy(bad));
         }
         // A length is counted down across pieces.
