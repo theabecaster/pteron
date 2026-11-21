@@ -104,6 +104,10 @@ public struct ReconnectPolicy: Sendable, Equatable {
     /// rate, or a live host looks silent (`BlobChunks`).
     public var slowestRate: Double = 8 * 1024
 
+    /// How many of a sync's reads may be under way at once on one connection (`CallGate`).
+    public var syncCalls = 4
+
+    /// The values in use.
     /// The values in use.
     public static let standard = ReconnectPolicy()
 
