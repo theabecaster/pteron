@@ -47,10 +47,21 @@ final class StreamFenceTests: XCTestCase {
 
     private var notices: [TerminalStream.Notice] = []
     private var streams: [TerminalStream] = []
+    private var logs: [SleepLog] = []
+
+    override func tearDown() async throws {
+        for log in logs { log.release(.seconds(1)) }
+        logs = []
+    }
 
     private func stream(_ link: FakeLink) -> (TerminalStream, Sink, SleepLog) {
         let sink = Sink()
         let (s, log) = makeStream(link: link, sink: sink)
+        // Held keys live a second in the app. Here that second does not pass by itself, so no
+        // test's outcome depends on how fast the machine runs it; a test about the keys' life
+        // sets a life of its own.
+        log.held = [s.fence.timing.heldLife]
+        logs.append(log)
         s.onActionFailed = { [weak self] in self?.notices.append($0) }
         streams.append(s)
         return (s, sink, log)
