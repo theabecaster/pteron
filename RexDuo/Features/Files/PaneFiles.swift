@@ -69,7 +69,7 @@ enum PathRecents {
 
 /// Files for one pane: the attach menu, Paste of an image or a file, the send, the file browser
 /// and Insert Path. Everything sent lands on the pane's computer and its path is typed into the
-/// pane, so every send starts from an explicit action and the menu says where it goes.
+/// pane, so every send starts from an explicit action and its notice says where it went.
 @MainActor
 final class PaneFiles {
     let server: ServerConnection
@@ -111,6 +111,13 @@ final class PaneFiles {
     private(set) weak var browser: UIViewController?
     private(set) weak var browserModel: BrowserModel?
 
+    /// Turns each picked, pasted or dropped file into what is sent (`ImagePrep`). It runs off the
+    /// main thread, as it may read a large photo. Tests put their own here.
+    var prepare: @Sendable (StagedFile) -> ImagePrep.Result {
+        get { picker.prepare }
+        set { picker.prepare = newValue }
+    }
+
     init(server: ServerConnection, sessionID: String, blockID: String) {
         self.server = server
         self.sessionID = sessionID
@@ -120,7 +127,7 @@ final class PaneFiles {
         lister = DirLister(control: server.control, sessionID: sessionID, blockID: blockID)
         sender.target = { [weak self] in self?.target ?? "this computer" }
         picker.onPicked = { [weak self] files in self?.send(files) }
-        picker.prepare = { ImagePrep.prepare($0, original: $1) }
+        prepare = { ImagePrep.prepare($0) }
         opener.onFolder = { [weak self] path in self?.browse(.browse, at: path) ?? false }
         watchSupport()
     }
@@ -212,63 +219,72 @@ final class PaneFiles {
     /// pane menu's Attach as SwiftUI (`AttachMenuItem`): one list, so the two never differ.
     struct Row {
         var title: String
-        var subtitle: String?
         var symbol: String
-        /// A toggle's state; nil for a plain row.
-        var on: Bool?
+        /// A submenu's rows; nil for a row that runs.
+        var children: [Row]?
         var run: @MainActor () -> Void
+
+        init(title: String, symbol: String, children: [Row]? = nil, run: @escaping @MainActor () -> Void = {}) {
+            self.title = title
+            self.symbol = symbol
+            self.children = children
+            self.run = run
+        }
     }
 
+    /// A group of rows, drawn with a divider before the next. No title: the menu has none.
     struct Section {
-        var title: String?
         var rows: [Row]
     }
 
-    /// The attach menu's rows, read when it opens so its title and Paste Image are current. The
-    /// rows for sending show where the host takes uploads, the browse rows where it lists folders.
+    /// The attach menu's rows, read when it opens so Paste Image is current. One short list of what
+    /// sends from the phone, where the host takes uploads: Paste Image (when the clipboard holds
+    /// one), Photos, Camera (where the device has one), Files. Then, after a divider and where the
+    /// host lists folders, one row for the computer's own files: Browse Files… and Insert Path….
+    /// Where the files go is said by the send's notice, not here.
     func sections() -> [Section] {
         var sections: [Section] = []
-        if support.upload == true { sections.append(sendSection()) }
+        if support.upload == true { sections.append(Section(rows: sendRows())) }
         let browse = [FilesCommand.browse, .insertPath].filter(offers).map { c in
             Row(title: c.title, symbol: c.symbol) { [weak self] in self?.run(c) }
         }
-        if !browse.isEmpty { sections.append(Section(rows: browse)) }
-        if support.upload == true {
-            let original = Row(title: "Send Original", subtitle: "Photos as they are, with their location",
-                               symbol: "photo.badge.checkmark", on: sendOriginals) { [weak self] in
-                self?.sendOriginals.toggle()
-            }
-            sections.append(Section(rows: [original]))
+        if !browse.isEmpty {
+            sections.append(Section(rows: [Row(title: Self.computerFilesTitle(machine), symbol: "desktopcomputer", children: browse)]))
         }
         return sections
     }
 
-    /// The attach key's menu.
-    func menu() -> UIMenu {
-        UIMenu(children: sections().map { s in
-            UIMenu(title: s.title ?? "", options: .displayInline, children: s.rows.map { r in
-                UIAction(title: r.title, subtitle: r.subtitle, image: UIImage(systemName: r.symbol),
-                         state: r.on.map { $0 ? .on : .off } ?? .off) { _ in r.run() }
-            })
-        })
+    /// The row for the computer's files: "Files on studio".
+    nonisolated static func computerFilesTitle(_ machine: String?) -> String {
+        let name = machine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return "Files on " + (name.isEmpty ? "the computer" : name)
     }
 
-    private func sendSection() -> Section {
+    /// The attach key's menu.
+    func menu() -> UIMenu {
+        UIMenu(children: sections().map { s in UIMenu(options: .displayInline, children: s.rows.map(Self.element)) })
+    }
+
+    private static func element(_ r: Row) -> UIMenuElement {
+        let image = UIImage(systemName: r.symbol)
+        if let children = r.children { return UIMenu(title: r.title, image: image, children: children.map(element)) }
+        return UIAction(title: r.title, image: image) { _ in r.run() }
+    }
+
+    private func sendRows() -> [Row] {
         var rows: [Row] = []
         if let title = pasteFileTitle {
             rows.append(Row(title: title, symbol: "doc.on.clipboard") { [weak self] in self?.pasteFiles() })
         }
-        rows.append(Row(title: "Photos", subtitle: "Without location. Videos are sent as they are.", symbol: "photo") { [weak self] in
-            self?.pickPhotos()
-        })
+        rows.append(Row(title: "Photos", symbol: "photo") { [weak self] in self?.pickPhotos() })
         if AttachPicker.cameraAvailable {
             rows.append(Row(title: "Camera", symbol: "camera") { [weak self] in
                 guard let self, let view = self.view else { return }
-                self.picker.takePhoto(over: view, original: self.sendOriginals)
+                self.picker.takePhoto(over: view)
             })
         }
         rows.append(Row(title: "Files", symbol: "folder") { [weak self] in self?.pickFiles() })
-        return Section(title: SendTarget.menuTitle(target), rows: rows)
+        return rows
     }
 
     /// "Paste Image" or "Paste File" where the clipboard holds one and the host takes uploads,
@@ -279,10 +295,10 @@ final class PaneFiles {
         return ClipboardChoice.pasteFileTitle(hasImage: b.hasImages, hasFiles: Self.hasFiles(b), canSend: support.upload == true)
     }
 
-    /// The Photos picker, honoring Send Original. Its pick is sent to the pane.
+    /// The Photos picker. Its pick is sent to the pane, prepared (`ImagePrep`).
     func pickPhotos() {
         guard support.upload == true, let view else { return }
-        picker.pickPhotos(over: view, original: sendOriginals)
+        picker.pickPhotos(over: view)
     }
 
     /// The Files picker. Its pick is sent to the pane as it is.
@@ -310,12 +326,6 @@ final class PaneFiles {
         }
     }
 
-    /// "Send Original": photos go untouched. Lasts until the app quits, like a picker's own choice.
-    private var sendOriginals: Bool {
-        get { server.prefs.sendOriginalPhotos }
-        set { server.prefs.sendOriginalPhotos = newValue }
-    }
-
     // MARK: Paste
 
     /// What Paste does now. Text always pastes as text; only a clipboard without text sends.
@@ -334,12 +344,11 @@ final class PaneFiles {
 
     /// Sends the items of a paste or a drop as one batch, prepared as picked photos are.
     func send(providers: [NSItemProvider], unnamed: String, empty: String) {
-        let original = sendOriginals
         let prepare = picker.prepare
         Task { @MainActor in
             var files: [ImagePrep.Result] = []
             for p in providers {
-                if let f = await Self.load(p, unnamed: unnamed) { files.append(await Task.detached { prepare(f, original) }.value) }
+                if let f = await Self.load(p, unnamed: unnamed) { files.append(await Task.detached { prepare(f) }.value) }
             }
             if files.isEmpty { Notice.shared.show(empty) } else { self.send(files) }
         }
@@ -404,9 +413,9 @@ final class PaneFiles {
             return send(ready)
         }
         let what = kept.count == 1 ? kept[0].name : "\(kept.count) images"
-        TerminalPrompt.ask(over: view, title: "Couldn't remove location. Send original?",
+        TerminalPrompt.ask(over: view, title: "Couldn't remove location. Send anyway?",
                            message: "\(what) would go with its location and other details.",
-                           confirm: "Send Original") { [weak self] yes in
+                           confirm: "Send Anyway") { [weak self] yes in
             if !yes { FileStaging.discard(kept) }
             let files = yes ? results.map(\.file) : ready
             if !files.isEmpty { self?.send(files) }

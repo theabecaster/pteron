@@ -493,10 +493,12 @@ to the phone, and the file browser lists the folders of the pane's computer. The
 in [rex-protocol.md](rex-protocol.md), Folders and Files.
 
 - **Sending.** The key bar's attach key (paperclip) is pinned before Return in every layout, so it
-  never scrolls out of sight. A tap opens a menu titled with where the
-  files go: the agent working in the pane (OSC 7501), else the pane's computer. It offers Paste
-  Image or Paste File (when the clipboard has one), Photos, Camera, Files, and Send Original.
-  The same rows are under Attach in the pane menu, right after Share (subtitle "or 📎 on the
+  never scrolls out of sight. A tap opens one short list with no titles, subtitles or switches:
+  Paste Image or Paste File (when the clipboard has one), Photos, Camera (where the device has
+  one) and Files, then, after a divider, "Files on <computer>" with Browse Files… and Insert
+  Path… (see Browse). Where the files go, the agent working in the pane (OSC 7501) or else the
+  pane's computer, is said by the send's progress and result ("Sent Photo… to Claude"). The
+  same rows are under Attach in the pane menu, right after Share (subtitle "or 📎 on the
   key bar"), for a pane whose keyboard is down (`AttachMenuItem`, built from
   `PaneFiles.sections`). Close Pane and Close Tab stay last.
   Paste, the paste key, ⌘V and the edit menu's Paste paste text whenever the clipboard has text;
@@ -541,14 +543,21 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   U+2066–2069) or the zero-width space. The zero-width joiner and non-joiner stay (emoji,
   Persian). A photo without a name gets `Photo 2026-11-17 17.31.jpg`, a pasted image
   `Pasted Image …`.
-- **Photos** (`ImagePrep`). HEIC, HEIF and every other still format go as JPEG at 0.85 (PNG for a
-  PNG or an image with transparency), anything longer than 2000 px is scaled down through ImageIO
-  thumbnails with its EXIF orientation applied, and location and other metadata are left out. A
-  small upright JPEG or PNG is copied without being decoded. It fails closed: each copy is checked
-  for GPS, IPTC and XMP place names; one that can't be stripped is drawn again, and one that can't
-  be drawn either is sent only after "Couldn't remove location. Send original?". Send Original
-  sends the bytes untouched; the choice lasts until the app quits. Live Photos send the still;
-  videos, moving GIFs and files picked in Files go as they are, as the menu says.
+- **Photos** (`ImagePrep`), with fixed values made for the agents that read them (Claude Code,
+  Codex: JPEG, PNG, GIF, WebP, no HEIC) and for the tunnel. Photos, the camera, pastes and drops
+  are prepared alike, with no switch. A screenshot (a PNG, or an image iOS marked "Screenshot" in
+  its EXIF) stays PNG at full size up to 3,000 px on its long side, the most Claude takes once a
+  conversation holds more than 20 images, so its text stays crisp. A photo becomes JPEG at 0.85,
+  at most 2,048 px on its long side: Claude reads at most 2,576 px and 4,784 patches of 28 px,
+  GPT-5.5 at most 2,048 px, so larger pixels would be thrown away. HEIC, HEIF and every other
+  still format are always converted (PNG where there is transparency). A prepared image weighs
+  about 5 MB at most (lower JPEG qualities, then a smaller PNG). Scaling goes through ImageIO
+  thumbnails off the main thread, with the EXIF orientation applied, and location and other
+  metadata are always left out. A small upright JPEG or PNG is copied without being decoded. It
+  fails closed: each copy is checked for GPS, IPTC and XMP place names; one that can't be
+  stripped is drawn again, and one that can't be drawn either is sent only after "Couldn't
+  remove location. Send anyway?". Live Photos send the still; videos, moving GIFs and files
+  picked in Files go as they are, so Files is the way to send a photo's exact bytes.
 - **Limits.** The server takes files up to 100 MiB (`too_large`); a larger one is refused before
   anything is sent. On an expensive network (cellular, a hotspot) a send over 25 MB asks first; a
   second send meanwhile is turned away with a notice. A send keeps running briefly in the
@@ -572,8 +581,9 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   to Files. The copy is deleted when Quick Look goes; none is kept for later, so nothing is left
   when the pane closes or the app goes to the background. Not found, a folder, a device and an
   unreadable file each get a plain message.
-- **Browse.** "Browse Files…" in the attach menu, under the sending rows, and in the palette's
-  commands (as are Insert Path…, Insert File… and Insert Photo…; [goto.md](goto.md)), opens a sheet over
+- **Browse.** "Browse Files…" in the attach menu's "Files on <computer>", below the sending
+  rows, and in the palette's commands (as are Insert Path…, Insert File… and Insert Photo…;
+  [goto.md](goto.md)), opens a sheet over
   the pane with the folder the pane's program is in (`PaneBrowser`, `BrowserModel`): folders
   first, names as Finder orders them, hidden files out until "Show Hidden Files" in the title's
   menu (⇧⌘.), which also has the parent folders, Home and Copy Path. A tap opens a folder or
@@ -619,7 +629,7 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   - Known limits: a cursor inside an open quote gets the escaped text literally; under `sudo
     -s`, `~/` means root's home.
 - **Keys.** The Mac's `pane.go_to_directory` (browse), `pane.insert_path`, `pane.insert_file`
-  (the Files picker) and `pane.insert_photo` (the Photos picker, honoring Send Original) are
+  (the Files picker) and `pane.insert_photo` (the Photos picker) are
   declared with the Mac's titles and no default key, so a key bound in init.lua does on the
   phone what it does on the Mac, where the pane's host has the method; elsewhere the key does
   nothing. They are pane actions (`AppAction.files`, `FilesCommand`): they run while a terminal

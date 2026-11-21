@@ -79,9 +79,6 @@ enum SendTarget {
         return "this computer"
     }
 
-    /// The attach menu's title.
-    static func menuTitle(_ target: String) -> String { "Send to \(target)" }
-
     /// What is being sent: its name for one file, the count for more.
     static func what(_ names: [String]) -> String {
         names.count == 1 ? names[0] : "\(names.count) files"

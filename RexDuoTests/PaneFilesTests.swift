@@ -1,5 +1,6 @@
 import Synchronization
 import UIKit
+import UniformTypeIdentifiers
 import XCTest
 import RexKit
 @testable import RexDuo
@@ -54,9 +55,30 @@ final class PaneFilesTests: XCTestCase {
         return (rig, files)
     }
 
-    private func titles(_ menu: UIMenu) -> [[String]] {
-        menu.children.map { ($0 as? UIMenu)?.children.map(\.title) ?? [$0.title] }
+    /// Each group's titles; a submenu's rows follow it, marked "▸ ". The rows must be plain:
+    /// no subtitle and no on/off state anywhere in the menu.
+    private func titles(_ menu: UIMenu, file: StaticString = #filePath, line: UInt = #line) -> [[String]] {
+        menu.children.map { group in
+            ((group as? UIMenu)?.children ?? [group]).flatMap { e -> [String] in
+                if let sub = e as? UIMenu { return [Self.machineless(sub.title)] + sub.children.map { "▸ " + $0.title } }
+                let action = e as? UIAction
+                XCTAssertEqual(action?.subtitle ?? "", "", e.title, file: file, line: line)
+                XCTAssertEqual(action?.state, .off, e.title, file: file, line: line)
+                return [e.title]
+            }
+        }
     }
+
+    private func titles(_ sections: [PaneFiles.Section]) -> [[String]] {
+        sections.map { s in s.rows.flatMap { [Self.machineless($0.title)] + ($0.children ?? []).map { "▸ " + $0.title } } }
+    }
+
+    /// "Files on studio" as "Files on …": the rig's machine name is not what these tests check.
+    private static func machineless(_ title: String) -> String {
+        title.hasPrefix("Files on ") && title.count > 9 ? "Files on …" : title
+    }
+
+    private static let computerRows = ["Files on …", "▸ Browse Files…", "▸ Insert Path…"]
 
     private func stripPasteRow(_ t: [[String]]) -> [[String]] {
         t.map { $0.filter { !$0.hasPrefix("Paste ") && $0 != "Camera" } }
@@ -73,7 +95,7 @@ final class PaneFilesTests: XCTestCase {
             XCTAssertTrue(files.showsAttachKey)
             XCTAssertTrue(files.canOpen)
             for m in [Self.upload, Self.download, Self.list] { XCTAssertEqual(rig.fake.count(m), 0, "\(m) at \(revision ?? 0)") }
-            XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Photos", "Files"], ["Browse Files…", "Insert Path…"], ["Send Original"]])
+            XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Photos", "Files"], Self.computerRows])
         }
     }
 
@@ -83,7 +105,7 @@ final class PaneFilesTests: XCTestCase {
         files.checkSupport()
         XCTAssertEqual(files.support, FileSupport(upload: true, download: true, listDir: false))
         XCTAssertEqual(rig.fake.count(Self.list), 0, "the list says it is missing: no call")
-        XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Photos", "Files"], ["Send Original"]], "the menu as it is today")
+        XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Photos", "Files"]], "only the sending rows")
         XCTAssertFalse(files.offers(.browse))
         XCTAssertFalse(files.offers(.insertPath))
         XCTAssertTrue(files.offers(.insertFile) && files.offers(.insertPhoto))
@@ -96,7 +118,7 @@ final class PaneFilesTests: XCTestCase {
         files.checkSupport()
         XCTAssertEqual(files.support, FileSupport(upload: false, download: false, listDir: true))
         XCTAssertTrue(files.showsAttachKey)
-        XCTAssertEqual(titles(files.menu()), [["Browse Files…", "Insert Path…"]], "no Photos, Camera, Files, Paste or Send Original")
+        XCTAssertEqual(titles(files.menu()), [Self.computerRows], "no Photos, Camera, Files or Paste")
         XCTAssertFalse(files.canOpen)
         XCTAssertNil(files.openablePath(in: "notes.txt"))
         XCTAssertFalse(DropRule.accepts(fromThisApp: false, canSend: files.support.upload == true, hasFiles: true))
@@ -123,6 +145,23 @@ final class PaneFilesTests: XCTestCase {
         XCTAssertNil(files.pasteFileTitle, "nor Paste Image in the edit menu")
     }
 
+    /// One flat list: Paste Image first while the clipboard holds an image, Camera only where the
+    /// device has one, and nothing to switch.
+    func testTheMenuIsOneShortListWithPasteFirst() async throws {
+        let (rig, files) = try await pane(creators: Self.creators(["write", "upload_begin", "download_begin", "list_dir"]))
+        defer { rig.stop() }
+        files.checkSupport()
+        let board = UIPasteboard.general
+        let saved = board.items
+        defer { board.items = saved }
+        let camera = AttachPicker.cameraAvailable ? ["Camera"] : []
+        board.items = [[UTType.png.identifier: UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).pngData { _ in }]]
+        XCTAssertEqual(titles(files.menu()), [["Paste Image", "Photos"] + camera + ["Files"], Self.computerRows])
+        board.items = []
+        XCTAssertEqual(titles(files.menu()), [["Photos"] + camera + ["Files"], Self.computerRows], "no clipboard image: no Paste row")
+        XCTAssertFalse(titles(files.menu()).joined().contains("Send Original"))
+    }
+
     /// The pane menu's Attach shows exactly where the attach key does, with the key's rows.
     func testThePaneMenusAttachFollowsTheKey() async throws {
         for methods in [["write", "upload_begin", "download_begin", "list_dir"], ["write", "list_dir"], ["write"]] {
@@ -130,7 +169,7 @@ final class PaneFilesTests: XCTestCase {
             defer { rig.stop() }
             files.checkSupport()
             XCTAssertEqual(AttachMenuItem.shows(files), files.showsAttachKey, "\(methods)")
-            XCTAssertEqual(files.sections().map { $0.rows.map(\.title) }, titles(files.menu()), "\(methods)")
+            XCTAssertEqual(titles(files.sections()), titles(files.menu()), "\(methods)")
         }
         XCTAssertFalse(AttachMenuItem.shows(nil), "no host on screen: no row")
     }
@@ -151,6 +190,29 @@ final class PaneFilesTests: XCTestCase {
         files.sleep = { _ in await withCheckedContinuation { wake.append($0) } }
         Notice.shared.dismiss()
         return (rig, files, { wake.forEach { $0.resume() }; wake = [] })
+    }
+
+    /// A paste or a drop is prepared as a photo is, always (no switch), and never on the main
+    /// thread, where a large photo's decode would stall the terminal.
+    func testAPasteIsPreparedOffTheMainThread() async throws {
+        let (rig, files, wake) = try await waitingPane()
+        defer { rig.stop(); wake(); Notice.shared.dismiss() }
+        final class Seen: @unchecked Sendable {  // written by the one prepare call, read after it
+            let lock = NSLock()
+            var onMain: [Bool] = []
+        }
+        let seen = Seen()
+        files.prepare = { f in
+            seen.lock.withLock { seen.onMain.append(Thread.isMainThread) }
+            return .ready(f)
+        }
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).pngData { _ in }
+        files.send(providers: [NSItemProvider(item: png as NSData, typeIdentifier: UTType.png.identifier)],
+                   unnamed: "Pasted Image", empty: "Nothing on the clipboard to send.")
+        let prepared = await eventually { !seen.lock.withLock { seen.onMain }.isEmpty }
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(seen.lock.withLock { seen.onMain }, [false])
+        files.close()
     }
 
     func testASendWaitingForAPaneThatLeavesSaysNotSent() async throws {

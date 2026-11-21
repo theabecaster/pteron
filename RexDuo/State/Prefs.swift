@@ -192,9 +192,6 @@ final class Prefs {
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
     }
-    /// "Send Original" in the attach menu: photos go as they are, location included, instead of
-    /// converted, downscaled and stripped. Not saved: each run starts with the private choice.
-    @ObservationIgnored var sendOriginalPhotos = false
     /// "Show Hidden Files" in the file browser. Not saved: each run starts with them hidden.
     @ObservationIgnored var showHiddenFiles = false
     /// The paths last inserted with Insert Path, newest first, per server and host
@@ -237,6 +234,12 @@ final class Prefs {
     // (`PathRecents.limit`); a file without an extension previews as text up to 1 MB
     // (`TextHint`). Insert Path writes a path relative to the program's folder, else `~/…`, else
     // absolute, escaped for a shell and as it is elsewhere, and never a line end (`PathInsert`).
+    // Sending has no settings: the attach menu is Paste Image (when the clipboard has one),
+    // Photos, Camera and Files, then the computer's files. A photo, a paste and a drop always
+    // lose their location and other metadata, and HEIC and other formats agents can't read
+    // become JPEG; a screenshot or a PNG stays PNG at full size up to 3,000 px, a photo becomes
+    // JPEG at 0.85 with its long side at most 2,048 px, and a prepared image weighs at most about
+    // 5 MB (`ImagePrep`). Videos and files picked in Files go as they are.
     // The tab strip has no settings beyond `navigation`: what it shows follows its width
     // (`StripLayout`). Parts a finger taps are 44 pt wide or more and chips sit 6 pt apart; the
     // strip is compact where its full form would leave the chips under 144 pt; a chip that

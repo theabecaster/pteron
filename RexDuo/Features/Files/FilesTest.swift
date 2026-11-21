@@ -9,7 +9,7 @@ import RexKit
 /// - `keyboard`: show the software keyboard and its key bar, even with a hardware keyboard.
 /// - `menu`: open the attach menu. `reveal`: scroll the key bar to the attach key.
 /// - `send:<path>|<path>`: send these files (paths on the Mac running the simulator) as one batch,
-///   prepared as Photos prepares them. `sendOriginal:` sends them untouched.
+///   prepared as Photos prepares them. `sendAsIs:` sends them untouched, as Files does.
 /// - `paste:<path>`: put this image on the clipboard alone, then Paste.
 /// - `open:<text>`: open what `<text>` names, as the edit menu's Open does for a selection.
 /// - `cancel`: cancel the send on its way, as the notice's Cancel does.
@@ -54,12 +54,12 @@ enum FilesTest {
             host.focusKeyboard()
         case "menu", "reveal":
             host.openAttachMenu(open: verb == "menu")
-        case "send", "sendOriginal":
-            let original = verb == "sendOriginal"
+        case "send", "sendAsIs":
+            let asIs = verb == "sendAsIs"
             let files = arg.split(separator: "|").compactMap { path -> ImagePrep.Result? in
                 let url = URL(fileURLWithPath: String(path))
                 guard let f = try? FileStaging.stage(copying: url, as: url.lastPathComponent) else { return nil }
-                return ImagePrep.prepare(f, original: original)
+                return asIs ? .ready(f) : ImagePrep.prepare(f)
             }
             host.files?.send(files)
         case "paste":

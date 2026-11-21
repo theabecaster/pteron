@@ -2,21 +2,31 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Turns a picked, pasted or dropped image into what is sent: HEIC, HEIF and every other still
-/// format become JPEG (PNG when the image is a PNG or has transparency), a photo larger than
-/// `maxLongEdge` is scaled down, and location and other metadata are left out. Everything goes
-/// through ImageIO thumbnails, never a full decode into a `UIImage`, and the EXIF orientation is
-/// applied to the pixels. "Send Original" skips all of it.
+/// Turns a picked, pasted or dropped image into what is sent, in the form coding agents read best
+/// (Claude Code and Codex read JPEG, PNG, GIF and WebP, not HEIC). A screenshot or a PNG stays
+/// PNG at full size up to `screenshotLongEdge`, so its text stays crisp; a photo becomes JPEG at
+/// `jpegQuality`, at most `photoLongEdge` on its long side. HEIC, HEIF and every other still
+/// format are always converted, and location and other metadata are always left out. Everything
+/// goes through ImageIO thumbnails, never a full decode into a `UIImage`, and the EXIF
+/// orientation is applied to the pixels. None of it is a setting (`Prefs`, Fixed choices); a file
+/// picked in Files goes as it is.
 ///
 /// It fails closed. A copy is checked for location after it is made; an image that can't be
 /// stripped is drawn again, and one that can't be drawn either comes back as `locationKept`, so
 /// the user is asked before it goes as it is. Videos and other files that aren't still images go
-/// as they are, as the attach menu says.
+/// as they are.
 ///
 /// `plan` is pure and tested; `prepare` runs it, off the main thread.
 enum ImagePrep {
-    static let maxLongEdge = 2000
-    /// About the most a photo should weigh once prepared.
+    /// A photo's long side at most. Claude reads at most 2,576 px and 4,784 patches of 28 px (a
+    /// 4:3 photo fits at about 2,240 × 1,680), GPT-5.5's high detail at most 2,048 px: more
+    /// pixels would cross the tunnel only for the agent to throw them away.
+    static let photoLongEdge = 2048
+    /// A screenshot's or a PNG's long side at most: the largest Claude takes in a conversation
+    /// that holds more than 20 images, as a long agent session does. Every iPhone and iPad
+    /// screenshot is under it, so they go at full size.
+    static let screenshotLongEdge = 3000
+    /// About the most an image should weigh once prepared: half of Claude's 10 MB per image.
     static let targetBytes = 5_000_000
     static let jpegQuality = 0.85
     /// Lower qualities tried, in turn, for a JPEG still over `targetBytes`.
@@ -30,10 +40,9 @@ enum ImagePrep {
     }
 
     enum Plan: Equatable {
-        /// Send the bytes as they are: "Send Original", or not a still image (a video, a document,
-        /// a moving GIF).
+        /// Send the bytes as they are: not a still image (a video, a document, a moving GIF).
         case keep
-        /// Same pixels and format, without location: a small, upright JPEG or PNG.
+        /// Same pixels and format, without location: an upright JPEG or PNG within its size.
         case stripLocation
         /// Draw it again at most `maxEdge` pixels on its long side, in `format`, oriented.
         case render(Format, maxEdge: Int)
@@ -41,7 +50,7 @@ enum ImagePrep {
 
     /// What became of a file.
     enum Result: Equatable {
-        /// Ready to send: prepared, or not an image, or an original the user asked for.
+        /// Ready to send: prepared, or not an image.
         case ready(StagedFile)
         /// An image whose location couldn't be removed. It goes only if the user says so.
         case locationKept(StagedFile)
@@ -52,23 +61,31 @@ enum ImagePrep {
     }
 
     /// What to do with an image of `type`, `width` × `height` pixels, with this EXIF orientation,
-    /// `frames` images in its file, and transparency or not.
+    /// `frames` images in its file, transparency or not, and marked as a screenshot or not.
     static func plan(type: UTType?, width: Int, height: Int, orientation: Int = 1, frames: Int = 1,
-                     alpha: Bool = false, original: Bool) -> Plan {
-        guard !original, let type, type.conforms(to: .image) else { return .keep }
+                     alpha: Bool = false, screenshot: Bool = false) -> Plan {
+        guard let type, type.conforms(to: .image) else { return .keep }
         // A moving GIF would lose its motion; a GIF holds no location (no EXIF, no IPTC).
         if type.conforms(to: .gif), frames > 1 { return .keep }
-        guard width > 0, height > 0 else { return .render(alpha ? .png : .jpeg, maxEdge: maxLongEdge) }
+        // Text on a screen needs every pixel and no JPEG blur: screenshots and PNGs stay sharp.
+        let sharp = screenshot || type.conforms(to: .png)
+        let cap = sharp ? screenshotLongEdge : photoLongEdge
+        let drawn: Format = alpha || sharp ? .png : .jpeg
+        guard width > 0, height > 0 else { return .render(drawn, maxEdge: cap) }
         let longEdge = max(width, height)
-        let edge = min(longEdge, maxLongEdge)
-        if type.conforms(to: .png) {
-            return longEdge > maxLongEdge || orientation != 1 || frames > 1 ? .render(.png, maxEdge: edge) : .stripLocation
-        }
-        if type.conforms(to: .jpeg) {
-            return longEdge > maxLongEdge || orientation != 1 || frames > 1 ? .render(.jpeg, maxEdge: edge) : .stripLocation
-        }
+        let edge = min(longEdge, cap)
+        let redraw = longEdge > cap || orientation != 1 || frames > 1
+        if type.conforms(to: .png) { return redraw ? .render(.png, maxEdge: edge) : .stripLocation }
+        if type.conforms(to: .jpeg) { return redraw ? .render(.jpeg, maxEdge: edge) : .stripLocation }
         // HEIC, HEIF (one image or several), TIFF, RAW, WebP, BMP, a still GIF and the rest.
-        return .render(alpha ? .png : .jpeg, maxEdge: edge)
+        return .render(drawn, maxEdge: edge)
+    }
+
+    /// Whether an image's ImageIO properties mark it as a screenshot: iOS writes "Screenshot" in
+    /// the EXIF user comment of each one, PNG or HEIF.
+    static func isScreenshot(_ props: [CFString: Any]) -> Bool {
+        let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        return (exif?[kCGImagePropertyExifUserComment] as? String) == "Screenshot"
     }
 
     /// The size an image has after `plan`'s scaling: the long side at most `maxEdge`, the aspect kept.
@@ -80,9 +97,8 @@ enum ImagePrep {
     }
 
     /// The prepared copy of `file`, which replaces it, or `file` itself when it goes as it is.
-    static func prepare(_ file: StagedFile, original: Bool) -> Result {
+    static func prepare(_ file: StagedFile) -> Result {
         let type = UTType(filenameExtension: (file.name as NSString).pathExtension)
-        guard !original else { return .ready(file) }
         guard let src = CGImageSourceCreateWithURL(file.url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let typeID = CGImageSourceGetType(src) as String? else {
             // Not readable as an image. If its name says it is one, it can't be shown to be clean.
@@ -91,10 +107,11 @@ enum ImagePrep {
         let index = CGImageSourceGetPrimaryImageIndex(src)
         let props = CGImageSourceCopyPropertiesAtIndex(src, index, nil) as? [CFString: Any] ?? [:]
         let number = { (k: CFString) in (props[k] as? NSNumber)?.intValue }
-        let plan = plan(type: UTType(typeID), width: number(kCGImagePropertyPixelWidth) ?? 0,
-                        height: number(kCGImagePropertyPixelHeight) ?? 0,
+        let width = number(kCGImagePropertyPixelWidth) ?? 0
+        let height = number(kCGImagePropertyPixelHeight) ?? 0
+        let plan = plan(type: UTType(typeID), width: width, height: height,
                         orientation: number(kCGImagePropertyOrientation) ?? 1, frames: CGImageSourceGetCount(src),
-                        alpha: (props[kCGImagePropertyHasAlpha] as? Bool) ?? false, original: false)
+                        alpha: (props[kCGImagePropertyHasAlpha] as? Bool) ?? false, screenshot: isScreenshot(props))
         switch plan {
         case .keep:
             return .ready(file)
@@ -103,9 +120,9 @@ enum ImagePrep {
                 FileStaging.discard([file])
                 return .ready(staged)
             }
-            // Couldn't be stripped in place: draw it again instead.
+            // Couldn't be stripped in place: draw it again instead, at its own size.
             let format: Format = UTType(typeID)?.conforms(to: .png) == true ? .png : .jpeg
-            return render(file, src, index: index, format: format, maxEdge: maxLongEdge)
+            return render(file, src, index: index, format: format, maxEdge: max(width, height, 1))
         case .render(let format, let maxEdge):
             return render(file, src, index: index, format: format, maxEdge: maxEdge)
         }

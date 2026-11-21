@@ -10,15 +10,13 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
     /// What a picker produced: staged copies, prepared. Files from Files go as they are.
     var onPicked: (([ImagePrep.Result]) -> Void)?
     /// Turns a picked photo into what is sent (`ImagePrep`); the identity until set.
-    var prepare: @Sendable (StagedFile, _ original: Bool) -> ImagePrep.Result = { f, _ in .ready(f) }
-    private var original = false
+    var prepare: @Sendable (StagedFile) -> ImagePrep.Result = { .ready($0) }
 
     static let maxPhotos = 20
 
     static var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
-    func pickPhotos(over view: UIView, original: Bool) {
-        self.original = original
+    func pickPhotos(over view: UIView) {
         var config = PHPickerConfiguration(photoLibrary: .shared())
         config.selectionLimit = Self.maxPhotos
         config.selection = .ordered
@@ -30,9 +28,8 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
         present(picker, over: view)
     }
 
-    func takePhoto(over view: UIView, original: Bool) {
+    func takePhoto(over view: UIView) {
         guard Self.cameraAvailable else { return }
-        self.original = original
         let picker = UIImagePickerController()
         picker.sourceType = .camera
         picker.mediaTypes = [UTType.image.identifier]
@@ -41,7 +38,6 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
     }
 
     func pickFiles(over view: UIView) {
-        original = true
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
         picker.allowsMultipleSelection = true
         picker.delegate = self
@@ -60,12 +56,11 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
         picker.dismiss(animated: true)
         guard !results.isEmpty else { return }
         let providers = results.map(\.itemProvider)
-        let original = self.original
         let prepare = self.prepare
         Task { @MainActor in
             var files: [ImagePrep.Result] = []
             for p in providers {
-                if let f = await Self.load(p) { files.append(await Self.prepared(f, original, prepare)) }
+                if let f = await Self.load(p) { files.append(await Self.prepared(f, prepare)) }
             }
             if files.count < providers.count {
                 Notice.shared.show(files.isEmpty ? "Couldn't read the photos." : "Couldn't read some of the photos.")
@@ -92,9 +87,9 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
         }
     }
 
-    private static func prepared(_ f: StagedFile, _ original: Bool,
-                                 _ prepare: @escaping @Sendable (StagedFile, Bool) -> ImagePrep.Result) async -> ImagePrep.Result {
-        await Task.detached(priority: .userInitiated) { prepare(f, original) }.value
+    private static func prepared(_ f: StagedFile,
+                                 _ prepare: @escaping @Sendable (StagedFile) -> ImagePrep.Result) async -> ImagePrep.Result {
+        await Task.detached(priority: .userInitiated) { prepare(f) }.value
     }
 
     // MARK: Camera
@@ -102,14 +97,23 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
     func imagePickerController(_ picker: UIImagePickerController,
                                didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
         picker.dismiss(animated: true)
-        guard let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.85),
-              let f = try? FileStaging.stage(data: data, as: UploadName.stamped("Photo", at: Date(), ext: "jpg")) else {
+        guard let image = info[.originalImage] as? UIImage else {
             Notice.shared.show("Couldn't keep the photo.")
             return
         }
-        let original = self.original
+        let name = UploadName.stamped("Photo", at: Date(), ext: "jpg")
         let prepare = self.prepare
-        Task { @MainActor in self.onPicked?([await Self.prepared(f, original, prepare)]) }
+        Task { @MainActor in
+            // Encoded off the main thread, at full quality: `prepare` scales it and encodes it
+            // once more, so the photo is compressed only once at the quality that is sent.
+            let result = await Task.detached(priority: .userInitiated) { () -> ImagePrep.Result? in
+                guard let data = image.jpegData(compressionQuality: 1),
+                      let f = try? FileStaging.stage(data: data, as: name) else { return nil }
+                return prepare(f)
+            }.value
+            guard let result else { return Notice.shared.show("Couldn't keep the photo.") }
+            self.onPicked?([result])
+        }
     }
 
     func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {

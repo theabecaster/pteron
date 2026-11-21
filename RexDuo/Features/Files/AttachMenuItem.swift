@@ -16,11 +16,7 @@ struct AttachMenuItem: View {
         if let files, Self.shows(files) {
             Menu {
                 ForEach(Array(files.sections().enumerated()), id: \.offset) { _, section in
-                    if let title = section.title {
-                        Section(title) { rows(section) }
-                    } else {
-                        Section { rows(section) }
-                    }
+                    Section { rows(section.rows) }
                 }
             } label: {
                 Label("Attach", systemImage: "paperclip")
@@ -33,20 +29,19 @@ struct AttachMenuItem: View {
     /// Where the row shows: where the attach key does.
     static func shows(_ files: PaneFiles?) -> Bool { files?.showsAttachKey == true }
 
-    @ViewBuilder
-    private func rows(_ section: PaneFiles.Section) -> some View {
-        ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
-            if let on = row.on {
-                Toggle(isOn: Binding(get: { on }, set: { _ in row.run() })) { label(row) }
+    private func rows(_ rows: [PaneFiles.Row]) -> some View {
+        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+            if let children = row.children {
+                Menu {
+                    ForEach(Array(children.enumerated()), id: \.offset) { _, child in
+                        Button { child.run() } label: { Label(child.title, systemImage: child.symbol) }
+                    }
+                } label: {
+                    Label(row.title, systemImage: row.symbol)
+                }
             } else {
-                Button { row.run() } label: { label(row) }
+                Button { row.run() } label: { Label(row.title, systemImage: row.symbol) }
             }
         }
-    }
-
-    @ViewBuilder
-    private func label(_ row: PaneFiles.Row) -> some View {
-        Label(row.title, systemImage: row.symbol)
-        if let subtitle = row.subtitle { Text(subtitle) }
     }
 }

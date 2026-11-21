@@ -176,7 +176,7 @@ builds.
   Keyboard off.
 - `-filesTest '<step>;<step>…'`: drive sending files and Open in the active pane once it is live
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
-  `send:<Mac path>|<Mac path>`, `sendOriginal:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.
+  `send:<Mac path>|<Mac path>`, `sendAsIs:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.
   The files land on the pane's computer and their paths are typed, so use a `zz-` session.
   The file browser: `browse`, `insert`, `browseAt:<path>` open it; then `go:<path>`,
   `enter:<name>`, `up`, `filter:<text>`, `hidden`, `tap:<name>`, `insertPath:<name>`,

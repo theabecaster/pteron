@@ -63,9 +63,13 @@ final class FileRulesTests: XCTestCase {
 
     // MARK: Destination
 
-    func testTheMenuNamesTheAgentElseTheMachine() {
-        XCTAssertEqual(SendTarget.menuTitle(SendTarget.name(agent: .claude, machine: "studio")), "Send to Claude")
-        XCTAssertEqual(SendTarget.menuTitle(SendTarget.name(agent: nil, machine: "studio")), "Send to studio")
+    func testTheNoticeNamesTheAgentElseTheMachine() {
+        XCTAssertEqual(SendTarget.done(["a.png"], to: SendTarget.name(agent: .claude, machine: "studio")), "Sent a.png to Claude")
+        XCTAssertEqual(SendTarget.progress(["a.png", "b.png"], to: SendTarget.name(agent: nil, machine: "studio"), fraction: 0.5),
+                       "Sending 2 files to studio · 50%")
+        XCTAssertEqual(PaneFiles.computerFilesTitle("studio"), "Files on studio")
+        XCTAssertEqual(PaneFiles.computerFilesTitle(" "), "Files on the computer")
+        XCTAssertEqual(PaneFiles.computerFilesTitle(nil), "Files on the computer")
         XCTAssertEqual(SendTarget.name(agent: nil, machine: "  "), "this computer")
         XCTAssertEqual(SendTarget.name(agent: nil, machine: nil), "this computer")
     }
