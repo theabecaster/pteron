@@ -272,8 +272,10 @@ struct RestartQuestion: View {
             Text(PortRestartCopy.confirm(command))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(theme.fg.opacity(0.9))
-                .lineLimit(4)
-                .truncationMode(.middle)
+                // The whole command, on as many lines as it takes (`RestartCommand.limit`
+                // bounds them): a command with a part left out can't be confirmed.
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
             Text(PortRestartCopy.detail)
                 .font(.caption2)
                 .foregroundStyle(theme.chrome.tertiary)

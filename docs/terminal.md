@@ -1053,7 +1053,9 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
   - It is not what the user typed: variables set in front (`PORT=4000 npm run dev`) and an
     alias are not in a process's arguments. So nothing says the command is
     the same. The row asks instead, in place and never in an alert: "Restart: npm run dev" in
-    monospace, "Runs this command again in its pane." under it, and Restart or Cancel.
+    monospace, "Runs this command again in its pane." under it, and Restart or Cancel. The
+    command shows whole, on as many lines as it takes, never with a part left out: a program
+    that starts another under its full path (Homebrew's `python3`) reads as that path.
   - After the tap, in this order, nothing twice (`PortRestart`): the Beacon is asked again and
     the command must read exactly as the row showed it; the pane is shown if it isn't on
     screen, and nothing is typed until it is on screen with its catch-up fence down (5 s at
