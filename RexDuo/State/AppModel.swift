@@ -373,6 +373,9 @@ final class AppModel {
     @ObservationIgnored let network: NetworkWatch?
     /// What happened to the connections, kept across launches. Nil in tests and the test host.
     @ObservationIgnored let connectionLog: ConnectionLog?
+    /// What the servers share when they reconnect: the budget of attempts for servers that are
+    /// down, and the breaker that tries one server when several stop answering together.
+    @ObservationIgnored let reconnect = ReconnectGovernor()
     /// Writes the snapshot the widgets read. It does nothing in tests, the test host and test
     /// launches (`GlanceWriter.Mode`).
     @ObservationIgnored let glance: GlanceWriter
@@ -432,6 +435,7 @@ final class AppModel {
             return server.sessions.first?.id
         }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
+        reconnect.onBreaker = { open in log?.record(.breaker(open: open)) }
         connectTidy()
         self.glance.source = { [weak self] in
             guard let self else { return [] }
@@ -478,7 +482,7 @@ final class AppModel {
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
             let s = ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, network: network,
-                                     deviceID: push.deviceID, log: connectionLog)
+                                     deviceID: push.deviceID, log: connectionLog, governor: reconnect)
             helperSetup.attach(s)
             s.agentsKnown = { [weak self] in self?.tidy.request() }
             s.forward = forward
@@ -664,6 +668,8 @@ final class AppModel {
     func select(_ server: ServerConnection, session: String, window: String, block: String? = nil) {
         selection = Selection(serverID: server.id, sessionID: session, windowID: window)
         if let block { focusedPane[window] = block }
+        reconnect.select(server.control)
+        server.opened()
         Task { await server.focusWindow(session, window) }
     }
 
@@ -709,6 +715,8 @@ final class AppModel {
     func foregroundResumed() {
         let fromBackground = inBackground
         inBackground = false
+        // The selected server is first in every order the governor keeps.
+        reconnect.select(selection.flatMap { sel in servers.first { $0.id == sel.serverID } }?.control)
         for s in servers { s.resume(fromBackground: fromBackground) }
         forward.becameActive()
         push.becameActive()

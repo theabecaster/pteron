@@ -574,6 +574,27 @@ final class PortForwardTests: XCTestCase {
         XCTAssertEqual(notices.count, 1)
     }
 
+    /// A page that asks while its computer is down (backing off, dormant or held): the phone's
+    /// listener takes the request and dials nothing, so no socket and no call goes to it.
+    func testAPageRequestWhileTheComputerIsDownDialsNothing() async throws {
+        let f = forward()
+        let server = FakeTunnelServer()
+        server.onSocket = answer
+        _ = try await f.open(target, on: server)
+        server.tunnelConnected = false
+        let locals = (0..<20).map { _ in StubLocal() }
+        for local in locals { listener.accept?(local) }
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(server.calls.isEmpty, "no call to a computer that is down")
+        XCTAssertTrue(server.sockets.isEmpty, "and no data connection")
+
+        // The control connection is back: the next request dials as usual.
+        server.tunnelConnected = true
+        listener.accept?(StubLocal())
+        await settle { server.calls.filter { $0.hasPrefix("data.connect") }.count == 1 }
+        XCTAssertEqual(server.sockets.count, 1)
+    }
+
     func testARemovedServerClosesItsBlocksWhenConnectedElseForgetsThem() async {
         let f = forward()
         let server = FakeTunnelServer()

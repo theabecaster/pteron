@@ -147,9 +147,46 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
 
 ## Offline
 
-- `RexControl` owns retries: after any failure, the first connect included, it backs off 1 s → 15 s
-  and reports each failure as a `ConnectionFailure` (error domain and code, the POSIX or TLS code
-  under it, the upgrade's HTTP status, the close code). `kick()` retries now.
+- `RexControl` owns retries and reports each failure as a `ConnectionFailure` (error domain and
+  code, the POSIX or TLS code under it, the upgrade's HTTP status, the close code).
+- **Why reconnecting is careful.** The phone's VPN keeps a packet for a computer that is off
+  until its handshake gives up, about 90 s, out of one small pool shared by every computer, and
+  each new packet starts that time over. An app that keeps asking a computer that is off can
+  stop the whole tunnel. So a host that doesn't answer is asked rarely, hosts that are down share
+  a budget, and nothing is asked in the background.
+- **One policy.** Every number and rule is a value of `ReconnectPolicy` (RexKit, pure):
+  `RexControl` keeps one host's state and `ReconnectGovernor` what the hosts share (one per app,
+  made by `AppModel`), and both ask the policy. `ReconnectPolicyTests` holds the values in use.
+  - *Schedule per host:* waits of 0 to 1 s, 10 s, 2 min, then 5 min, each a fifth shorter or
+    longer, and from the third attempt on never under 2 min. Only a welcome starts it over.
+  - *Kinds of failure:* silent (a timeout, no route, a lost connection), answered (a refused
+    port, a 5xx, an ordinary close: the normal schedule), final (not allowed, a 4xx, no common
+    API revision, TLS: retries stop and only the user asks again).
+  - *Dormant:* after 5 silent failures in a row. One attempt per 10 min, in the foreground.
+  - *The budget:* at most 2 attempts per 100 s across hosts that are down, and 2 under way. A
+    host's first attempt of an episode and a user's tap are outside it.
+  - *The tunnel breaker:* 2 hosts silent within 30 s are taken for the tunnel being down. One
+    test host (the selected one, else the last one good; not a dormant one if there is another)
+    is tried on its schedule and the others are held; when it stays silent the next host takes
+    the turn. A welcome from any host closes it, and the held hosts start 500 ms apart.
+  - *Triggers:* a tap (Try Again, pull to refresh, opening a server or session) is one attempt
+    now and nothing while one is under way. A path change pings a socket that is up and never
+    tears it down; a host that is down gets one attempt only if its last was 2 min ago. The
+    return to the foreground pings what is up, moves a backing-off host forward subject to the
+    floor, and leaves a dormant host alone unless it is selected. With no path nothing is tried
+    and a failure counts toward nothing.
+  - *Liveness:* a ping when nothing came in for 30 s, and at once when a request got nothing
+    back for 5 s (10 s on cellular); no pong in 10 s (20 s) is a dead connection. The connect
+    deadline is 10 s (15 s), the wake pong 2.5 s (5 s).
+  - *Background:* `enteredBackground()` cancels every wait and the pings; `wake()` ends it.
+- **The control connection is the only thing that asks a host that is down.** A terminal stream
+  opens no data socket, a RESUME included, while `isConnected` is false (`TerminalStream.resume`
+  and `openData`); it waits for `observeConnected`. Calls fail unsent before the socket, so a
+  port tunnel's dial, the Ports list's reads and a file transfer, which each begin with a call,
+  open nothing either. The watch's and a notification's one-shot channel makes one attempt for
+  one user action and never retries. `DownHostSocketCountTests` counts every path together.
+- A dormant or held server looks like any offline server: the same screen, the same sidebar
+  line, Try Again. Nothing new is shown.
 - `ServerConnection` turns failures into `ConnectionProblem`s (`State/ConnectionProblem.swift`):
   no internet, off the private network, host not on the tailnet, not answering (asleep, refused, or
   not Rex), not allowed, insecure, bad address, unknown. `NetworkWatch` (`NWPathMonitor` off the main
@@ -188,12 +225,13 @@ user shares.
   are in RexKit: `ConnectionEvent` (one line), `ConnectionJournal` (the rings and the file's
   format), `ConnectionLog` (the queue and the file), `ConnectionReporter` (a `RexControl`'s states
   as events).
-- **What it holds:** per server the newest 200 events of its control connection: `connecting`,
+- **What it holds:** per server the newest 200 events of its control connection: `connecting`
+  (with what asked for the attempt: first, backoff, user, network, foreground, peer),
   `connected` (with the milliseconds the attempt took), `closed` (a kind such as timeout, lost,
   reset, refused, unreachable, dns, tls, http, auth, closed, policy, revision, plus the error
   code, the HTTP status or close code, and the POSIX or TLS code under it), `retry` (the wait
-  before the next attempt) and `stopped`. And 200 events of the app: each launch with its build
-  number, each scene phase, and each change of the network path as four yes-or-no facts
+  before the next attempt), `dormant` and `stopped`. And 200 events of the app: each launch with its build
+  number, each scene phase, the tunnel breaker opening and closing, and each change of the network path as four yes-or-no facts
   (satisfied, expensive, constrained, a Tailscale address on an interface). At most 12 server
   rings; one server more pushes out the ring that was quiet longest.
 - **The privacy rule:** an event is numbers only (`ConnectionEvent` has no text field). No host

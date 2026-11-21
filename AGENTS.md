@@ -36,7 +36,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
   `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`), file transfer,
-  folder listing (`DirLister`), `ShellEscape` and the connection log (`ConnectionLog`). Foundation only,
+  folder listing (`DirLister`), `ShellEscape`, the connection log (`ConnectionLog`) and the reconnect rules (`ReconnectPolicy`,
+  `ReconnectGovernor`; docs/architecture.md, Offline). Foundation only,
   so it tests on macOS.
 - `Packages/RexGlance`: what the app shares with its extensions (docs/glance.md). `GlanceModel`
   holds `Brand` (the product's names), the `rexduo:` links that open the app (`DeepLink`,

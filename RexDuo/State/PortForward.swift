@@ -248,6 +248,10 @@ final class PortForward {
                 Task { await self.serve(next, f) }
             }
         }
+        // The computer's one gate: while its control connection has no welcome, a page's request
+        // dials nothing and asks nothing. The browser's connection is reset, as for any tunnel
+        // that can't be made, and it tries again by itself.
+        guard f.server.tunnelConnected else { return local.reset() }
         guard await waitSynced(f), !f.closed else { return local.reset() }
         var retried = false
         while true {
@@ -258,7 +262,7 @@ final class PortForward {
                     "session_id": f.target.sessionID, "block_id": bid,
                     "data_ref_id": BytesStream.ref("conn"), "subprotocol": BytesStream.subprotocol,
                 ])
-                guard let ticket = t.str("ticket") else { return local.reset() }
+                guard let ticket = t.str("ticket"), f.server.tunnelConnected else { return local.reset() }
                 socket = try await f.server.openTunnel(ticket: ticket, in: f.session)
             } catch {
                 // A reconnect between the ticket and the HELLO: WebKit tries again on a new one.

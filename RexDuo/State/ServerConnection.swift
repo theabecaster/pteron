@@ -368,8 +368,10 @@ final class ServerConnection: Identifiable {
 
     /// `deviceID` ends the client label (` #<id>`), which is how the helper recognizes this phone.
     /// `log`: the connection log, which gets this connection's state changes and retries.
+    /// `governor`: what the app's servers share when they reconnect (the budget, the breaker).
     init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier, push: PushRegistrar? = nil,
-         network: NetworkWatch? = nil, deviceID: String, log: ConnectionLog? = nil) {
+         network: NetworkWatch? = nil, deviceID: String, log: ConnectionLog? = nil,
+         governor: ReconnectGovernor? = nil) {
         self.prefs = prefs
         self.config = config
         self.notifier = notifier
@@ -378,7 +380,8 @@ final class ServerConnection: Identifiable {
         control = RexControl(address: config.url, client: ClientInfo(
             name: Brand.appName,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-            label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)))
+            label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)),
+            governor: governor)
         keymap = KeymapStore(control: control)
         #if DEBUG || BENCH
         // `-netDelay <ms>` (testing): a simulated round-trip time on this server's calls and
@@ -394,6 +397,8 @@ final class ServerConnection: Identifiable {
             self?.controlChanged(st)
         }
         control.onRetryScheduled = { reporter?.retryScheduled(after: $0) }
+        control.onAttempt = { reporter?.attempt($0) }
+        control.onDormant = { reporter?.wentDormant() }
         control.onReconnected = { [weak self] _ in
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)
@@ -497,6 +502,8 @@ final class ServerConnection: Identifiable {
 
     /// The app went to the background: a drop from here on is held until the return.
     func enteredBackground() {
+        // Nothing is retried in the background, and no wait for a retry stays armed.
+        control.enteredBackground()
         wake.enteredBackground(online: phase == .online && control.state == .connected)
         // No events arrive while the app is suspended.
         agentsWentStale()
@@ -539,7 +546,7 @@ final class ServerConnection: Identifiable {
         #if DEBUG
         if simulated != nil { return }
         #endif
-        guard !started else { control.kick(); return }
+        guard !started else { control.kick(.foreground); return }
         guard control.wsBase != nil else {
             // A typo in Settings: say so, and don't retry an address that can't work.
             let f = ConnectionFailure.invalidAddress(config.url)
@@ -548,6 +555,8 @@ final class ServerConnection: Identifiable {
             return
         }
         started = true
+        // The path as it is now, so the deadlines fit Wi-Fi or cellular from the first attempt.
+        tellPath(interfaceChanged: false)
         Task {
             do {
                 try await control.connect()
@@ -596,9 +605,24 @@ final class ServerConnection: Identifiable {
             endWake()
         }
         gate.networkChanged()
-        // A server that refused this app's API revision says the same on any network.
-        guard started, control.state != .connected, !control.retryStopped else { return }
-        control.kick()
+        guard started else { return }
+        // The connection decides by its policy: a socket that is up is pinged and never torn
+        // down, and a server that is down gets one attempt only past the floor. With no path
+        // nothing is tried.
+        tellPath(interfaceChanged: true)
+    }
+
+    /// Passes the phone's network path on to the control connection.
+    private func tellPath(interfaceChanged: Bool) {
+        let snap = network?.snapshot ?? .unknown
+        control.pathChanged(satisfied: snap.reachable, expensive: snap.expensive, interfaceChanged: interfaceChanged)
+    }
+
+    /// The user opened this server or one of its sessions: a tap. A server that is down gets
+    /// one attempt now (none while one is under way); a connected one needs nothing.
+    func opened() {
+        guard started, control.state != .connected else { return }
+        control.kick(.user)
     }
 
     /// Try Again: retry now, with `retrying` set until the attempt ends.
@@ -617,7 +641,7 @@ final class ServerConnection: Identifiable {
             return
         }
         #endif
-        if started { control.kick() } else { start() }
+        if started { control.kick(.user) } else { start() }
     }
 
     /// Reconnect from the sidebar: a fresh connection when online, else a retry that keeps the
