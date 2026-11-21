@@ -228,4 +228,14 @@ struct CloseNextTests {
         m.closedTab(sel(s.id, "work", "w1"))
         #expect(m.selection == sel(s.id, "work", "w3"))
     }
+
+    /// Reconnecting counts a tap only when the user moved to another computer. The app moving
+    /// on by itself, as when the tab on screen closes, asks no connection for an attempt.
+    @Test func theAppsOwnMoveToTheNextTabIsNoTap() {
+        #expect(AppModel.isTap(from: desk, to: lab, byUser: true))
+        #expect(AppModel.isTap(from: nil, to: lab, byUser: true))
+        #expect(!AppModel.isTap(from: desk, to: desk, byUser: true), "a tab of the same computer")
+        #expect(!AppModel.isTap(from: desk, to: lab, byUser: false), "the tab on screen closed")
+        #expect(!AppModel.isTap(from: nil, to: lab, byUser: false))
+    }
 }

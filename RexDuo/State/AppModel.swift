@@ -684,14 +684,15 @@ final class AppModel {
         return (s, v, w)
     }
 
-    func select(_ server: ServerConnection, session: String, window: String, block: String? = nil) {
-        // Moving to another server is the user asking for it; a tab or a pane of the server
-        // already selected is not, and asks its connection for nothing.
-        let moved = selection?.serverID != server.id
+    /// `byUser`: the user chose this tab. False when the app moves by itself (the tab on screen
+    /// closed and the next one shows): that is no tap, and asks no connection for an attempt.
+    func select(_ server: ServerConnection, session: String, window: String, block: String? = nil,
+                byUser: Bool = true) {
+        let tap = Self.isTap(from: selection?.serverID, to: server.id, byUser: byUser)
         selection = Selection(serverID: server.id, sessionID: session, windowID: window)
         if let block { focusedPane[window] = block }
         reconnect.select(server.control)
-        if moved { server.opened() }
+        if tap { server.opened() }
         Task { await server.focusWindow(session, window) }
     }
 
@@ -730,7 +731,15 @@ final class AppModel {
             },
             recent: recentTabs, anySession: !Self.isTestLaunch)
         guard let next = rule.next(), let s = self.server(next.serverID) else { return }
-        select(s, session: next.sessionID, window: next.windowID)
+        // The app moves on by itself: not a tap.
+        select(s, session: next.sessionID, window: next.windowID, byUser: false)
+    }
+
+    /// Whether a selection is a tap for reconnecting (`ServerConnection.opened`): the user
+    /// moved to another server. A tab or a pane of the server already selected is not, and
+    /// neither is a move the app made itself.
+    nonisolated static func isTap(from old: UUID?, to new: UUID, byUser: Bool) -> Bool {
+        byUser && old != new
     }
 
     /// Back in the foreground: reconnect where needed and resync every server with its real state.
