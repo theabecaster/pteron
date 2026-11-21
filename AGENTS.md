@@ -16,7 +16,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 
 ## Product principles
 
-- **Mac-like.** The app is the Rex Mac app on a phone: a sidebar beside or over the tab, splits laid
+- **Mac-like.** The app is the Rex Mac app on a phone: a sidebar beside or over the tab, or, in
+  tab mode, the Mac's tabs above in the title bar's place with no sidebar; splits laid
   out as the Mac lays them out, Rex's keymap. Keep chrome off the terminal: no toolbars, badges or
   standing overlays on a pane, only short-lived notices and controls that show just while they
   apply (the jump-to-bottom button, only while scrolled into history), because every point of
@@ -67,7 +68,9 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   start at the first one that shows the app), `CloseNext` (what shows when the tab on screen
   closes; docs/architecture.md).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
-  mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),
+  mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows, and tab mode's strip:
+  `TabStrip`, its layout `StripLayout`, the chips, the session popover, `StripRoutes` and
+  `DismissalWait`; docs/tab-mode.md),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `TerminalHostPool` keeps the panes on screen and parks the ones that left it last (docs/terminal.md, Parking); `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
   (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline, Onboarding (the
@@ -219,6 +222,8 @@ is for users. Read the one for the area you touch:
 - [docs/terminal-checklist.md](docs/terminal-checklist.md): what the terminal must do, the test for
   each row, and the manual device scripts.
 - [docs/duo-layout.md](docs/duo-layout.md): sidebar, postures and the Duo's vertical bar.
+- [docs/tab-mode.md](docs/tab-mode.md): tab mode: the strip, the chips, the session popover,
+  where the sidebar's things are, the crease, the dismissal wait.
 - [docs/sidebar.md](docs/sidebar.md): the sidebar's levels, folding, Agents mode, not-added hosts.
 - [docs/notifications.md](docs/notifications.md): toasts, permission, push through the helper.
 - [docs/glance.md](docs/glance.md): the widgets, the snapshot they read, the watch app, the

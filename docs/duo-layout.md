@@ -44,8 +44,9 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   tab.
 - **Tab mode** (`NavigationStyle`, `Prefs.navigation`). The other way around the app, like the
   Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at its height,
-  the tab strip (`TabStrip`). Settings doesn't offer the choice yet
-  (`NavigationStyle.isAvailable`).
+  the tab strip (`TabStrip`). The choice is Settings → Appearance → Navigation; sidebar mode
+  is the default. [tab-mode.md](tab-mode.md) has all of it; what follows is what the window
+  and the fold decide.
   - **A change applies at once.** `SidebarSplit` stops building the sidebar and gives the tab the
     window's width, and the tab's header draws the strip instead of the title bar. The tab stays
     the same view with the same panes and terminals (`NavigationSwitchTests`). On a wide window
@@ -67,7 +68,9 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     than 144 pt, and Close Tab stays in the pane menu. Any other chip shows its tab's status as
     its sidebar row does, and cuts its title at 120 pt. A chip shows up to three pane icons.
   - **Crease.** In book mode the whole strip, New Tab included, ends 3 pt short of the crease,
-    on the left page. Flat, it runs the bar's width as the title bar does.
+    on the left page. Flat, it runs the bar's width as the title bar does. A bar with less
+    than a hit target before the crease has its strip past the crease instead, so the session
+    chip is never on the fold (`StripLayout.run`).
   - **Chips do** what the sidebar's tab rows do (`StripRoutes`). A tap shows the tab, and the
     row of chips scrolls to keep the tab on screen in view. Touch and hold for Rename Tab…,
     Move Tab Backward, Move Tab Forward, Close Tab and Close Other Tabs. A tab with an agent or
@@ -82,7 +85,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     away, each with Rename Session… and Close Session on its menu, as in the sidebar (none on a
     computer that is down); the computers that aren't added; then Go to Anything…, Agents,
     Settings and Switch to Sidebar. A row that puts
-    up a sheet, an alert or the palette runs once the popover has closed.
+    up a sheet, an alert or the palette runs once the popover has gone, and after 1 s at the
+    latest (`DismissalWait`). The chip is as wide as its session's name needs, up to 120 pt.
   - **Vertical bar.** Sessions takes the sidebar toggle's place and opens the same popover from
     the item; nothing else in the bar moves, so it holds as many items as before
     (`TabActions.verticalBar`). Back in sidebar mode the toggle is back.
