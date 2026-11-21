@@ -369,6 +369,8 @@ scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
 - One command: it builds Release once (`build/dd-bench`), generates the scenarios, runs every
   scenario `--runs` times (default 3), then 5 cold launches for `--live`, prints the report and
   exits 1 if a budget is passed, a run failed or a scenario has no result.
+- Run it at normal priority on an otherwise idle machine, never under `taskpolicy -b`: at
+  background priority the main-thread times grow past their budgets with no change in the code.
 - Results: `build/bench/results/<scenario>__<run>.json`, one file per run.
   `node scripts/bench/report.mjs build/bench/results` prints and checks the report again.
 - Resumable: a run whose file exists is skipped, so the same command without `--fresh` goes on
