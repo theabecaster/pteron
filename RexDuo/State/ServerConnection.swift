@@ -209,9 +209,6 @@ final class ServerConnection: Identifiable {
     var recovering = false
     /// The offline screen is up for this server.
     var showsOffline: Bool { phase.problem != nil || recovering }
-    /// The server gave no answer time after time and is tried rarely until it answers
-    /// (`RexControl.dormant`): the sidebar's line says "Asleep".
-    private(set) var asleep = false
     /// Whether the app says that the way to the computers is down (`TunnelSuspicion`). Set by
     /// `AppModel`; alone, a server never says it.
     @ObservationIgnored var tunnelShows: @MainActor () -> Bool = { false }
@@ -410,10 +407,7 @@ final class ServerConnection: Identifiable {
         }
         control.onRetryScheduled = { reporter?.retryScheduled(after: $0) }
         control.onAttempt = { reporter?.attempt($0) }
-        control.onDormant = { [weak self] in
-            reporter?.wentDormant()
-            self?.asleep = true
-        }
+        control.onDormant = { reporter?.wentDormant() }
         control.onReconnected = { [weak self] _ in
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)
@@ -447,7 +441,6 @@ final class ServerConnection: Identifiable {
             #endif
             show(.online)
             endRetry()
-            if asleep { asleep = false }
         case .connecting:
             // Only the first attempt shows. A retry while offline keeps the offline screen as it is.
             if phase == .idle { show(.connecting) }
@@ -472,7 +465,6 @@ final class ServerConnection: Identifiable {
             endRetry()
         case .idle:
             show(.idle)
-            if asleep { asleep = false }
         }
         linkChanged?()
     }

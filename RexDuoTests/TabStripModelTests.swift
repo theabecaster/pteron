@@ -200,6 +200,8 @@ struct TabChipTests {
         #expect(!play.current && play.waiting == 1 && play.menu.isEmpty)
         #expect(down.status == .down("Not answering") && down.reconnect == .reconnect(attic.id) && down.newSession == nil)
         #expect(old.dim)
+        // Its tap moves to a computer that is down: that one is asked to try again.
+        #expect(old.retries && !work.retries && !play.retries)
         #expect(agents.count == 1)
     }
 }
@@ -327,6 +329,8 @@ struct SessionPopoverTests {
         let p = SessionPopover(machines: [machine(desk, "desk", status: .down("Not answering"), [session("work")])], current: current)
         let s = sessions(p)
         #expect(s[0].dim && s[0].current && s[0].menu.isEmpty)
+        // The computer on screen: its rows show what is there and ask for no attempt.
+        #expect(!s[0].retries)
         #expect(s[0].open == .open(current))
     }
 

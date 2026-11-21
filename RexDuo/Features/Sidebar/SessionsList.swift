@@ -164,7 +164,8 @@ struct SessionsList: View {
                 let selected = selection == Selection(serverID: server.id, sessionID: sid, windowID: wid)
                 let target = SidebarActions.Target(server: server, sessionID: sid, windowID: wid, label: w.label)
                 let canDrag = !dim && PaneArrange.isAvailable(.moveTab, target: nil, support: support)
-                TabRow(server: server, sessionID: sid, window: w, selected: selected, dim: dim, canDrag: canDrag,
+                TabRow(server: server, sessionID: sid, window: w, selected: selected, dim: dim,
+                       retries: dim && selection?.serverID != server.id, canDrag: canDrag,
                        theme: theme, actions: actions)
                     .equatable()
                     .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: canDrag) { d in
@@ -538,6 +539,8 @@ struct TabRow: View, Equatable {
     let window: WindowInfo
     let selected: Bool
     let dim: Bool
+    /// The tap asks the server to try again: it is down and not the one on screen.
+    var retries = false
     /// The server can reorder tabs and this one is online: a press that moves lifts it.
     var canDrag = false
     let theme: TermTheme
@@ -547,7 +550,8 @@ struct TabRow: View, Equatable {
     /// What the row shows of its tab; the status comes from the block boxes the label observes.
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.server === b.server && a.sessionID == b.sessionID && a.selected == b.selected
-            && a.dim == b.dim && a.canDrag == b.canDrag && a.theme.id == b.theme.id && a.actions === b.actions
+            && a.dim == b.dim && a.retries == b.retries && a.canDrag == b.canDrag && a.theme.id == b.theme.id
+            && a.actions === b.actions
             && SidebarRowKeys.windows([a.window]) == SidebarRowKeys.windows([b.window])
     }
 
@@ -570,6 +574,7 @@ struct TabRow: View, Equatable {
                 .padding(.leading, SidebarMetrics.tabLeading)
         }
         .buttonStyle(.plain)
+        .accessibilityHint(OfflineCopy.tapHint(down: dim, otherComputer: retries) ?? "")
         .accessibilityAddTraits(selected ? .isSelected : [])
         // Keyboard: Tab and the arrows move between rows, Return or Space opens the tab.
         .focusable(interactions: .activate)

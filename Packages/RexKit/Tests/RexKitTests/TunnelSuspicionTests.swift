@@ -198,7 +198,7 @@ final class TunnelSuspicionTests: XCTestCase {
     }
 
     /// Every computer stays away until each is dormant: the breaker closes with the last one,
-    /// and the tunnel is no longer what is said. Each computer is asleep by itself from then on.
+    /// and the tunnel is no longer what is said. Each computer is away by itself from then on.
     func testWhenEveryHostHasGoneDormantTheTunnelIsNoLongerSuspected() async {
         let rig = Rig(hosts: 2)
         await rig.connectAll()
@@ -222,7 +222,7 @@ final class TunnelSuspicionTests: XCTestCase {
         XCTAssertFalse(rig.governor.breakerOpen, "the last host that was tried went dormant")
         XCTAssertTrue(rig.controls.allSatisfy(\.dormant))
         XCTAssertEqual(rig.governor.tunnelHosts, [.unanswered, .unanswered], "still silent, both of them")
-        XCTAssertFalse(rig.suspected, "but each is asleep by itself now")
+        XCTAssertFalse(rig.suspected, "but each is away by itself now")
 
         // A dormant host that times out again opens nothing.
         for _ in 0..<1300 {

@@ -231,9 +231,10 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   and answers as a connection that failed (`UnreachableActionChannel`).
   `DownHostSocketCountTests` counts every path, one by one, for a host that is down for an hour
   in the foreground and an hour in the background.
-- A dormant or held server looks like any offline server: the same screen and Try Again. A
-  dormant one's sidebar line reads "Asleep" where it read "Not answering"
-  (`ServerConnection.asleep`, `OfflineCopy.short`).
+- A dormant or held server looks like any offline server: the same screen, the same sidebar
+  line, Try Again. Nothing new is shown. A row whose tap asks a down computer to try again (a
+  tab or a session of a computer other than the one on screen) has the VoiceOver hint "Tries
+  again." (`OfflineCopy.tapHint`).
 - **When every computer is silent together** the offline screen of a silent server says "Can't
   reach your computers" and "If Tailscale shows a warning, turn it off and on."
   (`ConnectionProblem.Kind.tunnelDown`), in place of that server's own problem. The rule is
@@ -247,7 +248,7 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   screen already says to turn Tailscale on), and one server that is off. It ends in the turn
   the breaker closes (a welcome, an answer) or the app leaves the front, and `ProblemGate` has
   kept each server's own problem meanwhile. Once every server has gone dormant the breaker is
-  closed and each says its own problem again, "Asleep" in the sidebar: the tunnel's message
+  closed and each says its own problem again: the tunnel's message
   is only for the time the app is still finding out. It is the same screen: no alert, toast,
   sound or button. The sidebar's line stays the server's own.
 - `TunnelProbe`: as the breaker opens, one TCP connection to Tailscale's own service on the

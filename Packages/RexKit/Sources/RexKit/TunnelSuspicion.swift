@@ -9,7 +9,7 @@ import Foundation
 /// closes on any welcome or answer, so those ends are the breaker's; the checks here for a
 /// computer that is up or has answered hold whatever the breaker does. It also closes when the
 /// last computer that was still being tried goes dormant: from then on each computer is
-/// asleep by itself, and that is what the app says, not this.
+/// away by itself, and its own problem is what the app says, not this.
 ///
 /// Pure: the caller says how things stand and what time it is.
 public struct TunnelSuspicion: Equatable, Sendable {

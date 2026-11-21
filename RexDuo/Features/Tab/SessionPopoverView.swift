@@ -129,6 +129,7 @@ struct SessionPopoverView: View {
             }
         }
         .accessibilityLabel(spoken(s))
+        .accessibilityHint(OfflineCopy.tapHint(down: s.dim, otherComputer: s.retries) ?? "")
         .accessibilityAddTraits(s.current ? .isSelected : [])
         .accessibilityActions {
             ForEach(Array(s.menu.enumerated()), id: \.offset) { _, action in

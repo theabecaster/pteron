@@ -82,7 +82,7 @@ final class ConnectionDiagnosticsTests: XCTestCase {
         let config = ServerConfig(name: "Kitchen Mac", url: "https://kitchen-rex.tail1234.ts.net")
         let server = ServerConnection(config: config, prefs: prefs, notifier: model.notifier,
                                       deviceID: "a1b2c3d4", log: log)
-        let before = (server.phase, server.retrying, server.recovering, server.waking, server.asleep, server.lastError)
+        let before = (server.phase, server.retrying, server.recovering, server.waking, server.lastError)
 
         await TunnelProbe.record(into: log) { TunnelProbe.Result(reachable: false, milliseconds: 3000) }
         await TunnelProbe.record(into: log) { TunnelProbe.Result(reachable: true, milliseconds: 4) }
@@ -92,7 +92,7 @@ final class ConnectionDiagnosticsTests: XCTestCase {
         XCTAssertTrue(text.contains("App       probe tailscale reachable=no after=3000ms"), text)
         XCTAssertTrue(text.contains("App       probe tailscale reachable=yes after=4ms"), text)
         XCTAssertFalse(text.contains("100.100"), "no address in the log")
-        let after = (server.phase, server.retrying, server.recovering, server.waking, server.asleep, server.lastError)
+        let after = (server.phase, server.retrying, server.recovering, server.waking, server.lastError)
         XCTAssertTrue(before == after)
         XCTAssertEqual(server.phase, .idle)
         XCTAssertEqual(server.control.state, .idle)

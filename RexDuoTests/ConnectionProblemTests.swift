@@ -221,16 +221,20 @@ struct ConnectionProblemTests {
         }
     }
 
-    /// The sidebar's line: a server that stopped answering for good reads "Asleep"; the tunnel's
-    /// problem stays one computer's line there.
+    /// The sidebar's line stays one computer's: a dormant one reads as any that doesn't answer,
+    /// and so does one under the tunnel's problem.
     @Test func theSidebarsLine() {
         #expect(OfflineCopy.short(.notAnswering) == "Not answering")
-        #expect(OfflineCopy.short(.notAnswering, asleep: true) == "Asleep")
         #expect(OfflineCopy.short(.tunnelDown) == "Not answering")
-        #expect(OfflineCopy.short(.tunnelDown, asleep: true) == "Not answering")
-        for kind in ConnectionProblem.Kind.allCases where kind != .notAnswering {
-            #expect(OfflineCopy.short(kind, asleep: true) == OfflineCopy.short(kind))
-        }
+    }
+
+    /// VoiceOver says a tap tries again only where it does: a row of a computer that is down
+    /// and is not the one on screen.
+    @Test func theHintIsOnlyOnRowsWhoseTapTriesAgain() {
+        #expect(OfflineCopy.tapHint(down: true, otherComputer: true) == "Tries again.")
+        #expect(OfflineCopy.tapHint(down: true, otherComputer: false) == nil, "a tab of the computer on screen")
+        #expect(OfflineCopy.tapHint(down: false, otherComputer: true) == nil)
+        #expect(OfflineCopy.tapHint(down: false, otherComputer: false) == nil)
     }
 
     @Test func aDropShowsNothingForFiveSeconds() {

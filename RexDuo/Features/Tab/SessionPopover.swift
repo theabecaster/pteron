@@ -74,6 +74,8 @@ struct SessionPopover: Equatable {
         var waiting: Int
         /// Last known from a machine that is down: it opens read-only.
         var dim: Bool
+        /// The tap asks that machine to try again: it is down and not the one on screen.
+        var retries = false
         /// The tap. Nil for a session whose tabs aren't known.
         var open: Action?
         /// The row's context menu: Rename Session… and Close Session… on the current session,
@@ -172,6 +174,7 @@ struct SessionPopover: Equatable {
                 let isCurrent = current?.serverID == m.id && current?.sessionID == s.id
                 rows.append(.session(Session(
                     session: s.id, machine: m.id, name: name, current: isCurrent, waiting: s.waiting, dim: down,
+                    retries: down && current?.serverID != m.id,
                     open: s.tab.map { .open(Selection(serverID: m.id, sessionID: s.id, windowID: $0)) },
                     menu: isCurrent && !down ? [.renameSession(m.id, session: s.id, name: name),
                                                 .closeSession(m.id, session: s.id, name: name)] : [])))
@@ -229,7 +232,7 @@ extension SessionPopover {
         switch s.phase {
         case .online: s.waking ? .waking : .connected
         case .idle, .connecting: .connecting
-        case .offline(let p): .down(OfflineCopy.short(p.kind, asleep: s.asleep), retrying: s.retrying)
+        case .offline(let p): .down(OfflineCopy.short(p.kind), retrying: s.retrying)
         }
     }
 }

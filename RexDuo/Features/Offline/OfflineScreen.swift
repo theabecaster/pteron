@@ -66,10 +66,8 @@ struct OfflineCopy: Equatable {
         }
     }
 
-    /// A few words for the sidebar's host row and Settings. `asleep`: the server gave no answer
-    /// time after time and is now tried rarely (`RexControl.dormant`).
-    static func short(_ kind: ConnectionProblem.Kind, asleep: Bool = false) -> String {
-        if asleep, kind == .notAnswering { return "Asleep" }
+    /// A few words for the sidebar's host row and Settings.
+    static func short(_ kind: ConnectionProblem.Kind) -> String {
         switch kind {
         case .noInternet: return "No internet connection"
         case .offPrivateNetwork: return "Off the private network"
@@ -84,6 +82,13 @@ struct OfflineCopy: Equatable {
         // The row is one computer's: it says what that computer does.
         case .tunnelDown: return "Not answering"
         }
+    }
+
+    /// VoiceOver's hint for a row whose tap asks a computer that is down to try again: a tab or
+    /// a session of a computer other than the one on screen (`AppModel.isTap`). Nil for every
+    /// other row: there a tap only shows what is there.
+    static func tapHint(down: Bool, otherComputer: Bool) -> String? {
+        down && otherComputer ? "Tries again." : nil
     }
 
     static let restoring = OfflineCopy(symbol: "antenna.radiowaves.left.and.right", title: "Back in range",
