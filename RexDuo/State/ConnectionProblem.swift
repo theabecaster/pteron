@@ -10,6 +10,15 @@ struct NetworkSnapshot: Equatable, Sendable {
     var route = ""
     /// The path is cellular or a hotspot (`NWPath.isExpensive`).
     var expensive = false
+    /// The kind of interface the path uses, and the phone's tunnel addresses: what tells a real
+    /// change of route from a path update that changes nothing (`RouteWatch`).
+    var interface = PathFacts.Interface.other
+    var tunnel: Set<String> = []
+
+    /// What reconnecting reads of the path.
+    var facts: PathFacts {
+        PathFacts(satisfied: reachable, expensive: expensive, interface: reachable ? interface : .none, tunnel: tunnel)
+    }
 
     static let unknown = NetworkSnapshot(reachable: true, onPrivateNetwork: nil)
 }

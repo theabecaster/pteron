@@ -11,6 +11,8 @@ final class NetworkWatch {
     private(set) var snapshot = NetworkSnapshot.unknown
     /// Called on the main actor after `snapshot` changes.
     @ObservationIgnored var onChange: ((NetworkSnapshot) -> Void)?
+    /// Called once on the main actor with the first report: the path the app started on.
+    @ObservationIgnored var onStart: ((NetworkSnapshot) -> Void)?
     @ObservationIgnored private let monitor = NWPathMonitor()
     @ObservationIgnored private let override: NetworkSnapshot?
     @ObservationIgnored private var primed = false
@@ -21,10 +23,14 @@ final class NetworkWatch {
         if let override { snapshot = override; return }
         monitor.pathUpdateHandler = { [weak self] path in
             // On the monitor's queue: the interface scan stays off the main thread.
-            let tailnet = PrivateNetwork.isConnected()
+            let tunnel = PrivateNetwork.tunnelAddresses()
+            let tailnet = !tunnel.isEmpty
+            let kind: PathFacts.Interface = path.usesInterfaceType(.wifi) ? .wifi
+                : path.usesInterfaceType(.cellular) ? .cellular
+                : path.usesInterfaceType(.wiredEthernet) ? .wired : .other
             let snap = NetworkSnapshot(reachable: path.status == .satisfied, onPrivateNetwork: tailnet,
                                        route: path.availableInterfaces.map(\.name).joined(separator: ","),
-                                       expensive: path.isExpensive)
+                                       expensive: path.isExpensive, interface: kind, tunnel: tunnel)
             // Four yes-or-no facts and no interface name; the log leaves out a repeat.
             log?.record(.network(.init(satisfied: path.status == .satisfied, expensive: path.isExpensive,
                                        constrained: path.isConstrained, tailnet: tailnet)))
@@ -38,9 +44,13 @@ final class NetworkWatch {
     private func apply(_ snap: NetworkSnapshot) {
         // The first report is the starting state, not a change; the first connect is already on it.
         defer { primed = true }
-        guard snap != snapshot else { return }
-        snapshot = snap
-        if primed { onChange?(snap) }
+        let changed = snap != snapshot
+        if changed { snapshot = snap }
+        if !primed {
+            onStart?(snap)
+        } else if changed {
+            onChange?(snap)
+        }
     }
 
     /// `-simulateNetwork offline|offPrivate|onPrivate` (Debug builds): pretend the phone's network is
@@ -64,9 +74,14 @@ final class NetworkWatch {
 /// IPv4 100.64.0.0/10 counts only on a tunnel (`utun*`, where the Tailscale app puts it): it is also
 /// the carrier-grade NAT range, which a cellular network can give the phone itself.
 enum PrivateNetwork {
-    nonisolated static func isConnected() -> Bool {
+    nonisolated static func isConnected() -> Bool { !tunnelAddresses().isEmpty }
+
+    /// The phone's Tailscale addresses, as text. They stay in memory and are only compared: a
+    /// different set is a different tunnel.
+    nonisolated static func tunnelAddresses() -> Set<String> {
+        var found: Set<String> = []
         var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let first = head else { return false }
+        guard getifaddrs(&head) == 0, let first = head else { return found }
         defer { freeifaddrs(head) }
         var cur: UnsafeMutablePointer<ifaddrs>? = first
         while let p = cur {
@@ -76,17 +91,17 @@ enum PrivateNetwork {
             switch Int32(sa.pointee.sa_family) {
             case AF_INET:
                 let a = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-                if isTailnet(interface: String(cString: p.pointee.ifa_name), ipv4: a) { return true }
+                if isTailnet(interface: String(cString: p.pointee.ifa_name), ipv4: a) { found.insert(String(a, radix: 16)) }
             case AF_INET6:
                 let bytes = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { s in
                     withUnsafeBytes(of: s.pointee.sin6_addr) { Array($0) }
                 }
-                if isTailnet(ipv6: bytes) { return true }
+                if isTailnet(ipv6: bytes) { found.insert(bytes.map { String($0, radix: 16) }.joined(separator: ":")) }
             default:
                 break
             }
         }
-        return false
+        return found
     }
 
     /// An IPv4 address of the interface `name`: Tailscale's only on a tunnel.

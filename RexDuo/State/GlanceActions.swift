@@ -323,6 +323,21 @@ final class OneShotActionChannel: ActionChannel {
     }
 }
 
+/// The channel to a computer the app already knows it can't reach (its connection is dormant, or
+/// the tunnel breaker is open): it opens nothing and every answer is the one a failed connection
+/// gives.
+@MainActor
+final class UnreachableActionChannel: ActionChannel {
+    func label(session: String) async -> String? { nil }
+
+    func statuses(session: String, block: String) async -> [String: ProgramStatus]? { nil }
+
+    func write(_ text: String, session: String, block: String, within limit: TimeInterval,
+               mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery { .unsent }
+
+    func close() {}
+}
+
 /// The two block calls an action makes.
 @MainActor
 enum ActionCalls {

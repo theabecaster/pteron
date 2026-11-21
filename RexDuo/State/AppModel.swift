@@ -376,6 +376,8 @@ final class AppModel {
     /// What the servers share when they reconnect: the budget of attempts for servers that are
     /// down, and the breaker that tries one server when several stop answering together.
     @ObservationIgnored let reconnect = ReconnectGovernor()
+    /// Tells a real change of route from the path's other reports, once it has settled.
+    @ObservationIgnored let route = RouteWatch()
     /// Writes the snapshot the widgets read. It does nothing in tests, the test host and test
     /// launches (`GlanceWriter.Mode`).
     @ObservationIgnored let glance: GlanceWriter
@@ -435,6 +437,15 @@ final class AppModel {
             return server.sessions.first?.id
         }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
+        // The path the app started on: where route changes are counted from, and what gives
+        // the connections their deadlines (Wi-Fi or cellular) before any change of path.
+        network?.onStart = { [weak self] snap in
+            self?.route.report(snap.facts)
+            for s in self?.servers ?? [] { s.pathStarted() }
+        }
+        route.onChange = { [weak self] in
+            for s in self?.servers ?? [] { s.routeChanged() }
+        }
         reconnect.onBreaker = { open in log?.record(.breaker(open: open)) }
         connectTidy()
         self.glance.source = { [weak self] in
@@ -458,10 +469,17 @@ final class AppModel {
         #endif
     }
 
-    /// Pull to refresh: re-bootstrap every server (reconnect the ones that are down).
+    /// Pull to refresh: re-bootstrap every server that is up. Of those that are down, one is
+    /// tried now (`ReconnectGovernor.refreshTarget`: the selected one, else the one the breaker
+    /// tries, else the likeliest to answer); the others keep their schedules, and follow its
+    /// welcome if the breaker held them.
     func refresh() async {
+        let target = reconnect.refreshTarget()
         await withTaskGroup(of: Void.self) { g in
-            for s in servers { g.addTask { await s.refresh() } }
+            for s in servers {
+                let retry = s.control === target
+                g.addTask { await s.refresh(retry: retry) }
+            }
         }
     }
 
@@ -622,6 +640,7 @@ final class AppModel {
 
     /// A new network path is when a down server can come back: retry those now.
     private func networkChanged() {
+        if let snap = network?.snapshot { route.report(snap.facts) }
         for s in servers { s.networkChanged() }
         push.networkChanged()
     }
@@ -666,10 +685,13 @@ final class AppModel {
     }
 
     func select(_ server: ServerConnection, session: String, window: String, block: String? = nil) {
+        // Moving to another server is the user asking for it; a tab or a pane of the server
+        // already selected is not, and asks its connection for nothing.
+        let moved = selection?.serverID != server.id
         selection = Selection(serverID: server.id, sessionID: session, windowID: window)
         if let block { focusedPane[window] = block }
         reconnect.select(server.control)
-        server.opened()
+        if moved { server.opened() }
         Task { await server.focusWindow(session, window) }
     }
 
@@ -761,6 +783,9 @@ final class AppModel {
     func actionChannel(_ action: WatchAction) -> ActionChannel? {
         guard let server = servers.first(where: { $0.id.uuidString == action.target.server }) else { return nil }
         if mayConnect, !inBackground, server.control.state == .connected { return LiveActionChannel(server) }
+        // A computer that has stopped answering, or a tunnel that looks down: no socket is
+        // opened for the action, and it is answered as one that couldn't reach the computer.
+        if server.control.dormant || reconnect.breakerOpen { return UnreachableActionChannel() }
         return OneShotActionChannel(address: server.config.url, client: ClientInfo(
             name: Brand.appName,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",

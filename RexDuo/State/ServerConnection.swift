@@ -606,9 +606,24 @@ final class ServerConnection: Identifiable {
         }
         gate.networkChanged()
         guard started else { return }
-        // The connection decides by its policy: a socket that is up is pinged and never torn
-        // down, and a server that is down gets one attempt only past the floor. With no path
-        // nothing is tried.
+        // Not every report is a new route: with no path nothing is tried, and with one again a
+        // wait that had stopped goes on. `routeChanged()` says when the route really changed.
+        tellPath(interfaceChanged: false)
+    }
+
+    /// The path monitor's first report: the path the app started on, which `start()` may have
+    /// been too early to read. No change, so nothing is asked.
+    func pathStarted() {
+        guard started else { return }
+        tellPath(interfaceChanged: false)
+    }
+
+    /// The route really changed and has settled (`RouteWatch`): another kind of interface, other
+    /// tunnel addresses, or a path after none. The connection decides by its policy: a socket
+    /// that is up is pinged and never torn down, and a server that is down gets one attempt only
+    /// past the floor.
+    func routeChanged() {
+        guard started else { return }
         tellPath(interfaceChanged: true)
     }
 
@@ -618,8 +633,9 @@ final class ServerConnection: Identifiable {
         control.pathChanged(satisfied: snap.reachable, expensive: snap.expensive, interfaceChanged: interfaceChanged)
     }
 
-    /// The user opened this server or one of its sessions: a tap. A server that is down gets
-    /// one attempt now (none while one is under way); a connected one needs nothing.
+    /// The user moved to this server from another one: a tap. A server that is down gets one
+    /// attempt now (none while one is under way); a connected one needs nothing. Moving between
+    /// the tabs and panes of one server is not a tap and asks for nothing.
     func opened() {
         guard started, control.state != .connected else { return }
         control.kick(.user)
@@ -674,12 +690,14 @@ final class ServerConnection: Identifiable {
     }
     #endif
 
-    /// Pull to refresh: reload everything when online, otherwise try again.
-    func refresh() async {
+    /// Pull to refresh: reload everything when online. A server that is down is tried again
+    /// only when `retry` says so: a pull tries one server that is down, not all of them
+    /// (`AppModel.refresh`).
+    func refresh(retry: Bool = true) async {
         if control.state == .connected {
             await bootstrap()
         } else {
-            retryNow()
+            if retry { retryNow() }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
     }

@@ -595,6 +595,28 @@ final class PortForwardTests: XCTestCase {
         XCTAssertEqual(server.sockets.count, 1)
     }
 
+    /// The app's part of the hour test (`DownHostSocketCountTests` in RexKit holds the control
+    /// connection, the panes and the file transfer): a live forward whose page asks once a
+    /// minute for two hours while its computer is down. `tunnelConnected` is the computer's gate
+    /// (no welcome, the background, or no verdict yet after it): no call and no data connection.
+    func testAForwardDialsNothingThroughTwoHoursOfRequestsToAComputerThatIsDown() async throws {
+        let f = forward()
+        let server = FakeTunnelServer()
+        server.onSocket = answer
+        _ = try await f.open(target, on: server)
+        listener.accept?(StubLocal())
+        await settle { server.sockets.count == 1 }
+        let calls = server.calls.count
+        server.tunnelConnected = false
+        for _ in 0..<120 {
+            listener.accept?(StubLocal())
+            await Task.yield()
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(server.calls.count, calls, "no call to a computer that is down")
+        XCTAssertEqual(server.sockets.count, 1, "and no data connection")
+    }
+
     func testARemovedServerClosesItsBlocksWhenConnectedElseForgetsThem() async {
         let f = forward()
         let server = FakeTunnelServer()
