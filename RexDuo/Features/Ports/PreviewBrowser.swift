@@ -662,9 +662,12 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
                 let user = alert?.textFields?.first?.text ?? "", password = alert?.textFields?.last?.text ?? ""
                 answer.resume(returning: (.useCredential, URLCredential(user: user, password: password, persistence: .forSession)))
             })
-            present(alert, animated: true)
+            // UIKit shows it once the sheet has finished rising, when it asks sooner than that.
             #if DEBUG
+            present(alert, animated: true) { [weak self] in self?.onChange?() }
             onChange?()
+            #else
+            present(alert, animated: true)
             #endif
         }
     }
@@ -717,9 +720,11 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
             return
         }
-        present(sheet, animated: true)
         #if DEBUG
+        present(sheet, animated: true) { [weak self] in self?.onChange?() }
         onChange?()
+        #else
+        present(sheet, animated: true)
         #endif
     }
 
