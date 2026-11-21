@@ -10,9 +10,13 @@ import UIKit
 @Suite struct StripViewTests {
     private let theme = ThemeStore.fallback
 
-    /// The session chip's own size in a bar `height` tall, as the strip measures it.
+    /// The session chip's own size in a bar `height` tall, as the strip's row asks it
+    /// (`StripRow`): no width proposed.
     private func ideal(_ chip: SessionChip, height: CGFloat = 44, type: DynamicTypeSize = .large) -> CGSize {
-        let view = SessionChipIdeal(chip: chip, height: height, theme: theme).environment(\.dynamicTypeSize, type)
+        let view = SessionChipView(chip: chip, theme: theme) {}
+            .frame(height: height)
+            .fixedSize(horizontal: true, vertical: false)
+            .environment(\.dynamicTypeSize, type)
         return UIHostingController(rootView: view).sizeThatFits(in: CGSize(width: 2000, height: height))
     }
 
@@ -45,12 +49,14 @@ import UIKit
     }
 
     /// The waiting dot's room is always part of the width, so the dot comes and goes without
-    /// moving the tabs; a glyph chip measures as its name too, for the bar that has room.
-    @Test func theWaitingDotAndTheFormDontChangeTheWidth() {
+    /// moving the tabs. The glyph asks for less than a hit target, which is what it gets.
+    @Test func theWaitingDotDoesntChangeTheWidth() {
         let quiet = ideal(SessionChip(name: "work", machine: nil, waiting: 0))
         #expect(ideal(SessionChip(name: "work", machine: nil, waiting: 1)) == quiet)
         #expect(ideal(SessionChip(name: "work", machine: nil, waiting: 4)) == quiet)
-        #expect(ideal(SessionChip(name: "work", machine: nil, waiting: 0, form: .glyph)) == quiet)
+        let glyph = ideal(SessionChip(name: "work", machine: nil, waiting: 0, form: .glyph))
+        #expect(glyph.width < StripLayout.hit)
+        #expect(StripLayout(.init(width: 402, sessionIdeal: glyph.width)).frame(.session)?.width == StripLayout.hit)
     }
 
     /// With more than one computer the chip has the computer's name under the session's, where
@@ -203,14 +209,85 @@ import UIKit
         let before = RenderCount.value(.tabChips)
         let window = Hosted.window(strip(m, s, tab: "w37", block: "b37"), size: CGSize(width: 402, height: 300))
         defer { window.isHidden = true }
-        _ = await Hosted.settle { RenderCount.value(.tabChips) > before }
-        _ = await Hosted.settle { false }
+        // Lay out until a run of passes draws nothing: turns of the main queue, not a clock.
+        func counts() -> [Int] { [RenderCount.value(.tabChips), RenderCount.value(.tabStrips)] }
+        var last = counts(), quiet = 0, passes = 0
+        while quiet < 20, passes < 2000 {
+            window.layoutIfNeeded()
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            passes += 1
+            // Not before the first chip is drawn.
+            quiet = counts() == last && last[0] > before ? quiet + 1 : 0
+            last = counts()
+        }
+        #expect(quiet == 20, "the strip came to rest: \(passes) passes")
         let drawn = RenderCount.value(.tabChips) - before
         #expect(drawn > 0 && drawn < 50, "\(drawn) chips drawn for 50 tabs")
-        let strips = RenderCount.value(.tabStrips)
-        _ = await Hosted.settle { false }
-        #expect(RenderCount.value(.tabChips) - before == drawn, "a strip at rest draws no chip again")
-        #expect(RenderCount.value(.tabStrips) == strips, "nor itself")
+    }
+
+    /// The strip's first layout has the session chip at its name's width and the tabs right
+    /// after it: the row measures the chip while it places the parts, so nothing shifts later.
+    @Test func theChipHasItsNamesWidthFromTheFirstLayout() async throws {
+        try #require(Hosted.setAccessibility(on: true), "the simulator's accessibility runtime")
+        defer { _ = Hosted.setAccessibility(on: false) }
+        let m = try model()
+        let s = server(m, tabs: 3)
+        let window = Hosted.window(strip(m, s, tab: "w1", block: "b1"), size: CGSize(width: 750, height: 300))
+        defer { window.isHidden = true }
+        func frame(_ label: String) async throws -> CGRect {
+            try await Hosted.eventually {
+                Hosted.accessibilityElements(in: window).first { $0.isAccessibilityElement && $0.accessibilityLabel == label }
+            }.accessibilityFrame
+        }
+        let chip = try await frame("Session work"), first = try await frame("tab-1, tab 1 of 3")
+        let asked = ideal(SessionChip(name: "work", machine: nil, waiting: 0)).width.rounded(.up)
+        #expect(asked < StripLayout.sessionMax)
+        #expect(abs(chip.width - max(asked, StripLayout.hit)) <= 1, "\(chip.width) pt for \(asked) pt")
+        #expect(abs(first.minX - (chip.maxX + StripLayout.gap)) <= 1, "the tabs start \(first.minX - chip.maxX) pt after it")
+    }
+
+    // MARK: The row
+
+    /// `StripRow` places the parts in one pass: a session part that asks for 70 pt gets its
+    /// frame once, 70 pt wide, and the chips get theirs once, starting 6 pt after it. Neither
+    /// is first laid out for the widest name and then moved.
+    @Test func theRowPlacesThePartsOnce() async throws {
+        final class Log {
+            var session: [CGRect] = []
+            var chips: [CGRect] = []
+        }
+        let log = Log()
+        // No pane: the session chip, the chips and New Tab.
+        let input = StripLayout.Input(width: 750, hasPane: false)
+        let row = StripRow(input: input) {
+            Color.red.frame(width: 70)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("row")) } action: { log.session.append($0) }
+                .layoutValue(key: StripRow.PartKey.self, value: .session)
+            Color.blue
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("row")) } action: { log.chips.append($0) }
+                .layoutValue(key: StripRow.PartKey.self, value: .chips)
+            Color.green
+                .layoutValue(key: StripRow.PartKey.self, value: .newTab)
+        }
+        .coordinateSpace(.named("row"))
+        .frame(width: 750, height: 44)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .ignoresSafeArea()
+        let window = Hosted.window(row, size: CGSize(width: 750, height: 300))
+        defer { window.isHidden = true }
+        _ = await Hosted.settle { !log.session.isEmpty && !log.chips.isEmpty }
+        for _ in 0..<20 {
+            window.layoutIfNeeded()
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+        }
+        var asked = input
+        asked.sessionIdeal = 70
+        let chips = try #require(StripLayout(asked).frame(.chips))
+        #expect(log.session == [CGRect(x: 4, y: 0, width: 70, height: 44)], "\(log.session)")
+        #expect(log.chips == [chips], "\(log.chips)")
+        #expect(log.chips.first?.minX == 80)
+        // Built without the name, the layout would have had the chips 50 pt further in.
+        #expect(StripLayout(input).frame(.chips)?.minX == 130)
     }
 
     // MARK: Taps

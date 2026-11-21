@@ -67,7 +67,9 @@ struct SessionChipView: View {
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
                 .layoutPriority(1)
-            if chip.waiting > 0 { dot }
+            // The dot keeps its room while no agent waits: the strip sizes the chip to its
+            // content, and a dot that came and went would move the tabs beside it.
+            dot.opacity(chip.waiting > 0 ? 1 : 0)
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(theme.chrome.tertiary)
@@ -76,24 +78,6 @@ struct SessionChipView: View {
 
     private var dot: some View {
         Circle().fill(theme.chrome.blocked).frame(width: StripStyle.waitingDot, height: StripStyle.waitingDot)
-    }
-}
-
-/// The session chip at the width its name asks for, in a bar `height` tall: what the strip
-/// measures for `StripLayout.Input.sessionIdeal`. It keeps room for the waiting dot whether or
-/// not an agent waits, so the dot comes and goes without moving the tabs beside the chip.
-struct SessionChipIdeal: View {
-    let chip: SessionChip
-    let height: CGFloat
-    let theme: TermTheme
-
-    var body: some View {
-        var named = chip
-        named.form = .name
-        named.waiting = max(chip.waiting, 1)
-        return SessionChipView(chip: named, theme: theme) {}
-            .frame(height: height)
-            .fixedSize(horizontal: true, vertical: false)
     }
 }
 

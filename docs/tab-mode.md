@@ -66,10 +66,11 @@ session, and the computer's name under it where more than one computer is set up
 tall enough.
 
 - **Width.** The chip is as wide as its name needs, between 44 pt and 120 pt; a longer name
-  truncates. The room a short name leaves goes to the tab chips. The strip measures the chip
-  (`SessionChipIdeal`, drawn hidden) and hands the width to `StripLayout`, which stays pure.
-  The measure always keeps room for the waiting dot, so the dot comes and goes without moving
-  the tabs.
+  truncates. The room a short name leaves goes to the tab chips. The strip's row (`StripRow`,
+  a SwiftUI `Layout`) asks the chip for its own width while it places the parts and hands it
+  to `StripLayout`, which stays pure: one layout pass, so a new strip never draws at one width
+  and then shifts. The chip always keeps room for the waiting dot, so the dot comes and goes
+  without moving the tabs.
 - **The popover** (`SessionPopover`, `SessionPopoverView`) is one scrolling list:
   - each computer with its status, "+" for a new session there, Reconnect while it is down,
     and the globe of its web ports while it has one, which opens them in a sheet
@@ -115,10 +116,13 @@ device or the orientation ([duo-layout.md](duo-layout.md)).
   (`TabActions.verticalBar`).
 - **Book mode.** The whole strip, New Tab included, is on the left page and ends 3 pt short of
   the crease. Flat, it runs the bar's width as the title bar does.
-- **A crease near the bar's start.** A bar with less than a hit target before the crease has
-  its strip past the crease instead, 3 pt clear of it. With a hit target on neither side the
-  strip keeps the wider side and the session chip is cut to it. Nothing is ever drawn on the
-  crease (`StripLayout.run`).
+- **A crease near the bar's start.** The strip stays before the crease while that side holds
+  the session chip as a hit target, and the pane menu as another where the strip has one. A
+  bar with less has its strip past the crease instead, 3 pt clear of it. With that room on
+  neither side the strip keeps the wider side and the session chip is cut to it; under 16 pt
+  it draws nothing. A trailing part needs its width and a 6 pt gap beside the session chip,
+  and the first without room ends them. Nothing is ever drawn on the crease
+  (`StripLayout.run`).
 - **Tabletop.** The fold runs across the window and the tab is above it, so the strip is the
   top of the upper half at full width.
 - `StripLayoutTests` lays the strip out in every posture of `DuoSimulation.postures`, with and
@@ -132,13 +136,16 @@ still on screen: a sheet doesn't open over a popover, and the palette's field wa
 keyboard. So the row's action is held until the popover has gone (`DismissalWait`).
 
 - The popover's content leaving the screen is the signal: that is the end of the real
-  dismissal, however long the system takes.
+  dismissal, however long the system takes. `PopoverRowsTests` tap every row in the real root
+  and see what it presents come up.
 - A cap of 1 s. If no signal comes, the action runs when the cap runs out, so a row never
-  does nothing.
+  does nothing. The cap's timer keeps the wait alive, so that holds when the view that made
+  the wait is torn down with the popover.
 - The action is held before the popover is told to close, and it runs once.
 - Rows that present nothing (a session, New Session, Reconnect, Switch to Sidebar) run at once.
-- The ports lists use the same wait: the sidebar's ports popover, and tab mode's ports sheet,
-  where the sheet's own dismissal is the signal.
+- Tab mode's surfaces use it: the session chip's popover, the vertical bar's Sessions popover
+  (the same content), and the ports sheet, where the sheet's own dismissal is the signal.
+  Sidebar mode's title menu and its ports popover wait a fixed 350 ms, as before.
 
 The sleep behind the cap is given to the type, so `DismissalWaitTests` drive the cap
 themselves and no test waits on a clock.
@@ -156,5 +163,6 @@ posture on one simulator.
 | What each row and chip action runs | `StripRoutesTests` |
 | The measured session chip, text sizes, fifty tabs, taps | `StripViewTests` |
 | The dismissal wait and its cap | `DismissalWaitTests` |
+| Every popover row presents what it should | `PopoverRowsTests` |
 | A change of mode keeps the tab and its panes | `NavigationSwitchTests` |
 | The Navigation setting | `SettingsTests` |

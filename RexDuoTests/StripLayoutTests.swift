@@ -194,13 +194,19 @@ struct StripLayoutTests {
         #expect(StripLayout(right).start == 12 && StripLayout(right).end == 356)
     }
 
-    /// The session chip never crosses the strip's end. Down to 56 pt beside a vertical bar
-    /// (48 pt without one) the left page still holds it as a 44 pt glyph, and it ends 3 pt
-    /// short of the crease.
+    /// The room the left page needs to keep the strip: the session chip as a hit target, and
+    /// the pane menu as another where the strip holds one.
+    private func leftPageNeeds(bar: Bool, pane: Bool = true) -> CGFloat {
+        StripLayout.leading(bar: bar) + StripLayout.hit + (bar || !pane ? 0 : StripLayout.hit)
+    }
+
+    /// The session chip never crosses the strip's end. Down to a cap that leaves the left page
+    /// what it needs (56 pt beside a vertical bar, 92 pt without one) the strip stays there:
+    /// the chip is a 44 pt glyph, and everything ends 3 pt short of the crease.
     @Test(arguments: [false, true])
     func theSessionChipEndsAtTheCrease(bar: Bool) throws {
         let lead = StripLayout.leading(bar: bar)
-        for cap in [lead + 44, lead + 60, lead + 120, 200] as [CGFloat] {
+        for cap in [leftPageNeeds(bar: bar), lead + 94, lead + 120, 200] as [CGFloat] {
             var i = busy(867, bar: bar)
             // The longest name: without the crease its chip is 120 pt.
             i.sessionIdeal = 300
@@ -210,24 +216,45 @@ struct StripLayoutTests {
             #expect(l.start == lead && l.end == cap, "cap \(cap)")
             #expect(chip.minX == lead && chip.maxX <= cap && chip.width >= StripLayout.hit, "cap \(cap): \(chip)")
             // What has no room between the chip and the crease isn't there (it stays in the
-            // pane menu, which is kept first, or in the vertical bar); nothing is drawn across
-            // the crease or over the chip.
+            // pane menu or the vertical bar); nothing is drawn across the crease or against
+            // the chip.
             for part in l.parts where part != .session {
                 let f = try #require(l.frame(part))
-                #expect(f.minX >= chip.maxX && f.maxX <= cap, "cap \(cap): \(part) at \(f)")
+                #expect(f.minX >= chip.maxX + StripLayout.gap && f.maxX <= cap, "cap \(cap): \(part) at \(f)")
             }
-            if !bar { #expect(l.shows(.paneMenu) == (cap >= lead + 88), "cap \(cap)") }
             checkFrames(l, i, "cap \(cap), bar \(bar)")
         }
     }
 
-    /// A crease that leaves less than a hit target before it (a cap under 56 pt beside a
-    /// vertical bar, under 48 pt without one): the strip starts past the crease, 3 pt clear of
-    /// it, so the session chip is whole and nothing is on the fold.
+    /// A trailing part needs its own width and a gap beside the session chip: the pane menu is
+    /// there from 94 pt of room. The first part without room ends them, so no later, narrower
+    /// part takes a place out of order.
+    @Test func trailingPartsStopAtTheFirstWithoutRoom() {
+        func strip(_ room: CGFloat, waiting: Int = 1) -> StripLayout {
+            var i = busy(867, bar: false)
+            i.waiting = waiting
+            i.crease = CGRect(x: 4 + room + 3, y: 0, width: 40, height: 669)
+            return StripLayout(i)
+        }
+        #expect(strip(93).parts == [.session])
+        #expect(strip(94).parts == [.session, .paneMenu])
+        #expect(strip(94).frame(.paneMenu) == CGRect(x: 54, y: 0, width: 44, height: 44))
+        // 136 pt: after the pane menu a 49 pt pill has no room. The 37 pt count would have,
+        // but it comes after the pill.
+        #expect(strip(136, waiting: 12).parts == [.session, .paneMenu])
+        #expect(strip(136).parts == [.session, .paneMenu])
+        #expect(strip(138).parts == [.session, .waiting, .paneMenu])
+        #expect(strip(175).parts == [.session, .dots, .waiting, .paneMenu])
+    }
+
+    /// A crease that leaves the left page less than it needs (a cap under 56 pt beside a
+    /// vertical bar, under 92 pt without one, where the pane menu wants its place too): the
+    /// strip starts past the crease, 3 pt clear of it, so the session chip is whole and
+    /// nothing is on the fold.
     @Test(arguments: [false, true])
     func aCreaseTooNearTheBarsStartMovesTheStripPastIt(bar: Bool) throws {
         let lead = StripLayout.leading(bar: bar)
-        for cap in [lead + 43, lead + 20, lead, 5, -10] as [CGFloat] {
+        for cap in [leftPageNeeds(bar: bar) - 1, lead + 20, lead, 5, -10] as [CGFloat] {
             var i = busy(867, bar: bar)
             i.sessionIdeal = 90
             i.crease = CGRect(x: cap + 3, y: 0, width: 40, height: 669)
@@ -242,7 +269,23 @@ struct StripLayoutTests {
         }
     }
 
-    /// A bar with a hit target on neither side of the crease keeps the wider side, and the
+    /// With no pane on screen the strip has no pane menu, so the left page needs the session
+    /// chip alone, as beside a vertical bar.
+    @Test func withoutAPaneTheLeftPageNeedsOnlyTheSessionChip() {
+        func strip(_ cap: CGFloat, pane: Bool) -> StripLayout {
+            var i = busy(867, bar: false)
+            i.hasPane = pane
+            i.crease = CGRect(x: cap + 3, y: 0, width: 40, height: 669)
+            return StripLayout(i)
+        }
+        #expect(leftPageNeeds(bar: false, pane: false) == 48 && leftPageNeeds(bar: false) == 92)
+        #expect(strip(48, pane: false).end == 48 && strip(48, pane: false).start == 4)
+        #expect(strip(47, pane: false).start == 93)
+        #expect(strip(91, pane: true).start == 137)
+        #expect(strip(92, pane: true).end == 92 && strip(92, pane: true).start == 4)
+    }
+
+    /// A bar without that room on either side of the crease keeps the wider side, and the
     /// session chip is cut to what is there: it never reaches the crease.
     @Test func aBarWithNoRoomOnEitherSideCutsTheSessionChip() throws {
         // 30 pt before the crease, 28 pt after it.
@@ -256,6 +299,57 @@ struct StripLayoutTests {
         let after = StripLayout(i)
         #expect(after.start == 74 && after.end == 116)
         #expect(try #require(after.frame(.session)) == CGRect(x: 74, y: 0, width: 42, height: 44))
+    }
+
+    /// Under 16 pt of room the strip draws nothing at all: a sliver of the glyph, or the
+    /// chip's hairline, would lie against the fold.
+    @Test func aRunUnderSixteenPointsHasNoParts() {
+        var i = busy(120, bar: false)
+        i.waiting = 3
+        // 10 pt before the crease, 6 pt after it.
+        i.crease = CGRect(x: 17, y: 0, width: 90, height: 669)
+        let before = StripLayout(i)
+        #expect(before.start == 4 && before.end == 14)
+        #expect(before.parts.isEmpty && before.frame(.session) == nil && !before.showsClose && before.chipsWidth == 0)
+        // 8 pt after a crease that covers the bar's start.
+        i.crease = CGRect(x: -10, y: 0, width: 115, height: 669)
+        let after = StripLayout(i)
+        #expect(after.start == 108 && after.end == 116 && after.parts.isEmpty)
+        // 16 pt is enough for a cut chip.
+        var enough = StripLayout.Input(width: 120, bar: false, hasSession: false, hasPane: false)
+        enough.crease = CGRect(x: 23, y: 0, width: 90, height: 669)
+        #expect(StripLayout(enough).frame(.session) == CGRect(x: 4, y: 0, width: 16, height: 44))
+        enough.crease = CGRect(x: 22, y: 0, width: 90, height: 669)
+        #expect(StripLayout(enough).parts.isEmpty)
+    }
+
+    /// The name's width moves the chips' start and nothing else: the parts on screen, the
+    /// strip's form and the close button are the same for every name. The strip builds its
+    /// views from the layout without the name (`StripRow`), and this is why it may.
+    @Test func theNamesWidthChangesNoPart() {
+        let crease = CGRect(x: 455.5, y: 0, width: 40, height: 669)
+        for width in stride(from: 100, through: 960, by: 7) as StrideThrough<CGFloat> {
+            for bar in [false, true] {
+                for creased in [false, true] {
+                    for origin in [0, 300, 420] as [CGFloat] {
+                        var i = busy(width, bar: bar)
+                        i.hasFloatsControl = Int(width) % 2 == 0
+                        if creased { i.crease = crease; i.originX = origin }
+                        let built = StripLayout(i)
+                        for ideal in [20, 44, 61, 90, 120, 300] as [CGFloat] {
+                            var named = i
+                            named.sessionIdeal = ideal
+                            let placed = StripLayout(named)
+                            let note = "\(width) pt, bar \(bar), crease \(creased) from \(origin), name \(ideal)"
+                            #expect(Set(built.parts).isSubset(of: Set(placed.parts)), "\(note): \(built.parts) built, \(placed.parts) placed")
+                            #expect(placed.compact == built.compact && placed.session == built.session && placed.dots == built.dots, "\(note)")
+                            #expect(placed.showsClose || !built.showsClose, "\(note)")
+                            #expect(placed.chipsWidth >= built.chipsWidth, "\(note)")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: The floats slot

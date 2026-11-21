@@ -33,9 +33,10 @@ struct StripLayout: Equatable {
         /// A tab with floating windows shows a control for them beside the pane menu: its slot
         /// is kept, in both forms and beside a vertical bar too. Off, nothing is kept.
         var hasFloatsControl = false
-        /// The session chip's own width with its name, as the view measured it
-        /// (`SessionChipIdeal`). The chip takes it, between a hit target and `sessionMax`. Nil,
-        /// before the first measure, takes the most a name may have.
+        /// The session chip's own width with its name, as the strip's row measures it while
+        /// it places the parts (`StripRow`). The chip takes it, between a hit target and
+        /// `sessionMax`. Nil takes the most a name may have: what the strip's views are built
+        /// from, since the name's width changes no part's form, only where the chips start.
         var sessionIdeal: CGFloat?
     }
 
@@ -88,6 +89,9 @@ struct StripLayout: Equatable {
     static let maxDots = 6
     /// How far the strip's end keeps from the crease, as the panes do.
     static let creaseClearance: CGFloat = 3
+    /// The least room the strip draws in. A crease can leave less: then nothing is drawn, so no
+    /// glyph and no hairline ever lies on the fold.
+    static let runMin: CGFloat = 16
 
     // MARK: Result
 
@@ -118,13 +122,19 @@ struct StripLayout: Equatable {
 
     /// The narrowest and widest the active chip is. It never outgrows the chips' room, so its
     /// close button is never scrolled out of reach while the chip is in view.
-    var activeChip: ClosedRange<CGFloat> {
-        let low = showsClose ? Self.closeChipMin : Self.chipMin
-        return low...max(low, chipsWidth)
-    }
+    var activeChip: ClosedRange<CGFloat> { activeChip(room: chipsWidth) }
 
     /// The narrowest and widest any other chip is. Its title is cut at `inactiveTitleMax`.
-    var chip: ClosedRange<CGFloat> { Self.chipMin...max(Self.chipMin, chipsWidth) }
+    var chip: ClosedRange<CGFloat> { chip(room: chipsWidth) }
+
+    /// The same for chips whose row is `room` wide: the row's width as it was placed, which
+    /// is more than `chipsWidth` where the session's name is short.
+    func activeChip(room: CGFloat) -> ClosedRange<CGFloat> {
+        let low = showsClose ? Self.closeChipMin : Self.chipMin
+        return low...max(low, room)
+    }
+
+    func chip(room: CGFloat) -> ClosedRange<CGFloat> { Self.chipMin...max(Self.chipMin, room) }
 
     init(_ i: Input) {
         let (lead, end) = Self.run(i)
@@ -156,15 +166,21 @@ struct StripLayout: Equatable {
         func place(_ part: Part, _ x: CGFloat, _ w: CGFloat) {
             frames[part] = CGRect(x: x, y: 0, width: w, height: i.height)
         }
+        // A crease can leave the strip next to nothing: then it has no parts at all.
+        guard end - lead >= Self.runMin else {
+            showsClose = false
+            return
+        }
         // Never past the strip's end: a crease that leaves the chip less than its width cuts it.
-        let sessionWidth = min(widths[.session] ?? Self.hit, max(end - lead, 0))
+        let sessionWidth = min(widths[.session] ?? Self.hit, end - lead)
         place(.session, lead, sessionWidth)
-        // The trailing parts sit against the end, right to left. One with no room left beside
-        // the session chip isn't there: a bar that narrow is cut by a crease, and the pane menu
-        // stays first.
+        // The trailing parts sit against the end, right to left, while each has room and a gap
+        // left beside the session chip. The first that doesn't ends them: a bar that narrow is
+        // cut by a crease, and the pane menu comes first.
         var x = end
         for part in [Part.paneMenu, .floats, .newTab, .unzoom, .waiting, .dots] {
-            guard let w = widths[part], x - w >= lead + sessionWidth else { continue }
+            guard let w = widths[part] else { continue }
+            guard x - w >= lead + sessionWidth + Self.gap else { break }
             x -= w
             place(part, x, w)
         }
@@ -193,15 +209,16 @@ struct StripLayout: Equatable {
     }
 
     /// Where the strip starts and ends in the bar: inside the bar's paddings and on one side of
-    /// the crease. That is the left page while it holds the session chip as a hit target, as in
-    /// book mode on the Duo. A bar with less than that before the crease has its strip past the
-    /// crease. With a hit target on neither side the strip keeps the wider side, and the session
-    /// chip is cut to it.
+    /// the crease. That is the left page while it holds the session chip as a hit target, and
+    /// the pane menu as another where the strip has one, as in book mode on the Duo. A bar with
+    /// less than that before the crease has its strip past the crease. With that room on
+    /// neither side the strip keeps the wider side, and the session chip is cut to it.
     static func run(_ i: Input) -> (start: CGFloat, end: CGFloat) {
         let lead = leading(bar: i.bar), end = i.width - trailing
         guard let crease = creaseSpan(i) else { return (lead, end) }
         let before = crease.lowerBound - lead, after = end - max(lead, crease.upperBound)
-        if before >= hit || before >= after { return (lead, max(lead, min(end, crease.lowerBound))) }
+        let needed = hit + (i.bar || !i.hasPane ? 0 : hit)
+        if before >= needed || before >= after { return (lead, max(lead, min(end, crease.lowerBound))) }
         return (max(lead, crease.upperBound), end)
     }
 

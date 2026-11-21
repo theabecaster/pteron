@@ -55,8 +55,6 @@ struct TabStrip<PaneMenu: View>: View {
     var floats: FloatsControl?
     /// The Pane Actions menu, as the title bar shows it.
     @ViewBuilder var paneMenu: PaneMenu
-    /// The session chip's own width with its name (`SessionChipIdeal`). Nil until measured.
-    @State private var sessionIdeal: CGFloat?
 
     var body: some View {
         #if DEBUG
@@ -66,28 +64,27 @@ struct TabStrip<PaneMenu: View>: View {
         // The agent index only, as the pill reads it: a status line or a title changes nothing here.
         let waiting = Waiting.all(model.servers).filter { !visible.contains($0.id) }.count
         GeometryReader { geo in
-            let layout = StripLayout(.init(width: geo.size.width, height: height,
-                                           originX: geo.frame(in: .global).minX - rootOrigin.x, crease: bookCrease,
-                                           bar: bar, hasSession: session != nil, hasPane: target?.block != nil,
-                                           zoomed: zoomed, panes: dots.count, waiting: waiting,
-                                           hasFloatsControl: floats != nil, sessionIdeal: sessionIdeal))
-            ZStack(alignment: .topLeading) {
+            let input = StripLayout.Input(width: geo.size.width, height: height,
+                                          originX: geo.frame(in: .global).minX - rootOrigin.x, crease: bookCrease,
+                                          bar: bar, hasSession: session != nil, hasPane: target?.block != nil,
+                                          zoomed: zoomed, panes: dots.count, waiting: waiting,
+                                          hasFloatsControl: floats != nil)
+            // What each part shows is decided without the session's name; where the parts sit
+            // is decided with it, by the row, in the same layout pass.
+            let layout = StripLayout(input)
+            StripRow(input: input) {
                 ForEach(layout.parts, id: \.self) { part in
-                    if let frame = layout.frame(part) {
-                        self.part(part, layout, session)
-                            .frame(width: frame.width, height: frame.height)
-                            .offset(x: frame.minX)
-                    }
+                    self.part(part, layout, session)
+                        // A part fills the frame the row gives it, as wide as its own content
+                        // where the row asks (the session chip).
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutValue(key: StripRow.PartKey.self, value: part)
                 }
             }
         }
         .frame(height: height)
         .font(.system(size: 17))
         .foregroundStyle(theme.fg)
-        // The layout stays pure: the chip's width is measured here and handed to it.
-        .background(alignment: .topLeading) {
-            SessionChipMeasure(target: target, height: height, theme: theme) { sessionIdeal = $0 }
-        }
         .background(theme.chrome.canvas)
     }
 
@@ -162,25 +159,30 @@ private struct TabChips: View {
         // A move's new order shows at once, as in the sidebar (`PendingOrder`).
         let ids = target.server.orderedWindowIDs(target.sessionID)
         let windows = ids.compactMap { session.window($0) }
-        ScrollViewReader { scroll in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: StripLayout.gap) {
-                    ForEach(Array(windows.enumerated()), id: \.element.id) { n, w in
-                        TabChipSlot(server: target.server, window: w, position: n + 1, count: windows.count,
-                                    active: w.id == target.windowID, block: target.block, layout: layout, theme: theme,
-                                    actions: actions)
-                            .id(w.id)
+        // The row's own width, as the strip placed it: a short session name leaves it more
+        // than the layout the parts were built from counts on.
+        GeometryReader { geo in
+            let room = geo.size.width
+            ScrollViewReader { scroll in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: StripLayout.gap) {
+                        ForEach(Array(windows.enumerated()), id: \.element.id) { n, w in
+                            TabChipSlot(server: target.server, window: w, position: n + 1, count: windows.count,
+                                        active: w.id == target.windowID, block: target.block, layout: layout, room: room,
+                                        theme: theme, actions: actions)
+                                .id(w.id)
+                        }
                     }
                 }
-            }
-            .onChange(of: InView(tab: target.windowID, order: ids, width: layout.chipsWidth), initial: true) { was, now in
-                guard let tab = now.tab else { return }
-                // The first layout, and a rotation or a fold, place the chip; only a change of
-                // tab or of order moves the row under the eye.
-                if was == now || was.width != now.width || reduceMotion {
-                    scroll.scrollTo(tab, anchor: .center)
-                } else {
-                    withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(tab, anchor: .center) }
+                .onChange(of: InView(tab: target.windowID, order: ids, width: room), initial: true) { was, now in
+                    guard let tab = now.tab else { return }
+                    // The first layout, and a rotation or a fold, place the chip; only a change of
+                    // tab or of order moves the row under the eye.
+                    if was == now || was.width != now.width || reduceMotion {
+                        scroll.scrollTo(tab, anchor: .center)
+                    } else {
+                        withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(tab, anchor: .center) }
+                    }
                 }
             }
         }
@@ -194,28 +196,46 @@ private struct TabChips: View {
     }
 }
 
-/// Measures the session chip for the strip: the chip with its name, drawn hidden at its own
-/// width, which `StripLayout` then cuts at `sessionMax`. Its own view, so a new name is read
-/// here and the strip is drawn again only when the width it reports changes. Nothing is
-/// measured per frame: the width is reported when the name, the machine or the text size
-/// changes it.
-private struct SessionChipMeasure: View {
-    @Environment(AppModel.self) private var model
-    let target: StripTarget?
-    let height: CGFloat
-    let theme: TermTheme
-    let report: (CGFloat) -> Void
+/// Places the strip's parts. It asks the session chip for its own width with its name, hands
+/// that to `StripLayout` (which stays pure) and puts every part in the frame the layout gives
+/// it. One layout pass: the first frame a strip draws already has the chip at its name's width,
+/// and nothing is measured outside a layout.
+///
+/// The parts are built from the layout made without the name's width. That one gives the
+/// session chip the most a name may have, so it never shows a part the placed layout lacks,
+/// and the name's width changes no part's form.
+struct StripRow: Layout {
+    /// The part a subview is.
+    struct PartKey: LayoutValueKey {
+        static let defaultValue: StripLayout.Part? = nil
+    }
 
-    var body: some View {
-        let chip = target.map {
-            SessionChip(name: $0.server.views[$0.sessionID]?.label ?? "", machine: model.servers.count > 1 ? $0.server.config.name : nil,
-                        waiting: 0)
-        } ?? .none()
-        SessionChipIdeal(chip: chip, height: height, theme: theme)
-            .hidden()
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded(.up) } action: { report($0) }
+    /// The bar, without the session chip's width.
+    var input: StripLayout.Input
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? input.width, height: input.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = Self.layout(input, subviews: subviews)
+        for view in subviews {
+            guard let part = view[PartKey.self], let frame = layout.frame(part) else {
+                view.place(at: bounds.origin, proposal: .zero)
+                continue
+            }
+            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                       proposal: ProposedViewSize(width: frame.width, height: frame.height))
+        }
+    }
+
+    /// The layout with the session chip as wide as its own content asks, to the next point.
+    static func layout(_ input: StripLayout.Input, subviews: Subviews) -> StripLayout {
+        var i = input
+        if let chip = subviews.first(where: { $0[PartKey.self] == .session }) {
+            i.sessionIdeal = chip.sizeThatFits(ProposedViewSize(width: nil, height: input.height)).width.rounded(.up)
+        }
+        return StripLayout(i)
     }
 }
 
@@ -255,15 +275,19 @@ struct SessionPopoverHost: View {
     @State private var wait = DismissalWait()
 
     var body: some View {
-        SessionPopoverView(popover: SessionPopover(model), theme: theme) { action in
-            let run = onAction
-            if action.presents { wait.hold { run(action) } }
-            close()
-            if !action.presents { run(action) }
-        }
-        .presentationCompactAdaptation(.popover)
-        // The popover's content leaves when its dismissal has ended.
-        .onDisappear { wait.dismissed() }
+        SessionPopoverView(popover: SessionPopover(model), theme: theme, onAction: tap)
+            .presentationCompactAdaptation(.popover)
+            // The popover's content leaves when its dismissal has ended.
+            .onDisappear { wait.dismissed() }
+    }
+
+    /// A row's tap: the popover closes, and the row runs at once or, when it puts something on
+    /// screen, once the popover has gone.
+    private func tap(_ action: SessionPopover.Action) {
+        let run = onAction
+        if action.presents { wait.hold { run(action) } }
+        close()
+        if !action.presents { run(action) }
     }
 }
 
@@ -299,6 +323,8 @@ private struct TabChipSlot: View {
     let active: Bool
     let block: String?
     let layout: StripLayout
+    /// The chips' row, as wide as it was placed.
+    let room: CGFloat
     let theme: TermTheme
     let actions: StripActions
 
@@ -308,7 +334,7 @@ private struct TabChipSlot: View {
         #endif
         let chip = TabChip.of(window, position: position, count: count, server: server, active: active, block: block,
                               strip: layout)
-        let width = active ? layout.activeChip : layout.chip
+        let width = active ? layout.activeChip(room: room) : layout.chip(room: room)
         TabChipView(chip: chip, theme: theme, onTap: { actions.pick(chip.id) }, onAction: { actions.chip($0, chip.id) })
             .frame(minWidth: width.lowerBound, maxWidth: width.upperBound, maxHeight: .infinity)
     }

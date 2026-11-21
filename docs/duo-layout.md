@@ -68,9 +68,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     than 144 pt, and Close Tab stays in the pane menu. Any other chip shows its tab's status as
     its sidebar row does, and cuts its title at 120 pt. A chip shows up to three pane icons.
   - **Crease.** In book mode the whole strip, New Tab included, ends 3 pt short of the crease,
-    on the left page. Flat, it runs the bar's width as the title bar does. A bar with less
-    than a hit target before the crease has its strip past the crease instead, so the session
-    chip is never on the fold (`StripLayout.run`).
+    on the left page. Flat, it runs the bar's width as the title bar does. A bar with too
+    little before the crease for the session chip (and the pane menu, where the strip has
+    one) has its strip past the crease instead, and under 16 pt of room it draws nothing, so
+    nothing is ever on the fold (`StripLayout.run`).
   - **Chips do** what the sidebar's tab rows do (`StripRoutes`). A tap shows the tab, and the
     row of chips scrolls to keep the tab on screen in view. Touch and hold for Rename Tab…,
     Move Tab Backward, Move Tab Forward, Close Tab and Close Other Tabs. A tab with an agent or
