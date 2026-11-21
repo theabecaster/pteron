@@ -161,6 +161,9 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
 - **Upload.** After the WELCOME the client sends the file as binary messages of at most 64 KiB (a
   1 MiB message drops the connection), then one empty binary message: the file is complete. The
   server moves it into place and closes with 1000. Until then the bytes sit in `<name>.partial`.
+- **Pings.** The server answers a WebSocket ping on an upload's connection before the file's
+  bytes begin, and after that only once the file has ended (revision 18): the answers can't pace
+  an upload. The control connection answers at once, and the app paces with it (`UploadPacer`).
 - **Wrong size.** Ending short of `size`, or sending past it, closes with 4006 `data stream broke
   a rule` and aborts the batch.
 - **Cancel.** Any other end before the empty message, a close with 1000 included, aborts the

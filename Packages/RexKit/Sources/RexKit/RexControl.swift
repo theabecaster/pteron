@@ -383,6 +383,13 @@ public final class RexControl {
         }
     }
 
+    /// Pings the connection once and returns with the pong. Throws when not connected, or when
+    /// the socket fails first. Nothing is dropped here: a slow answer is only slow.
+    func ping() async throws {
+        guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
+        try await t.awaitPong()  // only the handler's first call counts (`ResumeOnce`)
+    }
+
     #if DEBUG
     /// Testing: attempts fail as an unreachable host's do until `wake()` (false), or always (true).
     private var unreachableForTesting: Bool?

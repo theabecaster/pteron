@@ -102,7 +102,9 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
 - Back from the background, the host calls `wake()`: the stream pings its data socket. A socket
   that fails, or doesn't answer within 2.5 s (half open after a suspension), is dropped without a
   status 1000 close and the stream goes on with a RESUME, as after any drop. One that answers is
-  live. Transient chips ("Reconnecting…") wait out the wake's grace (`ForegroundWake.grace`).
+  live. iOS can call a ping's handler a second time when the socket is dropped while the ping
+  waits, so `URLSessionStreamSocket.ping` acts on the first call only (a second resume of its
+  continuation was a crash, seen on a wake during a slow upload). Transient chips ("Reconnecting…") wait out the wake's grace (`ForegroundWake.grace`).
   The fence is up from the wake until the socket has answered and the stream is quiet.
   URLSession can call a pong handler twice, the second time with an error, so the ping (and the
   socket's receive) resumes through `ResumeOnce`: only the first call counts. A second resume of
@@ -515,6 +517,18 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   at most twice: the server deleted the aborted batch's files and can't resume an upload. Once
   the last file's end has gone out the server may type at any moment, so nothing is sent again
   and Cancel no longer applies; a lost confirmation then says to check the pane.
+- **Pacing** (`UploadPacer`, RexKit). A socket's send returns once the system has the bytes, so an
+  unpaced file fills the phone's uplink queue at once, and the control connection's pings, calls
+  and typed keys wait behind all of it (a 7.5 MB photo on a 2 Mbit/s uplink: 10 s), past every
+  wake ping's 2.5 s. So each message waits its turn at a rate set from the control connection's
+  ping round trip, as LEDBAT does: the queue the upload adds is kept near 100 ms, and messages
+  shrink to about 100 ms of the rate (at least 8 KiB). On a fast network the rate climbs past
+  what the link takes within a few round trips. On top of the rate, a window: at most 256 KiB
+  handed to the socket beyond what an answered control ping vouches for, so the network never
+  gets a burst. On an iPhone a burst queues as packets inside the Tailscale extension, which iOS
+  kills past about 50 MB, and the tunnel is gone for 30 to 60 s (tailscale/tailscale#17967). The
+  upload's own socket can't confirm bytes: Rex answers a ping there only once the file has ended.
+  No control connection, or no answer in 5 s, leaves the rate alone in charge: never a stall.
 - **Cancel** cuts off the file on its way, and the server deletes the batch's earlier files and
   types nothing. Between files, when the server may hold finished files and nothing is on its
   way, the next file is reserved and cut off at once to the same effect (`FileUploader.abort`).

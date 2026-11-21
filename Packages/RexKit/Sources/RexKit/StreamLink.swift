@@ -16,6 +16,9 @@ protocol StreamLink: AnyObject {
     /// A new socket to `GET /api/data` with `subprotocol`, before its handshake: a terminal stream
     /// (`rex.data.terminal.v1`) or a file's bytes (`rex.data.bytes.v1`).
     func openDataSocket(subprotocol: String) throws -> any StreamSocket
+    /// Returns when the control connection answers a ping; throws when it isn't connected or
+    /// fails first. An upload measures the queue it adds with it (`UploadPacer`).
+    func ping() async throws
 }
 
 /// One data WebSocket.

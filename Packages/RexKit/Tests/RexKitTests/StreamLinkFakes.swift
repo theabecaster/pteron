@@ -79,6 +79,14 @@ final class FakeLink: StreamLink {
     /// Answers for methods, instead of an empty object.
     var replies: [String: JSONObject] = [:]
 
+    /// How the control connection answers a ping; at once by default.
+    var onPing: (@MainActor () async throws -> Void)?
+
+    func ping() async throws {
+        guard isConnected else { throw RexError.unsent("not connected") }
+        try await onPing?()
+    }
+
     /// Answers the oldest held call.
     func release() {
         guard !waiting.isEmpty else { return XCTFail("no call is waiting") }

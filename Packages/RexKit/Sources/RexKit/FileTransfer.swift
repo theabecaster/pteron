@@ -142,6 +142,8 @@ public final class FileUploader {
     public let sessionID: String
     public let blockID: String
     private var socket: (any StreamSocket)?
+    /// How fast a file starts, and the queueing it yields at (`UploadPacer`); tests change it.
+    var rate = UploadRate()
     private var cancelled = false
     /// The empty message after the batch's last file has gone out: the server may type at any moment.
     private var lastFileOut = false
@@ -258,12 +260,17 @@ public final class FileUploader {
         self.socket = socket
         defer { if self.socket === socket { self.socket = nil } }
         let last = index == count - 1
+        let pacer = UploadPacer(link: link, rate: rate, sleep: sleep)
+        // The batch's next file starts at the rate this one found.
+        defer { rate = pacer.rate }
         do {
             try await handshake(socket, hello: hello)
             var sent: Int64 = 0
             while sent < item.size {
                 if cancelled { throw Failure.cancelled }
-                let want = Int(min(Int64(BytesStream.maxMessage), item.size - sent))
+                // The message waits its turn, so the uplink keeps room for everything else.
+                let want = await pacer.turn(upTo: Int(min(Int64(BytesStream.maxMessage), item.size - sent)))
+                if cancelled { throw Failure.cancelled }
                 let chunk = try await source.read(upTo: want)
                 // Shorter than its size: the server would refuse it at the end anyway.
                 guard !chunk.isEmpty else { throw Failure.brokeRule }
