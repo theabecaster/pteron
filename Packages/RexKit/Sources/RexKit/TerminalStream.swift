@@ -462,6 +462,22 @@ public final class TerminalStream {
     /// unused (the old path takes over at the first Rex message, which follows the snapshot).
     private enum SnapshotState { case none, awaiting, restoring, refused }
     private var snapshotState = SnapshotState.none
+
+    /// The pane is on screen. A pane that streams unseen sets it false: on cellular its fresh
+    /// start takes its turn behind those that are seen (`SnapshotTurns`).
+    public var isOnScreen = true
+    /// This stream's place among its host's fresh starts on cellular: waiting, or holding the
+    /// turn until its snapshot ends. Nil on Wi-Fi, and whenever no fresh start is under way.
+    private var snapshotTurn: SnapshotTurns.Turn?
+
+    /// Gives the turn back, if this stream has one. Called wherever a fresh start ends or is
+    /// given up: the snapshot's end or failure, a failed start, `stop()`, `park()`,
+    /// `restart()`, a newer start, a dropped socket, a dead host and the background.
+    private func endSnapshotTurn() {
+        guard let turn = snapshotTurn else { return }
+        snapshotTurn = nil
+        control.snapshotTurns.give(turn)
+    }
     private var usesGhosttySnapshot: Bool { !ghosttySnapshotFailed }
 
     /// The server refused the HELLO or RESUME (REJECT).
@@ -598,6 +614,7 @@ public final class TerminalStream {
         hasPendingInput = false
         control.inputActivity.remove(ObjectIdentifier(self))
         control.streamStopped(self)
+        endSnapshotTurn()
         ws?.close()
         ws = nil
         wakeReader()
@@ -627,6 +644,7 @@ public final class TerminalStream {
         // The resume window runs from the moment the socket goes; an earlier drop keeps its time.
         if live || droppedAt == nil { droppedAt = .now }
         live = false
+        endSnapshotTurn()
         ws?.abort()
         ws = nil
         wakeReader()
@@ -675,6 +693,7 @@ public final class TerminalStream {
         waitingForControl = false
         // The old stream is over: a status 1000 close ends it on the server.
         token = nil
+        endSnapshotTurn()
         ws?.close()
         ws = nil
         wakeReader()
@@ -704,6 +723,7 @@ public final class TerminalStream {
     /// verdict after the return; the handshake it makes then has a deadline of its own.
     func enteredBackground() {
         handshakeClock?.expireNow()
+        endSnapshotTurn()
     }
 
     /// Sets the one deadline of `socket`'s handshake: the connect deadline of the path the
@@ -802,6 +822,7 @@ public final class TerminalStream {
     /// as dead. It is dropped with no close frame, so the server keeps the stream and the token
     /// stays good; the drop raises the fence and the stream waits for the control connection.
     func hostDied() {
+        endSnapshotTurn()
         guard !stopped, let socket = ws else { return }
         unansweredPing = nil
         socket.abort()
@@ -936,6 +957,7 @@ public final class TerminalStream {
             // longer trusted: the filter scans for the first Rex message, where the read starts.
             // (Called from inside a part, the filter is told by that part's false result.)
             snapshotState = .refused
+            endSnapshotTurn()
             if !consuming { filter?.abandonSnapshot() }
         case .refused:
             break
@@ -953,6 +975,8 @@ public final class TerminalStream {
             ok = sink?.streamGhosttySnapshot(part) == true && !ghosttySnapshotFailed
         }
         if case .end(let complete) = part {
+            // The snapshot is over, whole or not: the next pane's may start.
+            endSnapshotTurn()
             if ok, complete {
                 snapshotState = .none
                 hasScreen = true
@@ -966,6 +990,7 @@ public final class TerminalStream {
         // Draw the screen the old way, on this same stream, from the first Rex message on.
         ghosttySnapshotFailed = true
         snapshotState = .refused
+        endSnapshotTurn()
         return false
     }
 
@@ -1005,6 +1030,7 @@ public final class TerminalStream {
         guard !stopped else { return }
         gen += 1
         retrySerial += 1
+        endSnapshotTurn()
         wakeReader()
         resyncing = false
         snapshotState = .none
@@ -1034,6 +1060,21 @@ public final class TerminalStream {
                 sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
                 sink?.streamSnapshot(initial)
                 hasScreen = true
+            }
+
+            // On cellular, one fresh snapshot at a time for a host, the pane on screen first
+            // (`SnapshotTurns`). On Wi-Fi nothing waits here.
+            if fromSnapshot, control.onExpensivePath {
+                let turn = SnapshotTurns.Turn()
+                snapshotTurn = turn
+                await control.snapshotTurns.take(turn, visible: isOnScreen)
+                // Whatever moved the stream on while it waited gave the turn back.
+                guard myGen == gen, !stopped else { return }
+                guard mayOpen else {
+                    endSnapshotTurn()
+                    waitForControl()
+                    return
+                }
             }
 
             // 2. Ticket, then the data WebSocket.
@@ -1067,8 +1108,10 @@ public final class TerminalStream {
             // The control connection looked up and the data socket got no answer: it is asked
             // whether the host is there, and this start is a failed one like any other.
             if myGen == gen, !stopped, mayOpen { control.checkLiveness() }
+            if myGen == gen { endSnapshotTurn() }
             startFailed(RexError.local("no answer"), gen: myGen, epoch: epoch)
         } catch {
+            if myGen == gen { endSnapshotTurn() }
             startFailed(error, gen: myGen, epoch: epoch)
         }
     }
@@ -1299,6 +1342,7 @@ public final class TerminalStream {
 
     private func handleDataDrop(_ socket: any StreamSocket, gen myGen: Int) {
         guard !stopped, myGen == gen else { return }
+        endSnapshotTurn()
         live = false
         if ws === socket { ws = nil }
         let code = socket.closeCode

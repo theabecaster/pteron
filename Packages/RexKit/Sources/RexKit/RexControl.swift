@@ -187,6 +187,8 @@ public final class RexControl {
     /// The path the phone is on is cellular or a hotspot, as last told (`pathChanged`): the
     /// longer deadlines apply.
     public var onExpensivePath: Bool { pathExpensive }
+    /// One fresh snapshot at a time for this host while the path is expensive (`SnapshotTurns`).
+    let snapshotTurns = SnapshotTurns()
     /// When anything last came in on the socket.
     private var lastInbound = Date.distantPast
     /// The ping that waits for its pong.
@@ -938,6 +940,8 @@ public final class RexControl {
         let was = pathSatisfied
         pathSatisfied = satisfied
         pathExpensive = expensive
+        // Off cellular: panes start together again, and none is left waiting a turn.
+        if !expensive { snapshotTurns.openUp() }
         guard wantConnected else { return }
         guard satisfied else { cancelRetry(); return }
         if state == .connected {

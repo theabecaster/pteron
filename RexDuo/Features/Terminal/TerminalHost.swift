@@ -178,7 +178,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private(set) var isParked = false
     /// Warm: off screen like a parked pane, but its stream goes on and is parsed, unseen, so
     /// the screen is current the moment the pane is back (`warm`). The pool decides which panes.
-    private(set) var isWarm = false
+    private(set) var isWarm = false {
+        // On cellular a pane that streams unseen takes its turn for a fresh snapshot behind those on screen.
+        didSet { stream.isOnScreen = !isWarm }
+    }
     private var warmRate = WarmRate()
     /// Back from warm, until the first layout has decided whether a claim follows.
     private var returnedWarm = false
