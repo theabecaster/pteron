@@ -223,6 +223,15 @@ builds.
   `PORTS_LIST`, `PORTS_ROUTE`, `PORTS_FETCH`, and the forward logs `PORTS_LISTEN`,
   `PORTS_NEW_BLOCK`, `PORTS_CONN <end>`, `PORTS_CLOSE`, `PORTS_SWEEP`. It makes a tunnel block, so
   use a `zz-` session with a test server started in it.
+- `-portsLoop <n>`: no computer needed. Open the browser `n` times on a page the app serves to
+  itself on 127.0.0.1, as fast as each page loads, closing it each time (`PortsLoop`). It logs
+  `PORTS_LOOP opens=<k> footprint=<MB>` after 5 opens and after the last, then
+  `PORTS_LOOP done growth=<MB>`, and writes `Documents/perf/portsLoop.json`. Every open must
+  cost what the fifth did: `scripts/bench/ports-loop.sh <sim-id>` runs 100 and fails when they
+  end more than 1 MB over 5. `-portsLoopHold <seconds>` keeps each page up that long, for a
+  screenshot (`-portsLoop 1 -portsLoopHold 10`), and `-portsLoopLandscape YES` turns the iPhone
+  on its side first. Use it with `-autoOpen zz-none -sizing mirror`, so no pane is touched.
+  Also in the benchmark's `BENCH` build.
 - `-forceStatus '<text>'`: every pane shows its status chip with this text once it opens and each
   time it is live, to look at the chip over any output. With `-replay <file>` it needs no server.
 - `-tapTest col,row[;col,row…]`: tap those cells as a focused finger would, `-tapTestAfter` seconds

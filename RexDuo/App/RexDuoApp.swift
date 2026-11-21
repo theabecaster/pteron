@@ -15,6 +15,7 @@ struct RexDuoApp: App {
     init() {
         #if DEBUG || BENCH
         PerfProbe.cleanUpIfAsked()
+        PortsLoop.runIfAsked()
         #endif
         // Copies of files a crash or a kill left on their way to or from a pane.
         FileStaging.clearAll()
