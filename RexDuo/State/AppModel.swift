@@ -310,6 +310,17 @@ final class AppModel {
         agentsShown = true
     }
 
+    /// The machine whose ports are up in a sheet (`PortsSheet`), for tab mode, where no sidebar
+    /// header holds them. Open it with `showPorts(_:)`.
+    var portsShown: UUID?
+
+    /// Shows a machine's ports in a sheet: the list its sidebar header opens. Does nothing while
+    /// another sheet or the scanner is up, which would hold the one sheet the root can show.
+    func showPorts(_ id: UUID) {
+        guard !showSettings, !showPairing, !agentsShown, server(id) != nil else { return }
+        portsShown = id
+    }
+
     /// The agent board covers the tab (`TentBoard`). Toasts stay away meanwhile.
     var boardShown = false
     /// The palette while it is open (Go to Anything, Change Session, the commands); nil closed.
@@ -396,7 +407,7 @@ final class AppModel {
     @ObservationIgnored let actions = GlanceActions()
     /// Opens computers' dev servers on the phone, one browser at a time.
     @ObservationIgnored let forward = PortForward()
-    /// What a row of the sidebar's Ports group does: open, copy its link, show its pane, stop.
+    /// What a row of each machine's ports list does: open, copy its link, show its pane, stop.
     @ObservationIgnored private(set) lazy var ports = PortActions(model: self)
 
     /// `connect: false` builds no servers (unit tests and the test host). With `connect`, the
@@ -439,6 +450,7 @@ final class AppModel {
         helperSetup.servers = { [weak self] in self?.servers ?? [] }
         helperSetup.sheetIsUp = { [weak self] in
             self?.showSettings == true || self?.showPairing == true || self?.agentsShown == true
+                || self?.portsShown != nil
         }
         helperSetup.shownSession = { [weak self] server in
             guard let self else { return nil }
@@ -969,7 +981,7 @@ final class AppModel {
             break
         case .plain(.pair):
             // Only onto the bare app: a sheet or a cover that is up stays, and the link is dropped.
-            guard !showSettings, !showPairing, !agentsShown, helperSetup.active == nil else { return }
+            guard !showSettings, !showPairing, !agentsShown, portsShown == nil, helperSetup.active == nil else { return }
             pairingStart = nil
             showPairing = true
             // Straight to pairing: the guide steps aside for this run (a cancel lands on the

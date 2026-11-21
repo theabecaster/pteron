@@ -945,8 +945,8 @@ again, and never moves or resizes one (`Features/Tab/TabPresentation.swift`, `Fl
 A program in a local pane that listens on a TCP port (`npm run dev` on `localhost:5173`) opens on
 the phone, in the app's own browser, through a Rex dial tunnel. Servers bound to
 127.0.0.1 only work too. No port opens on the computer, and the phone listens on its own
-loopback only while the page is up. Nothing shows on a pane. The sidebar lists every such port
-of a machine in its Ports group, so nobody scrolls a pane's history for a link
+loopback only while the page is up. Nothing shows on a pane. Each machine's sidebar header
+opens every such port of the machine, so nobody scrolls a pane's history for a link
 (`State/ServerConnection+Ports.swift`, `State/PortForward.swift`, `State/PortActions.swift`,
 `Features/Ports/`).
 
@@ -977,14 +977,15 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
   a read that fails takes that pane's list. Web ports are every port but debuggers, SSH, mail,
   DNS, databases, queues and caches, by number and by program (`PortRules`). The dial address
   is the program's loopback address; `0.0.0.0` dials 127.0.0.1 and `::` dials ::1.
-- **The Ports group** (`Features/Ports/PortsGroup.swift`; [sidebar.md](sidebar.md), Ports). Its
-  rows are `ServerConnection.portRows`: the web ports of the machine's local terminals in
+- **A machine's ports** (`Features/Ports/MachinePorts.swift`, `PortsGroup.swift`;
+  [sidebar.md](sidebar.md), Ports): the globe button on its sidebar header, or on its heading in
+  tab mode's session popover, lists them. The rows are `ServerConnection.portRows`: the web ports of the machine's local terminals in
   sidebar order, set only when they change. A port an agent holds itself (its sign-in or editor
   link) gets no row; a server an agent started does. A row is named by what runs, then the
   folder it runs in ("Next.js · anchor"), with `localhost:3000` under it (`PortNames`: a small
   table of known programs, else the program's own name). A tap opens the page in the app, as
-  the pane menu's row does. The row's menu and its swipe: Copy Link (`http://localhost:3000`),
-  Show Pane, and Stop. The palette lists the same ports as "Open localhost:3000 · Next.js"
+  the pane menu's row does. The row's menu and VoiceOver's actions: Copy Link
+  (`http://localhost:3000`), Show Pane, and Stop. The palette lists the same ports as "Open localhost:3000 · Next.js"
   ([goto.md](goto.md)).
 - **Stop** (`PortStop`, `PortActions`). Stop types one Ctrl-C into the port's pane. It is
   offered only when the process that holds the port is itself the pane's foreground process

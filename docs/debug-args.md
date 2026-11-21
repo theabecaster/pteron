@@ -141,7 +141,7 @@ builds.
   dev.abrahamgonzalez.rexduo group.dev.abrahamgonzalez.rexduo`, then `glance/snapshot.json`.
 - No argument: a Debug build logs `SCENE_VISIBLE servers=<n>` when it starts its servers, at the
   first scene phase that shows the app (docs/architecture.md, Launch).
-- `-sidebar closed`: start with the sidebar hidden. `-focus none`: don't give the active pane the
+- `-sidebar closed`: start with the sidebar hidden; `-sidebar open`: start with it shown, a drawer too. `-focus none`: don't give the active pane the
   keyboard. `-settings <page>`: open Settings at that page: `main` (the top level), `servers`,
   `appearance`, `keyboard`, `notifications`, `about`, or a page under one of them, `addServer`,
   `darkTheme`, `lightTheme` or `acknowledgements`, whose Back then leads to its parent.
@@ -149,8 +149,10 @@ builds.
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
 - `-showAgents YES`: open the Agents sheet at launch (`AgentsSheet`, the Agents list for a layout
   without the sidebar).
+- `-showPorts YES`: the first machine's ports button in the sidebar opens its popover as soon as
+  it shows, once (`PortsList`).
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
-  ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`, and `portRows` for the Ports group's rows), how many
+  ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`, `portButtons` for the machines' ports buttons and `portRows` for the rows of their lists), how many
   progress values were written (`progressWrites`), how often the tab screen and the pane
   menu's Arrange ran (`windowScreens`, `paneMenuItems`), and how often the tab strip and its
   chips ran (`tabStrips`, `tabChips`), to check that progress reports re-render

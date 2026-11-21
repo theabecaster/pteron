@@ -127,20 +127,46 @@ struct MachineHeader: View {
     let collapsed: Bool
     /// False in Agents mode, where a machine never folds.
     var foldable = true
+    /// The machine's ports button sits before the chevron (`MachinePortsButton`). Sessions mode
+    /// only.
+    var ports = false
     let theme: TermTheme
     let toggle: () -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         if foldable {
-            Button(action: toggle) { content }
+            // The fold takes the row but for the ports button, which is its own button between
+            // the status and the chevron: VoiceOver finds the machine, then its ports. The
+            // chevron folds too, but is no element of its own.
+            HStack(spacing: 0) {
+                Button(action: toggle) {
+                    content
+                        .padding(.trailing, SidebarMetrics.gap)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 .buttonStyle(.plain)
                 .focusable(interactions: .activate)
                 .onKeyPress(.return) { toggle(); return .handled }
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+                if ports { MachinePortsButton(server: server, theme: theme) }
+                Button(action: toggle) {
+                    Chevron(open: !collapsed, theme: theme)
+                        .padding(.trailing, SidebarMetrics.pad)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHidden(true)
+            }
+            .padding(.leading, SidebarMetrics.pad)
         } else {
             content
+                .padding(.horizontal, SidebarMetrics.pad)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
         }
@@ -175,11 +201,7 @@ struct MachineHeader: View {
                 }
             }
             ConnectionDot(server: server, theme: theme)
-            if foldable { Chevron(open: !collapsed, theme: theme) }
         }
-        .padding(.horizontal, SidebarMetrics.pad)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .contentShape(Rectangle())
     }
 
     private var spokenName: String {

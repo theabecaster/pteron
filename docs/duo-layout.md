@@ -77,7 +77,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     `session.move_window` offers no Move rows. Chips aren't dragged: a sideways drag scrolls
     the row.
   - **The session chip** opens the sessions in a popover (`SessionPopover`): each machine with
-    its status, "+" for a new session there and Reconnect while it is down; its sessions, a tap
+    its status, "+" for a new session there, Reconnect while it is down, and the globe of its
+    web ports while it has one, which opens them in a sheet (`PortsSheet`); its sessions, a tap
     away, each with Rename Session… and Close Session on its menu, as in the sidebar (none on a
     computer that is down); the computers that aren't added; then Go to Anything…, Agents,
     Settings and Switch to Sidebar. A row that puts

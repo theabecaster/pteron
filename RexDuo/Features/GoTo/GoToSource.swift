@@ -98,7 +98,7 @@ enum GoToRun {
     case files(FilesCommand)
     /// A Lua or block action. With `onTarget`, on the target pane; else on the server alone.
     case server(serverID: UUID, name: String, args: JSONObject?, title: String, onTarget: Bool)
-    /// A port of a machine's Ports group (`PortRow.id`): its page opens in the app.
+    /// A port of a machine's ports list (`PortRow.id`): its page opens in the app.
     case port(serverID: UUID, row: String)
     /// A typed address (`localhost:3000/admin`) on the machine that listens there: its page
     /// opens at that path, shown as typed.

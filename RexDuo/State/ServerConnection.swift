@@ -310,13 +310,13 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var portWatch: [String: PortWatch] = [:]
     /// The connection each pane's ports were last read on (or an event gave them on).
     @ObservationIgnored var portsRead: [String: Int] = [:]
-    /// The Ports group's rows, in sidebar order: set only when they change, so the sidebar and
+    /// The ports list's rows, in sidebar order: set only when they change, so the sidebar and
     /// the palette read ports here and never walk the lists.
     var portRows: [PortRow] = []
-    /// The rows' ids alone, set only when a row comes or goes: what the sidebar's list reads, so
-    /// a port that changes hands re-renders its own row and not the list.
+    /// The rows' ids alone, set only when a row comes or goes: what a machine's ports button and
+    /// its list read, so a port that changes hands re-renders its own row and nothing else.
     var portRowIDs: [String] = []
-    /// Whether there is any row: all the list reads while the Ports group is folded.
+    /// Whether there is any row: all a machine's ports button reads while it has none.
     var hasPortRows = false
     /// Where each row's port is, for a row to read its own pane's list.
     @ObservationIgnored var portRowPlaces: [String: PortRow] = [:]

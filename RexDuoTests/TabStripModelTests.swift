@@ -213,8 +213,9 @@ struct SessionPopoverTests {
     private let desk = UUID(), cloud = UUID()
 
     private func machine(_ id: UUID, _ name: String, status: SessionPopover.Status = .connected,
-                         synced: Bool = true, _ sessions: [SessionPopover.Source.Session]) -> SessionPopover.Source {
-        SessionPopover.Source(id: id, name: name, platform: "darwin_arm64", status: status, synced: synced, sessions: sessions)
+                         synced: Bool = true, ports: Int = 0, _ sessions: [SessionPopover.Source.Session]) -> SessionPopover.Source {
+        SessionPopover.Source(id: id, name: name, platform: "darwin_arm64", status: status, synced: synced, sessions: sessions,
+                              ports: ports)
     }
 
     private func session(_ id: String, tab: String? = "w1", waiting: Int = 0) -> SessionPopover.Source.Session {
@@ -288,6 +289,23 @@ struct SessionPopoverTests {
         #expect(m[4].newSession != nil && m[4].reconnect == nil)
         #expect(m.map(\.status.spoken) == ["Connected", "Not answering", "Connecting", "Not answering", "Reconnecting"])
         #expect(m[0].platform == "darwin_arm64" && m[0].name == "desk")
+    }
+
+    /// A heading's ports button: only while its machine has a web port, kept while it is down
+    /// (its last known ports), and adding no row.
+    @Test func aHeadingOffersPortsOnlyWhileTheMachineHasThem() {
+        let p = SessionPopover(machines: [
+            machine(desk, "desk", ports: 2, [session("work")]),
+            machine(cloud, "cloud", status: .down("Not answering"), ports: 1, []),
+            machine(UUID(), "attic", []),
+        ], current: nil)
+        let m = machines(p)
+        #expect(m.map(\.ports) == [.ports(desk), .ports(cloud), nil])
+        #expect(m.map(\.portCount) == [2, 1, 0])
+        #expect(m[1].status.isDown && !m[0].status.isDown)
+        #expect(p.rows.count == SessionPopover(machines: [machine(desk, "desk", [session("work")]), machine(cloud, "cloud", status: .down("Not answering"), []),
+                                                          machine(UUID(), "attic", [])], current: nil).rows.count)
+        #expect(SessionPopover.title(.ports(desk)) == "Ports")
     }
 
     /// "No sessions" only under a machine that is connected and has told its sessions.

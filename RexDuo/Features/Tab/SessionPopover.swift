@@ -11,6 +11,8 @@ struct SessionPopover: Equatable {
         /// New Session on that machine.
         case newSession(UUID)
         case reconnect(UUID)
+        /// The machine's ports, in a sheet (`AppModel.showPorts(_:)`).
+        case ports(UUID)
         /// Add a computer a server lists (`NotAddedSection.add`).
         case add(KnownHost)
         /// Rename Session… and Close Session…, with the session's name as it shows.
@@ -25,7 +27,7 @@ struct SessionPopover: Equatable {
         /// has closed: a sheet can't open over it, and the palette's field wants the keyboard.
         var presents: Bool {
             switch self {
-            case .add, .renameSession, .closeSession, .goTo, .agents, .settings: true
+            case .add, .renameSession, .closeSession, .goTo, .agents, .settings, .ports: true
             case .open, .newSession, .reconnect, .useSidebar: false
             }
         }
@@ -40,6 +42,10 @@ struct SessionPopover: Equatable {
         /// Down, with the short reason (`OfflineCopy.short`). `retrying` while an attempt the
         /// user asked for is under way.
         case down(String, retrying: Bool = false)
+
+        var isDown: Bool {
+            if case .down = self { true } else { false }
+        }
 
         var spoken: String {
             switch self {
@@ -61,6 +67,10 @@ struct SessionPopover: Equatable {
         var newSession: Action?
         /// The heading's Reconnect. Only while the machine is down and no attempt is under way.
         var reconnect: Action?
+        /// How many web ports programs in its panes listen on, last known while it is down.
+        var portCount = 0
+        /// The heading's ports button: the machine's ports in a sheet. Only while it has one.
+        var ports: Action?
     }
 
     struct Session: Identifiable, Equatable {
@@ -145,6 +155,8 @@ struct SessionPopover: Equatable {
         /// Connected and synced: no sessions means there are none.
         var synced = true
         var sessions: [Session]
+        /// Its web ports (`ServerConnection.portRowIDs`).
+        var ports = 0
     }
 
     /// Machines and their sessions in the sidebar's order, then the computers that aren't
@@ -167,7 +179,8 @@ struct SessionPopover: Equatable {
             if case .down(_, let r) = m.status { (down, retrying) = (true, r) }
             rows.append(.machine(Machine(id: m.id, name: m.name, platform: m.platform, status: m.status,
                                          newSession: up ? .newSession(m.id) : nil,
-                                         reconnect: down && !retrying ? .reconnect(m.id) : nil)))
+                                         reconnect: down && !retrying ? .reconnect(m.id) : nil,
+                                         portCount: m.ports, ports: m.ports > 0 ? .ports(m.id) : nil)))
             if up, m.synced, m.sessions.isEmpty { rows.append(.empty(m.id)) }
             for s in m.sessions {
                 let name = s.name.isEmpty ? "session" : s.name
@@ -204,6 +217,7 @@ struct SessionPopover: Equatable {
         case .closeSession: "Close Session"
         case .newSession: "New Session"
         case .reconnect: "Reconnect"
+        case .ports: "Ports"
         case .add: "Add"
         default: nil
         }
@@ -221,7 +235,9 @@ extension SessionPopover {
                    sessions: s.orderedSessions.map { e in
                        Source.Session(id: e.id, name: e.label, tab: s.views[e.id]?.activeWindow?.id,
                                       waiting: s.agentKeys.filter { $0.sessionID == e.id && $0.state == "blocked" }.count)
-                   })
+                   },
+                   // Read only while the popover is up, as everything here.
+                   ports: s.hasPortRows ? s.portRowIDs.count : 0)
         }
         self.init(machines: machines, hosts: KnownHost.unsaved(model.servers.map { ($0.config, $0.hosts) }),
                   current: model.selection, waiting: model.waitingAgentIDs.count)

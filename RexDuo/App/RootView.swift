@@ -76,6 +76,12 @@ struct RootView: View {
                    onDismiss: { model.helperSetup.presentPending() }) {
                 AgentsSheet().environment(model)
             }
+            .sheet(isPresented: Binding(get: { model.portsShown != nil }, set: { if !$0 { model.portsShown = nil } }),
+                   onDismiss: { model.helperSetup.presentPending() }) {
+                if let server = model.server(model.portsShown) {
+                    PortsSheet(server: server).environment(model)
+                }
+            }
             .helperSetupCover(model: model)
             .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
                 model.openSettings(at: .addServer)
@@ -117,6 +123,8 @@ struct RootView: View {
                 model.helperSetup.simulateFromLaunchArguments()
                 // `-sidebar closed` (testing): start with the sidebar hidden.
                 if UserDefaults.standard.string(forKey: "sidebar") == "closed" { sidebar.open = false }
+                // `-sidebar open` (testing): a drawer shows at launch too, over the tab.
+                if UserDefaults.standard.string(forKey: "sidebar") == "open" { sidebar.open = true }
                 // `-showAgents YES` (testing): open the Agents sheet at launch.
                 if UserDefaults.standard.bool(forKey: "showAgents") { model.showAgents() }
                 #endif
@@ -207,7 +215,7 @@ struct RootView: View {
                 SidebarSplit(arrangement: arr, theme: theme, navigation: prefs.navigation,
                              open: Binding(get: { sidebar.shows(inline: arr.inline) }, set: { sidebar.open = $0 })) {
                     SidebarView(mode: $sidebar.mode, onSelect: { _ in writeSidebar { $0.tabShown(inline: arr.inline) } })
-                        // A hidden sidebar reads no port: its Ports group catches up when it shows.
+                        // A hidden sidebar reads no port: its machines' ports buttons catch up when it shows.
                         .environment(\.sidebarShown, shown)
                 } tab: {
                     tab(arr)

@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The sidebar's rows in Sessions mode, flattened: each machine, then (unless folded) its sessions,
-/// then (unless folded) each session's tabs, then its Ports group while a program in one of its
-/// panes listens on a port. Pure, so it is tested; the view looks the ids up.
+/// then (unless folded) each session's tabs. A machine's ports are no rows: they open from its
+/// header (`MachinePortsButton`). Pure, so it is tested; the view looks the ids up.
 ///
 /// Every row's id stays the same for the life of its item, so `List` turns a fold into removals and
 /// a reopen into inserts, and animates only those rows.
@@ -12,11 +12,6 @@ enum SidebarOutline {
         var sessions: [Session]
         /// Connected and synced with no sessions: a "No sessions" row shows under it.
         var empty = false
-        /// A program in one of its panes listens on a port: the Ports group shows.
-        var hasPorts = false
-        /// The ids of the group's rows (`PortRow.id`). Left empty while the group is folded:
-        /// its header needs only `hasPorts`.
-        var ports: [String] = []
     }
 
     struct Session: Equatable {
@@ -31,9 +26,6 @@ enum SidebarOutline {
             case tab(UUID, session: String, window: String)
             /// A machine's "No sessions" row.
             case empty(UUID)
-            /// A machine's Ports group, after its sessions, and one port in it.
-            case portsHeader(UUID)
-            case port(UUID, id: String)
         }
         var kind: Kind
         /// The first machine: no divider above it.
@@ -50,8 +42,6 @@ enum SidebarOutline {
             case .session(let m, let s): "s:\(m.uuidString):\(s)"
             case .tab(let m, _, let w): "t:\(m.uuidString):\(w)"
             case .empty(let m): "e:\(m.uuidString)"
-            case .portsHeader(let m): "pg:\(m.uuidString)"
-            case .port(let m, let p): "p:\(m.uuidString):\(p)"
             }
         }
     }
@@ -81,12 +71,6 @@ enum SidebarOutline {
                     out.append(Row(kind: .tab(m.id, session: s.id, window: w), last: j == s.windowIDs.count - 1, index: j))
                 }
             }
-            guard m.hasPorts else { continue }
-            out.append(Row(kind: .portsHeader(m.id), index: m.sessions.count))
-            guard !collapsed.contains(SidebarCollapse.ports(m.id)) else { continue }
-            for (j, p) in m.ports.enumerated() {
-                out.append(Row(kind: .port(m.id, id: p), last: j == m.ports.count - 1, index: j))
-            }
         }
         return out
     }
@@ -97,8 +81,6 @@ enum SidebarOutline {
 enum SidebarCollapse {
     static func machine(_ id: UUID) -> String { "m:\(id.uuidString)" }
     static func session(_ server: UUID, _ session: String) -> String { "s:\(server.uuidString):\(session)" }
-    /// A machine's Ports group.
-    static func ports(_ id: UUID) -> String { "p:\(id.uuidString)" }
 
     /// Folds `key` if it is open, opens it if it is folded.
     static func toggled(_ keys: Set<String>, _ key: String) -> Set<String> {
@@ -117,13 +99,13 @@ enum SidebarCollapse {
 
     /// The saved keys without those of removed servers, and of sessions that a connected, synced
     /// server no longer has. `live` holds only such servers: a down server keeps its keys, since its
-    /// last known sessions stay listed.
+    /// last known sessions stay listed. The fold of the Ports group the sidebar once had (`p:`) goes.
     static func pruned(_ keys: Set<String>, servers: [UUID], live: [UUID: [String]]) -> Set<String> {
         let known = Set(servers.map(\.uuidString))
         let liveKeys = Set(live.flatMap { id, sessions in sessions.map { session(id, $0) } })
         return keys.filter { key in
             let parts = key.split(separator: ":", maxSplits: 2).map(String.init)
-            guard parts.count >= 2, known.contains(parts[1]) else { return false }
+            guard parts.count >= 2, parts[0] != "p", known.contains(parts[1]) else { return false }
             if parts[0] == "s", let id = UUID(uuidString: parts[1]), live[id] != nil {
                 return liveKeys.contains(key)
             }

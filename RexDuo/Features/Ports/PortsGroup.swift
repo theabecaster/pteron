@@ -1,93 +1,47 @@
 import RexKit
 import SwiftUI
 
-/// The header of a machine's Ports group in the sidebar: it folds like a session. The group
-/// shows only while a program in one of the machine's panes listens on a port
-/// (docs/sidebar.md, Ports). Folded it shows no count, so nothing runs for a port that comes
-/// or goes while it is folded.
-struct PortsHeaderRow: View, Equatable {
-    let serverID: UUID
-    let collapsed: Bool
-    let topGap: CGFloat
-    let dim: Bool
-    let theme: TermTheme
-    @Environment(Prefs.self) private var prefs
-
-    nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.serverID == b.serverID && a.collapsed == b.collapsed && a.topGap == b.topGap
-            && a.dim == b.dim && a.theme.id == b.theme.id
-    }
-
-    var body: some View {
-        let id = serverID
-        let toggle = { toggleFold(SidebarCollapse.ports(id), prefs) }
-        Button(action: toggle) {
-            HStack(spacing: 0) {
-                Text("Ports")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(theme.chrome.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Chevron(open: !collapsed, theme: theme)
-            }
-            .padding(.leading, SidebarMetrics.sessionLeading)
-            .padding(.trailing, SidebarMetrics.pad)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusable(interactions: .activate)
-        .onKeyPress(.return) { toggle(); return .handled }
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
-        .padding(.top, topGap)
-        .opacity(dim ? 0.45 : 1)
-    }
-}
-
 extension EnvironmentValues {
-    /// False while the sidebar is hidden (a closed drawer, a closed inline sidebar). The Ports
-    /// group then reads no port state, so a port that comes, goes or changes hands runs no view.
+    /// False while the sidebar is hidden (a closed drawer, a closed inline sidebar). A machine's
+    /// ports button then reads no port state, so a port that comes, goes or changes hands runs
+    /// no view.
     @Entry var sidebarShown = true
 }
 
-/// What the Ports group last read, kept for while the sidebar is hidden. Not observed: writing
-/// it from a body re-renders nothing.
+/// What a machine's ports button last read, kept for while the sidebar is hidden. Not observed:
+/// writing it from a body re-renders nothing.
 @MainActor
 final class PortsSeen {
-    var has: [UUID: Bool] = [:]
-    var ids: [UUID: [String]] = [:]
-    var row: PortRow?
+    var counts: [UUID: Int] = [:]
 
-    /// The machine's rows as the list may read them now: fresh while the sidebar shows and the
-    /// group is open; else whether there are any (shown, folded); else what was read last.
-    func rows(_ server: ServerConnection, shown: Bool, open: Bool) -> (has: Bool, ids: [String]) {
-        guard shown else { return (has[server.id] ?? false, open ? (ids[server.id] ?? []) : []) }
-        let any = server.hasPortRows
-        has[server.id] = any
-        guard open else { return (any, []) }
-        let now = server.portRowIDs
-        ids[server.id] = now
-        return (any, now)
+    /// How many ports the machine's button shows now: fresh while it is shown, else what was
+    /// read last. With no ports it reads only `hasPortRows`, which changes with the first and the
+    /// last port; with some, `portRowIDs`, which changes only when a row comes or goes.
+    func count(_ server: ServerConnection, shown: Bool) -> Int {
+        guard shown else { return counts[server.id] ?? 0 }
+        let n = server.hasPortRows ? server.portRowIDs.count : 0
+        counts[server.id] = n
+        return n
     }
 }
 
-/// One port of the Ports group: what runs and where, with `localhost:3000` under it. A tap opens
-/// its page in the app; the menu and the swipe copy its link, show its pane and stop its program.
+/// One port of a machine's ports list (`PortsList`): what runs and where, with `localhost:3000`
+/// under it. A tap, or Return on a focused row, opens its page in the app; the menu and the
+/// VoiceOver actions copy its link, show its pane and stop its program.
 ///
 /// It reads the port, its pane's foreground process and its Stop state in its own body, so a
 /// change to one port re-renders this row alone.
 struct PortRowView: View {
     let server: ServerConnection
-    /// `PortRow.id`, and the row's id in the sidebar's outline (for the swipe).
+    /// `PortRow.id`.
     let rowID: String
-    let outlineID: String
     let dim: Bool
     let theme: TermTheme
-    let swipe: SwipeState
+    /// Where the tile starts.
+    var leading: CGFloat = 16
+    /// Closes the list's popover or sheet, then runs the action once it has gone (`PortsList`).
+    var close: PortsList.Close = { $0() }
     @Environment(AppModel.self) private var model
-    @Environment(\.sidebarShown) private var sidebarShown
-    @State private var seen = PortsSeen()
     @ScaledMetric(relativeTo: .subheadline) private var scale: CGFloat = 1
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -95,22 +49,23 @@ struct PortRowView: View {
         #if DEBUG
         let _ = RenderCount.bump(.portRows)
         #endif
-        // Hidden, the row is what it was: it reads nothing until the sidebar shows again.
-        let row = sidebarShown ? model.ports.row(server, id: rowID) : seen.row
-        let _ = sidebarShown ? (seen.row = row) : ()
-        if let row {
-            content(row, live: sidebarShown)
+        // The list builds its rows only while it is up, so a row always reads its port live.
+        if let row = model.ports.row(server, id: rowID) {
+            content(row)
         }
     }
 
     @ViewBuilder
-    private func content(_ row: PortRow, live: Bool) -> some View {
+    private func content(_ row: PortRow) -> some View {
         let ports = model.ports, server = server
-        let status = live ? ports.status(server, row) : nil
-        let canStop = live && !dim && ports.offersStop(server, row)
-        let open = { ports.open(server, row) }
-        let copy = { ports.copyLink(server, row) }
-        let show = { _ = ports.showPane(server, row) }
+        let status = ports.status(server, row)
+        let canStop = !dim && ports.offersStop(server, row)
+        let close = close
+        // The page and the pane come up once the list has gone; Copy Link closes it too. Stop
+        // leaves it up, so the row can say "Stopping…".
+        let open = { close { ports.open(server, row) } }
+        let copy = { close { ports.copyLink(server, row) } }
+        let show = { close { _ = ports.showPane(server, row) } }
         let stop = { ports.stop(server, row) }
         Button(action: open) { label(row, status) }
             .buttonStyle(.plain)
@@ -123,13 +78,10 @@ struct PortRowView: View {
                     Button(role: .destructive, action: stop) { Label("Stop", systemImage: "stop.circle") }
                 }
             }
+            .accessibilityAction(named: "Copy Link", copy)
+            .accessibilityAction(named: "Show Pane", show)
+            .modifier(StopAction(enabled: canStop, stop: stop))
             .opacity(dim ? 0.45 : 1)
-            .modifier(SidebarStackRow(theme: theme))
-            .modifier(SidebarSwipe(id: outlineID, leading: [
-                SwipeAction(title: "Show Pane", symbol: "terminal", tint: theme.accent, action: show),
-            ], trailing: (canStop ? [SwipeAction(title: "Stop", symbol: "stop.circle", tint: theme.chrome.error, action: stop)] : []) + [
-                SwipeAction(title: "Copy Link", symbol: "link", tint: theme.chrome.secondary, action: copy),
-            ], state: swipe))
     }
 
     private func label(_ row: PortRow, _ status: PortActions.Status?) -> some View {
@@ -158,10 +110,10 @@ struct PortRowView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-        .padding(.leading, SidebarMetrics.tabLeading)
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+        .padding(.leading, leading)
+        .padding(.trailing, 16)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel([title, row.entry.name, state].compactMap { $0 }.joined(separator: ", "))
@@ -174,5 +126,15 @@ struct PortRowView: View {
         case .stillRunning: "Still running"
         case nil: nil
         }
+    }
+}
+
+/// Stop as a VoiceOver action, only where the menu offers it.
+private struct StopAction: ViewModifier {
+    let enabled: Bool
+    let stop: () -> Void
+
+    func body(content: Content) -> some View {
+        if enabled { content.accessibilityAction(named: "Stop", stop) } else { content }
     }
 }

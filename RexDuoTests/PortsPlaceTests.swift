@@ -3,7 +3,7 @@ import XCTest
 @testable import RexKit
 @testable import RexDuo
 
-/// The Ports group: its names, its rows, where it shows, and Stop's rule (docs/terminal.md, Ports).
+/// A machine's ports: their names, their rows, where they show, and Stop's rule (docs/terminal.md, Ports).
 final class PortsPlaceLogicTests: XCTestCase {
     private func entry(_ port: Int = 3000, process: String? = nil, pid: Int? = 7, program: String? = nil, folder: String? = nil) -> PortEntry {
         PortEntry(port: port, dialHost: "127.0.0.1", process: process, pid: pid, program: program, folder: folder)
@@ -49,35 +49,24 @@ final class PortsPlaceLogicTests: XCTestCase {
         XCTAssertEqual(PortRows.rows(panes: [("s1", "b1")]) { agent[$0] }.map(\.id), ["b1:3000"])
     }
 
-    // MARK: The outline (hazard 7)
+    // MARK: The sidebar (hazard 7)
 
-    func testTheGroupShowsOnlyWithPortsAndFolds() {
+    func testPortsAddNoRowToTheSidebar() {
         let a = UUID(), b = UUID()
         let s = SidebarOutline.Session(id: "s1", windowIDs: ["w1"])
-        var machines = [SidebarOutline.Machine(id: a, sessions: [s]), SidebarOutline.Machine(id: b, sessions: [s])]
-        let none = SidebarOutline.rows(machines, collapsed: [])
-        XCTAssertFalse(none.contains { if case .portsHeader = $0.kind { true } else { false } }, "no port, no group")
-        XCTAssertEqual(none.count, 6)
-        machines[0].hasPorts = true
-        machines[0].ports = ["b1:3000", "b1:5173"]
-        let open = SidebarOutline.rows(machines, collapsed: [])
-        XCTAssertEqual(open.map(\.id), [
+        let machines = [SidebarOutline.Machine(id: a, sessions: [s]), SidebarOutline.Machine(id: b, sessions: [s])]
+        // The outline has no place for ports: they open from the machine's header.
+        XCTAssertEqual(SidebarOutline.rows(machines, collapsed: []).map(\.id), [
             "m:\(a.uuidString)", "s:\(a.uuidString):s1", "t:\(a.uuidString):w1",
-            "pg:\(a.uuidString)", "p:\(a.uuidString):b1:3000", "p:\(a.uuidString):b1:5173",
             "m:\(b.uuidString)", "s:\(b.uuidString):s1", "t:\(b.uuidString):w1",
-        ], "after the machine's sessions, and only under the machine that has ports")
-        let folded = SidebarOutline.rows(machines, collapsed: [SidebarCollapse.ports(a)])
-        XCTAssertEqual(folded.count, 7, "folded: the header alone")
-        // Folded, the list hands over no ids at all: the header needs only that there are ports.
-        machines[0].ports = []
-        XCTAssertEqual(SidebarOutline.rows(machines, collapsed: [SidebarCollapse.ports(a)]).map(\.id), folded.map(\.id))
-        machines[0].ports = ["b1:3000", "b1:5173"]
-        XCTAssertTrue(folded.contains { $0.id == "pg:\(a.uuidString)" })
-        XCTAssertEqual(SidebarOutline.rows(machines, collapsed: [SidebarCollapse.machine(a)]).count, 4, "a folded machine hides it")
-        // The fold is kept like the other groups', and goes with its server.
-        let key = SidebarCollapse.ports(a)
-        XCTAssertEqual(SidebarCollapse.pruned([key], servers: [a], live: [a: ["s1"]]), [key])
-        XCTAssertEqual(SidebarCollapse.pruned([key], servers: [b], live: [:]), [])
+        ])
+        // The fold the Ports group once saved goes on the next prune; the others stay.
+        let kept = SidebarCollapse.pruned(["p:\(a.uuidString)", SidebarCollapse.machine(a)], servers: [a, b], live: [a: ["s1"]])
+        XCTAssertEqual(kept, [SidebarCollapse.machine(a)])
+    }
+
+    func testTheSpokenPortsButtonNamesItsMachine() {
+        XCTAssertEqual(MachinePortsButton.spoken(2, machine: "desk"), "Ports on desk, 2 open")
     }
 
     // MARK: Stop's rule (hazards 1 and 3)
@@ -103,7 +92,7 @@ final class PortsPlaceLogicTests: XCTestCase {
     }
 }
 
-/// The Ports group against a Rex server in this process (`FakeRexServer`).
+/// A machine's ports against a Rex server in this process (`FakeRexServer`).
 @MainActor
 final class PortsPlaceServerTests: XCTestCase {
     typealias Rig = ServerEventsTests.Rig
@@ -211,32 +200,92 @@ final class PortsPlaceServerTests: XCTestCase {
         r.stop()
     }
 
-    func testAFoldedGroupOrAHiddenSidebarReadsNoPortList() async throws {
+    /// The machine's ports button (`MachinePortsButton`) reads its count through `PortsSeen`:
+    /// a port that changes hands redraws nothing, one that comes or goes redraws the button, and
+    /// a hidden sidebar's button reads nothing at all.
+    func testThePortsButtonRedrawsOnlyWhenARowComesOrGoes() async throws {
         let r = try await rig()
         await r.connect()
         _ = await eventually { r.server.portRowIDs.count == 4 }
         let seen = PortsSeen()
-        let folded = Said(), hidden = Said()
-        var got: (has: Bool, ids: [String]) = (false, [])
-        // Shown and open first, so there is something to remember.
-        XCTAssertEqual(seen.rows(r.server, shown: true, open: true).ids.count, 4)
-        withObservationTracking { got = seen.rows(r.server, shown: true, open: false) } onChange: { Task { @MainActor in folded.texts.append("folded") } }
-        XCTAssertTrue(got.has)
-        XCTAssertEqual(got.ids, [], "folded: the header alone")
-        withObservationTracking { got = seen.rows(r.server, shown: false, open: true) } onChange: { Task { @MainActor in hidden.texts.append("hidden") } }
-        XCTAssertEqual(got.ids.count, 4, "hidden: the rows as last read")
-        // A port comes, another changes hands, one goes.
+        let shown = Said(), hidden = Said()
+        var count = 0
+        withObservationTracking { count = seen.count(r.server, shown: true) } onChange: { Task { @MainActor in shown.texts.append("shown") } }
+        XCTAssertEqual(count, 4)
+        withObservationTracking { count = seen.count(r.server, shown: false) } onChange: { Task { @MainActor in hidden.texts.append("hidden") } }
+        XCTAssertEqual(count, 4, "hidden: the count as last read")
+        // Another process takes a port: the same rows.
+        sendPorts(r, block: "block:1a", [5173], pid: 70)
+        _ = await eventually { r.server.portRow("block:1a:5173")?.entry.pid == 70 }
+        await quiet(200)
+        XCTAssertEqual(shown.texts, [], "a port that changes hands doesn't redraw the button")
+        // A port comes.
         sendPorts(r, block: "block:1a", [5173, 8080], pid: 70)
         _ = await eventually { r.server.portRowIDs.count == 5 }
-        sendPorts(r, block: "block:1a", [8080], pid: 71)
+        await quiet(100)
+        XCTAssertEqual(shown.texts, ["shown"], "one that comes does")
+        XCTAssertEqual(hidden.texts, [], "a hidden sidebar's button is told of nothing")
+        XCTAssertEqual(seen.count(r.server, shown: false), 4)
+        XCTAssertEqual(seen.count(r.server, shown: true), 5, "shown again, it reads the count as it is now")
+        r.stop()
+    }
+
+    /// No port: the button shows nothing, and reads only whether there is one.
+    func testWithoutPortsTheButtonShowsNothingAndWaitsForTheFirst() async throws {
+        let r = try await rig()
+        r.fake.reply(PortsTests.ports, PortsTests.reply([]))
+        await r.connect()
+        let synced = await eventually { r.server.synced && r.server.views.count == 2 }
+        XCTAssertTrue(synced)
+        await quiet()
+        let seen = PortsSeen(), told = Said()
+        var count = -1
+        withObservationTracking { count = seen.count(r.server, shown: true) } onChange: { Task { @MainActor in told.texts.append("told") } }
+        XCTAssertEqual(count, 0)
+        XCTAssertFalse(r.server.hasPortRows)
+        sendPorts(r, block: "block:2a", [3000])
+        _ = await eventually { r.server.hasPortRows }
+        await quiet(100)
+        XCTAssertEqual(told.texts, ["told"])
+        XCTAssertEqual(seen.count(r.server, shown: true), 1)
+        r.stop()
+    }
+
+    /// Tab mode's session popover: the machine heading's ports button shows only with ports,
+    /// opens the machine's ports in a sheet, and stays, dimmed, for a down machine's last ports.
+    func testTheSessionPopoverOpensTheMachinesPorts() async throws {
+        let r = try await rig()
+        await r.connect()
         _ = await eventually { r.server.portRowIDs.count == 4 }
-        await quiet(200)
-        XCTAssertEqual(folded.texts, [], "a folded group's list is not told of a port that comes or goes")
-        XCTAssertEqual(hidden.texts, [], "nor is a hidden sidebar's")
-        XCTAssertEqual(seen.rows(r.server, shown: false, open: true).ids.count, 4)
-        // Shown again, it reads the list as it is now.
-        XCTAssertEqual(Set(seen.rows(r.server, shown: true, open: true).ids), Set(r.server.portRowIDs))
-        XCTAssertTrue(seen.rows(r.server, shown: true, open: true).ids.contains("block:1a:8080"))
+        let model = AppModel(prefs: r.server.prefs, connect: false)
+        model.servers = [r.server]
+        func heading() -> SessionPopover.Machine? {
+            for row in SessionPopover(model).rows { if case .machine(let m) = row { return m } }
+            return nil
+        }
+        XCTAssertEqual(heading()?.portCount, 4)
+        XCTAssertEqual(heading()?.ports, .ports(r.server.id))
+        XCTAssertTrue(SessionPopover.Action.ports(r.server.id).presents, "it waits for the popover to close")
+        StripRoutes(model: model, dialogs: SidebarActions(), open: { _ in }).run(.ports(r.server.id))
+        XCTAssertEqual(model.portsShown, r.server.id)
+        XCTAssertTrue(model.helperSetup.sheetIsUp())
+        model.portsShown = nil
+        // Under Settings it stays shut.
+        model.showSettings = true
+        model.showPorts(r.server.id)
+        XCTAssertNil(model.portsShown)
+        model.showSettings = false
+        // Down, the last known ports stay, dimmed.
+        r.server.phase = .offline(ConnectionProblem(kind: .notAnswering, detail: "test"))
+        XCTAssertEqual(heading()?.portCount, 4)
+        XCTAssertTrue(heading()?.status.isDown == true)
+        // The last port goes: no button.
+        r.server.phase = .online
+        for b in ["block:1a", "block:1b", "block:2a", "block:2b"] { sendPorts(r, block: b, []) }
+        let gone = await eventually { !r.server.hasPortRows }
+        XCTAssertTrue(gone)
+        XCTAssertNil(heading()?.ports)
+        XCTAssertEqual(heading()?.portCount, 0)
         r.stop()
     }
 

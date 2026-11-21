@@ -85,6 +85,23 @@ struct SessionPopoverView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 4)
+            if let ports = m.ports {
+                Button { onAction(ports) } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "globe").font(.caption.weight(.semibold))
+                        Text("\(m.portCount)").font(.caption.weight(.medium)).monospacedDigit()
+                    }
+                    .foregroundStyle(theme.chrome.secondary)
+                    .opacity(m.status.isDown ? 0.45 : 1)
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    .fixedSize()
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(MachinePortsButton.spoken(m.portCount, machine: m.name))
+            }
             if let reconnect = m.reconnect {
                 headingButton(SessionPopover.title(reconnect) ?? "", symbol: "arrow.clockwise", action: reconnect)
             }

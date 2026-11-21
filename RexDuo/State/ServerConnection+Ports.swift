@@ -6,7 +6,7 @@ struct PortWatch {
     var session: String
 }
 
-/// One row of a machine's Ports group: a web port a program in one of its panes listens on.
+/// One row of a machine's ports list: a web port a program in one of its panes listens on.
 struct PortRow: Equatable, Identifiable {
     var sessionID: String
     var blockID: String
@@ -15,7 +15,7 @@ struct PortRow: Equatable, Identifiable {
     var id: String { "\(blockID):\(entry.port)" }
 }
 
-/// The Ports group's rows from the panes' lists. Pure, so it is tested.
+/// The ports list's rows from the panes' lists. Pure, so it is tested.
 enum PortRows {
     /// `panes` in sidebar order; each pane's web ports follow by number. A port an agent holds
     /// itself (its sign-in or editor link) is no dev server: it gets no row. A server the agent
@@ -31,7 +31,7 @@ enum PortRows {
     }
 }
 
-/// Ports: which TCP ports programs in a pane listen on, for the sidebar's Ports group, the pane
+/// Ports: which TCP ports programs in a pane listen on, for each machine's ports list, the pane
 /// menu's row and tapped `localhost` links, and the gates that say where any of it applies
 /// (docs/terminal.md, Ports).
 ///
@@ -69,7 +69,7 @@ extension ServerConnection {
         views[sid]?.windowContaining(block: bid)?.block(bid)
     }
 
-    /// The pane menu's row, the Ports group and links show for this block: a local terminal on
+    /// The pane menu's row, the ports list and links show for this block: a local terminal on
     /// a server that lists ports and makes tunnels.
     func showsPorts(session sid: String, block bid: String) -> Bool {
         guard portsAvailable, tunnelsAvailable, let b = blockInfo(session: sid, block: bid) else { return false }
@@ -84,7 +84,7 @@ extension ServerConnection {
         fillPorts(session: sid, block: bid)
     }
 
-    /// The pane left the screen. Its list stays: the Ports group shows it.
+    /// The pane left the screen. Its list stays: the ports list shows it.
     func unwatchPorts(_ bid: String) {
         portWatch[bid] = nil
     }
@@ -184,7 +184,7 @@ extension ServerConnection {
     }
 
     /// A new connection: every list is read again after the sync. Until then the lists from
-    /// before stay, so the Ports group doesn't leave and come back on every reconnect.
+    /// before stay, so the ports list doesn't leave and come back on every reconnect.
     func resetPorts() {
         pendingPorts = [:]
         portsRead = [:]
@@ -211,7 +211,7 @@ extension ServerConnection {
         refreshPortRows()
     }
 
-    /// Works out the Ports group's rows again, and writes them only when they changed. Called
+    /// Works out the ports list's rows again, and writes them only when they changed. Called
     /// where a list or the gates change; nothing reads the lists per frame.
     func refreshPortRows() {
         var rows: [PortRow] = []

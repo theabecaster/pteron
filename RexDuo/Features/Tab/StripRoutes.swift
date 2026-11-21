@@ -44,6 +44,8 @@ struct StripRoutes {
             model.perform(.goTo(.anything))
         case .agents:
             model.showAgents()
+        case .ports(let id):
+            model.showPorts(id)
         case .settings:
             model.showSettings = true
         case .useSidebar:
