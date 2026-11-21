@@ -128,6 +128,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private let errorTitle = UILabel()
     private let errorDetail = UILabel()
     private var errorBuilt = false
+    /// The menu and the arrows are in the bars (`buildItems`).
+    private var itemsBuilt = false
     /// What the web view loads once it exists: the page, or a path typed before it did.
     private var firstLoad: URL?
     private lazy var backItem = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goBack() })
@@ -193,10 +195,12 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     // MARK: View
 
-    /// The bars come up with the sheet's first frame. The web view is the one costly thing to
-    /// make, and WebKit makes it on the main thread only, so it is made on a turn of its own
-    /// after that frame, its load starts at once, and it joins the view on the turn after: the
-    /// main thread is never held for all three together. Nothing is made before a page opens.
+    /// The bars come up with the sheet's first frame, holding the title, the address and Done.
+    /// The menu and the arrows, whose images cost the most of the bars, come on the turn after,
+    /// into room the bars already hold, so nothing moves. The web view is the one costly thing
+    /// to make, and WebKit makes it on the main thread only, so it is made on a turn of its own
+    /// after that, its load starts at once, and it joins the view on the turn after: the main
+    /// thread is never held for all of them together. Nothing is made before a page opens.
     override func viewDidLoad() {
         super.viewDidLoad()
         let trace = PreviewTrace.begin("viewDidLoad")
@@ -205,7 +209,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         errorView.isHidden = true
         PreviewTrace.measure("buildChrome") { buildChrome() }
         refresh()
-        DispatchQueue.main.async { [weak self] in self?.makeWebView() }
+        DispatchQueue.main.async { [weak self] in self?.buildItems() }
     }
 
     #if DEBUG || BENCH
@@ -295,14 +299,26 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         titleStack = stack
         navigationItem.titleView = stack
         navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.done() })
-        let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: makeMenu())
-        more.accessibilityLabel = "More"
-        navigationItem.rightBarButtonItem = more
-        backItem.accessibilityLabel = "Back"
-        forwardItem.accessibilityLabel = "Forward"
-        reloadItem.accessibilityLabel = "Reload"
-        toolbarItems = [backItem, UIBarButtonItem(systemItem: .fixedSpace), forwardItem, UIBarButtonItem(systemItem: .flexibleSpace), reloadItem]
-        if let fixed = toolbarItems?[1] { fixed.width = 28 }
+    }
+
+    /// The menu and the arrows, one turn after the bars. The title is centered with or without
+    /// the menu's button, and the toolbar is up, empty, from the first frame.
+    private func buildItems() {
+        guard !closed, !itemsBuilt else { return }
+        PreviewTrace.measure("buildItems") {
+            let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: makeMenu())
+            more.accessibilityLabel = "More"
+            navigationItem.rightBarButtonItem = more
+            backItem.accessibilityLabel = "Back"
+            forwardItem.accessibilityLabel = "Forward"
+            reloadItem.accessibilityLabel = "Reload"
+            let gap = UIBarButtonItem(systemItem: .fixedSpace)
+            gap.width = 28
+            toolbarItems = [backItem, gap, forwardItem, UIBarButtonItem(systemItem: .flexibleSpace), reloadItem]
+            itemsBuilt = true
+        }
+        refresh()
+        DispatchQueue.main.async { [weak self] in self?.makeWebView() }
     }
 
     private func makeMenu() -> UIMenu {
@@ -360,9 +376,11 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             navigationItem.titleView?.accessibilityLabel = "\(title), \(host)"
             (navigationItem.titleView as? UIStackView)?.sizeToFit()
         }
-        let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
-        if backItem.isEnabled != back { backItem.isEnabled = back }
-        if forwardItem.isEnabled != forward { forwardItem.isEnabled = forward }
+        if itemsBuilt {
+            let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
+            if backItem.isEnabled != back { backItem.isEnabled = back }
+            if forwardItem.isEnabled != forward { forwardItem.isEnabled = forward }
+        }
         #if DEBUG
         onChange?()
         #endif
