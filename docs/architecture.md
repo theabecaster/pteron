@@ -208,7 +208,12 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     one and the floor counted from it. A launch opens one socket per server (`ControlKickTests`).
   - *Liveness:* a ping when nothing came in for 30 s, and at once when a request got nothing
     back for 5 s (10 s on cellular); no pong in 10 s (20 s) is a dead connection. The connect
-    deadline is 10 s (15 s), the wake pong 2.5 s (5 s).
+    deadline is 10 s (15 s), the wake pong 2.5 s (5 s). There is one watchdog per connection,
+    not a deadline per call: while any call waits (typed input is one), the silence is counted
+    from the later of the last frame in and the oldest waiting call, and one wait is set for
+    what is left of it. Frames that keep arriving keep it quiet however long a call takes. It
+    neither waits nor fires in the background, and a wait set before a drop does nothing to the
+    next connection (`ControlWatchdogTests`).
   - *Background:* `enteredBackground()` cancels every wait and the pings and gives up an attempt
     that is under way; `wake()` ends it.
 - **One gate per host, for every socket.** The control connection is the only thing that asks a

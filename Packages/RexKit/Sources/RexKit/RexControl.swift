@@ -112,6 +112,8 @@ public final class RexControl {
     let session: URLSession
     /// Calls waiting for their answer, by request id.
     private var pending: [String: (Result<DecodedJSON, Error>) -> Void] = [:]
+    /// When each of those calls was sent, by request id: the watchdog waits on the oldest.
+    private var sentAt: [String: Date] = [:]
     private var nextID = 0
     private var reconnectToken: String?
     private var welcomeWaiter: CheckedContinuation<Void, Error>?
@@ -188,6 +190,9 @@ public final class RexControl {
     private var pingOut: Int?
     private var pingSerial = 0
     private var watchdogArmed = false
+    /// Counts the watchdog's waits, so one that was set before a drop, a stop or the background
+    /// does nothing when it ends.
+    private var watchdogSerial = 0
     /// The rules of reconnecting; this class keeps one host's state and asks.
     public let policy: ReconnectPolicy
     /// What this host shares with the others: the budget and the tunnel breaker.
@@ -488,24 +493,55 @@ public final class RexControl {
         }
     }
 
-    /// A request went out: if nothing at all comes back within `activityTimeout`, a ping goes at
-    /// once instead of at the keepalive's turn. One wait at a time, however many requests.
+    /// The connection's one liveness watchdog. While a call waits for its answer (typed input
+    /// is one: `terminal.write`), nothing at all coming in for `activityTimeout` sends a ping at
+    /// once instead of at the keepalive's turn, so a host that is gone is found in seconds. It
+    /// is no deadline on a call: frames that keep arriving keep it quiet however long one call
+    /// takes, and a ping that is answered ends it until the next request.
+    ///
+    /// The silence counts from the later of the last frame in and the oldest call still
+    /// waiting, and the one wait is set for exactly what is left of it, however many requests
+    /// there are. Nothing waits in the background: `enteredBackground()` ends the wait, and the
+    /// pong of the return starts a new one (`wake()`).
     private func armWatchdog() {
-        guard !watchdogArmed else { return }
+        guard !watchdogArmed, state == .connected, !pending.isEmpty else { return }
+        guard !suspended || policy.worksInBackground else { return }
         watchdogArmed = true
-        let gen = generation, timeout = policy.activityTimeout(expensive: pathExpensive)
+        watchdogSerial += 1
+        let serial = watchdogSerial
+        let left = max(0, policy.activityTimeout(expensive: pathExpensive) - quiet)
         Task { @MainActor [weak self, clock] in
-            await clock.sleep(seconds: timeout)
-            guard let self else { return }
+            await clock.sleep(seconds: left)
+            guard let self, serial == self.watchdogSerial else { return }
             self.watchdogArmed = false
-            guard gen == self.generation, self.state == .connected, !self.pending.isEmpty else { return }
-            if self.clock.now.timeIntervalSince(self.lastInbound) >= timeout {
+            guard self.state == .connected, !self.pending.isEmpty else { return }
+            if self.quiet >= self.policy.activityTimeout(expensive: self.pathExpensive) {
                 self.ping(deadline: self.policy.pongDeadline(expensive: self.pathExpensive))
             } else {
                 self.armWatchdog()
             }
         }
     }
+
+    /// How long nothing has come in while a call waited: since the last frame, or since the
+    /// oldest waiting call went out if that was later.
+    private var quiet: Double {
+        let since = max(lastInbound, sentAt.values.min() ?? clock.now)
+        return clock.now.timeIntervalSince(since)
+    }
+
+    /// Ends the watchdog's wait, if one is set: the wait that is sleeping does nothing.
+    private func disarmWatchdog() {
+        watchdogArmed = false
+        watchdogSerial += 1
+    }
+
+    /// Asks the connection whether it is alive, now: a ping with the pong deadline, unless one
+    /// waits already. No pong drops the host as any missed pong does.
+    func checkLiveness() {
+        ping(deadline: policy.pongDeadline(expensive: pathExpensive))
+    }
+
 
     private func receiveLoop(_ t: any ControlSocket, gen: Int) {
         t.receive { [weak self] result in
@@ -801,6 +837,7 @@ public final class RexControl {
         cancelRetry()
         pingTimer?.cancel()
         pingOut = nil
+        disarmWatchdog()
         if state == .connecting { cancelAttempt() }
     }
 
@@ -965,6 +1002,8 @@ public final class RexControl {
         ping(deadline: deadline, replacing: true) { [weak self] in
             self?.retryAtOnceUntil = .distantPast
             self?.verdict()
+            // Calls that were waiting before the background are watched again, from now.
+            self?.armWatchdog()
         }
     }
 
@@ -1008,6 +1047,8 @@ public final class RexControl {
     private func failAll(_ err: Error) {
         let p = pending
         pending.removeAll()
+        sentAt.removeAll()
+        disarmWatchdog()
         for (_, c) in p { c(.failure(err)) }
     }
 
@@ -1041,6 +1082,7 @@ public final class RexControl {
             welcomeWaiter = nil
         case "response":
             guard let id = m.str("id"), let c = pending.removeValue(forKey: id) else { return }
+            sentAt[id] = nil
             if let e = m.obj("error") {
                 c(.failure(RexError(code: e.str("code") ?? "internal", message: e.str("message") ?? "error", status: e.int("status") ?? 500)))
             } else {
@@ -1140,6 +1182,7 @@ public final class RexControl {
         var req: JSONObject = ["type": "request", "id": id, "method": method]
         if let payload { req["payload"] = payload }
         pending[id] = answer
+        sentAt[id] = clock.now
         armWatchdog()
         t.send(.string(JSONCodec.encode(req))) { err in
             guard let err else { return }
@@ -1147,6 +1190,7 @@ public final class RexControl {
                 // The socket didn't take the message, so the server never saw it. (A request
                 // that was sent and then lost its connection fails in `failAll`.)
                 if let c = self.pending.removeValue(forKey: id) {
+                    self.sentAt[id] = nil
                     c(.failure(RexError.unsent(err.localizedDescription)))
                 }
             }
