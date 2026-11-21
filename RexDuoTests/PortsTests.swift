@@ -145,6 +145,28 @@ final class PortsTests: XCTestCase {
         r.stop()
     }
 
+    /// On Wi-Fi the ports' reads keep their own width and go through no gate. On cellular they
+    /// take their turns at the sync's gate, so the sync's reads and theirs together stay at four.
+    func testOnCellularThePortsReadsShareTheSyncsFour() async throws {
+        let r = try await rig(18)
+        defer { r.stop() }
+        await r.connect()
+        _ = await eventually { r.fake.count(Self.ports) == 4 }
+        XCTAssertEqual(r.server.syncCalls.total, 0, "on Wi-Fi nothing goes through the gate")
+
+        r.server.control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        r.fake.forget()
+        r.fake.dropAll()
+        _ = await eventually(seconds: 8) { r.server.connectionSerial == 2 && r.fake.count(Self.ports) == 4 }
+        await r.settle(keymapLoads: 1)
+        _ = await eventually { r.server.syncCalls.inFlight == 0 }
+        let reads = ["program_status", "title", "process"].reduce(0) { $0 + r.fake.count("\(Self.terminal).\($1)") }
+        let gated = r.fake.count("session.attach") + reads + r.fake.count(Self.ports) + r.fake.count("block_creator.list")
+        XCTAssertEqual(r.fake.count(Self.ports), 4)
+        XCTAssertEqual(r.server.syncCalls.total, gated, "every read of the sync, the ports' among them, took a turn")
+        XCTAssertLessThanOrEqual(r.server.syncCalls.peak, 4)
+    }
+
     func testAPaneOffScreenKeepsItsEventsToo() async throws {
         let r = try await rig(18)
         await r.connect()

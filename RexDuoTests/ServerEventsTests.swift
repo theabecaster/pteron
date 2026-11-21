@@ -731,6 +731,128 @@ final class ServerEventsTests: XCTestCase {
         XCTAssertEqual(OfflineCopy.short(.updateApp), "Update \(Brand.appName)")
         XCTAssertNil(OfflineAction.secondary(for: .updateServer))
     }
+
+    // MARK: A sync's reads: all at once on Wi-Fi, four at a time on cellular
+
+    private static let metaReads = ["program_status", "title", "process"]
+
+    /// Reads of status, title and process the fake has seen.
+    private func metaCount(_ rig: Rig) -> Int {
+        Self.metaReads.reduce(0) { $0 + rig.fake.count("\(Self.terminal).\($1)") }
+    }
+
+    /// Eight sessions of two panes, connected on Wi-Fi, with every read slow enough to overlap.
+    private func eightSessions() async throws -> Rig {
+        let rig = try await Rig(revision: 18)
+        rig.setSessions((1...8).map { "session:\($0)" })
+        rig.server.shownSession = { "session:6" }
+        for m in Self.metaReads { rig.fake.delay("\(Self.terminal).\(m)", seconds: 0.03) }
+        rig.fake.delay("session.attach", seconds: 0.03)
+        await rig.connect()
+        return rig
+    }
+
+    /// The phone moves to cellular, as `NetworkWatch` tells the connection.
+    private func cellular(_ rig: Rig, _ on: Bool = true) {
+        rig.server.control.pathChanged(satisfied: true, expensive: on, interfaceChanged: false)
+    }
+
+    /// On Wi-Fi a sync is as it always was: 8 attaches in one turn, then 48 reads in one turn,
+    /// and nothing goes through the gate.
+    func testOnWiFiASyncGoesThroughNoGate() async throws {
+        let rig = try await eightSessions()
+        defer { rig.stop() }
+        XCTAssertFalse(rig.server.gatesSync)
+        XCTAssertEqual(rig.server.syncCalls.total, 0, "no read waited a turn")
+        XCTAssertEqual(rig.server.syncCalls.peak, 0)
+        XCTAssertEqual(rig.fake.count("session.attach"), 8)
+        XCTAssertEqual(metaCount(rig), 48)
+        XCTAssertEqual(rig.server.views.count, 8)
+    }
+
+    /// On cellular at most four are under way, the session on screen first, and every read is
+    /// still made.
+    func testOnCellularASyncKeepsAtMostFourReadsUnderWayAndReadsTheSessionOnScreenFirst() async throws {
+        let rig = try await eightSessions()
+        defer { rig.stop() }
+        cellular(rig)
+        XCTAssertTrue(rig.server.gatesSync)
+        rig.fake.forget()
+        await rig.server.bootstrap()
+        XCTAssertEqual(rig.server.syncCalls.limit, 4)
+        XCTAssertEqual(rig.server.syncCalls.peak, 4, "four at a time, never more")
+        XCTAssertEqual(rig.server.syncCalls.total, 8 + 48)
+        XCTAssertEqual(rig.server.syncCalls.inFlight, 0)
+        XCTAssertEqual(rig.fake.count("session.attach"), 8)
+        XCTAssertEqual(metaCount(rig), 48)
+        XCTAssertEqual(rig.fake.calls("session.attach").first?.str("session_id"), "session:6")
+        let firstRead = rig.fake.requests.first { $0.method.hasPrefix(Self.terminal) }
+        XCTAssertEqual(firstRead?.payload.str("session_id"), "session:6", "its panes' reads come first too")
+        XCTAssertEqual(rig.server.views.count, 8)
+    }
+
+    /// The path changes while reads wait their turn: the batch goes on as it began, and none
+    /// is left waiting.
+    func testAChangeOfPathInTheMiddleOfASyncStrandsNoRead() async throws {
+        let rig = try await eightSessions()
+        defer { rig.stop() }
+        cellular(rig)
+        rig.fake.forget()
+        let server = rig.server
+        let sync = Task { @MainActor in await server.bootstrap() }
+        _ = await eventually { self.metaCount(rig) >= 6 }
+        XCTAssertLessThan(metaCount(rig), 48, "reads still wait")
+        cellular(rig, false)
+        await sync.value
+        XCTAssertEqual(metaCount(rig), 48, "every one was made")
+        XCTAssertEqual(rig.server.syncCalls.inFlight, 0)
+        XCTAssertEqual(rig.server.syncCalls.peak, 4)
+        // And back on cellular in the middle of a Wi-Fi sync: that one is not gated either way.
+        rig.fake.forget()
+        let wifi = Task { @MainActor in await server.bootstrap() }
+        _ = await eventually { rig.fake.count("session.attach") >= 1 }
+        cellular(rig)
+        await wifi.value
+        XCTAssertEqual(rig.fake.count("session.attach"), 8)
+        XCTAssertEqual(rig.server.syncCalls.inFlight, 0)
+    }
+
+    /// The connection drops while reads wait their turn: they are not sent on the next
+    /// connection, whose own sync reads everything again.
+    func testReadsThatWaitedOnALostConnectionAreNotSentOnTheNextOne() async throws {
+        let rig = try await eightSessions()
+        defer { rig.stop() }
+        cellular(rig)
+        rig.fake.forget()
+        let server = rig.server
+        let sync = Task { @MainActor in await server.bootstrap() }
+        _ = await eventually { self.metaCount(rig) >= 4 }
+        let before = metaCount(rig)
+        XCTAssertLessThan(before, 24, "most reads still wait")
+        rig.fake.dropAll()
+        await sync.value
+        _ = await eventually(seconds: 8) { server.connectionSerial == 2 && server.control.state == .connected }
+        // Until every sync that followed is done.
+        var last = -1
+        _ = await eventually(seconds: 10) {
+            let now = self.metaCount(rig) + rig.fake.count("client.keymap")
+            defer { last = now }
+            return now == last && server.syncCalls.inFlight == 0 && server.synced
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        // Each sync on the new connection makes 8 attaches and 48 reads of its own.
+        let syncs = (rig.fake.count("session.attach") - 8) / 8
+        XCTAssertGreaterThanOrEqual(syncs, 1)
+        XCTAssertLessThanOrEqual(metaCount(rig), before + 4 + 48 * syncs,
+                                 "the lost sync's waiting reads were dropped, not sent")
+    }
+
+    func testTheSessionOnScreenComesFirstAndTheRestKeepTheirOrder() {
+        let items = [("a", 1), ("b", 2), ("c", 3), ("b", 4)]
+        XCTAssertEqual(ServerConnection.shownFirst(items, shown: "b") { $0.0 }.map(\.1), [2, 4, 1, 3])
+        XCTAssertEqual(ServerConnection.shownFirst(items, shown: nil) { $0.0 }.map(\.1), [1, 2, 3, 4])
+        XCTAssertEqual(ServerConnection.shownFirst(items, shown: "gone") { $0.0 }.map(\.1), [1, 2, 3, 4])
+    }
 }
 
 /// `ServerCapabilities` by itself: what a reconnect keeps and drops, and the probe slots.

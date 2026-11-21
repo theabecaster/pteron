@@ -131,7 +131,11 @@ extension ServerConnection {
     func readPorts(session sid: String, block bid: String) async {
         let serial = connectionSerial
         do {
-            let r = try await control.blockCall(Self.portsMethod, session: sid, block: bid)
+            // On cellular the ports' reads share the sync's four (`syncCalls`); on Wi-Fi they
+            // keep their own width.
+            let r = gatesSync
+                ? try await syncCalls.run { try await self.control.blockCall(Self.portsMethod, session: sid, block: bid) }
+                : try await control.blockCall(Self.portsMethod, session: sid, block: bid)
             guard serial == connectionSerial, blockInfo(session: sid, block: bid) != nil else { return }
             capabilities.record(method: Self.portsMethod, host: nil, .present, serial: serial)
             pendingPorts[bid] = nil

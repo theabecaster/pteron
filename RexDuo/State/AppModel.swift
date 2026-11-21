@@ -536,6 +536,11 @@ final class AppModel {
             s.firstSynced = { [weak self, weak s] in
                 if let s { self?.leadReported(s.id, synced: true, failed: false, dormant: false) }
             }
+            // A sync reads the session of the tab on screen first (at a launch, the one viewed last).
+            s.shownSession = { [weak self, weak s] in
+                guard let self, let sel = self.selection ?? self.prefs.lastSelection, sel.serverID == s?.id else { return nil }
+                return sel.sessionID
+            }
             s.forward = forward
             palette.attach(s)
             return s

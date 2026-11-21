@@ -273,6 +273,23 @@ final class ServerConnection: Identifiable {
     /// read's older answer doesn't replace it.
     @ObservationIgnored var metaReads: [Int: [String: MetaFields]] = [:]
     @ObservationIgnored private var nextMetaRead = 0
+    /// On cellular or a hotspot at most four of a sync's reads are under way at once
+    /// (`CallGate`): one call for each session, three for each pane and one for each pane's
+    /// ports don't go out in one turn there. On Wi-Fi nothing goes through it: a sync is as it
+    /// always was. What the user does never waits here.
+    @ObservationIgnored let syncCalls = CallGate()
+    /// Whether reads that start now go through `syncCalls`: the path is cellular or a hotspot,
+    /// by the same word the cellular deadlines go by. Asked once where a batch of reads starts,
+    /// so a change of path in the middle leaves the batch as it began.
+    var gatesSync: Bool { control.onExpensivePath }
+    /// The session of the tab on screen, when it is on this computer: a sync reads it first.
+    @ObservationIgnored var shownSession: (@MainActor () -> String?)?
+
+    /// `items` with those of the session on screen first, the rest in their order.
+    nonisolated static func shownFirst<T>(_ items: [T], shown: String?, session: (T) -> String) -> [T] {
+        guard let shown else { return items }
+        return items.filter { session($0) == shown } + items.filter { session($0) != shown }
+    }
     @ObservationIgnored var sessionListTask: Task<Void, Never>?
     /// Counts what makes a session list read out of date: a session event, or a full sync. Only a
     /// read that saw no change after it began is applied, so an older list never lands last.
@@ -792,10 +809,24 @@ final class ServerConnection: Identifiable {
             let list = (r.obj("attach_all")?.arr("sessions") ?? []).map {
                 SessionEntry(id: $0.str("session_id") ?? "", label: $0.str("label") ?? "")
             }.filter { !hidden.contains($0.id) }
+            // The session on screen first. On cellular four at a time; on Wi-Fi all at once.
+            let shown = shownSession?()
+            let ids = Self.shownFirst(list.map(\.id), shown: shown) { $0 }
             var fresh: [String: SessionView] = [:]
-            await withTaskGroup(of: SessionView?.self) { g in
-                for s in list { g.addTask { await self.fetchView(s.id) } }
-                for await v in g { if let v { fresh[v.sessionID] = v } }
+            if gatesSync {
+                let read = ViewReads()
+                let serial = connectionSerial
+                await syncCalls.each(ids) { [weak self] id in
+                    // Not on a later connection: its own sync reads the sessions again.
+                    guard let self, serial == self.connectionSerial, self.control.state == .connected else { return }
+                    if let v = await self.fetchView(id) { read.views[v.sessionID] = v }
+                }
+                fresh = read.views
+            } else {
+                await withTaskGroup(of: SessionView?.self) { g in
+                    for id in ids { g.addTask { await self.fetchView(id) } }
+                    for await v in g { if let v { fresh[v.sessionID] = v } }
+                }
             }
             // Replace, don't merge. Sessions changed by events during the sync get one more read.
             sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
@@ -816,7 +847,7 @@ final class ServerConnection: Identifiable {
             let blocks = fresh.values.flatMap { v in
                 v.windows.flatMap(\.allBlocks).filter(\.isTerminal).map { (v.sessionID, $0.id) }
             }
-            await loadMeta(blocks)
+            await loadMeta(Self.shownFirst(blocks, shown: shown) { $0.0 })
             if stale == agentsStale, !syncAgain, control.state == .connected { agentsWereRead() }
             await loadHosts()
             if platform == nil, let v = try? await control.call("server.version") { platform = v.str("platform") }
@@ -850,7 +881,8 @@ final class ServerConnection: Identifiable {
         let read = creatorsRead
         creatorsTask = Task { [weak self] in
             guard let self else { return }
-            let r = try? await self.control.call("block_creator.list")
+            let r = self.gatesSync ? try? await self.syncCalls.run { try await self.control.call("block_creator.list") }
+                : try? await self.control.call("block_creator.list")
             guard read == self.creatorsRead else { return }
             self.creatorsTask = nil
             // A read the connection dropped under says nothing about the server: what is known
@@ -917,16 +949,6 @@ final class ServerConnection: Identifiable {
         }
     }
 
-    /// One block's status, title and process, read in parallel. Each read parses its reply on the
-    /// main actor and hands back plain values. Outer nil: the call failed, keep what we had.
-    /// Inner nil: the server has none.
-    private func readMeta(_ sid: String, _ bid: String) async -> (String, BlockMeta?, String??, (name: String?, pid: Int?)?) {
-        async let st = readStatuses(sid, bid)
-        async let ti = readTitle(sid, bid)
-        async let pr = readProcess(sid, bid)
-        return (bid, await st, await ti, await pr)
-    }
-
     private func readStatuses(_ sid: String, _ bid: String) async -> BlockMeta? {
         guard let r = try? await control.blockCall("com.superlogical.terminal.program_status", session: sid, block: bid) else { return nil }
         var m = BlockMeta()
@@ -945,31 +967,102 @@ final class ServerConnection: Identifiable {
         return (fg.map(ProcessNames.label), fg?.int("pid"))
     }
 
-    /// Reads status, title and process for the blocks and replaces what we had for them. What a
-    /// live event changed while the read was out is newer than the read's answer and is kept.
+    /// One of a block's three reads.
+    private struct MetaRead: Sendable {
+        enum Part: Sendable { case statuses, title, process }
+        var session: String
+        var block: String
+        var part: Part
+    }
+
+    /// A block's answers as they come. Outer nil: the call failed, keep what we had. Inner nil:
+    /// the server has none.
+    private struct MetaAnswer {
+        var statuses: BlockMeta?
+        var title: String??
+        var process: (name: String?, pid: Int?)?
+        var left = 3
+    }
+
+    /// The answers of one `loadMeta`, by block, until each block has its three.
+    @MainActor private final class MetaAnswers {
+        var blocks: [String: MetaAnswer] = [:]
+    }
+
+    /// The views of one sync, as they are read.
+    @MainActor private final class ViewReads {
+        var views: [String: SessionView] = [:]
+    }
+
+    /// Reads status, title and process for the blocks, in their order, and replaces what we had
+    /// for them: three calls for each block, each block applied when its three have answered.
+    /// On Wi-Fi every call goes out in one turn; on cellular four are under way at a time
+    /// (`syncCalls`). What a live event changed while the read was out is newer than the read's
+    /// answer and is kept.
     func loadMeta(_ blocks: [(session: String, block: String)]) async {
         nextMetaRead += 1
         let read = nextMetaRead
         metaReads[read] = [:]
         defer { metaReads[read] = nil }
-        await withTaskGroup(of: (String, BlockMeta?, String??, (name: String?, pid: Int?)?).self) { g in
-            for (sid, bid) in blocks {
-                g.addTask { await self.readMeta(sid, bid) }
-            }
-            for await (bid, statuses, title, fg) in g where !touchedBlocks.contains(bid) {
-                let live = metaReads[read]?[bid] ?? []
-                var cur = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
-                if let statuses, !live.contains(.statuses) { cur.statuses = statuses.statuses }
-                if let title, !live.contains(.title) { cur.title = title }
-                if let fg, !live.contains(.foreground) {
-                    cur.foreground = fg.name
-                    cur.foregroundPID = fg.pid
+        guard gatesSync else {
+            await withTaskGroup(of: (String, MetaAnswer).self) { g in
+                for (sid, bid) in blocks {
+                    g.addTask {
+                        async let st = self.readStatuses(sid, bid)
+                        async let ti = self.readTitle(sid, bid)
+                        async let pr = self.readProcess(sid, bid)
+                        return (bid, MetaAnswer(statuses: await st, title: await ti, process: await pr, left: 0))
+                    }
                 }
-                pendingMeta[bid] = nil
-                statusShownAt[bid] = Date()
-                meta[bid] = cur
+                for await (bid, answer) in g { applyMeta(bid, answer, read: read) }
             }
+            return
         }
+        let answers = MetaAnswers()
+        let reads = blocks.flatMap { b in
+            [MetaRead.Part.statuses, .title, .process].map { MetaRead(session: b.session, block: b.block, part: $0) }
+        }
+        let serial = connectionSerial
+        await syncCalls.each(reads) { [weak self] r in
+            guard let self else { return }
+            var a = MetaAnswer()
+            // A read whose turn comes after its connection is gone is not sent on the next one:
+            // it counts as failed, and the reads of that connection's own sync don't wait behind it.
+            if serial == self.connectionSerial, self.control.state == .connected {
+                switch r.part {
+                case .statuses: a.statuses = await self.readStatuses(r.session, r.block)
+                case .title: a.title = await self.readTitle(r.session, r.block)
+                case .process: a.process = await self.readProcess(r.session, r.block)
+                }
+            }
+            // The block's other reads may have answered meanwhile: only this part is taken.
+            var now = answers.blocks[r.block] ?? MetaAnswer()
+            switch r.part {
+            case .statuses: now.statuses = a.statuses
+            case .title: now.title = a.title
+            case .process: now.process = a.process
+            }
+            now.left -= 1
+            answers.blocks[r.block] = now
+            guard now.left == 0 else { return }
+            answers.blocks[r.block] = nil
+            self.applyMeta(r.block, now, read: read)
+        }
+    }
+
+    private func applyMeta(_ bid: String, _ a: MetaAnswer, read: Int) {
+        guard !touchedBlocks.contains(bid) else { return }
+        let live = metaReads[read]?[bid] ?? []
+        var cur = pendingMeta[bid] ?? meta[bid] ?? BlockMeta()
+        if let statuses = a.statuses, !live.contains(.statuses) { cur.statuses = statuses.statuses }
+        if let title = a.title, !live.contains(.title) { cur.title = title }
+        if let fg = a.process, !live.contains(.foreground) {
+            cur.foreground = fg.name
+            cur.foregroundPID = fg.pid
+        }
+        pendingMeta[bid] = nil
+        statusShownAt[bid] = Date()
+        meta[bid] = cur
     }
 
     // MARK: Actions
