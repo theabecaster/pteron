@@ -29,7 +29,6 @@ final class StreamReconnectTests: XCTestCase {
     /// RESUME fails. Ends with the stream waiting for the control connection.
     private func loseNetwork(_ link: FakeLink, _ stream: TerminalStream) async {
         link.disconnect()
-        link.plans = [.fail]
         link.sockets.last?.drop()
         let waiting = await eventually { stream.waitingForControl }
         XCTAssertTrue(waiting)
@@ -51,10 +50,11 @@ final class StreamReconnectTests: XCTestCase {
         await settle()
 
         await loseNetwork(link, stream)
-        // Offline: the failed RESUME, and then nothing. No ticket is asked for and nothing retries.
+        // The control connection is down: no socket is opened to the host, not even for a
+        // RESUME. No ticket is asked for and nothing retries.
         await settle()
         XCTAssertEqual(link.count("data.connect"), 1)
-        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertEqual(link.sockets.count, 1)
         XCTAssertEqual(sink.statuses.last, .reconnecting)
         XCTAssertFalse(sink.statuses.contains { if case .failed = $0 { return true } else { return false } })
         XCTAssertEqual(log.backoffs, [])
@@ -64,9 +64,9 @@ final class StreamReconnectTests: XCTestCase {
         let live = await eventually { sink.statuses.last == .live }
         XCTAssertTrue(live)
         await settle()
-        XCTAssertEqual(link.sockets.count, 3)
-        XCTAssertTrue(link.sockets[2].isResume)
-        XCTAssertEqual(link.sockets[2].resumeCount, 5)
+        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertTrue(link.sockets[1].isResume)
+        XCTAssertEqual(link.sockets[1].resumeCount, 5)
         XCTAssertEqual(link.count("data.connect"), 1, "a resume needs no ticket")
         XCTAssertFalse(stream.waitingForControl)
     }
@@ -90,8 +90,8 @@ final class StreamReconnectTests: XCTestCase {
         link.sockets[0].push([1, 2, 3])
         await settle()
         // Half open after a suspension: the ping goes unanswered and the stream must not freeze.
+        // The control connection is up, so the stream may open its RESUME.
         link.sockets[0].pingPlan = .silent
-        link.disconnect()
         stream.wake()
         let resumed = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
         XCTAssertTrue(resumed)
@@ -163,8 +163,8 @@ final class StreamReconnectTests: XCTestCase {
         let live = await eventually { sink.statuses.last == .live }
         XCTAssertTrue(live)
         await settle()
-        // HELLO, failed RESUME, refused RESUME, HELLO.
-        XCTAssertEqual(link.sockets.map(\.isHello), [true, false, false, true])
+        // HELLO, refused RESUME, HELLO.
+        XCTAssertEqual(link.sockets.map(\.isHello), [true, false, true])
         XCTAssertEqual(link.count("data.connect"), 2)
     }
 
@@ -281,14 +281,14 @@ final class StreamReconnectTests: XCTestCase {
         XCTAssertTrue(waiting)
         await settle()
         XCTAssertEqual(link.count("data.connect"), 1)
-        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertEqual(link.sockets.count, 1)
         link.connect()
         let live = await eventually { sink.statuses.last == .live }
         XCTAssertTrue(live)
         await settle()
         // `restart()` asked for the whole screen: no RESUME of the old stream.
-        XCTAssertEqual(link.sockets.count, 3)
-        XCTAssertTrue(link.sockets[2].isHello)
+        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertTrue(link.sockets[1].isHello)
         XCTAssertEqual(link.count("data.connect"), 2)
     }
 

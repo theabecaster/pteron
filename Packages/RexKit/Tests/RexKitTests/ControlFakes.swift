@@ -10,6 +10,9 @@ final class FakeControlClock: ControlClock {
     private var sleepers: [(id: Int, due: Date, wake: CheckedContinuation<Void, Never>)] = []
     private var timers: [FakeTimer] = []
     private var nextID = 0
+    /// How many turns of the main actor each step waits for what it started. A test that moves
+    /// through hours a second at a time lowers it.
+    var yields = 200
 
     final class FakeTimer: ControlTimer {
         let interval: TimeInterval
@@ -60,7 +63,7 @@ final class FakeControlClock: ControlClock {
     /// and letting what they start run before the next.
     func advance(by seconds: Double) async {
         let target = now.addingTimeInterval(seconds)
-        await pump()
+        await pump(yields)
         while true {
             timers.removeAll { $0.cancelled }
             let nextSleep = sleepers.map(\.due).min()
@@ -73,17 +76,17 @@ final class FakeControlClock: ControlClock {
                 t.due = due.addingTimeInterval(t.interval)
                 t.body()
             }
-            await pump()
+            await pump(yields)
         }
         now = target
-        await pump()
+        await pump(yields)
     }
 }
 
 /// Lets every task that is ready on the main actor run, and those they start. No time passes.
 @MainActor
-func pump() async {
-    for _ in 0..<200 { await Task.yield() }
+func pump(_ turns: Int = 200) async {
+    for _ in 0..<turns { await Task.yield() }
 }
 
 /// A control socket that does nothing by itself: a test answers each send, receive and ping, when

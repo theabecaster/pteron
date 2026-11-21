@@ -91,7 +91,12 @@ final class ConnectionLogTests: XCTestCase {
             .network([.satisfied, .expensive, .tailnet]), .network([]), .connecting,
             .connected(afterMilliseconds: 1234), .closed(.timedOut()), .retry(after: 15), .retry(after: 0),
             .closed(failure(NSURLErrorCannotConnectToHost, posix: Int(ECONNREFUSED))),
+            .dormant, .stopped, .breaker(open: true), .breaker(open: false), .connecting(by: .network),
         ]
+        XCTAssertEqual(ConnectionEvent.breaker(open: true).summary, "breaker open")
+        XCTAssertEqual(ConnectionEvent.breaker(open: false).summary, "breaker closed")
+        XCTAssertEqual(ConnectionEvent.connecting(by: .peer).summary, "connecting by=peer")
+        XCTAssertEqual(ConnectionEvent.dormant.summary, "dormant")
         for i in events.indices {
             events[i].time = 1_795_000_000_000 + Int64(i)
             events[i].server = i % 2 == 0 ? 0 : UInt64.max - UInt64(i)
@@ -422,18 +427,20 @@ final class ConnectionLogTests: XCTestCase {
         let clock = FakeControlClock(), sockets = FakeControlSockets()
         let control = RexControl(address: "https://desk.example.ts.net",
                                  client: ClientInfo(name: "test", version: "0", label: "test"),
-                                 clock: clock, sockets: sockets.factory)
+                                 clock: clock, sockets: sockets.factory, random: { 0.5 })
         var uptime = 100.0
         let reporter = ConnectionReporter(log: log, server: "https://desk.example.ts.net") { uptime }
         control.onStateChange = { reporter.changed($0) }
         control.onRetryScheduled = { reporter.retryScheduled(after: $0) }
+        control.onAttempt = { reporter.attempt($0) }
+        control.onDormant = { reporter.wentDormant() }
 
         reporter.changed(.idle)
         let first = Task { @MainActor in try? await control.connect() }
         await pump()
-        await clock.advance(by: RexControl.welcomeTimeout)
+        await clock.advance(by: control.policy.connectDeadline(expensive: false))
         _ = await first.value
-        await clock.advance(by: 1)
+        await clock.advance(by: 0.5)
         uptime += 0.84
         sockets.last.welcome()
         await pump()
@@ -452,16 +459,15 @@ final class ConnectionLogTests: XCTestCase {
             line.split(separator: " ", omittingEmptySubsequences: true).dropFirst(3).joined(separator: " ")
         }
         XCTAssertEqual(lines, [
-            "connecting",
+            "connecting by=first",
             "closed timeout code=-1001",
-            "retry in=1000ms",
-            "connecting",
+            "retry in=500ms",
+            "connecting by=backoff",
             "connected after=840ms",
             "closed lost code=-1005",
-            "retry in=1000ms",
-            // Two kicks: the second replaced the first one's attempt.
-            "connecting",
-            "connecting",
+            "retry in=500ms",
+            // Two taps: one attempt.
+            "connecting by=user",
             "stopped",
         ])
         XCTAssertTrue(text.contains("  Server 1  connecting"))

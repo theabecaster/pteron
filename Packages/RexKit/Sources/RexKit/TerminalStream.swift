@@ -1021,6 +1021,9 @@ public final class TerminalStream {
     }
 
     private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool = false) async throws {
+        // The host's one gate: no data socket while its control connection has no welcome. A
+        // host that is backing off, dormant or held is asked by the control connection alone.
+        guard link.isConnected else { throw RexError.unsent("not connected") }
         let socket = try link.openDataSocket(subprotocol: "rex.data.terminal.v1")
         ws = socket
         do {
@@ -1175,12 +1178,16 @@ public final class TerminalStream {
         }
     }
 
-    /// One RESUME. It needs no ticket and no control connection. If it fails, for any reason
-    /// (the network is still down, a stale token, a byte count the server doesn't accept), a fresh
-    /// start follows, which reads the whole screen again and waits for the control connection if
-    /// it has to. There is no second RESUME: after a refusal the server has ended the stream.
+    /// One RESUME. It needs no ticket, but it is not tried while the host's control connection
+    /// has no welcome: the control connection alone asks a host that may be away, on its
+    /// schedule, and the stream waits for it with its token kept (`controlConnected()` resumes
+    /// if the server can still have the stream). If the RESUME fails, for any reason (a stale
+    /// token, a byte count the server doesn't accept), a fresh start follows, which reads the
+    /// whole screen again. There is no second RESUME: after a refusal the server has ended the
+    /// stream.
     private func resume(gen myGen: Int) async {
         guard myGen == gen, !stopped, let tok = token else { return }
+        guard link.isConnected else { waitForControl(); return }
         do {
             try await openData(hello: DataFrame.resumeHello(token: tok, received: received), gen: myGen, fresh: false)
         } catch {

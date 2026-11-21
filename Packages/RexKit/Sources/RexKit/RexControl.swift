@@ -18,6 +18,22 @@ public struct ClientInfo: Sendable, Equatable {
     }
 }
 
+/// What asked for a connection attempt.
+public enum AttemptTrigger: UInt8, Sendable, CaseIterable {
+    /// `connect()`.
+    case first = 1
+    /// The backoff's wait ended.
+    case backoff
+    /// The user asked: Try Again, or opening the server or one of its sessions.
+    case user
+    /// The phone's network changed.
+    case network
+    /// The app came back to the foreground.
+    case foreground
+    /// Another server connected, so the network works.
+    case peer
+}
+
 /// One control connection (`GET /api/control`, subprotocol `rex.control.v1`) to a Rex server.
 /// Every method call and event goes through here. See the server's /llms.txt.
 @MainActor
@@ -56,10 +72,22 @@ public final class RexControl {
     /// Optional behaviors the server lists in its welcome. Names this build doesn't know are
     /// kept and never looked at.
     public private(set) var features: Set<String> = []
-    /// The server refused the connection because the two sides share no API revision, and retries
-    /// have stopped: nothing changes until Rex or the app is updated. `kick()` and `wake()` (the
-    /// user asked, or the app came back) still try once.
+    /// Retries have stopped because trying again can't help until something is changed
+    /// (`ReconnectPolicy.FailureKind.final`): the server turned the client away, answered with a
+    /// 4xx, shares no API revision with it, or TLS failed. Only the user asks again (`kick()`).
     public private(set) var retryStopped = false
+    /// The server gave no answer time after time (`ReconnectPolicy.dormantAfter`): a computer that
+    /// is off or out of reach. It is tried once per `ReconnectPolicy.dormantInterval`, in the
+    /// foreground only, and when the user asks. The welcome ends it.
+    public private(set) var dormant = false
+    /// The app is in the background (`enteredBackground` until `wake`): no attempt is made, no
+    /// ping is sent and nothing waits to be tried.
+    public private(set) var suspended = false
+    /// The tunnel breaker holds this host (`ReconnectGovernor`): several hosts stopped answering
+    /// together, so one of them is tried and this one waits for its welcome.
+    public private(set) var isHeld = false
+    /// When the last welcome arrived.
+    public private(set) var lastGood: Date?
 
     /// Which of this connection's terminal streams have typed input on its way.
     public let inputActivity = InputActivity()
@@ -86,9 +114,44 @@ public final class RexControl {
     /// Called when the next attempt is set for `delay` seconds from now: 0 at once, else the
     /// backoff's step. For the connection log; nothing else depends on it.
     public var onRetryScheduled: ((_ delay: Double) -> Void)?
+    /// Called as an attempt begins, with what asked for it. For the connection log.
+    public var onAttempt: ((AttemptTrigger) -> Void)?
+    /// Called when retries stop because the server doesn't answer (`dormant`).
+    public var onDormant: (() -> Void)?
+    /// Called when the control socket is given up as dead, before anything is retried. For what
+    /// else holds sockets to the same host.
+    public var onSocketDead: (() -> Void)?
     private var generation = 0
     private var wantConnected = false
-    private var retryDelay = RexControl.firstRetryDelay
+    /// Backoff waits taken in this episode; the welcome sets it back to 0.
+    private var steps = 0
+    /// Failures in a row with no answer from the server's side.
+    private var silentRun = 0
+    /// Attempts made in this episode: since `connect()` or the last welcome.
+    private var attempts = 0
+    /// When the last attempt began.
+    private var lastAttempt: Date?
+    /// When the next attempt is due and what asks for it, kept while its wait is cancelled (the
+    /// background, no network).
+    private var nextAttemptAt: Date?
+    private var nextTrigger = AttemptTrigger.backoff
+    /// An attempt was let through and has not opened its socket yet.
+    private var starting = false
+    /// The phone has a network path, and whether it is cellular or a hotspot (`pathChanged`).
+    private var pathSatisfied = true
+    private var pathExpensive = false
+    /// When anything last came in on the socket.
+    private var lastInbound = Date.distantPast
+    /// The ping that waits for its pong.
+    private var pingOut: Int?
+    private var pingSerial = 0
+    private var watchdogArmed = false
+    /// The rules of reconnecting; this class keeps one host's state and asks.
+    public let policy: ReconnectPolicy
+    /// What this host shares with the others: the budget and the tunnel breaker.
+    public let governor: ReconnectGovernor
+    private(set) var governorID = 0
+    private let random: () -> Double
     private var retryTask: Task<Void, Never>?
     private var connectedObservers: [@MainActor () -> Bool] = []
     /// The terminal streams that run on this connection, by block. Weak: a stream that went
@@ -99,13 +162,21 @@ public final class RexControl {
     }
 
     /// `address` is the server's HTTPS address, e.g. `https://mac.tailnet.ts.net`.
-    public convenience init(address: String, client: ClientInfo) {
-        self.init(address: address, client: client, clock: SystemControlClock(), sockets: nil)
+    /// `governor`: what the app's servers share when they reconnect; nil gives this connection
+    /// one of its own (a connection made for one short job).
+    public convenience init(address: String, client: ClientInfo, governor: ReconnectGovernor? = nil) {
+        self.init(address: address, client: client, clock: SystemControlClock(), sockets: nil, governor: governor)
     }
 
     /// `clock` and `sockets` replace the system's time and URLSession's socket, for tests. Nil
-    /// `sockets` makes each socket from this connection's URLSession.
-    init(address: String, client: ClientInfo, clock: any ControlClock, sockets: ControlSocketFactory?) {
+    /// `sockets` makes each socket from this connection's URLSession. `random`: a number from 0
+    /// to 1 for each wait's jitter.
+    init(address: String, client: ClientInfo, clock: any ControlClock, sockets: ControlSocketFactory?,
+         governor: ReconnectGovernor? = nil, random: @escaping () -> Double = { Double.random(in: 0..<1) }) {
+        let governor = governor ?? ReconnectGovernor()
+        self.governor = governor
+        self.policy = governor.policy
+        self.random = random
         self.address = address
         self.wsBase = Self.webSocketBase(for: address)
         self.client = client
@@ -116,6 +187,7 @@ public final class RexControl {
         let session = URLSession(configuration: cfg)
         self.session = session
         self.makeSocket = sockets ?? { url, protocols in session.webSocketTask(with: url, protocols: protocols) }
+        governorID = governor.register(self)
     }
 
     /// The WebSocket origin (`wss://host[:port]`) for a server address, or nil if the address has
@@ -137,8 +209,9 @@ public final class RexControl {
     // MARK: Connection
 
     /// Connects, and keeps the connection while it's wanted: after any failure, the first one
-    /// included, it retries with backoff (1 s doubling to 15 s) until `disconnect()`. Throws if this
-    /// first attempt fails; `state` and `onReconnected` report the later ones.
+    /// included, it tries again as `ReconnectPolicy` and the `ReconnectGovernor` allow, until
+    /// `disconnect()`. Throws if this first attempt fails; `state` and `onReconnected` report the
+    /// later ones.
     public func connect() async throws {
         guard wsBase != nil else {
             let f = ConnectionFailure.invalidAddress(address)
@@ -146,15 +219,20 @@ public final class RexControl {
             throw f
         }
         wantConnected = true
-        try await openSocket()
+        suspended = false
+        try await openSocket(.first)
     }
 
     public func disconnect() {
         wantConnected = false
-        retryTask?.cancel()
-        retryTask = nil
+        cancelRetry()
+        endEpisode()
+        retryStopped = false
+        nextAttemptAt = nil
+        governor.remove(governorID)
         generation += 1
         pingTimer?.cancel()
+        pingOut = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         failAll(RexError.local("disconnected"))
@@ -188,19 +266,17 @@ public final class RexControl {
         }
     }
 
-    /// How long an attempt waits for the welcome before it counts as failed.
-    static let welcomeTimeout: Double = 8
-    /// Seconds between keepalive pings on a connection that is up.
-    static let pingInterval: TimeInterval = 30
-    /// The backoff's first step and its cap, in seconds; each failure doubles the step.
-    static let firstRetryDelay: Double = 1
-    static let maxRetryDelay: Double = 15
-
     /// Opens a socket and waits for the welcome. Every failure goes through `handleDrop`, which
-    /// records it and schedules the next attempt; the throw only tells the caller.
-    private func openSocket() async throws {
+    /// records it and plans the next attempt; the throw only tells the caller.
+    private func openSocket(_ trigger: AttemptTrigger) async throws {
         guard let wsBase else { throw ConnectionFailure.invalidAddress(address) }
         retryStopped = false
+        starting = false
+        lastAttempt = clock.now
+        attempts += 1
+        nextAttemptAt = nil
+        governor.began(governorID)
+        onAttempt?(trigger)
         // An attempt still waiting for its welcome is superseded by this one.
         resumeWelcome(throwing: RexError.local("superseded"))
         task?.cancel()
@@ -221,6 +297,7 @@ public final class RexControl {
         t.resume()
 
         let helloText = JSONCodec.encode(Self.hello(client: client, reconnectToken: reconnectToken))
+        let deadline = policy.connectDeadline(expensive: pathExpensive)
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             welcomeWaiter = c
             receiveLoop(t, gen: gen)
@@ -230,7 +307,7 @@ public final class RexControl {
             }
             // Welcome timeout.
             Task { @MainActor in
-                await self.clock.sleep(seconds: Self.welcomeTimeout)
+                await self.clock.sleep(seconds: deadline)
                 if self.welcomeWaiter != nil, gen == self.generation { self.handleDrop(gen: gen, failure: .timedOut()) }
             }
         }
@@ -271,14 +348,64 @@ public final class RexControl {
                                  closeReason: reason?.isEmpty == true ? nil : reason)
     }
 
+    // MARK: Liveness
+
+    /// The keepalive: every `idlePing` seconds, a ping if nothing came in for that long. A ping
+    /// that fails or gets no pong by its deadline drops the connection.
     private func startPings(gen: Int) {
         pingTimer?.cancel()
-        pingTimer = clock.every(Self.pingInterval) { [weak self] in
-            guard let self, gen == self.generation, let t = self.task else { return }
-            t.sendPing { err in
+        pingTimer = clock.every(policy.idlePing) { [weak self] in
+            guard let self, gen == self.generation, self.task != nil else { return }
+            guard self.clock.now.timeIntervalSince(self.lastInbound) >= self.policy.idlePing else { return }
+            self.ping(deadline: self.policy.pongDeadline(expensive: self.pathExpensive))
+        }
+    }
+
+    /// Sends a ping and takes the connection for dead when it fails or no pong comes within
+    /// `deadline`. One ping waits at a time; `replacing` lets a new one take the place of one
+    /// that waits (the return to the foreground, with its shorter deadline).
+    private func ping(deadline: Double, replacing: Bool = false, onPong: (@MainActor () -> Void)? = nil) {
+        guard let t = task, state == .connected, replacing || pingOut == nil else { return }
+        guard !suspended || policy.worksInBackground else { return }
+        let gen = generation
+        pingSerial += 1
+        let id = pingSerial
+        pingOut = id
+        t.sendPing { [weak self] err in
+            Task { @MainActor in
+                guard let self, self.pingOut == id else { return }
+                self.pingOut = nil
                 if let err {
-                    Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
+                    self.handleDrop(gen: gen, failure: self.failure(err, t))
+                } else {
+                    self.lastInbound = self.clock.now
+                    onPong?()
                 }
+            }
+        }
+        Task { @MainActor [weak self, clock] in
+            await clock.sleep(seconds: deadline)
+            guard let self, self.pingOut == id else { return }
+            self.pingOut = nil
+            self.handleDrop(gen: gen, failure: .timedOut())
+        }
+    }
+
+    /// A request went out: if nothing at all comes back within `activityTimeout`, a ping goes at
+    /// once instead of at the keepalive's turn. One wait at a time, however many requests.
+    private func armWatchdog() {
+        guard !watchdogArmed else { return }
+        watchdogArmed = true
+        let gen = generation, timeout = policy.activityTimeout(expensive: pathExpensive)
+        Task { @MainActor [weak self, clock] in
+            await clock.sleep(seconds: timeout)
+            guard let self else { return }
+            self.watchdogArmed = false
+            guard gen == self.generation, self.state == .connected, !self.pending.isEmpty else { return }
+            if self.clock.now.timeIntervalSince(self.lastInbound) >= timeout {
+                self.ping(deadline: self.policy.pongDeadline(expensive: self.pathExpensive))
+            } else {
+                self.armWatchdog()
             }
         }
     }
@@ -299,6 +426,7 @@ public final class RexControl {
                 guard let self, gen == self.generation else { return }
                 switch parsed {
                 case .success(let m):
+                    self.lastInbound = self.clock.now
                     if let m = m?.value as? JSONObject { self.handle(m) }
                     self.receiveLoop(t, gen: gen)
                 case .failure(let err):
@@ -308,101 +436,238 @@ public final class RexControl {
         }
     }
 
+    // MARK: Retrying
+
     /// The one place a failed or dropped socket is handled: once per generation, so a socket that
     /// fails several ways at once counts once and backs off once.
     private func handleDrop(gen: Int, failure: ConnectionFailure) {
         guard gen == generation else { return }
         generation += 1
         pingTimer?.cancel()
+        pingOut = nil
+        let wasConnected = state == .connected
         task?.cancel()
         task = nil
         failAll(RexError.local("connection lost"))
         resumeWelcome(throwing: failure)
         state = .failed(failure)
+        onSocketDead?()
+        // While the phone has no network a failure says nothing about the host: it counts
+        // toward nothing, and nothing is tried until a path is back.
+        let kind = policy.kind(of: failure)
+        let silent = pathSatisfied && kind == .silent
+        if pathSatisfied { silentRun = silent ? silentRun + 1 : 0 }
+        governor.failed(governorID, silent: silent, now: clock.now.timeIntervalSinceReferenceDate)
         guard wantConnected else { return }
-        // No common API revision: the next attempt would be refused the same way, so stop here.
-        // Only that reason stops; any other close, 1008 `event backlog exceeded` included, retries.
-        if failure.revisionRefusal != nil {
+        if governor.holds(governorID) { isHeld = true }
+        // Trying again would be turned away the same way. Only that stops; an ordinary close,
+        // 1008 `event backlog exceeded` included, is tried again.
+        if kind == .final {
             retryStopped = true
-            retryTask?.cancel()
-            retryTask = nil
+            cancelRetry()
             return
         }
-        if clock.now < retryAtOnceUntil {
+        if !dormant, silentRun >= policy.dormantAfter {
+            dormant = true
+            onDormant?()
+        }
+        if policy.retriesAtOnceAfterWake, wasConnected, clock.now < retryAtOnceUntil, mayRetry {
             retryAtOnceUntil = .distantPast
-            scheduleRetry(after: 0)
+            plan(after: 0, .foreground)
             return
         }
-        scheduleRetry(after: retryDelay)
-        retryDelay = min(retryDelay * 2, Self.maxRetryDelay)
+        planNext()
     }
 
-    private func scheduleRetry(after delay: Double) {
+    /// Whether anything may be tried on a timer now.
+    private var mayRetry: Bool {
+        wantConnected && state != .connected && !retryStopped && !isHeld && pathSatisfied
+            && (!suspended || policy.worksInBackground)
+    }
+
+    /// Sets the wait for the next attempt of the schedule: the next backoff step, or a dormant
+    /// host's interval.
+    private func planNext() {
+        guard mayRetry else { cancelRetry(); return }
+        if dormant {
+            plan(after: policy.dormantInterval, .backoff)
+        } else {
+            steps += 1
+            plan(after: policy.delay(step: steps, unit: random()), .backoff)
+        }
+    }
+
+    private func plan(after delay: Double, _ trigger: AttemptTrigger) {
         retryTask?.cancel()
+        nextAttemptAt = clock.now.addingTimeInterval(delay)
+        nextTrigger = trigger
         onRetryScheduled?(delay)
         retryTask = Task { @MainActor [weak self, clock] in
             if delay > 0 { await clock.sleep(seconds: delay) }
-            guard let self, !Task.isCancelled, self.wantConnected, self.task == nil else { return }
+            guard let self, !Task.isCancelled else { return }
             self.retryTask = nil
-            await self.attempt()
+            await self.scheduled(trigger)
         }
     }
 
-    private func attempt() async {
-        let hadToken = reconnectToken != nil
-        do {
-            try await openSocket()
-            retryDelay = Self.firstRetryDelay
-            onReconnected?(hadToken)
-        } catch {
-            // Already handled: `handleDrop` recorded it and scheduled the next try.
-        }
-    }
-
-    /// Tries now instead of waiting out the backoff: back in the foreground, the network changed,
-    /// or the user asked. Does nothing while connected or not wanted.
-    public func kick() {
-        guard wantConnected, state != .connected else { return }
-        retryDelay = Self.firstRetryDelay
+    /// Stops the wait. What it waited for stays known (`nextAttemptAt`), for `rearm`.
+    private func cancelRetry() {
         retryTask?.cancel()
         retryTask = nil
-        Task { @MainActor in await self.attempt() }
     }
 
-    /// How long `wake()` waits for a pong before it takes the connection for dead.
-    public static let wakeTimeout: Double = 2.5
-    /// The generation `wake()` pinged, until the pong.
-    private var unansweredPing: Int?
+    /// Starts the wait again after it was cancelled (the background, no network, the breaker):
+    /// for the time that was left of it, or for the next step if none was set.
+    private func rearm() {
+        guard retryTask == nil, task == nil, !starting, mayRetry else { return }
+        if let at = nextAttemptAt {
+            plan(after: max(0, at.timeIntervalSince(clock.now)), nextTrigger)
+        } else {
+            planNext()
+        }
+    }
+
+    /// A wait ended, or a trigger asked within the budget: the governor says whether the attempt
+    /// goes now, later, or not while the breaker is open.
+    private func scheduled(_ trigger: AttemptTrigger) async {
+        guard task == nil, !starting, mayRetry else { return }
+        // The first attempt of an episode, and a host the breaker let go, are outside the budget.
+        let exempt = attempts == 0 || trigger == .peer
+        switch governor.request(governorID, exempt: exempt, now: clock.now.timeIntervalSinceReferenceDate) {
+        case .go:
+            starting = true
+            await attempt(trigger)
+        case .wait(let seconds):
+            plan(after: seconds, trigger)
+        case .held:
+            isHeld = true
+        }
+    }
+
+    private func attempt(_ trigger: AttemptTrigger) async {
+        let hadToken = reconnectToken != nil
+        do {
+            try await openSocket(trigger)
+            onReconnected?(hadToken)
+        } catch {
+            // Already handled: `handleDrop` recorded it and planned the next try, if any.
+        }
+    }
+
+    /// The episode is over: the welcome arrived, or the connection is not wanted.
+    private func endEpisode() {
+        steps = 0
+        silentRun = 0
+        attempts = 0
+        dormant = false
+        isHeld = false
+        starting = false
+    }
+
+    /// Asks for one attempt: the user asked (the default), the network changed, the app came
+    /// back, or the breaker let this host go. Does nothing while connected or not wanted.
+    /// `ReconnectPolicy.kick` decides what the request gets. A user's request is always let
+    /// through, and does nothing while an attempt is under way; the others keep the floor and
+    /// the budget. The backoff never starts over here: only a welcome does that.
+    public func kick(_ trigger: AttemptTrigger = .user) {
+        guard wantConnected, state != .connected else { return }
+        let since = lastAttempt.map { clock.now.timeIntervalSince($0) }
+        switch policy.kick(trigger, connecting: state == .connecting || starting, dormant: dormant,
+                           stopped: retryStopped, held: isHeld, selected: governor.isSelected(governorID),
+                           suspended: suspended, pathSatisfied: pathSatisfied, attempts: attempts,
+                           sinceLastAttempt: since) {
+        case .ignore:
+            rearm()
+        case .now:
+            cancelRetry()
+            isHeld = false
+            starting = true
+            Task { @MainActor in await self.attempt(trigger) }
+        case .budgeted:
+            cancelRetry()
+            Task { @MainActor in await self.scheduled(trigger) }
+        case .after(let left):
+            // A wait that ends sooner is left to make the attempt.
+            if retryTask != nil, let at = nextAttemptAt, at <= clock.now.addingTimeInterval(left) { return }
+            plan(after: left, trigger)
+        }
+    }
+
+    /// The app went to the background: nothing is tried or pinged there, and no wait stays
+    /// armed. A connection that is up is left as it is. `wake()` ends it.
+    public func enteredBackground() {
+        suspended = true
+        guard !policy.worksInBackground else { return }
+        cancelRetry()
+        pingTimer?.cancel()
+        pingOut = nil
+    }
+
+    /// The phone's network path changed. No path: nothing is tried until one is back, and what
+    /// fails meanwhile counts toward nothing. A path again, or another interface: a connection
+    /// that is up is pinged and never torn down (a tailnet address stays the same across
+    /// interfaces), and a host that is down gets one attempt if the floor allows.
+    public func pathChanged(satisfied: Bool, expensive: Bool, interfaceChanged: Bool) {
+        let was = pathSatisfied
+        pathSatisfied = satisfied
+        pathExpensive = expensive
+        guard wantConnected else { return }
+        guard satisfied else { cancelRetry(); return }
+        guard interfaceChanged || !was else { return }
+        if state == .connected {
+            ping(deadline: policy.pongDeadline(expensive: expensive))
+        } else {
+            kick(.network)
+        }
+    }
+
+    /// The breaker opened and this host is not the one that is tried.
+    func heldByBreaker() {
+        guard wantConnected, state != .connected, !retryStopped else { return }
+        isHeld = true
+        cancelRetry()
+    }
+
+    /// This host is now the one the breaker tries: its schedule goes on.
+    func becameTestHost() {
+        guard isHeld else { return }
+        isHeld = false
+        rearm()
+    }
+
+    /// The test host connected: this host goes after `delay` seconds.
+    func releasedByBreaker(after delay: Double) {
+        guard isHeld else { return }
+        isHeld = false
+        guard mayRetry else { return }
+        plan(after: delay, .peer)
+    }
+
+    /// Whether this host is down and would be tried: what the governor orders and counts.
+    var wantsAttempts: Bool { wantConnected && state != .connected && !retryStopped }
+
+    /// How long `wake()` waits for a pong on Wi-Fi before it takes the connection for dead.
+    public static let wakeTimeout: Double = ReconnectPolicy.standard.wakePongDeadline
     /// A drop before this time is retried at once, once: the app just came back (`wake()`).
     private var retryAtOnceUntil = Date.distantPast
 
     /// Back in the foreground. A connection that looks up may have died while the app was
     /// suspended, and calls on it would hang until they time out. So it is pinged: no pong within
-    /// `wakeTimeout`, or a failed ping, counts as a drop, and the next attempt starts at once
-    /// instead of after the backoff. Not connected: tries now, as `kick()` does.
+    /// the wake deadline, or a failed ping, counts as a drop, and the next attempt starts at once
+    /// instead of after the backoff. Not connected: `kick(.foreground)`, which the floor and the
+    /// budget hold, and which leaves a dormant host alone unless it is the selected one.
     public func wake() {
         #if DEBUG
         if unreachableForTesting == false { unreachableForTesting = nil }
         #endif
+        suspended = false
         guard wantConnected else { return }
-        guard state == .connected, let t = task else { kick(); return }
-        let gen = generation
-        unansweredPing = gen
+        guard state == .connected, task != nil else { kick(.foreground); return }
+        startPings(gen: generation)
+        let deadline = policy.wakePongDeadline(expensive: pathExpensive)
         // The socket usually fails by itself moments after the app wakes; that drop retries at once too.
-        retryAtOnceUntil = clock.now.addingTimeInterval(Self.wakeTimeout + 0.5)
-        t.sendPing { [weak self] err in
-            Task { @MainActor in
-                guard let self, self.unansweredPing == gen else { return }
-                self.unansweredPing = nil
-                if let err { self.handleDrop(gen: gen, failure: self.failure(err, t)) } else { self.retryAtOnceUntil = .distantPast }
-            }
-        }
-        Task { @MainActor [weak self, clock] in
-            await clock.sleep(seconds: Self.wakeTimeout)
-            guard let self, self.unansweredPing == gen else { return }
-            self.unansweredPing = nil
-            self.handleDrop(gen: gen, failure: .timedOut())
-        }
+        retryAtOnceUntil = clock.now.addingTimeInterval(deadline + 0.5)
+        ping(deadline: deadline, replacing: true) { [weak self] in self?.retryAtOnceUntil = .distantPast }
     }
 
     /// Pings the connection once and returns with the pong. Throws when not connected, or when
@@ -462,6 +727,12 @@ public final class RexControl {
             negotiatedRevision = m.int("api_revision") ?? 0
             serverRevision = m.int("api_server_revision") ?? 0
             features = Set((m["features"] as? [Any])?.compactMap { $0 as? String } ?? [])
+            endEpisode()
+            cancelRetry()
+            nextAttemptAt = nil
+            lastGood = clock.now
+            lastInbound = clock.now
+            governor.welcomed(governorID)
             state = .connected
             welcomeWaiter?.resume()
             welcomeWaiter = nil
@@ -566,6 +837,7 @@ public final class RexControl {
         var req: JSONObject = ["type": "request", "id": id, "method": method]
         if let payload { req["payload"] = payload }
         pending[id] = answer
+        armWatchdog()
         t.send(.string(JSONCodec.encode(req))) { err in
             guard let err else { return }
             Task { @MainActor in

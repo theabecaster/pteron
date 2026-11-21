@@ -94,6 +94,12 @@ public struct ConnectionFailure: Error, Equatable, Sendable, CustomStringConvert
 
     public var isInvalidAddress: Bool { domain == Self.rexDomain && code == 1 }
 
+    /// The server's side answered: an HTTP status, a close code, or a refused port. The computer
+    /// is on and in reach, whatever it said. False for a timeout, a lost connection or no route.
+    public var peerAnswered: Bool {
+        httpStatus != nil || closeCode != nil || posixCode == Int(ECONNREFUSED)
+    }
+
     /// The POSIX errno behind the failure, wherever URLSession put it.
     public var posixCode: Int? {
         if domain == NSPOSIXErrorDomain { return code }

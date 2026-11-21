@@ -11,6 +11,8 @@ public final class ConnectionReporter {
     /// When the attempt under way began, on a clock that never jumps.
     private var began: TimeInterval?
     private var stopped = true
+    /// What asked for the attempt that is about to begin.
+    private var trigger: AttemptTrigger?
 
     /// `server`: the app's key for the server, which the log hashes and never stores.
     public init(log: ConnectionLog, server: String,
@@ -27,7 +29,8 @@ public final class ConnectionReporter {
         case .connecting:
             began = uptime()
             stopped = false
-            log.record(.connecting, server: server)
+            log.record(trigger.map { .connecting(by: $0) } ?? .connecting, server: server)
+            trigger = nil
         case .connected:
             let ms = began.map { Int64(((uptime() - $0) * 1000).rounded()) } ?? 0
             began = nil
@@ -45,6 +48,12 @@ public final class ConnectionReporter {
             log.record(.stopped, server: server)
         }
     }
+
+    /// `RexControl.onAttempt`: comes right before the `connecting` state it belongs to.
+    public func attempt(_ trigger: AttemptTrigger) { self.trigger = trigger }
+
+    /// `RexControl.onDormant`.
+    public func wentDormant() { log.record(.dormant, server: server) }
 
     /// `RexControl.onRetryScheduled`.
     public func retryScheduled(after seconds: Double) {

@@ -92,15 +92,22 @@ final class StreamParkTests: XCTestCase {
         XCTAssertEqual(sink.statuses.last, .live)
     }
 
-    func testTheReturnNeedsNoControlConnection() async {
+    /// A pane that returns while its host's control connection is down opens nothing: the
+    /// control connection alone asks a host that may be away. It comes back with the welcome.
+    func testTheReturnWaitsForTheControlConnection() async {
         let link = FakeLink()
         let (s, _, _) = await current(link)
         s.park()
         link.disconnect()
         s.unpark()
+        await settle()
+        XCTAssertEqual(link.sockets.count, 1, "no socket to a host whose control connection is down")
+        XCTAssertTrue(s.waitingForControl)
+        link.connect()
+        let back = await eventually { link.sockets.count == 2 && !s.waitingForControl }
+        XCTAssertTrue(back, "the welcome brings the pane back")
         let down = await eventually { !s.isFenced }
         XCTAssertTrue(down)
-        XCTAssertTrue(link.sockets[1].isResume)
     }
 
     func testKeysTypedOnAnIdleReturnArriveInOrderOnce() async {

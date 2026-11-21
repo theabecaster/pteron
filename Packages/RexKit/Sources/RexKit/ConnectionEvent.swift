@@ -15,7 +15,8 @@ public struct ConnectionEvent: Equatable, Sendable {
         case scene
         /// The phone's network path changed. `flags`: a `Network`.
         case network
-        /// An attempt began: a socket was opened to the server.
+        /// An attempt began: a socket was opened to the server. `flags`: the `AttemptTrigger`
+        /// that asked for it, 0 when unknown.
         case connecting
         /// The server's welcome arrived. `value`: milliseconds since the attempt began.
         case connected
@@ -25,6 +26,11 @@ public struct ConnectionEvent: Equatable, Sendable {
         case retry
         /// The app ended the connection itself: the server was removed or stopped.
         case stopped
+        /// The server gave no answer time after time and retries stopped. The next `connecting`
+        /// says what asked for the attempt that follows; a `connected` ends it.
+        case dormant
+        /// The tunnel breaker opened or closed (an event of the app). `flags`: 1 open, 0 closed.
+        case breaker
     }
 
     /// Why a connection ended, as far as the error's codes say.
@@ -131,6 +137,19 @@ public struct ConnectionEvent: Equatable, Sendable {
 
     public static let connecting = ConnectionEvent(kind: .connecting)
     public static let stopped = ConnectionEvent(kind: .stopped)
+    public static let dormant = ConnectionEvent(kind: .dormant)
+
+    public static func breaker(open: Bool) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .breaker)
+        e.flags = open ? 1 : 0
+        return e
+    }
+
+    public static func connecting(by trigger: AttemptTrigger) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .connecting)
+        e.flags = trigger.rawValue
+        return e
+    }
 
     public static func connected(afterMilliseconds ms: Int64) -> ConnectionEvent {
         var e = ConnectionEvent(kind: .connected)
@@ -229,7 +248,9 @@ public struct ConnectionEvent: Equatable, Sendable {
             let n = Network(rawValue: flags)
             func yn(_ f: Network) -> String { n.contains(f) ? "yes" : "no" }
             return "network satisfied=\(yn(.satisfied)) expensive=\(yn(.expensive)) constrained=\(yn(.constrained)) tailnet=\(yn(.tailnet))"
-        case .connecting: return "connecting"
+        case .connecting:
+            guard let by = AttemptTrigger(rawValue: flags) else { return "connecting" }
+            return "connecting by=\(by)"
         case .connected: return "connected after=\(value)ms"
         case .closed:
             var s = "closed \(cause)"
@@ -238,6 +259,8 @@ public struct ConnectionEvent: Equatable, Sendable {
             return s
         case .retry: return "retry in=\(value)ms"
         case .stopped: return "stopped"
+        case .dormant: return "dormant"
+        case .breaker: return flags == 1 ? "breaker open" : "breaker closed"
         }
     }
 }
