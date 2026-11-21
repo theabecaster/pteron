@@ -223,6 +223,17 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         DispatchQueue.main.async { [weak self] in self?.buildItems() }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutBar()
+        #if DEBUG || BENCH
+        if !laidOut {
+            laidOut = true
+            PreviewTrace.event("firstLayout")
+        }
+        #endif
+    }
+
     #if DEBUG || BENCH
     private var transitionTrace: PreviewTrace.Interval?
     private var laidOut = false
@@ -237,14 +248,6 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         super.viewDidAppear(animated)
         PreviewTrace.end(transitionTrace)
         transitionTrace = nil
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        if !laidOut {
-            laidOut = true
-            PreviewTrace.event("firstLayout")
-        }
     }
     #endif
 
@@ -335,8 +338,6 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// longer does that, this can be the navigation controller's toolbar again.
     private func buildBottomBar() {
         let bar = UIView()
-        bar.backgroundColor = .systemBackground
-        bar.translatesAutoresizingMaskIntoConstraints = false
         let back = barButton("chevron.backward", "Back") { $0.webView?.goBack() }
         let forward = barButton("chevron.forward", "Forward") { $0.webView?.goForward() }
         let reload = barButton("arrow.clockwise", "Reload") { $0.reload() }
@@ -347,24 +348,42 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         forwardButton = forward
         reloadButton = reload
         bottomBar = bar
-        // The page ends where the bar begins, at a toolbar's height. Over a home indicator the
-        // buttons sit low in it, close to the indicator, as a toolbar's do.
-        let overIndicator = view.safeAreaInsets.bottom > 0
-        let room: CGFloat = overIndicator ? 52 : 56
-        additionalSafeAreaInsets.bottom = room
         view.addSubview(bar)
-        NSLayoutConstraint.activate([
-            bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            bar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            back.centerYAnchor.constraint(equalTo: bar.topAnchor, constant: overIndicator ? 33 : 28),
-            forward.centerYAnchor.constraint(equalTo: back.centerYAnchor),
-            reload.centerYAnchor.constraint(equalTo: back.centerYAnchor),
-            back.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 28),
-            forward.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 40),
-            reload.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -28),
-        ])
+        // The iPhone Duo's bar can change sides or go while a page is up.
+        if #available(iOS 27.1, *) {
+            registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) { (browser: PreviewBrowser, _) in
+                browser.view.setNeedsLayout()
+            }
+        }
+        layoutBar()
+    }
+
+    /// Puts the bar and its buttons where a toolbar's are on this shape (`PreviewBarLayout`),
+    /// and ends the page above them. Run on every layout: a rotation, a fold, a resized sheet.
+    private func layoutBar() {
+        guard let bar = bottomBar, let back = backButton, let forward = forwardButton, let reload = reloadButton else { return }
+        var side: PreviewBarLayout.Side?
+        let rightToLeft = traitCollection.layoutDirection == .rightToLeft
+        if #available(iOS 27.1, *) {
+            switch traitCollection.verticalBarEdge {
+            case .leading: side = rightToLeft ? .right : .left
+            case .trailing: side = rightToLeft ? .left : .right
+            default: side = nil
+            }
+        }
+        let floats = view.window.map { $0.bounds.maxY - view.convert(view.bounds, to: $0).maxY > 1 } ?? false
+        let layout = PreviewBarLayout.make(size: view.bounds.size, verticalBar: side, compactHeight: traitCollection.verticalSizeClass == .compact,
+                                           floats: floats, rightToLeft: rightToLeft)
+        // The room is counted from the view's edge; the system's own inset is part of it.
+        let system = view.safeAreaInsets.bottom - additionalSafeAreaInsets.bottom
+        let added = max(0, layout.room - system)
+        if abs(additionalSafeAreaInsets.bottom - added) > 0.5 { additionalSafeAreaInsets.bottom = added }
+        let frame = layout.strip ?? layout.back.union(layout.reload)
+        bar.frame = frame
+        bar.backgroundColor = layout.strip == nil ? .clear : .systemBackground
+        for (button, place) in [(back, layout.back), (forward, layout.forward), (reload, layout.reload)] {
+            button.frame = place.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        }
     }
 
     private func barButton(_ symbol: String, _ label: String, _ action: @escaping @MainActor (PreviewBrowser) -> Void) -> UIButton {
@@ -377,11 +396,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             if let self { action(self) }
         })
         button.accessibilityLabel = label
+        button.accessibilityTraits = .button
         button.showsLargeContentViewer = true
         button.largeContentTitle = label
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 48).isActive = true
         return button
     }
 
@@ -442,8 +459,12 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             (navigationItem.titleView as? UIStackView)?.sizeToFit()
         }
         let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
-        if let backButton, backButton.isEnabled != back { backButton.isEnabled = back }
-        if let forwardButton, forwardButton.isEnabled != forward { forwardButton.isEnabled = forward }
+        for (button, on) in [(backButton, back), (forwardButton, forward)] {
+            guard let button, button.isEnabled != on else { continue }
+            button.isEnabled = on
+            // Said outright, so VoiceOver hears "dimmed" whatever UIKit works out by itself.
+            button.accessibilityTraits = on ? .button : [.button, .notEnabled]
+        }
         #if DEBUG
         onChange?()
         #endif

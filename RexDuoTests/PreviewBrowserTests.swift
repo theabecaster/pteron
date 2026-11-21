@@ -74,6 +74,52 @@ final class PreviewAddressTests: XCTestCase {
     }
 }
 
+/// The places are a navigation controller's toolbar's own, read from it on iOS 27.2 on each
+/// shape (the view is the sheet's; centres are given, in its coordinates).
+final class PreviewBarLayoutTests: XCTestCase {
+    private func centre(_ r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.midY) }
+
+    func testAnIPhoneUprightWithOrWithoutAHomeIndicator() {
+        // iPhone 17 Pro: a 402 x 812 sheet. The iPhone SE's is the same from its bottom edge up.
+        let l = PreviewBarLayout.make(size: CGSize(width: 402, height: 812), verticalBar: nil, compactHeight: false, floats: false, rightToLeft: false)
+        XCTAssertEqual(l.room, 86, "the page ends 86 pt above the sheet's edge, the home indicator's 34 included")
+        XCTAssertEqual(l.strip, CGRect(x: 0, y: 726, width: 402, height: 86))
+        XCTAssertEqual([l.back, l.forward, l.reload].map(centre), [CGPoint(x: 52, y: 760), CGPoint(x: 140, y: 760), CGPoint(x: 350, y: 760)])
+        XCTAssertEqual(l.back.size, CGSize(width: 48, height: 48))
+    }
+
+    func testAnIPhoneOnItsSide() {
+        let l = PreviewBarLayout.make(size: CGSize(width: 874, height: 402), verticalBar: nil, compactHeight: true, floats: false, rightToLeft: false)
+        XCTAssertEqual(l.room, 78)
+        XCTAssertEqual([l.back, l.forward, l.reload].map(centre), [CGPoint(x: 60, y: 356), CGPoint(x: 144, y: 356), CGPoint(x: 814, y: 356)])
+        XCTAssertEqual(l.reload.size, CGSize(width: 44, height: 44))
+    }
+
+    func testASheetThatFloats() {
+        // An iPad's form sheet, 580 x 660.
+        let l = PreviewBarLayout.make(size: CGSize(width: 580, height: 660), verticalBar: nil, compactHeight: false, floats: true, rightToLeft: false)
+        XCTAssertEqual(l.room, 64)
+        XCTAssertEqual([l.back, l.forward, l.reload].map(centre), [CGPoint(x: 32, y: 628), CGPoint(x: 116, y: 628), CGPoint(x: 548, y: 628)])
+    }
+
+    func testTheDuosVerticalBarHoldsThemFromTheBottomUp() {
+        // The outer screen upright: a 450 x 670 sheet, the bar on the right.
+        let right = PreviewBarLayout.make(size: CGSize(width: 450, height: 670), verticalBar: .right, compactHeight: false, floats: false, rightToLeft: false)
+        XCTAssertEqual(right.room, 0, "the page keeps its height beside a vertical bar")
+        XCTAssertNil(right.strip, "and the bar has no background")
+        XCTAssertEqual([right.back, right.forward, right.reload].map(centre), [CGPoint(x: 410, y: 474), CGPoint(x: 410, y: 562), CGPoint(x: 410, y: 622)])
+        // On its side, the bar on the left: a 662 x 458 sheet.
+        let left = PreviewBarLayout.make(size: CGSize(width: 662, height: 458), verticalBar: .left, compactHeight: true, floats: false, rightToLeft: false)
+        XCTAssertEqual([left.back, left.forward, left.reload].map(centre), [CGPoint(x: 40, y: 262), CGPoint(x: 40, y: 350), CGPoint(x: 40, y: 410)])
+        XCTAssertEqual(left.back.size, CGSize(width: 48, height: 48))
+    }
+
+    func testRightToLeftPutsBackOnTheRight() {
+        let l = PreviewBarLayout.make(size: CGSize(width: 402, height: 812), verticalBar: nil, compactHeight: false, floats: false, rightToLeft: true)
+        XCTAssertEqual([l.back, l.forward, l.reload].map(centre), [CGPoint(x: 350, y: 760), CGPoint(x: 262, y: 760), CGPoint(x: 52, y: 760)])
+    }
+}
+
 /// A web server on the phone's loopback, for the browser's own tests.
 final class PageServer: @unchecked Sendable {
     // `@unchecked`: `listener` is set once in `start`; connections live on `queue`.

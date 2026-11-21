@@ -235,6 +235,9 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
+- **The browser's buttons.** A page's sheet (docs/terminal.md, Ports) has Done and its menu in
+  the vertical bar, by the system, and back, forward and reload at the bar's bottom, by the app
+  (`PreviewBarLayout`): they are not a toolbar's items, so the system does not move them.
 - **Hide Keyboard.** The key bar's hide key, moved into the vertical bar beside the keyboard. It
   shows while the pane's key bar does, over the software keyboard or alone for a hardware one,
   and does what the hide key does: the software keyboard resigns, the bar alone goes quiet and
