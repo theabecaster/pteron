@@ -82,11 +82,32 @@ extension ServerConnection {
     func watchPorts(session sid: String, block bid: String) {
         portWatch[bid] = PortWatch(session: sid)
         fillPorts(session: sid, block: bid)
+        // Whoever waited for this pane hears of it once its stream is in place.
+        if paneWaiters[bid] != nil {
+            DispatchQueue.main.async { [weak self] in self?.paneCameOnScreen(bid) }
+        }
     }
 
     /// The pane left the screen. Its list stays: the ports list shows it.
     func unwatchPorts(_ bid: String) {
         portWatch[bid] = nil
+    }
+
+    /// Runs `body` once the pane is on screen over a current screen: now if it is, else when
+    /// it comes on screen and its catch-up fence is down. Never, if it doesn't; the caller
+    /// holds its own deadline. Nothing polls: the pane's host says when it shows
+    /// (`watchPorts`), and the stream says when its fence comes down (`whenCurrent`).
+    func whenPaneCurrent(_ bid: String, _ body: @escaping @MainActor () -> Void) {
+        if portWatch[bid] != nil, let stream = control.stream(block: bid) {
+            stream.whenCurrent(body)
+        } else {
+            paneWaiters[bid, default: []].append(body)
+        }
+    }
+
+    private func paneCameOnScreen(_ bid: String) {
+        guard portWatch[bid] != nil, let stream = control.stream(block: bid), let waiting = paneWaiters.removeValue(forKey: bid) else { return }
+        for body in waiting { stream.whenCurrent(body) }
     }
 
     /// Reads one pane's ports, unless this connection read them or an event gave them already.
@@ -209,6 +230,7 @@ extension ServerConnection {
     }
 
     func forgetPorts(_ bid: String) {
+        paneWaiters[bid] = nil
         heldPortRows = heldPortRows.filter { $0.value.row.blockID != bid }
         pendingPorts[bid] = nil
         portsRead[bid] = nil

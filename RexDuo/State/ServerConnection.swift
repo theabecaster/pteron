@@ -342,6 +342,8 @@ final class ServerConnection: Identifiable {
     var hasPortRows = false
     /// Where each row's port is, for a row to read its own pane's list.
     @ObservationIgnored var portRowPlaces: [String: PortRow] = [:]
+    /// What waits for a pane to be on screen over a current screen (`whenPaneCurrent`).
+    @ObservationIgnored var paneWaiters: [String: [@MainActor () -> Void]] = [:]
     /// Rows kept in the Ports group while their port is away: a Restart's, between its Ctrl-C
     /// and the port coming back (`PortActions`). `at`: where the row was in the list.
     @ObservationIgnored var heldPortRows: [String: (row: PortRow, at: Int)] = [:]

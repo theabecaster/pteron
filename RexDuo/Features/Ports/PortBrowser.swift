@@ -25,7 +25,8 @@ enum PortBrowser {
         return host == "localhost" || host == "::1" || LocalhostLink.isLoopbackV4(host)
     }
 
-    /// What the row adds to its address line while its page is out in the browser.
+    /// What the row adds to its address line while its page is out in the browser. A status
+    /// under the row's name, like "Still running", so in sentence case; it is no button.
     static let rowWords = "In browser"
 
     enum Problem: Error, Equatable {
@@ -56,9 +57,10 @@ enum PortBrowser {
             if unknownAction { return "Couldn't open \(name) in the browser: \(Brand.beaconName) on \(computer) needs an update." }
             switch code {
             case "not_available":
-                return "\(computer) can't open pages in this iPhone's browser. \(name) still opens here."
+                // Only when the computer's status said it could and that changed since.
+                return "\(computer) can't open pages in this iPhone's browser right now. \(name) still opens here."
             case "not_registered":
-                return "Couldn't open \(name) in the browser: this iPhone isn't set up with \(Brand.beaconName) on \(computer)."
+                return "Couldn't open \(name) in the browser: \(Brand.beaconName) on \(computer) doesn't know this iPhone yet. Set it up in Settings → Notifications."
             case "not_your_phone":
                 return "Couldn't open \(name) in the browser: this iPhone and \(computer) aren't on the same Tailscale account."
             case "not_listening":

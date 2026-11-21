@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import RexKit
 import UIKit
 
@@ -9,8 +10,9 @@ import UIKit
 /// Open in Browser, Stop for a server behind a wrapper and Restart need the computer's Beacon
 /// (`port_share`, `port_owner`). What a Beacon answered is kept per server for one connection
 /// and asked again on the next; a computer without one, or with an older one, shows none of
-/// the three. Nothing here asks on a timer: a port's owner is read once when its row shows,
-/// and a page is asked for only on a tap.
+/// the three. Nothing here asks or looks on a repeating timer: a port's owner is read once
+/// when its row shows, a page is asked for only on a tap, and a Restart waits on Rex's own
+/// events with one deadline for each wait.
 ///
 /// Stop types one Ctrl-C into the pane, once, and only under `PortStop`'s rule, checked against
 /// the server right before the write. It never names a process to the computer and never sends
@@ -96,8 +98,17 @@ final class PortActions {
         var shellLimit: TimeInterval = PortRestart.shellLimit
         /// The longest the port may take to come back.
         var portLimit: TimeInterval = PortRestart.portLimit
-        /// How often a Restart looks at what the app already holds while it waits.
-        var tick: TimeInterval = 0.2
+        /// Runs its closure once the pane is on screen over a current screen, if it ever is.
+        var whenPaneReady: @MainActor (ServerConnection, _ block: String, @escaping @MainActor () -> Void) -> Void = { server, bid, body in
+            server.whenPaneCurrent(bid, body)
+        }
+        /// Seconds that only go forward, for what is left of a limit.
+        var uptime: @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        /// The computer's Beacon said, in the status the app last read, that it can hand pages
+        /// to this iPhone's browser. Nil: the model's (`PushRegistrar.sharePossible`).
+        var sharePossible: (@MainActor (ServerConnection) -> Bool)?
+        /// How many statuses the app has read from the computer's Beacon. Nil: the model's.
+        var statusReads: (@MainActor (ServerConnection) -> Int)?
         /// How long a row says that its Restart failed.
         var failedFor: TimeInterval = 30
         /// How long a Beacon may take to hand out a page's address.
@@ -128,6 +139,9 @@ final class PortActions {
         var names: Bool?
         /// False once an answer took Open in Browser away for this computer.
         var browser = true
+        /// The Beacon's status said it could hand pages out and an answer then said it can't:
+        /// the count of statuses read at that moment. The item is away until another is read.
+        var staleAt: Int?
         /// The phone had a tailnet address when last read.
         var phone = false
     }
@@ -201,13 +215,27 @@ final class PortActions {
         return PortStop.restart(entry: row.entry, foregroundPID: meta?.foregroundPID, agent: meta?.agentKind != nil, owner: owner(server, row))
     }
 
-    /// Open in Browser shows for this row: the server is connected, its Beacon answered on this
-    /// connection and hasn't said it can't, the phone has a tailnet address, and the port is
-    /// one a computer hands out (`PortBrowser.mayAsk`). Nothing is asked to find out.
+    /// Open in Browser shows for this row: the server is connected; its Beacon said in its
+    /// status that it can hand pages to this iPhone's browser (`share_possible`); it answered
+    /// `port_owner` on this connection, so it is one that knows the action; no answer has
+    /// said otherwise since; the phone has a tailnet address; and the port is one a computer
+    /// hands out (`PortBrowser.mayAsk`). Nothing is asked to find out, so a tap is never how
+    /// someone learns that their computer can't.
     func offersBrowser(_ server: ServerConnection, _ row: PortRow) -> Bool {
         guard server.phase == .online, server.control.state == .connected, PortBrowser.mayAsk(row.entry) else { return false }
         let b = beacon(server)
-        return b.names == true && b.browser && b.phone
+        guard b.names == true, b.browser, b.phone, sharePossible(server) else { return false }
+        return b.staleAt != statusReads(server)
+    }
+
+    private func sharePossible(_ server: ServerConnection) -> Bool {
+        if let given = parts.sharePossible { return given(server) }
+        return model?.push.sharePossible(server.id) ?? false
+    }
+
+    private func statusReads(_ server: ServerConnection) -> Int {
+        if let given = parts.statusReads { return given(server) }
+        return model?.push.statusReads(server.id) ?? 0
     }
 
     /// The address the computer handed out for this row's page, while the app takes it to
@@ -366,12 +394,19 @@ final class PortActions {
             return failed(.unanswered)
         case .success(let result)?:
             guard let share = PortShare(result) else { return failed(.badAnswer) }
-            setBeacon(server) { $0.names = $0.names ?? true; $0.browser = true; $0.phone = true }
+            setBeacon(server) { $0.names = $0.names ?? true; $0.browser = true; $0.phone = true; $0.staleAt = nil }
             shares[key] = ShareMark(share: share, until: share.knownUntil(asked: parts.now()), serial: serial, pid: row.entry.pid)
             return .success(share)
         case .failure(let f)?:
-            if PortBeaconAnswer.share(code: f.code, unknownAction: f.isUnknownAction) == .hide {
+            switch PortBeaconAnswer.share(code: f.code, unknownAction: f.isUnknownAction) {
+            case .hide:
                 setBeacon(server) { $0.browser = false }
+            case .hideUntilStatus:
+                // Its status said it could. The item is away until the app reads another.
+                let reads = statusReads(server)
+                setBeacon(server) { $0.staleAt = reads }
+            case .keep:
+                break
             }
             return failed(.refused(code: f.code, unknownAction: f.isUnknownAction))
         }
@@ -619,22 +654,63 @@ final class PortActions {
         return step
     }
 
-    /// The time left of `limit` once `met` holds, or nil when it didn't in time. It looks only
-    /// at what the app already holds, every `tick`, and only while a Restart someone tapped is
-    /// under way.
-    private func left(of limit: TimeInterval, until met: @MainActor () -> Bool) async -> TimeInterval? {
-        var left = limit
-        while true {
-            if met() { return left }
-            guard left > 0 else { return nil }
-            let wait = min(parts.tick, left)
-            await parts.sleep(wait)
-            left -= wait
+    /// One wait of a Restart: it ends when what it waits for happens or when its one deadline
+    /// passes, whichever is first, and then never again. Used on the main actor only.
+    @MainActor
+    private final class Wait {
+        var over = false
+        var done: CheckedContinuation<Bool, Never>?
+        var met: @MainActor () -> Bool = { false }
+        var deadline: Task<Void, Never>?
+
+        func end(_ value: Bool) {
+            guard !over else { return }
+            over = true
+            deadline?.cancel()
+            done?.resume(returning: value)
+            done = nil
+        }
+
+        /// Looks once, and again each time something it read changes: the port lists and the
+        /// panes' processes are observed state, so nothing is looked at on a clock.
+        func look() {
+            guard !over else { return }
+            let now = withObservationTracking { met() } onChange: { [weak self] in
+                Task { @MainActor in self?.look() }
+            }
+            if now { end(true) }
         }
     }
 
-    private func until(_ limit: TimeInterval, _ met: @MainActor () -> Bool) async -> Bool {
-        await left(of: limit, until: met) != nil
+    /// True once `met` holds, false when it didn't within `limit`. `met` reads only what the
+    /// app holds and observes (`ServerConnection.ports`, `meta`); it is looked at again when
+    /// one of those changes, and one timer holds the deadline.
+    private func observed(_ limit: TimeInterval, _ met: @escaping @MainActor () -> Bool) async -> Bool {
+        if met() { return true }
+        guard limit > 0 else { return false }
+        let wait = Wait(), sleep = parts.sleep
+        wait.met = met
+        return await withCheckedContinuation { done in
+            wait.done = done
+            wait.deadline = Task { @MainActor in
+                await sleep(limit)
+                wait.end(false)
+            }
+            wait.look()
+        }
+    }
+
+    /// True once `arm`'s closure was called, false when it wasn't within `limit`.
+    private func signalled(_ limit: TimeInterval, _ arm: @MainActor (@escaping @MainActor () -> Void) -> Void) async -> Bool {
+        let wait = Wait(), sleep = parts.sleep
+        return await withCheckedContinuation { done in
+            wait.done = done
+            wait.deadline = Task { @MainActor in
+                await sleep(limit)
+                wait.end(false)
+            }
+            arm { wait.end(true) }
+        }
     }
 
     /// How many times a Restart reads the pane's processes while it waits for the shell.
@@ -674,8 +750,10 @@ final class PortActions {
         }
         if !parts.paneReady(server, bid) {
             let shown = parts.reveal.map { $0(server, row) } ?? (model?.openPane(server, session: sid, window: nil, block: bid) ?? false)
-            let ready = shown ? await until(parts.revealLimit) { [parts] in parts.paneReady(server, bid) } : false
-            guard ready else {
+            // The pane's host says when it shows and its stream when its fence is down; what is
+            // typed next still looks for itself.
+            let told = shown ? await signalled(parts.revealLimit) { [parts] fire in parts.whenPaneReady(server, bid, fire) } : false
+            guard told, parts.paneReady(server, bid) else {
                 _ = advance(key, .paneReady(false))
                 return ended()
             }
@@ -687,15 +765,16 @@ final class PortActions {
             _ = advance(key, .stopped(false))
             return ended()
         }
-        // The port goes and the events name another foreground than the job's; then the
-        // pane's processes are read, and only they decide that the job's shell is in front. A
-        // read that comes while the job is still ending is made again, `shellReads` times at most.
-        let shell = command.shellPID, before = meta?.foregroundPID, control = server.control
-        var back = false, time: TimeInterval? = parts.shellLimit
+        // The port goes and the pane's foreground is no longer the job's: both are events
+        // from Rex, waited for and never looked up on a clock. Then the pane's processes are
+        // read, and only they decide that the job's shell is in front. A read that comes while
+        // the job is still ending is made again when the foreground next changes, `shellReads`
+        // times at most, all within the one limit.
+        let shell = command.shellPID, control = server.control, began = parts.uptime()
+        var back = false, last = meta?.foregroundPID
         for _ in 0..<Self.shellReads {
-            guard let had = time else { break }
-            time = await left(of: had) { server.ports.value(bid)?.entry(port) == nil && server.currentMeta(bid)?.foregroundPID != before }
-            guard let now = time else { break }
+            let remaining = parts.shellLimit - (parts.uptime() - began), was = last
+            guard await observed(remaining, { server.ports.value(bid)?.entry(port) == nil && server.meta[bid]?.foregroundPID != was }) else { break }
             let reply = await within(parts.readLimit) {
                 try? await control.blockCall("com.superlogical.terminal.process", session: sid, block: bid)
             }
@@ -704,9 +783,7 @@ final class PortActions {
                 back = fg.pid == shell && !fg.agent && server.currentMeta(bid)?.agentKind == nil
             }
             if back { break }
-            let pause = parts.tick * 2
-            await parts.sleep(pause)
-            time = now > pause ? now - pause : nil
+            last = server.meta[bid]?.foregroundPID
         }
         guard back, advance(key, .shellBack(true)) == .typing else {
             _ = advance(key, .shellBack(false))
@@ -726,7 +803,7 @@ final class PortActions {
             _ = advance(key, .typed(false))
             return ended()
         }
-        let up = await until(parts.portLimit) { server.ports.value(bid)?.entry(port) != nil }
+        let up = await observed(parts.portLimit) { server.ports.value(bid)?.entry(port) != nil }
         _ = advance(key, .portBack(up))
         return ended()
     }
