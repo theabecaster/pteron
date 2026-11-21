@@ -114,6 +114,46 @@ final class PreviewBarLayoutTests: XCTestCase {
         XCTAssertEqual(left.back.size, CGSize(width: 48, height: 48))
     }
 
+    /// Sizes nobody read a toolbar on: other iPhones, Split View, a sheet resized. Each gets the
+    /// rule of its case, and the buttons stay inside the view, apart and in their order.
+    func testASizeThatWasNeverMeasuredGetsASaneBar() {
+        for width in stride(from: CGFloat(280), through: 1100, by: 37) {
+            for height in stride(from: CGFloat(320), through: 1100, by: 53) {
+                let size = CGSize(width: width, height: height), view = CGRect(origin: .zero, size: size)
+                for (compact, floats) in [(false, false), (true, false), (false, true)] {
+                    for rightToLeft in [false, true] {
+                        let l = PreviewBarLayout.make(size: size, verticalBar: nil, compactHeight: compact, floats: floats, rightToLeft: rightToLeft)
+                        let name = "\(size) compact \(compact) floats \(floats) rtl \(rightToLeft)"
+                        XCTAssertEqual(l.strip, CGRect(x: 0, y: height - l.room, width: width, height: l.room), name)
+                        for button in [l.back, l.forward, l.reload] {
+                            XCTAssertTrue(view.contains(button), name)
+                            XCTAssertTrue(l.strip?.contains(button) ?? false, "on the strip: \(name)")
+                        }
+                        XCTAssertFalse(l.back.intersects(l.forward), name)
+                        XCTAssertFalse(l.forward.intersects(l.reload), name)
+                        let order = [l.back.midX, l.forward.midX, l.reload.midX]
+                        XCTAssertEqual(order, rightToLeft ? order.sorted(by: >) : order.sorted(), name)
+                    }
+                }
+                for side in [PreviewBarLayout.Side.left, .right] {
+                    let l = PreviewBarLayout.make(size: size, verticalBar: side, compactHeight: false, floats: false, rightToLeft: false)
+                    XCTAssertEqual(l.room, 0)
+                    for button in [l.back, l.forward, l.reload] { XCTAssertTrue(view.contains(button), "\(size) \(side)") }
+                    XCTAssertLessThan(l.back.maxY, l.forward.minY)
+                    XCTAssertLessThan(l.forward.maxY, l.reload.minY)
+                    XCTAssertEqual(side == .right ? width - l.reload.midX : l.reload.midX, 40, "in the bar's column")
+                }
+            }
+        }
+        // An iPhone 16e's sheet (390 x 797): the upright rule, from its own edges.
+        let other = PreviewBarLayout.make(size: CGSize(width: 390, height: 797), verticalBar: nil, compactHeight: false, floats: false, rightToLeft: false)
+        XCTAssertEqual([other.back, other.forward, other.reload].map(centre), [CGPoint(x: 52, y: 745), CGPoint(x: 140, y: 745), CGPoint(x: 338, y: 745)])
+        // Too narrow for a toolbar's distance between the arrows: forward moves in.
+        let narrow = PreviewBarLayout.make(size: CGSize(width: 230, height: 500), verticalBar: nil, compactHeight: false, floats: false, rightToLeft: false)
+        XCTAssertFalse(narrow.forward.intersects(narrow.reload))
+        XCTAssertFalse(narrow.back.intersects(narrow.forward))
+    }
+
     func testRightToLeftPutsBackOnTheRight() {
         let l = PreviewBarLayout.make(size: CGSize(width: 402, height: 812), verticalBar: nil, compactHeight: false, floats: false, rightToLeft: true)
         XCTAssertEqual([l.back, l.forward, l.reload].map(centre), [CGPoint(x: 350, y: 760), CGPoint(x: 262, y: 760), CGPoint(x: 52, y: 760)])

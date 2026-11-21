@@ -2,9 +2,11 @@ import CoreGraphics
 
 /// Where back, forward and reload go in the browser, in its view's coordinates: where a
 /// navigation controller's toolbar puts three such items. The system gives no metrics for
-/// that, so these are its toolbar's own places, measured on iOS 27.2 on each shape: an iPhone
-/// upright and on its side, with and without a home indicator, a sheet that floats (iPad), and
-/// the iPhone Duo, whose toolbars stand in the vertical bar. Pure, so it is tested.
+/// that, so these are rules read off its toolbar on iOS 27.2. They are keyed on what the view
+/// can read and nothing else: its size, its vertical size class, whether its sheet reaches the
+/// window's bottom edge, the layout direction, and the system's vertical bar. Never the
+/// device, its orientation or the idiom, so a size nobody measured (Split View, another
+/// iPhone) gets the rule of the case it is. Pure, so it is tested.
 struct PreviewBarLayout: Equatable {
     /// The side of the view the system's vertical bar is on.
     enum Side: Equatable {
@@ -50,8 +52,11 @@ struct PreviewBarLayout: Equatable {
         }
         let y = size.height - up
         let first = rightToLeft ? size.width - inset : inset
-        let second = rightToLeft ? first - step : first + step
         let last = rightToLeft ? inset : size.width - inset
+        // Forward keeps a toolbar's distance from back, and in a view too narrow for that
+        // stays clear of reload.
+        let reach = max(0, min(step, abs(last - first) - button - 8))
+        let second = rightToLeft ? first - reach : first + reach
         return PreviewBarLayout(room: room, strip: CGRect(x: 0, y: size.height - room, width: size.width, height: room),
                                 back: square(first, y, button), forward: square(second, y, button), reload: square(last, y, button))
     }
