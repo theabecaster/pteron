@@ -1012,6 +1012,11 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
   opened port**. A page on one port that calls an API on another (a frontend on 5173 and its API
   on 3000) can't reach the second: open that one on its own. Done or a swipe down ends the
   forward, and the pane that had the keyboard gets it back.
+  - Nothing of it exists before a page opens. The bars come up with the sheet's first frame;
+    the web view, which WebKit makes on the main thread only, is made on the turn after, its
+    load starts at once, and it joins the view on the turn after that. The error page is put
+    together the first time a load fails. Pages keep their cookies and storage in the app's one
+    WebKit store, so a login on a dev server is still there the next time its page opens.
   - Chrome: Done, the page's title over its address, a menu (Copy Link, Share…), and back,
     forward and reload. There is no button that leaves for another app: the address only works
     inside this one.

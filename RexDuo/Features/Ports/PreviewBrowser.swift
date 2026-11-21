@@ -123,16 +123,26 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     private let titleLabel = UILabel()
     private let hostLabel = UILabel()
+    /// The error page, put together the first time a load fails.
     private let errorView = UIView()
     private let errorTitle = UILabel()
     private let errorDetail = UILabel()
+    private var errorBuilt = false
+    /// What the web view loads once it exists: the page, or a path typed before it did.
+    private var firstLoad: URL?
     private lazy var backItem = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goBack() })
     private lazy var forwardItem = UIBarButtonItem(image: UIImage(systemName: "chevron.forward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goForward() })
     private lazy var reloadItem = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"), primaryAction: UIAction { [weak self] _ in self?.reload() })
+    #if DEBUG
     /// Called after the chrome, the error page or what is shown over the page changed, and
-    /// `gone` when the browser is released: tests wait on these, not on the clock.
+    /// `gone` when the browser is released: tests wait on these, not on the clock. Debug builds
+    /// only; the shipped class has neither.
     var onChange: (() -> Void)?
     var gone: (@Sendable () -> Void)?
+    #endif
+    /// Where pages keep their cookies and storage: the app's one store, so a login on a dev
+    /// server is still there the next time its page opens.
+    static var siteData: @MainActor () -> WKWebsiteDataStore = { .default() }
     /// Copies a link. Tests put their own here.
     var copy: (String) -> Void = { UIPasteboard.general.string = $0 }
 
@@ -181,34 +191,53 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     // MARK: View
 
+    /// The bars come up with the sheet's first frame. The web view is the one costly thing to
+    /// make, and WebKit makes it on the main thread only, so it is made on a turn of its own
+    /// after that frame, its load starts at once, and it joins the view on the turn after: the
+    /// main thread is never held for all three together. Nothing is made before a page opens.
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
+        errorView.isHidden = true
+        buildChrome()
+        refresh()
+        DispatchQueue.main.async { [weak self] in self?.makeWebView() }
+    }
+
+    private func makeWebView() {
+        guard !closed, webView == nil else { return }
         let config = WKWebViewConfiguration()
+        config.websiteDataStore = Self.siteData()
         config.allowsInlineMediaPlayback = true
         let web = WKWebView(frame: view.bounds, configuration: config)
-        web.translatesAutoresizingMaskIntoConstraints = false
         web.navigationDelegate = self
         web.uiDelegate = self
+        webView = web
+        web.load(URLRequest(url: firstLoad ?? page.load))
+        firstLoad = nil
+        DispatchQueue.main.async { [weak self, weak web] in
+            if let self, let web { self.attach(web) }
+        }
+    }
+
+    private func attach(_ web: WKWebView) {
+        guard !closed, webView === web else { return }
+        web.translatesAutoresizingMaskIntoConstraints = false
         web.allowsBackForwardNavigationGestures = true
-        view.addSubview(web)
+        view.insertSubview(web, at: 0)
         NSLayoutConstraint.activate([
             web.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             web.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             web.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             web.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
-        webView = web
         observers = [
             web.observe(\.title) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
             web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
             web.observe(\.canGoBack) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
             web.observe(\.canGoForward) { [weak self] _, _ in MainActor.assumeIsolated { self?.refresh() } },
         ]
-        buildChrome()
-        buildErrorView()
         refresh()
-        web.load(URLRequest(url: page.load))
     }
 
     private func buildChrome() {
@@ -251,8 +280,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     }
 
     private func buildErrorView() {
+        guard !errorBuilt else { return }
+        errorBuilt = true
         errorView.backgroundColor = .systemBackground
-        errorView.isHidden = true
         errorView.frame = view.bounds
         errorView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         errorTitle.font = .preferredFont(forTextStyle: .headline)
@@ -283,23 +313,31 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         ])
     }
 
-    /// The title, the address and the arrows, from the page on screen.
+    /// The title, the address and the arrows, from the page on screen. WebKit reports its
+    /// title, address and history several times a load; only what changed is touched.
     private func refresh() {
         let current = failed ?? webView?.url
         let host = PreviewAddress.display(current, page)
         // A failed load has no title of its own: the page before it must not name it.
         let title = failed == nil ? (webView?.title.flatMap { $0.isEmpty ? nil : $0 } ?? host) : host
-        titleLabel.text = title
-        hostLabel.text = host
-        hostLabel.isHidden = title == host
-        navigationItem.titleView?.accessibilityLabel = "\(title), \(host)"
-        (navigationItem.titleView as? UIStackView)?.sizeToFit()
-        backItem.isEnabled = webView?.canGoBack ?? false
-        forwardItem.isEnabled = webView?.canGoForward ?? false
+        if titleLabel.text != title || hostLabel.text != host {
+            titleLabel.text = title
+            hostLabel.text = host
+            hostLabel.isHidden = title == host
+            navigationItem.titleView?.accessibilityLabel = "\(title), \(host)"
+            (navigationItem.titleView as? UIStackView)?.sizeToFit()
+        }
+        let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
+        if backItem.isEnabled != back { backItem.isEnabled = back }
+        if forwardItem.isEnabled != forward { forwardItem.isEnabled = forward }
+        #if DEBUG
         onChange?()
+        #endif
     }
 
+    #if DEBUG
     deinit { gone?() }
+    #endif
 
     // MARK: The address line
 
@@ -399,7 +437,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         page.scheme = address.scheme
         failed = nil
         errorView.isHidden = true
-        if let url = PreviewAddress.load(address.rest, page) { webView?.load(URLRequest(url: url)) }
+        if let url = PreviewAddress.load(address.rest, page) {
+            if let webView { webView.load(URLRequest(url: url)) } else { firstLoad = url }
+        }
         refresh()
     }
 
@@ -500,6 +540,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         guard PreviewAddress.showsError(error) else { return }
         let e = error as NSError
         failed = (e.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? webView?.url ?? page.load
+        buildErrorView()
         errorTitle.text = PreviewAddress.errorTitle(failed, page)
         errorDetail.text = Self.reason(e)
         errorView.isHidden = false
@@ -555,7 +596,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
                 answer.resume(returning: (.useCredential, URLCredential(user: user, password: password, persistence: .forSession)))
             })
             present(alert, animated: true)
+            #if DEBUG
             onChange?()
+            #endif
         }
     }
 
@@ -608,7 +651,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             return
         }
         present(sheet, animated: true)
+        #if DEBUG
         onChange?()
+        #endif
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {

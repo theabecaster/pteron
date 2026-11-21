@@ -249,6 +249,20 @@ final class PreviewBrowserTests: XCTestCase {
         b.close()
     }
 
+    func testAFailedNavigationIsTitledByTheAddressNotByThePageBefore() async throws {
+        let b = try await open()
+        let titled = await until(b) { b.shownTitle == "Fixture page" }
+        XCTAssertTrue(titled)
+        // The server goes, and the page is loaded again.
+        await server.stop()
+        b.webView?.reload()
+        let failed = await until(b) { b.shownError != nil }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(b.shownTitle, "localhost:3000", "the address, never the title of the page that was there")
+        XCTAssertEqual(b.shownError, "Couldn't load localhost:3000")
+        b.close()
+    }
+
     func testALinkForANewWindowOpensInTheSameView() async throws {
         let b = try await open()
         _ = await until(b) { b.shownTitle == "Fixture page" }
