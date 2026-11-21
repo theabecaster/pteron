@@ -214,4 +214,49 @@ final class UploadPacerTests: XCTestCase {
         XCTAssertEqual(r.messageBytes(max: 65_536), 65_536)
         XCTAssertEqual(r.messageBytes(max: 100), 100, "never past what is left of the file")
     }
+
+    // MARK: What a pacing ping tells the rate
+
+    private func pacer(_ link: FakeLink) -> UploadPacer {
+        UploadPacer(link: link, rate: UploadRate(), sleep: { _ in await Task.yield() })
+    }
+
+    private func settled() async { for _ in 0..<50 { await Task.yield() } }
+
+    /// No pong within the pong deadline: the slowest sample there is. The rate halves, and the
+    /// upload goes on.
+    func testAProbeWithNoPongInTimeSlowsTheRate() async {
+        let link = FakeLink()
+        link.onProbe = { .slow }
+        let p = pacer(link)
+        let before = p.rate.rate
+        _ = await p.turn(upTo: 65_536)
+        await settled()
+        XCTAssertEqual(p.rate.rate, before / 2)
+        XCTAssertTrue(p.rate.congested)
+        XCTAssertEqual(p.confirmed, 0, "it vouches for nothing sent after it left")
+        let bytes = await p.turn(upTo: 65_536)
+        XCTAssertGreaterThan(bytes, 0, "and the file is not held back")
+    }
+
+    /// No sample (not connected, lost, the background): the rate stays as it is.
+    func testAProbeThatEndsWithNoSampleLeavesTheRateAlone() async {
+        let link = FakeLink()
+        link.onProbe = { PaceSample.none }
+        let p = pacer(link)
+        let before = p.rate
+        _ = await p.turn(upTo: 65_536)
+        await settled()
+        XCTAssertEqual(p.rate, before)
+    }
+
+    func testAnAnsweredProbeIsMeasuredFromWhenItLeft() async {
+        let link = FakeLink()
+        link.onProbe = { .answered }
+        let p = pacer(link)
+        let before = p.rate.rate
+        _ = await p.turn(upTo: 65_536)
+        await settled()
+        XCTAssertEqual(p.rate.rate, before * 2, "an answer at once: nothing is queued, so faster")
+    }
 }

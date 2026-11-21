@@ -87,6 +87,14 @@ final class FakeLink: StreamLink {
         try await onPing?()
     }
 
+    /// How a pacing ping ends; by default as `ping()` does.
+    var onProbe: (@MainActor () async -> PaceSample)?
+
+    func paceProbe() async -> PaceSample {
+        if let onProbe { return await onProbe() }
+        return (try? await ping()) != nil ? .answered : .none
+    }
+
     /// Answers the oldest held call.
     func release() {
         guard !waiting.isEmpty else { return XCTFail("no call is waiting") }

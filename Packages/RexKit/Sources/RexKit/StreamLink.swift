@@ -21,10 +21,28 @@ protocol StreamLink: AnyObject {
     func ping() async throws
     /// How long a data socket may wait for the answer to its handshake, in seconds.
     var dataHandshakeDeadline: Double { get }
+    /// One ping of the control connection for an upload to pace itself by (`UploadPacer`). It
+    /// only measures: whatever comes of it, the host is not dropped for it. The wait always
+    /// ends.
+    func paceProbe() async -> PaceSample
+}
+
+/// What came of a pacing ping.
+enum PaceSample: Equatable, Sendable {
+    /// The pong came: the time since the ping left is the sample.
+    case answered
+    /// No pong within the pong deadline: a slow sample.
+    case slow
+    /// No sample: not connected, lost, or the app went to the background.
+    case none
 }
 
 extension StreamLink {
     var dataHandshakeDeadline: Double { ReconnectPolicy.standard.connectDeadline }
+
+    func paceProbe() async -> PaceSample {
+        (try? await ping()) != nil ? .answered : .none
+    }
 }
 
 /// A data socket got no answer to its handshake in time.

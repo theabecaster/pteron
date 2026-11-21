@@ -192,6 +192,9 @@ public final class RexControl {
     private var watchdogArmed = false
     /// Who waits in `ping()` for the pong of the ping that is out.
     private var pongWaiters: [CheckedContinuation<Void, Error>] = []
+    /// The pacing pings that wait for a pong (`paceProbe`), by their number.
+    private var probes: [Int: CheckedContinuation<PaceSample, Never>] = [:]
+    private var probeSerial = 0
     /// Counts the watchdog's waits, so one that was set before a drop, a stop or the background
     /// does nothing when it ends.
     private var watchdogSerial = 0
@@ -845,6 +848,7 @@ public final class RexControl {
         pingTimer?.cancel()
         pingOut = nil
         endPongWaits(RexError.unsent("in the background"))
+        endProbes()
         disarmWatchdog()
         // A data socket still in its handshake is given up, as the attempt below is.
         for s in streams.values { s.stream?.enteredBackground() }
@@ -1024,6 +1028,8 @@ public final class RexControl {
     /// connection's own, with the pong deadline: no pong in time drops the host, as any missed
     /// pong does, and that ends this wait. With a ping out already, this waits for its pong.
     /// In the background the wait ends with nothing dropped, as every other wait does there.
+    /// For a stream that asked the connection to check itself (`checkLiveness`); an upload
+    /// paces itself with `paceProbe`, which drops nothing.
     func ping() async throws {
         guard task != nil, state == .connected else { throw RexError.unsent("not connected") }
         guard !suspended || policy.worksInBackground else { throw RexError.unsent("in the background") }
@@ -1031,6 +1037,40 @@ public final class RexControl {
             pongWaiters.append(c)
             ping(deadline: policy.pongDeadline(expensive: pathExpensive))
         }
+    }
+
+    /// A ping for an upload to pace itself by (`UploadPacer`): a ping of its own, so its time is
+    /// never an earlier ping's. It only measures. No pong within the pong deadline is a slow
+    /// sample and nothing more: only the connection's own pings (`ping(deadline:)`) drop a
+    /// host. The wait always ends: with the pong, at the deadline, with the connection, or
+    /// when the app goes to the background.
+    func paceProbe() async -> PaceSample {
+        guard let t = task, state == .connected, !suspended || policy.worksInBackground else { return .none }
+        probeSerial += 1
+        let id = probeSerial
+        let deadline = policy.pongDeadline(expensive: pathExpensive)
+        return await withCheckedContinuation { (c: CheckedContinuation<PaceSample, Never>) in
+            probes[id] = c
+            t.sendPing { [weak self] err in
+                Task { @MainActor in
+                    guard let self, let c = self.probes.removeValue(forKey: id) else { return }
+                    if err == nil { self.lastInbound = self.clock.now }
+                    c.resume(returning: err == nil ? .answered : .none)
+                }
+            }
+            Task { @MainActor [weak self, clock] in
+                await clock.sleep(seconds: deadline)
+                guard let self, let c = self.probes.removeValue(forKey: id) else { return }
+                c.resume(returning: .slow)
+            }
+        }
+    }
+
+    /// Ends every pacing ping's wait with no sample.
+    private func endProbes() {
+        let waiting = probes
+        probes = [:]
+        for (_, c) in waiting { c.resume(returning: .none) }
     }
 
     /// Ends the wait of everyone in `ping()`: with the pong (nil), or with why none will come.
@@ -1078,6 +1118,7 @@ public final class RexControl {
         sentAt.removeAll()
         disarmWatchdog()
         endPongWaits(err)
+        endProbes()
         for (_, c) in p { c(.failure(err)) }
     }
 

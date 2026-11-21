@@ -77,6 +77,9 @@ struct UploadRate: Equatable {
         return true
     }
 
+    /// A ping got no pong within the pong deadline: the rate halves.
+    mutating func unanswered() { slower() }
+
     /// The queue the rate keeps under: `target`, or less where `maxQueuedBytes` take less at
     /// this rate.
     var queueLimit: Duration {
@@ -215,13 +218,23 @@ final class UploadPacer {
         let at = handedOut
         let link = self.link, clock = self.clock
         Task { [weak self] in
-            let answered = (try? await link.ping()) != nil
+            // A ping of its own, so the time is this message's and never an earlier ping's.
+            let sample = await link.paceProbe()
             guard let self, self.probeStart == now else { return }
             self.probeStart = nil
             // A failed ping vouches for nothing, but must not hold the file back either.
             self.confirmed = Swift.max(self.confirmed, at)
-            // A late ping already slowed the rate; its answer doesn't count twice.
-            if answered, !self.counted { self.rate.answered(rtt: clock.now - now) }
+            switch sample {
+            case .answered:
+                // A late ping already slowed the rate; its answer doesn't count twice.
+                if !self.counted { self.rate.answered(rtt: clock.now - now) }
+            case .slow:
+                // No pong in all that time: the slowest sample there is. The pacer slows; whether
+                // the host is gone is the control connection's to say.
+                if !self.counted { self.rate.unanswered() }
+            case .none:
+                break
+            }
             self.resume()
         }
     }
