@@ -1012,10 +1012,11 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
   opened port**. A page on one port that calls an API on another (a frontend on 5173 and its API
   on 3000) can't reach the second: open that one on its own. Done or a swipe down ends the
   forward, and the pane that had the keyboard gets it back.
-  - Nothing of it exists before a page opens. The bars come up with the sheet's first frame,
-    with the title, the address and Done; the menu and the arrows come on the turn after, into
-    room the bars already hold. The web view, which WebKit makes on the main thread only, is
-    made on the turn after that, its load starts at once, and it joins the view one turn later. The error page is put
+  - Nothing of it exists before a page opens. The sheet's first frame is the sheet alone; its
+    bars, with everything in them, are shown on the turn after, while the sheet has only begun
+    to rise (laying out bars is most of what a sheet with bars costs the main thread over an
+    empty one). The web view, which WebKit makes on the main thread only, is made on the turn
+    after that, its load starts at once, and it joins the view one turn later. The error page is put
     together the first time a load fails. Pages keep their cookies and storage in the app's one
     WebKit store, so a login on a dev server is still there the next time its page opens.
     Debug and benchmark builds mark the steps of an open as signpost intervals (`PreviewTrace`:

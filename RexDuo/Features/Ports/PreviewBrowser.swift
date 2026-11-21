@@ -128,8 +128,10 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private let errorTitle = UILabel()
     private let errorDetail = UILabel()
     private var errorBuilt = false
-    /// The menu and the arrows are in the bars (`buildItems`).
+    /// The bars are up with the menu and the arrows in them (`buildItems`).
     private var itemsBuilt = false
+    /// The sheet began to appear, and the bars were asked for.
+    private var barsAsked = false
     /// What the web view loads once it exists: the page, or a path typed before it did.
     private var firstLoad: URL?
     private lazy var backItem = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goBack() })
@@ -174,7 +176,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             browser.keyboardHolder = holder
         }
         let nav = UINavigationController(rootViewController: browser)
-        nav.isToolbarHidden = false
+        // The bars are shown one turn after the sheet (`buildItems`).
+        nav.setNavigationBarHidden(true, animated: false)
         // Opaque bars with the page between them: a page is any color, and the bars' text
         // must read over none of it.
         let bar = UINavigationBarAppearance()
@@ -195,12 +198,14 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     // MARK: View
 
-    /// The bars come up with the sheet's first frame, holding the title, the address and Done.
-    /// The menu and the arrows, whose images cost the most of the bars, come on the turn after,
-    /// into room the bars already hold, so nothing moves. The web view is the one costly thing
-    /// to make, and WebKit makes it on the main thread only, so it is made on a turn of its own
-    /// after that, its load starts at once, and it joins the view on the turn after: the main
-    /// thread is never held for all of them together. Nothing is made before a page opens.
+    /// The sheet's first frame is the sheet alone. Its bars, with the title, the address, Done,
+    /// the menu and the arrows, are shown on the turn after, while the sheet has only begun to
+    /// rise: laying out bars is most of what a sheet with bars costs over an empty one, and in
+    /// the sheet's own first turn it would hold the main thread for both. The web view is the
+    /// one costly thing to make, and WebKit makes it on the main thread only, so it is made on
+    /// a turn of its own after that, its load starts at once, and it joins the view on the turn
+    /// after: the main thread is never held for all of them together. Nothing is made before a
+    /// page opens.
     override func viewDidLoad() {
         super.viewDidLoad()
         let trace = PreviewTrace.begin("viewDidLoad")
@@ -209,6 +214,15 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         errorView.isHidden = true
         PreviewTrace.measure("buildChrome") { buildChrome() }
         refresh()
+    }
+
+    /// The turn in which the sheet starts to rise is UIKit's own and the longest of an open, so
+    /// nothing of ours is in it: what the bars hold is asked for from inside that turn and made
+    /// on the one after.
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        guard !barsAsked else { return }
+        barsAsked = true
         DispatchQueue.main.async { [weak self] in self?.buildItems() }
     }
 
@@ -301,8 +315,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.done() })
     }
 
-    /// The menu and the arrows, one turn after the bars. The title is centered with or without
-    /// the menu's button, and the toolbar is up, empty, from the first frame.
+    /// The bars and what they hold, one turn after the sheet: the menu and the arrows are made
+    /// here, and both bars are shown with everything in them at once.
     private func buildItems() {
         guard !closed, !itemsBuilt else { return }
         PreviewTrace.measure("buildItems") {
@@ -316,6 +330,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             gap.width = 28
             toolbarItems = [backItem, gap, forwardItem, UIBarButtonItem(systemItem: .flexibleSpace), reloadItem]
             itemsBuilt = true
+            navigationController?.setNavigationBarHidden(false, animated: false)
+            navigationController?.setToolbarHidden(false, animated: false)
         }
         refresh()
         DispatchQueue.main.async { [weak self] in self?.makeWebView() }
