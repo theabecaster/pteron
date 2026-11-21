@@ -28,7 +28,7 @@ struct FindResult: Equatable, Sendable {
     var matches: [FindSpan] = []
     /// The search has caught up with the terminal as of its last feed.
     var complete = true
-    /// The scrollback is at its line limit: older lines are gone (for "No Results in recent history").
+    /// The scrollback is at its line limit: older lines are gone (for "No matches in recent history").
     var historyFull = false
 }
 

@@ -1,3 +1,4 @@
+import GlanceModel
 import SwiftUI
 import RexKit
 
@@ -34,6 +35,9 @@ struct AgentsList: View {
                     AgentRow(server: g.server, key: key, dim: g.server.phase.problem != nil, theme: theme, actions: actions)
                         .equatable()
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            // No confirmation, unlike the watch's: the swipe is already a deliberate
+                            // second step, the row shows which agent it is, and Esc only interrupts,
+                            // as the Interrupt key does on the Mac.
                             if key.state == "blocked" || key.state == "working" {
                                 Button { AgentRow.send(g.server, key, "\u{1b}", interrupt: true) } label: {
                                     Label("Interrupt", systemImage: "escape")
@@ -45,7 +49,7 @@ struct AgentsList: View {
                                     .tint(theme.chrome.blocked)
                             }
                             Button { AgentRow.open(g.server, key, model, actions) } label: {
-                                Label("Jump", systemImage: "arrow.up.forward.square")
+                                Label("Show", systemImage: "arrow.up.forward.square")
                             }
                             .tint(theme.accent)
                         }
@@ -174,13 +178,7 @@ struct AgentRowLabel: View {
     nonisolated static func stateText(_ s: ProgramStatus?) -> String {
         switch s?.state ?? "idle" {
         case "working": return "Working" + (s?.progress.map { " \($0)%" } ?? "")
-        case "blocked":
-            switch s?.waitingFor {
-            case "permission": return "Needs permission"
-            case "question": return "Has a question"
-            case "auth": return "Needs password"
-            default: return "Waiting for you"
-            }
+        case "blocked": return WatchScreen.words(why: s?.waitingFor)
         case "done": return "Done"
         case "error": return "Error"
         default: return "Idle"

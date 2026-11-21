@@ -41,7 +41,7 @@ enum FindQuery {
         guard r.open, !r.needle.isEmpty else { return nil }
         if r.total == 0 {
             guard r.complete else { return nil }
-            return r.historyFull ? "No Results in recent history" : "No Results"
+            return r.historyFull ? "No matches in recent history" : "No matches"
         }
         let more = r.complete ? "" : "+"
         if let i = r.selectedIndex { return "\(i + 1) of \(r.total)\(more)" }

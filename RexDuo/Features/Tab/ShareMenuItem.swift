@@ -1,7 +1,7 @@
 import SwiftUI
 import RexKit
 
-/// "Share ▸" in the pane menu: plain or styled, the screen or the pane's whole output. Its own
+/// "Share ▸" in the pane menu: plain text or with colors, the screen or the pane's whole output. Its own
 /// view, so only it reads the server's capabilities and views: a change there redraws this row,
 /// not the tab screen. All Output shows unless the pane's server is known to lack the two methods
 /// it reads with; offline it stays and says it needs the connection.
@@ -14,13 +14,13 @@ struct ShareMenuItem: View {
     var body: some View {
         let all = server.sharesAllOutput(session: sessionID, block: block)
         Menu {
-            Section("Plain") {
+            Section {
                 Button("Screen") { action(.screen, false) }
                 if all { Button("All Output") { action(.allOutput, false) } }
             }
-            Section("Styled") {
-                Button("Screen") { action(.screen, true) }
-                if all { Button("All Output") { action(.allOutput, true) } }
+            Section {
+                Button("Screen with Colors") { action(.screen, true) }
+                if all { Button("All Output with Colors") { action(.allOutput, true) } }
             }
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")

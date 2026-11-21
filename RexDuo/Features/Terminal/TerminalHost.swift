@@ -287,7 +287,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var fitGuardUsed = false
     /// `stop()` is ending the stream: its fence goes without the stream having caught up.
     private var stoppingStream = false
-    private static let lostText = "Resized elsewhere · tap to fit here"
+    private static let lostText = "Resized on another screen · tap to fit this one"
     #if DEBUG
     /// `-forceStatus <text>` (Debug builds, testing): every pane shows this chip once it opens and
     /// again each time it is live, to look at the chip over any output.
@@ -686,7 +686,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
            PathGuess.isSmall(rows: e.endRow - e.startRow + 1, cols: e.cols, startCol: e.startCol, endCol: e.endCol,
                              clipped: e.startClipped || e.endClipped),
            let text = term.selectedText, files?.openablePath(in: text) != nil {
-            items.append(UIAction(title: "Open", image: UIImage(systemName: "doc.viewfinder")) { [weak self] _ in
+            items.append(UIAction(title: "Open File", image: UIImage(systemName: "doc.viewfinder")) { [weak self] _ in
                 guard let self else { return }
                 self.clearSelection()
                 self.files?.open(selection: text)
@@ -2033,7 +2033,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func streamTheme(_ theme: JSONObject) {}
 
     func streamExited(code: Int?) {
-        showStatus("Program exited\(code.map { " (\($0))" } ?? "")")
+        showStatus("Program exited\(code.map { " with code \($0)" } ?? "")")
     }
 
     func streamStatus(_ status: TerminalStream.Status) {
@@ -2077,7 +2077,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .connecting: showStatus("Connecting…", after: loader != nil ? connectingDelay : Self.statusDelay)
         // A failure retries on its own; to the user it is still reconnecting.
         case .reconnecting, .failed: showStatus("Reconnecting…", after: Self.statusDelay)
-        case .ended(let m): showStatus(m)
+        // RexKit's words are for logs; the pane on screen is the one that closed.
+        case .ended: showStatus(Messages.thisPaneClosed)
         }
     }
 

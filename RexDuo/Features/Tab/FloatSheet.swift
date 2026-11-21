@@ -349,7 +349,7 @@ struct FloatsControl: View {
                 }
             }
             .accessibilityLabel(FloatSheet.Spoken.control(count: m.count))
-            .accessibilityHint("Lists them, to show one over the tab.")
+            .accessibilityHint("Shows the floating windows.")
         }
     }
 }
@@ -372,13 +372,13 @@ struct FloatsMenuRows: View {
             }
         }
         if !menu.minimized.isEmpty {
-            Section("Minimized on the Mac") {
+            Section("Minimized") {
                 ForEach(menu.minimized) { r in
                     Button { onRestore(r.id) } label: {
                         Label(r.name, systemImage: r.symbol)
                         if let s = r.subtitle { Text(s) }
                     }
-                    .accessibilityLabel("\(r.name), minimized on the Mac")
+                    .accessibilityLabel("\(r.name), minimized")
                 }
             }
         }
@@ -419,7 +419,10 @@ struct FloatMenuSection: View {
                     }
                 }
                 if m?.minimize == true {
-                    Button(action: onMinimize) { Label("Minimize", systemImage: "minus.square") }
+                    Button(action: onMinimize) {
+                        Label("Minimize", systemImage: "minus.square")
+                        Text("On every screen")
+                    }
                 }
                 if m?.minimizeAll == true {
                     Button(action: onMinimizeAll) { Label("Minimize All", systemImage: "rectangle.stack.badge.minus") }
@@ -427,7 +430,7 @@ struct FloatMenuSection: View {
                 ForEach(m?.minimized ?? []) { r in
                     Button { onRestore(r.id) } label: {
                         Label("Show \(r.name)", systemImage: r.symbol)
-                        Text(r.subtitle.map { "Minimized on the Mac · \($0)" } ?? "Minimized on the Mac")
+                        Text(r.subtitle.map { "Minimized · \($0)" } ?? "Minimized")
                     }
                 }
             }
@@ -624,7 +627,7 @@ struct FloatSheetView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 4)
                 .accessibilityLabel("Back to the Tab")
-                .accessibilityHint("Hides the floating window on this phone. It stays open on the Mac.")
+                .accessibilityHint("Hides the floating window on this iPhone. It stays open on \(server.config.name).")
             }
         }
         .foregroundStyle(theme.fg)

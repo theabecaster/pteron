@@ -112,7 +112,7 @@ final class GoToModel {
             return split ? .pane(w.server.id, k.sessionID, k.windowID, k.blockID) : .tab(w.server.id, k.sessionID, k.windowID)
         }
         if model.servers.isEmpty {
-            note = "No servers. Pair one in Settings."
+            note = Messages.noComputers
         } else if !copy.connecting.isEmpty {
             note = copy.connecting.map { "\($0) is connecting" }.joined(separator: ", ")
         } else {

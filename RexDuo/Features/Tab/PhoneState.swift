@@ -164,7 +164,7 @@ struct WaitingPill: View {
         let items = Waiting.all(model.servers).filter { !visible.contains($0.id) }
         if let first = items.first {
             Menu {
-                Section("Waiting for you") {
+                Section("Waiting for You") {
                     ForEach(items) { it in
                         Button { onJump(it) } label: { WaitingMenuLabel(item: it) }
                     }

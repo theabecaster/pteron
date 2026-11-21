@@ -183,7 +183,7 @@ struct MachineHeader: View {
     }
 
     private var spokenName: String {
-        "\(server.config.name), machine, \(sessionCount) session\(sessionCount == 1 ? "" : "s")"
+        "\(server.config.name), computer, \(sessionCount) session\(sessionCount == 1 ? "" : "s")"
     }
 }
 

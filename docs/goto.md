@@ -12,8 +12,9 @@ server's keymap (the user's init.lua wins), never fixed:
 `client.tab.overview` keeps its own key (⇧⌘\, Show All Tabs). On a setup whose init.lua binds
 ⌘K to Clear and ⇧⌘K to `session.switch`, ⌘K clears and ⇧⌘K opens Change Session.
 
-Touch: "Go to Anything…" in the title bar's menu, right after All Tabs (with its key), and a
-VoiceOver action "Go to Anything" on the title. No pull-down, no standing button.
+Touch: "Go to Anything…" in the title bar's menu, right after Show All Tabs (with its key), in
+tab mode the session popover's first footer row, and a VoiceOver action "Go to Anything" on the
+title. No pull-down, no standing button.
 
 Code: `RexDuo/Features/GoTo/`.
 

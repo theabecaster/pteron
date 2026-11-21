@@ -70,23 +70,25 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     on the left page. Flat, it runs the bar's width as the title bar does.
   - **Chips do** what the sidebar's tab rows do (`StripRoutes`). A tap shows the tab, and the
     row of chips scrolls to keep the tab on screen in view. Touch and hold for Rename Tab…,
-    Move Left, Move Right, Close Tab and Close Other Tabs. A tab with an agent asks before it
-    closes, as everywhere; Close Other Tabs always asks. A move takes the sidebar drag's path:
+    Move Tab Backward, Move Tab Forward, Close Tab and Close Other Tabs. A tab with an agent or
+    two panes or more asks before it closes, as everywhere (`CloseTabAsk`); Close Other Tabs
+    always asks. A move takes the sidebar drag's path:
     the new order shows at once and is held for the server, and a server without
     `session.move_window` offers no Move rows. Chips aren't dragged: a sideways drag scrolls
     the row.
   - **The session chip** opens the sessions in a popover (`SessionPopover`): each machine with
     its status, "+" for a new session there and Reconnect while it is down; its sessions, a tap
-    away, with Rename Session… and Close Session… on the current one's menu; the computers
-    that aren't added; then Go to Anything…, Agents, Settings and Use Sidebar. A row that puts
+    away, each with Rename Session… and Close Session on its menu, as in the sidebar (none on a
+    computer that is down); the computers that aren't added; then Go to Anything…, Agents,
+    Settings and Switch to Sidebar. A row that puts
     up a sheet, an alert or the palette runs once the popover has closed.
   - **Vertical bar.** Sessions takes the sidebar toggle's place and opens the same popover from
     the item; nothing else in the bar moves, so it holds as many items as before
     (`TabActions.verticalBar`). Back in sidebar mode the toggle is back.
   - **Without the sidebar.** cmd+. and the board's "+K more" open the Agents sheet
-    (`AppModel.showAgents`). Toggle Sidebar does nothing and isn't in the palette; the swipe
+    (`AppModel.showAgents`). Show/Hide Sidebar does nothing and isn't in the palette; the swipe
     from the left edge is off. With no tab on screen the strip stays, for its session chip,
-    and the screen says "Pick a tab above." with Change Session, which opens the palette's
+    and the screen says "Pick a session." with Change Session, which opens the palette's
     sessions. A machine that is down shows its offline screen below the strip, so another
     machine's sessions stay a tap away; its Show Sidebar is Change Session.
   - **The sidebar is left as it was.** Nothing in tab mode writes whether it shows or which
@@ -106,7 +108,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   sidebar ends it, and so does the window turning wide, where the sidebar shows beside the tab.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
-  width is remembered per posture. The toggle button, the Toggle Sidebar command and a swipe from
+  width is remembered per posture. The toggle button, the Show/Hide Sidebar command and a swipe from
   the left edge show and hide it. A drag or toggle resizes the terminals once, never per frame.
   Hidden, it moves past the window's edge, also past a leading inset (the vertical bar on the
   left in Split View or landscape, the Dynamic Island), so none of it shows under the bar.
@@ -184,7 +186,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     of no size holds that interaction, and the rest of tent mode (detector, timers, touch
     watch, power observer, the panes' key hook) starts with the first such update. An iPhone
     that never reports a hinge, and any iOS before 27.1, gets an empty overlay and nothing else.
-  - **What it shows.** One large line for the most urgent state ("2 need you", else "1 error",
+  - **What it shows.** One large line for the most urgent state ("2 waiting", else "1 error",
     "3 working", "All done", "All quiet"), and under it the machine, or how many are connected.
     Then a tile per agent that isn't idle, from the same data and in the same order as the
     sidebar's Agents mode, across machines: waiting (the longest first), error, working, done.
@@ -201,7 +203,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     sidebar in Agents mode. Under 300 pt of width, one column. Larger text makes the header
     taller (up to 1.5×) and the tiles too (up to 1.25×), so fewer tiles show and none is cut.
   - **Quiet.** With no agent at work it is a desk clock with "All quiet" under it. With no
-    server it says "No machines paired", with no button.
+    server it says "No computers yet", with no button.
   - **Never stale as current.** Only connected machines count in the headline and the glow. A
     machine whose connection is down keeps its last known tiles, dimmed and after the live
     ones. The headline is "Reconnecting…" with none connected, and also instead of "All quiet"
@@ -228,8 +230,9 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   - **Reorder** (`BoardOrderThrottle`). Agents that change state quickly reorder the tiles at
     most once a second, with a spring; a tile that comes or goes fades at once.
 - **Vertical bar.** Where `verticalBarEdge` reports a bar, the navigation bar shows and its items
-  go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. While a pane's key
-  bar is up, they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). The tab's title,
+  go there: the sidebar toggle (leading, top), then Show All Tabs and Pane Actions, then Floating
+  Windows while a narrow tab has a float and the keyboard is down. While a pane's key bar is up,
+  they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
 - **Hide Keyboard.** The key bar's hide key, moved into the vertical bar beside the keyboard. It

@@ -15,7 +15,7 @@ struct NotAddedSection: View {
     var body: some View {
         let hosts = KnownHost.unsaved(model.servers.map { ($0.config, $0.hosts) })
         if !hosts.isEmpty {
-            Text("Not added")
+            Text("Not Added")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(theme.chrome.tertiary)
                 .padding(.horizontal, SidebarMetrics.pad)

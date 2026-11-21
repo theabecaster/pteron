@@ -162,7 +162,7 @@ struct SidebarModeTests {
         let s = try #require(AppShortcuts.list(KeyDefaults.resolved).first { $0.command == .jumpToWaiting })
         #expect(s.key.character == ".")
         #expect(s.modifiers == [.command, .option])
-        #expect(s.title == "Jump to Waiting Agent")
+        #expect(s.title == "Jump to Waiting")
         // ⌘. stays the Agents toggle.
         #expect(AppShortcuts.list(KeyDefaults.resolved).first { $0.id == "cmd+." }?.command == .toggleAgents)
     }
@@ -297,13 +297,13 @@ struct SidebarRowStateTests {
                                       actions: actions))
 
         let machine = MachineRow(server: server, sessionCount: 1, windows: [window("w1")], collapsed: false, topGap: 4,
-                                 theme: theme)
+                                 theme: theme, actions: actions)
         #expect(machine == MachineRow(server: server, sessionCount: 1, windows: [window("w1")], collapsed: false,
-                                      topGap: 4, theme: theme))
+                                      topGap: 4, theme: theme, actions: actions))
         #expect(machine != MachineRow(server: server, sessionCount: 2, windows: [window("w1")], collapsed: false,
-                                      topGap: 4, theme: theme))
+                                      topGap: 4, theme: theme, actions: actions))
         #expect(machine != MachineRow(server: server, sessionCount: 1, windows: [window("w1")], collapsed: true,
-                                      topGap: 4, theme: theme))
+                                      topGap: 4, theme: theme, actions: actions))
     }
 
     @Test func pruneKeyListsOnlyConnectedSyncedSessions() {

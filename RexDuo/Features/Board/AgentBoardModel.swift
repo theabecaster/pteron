@@ -70,7 +70,7 @@ struct AgentBoard: Equatable {
 
     static func make(_ machines: [BoardMachine]) -> AgentBoard {
         guard !machines.isEmpty else {
-            return AgentBoard(headline: "No machines paired", urgency: .unpaired, subline: "", tiles: [], idleCount: 0)
+            return AgentBoard(headline: "No computers yet", urgency: .unpaired, subline: "", tiles: [], idleCount: 0)
         }
         let live = machines.filter { $0.link == .live }
         let stale = machines.filter { $0.link == .stale }
@@ -94,7 +94,7 @@ struct AgentBoard: Equatable {
         if live.isEmpty {
             (headline, urgency) = stale.isEmpty ? ("Connecting…", .connecting) : ("Reconnecting…", .reconnecting)
         } else if count(0) > 0 {
-            (headline, urgency) = (count(0) == 1 ? "1 needs you" : "\(count(0)) need you", .waiting)
+            (headline, urgency) = ("\(count(0)) waiting", .waiting)
         } else if count(1) > 0 {
             (headline, urgency) = (count(1) == 1 ? "1 error" : "\(count(1)) errors", .error)
         } else if count(2) > 0 {
@@ -125,8 +125,8 @@ struct AgentBoard: Equatable {
         if machines.count <= 2, live == machines.count || live == 0 {
             return machines.map(\.name).joined(separator: " · ")
         }
-        if live == 0 { return "\(machines.count) machines" }
-        return "\(live) of \(machines.count) machines connected" + (anyStale && !reconnectingAbove ? " · Reconnecting…" : "")
+        if live == 0 { return Messages.computers(machines.count) }
+        return "\(live) of \(machines.count) computers connected" + (anyStale && !reconnectingAbove ? " · Reconnecting…" : "")
     }
 
     /// How long an agent has waited, for its tile: "3m", "2h". Nil under a minute.

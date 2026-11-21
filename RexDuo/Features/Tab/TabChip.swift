@@ -26,8 +26,8 @@ struct TabChip: Identifiable, Equatable {
             case .rename: "Rename Tab…"
             case .close: "Close Tab"
             case .closeOthers: "Close Other Tabs"
-            case .moveLeft: "Move Left"
-            case .moveRight: "Move Right"
+            case .moveLeft: "Move Tab Backward"
+            case .moveRight: "Move Tab Forward"
             }
         }
 
@@ -172,7 +172,7 @@ struct SessionChip: Equatable {
         return chip
     }
 
-    static let hint = "Double-tap to change session."
+    static let hint = "Changes the session."
 
     /// What VoiceOver reads: "Session work, studio".
     var spoken: String {

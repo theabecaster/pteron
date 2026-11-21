@@ -128,10 +128,10 @@ listen on, so a dev server's page is one tap away ([terminal.md](terminal.md), P
   its Stop state in its own body, so a port that changes hands re-renders that row alone
   (`-renderCount`'s `portRows`).
 
-## Not added
+## Not Added
 
 Machines in a server's `hosts.list` that aren't saved (`KnownHost.unsaved`) show under a quiet
-**Not added** header: glyph, name and an **Add** button. Add opens the pairing identity card for
+**Not Added** header: glyph, name and an **Add** button. Add opens the pairing identity card for
 that host's address (`AppModel.startPairing(prefilled:name:guessed:)`), named after its label.
 `hosts.list` mostly gives `ssh://` endpoints, so the address is often worked out from the listing
 server's (`guessed: true`); a failed check then says to pair with a code. Without any address,
@@ -284,7 +284,7 @@ not help: every step sized the whole screen again. With trivial rows (one `Text`
 
 ## Accessibility
 
-- Headers are buttons with the header trait. VoiceOver reads "devbox, machine, 3 sessions,
+- Headers are buttons with the header trait. VoiceOver reads "devbox, computer, 3 sessions,
   1 agent waiting, collapsed". Sessions read "qr-pairing, session, 2 tabs, expanded".
 - The mode switch reads as two selectable buttons, "Sessions" and "Agents, 2 waiting".
 - Rows are buttons, so Full Keyboard Access moves through them and Space opens or folds.

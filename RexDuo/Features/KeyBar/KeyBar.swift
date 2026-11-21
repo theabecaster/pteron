@@ -384,7 +384,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         attachButton = button
         cap.isAccessibilityElement = false
         button.accessibilityLabel = Self.names["attach"]
-        button.accessibilityHint = "Sends a photo or a file to this pane's computer"
+        button.accessibilityHint = "Send photos or files, or browse the computer's files"
         cap.addSubview(button)
         NSLayoutConstraint.activate([
             button.leadingAnchor.constraint(equalTo: cap.leadingAnchor),
@@ -692,9 +692,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     ]
     /// Spoken names for VoiceOver and the editor.
     static let names: [String: String] = [
-        "left": "Left", "right": "Right", "up": "Up", "down": "Down", "paste": "Paste", "attach": "Attach File", "hide": "Hide Keyboard",
+        "left": "Left", "right": "Right", "up": "Up", "down": "Down", "paste": "Paste", "attach": "Attach", "hide": "Hide Keyboard",
         "enter": "Return", "tab": "Tab", "shift-tab": "Shift-Tab", "arrows": "Arrow Trackpad", "esc": "Escape",
         "ctrl": "Control", "alt": "Alt", "cmd": "Command",
+        "ctrl-c": "Control-C", "ctrl-d": "Control-D", "ctrl-z": "Control-Z", "ctrl-r": "Control-R", "ctrl-l": "Control-L",
+        "ctrl-a": "Control-A", "ctrl-e": "Control-E", "ctrl-u": "Control-U", "ctrl-w": "Control-W", "ctrl-o": "Control-O",
+        "pgup": "Page Up", "pgdn": "Page Down", "home": "Home", "end": "End",
     ]
     /// Keys shown as two symbols side by side: shift-tab as ⇧⇥, as macOS menus spell it.
     static let symbolPairs: [String: [String]] = ["shift-tab": ["shift", "arrow.right.to.line"]]

@@ -42,7 +42,7 @@ final class FindField: UITextField {
         clearButtonMode = .never
         borderStyle = .none
         backgroundColor = .clear
-        accessibilityLabel = "Find in Scrollback"
+        accessibilityLabel = "Find in Pane"
     }
 
     required init?(coder: NSCoder) { fatalError() }

@@ -268,7 +268,7 @@ struct AppShortcutTests {
         #expect(s.command == .toggleSidebar)
         #expect(s.key.character == "/")
         #expect(s.modifiers == .command)
-        #expect(s.title == "Toggle Sidebar")
+        #expect(s.title == "Show/Hide Sidebar")
     }
 
     @Test func onlyAppCommandsAndOneShortcutPerKey() {
@@ -461,7 +461,7 @@ struct HardwareKeyPathTests {
         let (host, _) = makeHost()
         let commands = try #require(host.keyCommands)
         let slash = try #require(commands.first { $0.input == "/" && $0.modifierFlags == .command })
-        #expect(slash.title == "Toggle Sidebar")
+        #expect(slash.title == "Show/Hide Sidebar")
         #expect(slash.wantsPriorityOverSystemBehavior)
     }
 

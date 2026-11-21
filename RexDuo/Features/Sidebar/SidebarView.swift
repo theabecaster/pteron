@@ -32,23 +32,20 @@ struct SidebarView: View {
         HStack(spacing: 4) {
             IconButton(symbol: "gearshape", label: "Settings") { model.showSettings = true }
             Spacer()
-            Menu {
-                ForEach(model.servers) { s in
-                    Button("New Session on \(s.config.name)") {
-                        Task {
-                            if let id = await s.createSession(label: nil), let w = s.views[id]?.windows.first {
-                                model.select(s, session: id, window: w.id)
-                                onSelect(Selection(serverID: s.id, sessionID: id, windowID: w.id))
-                            }
-                        }
+            // Only computers that are connected can make one; with one such computer, + makes it there.
+            let targets = NewSession.targets(model.servers)
+            if targets.count == 1, let s = targets.first {
+                Button { newSession(on: s) } label: { plus }
+                    .accessibilityLabel("New Session on \(s.config.name)")
+            } else {
+                Menu {
+                    ForEach(targets) { s in
+                        Button("New Session on \(s.config.name)") { newSession(on: s) }
                     }
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                } label: { plus }
+                .disabled(targets.isEmpty)
+                .accessibilityLabel("New Session")
             }
-            .accessibilityLabel("New Session")
         }
         .font(.system(size: 17))
         .foregroundStyle(theme.chrome.secondary)
@@ -57,6 +54,42 @@ struct SidebarView: View {
         .background(theme.chrome.sidebar)
         .overlay(alignment: .top) { Rectangle().fill(theme.chrome.divider).frame(height: 1) }
     }
+
+    private var plus: some View {
+        Image(systemName: "plus")
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+
+    private func newSession(on s: ServerConnection) {
+        Task {
+            guard let sel = NewSession.opened(s, id: await s.createSession(label: nil)) else { return }
+            model.select(s, session: sel.sessionID, window: sel.windowID)
+            onSelect(sel)
+        }
+    }
+}
+
+/// New Session, wherever it is offered: on a connected computer, and the new session's first tab
+/// goes on screen.
+@MainActor
+enum NewSession {
+    /// The computers the + menu offers: the connected ones.
+    static func targets(_ servers: [ServerConnection]) -> [ServerConnection] {
+        servers.filter { $0.phase == .online }
+    }
+
+    /// The tab to show for a session `server` just made, once its view is in.
+    static func opened(_ server: ServerConnection, id: String?) -> Selection? {
+        guard let id, let w = server.views[id]?.windows.first else { return nil }
+        return Selection(serverID: server.id, sessionID: id, windowID: w.id)
+    }
+}
+
+extension ServerConnection {
+    /// Reconnect is offered only while the computer is down and no attempt the user asked for is
+    /// running: on a connected one it would only drop a working connection.
+    var offersReconnect: Bool { phase.problem != nil && !retrying }
 }
 
 /// Sessions | Agents, at the sidebar's top. The Agents segment carries the waiting count, so a

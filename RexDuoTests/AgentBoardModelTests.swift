@@ -23,8 +23,8 @@ struct AgentBoardModelTests {
         func head(_ states: [String?]) -> String {
             AgentBoard.make([machine(states.enumerated().map { agent("b\($0.offset)", $0.element) })]).headline
         }
-        #expect(head(["blocked", "error", "working", "done", nil]) == "1 needs you")
-        #expect(head(["blocked", "blocked", "working"]) == "2 need you")
+        #expect(head(["blocked", "error", "working", "done", nil]) == "1 waiting")
+        #expect(head(["blocked", "blocked", "working"]) == "2 waiting")
         #expect(head(["error", "working", "done"]) == "1 error")
         #expect(head(["error", "error", "done"]) == "2 errors")
         // One error and one done is not "All done".
@@ -52,7 +52,7 @@ struct AgentBoardModelTests {
 
     @Test func noMachines() {
         let b = AgentBoard.make([])
-        #expect(b.headline == "No machines paired")
+        #expect(b.headline == "No computers yet")
         #expect(b.urgency == .unpaired)
         #expect(b.subline.isEmpty)
         #expect(b.tiles.isEmpty)
@@ -68,7 +68,7 @@ struct AgentBoardModelTests {
         // Waiting, the longest first, then error, working (the server's order), done. Idle has no tile.
         #expect(b.tiles.map(\.agent.blockID) == ["wait-old", "wait-new", "err", "work", "work2", "done"])
         #expect(b.idleCount == 1)
-        #expect(b.headline == "2 need you")
+        #expect(b.headline == "2 waiting")
     }
 
     @Test func aWaitingAgentWithNoTimeComesAfterThoseWithOne() {
@@ -107,7 +107,7 @@ struct AgentBoardModelTests {
         #expect(quiet.glow == nil)
         #expect(quiet.tiles.map(\.stale) == [true])
         // The headline says it already.
-        #expect(quiet.subline == "1 of 2 machines connected")
+        #expect(quiet.subline == "1 of 2 computers connected")
         let done = AgentBoard.make([machine([agent("done", "done")]), down])
         #expect(done.headline == "Reconnecting…")
         #expect(done.tiles.map(\.agent.blockID) == ["done", "old-wait"])
@@ -136,10 +136,10 @@ struct AgentBoardModelTests {
         func m(_ n: String, _ link: BoardMachine.Link) -> BoardMachine { BoardMachine(id: UUID(), name: n, link: link, agents: []) }
         #expect(AgentBoard.subline([m("Studio", .live)]) == "Studio")
         #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .live)]) == "Studio · Laptop")
-        #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .live), m("Mini", .live)]) == "3 of 3 machines connected")
+        #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .live), m("Mini", .live)]) == "3 of 3 computers connected")
         // A machine that never connected this launch is counted and has no tiles.
-        #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .never)]) == "1 of 2 machines connected")
-        #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .stale)]) == "1 of 2 machines connected · Reconnecting…")
+        #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .never)]) == "1 of 2 computers connected")
+        #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .stale)]) == "1 of 2 computers connected · Reconnecting…")
         #expect(AgentBoard.subline([m("Studio", .stale), m("Laptop", .stale)]) == "Studio · Laptop")
         #expect(AgentBoard.subline([m("A", .stale), m("B", .stale), m("C", .never)]) == "3 machines")
     }
@@ -164,9 +164,9 @@ struct AgentBoardModelTests {
         }
         #expect(AgentRowLabel.stateText(status("working")) == "Working")
         #expect(AgentRowLabel.stateText(status("working", progress: 62)) == "Working 62%")
-        #expect(AgentRowLabel.stateText(status("blocked", kind: "permission")) == "Needs permission")
+        #expect(AgentRowLabel.stateText(status("blocked", kind: "permission")) == "Needs your permission")
         #expect(AgentRowLabel.stateText(status("blocked", kind: "question")) == "Has a question")
-        #expect(AgentRowLabel.stateText(status("blocked", kind: "auth")) == "Needs password")
+        #expect(AgentRowLabel.stateText(status("blocked", kind: "auth")) == "Needs your password")
         #expect(AgentRowLabel.stateText(status("blocked")) == "Waiting for you")
         #expect(AgentRowLabel.stateText(status("done")) == "Done")
         #expect(AgentRowLabel.stateText(status("error")) == "Error")

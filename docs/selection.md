@@ -15,8 +15,8 @@ Manual device script: [terminal-checklist.md](terminal-checklist.md), "Selection
   the word's far end. The loupe follows the moving edge. A light tick plays for each new row. Near
   the top or bottom edge the view scrolls a line every 60 ms while the finger stays there.
 - **Lift**: the selection is copied (copy-on-select), a two-beat "success" haptic plays with the
-  shimmer, two handles appear, and the edit menu (Copy, Paste, Select All) opens above the
-  selection.
+  shimmer, two handles appear, and the edit menu (Copy, Paste, Select All, then Open File, Find
+  Selection, Paste Image or Paste File and Share… where they apply) opens above the selection.
 - **Handles**: drag either one to adjust. The loupe shows the edge being moved, rows tick, edges
   autoscroll. On release the adjusted selection is copied again and the menu returns. Dragging one
   handle past the other turns the selection around.
@@ -103,7 +103,8 @@ GhosttyTerminalView (points, cells and rects all from GhosttyGridGeometry)
   its edge. The controller widens that to 18 pt and repeats every 60 ms while the finger rests.
 - **Taps are counted in the host's tap handler** (0.35 s, 28 pt), not by recognizers that wait for
   each other, so a single tap acts at once.
-- **Edit menu**: Copy, Paste, Select All, above the selection when there is room. Hidden while a
+- **Edit menu**: Copy, Paste, Select All, then Open File (a selection that names a file), Find
+  Selection, Paste Image or Paste File and Share…, above the selection when there is room. Hidden while a
   finger is on the selection.
 
 ### Performance

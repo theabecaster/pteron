@@ -33,9 +33,9 @@ struct FindQueryTests {
         r.complete = false
         #expect(FindQuery.count(r) == nil, "nothing found yet while searching")
         r.complete = true
-        #expect(FindQuery.count(r) == "No Results")
+        #expect(FindQuery.count(r) == "No matches")
         r.historyFull = true
-        #expect(FindQuery.count(r) == "No Results in recent history")
+        #expect(FindQuery.count(r) == "No matches in recent history")
         r.total = 12
         #expect(FindQuery.count(r) == "– of 12")
         r.selectedIndex = 2

@@ -144,6 +144,19 @@ import Testing
         #expect(r.dialogs.closingTab == nil)
     }
 
+    /// A tab with two panes asks before it closes, as Close Other Panes does (`CloseTabAsk`).
+    @Test func closingATabWithTwoPanesAsks() throws {
+        let r = try rig()
+        let pane: (String) -> JSONObject = { ["block_id": $0, "creator_name": "com.superlogical.terminal"] }
+        r.server.views["play"] = SessionView(["revision": 2, "session_id": "play", "label": "", "active_window_id": "game",
+                                              "windows": [["window_id": "game", "label": "game", "layers": [
+                                                  ["kind": "tiled", "blocks": [pane("b-g1"), pane("b-g2")]] as JSONObject,
+                                              ]] as JSONObject]])
+        r.routes.run(.close, tab: "game", session: "play", server: r.server)
+        #expect(r.dialogs.closingTab?.windowID == "game")
+        #expect(r.dialogs.closingTabAsk == CloseTabAsk(panes: 2, agent: false))
+    }
+
     /// Close Other Tabs always asks, with exactly the other tabs and whether an agent runs there.
     @Test func closeOtherTabsAlwaysAsks() throws {
         let r = try rig()
@@ -245,8 +258,8 @@ import Testing
             GoToCommands.add(r.model.servers, target: nil, waitingCount: 0, navigation: navigation, into: &copy)
             return copy.items.map(\.title)
         }
-        #expect(titles(.sidebar).contains("Toggle Sidebar"))
-        #expect(!titles(.tabs).contains("Toggle Sidebar"))
+        #expect(titles(.sidebar).contains("Show/Hide Sidebar"))
+        #expect(!titles(.tabs).contains("Show/Hide Sidebar"))
         #expect(titles(.tabs).count == titles(.sidebar).count - 1)
     }
 }

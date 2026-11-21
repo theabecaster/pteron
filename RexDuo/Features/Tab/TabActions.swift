@@ -8,10 +8,10 @@ enum TabAction: Hashable, CaseIterable {
 
     var title: String {
         switch self {
-        case .splitRight: "Split Right"
-        case .splitDown: "Split Down"
+        case .splitRight: "Split Pane Right"
+        case .splitDown: "Split Pane Down"
         case .newTab: "New Tab"
-        case .allTabs: "All Tabs"
+        case .allTabs: "Show All Tabs"
         case .unzoom: "Unzoom"
         case .hideKeyboard: "Hide Keyboard"
         case .paneActions: "Pane Actions"
@@ -39,6 +39,31 @@ enum TabAction: Hashable, CaseIterable {
         case .floats: "macwindow.on.rectangle"
         case .sidebar: "sidebar.left"
         case .sessions: "rectangle.stack"
+        }
+    }
+}
+
+/// Whether closing a tab asks first, and what the question says: it asks when an agent would stop,
+/// and when the tab holds two panes or more, as Close Other Panes always asks. The same rule for
+/// every Close Tab: the title bar's, a chip's, a sidebar row's and the keyboard's.
+struct CloseTabAsk: Equatable {
+    /// Every pane in the tab, floating ones too: they all close.
+    var panes: Int
+    /// An agent runs in one of them.
+    var agent: Bool
+
+    /// nil: the tab closes at once.
+    static func decide(panes: Int, agent: Bool) -> CloseTabAsk? {
+        agent || panes >= 2 ? CloseTabAsk(panes: panes, agent: agent) : nil
+    }
+
+    static let title = "Close this tab?"
+
+    func message(computer: String) -> String {
+        switch (agent, panes >= 2) {
+        case (true, true): "Its \(panes) panes close, and the agent running there stops on \(computer) too."
+        case (true, false): "The agent running there stops on \(computer) too."
+        default: "Its \(panes) panes close, and their programs stop on \(computer) too."
         }
     }
 }

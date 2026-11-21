@@ -41,6 +41,7 @@ struct SessionsList: View {
         #endif
         // The root's callback changes with the posture (a drawer closes on select, inline stays).
         actions.onSelect = onSelect
+        actions.model = model
         let servers = Dictionary(model.servers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let collapsed = prefs.sidebarCollapsed
         // A drag's held order is applied here, at the outline's source (`PendingOrder`).
@@ -125,16 +126,14 @@ struct SessionsList: View {
             MachineRow(server: server, sessionCount: server.sessions.count,
                        windows: server.sessions.flatMap { server.views[$0.id]?.windows ?? [] },
                        collapsed: collapsed.contains(SidebarCollapse.machine(id)),
-                       topGap: row.first ? 4 : machineGap, theme: theme)
+                       topGap: row.first ? 4 : machineGap, theme: theme, actions: actions)
                 .equatable()
                 .modifier(SidebarStackRow(theme: theme))
                 .modifier(SidebarSwipe(id: row.id, leading: [
-                    SwipeAction(title: "New Session", symbol: "plus", tint: theme.accent) {
-                        Task { await server.createSession(label: nil) }
-                    },
-                ], trailing: [
+                    SwipeAction(title: "New Session", symbol: "plus", tint: theme.accent) { actions.newSession(server) },
+                ], trailing: server.offersReconnect ? [
                     SwipeAction(title: "Reconnect", symbol: "arrow.clockwise", tint: theme.chrome.working) { server.reconnect() },
-                ], fullLeading: true, state: swipe))
+                ] : [], fullLeading: true, state: swipe))
         case .session(let id, let sid):
             if let entry = server.sessions.first(where: { $0.id == sid }) {
                 let target = SidebarActions.Target(server: server, sessionID: sid, label: entry.label)
@@ -174,7 +173,7 @@ struct SessionsList: View {
                     .modifier(SidebarStackRow(theme: theme, selected: selected, selectionLeading: SidebarMetrics.tabLeading))
                     .modifier(SidebarSwipe(id: row.id, trailing: [
                         SwipeAction(title: "Close", symbol: "xmark", tint: theme.chrome.error) {
-                            actions.closeTab(target, hasAgent: server.windowAgent(w) != nil)
+                            actions.closeTab(target, hasAgent: server.windowAgent(w) != nil, panes: w.allBlocks.count)
                         },
                         SwipeAction(title: "Rename", symbol: "pencil", tint: theme.chrome.secondary) {
                             actions.rename(target, current: w.label)
@@ -182,7 +181,7 @@ struct SessionsList: View {
                     ], state: swipe))
             }
         case .empty:
-            NoSessionsRow(server: server, theme: theme)
+            NoSessionsRow(server: server, theme: theme, actions: actions)
                 .modifier(SidebarStackRow(theme: theme))
         case .portsHeader(let id):
             PortsHeaderRow(serverID: id,
@@ -368,13 +367,17 @@ final class SidebarActions {
     }
 
     @ObservationIgnored var onSelect: (Selection) -> Void = { _ in }
+    /// Where New Session puts the new session's tab.
+    @ObservationIgnored weak var model: AppModel?
     /// The list's one drag: rows lift into it, the list's drop target follows it.
     @ObservationIgnored let drag = SidebarDrag()
     var renaming: Target?
     var renameText = ""
     var closing: Target?
-    /// A tab with an agent in it: closing asks first.
+    /// A tab with an agent or several panes in it: closing asks first.
     var closingTab: Target?
+    /// What that question says.
+    var closingTabAsk = CloseTabAsk(panes: 1, agent: true)
     /// Close Other Tabs, from a tab chip's menu: exactly these tabs, as the session held them
     /// at the tap.
     var closingOthers: Others?
@@ -392,10 +395,24 @@ final class SidebarActions {
         renaming = t
     }
 
-    /// Destructive: a confirmation when an agent would stop.
-    func closeTab(_ t: Target, hasAgent: Bool) {
+    /// Destructive: a confirmation when an agent would stop or several panes close (`CloseTabAsk`).
+    func closeTab(_ t: Target, hasAgent: Bool, panes: Int = 1) {
         guard let w = t.windowID else { return }
-        if hasAgent { closingTab = t } else { Task { await t.server.closeWindow(t.sessionID, w) } }
+        if let ask = CloseTabAsk.decide(panes: panes, agent: hasAgent) {
+            closingTabAsk = ask
+            closingTab = t
+        } else {
+            Task { await t.server.closeWindow(t.sessionID, w) }
+        }
+    }
+
+    /// New Session from a row: made, then its tab on screen, as the + menu and the popover do.
+    func newSession(_ server: ServerConnection) {
+        Task {
+            guard let sel = NewSession.opened(server, id: await server.createSession(label: nil)) else { return }
+            model?.select(server, session: sel.sessionID, window: sel.windowID)
+            onSelect(sel)
+        }
     }
 }
 
@@ -406,7 +423,7 @@ struct SidebarDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .alert("Rename", isPresented: Binding(get: { actions.renaming != nil }, set: { if !$0 { actions.renaming = nil } })) {
+            .alert(actions.renaming?.windowID == nil ? "Rename Session" : "Rename Tab", isPresented: Binding(get: { actions.renaming != nil }, set: { if !$0 { actions.renaming = nil } })) {
                 TextField("Name", text: $actions.renameText)
                 Button("Cancel", role: .cancel) { actions.renaming = nil }
                 Button("Rename") {
@@ -429,9 +446,9 @@ struct SidebarDialogs: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) { actions.closing = nil }
             } message: {
-                Text("Every tab in it closes and its programs stop, on the Mac too.")
+                Text("Every tab in it closes, and its programs stop on \(actions.closing?.server.config.name ?? "the computer") too.")
             }
-            .confirmationDialog("Close this tab?",
+            .confirmationDialog(CloseTabAsk.title,
                                 isPresented: Binding(get: { actions.closingTab != nil }, set: { if !$0 { actions.closingTab = nil } }),
                                 titleVisibility: .visible) {
                 Button("Close Tab", role: .destructive) {
@@ -440,7 +457,7 @@ struct SidebarDialogs: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) { actions.closingTab = nil }
             } message: {
-                Text("The agent running there stops, on the Mac too.")
+                Text(actions.closingTabAsk.message(computer: actions.closingTab?.server.config.name ?? "the computer"))
             }
             .confirmationDialog(actions.closingOthers.map { $0.tabs.count == 1 ? "Close 1 other tab?" : "Close \($0.tabs.count) other tabs?" } ?? "",
                                 isPresented: Binding(get: { actions.closingOthers != nil }, set: { if !$0 { actions.closingOthers = nil } }),
@@ -452,7 +469,8 @@ struct SidebarDialogs: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) { actions.closingOthers = nil }
             } message: { c in
-                if c.agent { Text("The agents running there stop, on the Mac too.") }
+                Text(c.agent ? "The agents running there stop on \(c.target.server.config.name) too."
+                             : "Their programs stop on \(c.target.server.config.name) too.")
             }
     }
 }
@@ -475,22 +493,25 @@ struct MachineRow: View, Equatable {
     let collapsed: Bool
     let topGap: CGFloat
     let theme: TermTheme
+    let actions: SidebarActions
     @Environment(Prefs.self) private var prefs
 
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.server === b.server && a.sessionCount == b.sessionCount && a.collapsed == b.collapsed
-            && a.topGap == b.topGap && a.theme.id == b.theme.id
+            && a.topGap == b.topGap && a.theme.id == b.theme.id && a.actions === b.actions
             && SidebarRowKeys.windows(a.windows) == SidebarRowKeys.windows(b.windows)
     }
 
     var body: some View {
-        let server = server
+        let server = server, actions = actions
         MachineHeader(server: server, windows: windows, sessionCount: sessionCount, collapsed: collapsed, theme: theme) {
             toggleFold(SidebarCollapse.machine(server.id), prefs)
         }
         .contextMenu {
-            Button { Task { await server.createSession(label: nil) } } label: { Label("New Session", systemImage: "plus") }
-            Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+            Button { actions.newSession(server) } label: { Label("New Session", systemImage: "plus") }
+            if server.offersReconnect {
+                Button { server.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+            }
         }
         .padding(.top, topGap)
     }
@@ -524,8 +545,8 @@ struct SessionRow: View, Equatable {
                       newTab: { _ = newTab() })
             .contextMenu {
                 Button { _ = newTab() } label: { Label("New Tab", systemImage: "plus.square") }
-                Button { actions.rename(target, current: s.label) } label: { Label("Rename Session", systemImage: "pencil") }
-                Button(role: .destructive) { actions.closing = target } label: { Label("Close Session…", systemImage: "xmark") }
+                Button { actions.rename(target, current: s.label) } label: { Label("Rename Session…", systemImage: "pencil") }
+                Button(role: .destructive) { actions.closing = target } label: { Label("Close Session", systemImage: "xmark") }
             }
             .modifier(SidebarLift(enabled: canDrag) { actions.drag.lift(.session(server: server.id, session: s.id)) })
             .padding(.top, topGap)
@@ -561,7 +582,7 @@ struct TabRow: View, Equatable {
         #endif
         let server = server, w = window, sid = sessionID, actions = actions
         let target = SidebarActions.Target(server: server, sessionID: sid, windowID: w.id, label: w.label)
-        let close = { actions.closeTab(target, hasAgent: server.windowAgent(w) != nil) }
+        let close = { actions.closeTab(target, hasAgent: server.windowAgent(w) != nil, panes: w.allBlocks.count) }
         let rename = { actions.rename(target, current: w.label) }
         let open = {
             model.select(server, session: sid, window: w.id)
@@ -583,7 +604,7 @@ struct TabRow: View, Equatable {
             return .handled
         }
         .contextMenu {
-            Button(action: rename) { Label("Rename Tab", systemImage: "pencil") }
+            Button(action: rename) { Label("Rename Tab…", systemImage: "pencil") }
             Button { Task { await server.newWindow(sid) } } label: { Label("New Tab", systemImage: "plus.square") }
             Button(role: .destructive, action: close) { Label("Close Tab", systemImage: "xmark") }
         }
@@ -607,10 +628,11 @@ enum SidebarRowKeys {
     }
 }
 
-/// A connected machine without sessions: says so, with New Session.
+/// A connected computer without sessions: says so, with New Session.
 struct NoSessionsRow: View {
     let server: ServerConnection
     let theme: TermTheme
+    let actions: SidebarActions
 
     var body: some View {
         HStack(spacing: 6) {
@@ -619,7 +641,7 @@ struct NoSessionsRow: View {
                 .foregroundStyle(theme.chrome.tertiary)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Button { Task { await server.createSession(label: nil) } } label: {
+            Button { actions.newSession(server) } label: {
                 Text("New Session")
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)

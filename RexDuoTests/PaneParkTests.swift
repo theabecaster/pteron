@@ -318,7 +318,7 @@ final class PaneParkTests: XCTestCase {
         host.streamResized(cols: mine.cols, rows: mine.rows, owner: nil)
         XCTAssertNil(host.statusChipText)
         host.streamResized(cols: 120, rows: 40, owner: "client:mac")
-        XCTAssertEqual(host.statusChipText, "Resized elsewhere · tap to fit here")
+        XCTAssertEqual(host.statusChipText, "Resized on another screen · tap to fit this one")
         host.removeFromSuperview()
     }
 
@@ -682,7 +682,7 @@ final class PaneParkTests: XCTestCase {
         transport.held = []
         transport.finishAll()
         pause(0.1)
-        XCTAssertEqual(host.statusChipText, "Resized elsewhere · tap to fit here")
+        XCTAssertEqual(host.statusChipText, "Resized on another screen · tap to fit this one")
         XCTAssertTrue(drawnFits(host), "drawn as the server's grid scaled to the pane, as when resized elsewhere")
         host.removeFromSuperview()
     }

@@ -17,7 +17,7 @@ struct WindowScreen: View {
 
     /// A close that needs a second tap because an agent would stop, or that closes several panes.
     enum Confirm: Identifiable {
-        case pane(String), tab
+        case pane(String), tab(CloseTabAsk)
         /// Close Other Panes: exactly these blocks, as the tab held them at the tap.
         case others([String], agent: Bool)
         var id: String {
@@ -154,8 +154,9 @@ struct WindowScreen: View {
         } message: { c in
             switch c {
             case .others(_, agent: false): EmptyView()
-            case .others: Text("The agents running there stop, on the Mac too.")
-            default: Text("The agent running there stops, on the Mac too.")
+            case .others: Text("The agents running there stop on \(server.config.name) too.")
+            case .tab(let ask): Text(ask.message(computer: server.config.name))
+            default: Text("The agent running there stops on \(server.config.name) too.")
             }
         }
         .confirmationDialog("Move Pane to Tab", isPresented: Binding(get: { moveChoices != nil }, set: { if !$0 { moveChoices = nil } }),
@@ -235,7 +236,7 @@ struct WindowScreen: View {
 
     private var confirmTitle: String {
         switch confirm {
-        case .tab: return "Close this tab?"
+        case .tab: return CloseTabAsk.title
         case .others(let ids, _): return ids.count == 1 ? "Close 1 other pane?" : "Close \(ids.count) other panes?"
         default: return "Close this pane?"
         }
@@ -395,7 +396,10 @@ struct WindowScreen: View {
     }
 
     private func requestCloseTab() {
-        if let w = window, server.windowAgent(w) != nil { confirm = .tab; return }
+        if let w = window, let ask = CloseTabAsk.decide(panes: w.allBlocks.count, agent: server.windowAgent(w) != nil) {
+            confirm = .tab(ask)
+            return
+        }
         closeTab()
     }
 
@@ -545,7 +549,7 @@ struct WindowScreen: View {
             open(sel)
         } else if server.views[sid]?.window(source) == nil {
             Notice.shared.show("Moved the pane to \(name).", style: .neutral,
-                               action: Notice.Action(title: "Open") { open(sel) })
+                               action: Notice.Action(title: "Show") { open(sel) })
         }
     }
 
@@ -1007,7 +1011,7 @@ struct WindowScreen: View {
                         Text("or tap with two fingers")
                     }
                 }
-                Button { Task { await server.clear(sessionID, block) } } label: { Label("Clear", systemImage: "eraser") }
+                Button { Task { await server.clear(sessionID, block) } } label: { Label("Clear Terminal", systemImage: "eraser") }
                 Button { rename() } label: { Label("Rename Tab…", systemImage: "pencil") }
             }
             Section {
@@ -1368,7 +1372,7 @@ struct TabOverview: View {
                 .padding(14)
             }
             .background(theme.chrome.canvas.ignoresSafeArea())
-            .navigationTitle("Tabs")
+            .navigationTitle("All Tabs")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }

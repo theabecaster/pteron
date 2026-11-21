@@ -467,7 +467,7 @@ private struct MoreTile: View {
         .buttonStyle(BoardTileStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(count == 1 ? "1 more agent" : "\(count) more agents")
-        .accessibilityHint("Lists every agent in the sidebar.")
+        .accessibilityHint("Lists every agent.")
     }
 }
 

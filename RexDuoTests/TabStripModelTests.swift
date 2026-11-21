@@ -187,7 +187,7 @@ struct TabChipTests {
             "m:\(desk.id.uuidString)", "s:\(desk.id.uuidString):work", "s:\(desk.id.uuidString):play",
             "m:\(cloud.id.uuidString)", "e:\(cloud.id.uuidString)",
             "m:\(attic.id.uuidString)", "s:\(attic.id.uuidString):old",
-            "f:Go to Anything…", "f:Agents", "f:Settings", "f:Use Sidebar",
+            "f:Go to Anything…", "f:Agents", "f:Settings", "f:Switch to Sidebar",
         ])
         guard case .session(let work) = p.rows[1], case .session(let play) = p.rows[2],
               case .machine(let down) = p.rows[5], case .session(let old) = p.rows[6],
@@ -197,7 +197,9 @@ struct TabChipTests {
         }
         // A session's row opens the tab the session has in front.
         #expect(work.current && work.open == .open(Selection(serverID: desk.id, sessionID: "work", windowID: "web")))
-        #expect(!play.current && play.waiting == 1 && play.menu.isEmpty)
+        #expect(!play.current && play.waiting == 1)
+        // Any session that isn't down renames and closes from its row, as in the sidebar.
+        #expect(play.menu == [.renameSession(desk.id, session: "play", name: "play"), .closeSession(desk.id, session: "play", name: "play")])
         #expect(down.status == .down("Not answering") && down.reconnect == .reconnect(attic.id) && down.newSession == nil)
         #expect(old.dim)
         // Its tap moves to a computer that is down: that one is asked to try again.
@@ -244,7 +246,7 @@ struct SessionPopoverTests {
             "m:\(desk.uuidString)", "s:\(desk.uuidString):work", "s:\(desk.uuidString):play",
             "m:\(cloud.uuidString)", "s:\(cloud.uuidString):deploy",
             "not-added", "h:h1",
-            "f:Go to Anything…", "f:Agents", "f:Settings", "f:Use Sidebar",
+            "f:Go to Anything…", "f:Agents", "f:Settings", "f:Switch to Sidebar",
         ])
         #expect(Set(p.rows.map(\.id)).count == p.rows.count)
         #expect(p.rows[6].action == .add(host))
@@ -257,7 +259,7 @@ struct SessionPopoverTests {
     @Test func theFooterIsTheSidebarsOtherPlacesAndTheWayBack() {
         let footer = SessionPopover.footer(waiting: 2)
         #expect(footer.map(\.action) == [.goTo, .agents, .settings, .useSidebar])
-        #expect(footer.map(\.title) == ["Go to Anything…", "Agents", "Settings", "Use Sidebar"])
+        #expect(footer.map(\.title) == ["Go to Anything…", "Agents", "Settings", "Switch to Sidebar"])
         #expect(footer.map(\.count) == [0, 2, 0, 0])
         #expect(footer.allSatisfy { !$0.symbol.isEmpty })
         #expect(SessionPopover(machines: [], current: nil).firstFooterID == "f:Go to Anything…")
@@ -300,9 +302,9 @@ struct SessionPopoverTests {
         #expect(empties(.down("Not answering"), synced: true) == 0)
     }
 
-    /// A session's row switches to it on tap. Only the session on screen has a menu: Rename
-    /// Session… and Close Session….
-    @Test func sessionRowsSwitchAndOnlyTheCurrentOneHasAMenu() {
+    /// A session's row switches to it on tap. Every session has a menu, as in the sidebar: Rename
+    /// Session… and Close Session.
+    @Test func sessionRowsSwitchAndEachHasAMenu() {
         let current = Selection(serverID: desk, sessionID: "work", windowID: "w9")
         let p = SessionPopover(machines: [machine(desk, "desk", [session("work", tab: "w2", waiting: 2), session("play"),
                                                                  session("new", tab: nil)]),
@@ -315,10 +317,12 @@ struct SessionPopoverTests {
         #expect(s[2].open == nil)
         #expect(s[0].menu == [.renameSession(desk, session: "work", name: "work"),
                               .closeSession(desk, session: "work", name: "work")])
-        #expect(s[0].menu.compactMap(SessionPopover.title) == ["Rename Session…", "Close Session…"])
-        #expect(s[1].menu.isEmpty && s[2].menu.isEmpty)
-        // The same session id on another machine is another session.
-        #expect(!s[3].current && s[3].menu.isEmpty && s[3].id != s[0].id)
+        #expect(s[0].menu.compactMap(SessionPopover.title) == ["Rename Session…", "Close Session"])
+        #expect(s[1].menu == [.renameSession(desk, session: "play", name: "play"), .closeSession(desk, session: "play", name: "play")])
+        #expect(s[2].menu.count == 2)
+        // The same session id on another machine is another session, with its own menu.
+        #expect(!s[3].current && s[3].menu == [.renameSession(cloud, session: "work", name: "work"),
+                                               .closeSession(cloud, session: "work", name: "work")] && s[3].id != s[0].id)
         #expect(s.map(\.waiting) == [2, 0, 0, 0])
     }
 

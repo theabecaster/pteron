@@ -617,7 +617,7 @@ struct EmptyState: View {
             return "On your computer, run `rex server tailscale pair`, then scan the code it shows."
         }
         if model.servers.contains(where: { $0.phase == .online }) {
-            return prefs.navigation == .tabs ? "Pick a tab above." : "Pick a tab in the sidebar."
+            return prefs.navigation == .tabs ? "Pick a session." : "Pick a tab in the sidebar."
         }
         return "Connecting to Rex…"
     }

@@ -26,9 +26,7 @@ struct StripRoutes {
             Haptic.tap()
             let open = open
             Task {
-                if let sid = await server.createSession(label: nil), let w = server.views[sid]?.windows.first {
-                    open(Selection(serverID: server.id, sessionID: sid, windowID: w.id))
-                }
+                if let sel = NewSession.opened(server, id: await server.createSession(label: nil)) { open(sel) }
             }
         case .reconnect(let id):
             model.server(id)?.reconnect()
@@ -76,7 +74,7 @@ struct StripRoutes {
         case .rename:
             dialogs.rename(target, current: window.label)
         case .close:
-            dialogs.closeTab(target, hasAgent: server.windowAgent(window) != nil)
+            dialogs.closeTab(target, hasAgent: server.windowAgent(window) != nil, panes: window.allBlocks.count)
         case .closeOthers:
             let others = ids.filter { $0 != tab }
             guard !others.isEmpty else { return }

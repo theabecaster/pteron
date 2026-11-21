@@ -166,8 +166,8 @@ from a program state the user has not seen.
   (`GhosttyTerminalView.sayFocus`).
 - **A file send** waits for the fence and then goes: the user picked a file, not a place on the
   screen (`whenCurrent`). It waits 10 s at most; if the pane is still behind then, or leaves
-  the screen or closes first, the notice says "Not sent: <files>. The pane was still
-  reconnecting." with Retry.
+  the screen or closes first, the notice says "Didn't send <files>: the pane was still
+  reconnecting. Try again in a moment." with Try Again.
 - **Always allowed**: scrolling, selection, copy, find, opening links, menus.
 - **Look**: the screen as it was, with no dimming and no badge. Only the cursor is hollow, as an
   unfocused pane's. The engine holds the screen on show and draws what arrived as one frame when
@@ -175,7 +175,7 @@ from a program state the user has not seen.
   most; after that the screen follows the bytes while the fence stays up. A pane that opens at
   the size it will keep draws its first screen at once.
 - A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
-- A `resize` from another client counts as "Resized elsewhere" only on a current stream or after
+- A `resize` from another client counts as "Resized on another screen" only on a current stream or after
   our own resize has come by: a size from before our resize can arrive after the claim's answer.
 
 ## Parking
@@ -229,7 +229,7 @@ is not a cold start.
 - Fit: after layout settles (120 ms), `session.own_block` (take), then `terminal.resize` to the
   largest grid that fits (`TerminalLayout.fitGrid`, at least 12×4), while the stream starts
   beside it. Backgrounding the app or switching to mirror calls `session.disown_block` at once,
-  and leaving the pane does 10 s later (Parking, claim grace); the Mac then gets its size back. If another client resizes the pane, the host stops and offers "Resized elsewhere ·
+  and leaving the pane does 10 s later (Parking, claim grace); the Mac then gets its size back. If another client resizes the pane, the host stops and offers "Resized on another screen ·
   tap to fit here". Until then it shows the server's grid as mirror does. A pinch there fits the
   pane here too (Gestures).
 - Ownership. A pane follows its owner's size, and a resize from a client that isn't the owner
@@ -297,7 +297,7 @@ is not a cold start.
     the program redrew for a sliver, then again when the keyboard went down. Only a canvas never
     measured with the keyboard down leaves the grid fitting what shows.
   - Another client's size that comes after our resize's echo but before the claim's answer
-    (the echo comes first in the stream) counts as "Resized elsewhere", as one after the
+    (the echo comes first in the stream) counts as "Resized on another screen", as one after the
     answer does. Taken in silently, the claim would answer "ours" over a server grid wider than
     the pane, and every later layout found the claim in place and sent nothing: lines and the
     input line cut at the right edge until the width changed.
@@ -471,7 +471,7 @@ Around that:
 
 ## Find
 
-Find in Scrollback, as on the Rex Mac app: type a needle, every match on screen is tinted, the
+Find in Pane, as on the Rex Mac app: type a needle, every match on screen is tinted, the
 current one stands out, and Next and Previous step through the pane's screen and history.
 
 - **Where it searches.** The pane's own terminal, with libghostty-vt's search
@@ -479,7 +479,7 @@ current one stands out, and Next and Previous step through the pane's screen and
   the phone holds the newest 10,000 lines, and a match older than that has no row to show. Matching
   is the library's: byte for byte, with ASCII letters folded (no regex, no case option, as on the
   Mac). The needle is the field's first line, composed (NFC), at most 1 KB (`FindQuery`). With the
-  history at its cap and nothing found the count says "No Results in recent history".
+  history at its cap and nothing found the count says "No matches in recent history".
 - **Opening.** ⌘F (the keymap's `client.find.open`), "Find…" in the pane menu's section above
   Close (its key text comes from the keymap, `KeyLabel`, and hides when nothing runs it), "Find
   Selection" in the edit menu (a one-row selection of at most 200 bytes), or another client
@@ -772,11 +772,12 @@ Share item is chosen.
 The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Tab/PaneArrange.swift`,
 `PaneMenuItems.swift`, `State/ServerConnection+Panes.swift`). Nothing new shows on a pane.
 
-- **Where.** "Arrange ▸" sits in the pane menu's section above Close, after Find… and Share ▸,
-  on a tab with two or more panes, or with a floating window to minimize or show again (a
-  one-pane tab too). One submenu, its groups titled inline sections: Swap With (the other
-  panes), Move to Tab (the session's other tabs, then New Tab), Balance Splits, Close Other
-  Panes… in a destructive section of its own, then Floating Windows (Floating windows, below).
+- **Where.** The pane menu's middle section is Find…, Share ▸, Attach ▸, Arrange ▸ and Ports,
+  in that order. "Arrange ▸" shows on a tab with two or more panes. One submenu, its groups
+  titled inline sections: Swap With (the other panes), Move to Tab (the session's other tabs,
+  then New Tab), Balance Splits, Close Other Panes… in a destructive section of its own.
+  Floating Windows is a section of the pane menu of its own, not inside Arrange, while the tab
+  has a float (Floating windows, below).
   No shortcut text, no `.keyboardShortcut`: the keymap stays the only key dispatch.
 - **Names.** A pane is named by its label when someone gave it one (on the Mac, from the CLI or a
   layout; not `shell` or `Block 89abcdef`), else its agent, else its program, else "Pane N" by

@@ -176,8 +176,8 @@ struct SessionPopover: Equatable {
                     session: s.id, machine: m.id, name: name, current: isCurrent, waiting: s.waiting, dim: down,
                     retries: down && current?.serverID != m.id,
                     open: s.tab.map { .open(Selection(serverID: m.id, sessionID: s.id, windowID: $0)) },
-                    menu: isCurrent && !down ? [.renameSession(m.id, session: s.id, name: name),
-                                                .closeSession(m.id, session: s.id, name: name)] : [])))
+                    menu: !down ? [.renameSession(m.id, session: s.id, name: name),
+                                   .closeSession(m.id, session: s.id, name: name)] : [])))
             }
         }
         if !hosts.isEmpty {
@@ -194,14 +194,14 @@ struct SessionPopover: Equatable {
         [Footer(action: .goTo, title: TabAction.goTo.title, symbol: TabAction.goTo.symbol),
          Footer(action: .agents, title: "Agents", symbol: SidebarMode.agents.symbol, count: waiting),
          Footer(action: .settings, title: "Settings", symbol: "gearshape"),
-         Footer(action: .useSidebar, title: "Use Sidebar", symbol: "sidebar.left")]
+         Footer(action: .useSidebar, title: "Switch to Sidebar", symbol: "sidebar.left")]
     }
 
     /// A menu row's title.
     static func title(_ action: Action) -> String? {
         switch action {
         case .renameSession: "Rename Session…"
-        case .closeSession: "Close Session…"
+        case .closeSession: "Close Session"
         case .newSession: "New Session"
         case .reconnect: "Reconnect"
         case .add: "Add"
