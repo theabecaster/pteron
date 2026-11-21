@@ -543,7 +543,8 @@ final class ServerConnection: Identifiable {
 
     /// The app is back: hold drops for `ForegroundWake.grace` while the connections are checked.
     private func beginWake() {
-        guard wake.enteredForeground(now: Self.now()), let until = wake.deadline else { return }
+        guard wake.enteredForeground(now: Self.now(), expensive: network?.snapshot.expensive ?? false),
+              let until = wake.deadline else { return }
         // A drop held while in the background shows now if it was a clear one.
         if let p = pendingProblem, ForegroundWake.isClear(p.kind, answered: false, network: network?.snapshot ?? .unknown) {
             endWake()

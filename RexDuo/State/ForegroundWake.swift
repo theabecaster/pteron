@@ -29,6 +29,12 @@ struct ForegroundWake: Equatable {
     /// to call a half-open socket dead (`RexControl.wakeTimeout`), and a new one takes about a second
     /// over Tailscale, whose own tunnel is waking up too.
     static let grace: TimeInterval = 5
+    /// The same on cellular or a hotspot, where that ping has 5 s and a new connection takes
+    /// longer: with 5 s the hold ended while the check it waits for was still out.
+    static let graceExpensive: TimeInterval = 8
+
+    /// The hold for the path the phone is on.
+    static func grace(expensive: Bool) -> TimeInterval { expensive ? graceExpensive : grace }
 
     private(set) var state = State.awake
 
@@ -42,9 +48,11 @@ struct ForegroundWake: Equatable {
     }
 
     /// The app is back. Returns true when a hold began, so the caller starts its timer.
-    mutating func enteredForeground(now: TimeInterval) -> Bool {
+    /// `expensive`: the path is cellular or a hotspot now. The hold's length is set here, once;
+    /// a change of path during it leaves it alone.
+    mutating func enteredForeground(now: TimeInterval, expensive: Bool = false) -> Bool {
         guard state == .background else { return false }
-        state = .waking(until: now + Self.grace)
+        state = .waking(until: now + Self.grace(expensive: expensive))
         return true
     }
 

@@ -1251,7 +1251,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // The socket may have died while the app was suspended. The stream checks it and, if it
         // has, resumes where it stopped (no new snapshot), so the screen on show stays until then.
         if backgroundedAt != nil, started, window != nil {
-            quietUntil = CACurrentMediaTime() + ForegroundWake.grace
+            quietUntil = CACurrentMediaTime() + ForegroundWake.grace(expensive: stream.control.onExpensivePath)
             stream.wake()
             PerfProbe.active?.mounted(self, kind: .resumed)  // PERF
         } else {

@@ -48,6 +48,29 @@ struct ForegroundWakeTests {
         #expect(!r7, "nothing is left to show")
     }
 
+    @Test func onCellularTheHoldIsEightSecondsAndOnWiFiFiveAsBefore() {
+        #expect(ForegroundWake.grace == 5)
+        #expect(ForegroundWake.grace(expensive: false) == 5)
+        #expect(ForegroundWake.grace(expensive: true) == 8)
+        var w = ForegroundWake()
+        w.enteredBackground(online: true)
+        let began = w.enteredForeground(now: 100, expensive: true)
+        #expect(began)
+        #expect(w.deadline == 108)
+        let held = w.failure(.notAnswering, answered: false, network: net, now: 105.5)
+        #expect(held == .hold, "past the Wi-Fi hold, inside the cellular one")
+        let early = w.expire(now: 107.9)
+        #expect(!early)
+        let ended = w.expire(now: 108)
+        #expect(ended)
+        // A clear answer still ends it at once.
+        var c = ForegroundWake()
+        c.enteredBackground(online: true)
+        _ = c.enteredForeground(now: 100, expensive: true)
+        let clear = c.failure(.noInternet, answered: false, network: noNet, now: 101)
+        #expect(clear == .show)
+    }
+
     @Test func wakingThatOutlastsTheGraceShows() {
         var w = woken()
         let r8 = w.failure(.offPrivateNetwork, answered: false, network: net, now: 101)

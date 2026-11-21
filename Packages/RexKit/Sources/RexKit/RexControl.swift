@@ -184,6 +184,9 @@ public final class RexControl {
     /// The phone has a network path, and whether it is cellular or a hotspot (`pathChanged`).
     private var pathSatisfied = true
     private var pathExpensive = false
+    /// The path the phone is on is cellular or a hotspot, as last told (`pathChanged`): the
+    /// longer deadlines apply.
+    public var onExpensivePath: Bool { pathExpensive }
     /// When anything last came in on the socket.
     private var lastInbound = Date.distantPast
     /// The ping that waits for its pong.
