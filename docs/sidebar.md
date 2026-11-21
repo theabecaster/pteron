@@ -115,9 +115,19 @@ to the list.
 - A tap opens the machine's ports in a popover over the sidebar (`MachinePortsButton`,
   `PortsList`): "Ports", then a row each. A row: a globe tile, what runs and its folder
   ("Next.js · anchor"), `localhost:3000` under it. Tap, or Return on a focused row, opens the
-  page in the app. The menu, and VoiceOver's actions: Copy Link, Show Pane, and Stop where it
-  applies. The page, the pane and Copy Link close the popover first; Stop leaves it up, and
-  the address line adds "Stopping…", then "Still running" if the port is still held 5 s later.
+  page in the app. The menu, and VoiceOver's actions: Open in Browser, Copy Link, Show Pane,
+  Restart and Stop, each only where it applies. The page, the pane, Copy Link and Open in
+  Browser close the popover first; Stop leaves it up, and the address line adds "Stopping…",
+  then "Still running" if the port is still held 5 s later.
+- Open in Browser, Restart, and Stop for a server started through a wrapper (`npm run dev`)
+  show only on a computer whose Beacon answers for them; elsewhere they are absent, with no
+  setting and no hint. A row whose page is open in the iPhone's browser adds "In browser" to
+  its address line: no badge, no color.
+- Restart asks in the row, never in an alert: under the row, "Restart: npm run dev" in
+  monospace, "Runs this command again in its pane.", and Restart or Cancel. The popover stays
+  up when the pane is already on screen, and closes first when the pane has to be shown.
+  While it runs the address line adds "Restarting…" and the row keeps its place although its
+  port is away; if it fails, "Couldn't restart" with Show Pane under the row for 30 s.
 - Rows follow the sidebar's order of their panes, then the port number.
 - A down machine keeps its last known ports: the button and the rows are dimmed, the popover
   says why under its title, and a tap says the machine is offline.
@@ -133,8 +143,10 @@ to the list.
   changes with the first and the last, and `portRowIDs`, set only when a row comes or goes,
   while it has some. A hidden sidebar's button reads neither (`PortsSeen`). The list reads
   `portRowIDs` only while it is up, and a row reads its own pane's port list, its pane's
-  foreground process and its Stop state in its own body, so a port that changes hands redraws
+  foreground process and its own state in its own body, so a port that changes hands redraws
   that row alone and nothing in the sidebar (`-renderCount`'s `portButtons` and `portRows`).
+  A row that shows has its process read from the Beacon once per process and connection
+  (`.task`); with the list closed there is no row and nothing is asked.
 
 ## Not Added
 

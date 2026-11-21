@@ -1009,28 +1009,87 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
   link) gets no row; a server an agent started does. A row is named by what runs, then the
   folder it runs in ("Next.js · anchor"), with `localhost:3000` under it (`PortNames`: a small
   table of known programs, else the program's own name). A tap opens the page in the app, as
-  the pane menu's row does. The row's menu and VoiceOver's actions: Copy Link
-  (`http://localhost:3000`), Show Pane, and Stop. The palette lists the same ports as "Open localhost:3000 · Next.js"
+  the pane menu's row does. The row's menu and VoiceOver's actions: Open in Browser, Copy Link
+  (`http://localhost:3000`), Show Pane, Restart and Stop, each only where it applies. The
+  palette lists the same ports as "Open localhost:3000 · Next.js"
   ([goto.md](goto.md)).
-- **Stop** (`PortStop`, `PortActions`). Stop types one Ctrl-C into the port's pane. It is
-  offered only when the process that holds the port is itself the pane's foreground process
-  and the pane runs no agent. A server left in the background, one started by a script or an
-  agent that is still in front (`npm run dev`, where `npm` is in front and its child holds the
-  port), and a port whose process Rex couldn't name get no Stop, only Show Pane: Rex names the
-  foreground's parents and never the port holder's, so the phone can't tell such a server from
-  one beside the foreground. On the tap the pane's processes are read again
-  (`terminal.process`); if the foreground is no longer that process, nothing is typed and a
-  notice offers Show Pane. The Ctrl-C goes once, through the pane's input queue when the pane is
+- **Stop** (`PortStop`, `PortActions`). Stop types one Ctrl-C into the port's pane. From Rex
+  alone it is offered only when the process that holds the port is itself the pane's
+  foreground process and the pane runs no agent: Rex names the foreground's parents and never
+  the port holder's, so a server started through a wrapper (`npm run dev`, where `npm` is in
+  front and its child holds the port) can't be told from one beside the foreground. Where the
+  computer's Beacon names a port's process (see **The Beacon** below), the wrapped server gets
+  Stop too: the pane's foreground process must be the holder, the leader of the holder's
+  process group, or a parent of the holder in that same group, the foreground group of the
+  holder's terminal must be that group where the Beacon names it, and no process of the group
+  may be an agent (`PortOwner.interruptReaches`, `PortStop.agentInGroup`). A server left in the
+  background, one its starter put in a group of its own, one an agent started and a port whose
+  process nobody could name get no Stop, only Show Pane. On the tap the pane's processes are
+  read again (`terminal.process`), and for a wrapped server the Beacon is asked again about
+  that process, so nothing is decided from what the row showed; if the answer is no longer a
+  yes, nothing is typed and a notice offers Show Pane. Stop never shows the pane. The Ctrl-C goes once, through the pane's input queue when the pane is
   on screen or kept warm (`sendOnce`) and as one call otherwise (a parked pane has no running
   stream); one that doesn't leave the phone, as while the pane is behind its catch-up fence, is
   a calm notice with Show Pane, never a later send. The row says "Stopping…"; a port still held 5 s later says
   "Still running" and Stop is there to tap again. The phone never sends a signal and never a
   second interrupt by itself. The row goes when Rex says the port is gone.
-- **No Restart.** Typing a server's command again needs its exact command line from a source
-  that can't be wrong. Rex gives none: `terminal.process` returns each process's first argument
-  only ("Rex never returns the other arguments, because they can hold secrets"), no event
-  carries a shell's command marks, and Rex installs no shell integration that would write them.
-  So the app has Stop and Show Pane, and no Restart.
+- **Restart** (`RestartCommand`, `PortRestart` in RexKit; `PortActions.restartNow`). Rex gives no
+  command line (`terminal.process` returns each process's first argument only, and no event
+  carries a shell's command marks), so Restart exists only where the Beacon names the job. It
+  is offered when all of this holds: Stop's rule above; the leader of the holder's process
+  group is in the Beacon's answer with the process that started it; that parent is a shell
+  (`ProcessNames.isShell`); the leader's arguments are there, whole and text (`argv` not null,
+  not `truncated`, not `argv_lossy`); they are not the shell's own (a subshell or a function
+  runs as a copy of the shell); the leader's folder is the shell's folder, so no `cd` is ever
+  typed; every argument has a spelling on one line (`ShellEscape`, with a literal `~` kept
+  literal; an empty argument, a control character or a first word with `=` gives no Restart);
+  the line is at most 300 characters; and no agent is in the pane or the group.
+  - It is not what the user typed: variables set in front (`PORT=4000 npm run dev`), an alias
+    and anything after a pipe are not in a process's arguments. So nothing says the command is
+    the same. The row asks instead, in place and never in an alert: "Restart: npm run dev" in
+    monospace, "Runs this command again in its pane." under it, and Restart or Cancel.
+  - After the tap, in this order, nothing twice (`PortRestart`): the Beacon is asked again and
+    the command must read exactly as the row showed it; the pane is shown if it isn't on
+    screen, and nothing is typed until it is on screen with its catch-up fence down (5 s at
+    most); one Ctrl-C goes as Stop sends it, with Stop's own checks; the port must go and the
+    pane's processes (`terminal.process`, read at most three times) must name the very shell
+    that started the job as the foreground, within 10 s; the command and Return go once
+    through `sendOnce`, after a last look (the port still gone, no other foreground named
+    since the read, no agent, the screen still current); the row says "Restarting…" until the
+    port is back, 30 s at most. The row keeps its place in the list while its port is away
+    (`ServerConnection.holdPortRow`).
+  - Any step that doesn't hold ends it: one notice with Show Pane, the row says "Couldn't
+    restart" with Show Pane for 30 s, and nothing is typed afterwards. A command that didn't
+    leave is never sent later; one that left without an answer is never sent again.
+- **Open in Browser** (`PortBrowser`, `PortActions.openInBrowserNow`). The page in the
+  iPhone's own browser, at an address the computer's Beacon hands out for that port and this
+  iPhone (`port_share`; [helper.md](helper.md)). The item is in a row's menu and in
+  the browser's menu only while all of this holds: the Beacon has answered on this connection,
+  no answer has said this computer can't (`not_supported`, `not_available`, `not_registered`,
+  `not_your_phone`), the iPhone has a tailnet address (`PrivateNetwork.address`: 100.64.0.0/10
+  on a tunnel, or fd7a:115c:a1e0::/48), and the port is 80 or from 1024 up on the computer's
+  loopback. A tap asks the Beacon, then opens the address with the system's browser. Nothing
+  else asks: showing a row or opening a page in the app never makes such an address.
+  - A row whose page is out there adds "In browser" to its address line, and its Copy Link
+    gives that address. The app takes the address to exist until a minute before the Beacon
+    would end it unused (`idle_seconds`), on this connection and for the process that held the
+    port; then the words go, and the next tap asks again.
+  - One site. While the address exists, a page opened in the app loads from it too and not
+    from the phone's listener, so a login made in one is the same site in the other. The app
+    asks for it again at that moment, which keeps it and finds out that it ended; then the
+    page loads the old way. The chrome still shows the computer's address (`localhost:3000`);
+    Copy Link and Share give the address that works outside the app.
+  - A tap that opens nothing says why in one line (`PortBrowser.notice`), in the open browser's
+    own line when the tap was there. "Nothing is running on localhost:3000 now." for a port
+    that stopped listening.
+- **The Beacon** (`PortActions.learnOwner`, `PushRegistrar.ask`). Open in Browser, Stop for a
+  wrapped server and Restart need Beacon 0.7 on the computer, holding this iPhone
+  (notifications set up there). There is no setting. A row that shows asks `port_owner` for its
+  process once per process and connection; a computer with no Beacon is asked nothing, and one
+  that answers `not_supported`, `not_registered` or `refused` is not asked again on that
+  connection. Nothing is asked while the computer's ports list is closed (it has no row then), and
+  nothing on a timer. Without a Beacon everything above is absent and Ports works as before,
+  plain Stop included.
 - **The browser.** `PreviewBrowser`: the app's own view, one `WKWebView` made when the page
   opens and let go when it closes, never kept warm. It loads `http://localhost:<port>/` from the
   menu or a Ports row, or the tapped link's scheme and path. The phone listens on 127.0.0.1 on
@@ -1058,8 +1117,10 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
     bottom up, where the page keeps its height. They say Back, Forward and Reload to
     VoiceOver, say when they are off, and show large on a long press at the accessibility
     text sizes.
-    There is no button that leaves for another app: the address only works
-    inside this one.
+    Open in Browser is in the menu only while the computer can hand the page to the
+    iPhone's browser (see **Open in Browser**), looked up each time the menu opens, and never
+    for a page of another site; otherwise there is no button that leaves for another app,
+    since the address shown only works inside this one. It is a menu item, never a bar item.
   - The address shown is the one the user knows from the computer (`PreviewAddress`,
     `LocalhostLink.shown`): a tapped link's own host and port as written (`localhost:3000`,
     `127.0.0.1:5173`, `0.0.0.0:8000`, `[::1]:4000`, a LAN address), and `localhost:<port>` from
