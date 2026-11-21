@@ -11,12 +11,17 @@ struct StripLayoutTests {
         StripLayout.Input(width: width, height: height, bar: bar, zoomed: true, panes: 6, waiting: 1)
     }
 
+    private func checkFrames(_ l: StripLayout, _ i: StripLayout.Input, _ note: String) {
+        Self.checkFrames(l, i, note)
+    }
+
     /// The frames are in order, apart, inside the bar's paddings and as tall as the bar; every
     /// part a finger taps is at least 44 pt wide; the chips keep their gap on both sides.
-    private func checkFrames(_ l: StripLayout, _ i: StripLayout.Input, _ note: String) {
+    static func checkFrames(_ l: StripLayout, _ i: StripLayout.Input, _ note: String) {
         let parts = l.parts
         #expect(parts.first == .session, "\(note)")
-        var x = StripLayout.leading(bar: i.bar)
+        #expect(l.start >= StripLayout.leading(bar: i.bar), "\(note)")
+        var x = l.start
         for part in parts {
             guard let f = l.frame(part) else { Issue.record("\(note): \(part) has no frame"); continue }
             #expect(f.minX >= x, "\(note): \(part) overlaps the part before it")
@@ -158,16 +163,16 @@ struct StripLayoutTests {
     }
     #endif
 
-    /// The crease is in the root's coordinates and the bar may start elsewhere: the cap is the
-    /// crease's leading edge, less 3 pt, less the bar's own origin.
+    /// The crease is in the root's coordinates and the bar may start elsewhere: the strip ends
+    /// at the crease's leading edge, less 3 pt, less the bar's own origin.
     @Test func theCreaseIsConvertedThroughTheBarsOrigin() {
         let crease = CGRect(x: 455.5, y: 0, width: 40, height: 669)
         var i = busy(867, bar: true)
         i.crease = crease
         i.originX = 100
-        #expect(StripLayout.cap(i) == 352.5)
+        #expect(StripLayout.creaseSpan(i) == 352.5...398.5)
         let l = StripLayout(i)
-        #expect(l.end == 352.5)
+        #expect(l.start == 12 && l.end == 352.5)
         // What is left is a phone's width: the compact rules.
         #expect(l.compact && !l.shows(.newTab))
         checkFrames(l, i, "offset bar")
@@ -179,14 +184,78 @@ struct StripLayoutTests {
         let crease = CGRect(x: 455.5, y: 0, width: 40, height: 669)
         var left = busy(402, bar: false)
         left.crease = crease
-        #expect(StripLayout.cap(left) == nil)
+        #expect(StripLayout.creaseSpan(left) == nil)
         #expect(StripLayout(left) == StripLayout(busy(402, bar: false)))
 
         var right = busy(360, bar: true)
         right.crease = crease
         right.originX = 500
-        #expect(StripLayout.cap(right) == nil)
-        #expect(StripLayout(right).end == 356)
+        #expect(StripLayout.creaseSpan(right) == nil)
+        #expect(StripLayout(right).start == 12 && StripLayout(right).end == 356)
+    }
+
+    /// The session chip never crosses the strip's end. Down to 56 pt beside a vertical bar
+    /// (48 pt without one) the left page still holds it as a 44 pt glyph, and it ends 3 pt
+    /// short of the crease.
+    @Test(arguments: [false, true])
+    func theSessionChipEndsAtTheCrease(bar: Bool) throws {
+        let lead = StripLayout.leading(bar: bar)
+        for cap in [lead + 44, lead + 60, lead + 120, 200] as [CGFloat] {
+            var i = busy(867, bar: bar)
+            // The longest name: without the crease its chip is 120 pt.
+            i.sessionIdeal = 300
+            i.crease = CGRect(x: cap + 3, y: 0, width: 40, height: 669)
+            let l = StripLayout(i)
+            let chip = try #require(l.frame(.session))
+            #expect(l.start == lead && l.end == cap, "cap \(cap)")
+            #expect(chip.minX == lead && chip.maxX <= cap && chip.width >= StripLayout.hit, "cap \(cap): \(chip)")
+            // What has no room between the chip and the crease isn't there (it stays in the
+            // pane menu, which is kept first, or in the vertical bar); nothing is drawn across
+            // the crease or over the chip.
+            for part in l.parts where part != .session {
+                let f = try #require(l.frame(part))
+                #expect(f.minX >= chip.maxX && f.maxX <= cap, "cap \(cap): \(part) at \(f)")
+            }
+            if !bar { #expect(l.shows(.paneMenu) == (cap >= lead + 88), "cap \(cap)") }
+            checkFrames(l, i, "cap \(cap), bar \(bar)")
+        }
+    }
+
+    /// A crease that leaves less than a hit target before it (a cap under 56 pt beside a
+    /// vertical bar, under 48 pt without one): the strip starts past the crease, 3 pt clear of
+    /// it, so the session chip is whole and nothing is on the fold.
+    @Test(arguments: [false, true])
+    func aCreaseTooNearTheBarsStartMovesTheStripPastIt(bar: Bool) throws {
+        let lead = StripLayout.leading(bar: bar)
+        for cap in [lead + 43, lead + 20, lead, 5, -10] as [CGFloat] {
+            var i = busy(867, bar: bar)
+            i.sessionIdeal = 90
+            i.crease = CGRect(x: cap + 3, y: 0, width: 40, height: 669)
+            let past = cap + 3 + 40 + 3
+            let l = StripLayout(i)
+            #expect(l.start == past && l.end == 867 - StripLayout.trailing, "cap \(cap)")
+            #expect(try #require(l.frame(.session)) == CGRect(x: past, y: 0, width: 90, height: 44), "cap \(cap)")
+            for part in l.parts {
+                #expect(try #require(l.frame(part)).minX >= past, "cap \(cap): \(part) is on the crease")
+            }
+            checkFrames(l, i, "cap \(cap), bar \(bar)")
+        }
+    }
+
+    /// A bar with a hit target on neither side of the crease keeps the wider side, and the
+    /// session chip is cut to what is there: it never reaches the crease.
+    @Test func aBarWithNoRoomOnEitherSideCutsTheSessionChip() throws {
+        // 30 pt before the crease, 28 pt after it.
+        var i = StripLayout.Input(width: 120, bar: false, hasSession: false, hasPane: false)
+        i.crease = CGRect(x: 37, y: 0, width: 48, height: 669)
+        let l = StripLayout(i)
+        #expect(l.start == 4 && l.end == 34)
+        #expect(try #require(l.frame(.session)) == CGRect(x: 4, y: 0, width: 30, height: 44))
+        // More room after it: the strip is there.
+        i.crease = CGRect(x: 23, y: 0, width: 48, height: 669)
+        let after = StripLayout(i)
+        #expect(after.start == 74 && after.end == 116)
+        #expect(try #require(after.frame(.session)) == CGRect(x: 74, y: 0, width: 42, height: 44))
     }
 
     // MARK: The floats slot
@@ -312,7 +381,13 @@ struct StripLayoutTests {
         #expect(width(nil) == StripLayout.sessionMax)
         #expect(width(72) == 72)
         #expect(width(20) == StripLayout.hit)
+        #expect(width(120) == 120 && width(121) == StripLayout.sessionMax)
         #expect(width(300) == StripLayout.sessionMax)
+        // What a short name leaves goes to the chips, which start 6 pt after the chip.
+        let short = StripLayout(.init(width: 750, sessionIdeal: 72)), long = StripLayout(.init(width: 750, sessionIdeal: 300))
+        #expect(short.frame(.chips)?.minX == 4 + 72 + 6 && long.frame(.chips)?.minX == 4 + 120 + 6)
+        #expect(short.chipsWidth == long.chipsWidth + 48)
+        #expect(short.frame(.chips)?.maxX == long.frame(.chips)?.maxX && short.frame(.newTab) == long.frame(.newTab))
         // The name's width doesn't decide the form.
         #expect(!StripLayout(.init(width: 520, sessionIdeal: 300)).compact)
         // As a glyph it is a hit target, whatever the name.
@@ -342,4 +417,125 @@ struct StripLayoutTests {
     @Test func theDotsAreTheOnlyPartWithoutATap() {
         #expect(StripLayout.Part.allCases.filter { !$0.tappable } == [.dots])
     }
+
+    // MARK: Every posture
+
+    #if DEBUG
+    /// The strip in every posture `-simulateDuo` knows, as tab mode lays it out there: as wide
+    /// as the window inside its insets, capped by the crease book mode settles on. With and
+    /// without the vertical bar's items (a simulator draws no vertical bar), busy and quiet,
+    /// with a floating windows control, with no session, and with short and long session names:
+    /// every frame is inside the bar, none is on the crease, and what a finger taps is a hit
+    /// target clear of its neighbors.
+    @Test func everyPostureKeepsItsFramesInsideAndOffTheCrease() throws {
+        var barEdges = Set<String>(), capped: [String] = []
+        for p in DuoSimulation.postures {
+            let width = p.rootSize.width
+            let crease = CreaseSettle().crease(p.rootDivision)
+            let height: CGFloat = p.vertical == .compact ? 34 : 44
+            let hasBar = p.safeArea.leading == 84 || p.safeArea.trailing == 84
+            if hasBar { barEdges.insert(p.safeArea.leading == 84 ? "leading" : "trailing") }
+            if crease != nil { capped.append(p.name) }
+            for bar in hasBar ? [true, false] : [false] {
+                var inputs: [(String, StripLayout.Input)] = []
+                for ideal in [nil, 44, 80, 300] as [CGFloat?] {
+                    var full = busy(width, bar: bar, height: height)
+                    full.crease = crease
+                    full.sessionIdeal = ideal
+                    inputs.append(("busy", full))
+                    var floats = full
+                    floats.hasFloatsControl = true
+                    inputs.append(("floats", floats))
+                    var quiet = StripLayout.Input(width: width, height: height, crease: crease, bar: bar)
+                    quiet.sessionIdeal = ideal
+                    inputs.append(("quiet", quiet))
+                    var empty = quiet
+                    empty.hasSession = false
+                    empty.hasPane = false
+                    inputs.append(("no session", empty))
+                }
+                for (what, i) in inputs {
+                    let l = StripLayout(i)
+                    let note = "\(p.name), bar \(bar), \(what), name \(i.sessionIdeal.map { "\($0)" } ?? "unmeasured")"
+                    checkFrames(l, i, note)
+                    for part in l.parts {
+                        let f = try #require(l.frame(part))
+                        #expect(f.minX >= StripLayout.leading(bar: bar) && f.maxX <= width - StripLayout.trailing, "\(note): \(part) at \(f)")
+                        #expect(f.width > 0 && f.minY == 0 && f.maxY == height, "\(note): \(part) at \(f)")
+                        if let crease {
+                            // The bar starts at the root's leading edge: the same coordinates.
+                            let fold = crease.insetBy(dx: -StripLayout.creaseClearance, dy: 0)
+                            #expect(f.maxX <= fold.minX || f.minX >= fold.maxX, "\(note): \(part) at \(f) is on the crease \(fold)")
+                        }
+                    }
+                    // The way to the sessions and, with a pane, to its menu: in the strip, or
+                    // in the vertical bar, never neither.
+                    #expect(l.shows(.session), "\(note)")
+                    #expect(l.frame(.session).map { $0.width >= StripLayout.hit } == true, "\(note)")
+                    if i.hasPane { #expect(l.shows(.paneMenu) == !bar, "\(note)") }
+                    if i.hasSession { #expect(l.chipsWidth >= StripLayout.closeChipMin, "\(note): the chips have \(l.chipsWidth) pt") }
+                }
+            }
+        }
+        #expect(barEdges == ["leading", "trailing"], "a posture with the bar on each edge")
+        // Only book mode has a crease the strip must end at.
+        #expect(capped == ["book"])
+    }
+
+    /// Tabletop: the fold runs across the window and the tab is above it. The strip is the top
+    /// of the upper half, at the window's full width, far from the fold.
+    @Test func tabletopKeepsTheStripAboveTheFold() throws {
+        let p = try #require(DuoSimulation.named("tabletop"))
+        let fold = try #require(p.rootDivision)
+        #expect(fold.isActive && !fold.isVertical)
+        // A fold across the window caps nothing.
+        #expect(CreaseSettle().crease(fold) == nil)
+        let i = busy(p.rootSize.width, bar: false)
+        let l = StripLayout(i)
+        #expect(l.start == 4 && l.end == p.rootSize.width - StripLayout.trailing && !l.compact)
+        for part in l.parts {
+            #expect(try #require(l.frame(part)).maxY <= fold.frame.minY - StripLayout.creaseClearance, "\(part)")
+        }
+        checkFrames(l, i, "tabletop")
+    }
+
+    /// The vertical bar's items in every posture that has the bar, on either edge, typing or
+    /// not, zoomed or not: tab mode's list is sidebar mode's with Sessions where the sidebar
+    /// toggle is, so the bar holds as many items either way and they fit above the keyboard.
+    /// What the strip leaves to the bar there (the pane menu, Unzoom) is in the bar's list.
+    @Test func bothModesBarListsFitEveryPostureWithABar() {
+        var edges = Set<String>()
+        for p in DuoSimulation.postures where p.safeArea.leading == 84 || p.safeArea.trailing == 84 {
+            let leading = p.safeArea.leading == 84
+            edges.insert(leading ? "leading" : "trailing")
+            let column = CGRect(x: leading ? 0 : p.size.width - 84, y: 0, width: 84, height: p.size.height)
+            let room = TabActions.keyBarRoom(column: column, compactHeight: p.vertical == .compact)
+            for typing in [false, true] {
+                for zoomed in [false, true] {
+                    let note = "\(p.name), typing \(typing), zoomed \(zoomed)"
+                    let sidebar = TabActions.verticalBar(.sidebar, zoomed: zoomed, hidesKeyboard: typing, room: room)
+                    let tabs = TabActions.verticalBar(.tabs, zoomed: zoomed, hidesKeyboard: typing, room: room)
+                    #expect(tabs == sidebar.map { $0 == .sidebar ? .sessions : $0 }, "\(note)")
+                    #expect(!tabs.contains(.sidebar) && !sidebar.contains(.sessions), "\(note)")
+                    if typing {
+                        #expect(tabs.count <= room, "\(note): \(tabs)")
+                        #expect(tabs.first == .hideKeyboard, "\(note)")
+                    } else {
+                        #expect(tabs.first == .sessions && sidebar.first == .sidebar, "\(note)")
+                    }
+                    // The strip beside the bar has no pane menu and no Unzoom of its own.
+                    var i = busy(p.rootSize.width, bar: true, height: p.vertical == .compact ? 34 : 44)
+                    i.zoomed = zoomed
+                    let l = StripLayout(i)
+                    #expect(!l.shows(.paneMenu) && !l.shows(.unzoom), "\(note)")
+                    #expect(tabs.contains(.paneActions) && sidebar.contains(.paneActions), "\(note)")
+                    if zoomed, !typing { #expect(tabs.contains(.unzoom), "\(note)") }
+                    // The session chip is in the strip whether or not Sessions is in the bar.
+                    #expect(l.shows(.session), "\(note)")
+                }
+            }
+        }
+        #expect(edges == ["leading", "trailing"])
+    }
+    #endif
 }

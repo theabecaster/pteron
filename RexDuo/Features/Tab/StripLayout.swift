@@ -33,8 +33,9 @@ struct StripLayout: Equatable {
         /// A tab with floating windows shows a control for them beside the pane menu: its slot
         /// is kept, in both forms and beside a vertical bar too. Off, nothing is kept.
         var hasFloatsControl = false
-        /// The session chip's own width with its name, once the view has measured it. Nil takes
-        /// the most a name may have.
+        /// The session chip's own width with its name, as the view measured it
+        /// (`SessionChipIdeal`). The chip takes it, between a hit target and `sessionMax`. Nil,
+        /// before the first measure, takes the most a name may have.
         var sessionIdeal: CGFloat?
     }
 
@@ -68,7 +69,8 @@ struct StripLayout: Equatable {
     static let hit: CGFloat = 44
     /// Between the session chip and the chips, between two chips, and after the chips.
     static let gap: CGFloat = 6
-    /// The most the session chip takes with its name: about 96 pt of name, and the chevron.
+    /// The most the session chip takes with its name: about 96 pt of name, and the chevron. A
+    /// shorter name's chip is as wide as its name needs (`Input.sessionIdeal`).
     static let sessionMax: CGFloat = 120
     /// The narrowest tab chip.
     static let chipMin: CGFloat = hit
@@ -97,6 +99,9 @@ struct StripLayout: Equatable {
     var dots: DotsForm?
     /// The active chip carries its close button.
     var showsClose: Bool
+    /// Where the bar's content starts: its leading padding, or past a crease that leaves no
+    /// room before it (`run`).
+    var start: CGFloat
     /// Where the bar's content ends: its trailing padding, or short of the crease.
     var end: CGFloat
     /// Each part on screen, in the bar's own coordinates, as tall as the bar.
@@ -122,13 +127,12 @@ struct StripLayout: Equatable {
     var chip: ClosedRange<CGFloat> { Self.chipMin...max(Self.chipMin, chipsWidth) }
 
     init(_ i: Input) {
-        let lead = Self.leading(bar: i.bar)
-        let cap = Self.cap(i)
-        let end = min(i.width - Self.trailing, cap ?? .infinity)
+        let (lead, end) = Self.run(i)
         // Decided for the bar as it is with every part showing, so a pill or the dots coming
         // and going never changes what else is there.
         let compact = end - lead - Self.fullParts(bar: i.bar, floats: i.hasFloatsControl) < Self.chipsRoom
         self.compact = compact
+        start = lead
         self.end = end
         session = compact ? .glyph : .name
 
@@ -152,12 +156,15 @@ struct StripLayout: Equatable {
         func place(_ part: Part, _ x: CGFloat, _ w: CGFloat) {
             frames[part] = CGRect(x: x, y: 0, width: w, height: i.height)
         }
-        let sessionWidth = widths[.session] ?? Self.hit
+        // Never past the strip's end: a crease that leaves the chip less than its width cuts it.
+        let sessionWidth = min(widths[.session] ?? Self.hit, max(end - lead, 0))
         place(.session, lead, sessionWidth)
-        // The trailing parts sit against the end, right to left.
+        // The trailing parts sit against the end, right to left. One with no room left beside
+        // the session chip isn't there: a bar that narrow is cut by a crease, and the pane menu
+        // stays first.
         var x = end
         for part in [Part.paneMenu, .floats, .newTab, .unzoom, .waiting, .dots] {
-            guard let w = widths[part] else { continue }
+            guard let w = widths[part], x - w >= lead + sessionWidth else { continue }
             x -= w
             place(part, x, w)
         }
@@ -177,12 +184,25 @@ struct StripLayout: Equatable {
     static func leading(bar: Bool) -> CGFloat { bar ? 12 : 4 }
     static let trailing: CGFloat = 4
 
-    /// Where the strip must end for the crease, in the bar's coordinates. Nil when no crease
-    /// crosses the bar.
-    static func cap(_ i: Input) -> CGFloat? {
+    /// The crease with its clearance on both sides, in the bar's coordinates. Nil when it lies
+    /// outside the bar.
+    static func creaseSpan(_ i: Input) -> ClosedRange<CGFloat>? {
         guard let crease = i.crease else { return nil }
-        let x = crease.minX - creaseClearance - i.originX
-        return x > 0 && x < i.width ? x : nil
+        let from = crease.minX - creaseClearance - i.originX, to = crease.maxX + creaseClearance - i.originX
+        return to > 0 && from < i.width ? from...to : nil
+    }
+
+    /// Where the strip starts and ends in the bar: inside the bar's paddings and on one side of
+    /// the crease. That is the left page while it holds the session chip as a hit target, as in
+    /// book mode on the Duo. A bar with less than that before the crease has its strip past the
+    /// crease. With a hit target on neither side the strip keeps the wider side, and the session
+    /// chip is cut to it.
+    static func run(_ i: Input) -> (start: CGFloat, end: CGFloat) {
+        let lead = leading(bar: i.bar), end = i.width - trailing
+        guard let crease = creaseSpan(i) else { return (lead, end) }
+        let before = crease.lowerBound - lead, after = end - max(lead, crease.upperBound)
+        if before >= hit || before >= after { return (lead, max(lead, min(end, crease.lowerBound))) }
+        return (max(lead, crease.upperBound), end)
     }
 
     /// What the parts other than the chips take in a bar that shows them all in their full

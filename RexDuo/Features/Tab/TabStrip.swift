@@ -55,6 +55,8 @@ struct TabStrip<PaneMenu: View>: View {
     var floats: FloatsControl?
     /// The Pane Actions menu, as the title bar shows it.
     @ViewBuilder var paneMenu: PaneMenu
+    /// The session chip's own width with its name (`SessionChipIdeal`). Nil until measured.
+    @State private var sessionIdeal: CGFloat?
 
     var body: some View {
         #if DEBUG
@@ -68,7 +70,7 @@ struct TabStrip<PaneMenu: View>: View {
                                            originX: geo.frame(in: .global).minX - rootOrigin.x, crease: bookCrease,
                                            bar: bar, hasSession: session != nil, hasPane: target?.block != nil,
                                            zoomed: zoomed, panes: dots.count, waiting: waiting,
-                                           hasFloatsControl: floats != nil))
+                                           hasFloatsControl: floats != nil, sessionIdeal: sessionIdeal))
             ZStack(alignment: .topLeading) {
                 ForEach(layout.parts, id: \.self) { part in
                     if let frame = layout.frame(part) {
@@ -82,6 +84,10 @@ struct TabStrip<PaneMenu: View>: View {
         .frame(height: height)
         .font(.system(size: 17))
         .foregroundStyle(theme.fg)
+        // The layout stays pure: the chip's width is measured here and handed to it.
+        .background(alignment: .topLeading) {
+            SessionChipMeasure(target: target, height: height, theme: theme) { sessionIdeal = $0 }
+        }
         .background(theme.chrome.canvas)
     }
 
@@ -185,6 +191,31 @@ private struct TabChips: View {
         var tab: String?
         var order: [String]
         var width: CGFloat
+    }
+}
+
+/// Measures the session chip for the strip: the chip with its name, drawn hidden at its own
+/// width, which `StripLayout` then cuts at `sessionMax`. Its own view, so a new name is read
+/// here and the strip is drawn again only when the width it reports changes. Nothing is
+/// measured per frame: the width is reported when the name, the machine or the text size
+/// changes it.
+private struct SessionChipMeasure: View {
+    @Environment(AppModel.self) private var model
+    let target: StripTarget?
+    let height: CGFloat
+    let theme: TermTheme
+    let report: (CGFloat) -> Void
+
+    var body: some View {
+        let chip = target.map {
+            SessionChip(name: $0.server.views[$0.sessionID]?.label ?? "", machine: model.servers.count > 1 ? $0.server.config.name : nil,
+                        waiting: 0)
+        } ?? .none()
+        SessionChipIdeal(chip: chip, height: height, theme: theme)
+            .hidden()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded(.up) } action: { report($0) }
     }
 }
 
