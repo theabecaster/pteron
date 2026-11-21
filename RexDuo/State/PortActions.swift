@@ -2,8 +2,15 @@ import Foundation
 import RexKit
 import UIKit
 
-/// What a row of the Ports group does: open its page, copy its link, show its pane, stop its
-/// program (docs/terminal.md, Ports). Owned by `AppModel`; the sidebar and the palette call it.
+/// What a row of the Ports group does: open its page, in the app or in the phone's browser,
+/// copy its link, show its pane, stop its program and start it again (docs/terminal.md, Ports).
+/// Owned by `AppModel`; the sidebar and the palette call it.
+///
+/// Open in Browser, Stop for a server behind a wrapper and Restart need the computer's Beacon
+/// (`port_share`, `port_owner`). What a Beacon answered is kept per server for one connection
+/// and asked again on the next; a computer without one, or with an older one, shows none of
+/// the three. Nothing here asks on a timer: a port's owner is read once when its row shows,
+/// and a page is asked for only on a tap.
 ///
 /// Stop types one Ctrl-C into the pane, once, and only under `PortStop`'s rule, checked against
 /// the server right before the write. It never names a process to the computer and never sends
@@ -17,6 +24,24 @@ final class PortActions {
         case stopping
         /// The port is still there `stillAfter` after a Ctrl-C.
         case stillRunning
+    }
+
+    /// What a row shows beside its address, or under it for a Restart to confirm.
+    enum Note: Equatable {
+        /// The command a Restart would type, waiting for its one tap.
+        case confirm(RestartCommand)
+        case restarting
+        case restartFailed
+        case stopping
+        case stillRunning
+        /// Its page is out in the phone's browser.
+        case inBrowser
+    }
+
+    /// How an Open in Browser ended, for tests.
+    enum Browsed: Equatable {
+        case opened(URL)
+        case problem(PortBrowser.Problem)
     }
 
     /// How a Stop ended, for tests.
@@ -43,6 +68,40 @@ final class PortActions {
         var machines: (@MainActor () -> [PortAddress.Machine])?
         /// Opens a web address that isn't a computer's own in the system's browser.
         var openURL: @MainActor (URL) -> Void = { UIApplication.shared.open($0) }
+        /// One action of the computer's Beacon; nil when none holds this phone there. Nil here:
+        /// the model's (`PushRegistrar.ask`).
+        var beacon: (@MainActor (ServerConnection, _ action: String, _ args: JSONObject, _ timeout: Int) async -> Result<JSONObject, HelperFailure>?)?
+        /// The phone's own tailnet address, read when asked.
+        var phoneAddress: @MainActor () -> String? = { PrivateNetwork.address() }
+        var now: @MainActor () -> Date = { Date() }
+        /// The pane is on screen over a current screen: its stream runs and its fence is down.
+        var paneReady: @MainActor (ServerConnection, _ block: String) -> Bool = { server, bid in
+            guard server.portWatch[bid] != nil, let stream = server.control.stream(block: bid) else { return false }
+            return !stream.isFenced
+        }
+        /// Puts the row's pane on screen. Nil: `showPane`, without its notice.
+        var reveal: (@MainActor (ServerConnection, PortRow) -> Bool)?
+        /// Types a Restart's command, once, through the pane's own input queue and nothing
+        /// else: a pane without a running stream, or behind its fence, gets nothing.
+        var type: @MainActor (ServerConnection, _ text: String, _ block: String, _ limit: TimeInterval,
+                              _ mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery = { server, text, bid, limit, may in
+            guard let stream = server.control.stream(block: bid), !stream.isFenced, may() else { return .unsent }
+            return await withCheckedContinuation { done in
+                stream.sendOnce(text: text, within: .milliseconds(Int(limit * 1000))) { done.resume(returning: $0) }
+            }
+        }
+        /// The longest a revealed pane may take to show a current screen.
+        var revealLimit: TimeInterval = 5
+        /// The longest the shell may take to be in front again with the port gone.
+        var shellLimit: TimeInterval = PortRestart.shellLimit
+        /// The longest the port may take to come back.
+        var portLimit: TimeInterval = PortRestart.portLimit
+        /// How often a Restart looks at what the app already holds while it waits.
+        var tick: TimeInterval = 0.2
+        /// How long a row says that its Restart failed.
+        var failedFor: TimeInterval = 30
+        /// How long a Beacon may take to hand out a page's address.
+        var shareLimit: TimeInterval = 8
         var write: @MainActor (ServerConnection, _ session: String, _ block: String, _ limit: TimeInterval,
                                _ mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery = { server, sid, bid, limit, may in
             await LiveActionChannel(server).write("\u{3}", session: sid, block: bid, within: limit, mayWrite: may)
@@ -60,6 +119,46 @@ final class PortActions {
     @ObservationIgnored var presenter: @MainActor () -> UIView? = { GoToCenter.keyWindow()?.rootViewController?.view }
     @ObservationIgnored var parts: Parts
     private var marks: [String: Mark] = [:]
+
+    /// What a server's Beacon has shown of itself on one connection.
+    private struct BeaconMark: Equatable {
+        var serial: Int
+        /// Nil until it answered `port_owner`; false when it can't (none, an older one, not
+        /// this phone's).
+        var names: Bool?
+        /// False once an answer took Open in Browser away for this computer.
+        var browser = true
+        /// The phone had a tailnet address when last read.
+        var phone = false
+    }
+
+    private struct OwnerMark: Equatable {
+        var pid: Int
+        var serial: Int
+        /// Nil: asked, and the Beacon couldn't read that process.
+        var owner: PortOwner?
+    }
+
+    private struct ShareMark: Equatable {
+        var share: PortShare
+        var until: Date
+        var serial: Int
+        /// The process that held the port: another one's row is not out in the browser.
+        var pid: Int?
+    }
+
+    private struct RestartMark: Equatable {
+        var run: PortRestart
+        var command: RestartCommand
+        var pid: Int
+    }
+
+    private var beacons: [UUID: BeaconMark] = [:]
+    private var owners: [String: OwnerMark] = [:]
+    private var shares: [String: ShareMark] = [:]
+    private var restarts: [String: RestartMark] = [:]
+    /// Rows whose owner is being read now.
+    @ObservationIgnored private var asking: Set<String> = []
 
     init(model: AppModel?, parts: Parts = Parts()) {
         self.model = model
@@ -81,17 +180,232 @@ final class PortActions {
         return m.status
     }
 
-    /// Stop shows for this row: the server is connected, no Ctrl-C is on its way, and the
-    /// port's process is the pane's foreground process as last reported (`PortStop`).
+    /// Stop shows for this row: the server is connected, no Ctrl-C or Restart is on its way,
+    /// and an interrupt typed into the pane reaches the port's process as last reported
+    /// (`PortStop`): it is the pane's foreground process, or, where the Beacon named its
+    /// parents, in the foreground's process group.
     func offersStop(_ server: ServerConnection, _ row: PortRow) -> Bool {
-        guard server.phase == .online, server.control.state == .connected, status(server, row) != .stopping else { return false }
+        guard server.phase == .online, server.control.state == .connected, status(server, row) != .stopping,
+              restarts[Self.key(server, row)] == nil else { return false }
         let meta = server.meta[row.blockID]
-        return PortStop.verdict(entry: row.entry, foregroundPID: meta?.foregroundPID, agent: meta?.agentKind != nil) == .allowed
+        return PortStop.verdict(entry: row.entry, foregroundPID: meta?.foregroundPID, agent: meta?.agentKind != nil,
+                                owner: owner(server, row)) == .allowed
     }
 
-    /// The row's link: the page as the phone opens it.
+    /// The command Restart would type for this row, or nil when Restart isn't offered: the
+    /// Beacon named the job, its command reads whole, and Stop's rule holds (`PortStop.restart`).
+    func restartCommand(_ server: ServerConnection, _ row: PortRow) -> RestartCommand? {
+        guard server.phase == .online, server.control.state == .connected, status(server, row) == nil,
+              restarts[Self.key(server, row)] == nil else { return nil }
+        let meta = server.meta[row.blockID]
+        return PortStop.restart(entry: row.entry, foregroundPID: meta?.foregroundPID, agent: meta?.agentKind != nil, owner: owner(server, row))
+    }
+
+    /// Open in Browser shows for this row: the server is connected, its Beacon answered on this
+    /// connection and hasn't said it can't, the phone has a tailnet address, and the port is
+    /// one a computer hands out (`PortBrowser.mayAsk`). Nothing is asked to find out.
+    func offersBrowser(_ server: ServerConnection, _ row: PortRow) -> Bool {
+        guard server.phase == .online, server.control.state == .connected, PortBrowser.mayAsk(row.entry) else { return false }
+        let b = beacon(server)
+        return b.names == true && b.browser && b.phone
+    }
+
+    /// The address the computer handed out for this row's page, while the app takes it to
+    /// exist: on this connection, for the process that held the port, until shortly before
+    /// the computer would end it unused.
+    func shared(_ server: ServerConnection, _ row: PortRow) -> PortShare? {
+        guard let m = shares[Self.key(server, row)], m.serial == server.connectionSerial, m.pid == row.entry.pid,
+              parts.now() < m.until else { return nil }
+        return m.share
+    }
+
+    /// What the row shows beside its address.
+    func note(_ server: ServerConnection, _ row: PortRow) -> Note? {
+        if let r = restarts[Self.key(server, row)] {
+            switch r.run.step {
+            case .confirming: if r.pid == row.entry.pid { return .confirm(r.command) }
+            case .failed: return .restartFailed
+            case .done: break
+            default: return .restarting
+            }
+        }
+        switch status(server, row) {
+        case .stopping: return .stopping
+        case .stillRunning: return .stillRunning
+        case nil: return shared(server, row) == nil ? nil : .inBrowser
+        }
+    }
+
+    /// The row's link: the address the computer handed out when its page is out in the
+    /// browser, else the page as the computer names it.
     func link(_ server: ServerConnection, _ row: PortRow) -> String {
-        "http://\(row.entry.name)"
+        if let share = shared(server, row) {
+            let text = share.url.absoluteString
+            return text.hasSuffix("/") ? String(text.dropLast()) : text
+        }
+        return "http://\(row.entry.name)"
+    }
+
+    // MARK: The Beacon
+
+    private func beacon(_ server: ServerConnection) -> BeaconMark {
+        if let m = beacons[server.id], m.serial == server.connectionSerial { return m }
+        return BeaconMark(serial: server.connectionSerial)
+    }
+
+    private func setBeacon(_ server: ServerConnection, _ change: (inout BeaconMark) -> Void) {
+        var m = beacon(server)
+        change(&m)
+        if beacons[server.id] != m { beacons[server.id] = m }
+    }
+
+    private func ask(_ server: ServerConnection, _ action: String, _ args: JSONObject, timeout: Int) async -> Result<JSONObject, HelperFailure>? {
+        if let given = parts.beacon { return await given(server, action, args, timeout) }
+        return await model?.push.ask(server.id, action: action, args: args, timeout: timeout)
+    }
+
+    /// What the Beacon said of the row's process on this connection.
+    private func owner(_ server: ServerConnection, _ row: PortRow) -> PortOwner? {
+        guard let m = owners[Self.key(server, row)], m.pid == row.entry.pid, m.serial == server.connectionSerial else { return nil }
+        return m.owner
+    }
+
+    /// The row shows: its process's owner is read, once per process and connection. Nothing is
+    /// asked of a computer whose Beacon can't answer, and nothing twice at once.
+    func learnOwner(_ server: ServerConnection, _ row: PortRow) {
+        guard let pid = row.entry.pid, server.phase == .online, server.control.state == .connected,
+              beacon(server).names != false else { return }
+        let key = Self.key(server, row)
+        if let m = owners[key], m.pid == pid, m.serial == server.connectionSerial { return }
+        guard asking.insert(key).inserted else { return }
+        Task {
+            _ = await readOwner(server, key: key, pid: pid)
+            asking.remove(key)
+        }
+    }
+
+    /// One `port_owner` for a process, and what it says of the Beacon. Nil when nothing came,
+    /// when the Beacon can't name processes, and when it couldn't read this one.
+    private func readOwner(_ server: ServerConnection, key: String, pid: Int) async -> PortOwner? {
+        let serial = server.connectionSerial
+        let answer = await within(parts.readLimit) { [weak self] in
+            await self?.ask(server, "port_owner", ["pid": pid], timeout: 4000)
+        }
+        guard serial == server.connectionSerial, let answer else { return nil }
+        let phone = parts.phoneAddress() != nil
+        switch answer {
+        case .success(let result):
+            // An answer about another process is no answer about this one.
+            let owner = PortOwner(result).flatMap { $0.pid == pid ? $0 : nil }
+            setBeacon(server) { $0.names = true; $0.phone = phone }
+            let mark = OwnerMark(pid: pid, serial: serial, owner: owner)
+            if owners[key] != mark { owners[key] = mark }
+            return owner
+        case .failure(let f):
+            if PortBeaconAnswer.ownerMissing(code: f.code, unknownAction: f.isUnknownAction) {
+                setBeacon(server) { $0.names = false }
+            } else if f.code == "not_available" || f.code == "bad_request" {
+                // The Beacon answers; it couldn't read this process.
+                setBeacon(server) { $0.names = true; $0.phone = phone }
+                owners[key] = OwnerMark(pid: pid, serial: serial, owner: nil)
+            }
+            return nil
+        }
+    }
+
+    // MARK: Open in Browser
+
+    func openInBrowser(_ server: ServerConnection, _ row: PortRow) {
+        Task { await openInBrowserNow(server, row) }
+    }
+
+    /// Asks the computer for the page's address and opens it in the phone's browser. `rest`:
+    /// the path to open. `say`: where a failure's line goes (the open browser's own, when the
+    /// tap was there); nil for a notice.
+    @discardableResult
+    func openInBrowserNow(_ server: ServerConnection, _ row: PortRow, rest: String = "/", say: (@MainActor (String) -> Void)? = nil) async -> Browsed {
+        let name = row.entry.name, computer = server.config.name
+        switch await requestShare(server, row) {
+        case .success(let share):
+            guard let url = share.page(rest) else { return browseFailed(.badAnswer, name, computer, say) }
+            parts.openURL(url)
+            return .opened(url)
+        case .failure(let problem):
+            return browseFailed(problem, name, computer, say)
+        }
+    }
+
+    private func browseFailed(_ problem: PortBrowser.Problem, _ name: String, _ computer: String, _ say: (@MainActor (String) -> Void)?) -> Browsed {
+        let text = PortBrowser.notice(problem, name: name, computer: computer)
+        if let say { say(text) } else { parts.notify(text, nil) }
+        return .problem(problem)
+    }
+
+    /// One `port_share` for the row: a new address, or the one it has with its time started
+    /// over. What the answer says of the computer is kept: one that can't do this loses the
+    /// item for this connection, and a failure takes the row's "In browser" away.
+    private func requestShare(_ server: ServerConnection, _ row: PortRow) async -> Result<PortShare, PortBrowser.Problem> {
+        let key = Self.key(server, row), serial = server.connectionSerial
+        func failed(_ p: PortBrowser.Problem) -> Result<PortShare, PortBrowser.Problem> {
+            if shares[key] != nil { shares[key] = nil }
+            return .failure(p)
+        }
+        guard server.phase == .online, server.control.state == .connected else { return failed(.offline) }
+        guard let phone = parts.phoneAddress() else {
+            setBeacon(server) { $0.phone = false }
+            return failed(.noAddress)
+        }
+        let args: JSONObject = ["block": row.blockID, "port": row.entry.port, "phone_ip": phone]
+        let limit = parts.shareLimit
+        let answer = await within(limit) { [weak self] in
+            await self?.ask(server, "port_share", args, timeout: Int(limit * 1000) - 1000)
+        }
+        guard serial == server.connectionSerial else { return failed(.offline) }
+        switch answer {
+        case nil:
+            return failed(.unanswered)
+        case .success(let result)?:
+            guard let share = PortShare(result) else { return failed(.badAnswer) }
+            setBeacon(server) { $0.names = $0.names ?? true; $0.browser = true; $0.phone = true }
+            shares[key] = ShareMark(share: share, until: share.knownUntil(asked: parts.now()), serial: serial, pid: row.entry.pid)
+            return .success(share)
+        case .failure(let f)?:
+            if PortBeaconAnswer.share(code: f.code, unknownAction: f.isUnknownAction) == .hide {
+                setBeacon(server) { $0.browser = false }
+            }
+            return failed(.refused(code: f.code, unknownAction: f.isUnknownAction))
+        }
+    }
+
+    /// The address an in-app open loads for `link` in a pane, when the computer has already
+    /// handed one out for that port; nil to load through the phone's own listener as before.
+    /// Opening a page in the app never asks for a first address. One that exists is asked
+    /// for again, which starts its time over and finds out that it ended: then the row's
+    /// "In browser" goes and the page loads the old way.
+    func existingShare(_ server: ServerConnection, block: String, _ link: LocalhostLink) async -> PortShare? {
+        guard PortBrowser.mayLoad(link), let row = server.portRow("\(block):\(link.port)") else { return nil }
+        // The open is a tap: the Beacon may be asked what holds the port, for the page's menu.
+        learnOwner(server, row)
+        guard shared(server, row) != nil, case .success(let again) = await requestShare(server, row) else { return nil }
+        return again
+    }
+
+    /// The open browser's Open in Browser and its Copy Link, for a pane's port.
+    func outside(_ server: ServerConnection, block: String, port: Int) -> PreviewBrowser.Outside {
+        let id = "\(block):\(port)"
+        return PreviewBrowser.Outside(
+            offered: { [weak self, weak server] in
+                guard let self, let server, let row = server.portRow(id) else { return false }
+                return self.offersBrowser(server, row)
+            },
+            open: { [weak self, weak server] rest, say in
+                guard let self, let server, let row = server.portRow(id) else { return }
+                Task { await self.openInBrowserNow(server, row, rest: rest, say: say) }
+            },
+            link: { [weak self, weak server] rest in
+                guard let self, let server, let row = server.portRow(id) else { return nil }
+                return self.shared(server, row)?.page(rest)?.absoluteString
+            })
     }
 
     // MARK: Actions
@@ -103,6 +417,14 @@ final class PortActions {
         pane.view = presenter()
         pane.notify = { [parts] in parts.notify($0, nil) }
         pane.typed = { [weak self] text, browser in self?.go(text, from: browser) }
+        pane.shared = { [weak self, weak server] link in
+            guard let self, let server else { return nil }
+            return await self.existingShare(server, block: row.blockID, link)
+        }
+        pane.outside = { [weak self, weak server] port in
+            guard let self, let server else { return nil }
+            return self.outside(server, block: row.blockID, port: port)
+        }
         if let address { pane.open(row.entry, as: address) } else { pane.open(row.entry) }
     }
 
@@ -197,18 +519,24 @@ final class PortActions {
 
     /// One Stop: the pane's processes are read now, `PortStop` decides, and one Ctrl-C goes
     /// through the pane's own input queue when it is on screen, else as one call. Nothing is
-    /// tried twice.
+    /// tried twice. Where Rex's answer alone says the port's process is not in front and the
+    /// computer's Beacon names processes, the Beacon is asked now about that process: a server
+    /// behind a wrapper is stopped when the pane's foreground is its process group. `quiet`: a
+    /// Restart's Stop, which says nothing itself.
     @discardableResult
-    func stopNow(_ server: ServerConnection, _ row: PortRow) async -> Outcome {
+    func stopNow(_ server: ServerConnection, _ row: PortRow, quiet: Bool = false) async -> Outcome {
         let key = Self.key(server, row), sid = row.sessionID, bid = row.blockID, port = row.entry.port
         let name = PortNames.program(row.entry) ?? row.entry.name
+        func fail(_ outcome: Outcome, _ text: String, pane: Bool = true) -> Outcome {
+            self.fail(key, outcome, text, pane ? server : nil, pane ? row : nil, quiet: quiet)
+        }
         guard marks[key]?.status != .stopping else { return .busy }
-        guard let pid = row.entry.pid else { return fail(key, .refused(.unknownProcess), "Couldn't stop \(name). Show its pane to stop it there.", server, row) }
+        guard let pid = row.entry.pid else { return fail(.refused(.unknownProcess), "Couldn't stop \(name). Show its pane to stop it there.") }
         if let label = parts.only(), server.sessions.first(where: { $0.id == sid })?.label != label {
             return .refused(.notForeground)
         }
         guard server.phase == .online, server.control.state == .connected else {
-            return fail(key, .offline, "Couldn't stop \(name). \(Messages.offline(server.config.name))")
+            return fail(.offline, "Couldn't stop \(name). \(Messages.offline(server.config.name))", pane: false)
         }
         marks[key] = Mark(status: .stopping, pid: pid)
         let control = server.control
@@ -216,12 +544,18 @@ final class PortActions {
             try? await control.blockCall("com.superlogical.terminal.process", session: sid, block: bid)
         }
         guard let reply else {
-            return fail(key, .unanswered, "Couldn't stop \(name): its pane didn't answer. Nothing was sent.", server, row)
+            return fail(.unanswered, "Couldn't stop \(name): its pane didn't answer. Nothing was sent.")
         }
         let fg = PortStop.foreground(reply)
         let seen = server.currentMeta(bid)
-        let verdict = PortStop.verdict(entry: server.ports.value(bid)?.entry(port), expected: pid, foregroundPID: fg.pid,
+        var verdict = PortStop.verdict(entry: server.ports.value(bid)?.entry(port), expected: pid, foregroundPID: fg.pid,
                                        agent: fg.agent || seen?.agentKind != nil)
+        if verdict == .notForeground, beacon(server).names != false {
+            // Read now, not taken from what the row showed: the process may be another's child since.
+            let owner = await readOwner(server, key: key, pid: pid)
+            verdict = PortStop.verdict(entry: server.ports.value(bid)?.entry(port), expected: pid, foregroundPID: fg.pid,
+                                       agent: fg.agent || seen?.agentKind != nil || server.currentMeta(bid)?.agentKind != nil, owner: owner)
+        }
         switch verdict {
         case .allowed:
             break
@@ -230,22 +564,198 @@ final class PortActions {
             marks[key] = nil
             return .gone
         case .unknownProcess, .notForeground, .agent:
-            return fail(key, .refused(verdict), "Couldn't stop \(name): another program is running in its pane now. Nothing was sent.", server, row)
+            return fail(.refused(verdict), "Couldn't stop \(name): another program is running in its pane now. Nothing was sent.")
         }
         // From here on nothing is tried twice. The last look, with nothing between it and the
-        // write: the port is still that process's, and no event has named another foreground.
+        // write: the port is still that process's, no event has named another foreground since
+        // the pane's processes were read, and no agent has shown up in the pane.
         let delivery = await parts.write(server, sid, bid, parts.leaveLimit) {
             server.ports.value(bid)?.entry(port)?.pid == pid && server.currentMeta(bid)?.foregroundPID == seen?.foregroundPID
+                && server.currentMeta(bid)?.agentKind == nil
         }
         switch delivery {
         case .delivered, .unknown:
             watch(server, key: key, block: bid, port: port, pid: pid)
             return .sent
         case .unsent:
-            return fail(key, .unsent, "Couldn't stop \(name): the connection dropped. Nothing was sent.", server, row)
+            return fail(.unsent, "Couldn't stop \(name): the connection dropped. Nothing was sent.")
         case .refused:
-            return fail(key, .closed, "Couldn't stop \(name). \(Messages.paneClosed)")
+            return fail(.closed, "Couldn't stop \(name). \(Messages.paneClosed)", pane: false)
         }
+    }
+
+    // MARK: Restart
+
+    /// Restart in the row's menu: the row shows the command and waits for one tap. Nothing is
+    /// sent anywhere. Another row's unanswered question goes.
+    func askRestart(_ server: ServerConnection, _ row: PortRow) {
+        guard let command = restartCommand(server, row), let pid = row.entry.pid else { return }
+        restarts = restarts.filter { $0.value.run.step != .confirming }
+        restarts[Self.key(server, row)] = RestartMark(run: PortRestart(), command: command, pid: pid)
+    }
+
+    /// Cancel on the question, or Show Pane on a Restart that failed: the row is a row again.
+    func dismissRestart(_ server: ServerConnection, _ row: PortRow) {
+        let key = Self.key(server, row)
+        guard let r = restarts[key], r.run.step == .confirming || r.run.isOver else { return }
+        restarts[key] = nil
+        server.releasePortRow(row.id)
+    }
+
+    /// The row's pane is on screen over a current screen now: a Restart types there without
+    /// showing anything first.
+    func paneShows(_ server: ServerConnection, _ row: PortRow) -> Bool {
+        parts.paneReady(server, row.blockID)
+    }
+
+    func confirmRestart(_ server: ServerConnection, _ row: PortRow) {
+        Task { await restartNow(server, row) }
+    }
+
+    private func advance(_ key: String, _ event: PortRestart.Event) -> PortRestart.Step {
+        guard var r = restarts[key] else { return .failed(.changed) }
+        let step = r.run.take(event)
+        restarts[key] = r
+        return step
+    }
+
+    /// The time left of `limit` once `met` holds, or nil when it didn't in time. It looks only
+    /// at what the app already holds, every `tick`, and only while a Restart someone tapped is
+    /// under way.
+    private func left(of limit: TimeInterval, until met: @MainActor () -> Bool) async -> TimeInterval? {
+        var left = limit
+        while true {
+            if met() { return left }
+            guard left > 0 else { return nil }
+            let wait = min(parts.tick, left)
+            await parts.sleep(wait)
+            left -= wait
+        }
+    }
+
+    private func until(_ limit: TimeInterval, _ met: @MainActor () -> Bool) async -> Bool {
+        await left(of: limit, until: met) != nil
+    }
+
+    /// How many times a Restart reads the pane's processes while it waits for the shell.
+    static let shellReads = 3
+
+    /// One Restart, after its one tap (`PortRestart` holds the order). The job is read again
+    /// and must read as the command the row showed; the pane comes on screen and nothing is
+    /// typed before it shows a current screen; one Ctrl-C goes as Stop sends it; once the port
+    /// is gone and the pane's processes say the job's own shell is in front, the command and
+    /// Return go once through the pane's input queue; then the row waits for the port. Any
+    /// step that doesn't hold ends it with one notice and Show Pane, and nothing is typed after.
+    @discardableResult
+    func restartNow(_ server: ServerConnection, _ row: PortRow) async -> PortRestart.Step {
+        let key = Self.key(server, row), sid = row.sessionID, bid = row.blockID, port = row.entry.port
+        guard let mark = restarts[key], mark.run.step == .confirming, let pid = row.entry.pid, mark.pid == pid else {
+            return restarts[key]?.run.step ?? .failed(.changed)
+        }
+        if let label = parts.only(), server.sessions.first(where: { $0.id == sid })?.label != label {
+            restarts[key] = nil
+            return .failed(.changed)
+        }
+        let command = mark.command
+        func ended() -> PortRestart.Step { restartEnded(key, server, row) }
+        _ = advance(key, .confirmed)
+        guard server.phase == .online, server.control.state == .connected else {
+            _ = advance(key, .paneReady(false))
+            return ended()
+        }
+        // The job as it is now. What the row showed may be minutes old.
+        let owner = await readOwner(server, key: key, pid: pid)
+        let meta = server.currentMeta(bid)
+        let fresh = PortStop.restart(entry: server.ports.value(bid)?.entry(port), expected: pid, foregroundPID: meta?.foregroundPID,
+                                     agent: meta?.agentKind != nil, owner: owner)
+        guard fresh == command, advance(key, .checked(same: true)) == .revealing else {
+            _ = advance(key, .checked(same: false))
+            return ended()
+        }
+        if !parts.paneReady(server, bid) {
+            let shown = parts.reveal.map { $0(server, row) } ?? (model?.openPane(server, session: sid, window: nil, block: bid) ?? false)
+            let ready = shown ? await until(parts.revealLimit) { [parts] in parts.paneReady(server, bid) } : false
+            guard ready else {
+                _ = advance(key, .paneReady(false))
+                return ended()
+            }
+        }
+        guard advance(key, .paneReady(true)) == .stopping else { return ended() }
+        // The row keeps its place while its port is away.
+        server.holdPortRow(row)
+        guard await stopNow(server, row, quiet: true) == .sent, advance(key, .stopped(true)) == .waitingForShell else {
+            _ = advance(key, .stopped(false))
+            return ended()
+        }
+        // The port goes and the events name another foreground than the job's; then the
+        // pane's processes are read, and only they decide that the job's shell is in front. A
+        // read that comes while the job is still ending is made again, `shellReads` times at most.
+        let shell = command.shellPID, before = meta?.foregroundPID, control = server.control
+        var back = false, time: TimeInterval? = parts.shellLimit
+        for _ in 0..<Self.shellReads {
+            guard let had = time else { break }
+            time = await left(of: had) { server.ports.value(bid)?.entry(port) == nil && server.currentMeta(bid)?.foregroundPID != before }
+            guard let now = time else { break }
+            let reply = await within(parts.readLimit) {
+                try? await control.blockCall("com.superlogical.terminal.process", session: sid, block: bid)
+            }
+            if let reply {
+                let fg = PortStop.foreground(reply)
+                back = fg.pid == shell && !fg.agent && server.currentMeta(bid)?.agentKind == nil
+            }
+            if back { break }
+            let pause = parts.tick * 2
+            await parts.sleep(pause)
+            time = now > pause ? now - pause : nil
+        }
+        guard back, advance(key, .shellBack(true)) == .typing else {
+            _ = advance(key, .shellBack(false))
+            return ended()
+        }
+        // The last look, with nothing between it and the write: this Restart is still the one
+        // typing, the port is still gone, no event has named another foreground since the read,
+        // no agent is in the pane, and the pane still shows a current screen.
+        let seen = server.currentMeta(bid)?.foregroundPID
+        let delivery = await parts.type(server, command.typed, bid, parts.leaveLimit) { [weak self] in
+            guard let self, self.restarts[key]?.run.mayWrite == .command else { return false }
+            return server.ports.value(bid)?.entry(port) == nil && server.currentMeta(bid)?.foregroundPID == seen
+                && server.currentMeta(bid)?.agentKind == nil && self.parts.paneReady(server, bid)
+        }
+        // One that left and got no answer may have been typed: it is never typed again.
+        guard delivery == .delivered || delivery == .unknown, advance(key, .typed(true)) == .waitingForPort else {
+            _ = advance(key, .typed(false))
+            return ended()
+        }
+        let up = await until(parts.portLimit) { server.ports.value(bid)?.entry(port) != nil }
+        _ = advance(key, .portBack(up))
+        return ended()
+    }
+
+    /// A Restart is over. Done: the row is a row again. Failed: one notice with Show Pane, and
+    /// the row says so for `failedFor`, or until its Show Pane is tapped.
+    private func restartEnded(_ key: String, _ server: ServerConnection, _ row: PortRow) -> PortRestart.Step {
+        guard let step = restarts[key]?.run.step else { return .failed(.changed) }
+        guard case .failed(let failure) = step else {
+            restarts[key] = nil
+            marks[key] = nil
+            server.releasePortRow(row.id)
+            return step
+        }
+        if marks[key]?.status == .stopping { marks[key] = nil }
+        let text = PortRestartCopy.notice(failure, name: PortNames.program(row.entry) ?? row.entry.name, address: row.entry.name)
+        parts.notify(text, Notice.Action(title: "Show Pane") { [weak self, weak server] in
+            guard let self, let server else { return }
+            self.dismissRestart(server, row)
+            self.showPane(server, row)
+        })
+        let sleep = parts.sleep, wait = parts.failedFor
+        Task { [weak self, weak server] in
+            await sleep(wait)
+            guard let self, self.restarts[key]?.run.step == step else { return }
+            self.restarts[key] = nil
+            server?.releasePortRow(row.id)
+        }
+        return step
     }
 
     /// One look, `stillAfter` after the Ctrl-C: a port that is still that process's is marked
@@ -260,8 +770,10 @@ final class PortActions {
         }
     }
 
-    private func fail(_ key: String, _ outcome: Outcome, _ text: String, _ server: ServerConnection? = nil, _ row: PortRow? = nil) -> Outcome {
+    private func fail(_ key: String, _ outcome: Outcome, _ text: String, _ server: ServerConnection? = nil, _ row: PortRow? = nil,
+                      quiet: Bool = false) -> Outcome {
         if marks[key]?.status == .stopping { marks[key] = nil }
+        guard !quiet else { return outcome }
         var action: Notice.Action?
         if let server, let row {
             action = Notice.Action(title: "Show Pane") { [weak self, weak server] in

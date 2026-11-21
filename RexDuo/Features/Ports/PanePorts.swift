@@ -30,6 +30,13 @@ final class PanePorts {
     var present: ((URL) -> Void)?
     /// An address typed into the open browser's address line (`PortActions.go`).
     var typed: (@MainActor (String, PreviewBrowser) -> Void)?
+    /// The address the computer has already handed out for a link's port, if any
+    /// (`PortActions.existingShare`): the page then loads from it and not from the phone's own
+    /// listener, so the app and the phone's browser show one site. Nil here, or a nil answer:
+    /// the page loads as before.
+    var shared: (@MainActor (LocalhostLink) async -> PortShare?)?
+    /// The open browser's Open in Browser and Copy Link for a port (`PortActions.outside`).
+    var outside: (@MainActor (Int) -> PreviewBrowser.Outside?)?
     private var watching = false
 
     init(server: ServerConnection, sessionID: String, blockID: String) {
@@ -145,11 +152,24 @@ final class PanePorts {
     // MARK: Browser
 
     private func browse(_ link: LocalhostLink) {
-        guard let forward = server.forward else {
-            return notify("Couldn't open \(link.name). Try again in a moment.")
-        }
-        let target = PortForward.Target(sessionID: sessionID, port: link.port, dialHost: link.dialHost)
         Task {
+            // A page the computer already hands out to this phone's browser loads from there.
+            // Nothing is asked for a page that isn't: opening in the app makes no such address.
+            if PortBrowser.mayLoad(link), let share = await shared?(link), let url = share.page(link.rest) {
+                if let present { return present(url) }
+                var page = PreviewPage(load: url, shown: link.shown, scheme: link.scheme,
+                                       source: PortActions.source(server.id, port: link.port))
+                page.shared = true
+                guard PreviewBrowser.present(page, over: view, onAddress: typed, outside: outside?(link.port), onClose: {}) else {
+                    notify("Couldn't open \(link.name): its pane is no longer on screen. Show the pane, then try again.")
+                    return
+                }
+                return
+            }
+            guard let forward = server.forward else {
+                return notify("Couldn't open \(link.name). Try again in a moment.")
+            }
+            let target = PortForward.Target(sessionID: sessionID, port: link.port, dialHost: link.dialHost)
             guard let local = try? await forward.open(target, on: server), let url = link.url(localPort: local) else {
                 notify("Couldn't open \(link.name) on this iPhone. Try again in a moment.")
                 return
@@ -162,7 +182,7 @@ final class PanePorts {
             // The chrome names the address as the user knows it, never the phone's own listener.
             let page = PreviewPage(load: url, shown: link.shown, scheme: link.scheme,
                                    source: PortActions.source(server.id, port: link.port))
-            guard PreviewBrowser.present(page, over: view, onAddress: typed, onClose: { forward.close(opened) }) else {
+            guard PreviewBrowser.present(page, over: view, onAddress: typed, outside: outside?(link.port), onClose: { forward.close(opened) }) else {
                 forward.close(opened)
                 notify("Couldn't open \(link.name): its pane is no longer on screen. Show the pane, then try again.")
                 return

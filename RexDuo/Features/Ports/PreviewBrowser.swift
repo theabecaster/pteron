@@ -12,6 +12,10 @@ struct PreviewPage: Equatable {
     var scheme = "http"
     /// Which computer's port this is (`PortActions.source`), for an address typed later.
     var source: String?
+    /// `load` is the address the computer hands out to this phone's browsers, which works
+    /// outside the app too: Copy Link and Share give it. False: `load` is the phone's own
+    /// listener, and they give the address as shown.
+    var shared = false
 }
 
 /// What the preview browser shows and copies for a page. Pure, so it is tested
@@ -32,10 +36,20 @@ enum PreviewAddress {
     }
 
     /// Copy Link and Share: the address as shown, with the path of the page on screen. It is
-    /// the address that works on the computer.
+    /// the address that works on the computer. A page loaded from the address the computer
+    /// hands out gives that address: it works in the phone's browser, where the page may be
+    /// open as well, and the address shown does not.
     static func link(_ current: URL?, _ page: PreviewPage) -> String {
         guard isOwn(current, page) else { return current?.absoluteString ?? "" }
+        if page.shared { return (current ?? page.load).absoluteString }
         return "\(page.scheme)://\(page.shown)\(current.map(rest) ?? "/")"
+    }
+
+    /// The path, query and fragment of the server's own page on screen; nil for a page of
+    /// another site, which Open in Browser has nothing to do with.
+    static func ownRest(_ current: URL?, _ page: PreviewPage) -> String? {
+        guard isOwn(current, page) else { return nil }
+        return current.map(rest) ?? "/"
     }
 
     /// The address line's text while it is edited: the address as shown and the path on screen.
@@ -106,7 +120,18 @@ enum PreviewAddress {
 @MainActor
 final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate,
     UIAdaptivePresentationControllerDelegate, UITextFieldDelegate {
+    /// The browser's way out to the phone's own browser, for the port it shows.
+    struct Outside {
+        /// Open in Browser is offered now. Asked each time the menu opens; it asks nothing.
+        var offered: @MainActor () -> Bool
+        /// Opens the page at this path in the phone's browser. A failure's line goes to `say`.
+        var open: @MainActor (_ rest: String, _ say: @escaping @MainActor (String) -> Void) -> Void
+        /// The address the computer hands out for this path, when it does now.
+        var link: @MainActor (_ rest: String) -> String?
+    }
+
     private(set) var page: PreviewPage
+    private let outside: Outside?
     private let onClose: () -> Void
     /// Go in the address line, with the text typed.
     private let onAddress: (@MainActor (String, PreviewBrowser) -> Void)?
@@ -155,9 +180,11 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// The one shown now; it keeps itself alive while up.
     private static var current: PreviewBrowser?
 
-    init(page: PreviewPage, onAddress: (@MainActor (String, PreviewBrowser) -> Void)? = nil, onClose: @escaping () -> Void) {
+    init(page: PreviewPage, onAddress: (@MainActor (String, PreviewBrowser) -> Void)? = nil, outside: Outside? = nil,
+         onClose: @escaping () -> Void) {
         self.page = page
         self.onAddress = onAddress
+        self.outside = outside
         self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
     }
@@ -168,12 +195,12 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// Shows the page over `view`'s window. False when there is no window to present from.
     @discardableResult
     static func present(_ page: PreviewPage, over view: UIView?, onAddress: (@MainActor (String, PreviewBrowser) -> Void)? = nil,
-                        onClose: @escaping () -> Void) -> Bool {
+                        outside: Outside? = nil, onClose: @escaping () -> Void) -> Bool {
         guard var top = view?.window?.rootViewController else { return false }
         let trace = PreviewTrace.begin("present")
         defer { PreviewTrace.end(trace) }
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-        let browser = PreviewBrowser(page: page, onAddress: onAddress, onClose: onClose)
+        let browser = PreviewBrowser(page: page, onAddress: onAddress, outside: outside, onClose: onClose)
         if let view, let holder = UIResponder.rexCurrentFirstResponder() as? UIView, holder.isDescendant(of: view) {
             browser.keyboardHolder = holder
         }
@@ -406,11 +433,42 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         return button
     }
 
+    /// Copy Link and Share, and Open in Browser only while the computer can hand the page to
+    /// the phone's browser: looked up each time the menu opens, so the item is never there
+    /// without a way to open, and never for a page of another site.
     private func makeMenu() -> UIMenu {
-        UIMenu(children: [
+        let fixed = [
             UIAction(title: "Copy Link", image: UIImage(systemName: "link")) { [weak self] _ in self?.copyLink() },
             UIAction(title: "Share…", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.share() },
-        ])
+        ]
+        guard outside != nil else { return UIMenu(children: fixed) }
+        let out = UIDeferredMenuElement.uncached { [weak self] done in
+            // UIKit asks on the main thread, as the menu opens.
+            MainActor.assumeIsolated {
+                guard let self, self.offersOutside else { return done([]) }
+                done([UIAction(title: "Open in Browser", image: UIImage(systemName: "safari")) { [weak self] _ in self?.openOutside() }])
+            }
+        }
+        return UIMenu(children: [out] + fixed)
+    }
+
+    /// Open in Browser is in the menu now (tests read it).
+    var offersOutside: Bool {
+        guard let outside, PreviewAddress.ownRest(failed ?? webView?.url, page) != nil else { return false }
+        return outside.offered()
+    }
+
+    func openOutside() {
+        guard let outside, let rest = PreviewAddress.ownRest(failed ?? webView?.url, page) else { return }
+        outside.open(rest) { [weak self] text in self?.say(text) }
+    }
+
+    /// What Copy Link and Share give: the address the computer hands out when it does, for the
+    /// page on screen, else the address as shown.
+    var linkText: String {
+        let current = failed ?? webView?.url
+        if let rest = PreviewAddress.ownRest(current, page), let handed = outside?.link(rest) { return handed }
+        return PreviewAddress.link(current, page)
     }
 
     private func buildErrorView() {
@@ -605,11 +663,11 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     }
 
     func copyLink() {
-        copy(PreviewAddress.link(failed ?? webView?.url, page))
+        copy(linkText)
     }
 
     private func share() {
-        guard let url = URL(string: PreviewAddress.link(failed ?? webView?.url, page)) else { return }
+        guard let url = URL(string: linkText) else { return }
         let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
         sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
         present(sheet, animated: true)

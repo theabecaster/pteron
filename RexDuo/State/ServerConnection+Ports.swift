@@ -209,6 +209,7 @@ extension ServerConnection {
     }
 
     func forgetPorts(_ bid: String) {
+        heldPortRows = heldPortRows.filter { $0.value.row.blockID != bid }
         pendingPorts[bid] = nil
         portsRead[bid] = nil
         ports.remove(bid)
@@ -219,7 +220,7 @@ extension ServerConnection {
     /// where a list or the gates change; nothing reads the lists per frame.
     func refreshPortRows() {
         var rows: [PortRow] = []
-        if portsAvailable, tunnelsAvailable, !ports.isEmpty {
+        if portsAvailable, tunnelsAvailable, !ports.isEmpty || !heldPortRows.isEmpty {
             let hidden = hiddenSessions()
             var panes: [(session: String, block: String)] = []
             for e in orderedSessions where !hidden.contains(e.id) {
@@ -229,6 +230,11 @@ extension ServerConnection {
                 }
             }
             rows = PortRows.rows(panes: panes) { ports.value($0) }
+            // A row that is being restarted keeps its place while its port is away.
+            for held in heldPortRows.values.sorted(by: { $0.at < $1.at }) where !rows.contains(where: { $0.id == held.row.id }) {
+                guard panes.contains(where: { $0.block == held.row.blockID }) else { continue }
+                rows.insert(held.row, at: min(held.at, rows.count))
+            }
         }
         guard rows != portRows else { return }
         portRows = rows
@@ -241,9 +247,22 @@ extension ServerConnection {
     /// One row, read from its own pane's list: a view that calls this observes that pane's
     /// ports and nothing else.
     func portRow(_ id: String) -> PortRow? {
-        guard let place = portRowPlaces[id], let entry = ports.value(place.blockID)?.entry(place.entry.port),
-              PortRules.isWeb(entry), !PortRows.isAgent(entry) else { return nil }
+        guard let place = portRowPlaces[id] else { return nil }
+        guard let entry = ports.value(place.blockID)?.entry(place.entry.port) else { return heldPortRows[id]?.row }
+        guard PortRules.isWeb(entry), !PortRows.isAgent(entry) else { return nil }
         return PortRow(sessionID: place.sessionID, blockID: place.blockID, entry: entry)
+    }
+
+    /// Keeps `row` in the Ports group while its port is away, where it is now.
+    func holdPortRow(_ row: PortRow) {
+        heldPortRows[row.id] = (row, portRows.firstIndex { $0.id == row.id } ?? portRows.count)
+        refreshPortRows()
+    }
+
+    /// The row follows its port again: it goes if the port is gone.
+    func releasePortRow(_ id: String) {
+        guard heldPortRows.removeValue(forKey: id) != nil else { return }
+        refreshPortRows()
     }
 
     // MARK: New blocks' metadata

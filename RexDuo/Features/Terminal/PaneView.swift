@@ -76,6 +76,14 @@ struct PaneHostView: UIViewRepresentable {
         host.share = PaneShare(server: server, sessionID: sessionID, blockID: blockID)
         host.ports = PanePorts(server: server, sessionID: sessionID, blockID: blockID)
         host.ports?.typed = { [weak model] text, browser in model?.ports.go(text, from: browser) }
+        host.ports?.shared = { [weak model, weak server, blockID] link in
+            guard let model, let server else { return nil }
+            return await model.ports.existingShare(server, block: blockID, link)
+        }
+        host.ports?.outside = { [weak model, weak server, blockID] port in
+            guard let model, let server else { return nil }
+            return model.ports.outside(server, block: blockID, port: port)
+        }
         if let center = model?.palette {
             host.onServerRun = { [weak center, weak server] name, title in
                 guard let center, let server else { return nil }
