@@ -781,7 +781,7 @@ final class PaneParkTests: XCTestCase {
 
     // MARK: Block ownership: another client has the pane
 
-    private static let lostText = "Resized elsewhere · tap to fit here"
+    private static let lostText = "Resized on another screen · tap to fit this one"
 
     /// The pane has a screen and its stream has caught up: nothing is on its way.
     private func current(_ host: TerminalHost) {
