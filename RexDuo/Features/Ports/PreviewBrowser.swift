@@ -395,6 +395,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         let button = UIButton(configuration: style, primaryAction: UIAction { [weak self] _ in
             if let self { action(self) }
         })
+        // Said outright: UIKit works these out only while an assistive technology runs.
+        button.isAccessibilityElement = true
         button.accessibilityLabel = label
         button.accessibilityTraits = .button
         button.showsLargeContentViewer = true
