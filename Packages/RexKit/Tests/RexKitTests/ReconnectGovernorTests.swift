@@ -408,6 +408,52 @@ final class ReconnectGovernorTests: XCTestCase {
         XCTAssertEqual(back.triggers.last, .backoff, "by its own timer, not a tap")
     }
 
+    /// `connect()` asks the governor like every other attempt: while the breaker is open, a
+    /// host that is new opens nothing, and goes with the others when a host answers.
+    func testConnectWaitsForItsTurnWhileTheBreakerIsOpen() async {
+        makeHosts(3)
+        let a = hosts[0], b = hosts[1], new = hosts[2]
+        for h in [a, b] {
+            let c = h.control
+            Task { @MainActor in try? await c.connect() }
+            await pump()
+            h.sockets.last.welcome()
+            await pump()
+        }
+        for h in [a, b] { h.sockets.last.failReceive() }
+        await pump()
+        XCTAssertTrue(governor.breakerOpen)
+        let c = new.control
+        let first = Task { @MainActor in
+            do { try await c.connect(); return true } catch { return false }
+        }
+        let connected = await first.value
+        XCTAssertFalse(connected)
+        XCTAssertEqual(new.sockets.count, 0, "no socket while the tunnel looks down")
+        XCTAssertTrue(new.control.isHeld)
+        await clock.advance(by: 0.5)
+        let test = try! XCTUnwrap([a, b].first { $0.isConnecting })
+        test.sockets.last.welcome()
+        await clock.advance(by: 2)
+        XCTAssertEqual(new.sockets.count, 1, "the welcome let it go")
+    }
+
+    func testATapGoesThroughAnOpenBreakerAndItsWelcomeClosesIt() async {
+        makeHosts(3)
+        await connectAll()
+        governor.select(hosts[0].control)
+        for h in hosts { h.sockets.last.failReceive() }
+        await pump()
+        let held = try! XCTUnwrap(hosts.first { $0.control.isHeld })
+        let before = held.sockets.count
+        held.control.kick()
+        await pump()
+        XCTAssertEqual(held.sockets.count, before + 1, "the user asked")
+        held.sockets.last.welcome()
+        await pump()
+        XCTAssertFalse(governor.breakerOpen, "a welcome from any host: the tunnel works")
+    }
+
     // MARK: The breaker's other transitions (the table in `ReconnectGovernor`)
 
     /// `n` hosts that were connected, all lost in the same moment with no answer: the breaker
