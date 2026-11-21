@@ -105,9 +105,11 @@ socket to a host whose control connection has no welcome; it asks to be told
     stream and the token stays good. The fence is up since the drop that led there, so nothing
     typed goes out. The stream does not ask again by itself: it asks the control connection
     whether the host is there (`RexControl.checkLiveness`, a ping with the pong deadline). No
-    pong drops the host, and its next welcome resumes the stream. A pong lets the stream try
-    once more, after the pause that follows a failed start (3 s, then 6, 12, 24, 30), with a
-    RESUME while the server can still have the stream.
+    pong drops the host, and its next welcome resumes the stream. After a pong the stream
+    tries again by itself: after 3 s, then 6, 12, 24, and every 30 s from there, with a RESUME
+    for as long as the server can still have the stream (its keep time), and a fresh start
+    after that. One retry waits at a time: the control connection's verdict or welcome, or a
+    fresh start, takes its place.
   - A HELLO with no answer is closed with status 1000, which also ends a stream the server may
     have opened for it. It is a failed start like any other, and the control connection is
     asked the same way.
@@ -593,9 +595,10 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   gets a burst. On an iPhone a burst queues as packets inside the Tailscale extension, which iOS
   kills past about 50 MB, and the tunnel is gone for 30 to 60 s (tailscale/tailscale#17967). The
   upload's own socket can't confirm bytes: Rex answers a ping there only once the file has ended.
-  The control ping has the pong deadline (10 s, 20 s on cellular): with no pong the host is
-  dropped as for any missed pong, and the upload ends as it does on a lost connection. In the
-  background the wait ends with nothing dropped.
+  The pacing ping (`RexControl.paceProbe`) is a ping of its own and only measures: with no
+  pong within the pong deadline (10 s, 20 s on cellular) it counts as a slow sample and the
+  rate halves; it never drops the host. In the background, or when the connection is lost, its
+  wait ends with no sample.
   No control connection, or no answer in 5 s, leaves the rate alone in charge: never a stall.
 - **Cancel** cuts off the file on its way, and the server deletes the batch's earlier files and
   types nothing. Between files, when the server may hold finished files and nothing is on its

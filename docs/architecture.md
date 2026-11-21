@@ -313,7 +313,8 @@ No answer time below is measured; "can be slow" is what the call's work suggests
 | Call | Answer time | What the watchdog does |
 |---|---|---|
 | `write`, `resize`, `client.key`, `client.action` | short | nothing while answers come; one ping when a host is silent for 5 s |
-| `format` (a screen, All Output), `blob_read` | can be slow: grows with the scrollback | one ping at 5 s if nothing else comes in |
+| `format` (a screen, All Output) | can be slow: grows with the scrollback; its reply is at most 64 KiB | one ping at 5 s if nothing else comes in |
+| `blob_read` (the rest of a screen or of All Output) | one chunk of 64 to 256 KiB each, sized from the last one's rate (`BlobChunks`, `ChunkSizer`) | the same. A reply counts as heard only when it is in whole, and a pong waits behind it, so a chunk must arrive inside 15 s (30 s): 64 KiB takes 8 s at 64 kbit/s, the slowest link the policy assumes (`ReconnectPolicy.slowestRate`) |
 | `ports`, `process`, `program_status`, `title`, `size` | can be slow: the host reads its processes | the same |
 | `list_dir` | can be slow: a large or remote folder | the same |
 | `upload_begin`, `download_begin`, `data.connect` | short: they answer a ticket | the same; the bytes go on a data socket, which has its own handshake deadline ([terminal.md](terminal.md), Reconnect) |
@@ -321,9 +322,11 @@ No answer time below is measured; "can be slow" is what the call's work suggests
 | `session.create`, `new_window`, `new_split` | can be slow: a shell starts | the same |
 | `session.bootstrap`, `attach`, `view`, `list`, `hosts.list`, `block_creator.list`, `client.keymap` | can be slow on a busy host | the same |
 
-An upload sends no control call per message: it paces itself with `RexControl.ping()`, the
-connection's own ping with the pong deadline, so a host that stops answering during an upload
-is dropped like any other. A terminal's snapshot comes on its data socket, not as a call.
+An upload sends no control call per message: it paces itself with `RexControl.paceProbe()`, a
+ping of its own that only measures. No pong within the pong deadline is a slow sample, which
+halves the rate; it never drops the host. A host that stops answering during an upload is
+found as any other is, by the watchdog and the keepalive. A terminal's snapshot comes on its
+data socket, not as a call.
 
 ### The connection log
 
