@@ -146,6 +146,7 @@ NEXT="$(public next)"
 
 # Copies of the scripts that trust those keys instead of the published ones.
 cp "$here/release.sh" "$relay/release.sh"
+cp "$here/release-list.py" "$relay/release-list.py"
 sed -e "s|^PRIMARY_KEY=.*|PRIMARY_KEY=\"$PRIMARY\"|" -e "s|^RECOVERY_KEY=.*|RECOVERY_KEY=\"$RECOVERY\"|" "$setup" > "$relay/setup.sh"
 printf '# test keys\nprimary  %s\nrecovery %s\n' "$PRIMARY" "$RECOVERY" > "$relay/update-key.pub"
 printf '[package]\nname = "rex-duo-helper"\nversion = "9.8.7"\n' > "$relay/Cargo.toml"
@@ -201,7 +202,8 @@ zip_app "$box/app" "$relay/dist/Beacon-macOS.zip"
 release() { # release <key name> [options]: runs the copy of release.sh; other settings come from the caller's environment
   local key="$1"
   shift
-  (cd "$relay" && REXDUO_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" ./release.sh "$@")
+  # The list this copy wrote last stands for the published one: nothing is downloaded here.
+  (cd "$relay" && REXDUO_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" PUBLISHED_LIST="${PUBLISHED_LIST:-$relay/dist/release/manifest.json}" ./release.sh "$@")
 }
 sign_with() { # sign_with <key name> <file> <signature file>
   "$OPENSSL" pkeyutl -sign -inkey "$box/$1.key" -rawin -in "$2" | "$OPENSSL" base64 -A > "$3"

@@ -45,19 +45,23 @@
 #                Set MIN_VERSION to an older version when this release still works with it:
 #                until an installed helper has updated itself, which takes up to 12 hours,
 #                every phone says of it that it needs an update.
-#   disabled     with --disable <name> or --enable <name> (each may be given more than once):
-#                the features turned off in every Beacon from 0.7.0 on, by name (Relay/README.md,
+#   disabled     the features turned off in every Beacon from 0.7.0 on, by name (Relay/README.md,
 #                "Turning it off"; `port_share` is the one there is). A Beacon follows the newest
 #                list it accepted that has the field; a list without it changes nothing, and a
-#                Beacon that never saw one has everything on. --resign keeps the field the list
-#                has and applies --disable and --enable to it; --enable of the last name leaves
-#                an empty list, which is what turns it back on. A new release carries the field
-#                only when one of the two is given, so give --disable again with every release
-#                while something is to stay off: a Beacon installed after it would otherwise
-#                never hear of it. Beacons before 0.7.0, the app and setup.sh don't read it.
-#   signed_at    beside disabled: when the list was signed, each time later than the last. A
-#                Beacon takes `disabled` only from a list signed after the one it last took it
-#                from, so an older signed list played back can't turn anything back on.
+#                Beacon that never saw one has everything on. Every list this script writes
+#                starts from what the PUBLISHED list turns off: a release carries it over, and
+#                --resign signs the published list. --disable <name> adds a name and --enable
+#                <name> takes one out (each may be given more than once); --enable of the last
+#                name leaves an empty list, which is what turns it back on. Beacons before
+#                0.7.0, the app and setup.sh don't read it. release-list.py writes it.
+#   signed_at    beside disabled: when the list was signed, always later than the published
+#                list says. A Beacon takes `disabled` only from a list signed after the one it
+#                last took it from, so an older signed list played back can't turn anything
+#                back on.
+#
+# The published list is downloaded with gh (its signature is checked against update-key.pub)
+# before anything is written. PUBLISHED_LIST=<file> names a copy to use in its place, and a
+# file that is not there says nothing is published yet (the first release, a test).
 #   expires_at   EXPIRES_DAYS from now (default 180). The helper, the app and setup.sh refuse
 #                the list after that, so a list must be signed again (--resign) before then even
 #                when nothing is released.
@@ -185,6 +189,19 @@ binary_text() { # binary_text <file> <platform> <out>
 OUT="dist/release"
 DOC="../docs/helper.md"
 
+# The list as it is published now, in "$published"; no such file when nothing is published.
+published="$work/published.json"
+if [[ -n "${PUBLISHED_LIST:-}" ]]; then
+  if [[ -f "$PUBLISHED_LIST" ]]; then cp "$PUBLISHED_LIST" "$published"; fi
+else
+  command -v gh >/dev/null 2>&1 || die "gh is needed to read the published list (PUBLISHED_LIST=<file> names a copy to use in its place)"
+  mkdir -p "$work/published"
+  gh release download helper-latest --repo "$REPO" --pattern manifest.json --pattern manifest.json.sig --dir "$work/published" \
+    || die "the published list could not be downloaded (PUBLISHED_LIST=<file> names a copy to use in its place)"
+  verify "$work/published/manifest.json" "$work/published/manifest.json.sig" || die "the published list's signature does not verify"
+  cp "$work/published/manifest.json" "$published"
+fi
+
 # EXPIRES_DAYS from now, in the one spelling the helper, the app and setup.sh read.
 EXPIRES_AT="$(python3 -c 'import datetime, sys; print((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$EXPIRES_DAYS")"
 
@@ -245,16 +262,19 @@ PY
 
 if [[ $RESIGN -eq 1 ]]; then
   [[ $BUILD -eq 1 && ${#PACKAGE_ARGS[@]} -eq 0 ]] || die "--resign builds nothing: leave out --skip-build and --no-notarize"
+  # The list that is signed again is the published one. A copy here that is not that list is
+  # not signed: release-list.py refuses it.
+  [[ -f "$published" ]] || die "there is no published list to sign again"
   if [[ ! -f "$OUT/manifest.json" ]]; then
-    command -v gh >/dev/null 2>&1 || die "no $OUT/manifest.json here, and gh is needed to download the published one"
     mkdir -p "$OUT"
-    gh release download helper-latest --repo "$REPO" --pattern manifest.json --dir "$OUT"
+    cp "$published" "$OUT/manifest.json"
   fi
-  # Only the dates and, when asked, the next key and what is turned off change. The files it
-  # names stay as they are.
-  python3 - "$OUT/manifest.json" "$EXPIRES_AT" "$NEXT_KEY" "$DISABLE" "$ENABLE" <<'PY'
-import datetime, json, re, sys
-path, expires_at, next_key, disable, enable = sys.argv[1:]
+  python3 ./release-list.py resign "$OUT/manifest.json" "$published" "$DISABLE" "$ENABLE" || die "the list was not written"
+  # Besides that, only the dates and, when asked, the next key change. The files it names
+  # stay as they are.
+  python3 - "$OUT/manifest.json" "$EXPIRES_AT" "$NEXT_KEY" <<'PY'
+import json, re, sys
+path, expires_at, next_key = sys.argv[1:]
 with open(path) as f:
     manifest = json.load(f)
 if not re.fullmatch(r"\d+\.\d+\.\d+", str(manifest.get("version", ""))) or not isinstance(manifest.get("assets"), dict):
@@ -266,26 +286,6 @@ if next_key:
 manifest.setdefault("next_key", None)
 # Desk presence has no switch: the field of the one that never shipped doesn't stay in a list.
 manifest.pop("desk", None)
-# What is turned off: the list's own, with --disable added and --enable taken out.
-off = manifest.get("disabled")
-if disable or enable or isinstance(off, list):
-    names = set(n for n in off if isinstance(n, str)) if isinstance(off, list) else set()
-    names |= set(filter(None, disable.split(",")))
-    names -= set(filter(None, enable.split(",")))
-    manifest["disabled"] = sorted(names)
-    # Such a list says when it was signed, always later than the list it replaces: a Beacon
-    # takes what is turned off only from a list signed after the one it last took it from.
-    stamp = "%Y-%m-%dT%H:%M:%SZ"
-    signed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
-    try:
-        before = datetime.datetime.strptime(str(manifest.get("signed_at", "")), stamp)
-        signed = max(signed, before + datetime.timedelta(seconds=1))
-    except ValueError:
-        pass
-    manifest["signed_at"] = signed.strftime(stamp)
-else:
-    manifest.pop("disabled", None)
-    manifest.pop("signed_at", None)
 with open(path, "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
@@ -382,9 +382,9 @@ for f in "${LINUX[@]}"; do
 done
 
 # One field per line (indent=2): setup.sh reads this file with sed and awk.
-python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "$DISABLE" "$ENABLE" "${LINUX[@]}" <<'PY'
+python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "${LINUX[@]}" <<'PY'
 import datetime, hashlib, json, os, sys
-out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, disable, enable, *linux = sys.argv[1:]
+out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, *linux = sys.argv[1:]
 
 def number(v):
     return tuple(int(part) for part in v.split("."))
@@ -412,16 +412,17 @@ manifest = {
     "expires_at": expires_at,
     "next_key": next_key or None,
 }
-# What is turned off, when this release says: the names of --disable that --enable does not
-# take back. With it, when the list was signed (see --resign).
-if disable or enable:
-    manifest["disabled"] = sorted(set(filter(None, disable.split(","))) - set(filter(None, enable.split(","))))
-    manifest["signed_at"] = manifest["released_at"]
 manifest["assets"] = assets
 with open(os.path.join(out, "manifest.json"), "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
 PY
+# What the published list turns off stays off in this one, unless --enable says otherwise.
+if [[ -f "$published" ]]; then carried="$published"; else carried="-"; fi
+python3 ./release-list.py release "$OUT/manifest.json" "$carried" "$DISABLE" "$ENABLE" || die "the list was not written"
+if grep -q '^  "disabled": ' "$OUT/manifest.json"; then
+  echo "    Turned off in every Beacon that reads it: $(python3 -c 'import json, sys; print(", ".join(json.load(open(sys.argv[1]))["disabled"]) or "nothing")' "$OUT/manifest.json")."
+fi
 sign "$OUT/manifest.json" "$OUT/manifest.json.sig"
 
 # Everything again, from the files as they will be published and the committed public keys.

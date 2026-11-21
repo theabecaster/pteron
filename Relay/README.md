@@ -393,7 +393,15 @@ a `size`, whatever its name, and picks its own by name.
   with something there that is not a list of names, or without a valid `signed_at`, is
   taken as a list and changes nothing about this. When the list can't be had or is not
   accepted, what was kept stays, across restarts too. A Beacon that never accepted a list
-  with the field has everything on. `Relay/release.sh --resign --disable <name>` and
+  with the field has everything on. What a Beacon remembers (the highest version it
+  accepted, the time of the list it took `disabled` from) is in its state folder, so a
+  Beacon on a fresh install remembers nothing: it accepts any list that the publisher
+  signed and that has not expired, the previous list of the same version included, and
+  follows that list's `disabled` until it accepts one signed later.
+  A list is good for 180 days from its signing. Each list is taken whole before the next
+  is looked at, in the order they come, whichever part of Beacon fetched it; each file in
+  the state folder is written to a temporary file, renamed into place, and the folder
+  synced. `Relay/release.sh --resign --disable <name>` and
   `--enable <name>` write the two fields (step 8, Turning it off).
 - `next_key` (handover): a manifest that passed steps 2 and 3 and names a base64 32-byte key
   adds that key to Beacon's trusted set, kept in `trusted_keys.json` (mode 0600) in the
@@ -1142,10 +1150,22 @@ Relay/release.sh --resign --disable port_share --publish   # the same, and uploa
 Relay/release.sh --resign --enable port_share --publish    # on again
 ```
 
-`--resign` takes the published list (it downloads it when `Relay/dist/release` has none),
-changes `disabled`, `signed_at` and the expiry date, and signs it; versions and files stay
-as they are, so no Beacon updates because of it. A release made while something is off
-has to be given `--disable` again, or a Beacon installed after it never hears of it.
+Every list `release.sh` writes starts from what the published list turns off. It
+downloads that list first (with `gh`; its signature has to verify) and writes `disabled`
+with `Relay/release-list.py`:
+
+- `--resign` signs the published list, with `disabled`, `signed_at` and the expiry date
+  changed; versions and files stay as they are, so no Beacon updates because of it. A copy
+  in `Relay/dist/release` that is not the published list, byte for byte, is refused: delete
+  it and run again.
+- A release carries over what the published list turns off. Only `--enable <name>` takes a
+  name out; `--disable <name>` adds one.
+- `signed_at` is the time of signing, and at least one second after the published list's.
+- The names are checked as Beacon checks them: at most 32, each 1 to 64 small letters,
+  digits and `_`. Anything else stops the script before a list is written.
+
+`PUBLISHED_LIST=<file>` names a copy to use in place of the download; a file that is not
+there says nothing is published yet (the first release, and `test-install.sh`).
 
 ### 9. Who holds a port, and how it was started (`port_owner`, from 0.7.0)
 

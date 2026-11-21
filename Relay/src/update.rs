@@ -511,7 +511,14 @@ fn load_high_water(state_dir: &Path) -> Option<Version> {
 /// date: the highest version seen, and a key the manifest hands over. Only a manifest that
 /// was accepted changes either, so a `next_key` in a list nobody trusted is never read.
 /// The same goes for what the list turns off (`Switches`).
+///
+/// One list at a time in this process: the update timer, a look before a share and a check
+/// the app asked for may each bring one at the same moment, and each reads what is
+/// remembered, compares and writes. Taken one after the other, the list signed last is the
+/// one whose `disabled` stays, whichever of them came in first.
 fn accept_and_remember(state_dir: &Path, builtin: Vec<[u8; 32]>, data: &[u8], signature_file: &[u8], now: i64) -> Result<Manifest, Fault> {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut trust = load_trust(state_dir, builtin);
     let high_water = load_high_water(state_dir);
     let m = accept_manifest(data, signature_file, &trust.keys(), high_water, now)?;
@@ -2597,6 +2604,162 @@ mod tests {
         tokio::join!(u.look_at_switches(), u.look_at_switches(), u.look_at_switches());
         assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (2, true));
         tokio::time::resume();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lists_that_come_in_at_once_are_taken_one_after_the_other_and_the_newest_stays() {
+        let (pair, public) = keypair();
+        let dir = temp("switch-race");
+        // Twelve lists signed at twelve times, half turning the port share off: whichever
+        // order they are accepted in, by as many threads at once, what stays is what the
+        // one signed last says, and the time kept is its time.
+        let lists: Vec<(i64, bool, Vec<u8>, Vec<u8>)> = (1..=12)
+            .map(|n| {
+                let off = n % 2 == 0;
+                let (data, sig) = signed(
+                    &pair,
+                    &|v: &mut Value| {
+                        v["disabled"] = if off { json!(["port_share"]) } else { json!([]) };
+                        v["signed_at"] = json!(iso8601(RELEASED + n));
+                    },
+                    "0.7.0",
+                );
+                (n, off, data, sig)
+            })
+            .collect();
+        for round in 0..40 {
+            let _ = std::fs::remove_file(dir.join(SWITCHES_FILE));
+            let start = std::sync::Barrier::new(lists.len());
+            std::thread::scope(|scope| {
+                for i in 0..lists.len() {
+                    // A different order each round.
+                    let (_, _, data, sig) = &lists[(i * 5 + round) % lists.len()];
+                    let (dir, start) = (&dir, &start);
+                    scope.spawn(move || {
+                        start.wait();
+                        accept_and_remember(dir, vec![public], data, sig, RELEASED).unwrap();
+                    });
+                }
+            });
+            assert_eq!((Switches::load(&dir), Switches::stored_at(&dir)), (vec!["port_share".to_string()], Some(RELEASED + 12)), "round {round}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Runs release-list.py, which release.sh writes a list's `disabled` with, on files of
+    /// this test's own: `list` as the list to write and `published` as the published one.
+    /// The list as written, or what the script said when it refused. None without python3.
+    fn written(dir: &Path, mode: &str, list: &Value, published: Option<&Value>, disable: &str, enable: &str) -> Option<Result<Value, String>> {
+        let pretty = |v: &Value| format!("{}\n", serde_json::to_string_pretty(v).unwrap());
+        std::fs::write(dir.join("list.json"), pretty(list)).unwrap();
+        let published_path = match published {
+            Some(p) => {
+                std::fs::write(dir.join("published.json"), pretty(p)).unwrap();
+                dir.join("published.json").into_os_string()
+            }
+            None => "-".into(),
+        };
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("release-list.py");
+        let run = crate::tools::command("python3")?.arg(script).arg(mode).arg(dir.join("list.json")).arg(published_path).args([disable, enable]).output().ok()?;
+        Some(if run.status.success() {
+            Ok(serde_json::from_slice(&std::fs::read(dir.join("list.json")).unwrap()).unwrap())
+        } else {
+            // Refused: the list is as it was.
+            assert_eq!(std::fs::read_to_string(dir.join("list.json")).unwrap(), pretty(list));
+            Err(String::from_utf8_lossy(&run.stderr).trim().to_string())
+        })
+    }
+
+    #[test]
+    fn the_list_release_sh_writes_keeps_off_what_the_published_one_turned_off() {
+        let dir = temp("release-list");
+        let fresh = |version: &str| -> Value { serde_json::from_str(&manifest_json(version)).unwrap() };
+        let with = |version: &str, disabled: Value, signed_at: &str| {
+            let mut v = fresh(version);
+            v["disabled"] = disabled;
+            v["signed_at"] = json!(signed_at);
+            v
+        };
+        // A Mac or a Linux box without python3 has no release.sh to run either.
+        let Some(plain) = written(&dir, "release", &fresh("0.7.1"), None, "", "") else {
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        };
+        // Nothing published, or a published list that says nothing, and nothing asked: a
+        // list as before, with neither field.
+        assert_eq!(plain.unwrap(), fresh("0.7.1"));
+        assert_eq!(written(&dir, "release", &fresh("0.7.1"), Some(&fresh("0.7.0")), "", "").unwrap().unwrap(), fresh("0.7.1"));
+        // The published list turns the port share off. It was signed in a year to come, so
+        // the next list's time is told from it and not from the clock: one second later.
+        let published = with("0.7.0", json!(["port_share"]), "2099-01-01T00:00:00Z");
+        // A release that says nothing keeps it off.
+        let next = written(&dir, "release", &fresh("0.7.1"), Some(&published), "", "").unwrap().unwrap();
+        assert_eq!((&next["disabled"], &next["signed_at"]), (&json!(["port_share"]), &json!("2099-01-01T00:00:01Z")));
+        assert_eq!(next["version"], "0.7.1");
+        let mut rest = next.clone();
+        rest.as_object_mut().unwrap().retain(|k, _| k != "disabled" && k != "signed_at");
+        assert_eq!(rest, fresh("0.7.1"), "nothing else is changed");
+        // Only --enable takes the name out, and --disable adds one beside it.
+        let on = written(&dir, "release", &fresh("0.7.1"), Some(&published), "", "port_share,").unwrap().unwrap();
+        assert_eq!((&on["disabled"], &on["signed_at"]), (&json!([]), &json!("2099-01-01T00:00:01Z")));
+        let more = written(&dir, "release", &fresh("0.7.1"), Some(&published), "something_later,", "").unwrap().unwrap();
+        assert_eq!(more["disabled"], json!(["port_share", "something_later"]));
+        let first = written(&dir, "release", &fresh("0.7.1"), Some(&fresh("0.7.0")), "port_share,", "").unwrap().unwrap();
+        assert_eq!(first["disabled"], json!(["port_share"]));
+        assert!(parse_iso8601(first["signed_at"].as_str().unwrap()).is_some_and(|at| (at - now() as i64).abs() < 300), "signed now: {first}");
+        // --resign signs the published list: the same, or with a name put in or taken out,
+        // each time a second later than the list it replaces.
+        let again = written(&dir, "resign", &published, Some(&published), "", "").unwrap().unwrap();
+        assert_eq!((&again["disabled"], &again["signed_at"]), (&json!(["port_share"]), &json!("2099-01-01T00:00:01Z")));
+        let twice = written(&dir, "resign", &again, Some(&again), "", "port_share,").unwrap().unwrap();
+        assert_eq!((&twice["disabled"], &twice["signed_at"]), (&json!([]), &json!("2099-01-01T00:00:02Z")));
+        assert_eq!(written(&dir, "resign", &fresh("0.7.0"), Some(&fresh("0.7.0")), "", "").unwrap().unwrap(), fresh("0.7.0"));
+        // A copy that is not the published list is not signed again: an older copy with
+        // the port share on, while the published one has it off.
+        let stale = with("0.7.0", json!([]), "2098-01-01T00:00:00Z");
+        for (list, published) in [(&stale, Some(&published)), (&fresh("0.7.0"), Some(&published)), (&published, None)] {
+            let refused = written(&dir, "resign", list, published, "", "").unwrap().unwrap_err();
+            assert!(refused.starts_with("release: ") && (refused.contains("not the list that is published") || refused.contains("no published list")), "{refused}");
+        }
+        // Names a Beacon would not take, asked for or carried over, and more than it takes.
+        let many: Vec<String> = (0..MAX_DISABLED + 1).map(|n| format!("feature_{n}")).collect();
+        let long = "x".repeat(MAX_FEATURE_NAME + 1);
+        for (published, disable) in [
+            (fresh("0.7.0"), "Port Share,".to_string()),
+            (fresh("0.7.0"), format!("{long},")),
+            (fresh("0.7.0"), "port-share,".to_string()),
+            (with("0.7.0", json!(["Port Share"]), "2099-01-01T00:00:00Z"), String::new()),
+            (with("0.7.0", json!(["port_share", 1]), "2099-01-01T00:00:00Z"), String::new()),
+            (with("0.7.0", json!(&many), "2099-01-01T00:00:00Z"), String::new()),
+            (with("0.7.0", json!(&many[1..]), "2099-01-01T00:00:00Z"), "one_more,".to_string()),
+        ] {
+            let refused = written(&dir, "release", &fresh("0.7.1"), Some(&published), &disable, "").unwrap().unwrap_err();
+            assert!(refused.starts_with("release: "), "{disable:?}: {refused}");
+        }
+        // The most a Beacon takes is written, and read by one.
+        let full = written(&dir, "release", &fresh("0.7.1"), Some(&with("0.7.0", json!(&many[1..]), "2099-01-01T00:00:00Z")), "", "").unwrap().unwrap();
+        assert_eq!(names(&full["disabled"]).map(|n| n.len()), Some(MAX_DISABLED));
+        // What it writes is what a Beacon follows: signed here with a key of this test's
+        // own, the published list first and then the release made from it. The release
+        // without the carried names would have left the port share off in a Beacon that
+        // saw the earlier list and on in one installed later; with them both have it off.
+        let (pair, public) = keypair();
+        let accept = |state: &Path, list: &Value| {
+            let data = format!("{}\n", serde_json::to_string_pretty(list).unwrap()).into_bytes();
+            accept_and_remember(state, vec![public], &data, &sign(&pair, &data), RELEASED).map(|m| m.version)
+        };
+        let (old, new) = (dir.join("an-installed-beacon"), dir.join("a-new-install"));
+        assert_eq!(accept(&old, &published).unwrap(), "0.7.0");
+        for state in [&old, &new] {
+            assert_eq!(accept(state, &next).unwrap(), "0.7.1");
+            assert_eq!(Switches::load(state), ["port_share"], "{state:?}");
+        }
+        // And the published list played back afterwards changes nothing.
+        let _ = accept(&new, &published);
+        assert_eq!(Switches::load(&new), ["port_share"]);
+        assert_eq!(accept(&old, &on).unwrap(), "0.7.1");
+        assert_eq!(Switches::load(&old), ["port_share"], "signed at the same second as the list that keeps it off: not later, not taken");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

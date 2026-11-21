@@ -182,7 +182,9 @@ list that Beacons already read for updates. A Beacon follows it at its next upda
 within about 12 hours, and looks at the list again whenever a share is asked for and its
 last look is more than 10 minutes old: open shares close, and nothing is shared until a
 later list turns it back on. Only a list that carries the publisher's signature can do either, and an older copy
-of the list can't undo a newer one. Nothing else on a computer can be switched this way.
+of the list can't undo a newer one on a Beacon that has seen the newer one. A Beacon that was
+just installed has seen none: it follows whichever signed list it is given first, as long as
+that list has not expired (a list is good for 180 days), until it sees a later one. Nothing else on a computer can be switched this way.
 
 Beacon also answers the app's question of which processes are behind a port (their ids,
 names, process groups, the arguments they were started with and their folders, for your own
