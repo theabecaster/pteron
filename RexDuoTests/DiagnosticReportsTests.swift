@@ -1,5 +1,6 @@
 import XCTest
 import RexKit
+import GlanceModel
 @testable import RexDuo
 
 /// The crash and hang reports the app keeps (`DiagnosticReports`) and the file Settings → About
@@ -138,7 +139,7 @@ final class DiagnosticReportsTests: XCTestCase {
         let reports = [DiagnosticReports.Report(date: date(2), json: json(2)),
                        DiagnosticReports.Report(date: date(1), json: json(1))]
         let text = await ConnectionDiagnostics.report(log: log, servers: [config], reports: reports, version: "1.2 (34)")
-        XCTAssertTrue(text.hasPrefix("Pteron diagnostics\nversion 1.2 (34)\n"), text)
+        XCTAssertTrue(text.hasPrefix("\(Brand.appName) diagnostics\nversion 1.2 (34)\n"), text)
         XCTAssertTrue(text.contains("Connection log"), text)
         XCTAssertTrue(text.contains("App         launch build=2611201913"), text)
         XCTAssertTrue(text.contains("Computer 1  retry in=1000ms"), text)
@@ -159,11 +160,11 @@ final class DiagnosticReportsTests: XCTestCase {
     func testTheSharedFileIsOneTextFileThatGoesWhenTheSheetCloses() throws {
         let share = folder.appendingPathComponent("Share")
         let first = try ConnectionDiagnostics.writeShareFile("one", in: share)
-        XCTAssertEqual(first.lastPathComponent, "Pteron Diagnostics.txt")
+        XCTAssertEqual(first.lastPathComponent, "\(Brand.appName) Diagnostics.txt")
         XCTAssertEqual(try String(contentsOf: first, encoding: .utf8), "one")
         // A second tap after a sheet that never told of its close: one file, the new one.
         let second = try ConnectionDiagnostics.writeShareFile("two", in: share)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: share.path), ["Pteron Diagnostics.txt"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: share.path), ["\(Brand.appName) Diagnostics.txt"])
         XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), "two")
         ConnectionDiagnostics.clearShareFile(in: share)
         XCTAssertFalse(FileManager.default.fileExists(atPath: share.path))
