@@ -99,8 +99,9 @@ pub struct Net {
     fixed: Option<Tailnet>,
     /// Whether a phone may have this address.
     phone: fn(IpAddr) -> bool,
-    /// The tailnet user a phone's address belongs to.
-    who: Asked<Option<u64>>,
+    /// What the Tailscale client says of a phone's address: None when it can't be asked or
+    /// gave no answer, else the tailnet user the address belongs to, if any.
+    who: Asked<Option<Option<u64>>>,
     /// Whether the port's listener is a process of this user.
     holder: Asked<bool>,
     pub idle: Duration,
@@ -117,12 +118,13 @@ impl Net {
     /// may have any loopback address.
     #[cfg(test)]
     pub fn loopback(tailnet: Option<Tailnet>) -> Net {
-        let who = Asked::Fixed(tailnet.as_ref().and_then(|t| t.user));
+        let who = Asked::Fixed(Some(tailnet.as_ref().and_then(|t| t.user)));
         Net { fixed: tailnet, phone: |ip| ip.is_loopback(), who, holder: Asked::Fixed(true), idle: IDLE, waiting: WAITING }
     }
 
-    /// The tailnet user `phone` belongs to, as the Tailscale client says.
-    async fn whois(&self, phone: IpAddr) -> Option<u64> {
+    /// The tailnet user `phone` belongs to, as the Tailscale client says; None when the
+    /// client can't be asked or does not answer.
+    async fn whois(&self, phone: IpAddr) -> Option<Option<u64>> {
         match self.who {
             Asked::Fixed(user) => user,
             // A test never asks the real client.
@@ -411,7 +413,9 @@ impl Shares {
         }
         // The address has to be a device of this computer's own user, as Tailscale has it,
         // and the port's listener a process of the user Beacon runs as.
-        if !same_user(tailnet.user, self.net.whois(ask.phone).await) {
+        // A client that can't be asked, or does not answer in time, is no tailnet to share on.
+        let phones_user = self.net.whois(ask.phone).await.ok_or(Refusal::NotAvailable)?;
+        if !same_user(tailnet.user, phones_user) {
             return Err(Refusal::NotYourPhone);
         }
         if !self.net.listens_as_me(ask.port).await {
@@ -1662,7 +1666,7 @@ mod tests {
         // Tailscale says the address is another user's device, a tagged one, or it knows
         // no such address (or could not be asked): no share.
         for theirs in [Some(2002), None] {
-            let all = Shares::new(Net { who: Asked::Fixed(theirs), ..Net::testing() });
+            let all = Shares::new(Net { who: Asked::Fixed(Some(theirs)), ..Net::testing() });
             assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotYourPhone), "{theirs:?}");
             assert_eq!(all.count(), 0);
         }
@@ -1670,12 +1674,21 @@ mod tests {
         let mut net = Net::testing();
         net.fixed.as_mut().unwrap().user = None;
         for phone in [Some(1001), None] {
-            let all = Shares::new(Net { who: Asked::Fixed(phone), ..net.clone() });
+            let all = Shares::new(Net { who: Asked::Fixed(Some(phone)), ..net.clone() });
             assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotYourPhone));
         }
-        // A test never asks the real client: unasked, nobody is known.
+        // The same user: a share.
+        let all = Shares::new(Net { who: Asked::Fixed(Some(Some(1001))), ..Net::testing() });
+        assert!(all.open(ask(dev.port())).await.is_ok());
+        // The client is not there to ask, or gave no answer in time (the command line is
+        // missing, was stopped at its time limit, or printed more than is read): the
+        // computer has no tailnet to share on, which is not the phone's doing.
+        let all = Shares::new(Net { who: Asked::Fixed(None), ..Net::testing() });
+        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotAvailable));
+        // A test never asks the real client: unasked, there is no answer.
         let all = Shares::new(Net { who: Asked::System, ..Net::testing() });
-        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotYourPhone));
+        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotAvailable));
+        assert_eq!(all.count(), 0);
         assert!(same_user(Some(1001), Some(1001)) && !same_user(Some(1001), Some(2002)));
     }
 

@@ -945,13 +945,24 @@ or of the system has no listener as far as a share goes.
 Whose phone it is: before a new share is made, Beacon runs `tailscale whois --json
 <phone_ip>` and reads `Node.User`, `Node.Tags` and `UserProfile.ID`. The two ids have to
 agree with each other and with `Self.UserID` of this computer's own status, and neither
-device may be tagged.
+device may be tagged (`Tags` absent, `null` or empty means untagged). The ids are read as
+whole numbers, exactly. A client that gives no answer to this in time makes the answer
+`not_available`, not `not_your_phone`.
 
 How Beacon reads Tailscale: it runs the client's own command line, `tailscale status --json
---peers=false`, as the user it runs as, with a 5 s limit, once per `port_share`. It looks for it
-at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, `/usr/local/bin/tailscale` and
-`/opt/homebrew/bin/tailscale` on a Mac, and among the system tools and at
-`/usr/local/bin/tailscale` on Linux. It reads `BackendState` (must be `Running`),
+--peers=false`, as the user it runs as, with a 5 s limit, once per `port_share`. It looks for
+the command line at fixed full paths, in this order, and runs the first that is a program
+owned by root or by its own user that no one else can write to. No `PATH` is searched.
+
+| System | Paths, in order |
+|---|---|
+| macOS | `/Applications/Tailscale.app/Contents/MacOS/Tailscale` (the app's own program, which is the command line too), `/opt/homebrew/bin/tailscale`, `/usr/local/bin/tailscale` |
+| Linux | `/usr/bin/tailscale`, `/usr/sbin/tailscale`, `/run/current-system/sw/bin/tailscale` (NixOS), `/usr/local/bin/tailscale` |
+
+When none is there, or the one there does not answer either question in time, the answer is
+`not_available`.
+
+From the status it reads `BackendState` (must be `Running`),
 `Self.TailscaleIPs` (only addresses in Tailscale's two ranges count), `Self.DNSName`,
 `Self.HostName`, `Self.UserID`, `Self.Tags` and `CurrentTailnet.MagicDNSEnabled`. Nothing is changed and no other device
 is listed. Without that answer there is no share: no address is taken from the network

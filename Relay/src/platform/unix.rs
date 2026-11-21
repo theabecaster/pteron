@@ -673,12 +673,21 @@ pub fn raise_fd_limit() -> Option<u64> {
 
 // MARK: Tailscale and listening ports
 
-/// Where the regular Tailscale client's command line is, in the order it is looked for: a
-/// full path, or the name of a system tool (tools.rs).
+/// Where the regular Tailscale client's command line is, in the order it is looked for.
+/// Full paths only: a service's `PATH` holds none of them, and no `PATH` is searched. On a
+/// Mac the app's own program comes first (it is the command line too), then where Homebrew
+/// links one; on Linux where a package puts it, NixOS's place, then a local install.
 #[cfg(target_os = "macos")]
-pub const TAILSCALE: [&str; 3] = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale"];
+pub const TAILSCALE: [&str; 3] = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"];
 #[cfg(target_os = "linux")]
-pub const TAILSCALE: [&str; 2] = ["tailscale", "/usr/local/bin/tailscale"];
+pub const TAILSCALE: [&str; 4] = ["/usr/bin/tailscale", "/usr/sbin/tailscale", "/run/current-system/sw/bin/tailscale", "/usr/local/bin/tailscale"];
+
+/// True when `path` is a program that the system's administrator or `user` put there: a
+/// file someone may run, owned by root or by `user`, that no one else can write to. A link
+/// counts as what it leads to.
+pub fn is_own_program(path: &Path, user: UserId) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0 && m.mode() & 0o022 == 0 && (m.uid() == 0 || m.uid() == user))
+}
 
 /// The system tool that names the process listening on TCP `port`, and its arguments: `lsof`
 /// on macOS, `ss` on Linux. Both answer for this user's own processes without more rights.
@@ -984,6 +993,34 @@ mod tests {
         assert!(addr.ip().is_loopback() && addr.port() != 0);
         let _dialed = tokio::net::TcpStream::connect(addr).await.unwrap();
         listener.accept().await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_program_is_run_only_when_it_is_roots_or_the_users_and_theirs_alone_to_change() {
+        let dir = temp("own");
+        let me = user_id();
+        let program = dir.join("tailscale");
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        let set = |mode: u32| std::fs::set_permissions(&program, std::fs::Permissions::from_mode(mode)).unwrap();
+        set(0o755);
+        assert!(is_own_program(&program, me));
+        // A link to it, as Homebrew makes one.
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&program, &link).unwrap();
+        assert!(is_own_program(&link, me));
+        // Someone else's, one that others can write to, one that can't be run, a folder,
+        // and nothing at all.
+        assert!(!is_own_program(&program, me + 1));
+        for open in [0o775, 0o757, 0o777] {
+            set(open);
+            assert!(!is_own_program(&program, me), "{open:o}");
+        }
+        set(0o644);
+        assert!(!is_own_program(&program, me));
+        assert!(!is_own_program(&dir, me) && !is_own_program(&dir.join("missing"), me));
+        // The system's own tools are root's.
+        assert!(is_own_program(Path::new("/bin/sh"), me + 1));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

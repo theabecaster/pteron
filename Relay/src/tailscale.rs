@@ -12,6 +12,9 @@
 //! tailnet user as this computer. A tagged device has no user, on either side, and gets none.
 //! Both commands have 5 s and may print 256 KB; past either, there is no answer.
 //!
+//! The command line is looked for at fixed full paths (`platform::TAILSCALE`), in order,
+//! and the first that is a program of root's or this user's is run. No `PATH` is searched.
+//!
 //! A computer where the command is missing, does not answer, or says anything but `Running`
 //! has no tailnet as far as Beacon goes: no address is guessed from the network interfaces,
 //! since an address in Tailscale's range on another network is not a tailnet.
@@ -19,6 +22,7 @@
 use crate::util::Json;
 use serde_json::Value;
 use std::net::IpAddr;
+use std::path::Path;
 use std::time::Duration;
 
 /// How long a command may take, and how much it may print.
@@ -90,19 +94,26 @@ pub fn whois_user(json: &str) -> Option<u64> {
     (user == profile && !tagged(node)).then_some(user)
 }
 
-/// The Tailscale client's command line on this computer.
-fn client() -> Option<tokio::process::Command> {
-    let program = crate::platform::TAILSCALE.iter().filter_map(|place| crate::tools::program(std::path::Path::new(place))).find(|p| crate::platform::is_executable(p))?;
-    crate::tools::async_command(program)
+/// The first of `places` that is a full path and that `usable` takes.
+pub fn find<'a>(places: &[&'a str], usable: impl Fn(&Path) -> bool) -> Option<&'a Path> {
+    places.iter().map(Path::new).find(|p| p.is_absolute() && usable(p))
 }
 
-/// Asks the Tailscale client whose device `ip` is. None when it does not know the address,
-/// does not answer, or the device has no user.
+/// The Tailscale client's command line on this computer.
+fn client() -> Option<tokio::process::Command> {
+    let me = crate::platform::user_id();
+    crate::tools::async_command(find(&crate::platform::TAILSCALE, |p| crate::platform::is_own_program(p, me))?)
+}
+
+/// Asks the Tailscale client whose device `ip` is. None when there is no client to ask or
+/// it gave no answer in time: then nothing is known. `Some(None)` when it answered and the
+/// address is no device with a user (it does not know the address, or the device is tagged).
 #[cfg_attr(test, allow(dead_code))] // tests never ask the real client
-pub async fn whois(ip: IpAddr) -> Option<u64> {
+pub async fn whois(ip: IpAddr) -> Option<Option<u64>> {
     let mut command = client()?;
     command.args(["whois", "--json", &ip.to_string()]);
-    whois_user(std::str::from_utf8(&crate::tools::printed(command, PRINT_LIMIT, WAIT).await?).ok()?)
+    let printed = crate::tools::printed(command, PRINT_LIMIT, WAIT).await?;
+    Some(std::str::from_utf8(&printed).ok().and_then(whois_user))
 }
 
 /// Asks the Tailscale client now. None when this computer does not run it.
@@ -159,12 +170,15 @@ mod tests {
         }
     }
 
-    /// What the client prints about an address, cut to what is read, with example values.
+    /// What the client prints about an address: its keys as a real client has them, with
+    /// example values. The ids are whole numbers; `Tags` is there only for a tagged device.
     fn whois_answer(user: u64, profile: u64, tags: Option<Value>) -> Value {
         let mut answer = json!({
-            "Node": {"ID": 5, "StableID": "nEXAMPLE", "Name": "phone.example.ts.net.", "User": user, "Addresses": ["100.64.0.2/32"]},
-            "UserProfile": {"ID": profile, "LoginName": "alex@example.com", "DisplayName": "Alex"},
-            "CapMap": {}
+            "Node": {"ID": 5550001, "StableID": "nEXAMPLE1CNTRL", "Name": "phone.example.ts.net.", "User": user, "Key": "nodekey:0000", "KeyExpiry": "2027-01-01T00:00:00Z",
+                "Machine": "mkey:0000", "DiscoKey": "discokey:0000", "Addresses": ["100.64.0.2/32", "fd7a:115c:a1e0::2/128"], "AllowedIPs": ["100.64.0.2/32", "fd7a:115c:a1e0::2/128"],
+                "Hostinfo": {"OS": "iOS", "Hostname": "phone"}, "Created": "2026-01-01T00:00:00Z", "Cap": 100, "Online": true, "ComputedName": "phone", "ComputedNameWithHost": "phone"},
+            "UserProfile": {"ID": profile, "LoginName": "alex@example.com", "DisplayName": "Alex", "ProfilePicURL": "https://example.com/a.png"},
+            "CapMap": null
         });
         if let Some(tags) = tags {
             answer["Node"]["Tags"] = tags;
@@ -176,7 +190,27 @@ mod tests {
     fn an_address_belongs_to_the_user_the_client_names_for_it() {
         // The phone of the same user as this computer (1001 above).
         assert_eq!(whois_user(&whois_answer(1001, 1001, None).to_string()), Some(1001));
+        // No `Tags` key, `Tags: null` and an empty list all mean untagged.
         assert_eq!(whois_user(&whois_answer(1001, 1001, Some(json!([]))).to_string()), Some(1001));
+        assert_eq!(whois_user(&whois_answer(1001, 1001, Some(Value::Null)).to_string()), Some(1001));
+        assert!(whois_answer(1001, 1001, None)["Node"].get("Tags").is_none());
+        // Ids are whole numbers of any size, read exactly: two that a floating-point number
+        // could not tell apart are two users.
+        let (huge, next) = (9_007_199_254_740_993u64, 9_007_199_254_740_992u64);
+        assert_eq!(whois_user(&whois_answer(huge, huge, None).to_string()), Some(huge));
+        assert_eq!(whois_user(&whois_answer(u64::MAX, u64::MAX, None).to_string()), Some(u64::MAX));
+        assert_eq!(whois_user(&whois_answer(huge, next, None).to_string()), None);
+        assert!(!crate::share::same_user(Some(huge), Some(next)));
+        let text = format!("{{\"Node\":{{\"User\":{huge}}},\"UserProfile\":{{\"ID\":{huge}}},\"CapMap\":null,\"Unknown\":[1,2]}}");
+        assert_eq!(whois_user(&text), Some(huge));
+        let mut s = status();
+        s["Self"]["UserID"] = json!(huge);
+        assert_eq!(parse(&s.to_string()).unwrap().user, Some(huge));
+        // An id written as anything but a whole number is none: a string, a fraction.
+        for not_whole in ["\"1001\"", "1001.0", "1.001e3", "-1001", "true", "null"] {
+            let text = format!("{{\"Node\":{{\"User\":{not_whole}}},\"UserProfile\":{{\"ID\":{not_whole}}}}}");
+            assert_eq!(whois_user(&text), None, "{not_whole}");
+        }
         // Another user's device: a user, but not this computer's.
         assert_eq!(whois_user(&whois_answer(2002, 2002, None).to_string()), Some(2002));
         // A tagged device has no user.
@@ -247,9 +281,24 @@ mod tests {
     }
 
     #[test]
-    fn the_client_is_looked_for_in_its_own_places_only() {
-        for place in crate::platform::TAILSCALE {
-            assert!(place.starts_with('/') || !place.contains('/'), "{place}");
+    fn the_client_is_looked_for_at_fixed_full_paths_in_order() {
+        let places = crate::platform::TAILSCALE;
+        for place in places {
+            assert!(place.starts_with('/') && !place.contains("..") && (place.ends_with("/tailscale") || place.ends_with("/Tailscale")), "{place}");
         }
+        if cfg!(target_os = "macos") {
+            assert_eq!(places.to_vec(), ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]);
+        } else {
+            assert_eq!(places.to_vec(), ["/usr/bin/tailscale", "/usr/sbin/tailscale", "/run/current-system/sw/bin/tailscale", "/usr/local/bin/tailscale"]);
+        }
+        // The first one that is usable is taken, whichever that is; none usable is none.
+        let list = ["/a/tailscale", "/b/tailscale", "/c/tailscale"];
+        assert_eq!(find(&list, |_| true), Some(Path::new("/a/tailscale")));
+        assert_eq!(find(&list, |p| p != Path::new("/a/tailscale")), Some(Path::new("/b/tailscale")));
+        assert_eq!(find(&list, |p| p == Path::new("/c/tailscale")), Some(Path::new("/c/tailscale")));
+        assert_eq!(find(&list, |_| false), None);
+        // A name without a folder would be looked up somewhere: it is never tried.
+        assert_eq!(find(&["tailscale", "bin/tailscale", "./tailscale"], |_| true), None);
+        assert_eq!(find(&["tailscale", "/d/tailscale"], |_| true), Some(Path::new("/d/tailscale")));
     }
 }
