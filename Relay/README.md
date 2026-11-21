@@ -937,10 +937,15 @@ Errors, each with a plain sentence as `message`:
 | `busy` | Eight shares are open. |
 | `failed` | The system gave no port to listen on. |
 
-Whose port it is: Beacon asks the system which process listens on the port (`lsof` on a Mac,
-`ss` on Linux, as in step 9), reads that process, and makes a share only when it runs as the
-user Beacon runs as. Both tools name only that user's processes, so a port of another user
-or of the system has no listener as far as a share goes.
+Whose port it is: Beacon asks the system which sockets listen on the port (`lsof -Fptn` on a
+Mac, `ss -ltnp` on Linux), reads each process named, and keeps the loopback addresses where
+it runs as the user Beacon runs as: `127.0.0.1` for an IPv4 socket, `::1` for an IPv6 one.
+Both tools name only that user's processes, so a port of another user or of the system has
+no listener as far as a share goes. A share connects only to the addresses kept. It asks
+again whose the port is when a connection there finds nothing, when Rex says the port left
+its pane, and once a minute while it is in use (at most every 2 s); a port that another
+user's process holds by then gets no connection, and the phone the waiting page. Between two
+of those looks a share relies on the last one.
 
 Whose phone it is: before a new share is made, Beacon runs `tailscale whois --json
 <phone_ip>` and reads `Node.User`, `Node.Tags` and `UserProfile.ID`. The two ids have to
@@ -951,16 +956,24 @@ whole numbers, exactly. A client that gives no answer to this in time makes the 
 
 How Beacon reads Tailscale: it runs the client's own command line, `tailscale status --json
 --peers=false`, as the user it runs as, with a 5 s limit, once per `port_share`. It looks for
-the command line at fixed full paths, in this order, and runs the first that is a program
-owned by root or by its own user that no one else can write to. No `PATH` is searched.
+the command line at fixed full paths, in this order, and runs the first that passes. No
+`PATH` is searched. A path passes when the file can be run and only root, Beacon's own user
+or the computer's administrators can change it or put another in its place: the file and
+every folder on the way to it belong to root or to that user, none can be written to by
+everyone, and none by its group unless the group is macOS's `admin` (whose members can act
+as root; the system itself makes `/Applications` writable by it). On Linux no group may. A
+link is followed, and both the folders the link is in and the folders the file is really in
+are held to this. A path that does not pass is skipped for the next.
 
 | System | Paths, in order |
 |---|---|
 | macOS | `/Applications/Tailscale.app/Contents/MacOS/Tailscale` (the app's own program, which is the command line too), `/opt/homebrew/bin/tailscale`, `/usr/local/bin/tailscale` |
 | Linux | `/usr/bin/tailscale`, `/usr/sbin/tailscale`, `/run/current-system/sw/bin/tailscale` (NixOS), `/usr/local/bin/tailscale` |
 
-When none is there, or the one there does not answer either question in time, the answer is
-`not_available`.
+When none passes, or the one that does gives no answer to either question in time, the
+answer is `not_available`. A default Homebrew has its folders owned by the user with group
+`admin` (`/opt/homebrew/bin` on Apple silicon, `/usr/local/bin` on Intel), so its link passes
+on a Mac; a folder there that everyone or another group can write to does not.
 
 From the status it reads `BackendState` (must be `Running`),
 `Self.TailscaleIPs` (only addresses in Tailscale's two ranges count), `Self.DNSName`,
@@ -1028,7 +1041,8 @@ When a share ends. Its listener and all its connections close:
 - When the phone is no longer registered: it unregistered, the gateway no longer knows it
   (`410`, the second `401`), or `rex-duo-helper forget` removed it. Beacon sees a `forget`
   the next time it reads its registrations, and a share asks again before it takes a
-  connection, so a removed phone is never served.
+  connection, before it passes on each request and every 30 s on a quiet connection or a
+  WebSocket, so a removed phone gets nothing more and its open connections end.
 - When Beacon stops. A restarted Beacon has no shares.
 
 **The waiting page.** A share whose dev server stopped does not go at once. Beacon learns
@@ -1095,7 +1109,8 @@ Result:
     can't be read);
   - `argv`: the arguments as an array, the program's own name first, each exactly as it is
     (spaces, quotes and empty arguments included), never joined. `null` when they could not
-    be read, or when the process ended or was replaced while it was read;
+    be read, when the process ended or was replaced while it was read, and on a Mac when
+    they can't be told from the environment (below);
   - `argv_lossy`: true when an argument was not UTF-8. JSON holds text, so such bytes come
     as U+FFFD, and the array is not what was typed;
   - `truncated`: true when the arguments did not fit 8192 bytes or 256 arguments, or ended
@@ -1137,10 +1152,21 @@ only in this action's result, to the caller, over the Rex connection that carrie
 action. Beacon never logs them, writes them to a file, puts them in an error, or sends them
 to the push gateway. The environment is never returned: on a Mac the kernel hands it over
 in the same block as the arguments (`KERN_PROCARGS2`); Beacon reads only the counted
-arguments out of it and wipes the block.
+arguments out of it and wipes the block. The block gives the count of arguments and where
+they begin, not where they end. A program that wrote over its arguments and their NULs (a
+title set in place) has fewer strings there than the count, and the count then runs on into
+the environment and, when that is short, into the NULs behind it. The rule: take the last
+of the counted strings that is not empty. When it has the form `NAME=value`, or holds an
+`=` and is the first string or has empty strings behind it, nothing is returned: `argv` is
+`null`. That also costs a process whose real last argument has that form (`make CC=clang`)
+its arguments, and with them Restart. What the rule can't catch: a program that wrote over
+the NUL of its last argument only, so that this argument runs on into a variable and the
+result does not have the form `NAME=value` (`--port=3000` with `PATH=…` behind it); and a
+variable that was set without that form. No program is known to do the first; the block has
+nothing that would show it.
 
 On a Mac the processes are read from the kernel (`proc_pidinfo`, `proc_pidpath`, `getsid`,
-`sysctl kern.procargs2`); on Linux from `/proc/<pid>/stat`, `status`, `cmdline` and the `exe`
+`proc_listpgrppids`, `sysctl kern.procargs2`); on Linux from `/proc/<pid>/stat`, `status`, `cmdline` and the `exe`
 and `cwd` links.
 
 ## Desk presence

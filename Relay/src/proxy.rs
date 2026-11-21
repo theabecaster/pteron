@@ -26,7 +26,12 @@
 //! page and the connection ends. Each direction holds one buffer: at most `HEAD_MAX` plus one
 //! read (`READ`), so a connection costs at most about 128 KB however much passes through it.
 
+use crate::owner::Mine;
 use crate::waiting;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::AtomicU8;
+use std::sync::Arc;
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,7 +71,26 @@ pub struct Target {
     pub machine: String,
     /// The dev server answered on `::1` last, so that is tried first.
     v6_first: AtomicBool,
+    /// Which loopback addresses the port is this user's on, as last looked up: bit 1 for
+    /// `127.0.0.1`, bit 2 for `::1`. Only those are connected to.
+    mine: AtomicU8,
+    /// Looks up again whose the port is.
+    lookup: Lookup,
+    /// When it was last looked up.
+    looked: Mutex<Option<tokio::time::Instant>>,
 }
+
+/// Asks the system on which loopback addresses the port is this user's.
+pub type Lookup = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Mine> + Send>> + Send + Sync>;
+
+/// The least time between two lookups for one share. While nothing of this user's listens
+/// on a share's port, every request finds that out anew; a page that asks again every few
+/// seconds must not start a program each time something on it does.
+pub const LOOKUP_EVERY: Duration = Duration::from_secs(2);
+/// How old a lookup may be when a new connection is made on the strength of it. A port
+/// that changed hands without a moment in which nothing listened gives no failed
+/// connection to notice it by, so while a share is in use it asks again this often.
+pub const LOOKUP_FRESH: Duration = Duration::from_secs(60);
 
 /// `host:port` as an address writes it: an IPv6 address in brackets.
 pub fn authority(host: &str, port: u16) -> String {
@@ -80,7 +104,8 @@ pub fn authority(host: &str, port: u16) -> String {
 impl Target {
     /// A share of `port` that listens on `listen` and is also reached by `name`, when the
     /// computer has one: by the whole name, and by its first part, which a device on the
-    /// same tailnet may use for it.
+    /// same tailnet may use for it. The port counts as this user's on both loopback
+    /// addresses, with nothing to look it up again: `holder` says otherwise.
     pub fn new(port: u16, listen: SocketAddr, name: Option<&str>, machine: &str) -> Target {
         let name = name.map(str::to_ascii_lowercase);
         let short = name.as_ref().and_then(|n| n.split('.').next().map(String::from));
@@ -93,7 +118,38 @@ impl Target {
                 shared.push(if host.contains(':') { format!("[{host}]") } else { host });
             }
         }
-        Target { port, listen, shared, machine: machine.to_string(), v6_first: AtomicBool::new(false) }
+        let both: Lookup = Arc::new(|| Box::pin(async { Mine::BOTH }));
+        Target { port, listen, shared, machine: machine.to_string(), v6_first: AtomicBool::new(false), mine: AtomicU8::new(3), lookup: both, looked: Mutex::new(None) }
+    }
+
+    /// The same share, with the port this user's on `mine` only, and `lookup` to ask again.
+    pub fn holder(self, mine: Mine, lookup: Lookup) -> Target {
+        self.mine.store(u8::from(mine.v4) | u8::from(mine.v6) << 1, Ordering::SeqCst);
+        *self.looked.lock().unwrap() = Some(tokio::time::Instant::now());
+        Target { lookup, ..self }
+    }
+
+    /// Something said the dev server may be gone (Rex, a pane closing): whose the port is
+    /// is looked up before the next connection to it.
+    pub fn forget_holder(&self) {
+        self.mine.store(0, Ordering::SeqCst);
+        *self.looked.lock().unwrap() = None;
+    }
+
+    /// Looks up again on which addresses the port is this user's, unless that was done a
+    /// moment ago. True when it was looked up.
+    async fn look_again(&self) -> bool {
+        {
+            let mut looked = self.looked.lock().unwrap();
+            let now = tokio::time::Instant::now();
+            if looked.is_some_and(|at| now.duration_since(at) < LOOKUP_EVERY) {
+                return false;
+            }
+            *looked = Some(now);
+        }
+        let mine = (self.lookup)().await;
+        self.mine.store(u8::from(mine.v4) | u8::from(mine.v6) << 1, Ordering::SeqCst);
+        true
     }
 
     /// True for `host:port` as the dev server names itself.
@@ -107,14 +163,37 @@ impl Target {
         self.shared.iter().any(|s| s == authority)
     }
 
-    /// The dev server, on the loopback: `127.0.0.1` and `::1`, the one that answered last
-    /// first. None when nothing listens on the port.
+    /// The dev server, on the loopback. Only an address where the port was this user's
+    /// when it was last looked up is connected to. When that was more than `LOOKUP_FRESH`
+    /// ago, or nothing answers there (the server stopped, or the lookup is to be done
+    /// again), whose the port is now is looked up first: a server that is back is reached, and a port that someone else's process has
+    /// taken meanwhile is not. None when nothing of this user's listens on the port.
     pub async fn dial(&self) -> Option<TcpStream> {
+        let stale = self.looked.lock().unwrap().is_some_and(|at| at.elapsed() >= LOOKUP_FRESH);
+        if stale {
+            self.look_again().await;
+        }
+        if let Some(stream) = self.connect().await {
+            return Some(stream);
+        }
+        // Nothing answered: from here on nothing is connected to until a lookup has said
+        // again whose the port is. (Lookups are spaced, so that may be a later request.)
+        self.mine.store(0, Ordering::SeqCst);
+        if !self.look_again().await {
+            return None;
+        }
+        self.connect().await
+    }
+
+    /// Connects to the port on the addresses it is this user's on, the one that answered
+    /// last first.
+    pub async fn connect(&self) -> Option<TcpStream> {
         let (v4, v6) = (IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST));
         let v6_first = self.v6_first.load(Ordering::Relaxed);
+        let mine = self.mine.load(Ordering::SeqCst);
         for ip in if v6_first { [v6, v4] } else { [v4, v6] } {
             let addr = SocketAddr::new(ip, self.port);
-            if addr == self.listen {
+            if addr == self.listen || mine & if ip.is_ipv6() { 2 } else { 1 } == 0 {
                 continue;
             }
             if let Ok(Ok(stream)) = tokio::time::timeout(DIAL, TcpStream::connect(addr)).await {
@@ -131,6 +210,9 @@ impl Target {
 pub trait Watch: Send + Sync {
     fn source_gone(&self);
     fn source_back(&self);
+    /// Whether the phone the share is for is still registered. Asked before each request
+    /// is passed on and while a connection is quiet.
+    fn registered(&self) -> bool;
 }
 
 // MARK: Bodies
@@ -614,7 +696,7 @@ pub async fn serve(stream: TcpStream, t: &Target, watch: &dyn Watch) {
     let between = Between { asked: Mutex::new(VecDeque::new()), answering: AtomicBool::new(false), answered: AtomicBool::new(false) };
     let (verdict, mut verdicts) = mpsc::unbounded_channel::<bool>();
     let malformed = {
-        let up = up(&mut phone, &mut to_server, t, &between, &mut verdicts);
+        let up = up(&mut phone, &mut to_server, t, &between, &mut verdicts, watch);
         let down = down(Reader::new(from_server), &mut to_phone, t, &between, verdict);
         tokio::pin!(up, down);
         tokio::select! {
@@ -638,7 +720,7 @@ pub async fn serve(stream: TcpStream, t: &Target, watch: &dyn Watch) {
 }
 
 /// The browser's side: each request, its head rewritten, to the dev server.
-async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, server: &mut W, t: &Target, between: &Between, verdicts: &mut mpsc::UnboundedReceiver<bool>) -> Up {
+async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, server: &mut W, t: &Target, between: &Between, verdicts: &mut mpsc::UnboundedReceiver<bool>, watch: &dyn Watch) -> Up {
     loop {
         let len = loop {
             match tokio::time::timeout(HEAD_WAIT, phone.head()).await {
@@ -651,13 +733,17 @@ async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, 
                 // Quiet for a while. A request that waits for its answer, or an answer
                 // that is still coming (an event stream), keeps the connection; one with
                 // nothing going on is closed, as a server closes an idle connection.
+                // A phone that is no longer registered has no connection, in use or not.
                 Err(_) => {
-                    if between.asked.lock().unwrap().is_empty() && !between.answering.load(Ordering::SeqCst) {
+                    if !watch.registered() || (between.asked.lock().unwrap().is_empty() && !between.answering.load(Ordering::SeqCst)) {
                         return Up::Broken;
                     }
                 }
             }
         };
+        if !watch.registered() {
+            return Up::Broken;
+        }
         let Ok((head, asked, body)) = request(&phone.buf[..len], t) else { return Up::Broken };
         phone.buf.drain(..len);
         let upgrade = asked.upgrade;
@@ -677,7 +763,19 @@ async fn up<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(phone: &mut Reader<R>, 
             // The browser sends nothing more until it knows which protocol the rest is.
             match verdicts.recv().await {
                 Some(true) => {
-                    let done = phone.pass_all(server).await.is_ok();
+                    let done = {
+                        let passing = phone.pass_all(server);
+                        tokio::pin!(passing);
+                        loop {
+                            tokio::select! {
+                                passed = &mut passing => break passed.is_ok(),
+                                // The socket stays as long as its phone is registered.
+                                _ = tokio::time::sleep(HEAD_WAIT) => if !watch.registered() {
+                                    return Up::Broken;
+                                }
+                            }
+                        }
+                    };
                     let _ = server.shutdown().await;
                     return if done { Up::Closed } else { Up::Broken };
                 }

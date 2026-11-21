@@ -29,12 +29,41 @@ const WAIT: Duration = Duration::from_secs(5);
 /// How much it may print.
 const PRINT_LIMIT: usize = 64 * 1024;
 
-/// True when the process that listens on TCP `port` is one of the user Beacon runs as. The
-/// system's tool names only this user's processes, and the one it names is read again to be
-/// sure of whose it is.
-pub async fn listens_as_me(port: u16) -> bool {
+/// Which of the two loopback addresses a port is listened on by a process of the user
+/// Beacon runs as: `127.0.0.1` (an IPv4 socket) and `::1` (an IPv6 one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mine {
+    pub v4: bool,
+    pub v6: bool,
+}
+
+impl Mine {
+    pub const BOTH: Mine = Mine { v4: true, v6: true };
+    pub const NONE: Mine = Mine { v4: false, v6: false };
+
+    pub fn any(self) -> bool {
+        self.v4 || self.v6
+    }
+}
+
+/// Where TCP `port` is listened on by this user, as the system's tool lists the listening
+/// sockets (`platform::listener_sockets`). The tool names only this user's processes, and
+/// each one it names is read again to be sure of whose it is. A socket of another user on
+/// one address leaves that address out, whatever is on the other.
+pub async fn mine(port: u16) -> Mine {
     let me = crate::platform::user_id();
-    listener(port).await.and_then(crate::platform::process).is_some_and(|p| p.uid == me)
+    let (tool, args) = crate::platform::listener_query(port);
+    let Some(mut command) = crate::tools::async_command(tool) else { return Mine::NONE };
+    command.args(args);
+    let Some(printed) = crate::tools::printed(command, PRINT_LIMIT, WAIT).await else { return Mine::NONE };
+    let mut found = Mine::NONE;
+    for (pid, v6) in crate::platform::listener_sockets(&String::from_utf8_lossy(&printed)) {
+        if crate::platform::process(pid).is_some_and(|p| p.uid == me) {
+            found.v4 |= !v6;
+            found.v6 |= v6;
+        }
+    }
+    found
 }
 
 /// One process of the chain.
@@ -326,10 +355,14 @@ mod tests {
             assert_eq!(found, Some(std::process::id()));
         }
         if found.is_some() {
-            assert!(listens_as_me(port).await);
+            // On 127.0.0.1 alone: an IPv4 socket, and nothing on ::1.
+            assert_eq!(mine(port).await, Mine { v4: true, v6: false });
+            if let Ok(six) = tokio::net::TcpListener::bind(("::1", 0)).await {
+                assert_eq!(mine(six.local_addr().unwrap().port()).await, Mine { v4: false, v6: true });
+            }
         }
         drop(l);
         assert_eq!(listener(port).await, None);
-        assert!(!listens_as_me(port).await);
+        assert_eq!(mine(port).await, Mine::NONE);
     }
 }
