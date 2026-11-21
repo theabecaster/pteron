@@ -260,7 +260,7 @@ struct ConnectionProblemTests {
         #expect(OfflineCopy.tapHint(down: false, otherComputer: false) == nil)
     }
 
-    @Test func aDropShowsNothingForFiveSeconds() {
+    @MainActor @Test func aDropShowsNothingForFiveSeconds() {
         #expect(ServerConnection.phaseGrace == 5)
     }
 
