@@ -100,39 +100,11 @@ struct PortsList: View {
     var body: some View {
         let ids = server.portRowIDs
         let problem = server.phase.problem
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(theme.chrome.secondary)
-                    if let problem {
-                        Text(OfflineCopy.short(problem.kind))
-                            .font(.caption2)
-                            .foregroundStyle(theme.chrome.tertiary)
-                    }
-                }
-                .lineLimit(1)
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
-                ForEach(ids, id: \.self) { id in
-                    PortRowView(server: server, rowID: id, dim: problem != nil, theme: theme, close: close)
-                }
-                if ids.isEmpty {
-                    Text("Nothing listens on a port now.")
-                        .font(.subheadline)
-                        .foregroundStyle(theme.chrome.tertiary)
-                        .padding(.horizontal, 16)
-                        .frame(minHeight: 44)
-                }
+        PortsListFrame(title: title, problem: problem.map { OfflineCopy.short($0.kind) }, isEmpty: ids.isEmpty, theme: theme) {
+            ForEach(ids, id: \.self) { id in
+                PortRowView(server: server, rowID: id, dim: problem != nil, theme: theme, close: close)
             }
-            .padding(.bottom, 6)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .foregroundStyle(theme.fg)
     }
 
     #if DEBUG
@@ -147,6 +119,50 @@ struct PortsList: View {
     #endif
 }
 
+/// What a ports list draws around its rows: its title, why a down machine's ports are dimmed,
+/// and the line for a list with none. `PortsList` fills it; tests draw it with rows of their own.
+struct PortsListFrame<Rows: View>: View {
+    let title: String
+    var problem: String?
+    let isEmpty: Bool
+    let theme: TermTheme
+    @ViewBuilder let rows: () -> Rows
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(theme.chrome.secondary)
+                    if let problem {
+                        Text(problem)
+                            .font(.caption2)
+                            .foregroundStyle(theme.chrome.tertiary)
+                    }
+                }
+                .lineLimit(1)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
+                rows()
+                if isEmpty {
+                    Text("Nothing listens on a port now.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.chrome.tertiary)
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 44)
+                }
+            }
+            .padding(.bottom, 6)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .foregroundStyle(theme.fg)
+    }
+}
+
 /// A machine's ports in a sheet, for tab mode, where there is no sidebar header to open them
 /// from: the session popover's machine heading does (`SessionPopover.Action.ports`). The same
 /// list and rows; a page or a pane comes up once the sheet has gone. Shown by
@@ -159,7 +175,7 @@ struct PortsSheet: View {
     var body: some View {
         let theme = prefs.theme
         let model = model
-        NavigationStack {
+        PortsSheetFrame(theme: theme, done: { model.portsShown = nil }) {
             PortsList(server: server, title: server.config.name, theme: theme) { action in
                 model.portsShown = nil
                 Task { @MainActor in
@@ -167,14 +183,27 @@ struct PortsSheet: View {
                     action()
                 }
             }
-            .navigationTitle("Ports")
-            .navigationBarTitleDisplayMode(.inline)
-            .settingsBar(theme)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { model.portsShown = nil } }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(theme.chrome.sidebar)
+        }
+    }
+}
+
+/// The sheet around a ports list: its title, Done, and the theme. `PortsSheet` fills it.
+struct PortsSheetFrame<List: View>: View {
+    let theme: TermTheme
+    let done: () -> Void
+    @ViewBuilder let list: () -> List
+
+    var body: some View {
+        NavigationStack {
+            list()
+                .navigationTitle("Ports")
+                .navigationBarTitleDisplayMode(.inline)
+                .settingsBar(theme)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(theme.chrome.sidebar)
         }
         .presentationDetents([.medium, .large])
         .tint(theme.accent)
