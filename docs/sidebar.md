@@ -128,6 +128,11 @@ to the list.
   up when the pane is already on screen, and closes first when the pane has to be shown.
   While it runs the address line adds "Restarting…" and the row keeps its place although its
   port is away; if it fails, "Couldn't restart" with Show Pane under the row for 30 s.
+- At the accessibility text sizes a row's address and what it says of a Stop or a Restart
+  each get a line, and the Restart question's two buttons stand one over the other, so
+  nothing is cut and no button's word breaks. `PortsShotsTests` draws the list in every state
+  a row can be in (`PortRowFace`, `PortsListFrame`, `PortsSheetFrame`), Light and Dark, to
+  the test host's `tmp/ports-shots`.
 - Rows follow the sidebar's order of their panes, then the port number.
 - A down machine keeps its last known ports: the button and the rows are dimmed, the popover
   says why under its title, and a tap says the machine is offline.
