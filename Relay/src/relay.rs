@@ -221,6 +221,8 @@ pub struct Options {
     pub status_path: PathBuf,
     /// The gateways pushes may go through.
     pub gateways: Gateways,
+    /// False: the port share is off on this computer (`port_share: false` in config.json).
+    pub port_share: bool,
     /// The helper's identity key, or None when it could not be read or made.
     pub key: Option<HelperKey>,
     /// The state folder, where `install` leaves a setup code.
@@ -297,6 +299,9 @@ pub struct Relay {
     stopping: AtomicBool,
     /// The ports a phone's browsers reach over the tailnet (share.rs).
     shares: Arc<Shares>,
+    /// Whether the port share is on. Off: `port_share` answers `not_available`,
+    /// `share_possible` is false, and no share is open (`set_sharing`).
+    sharing: AtomicBool,
     /// Desk presence (desk.rs, hold.rs, presence.rs).
     desk: Mutex<Desk>,
     holds: Mutex<Holds>,
@@ -360,6 +365,7 @@ impl Relay {
             due_task: Mutex::new(None),
             status_path: o.status_path,
             stopping: AtomicBool::new(false),
+            sharing: AtomicBool::new(o.port_share),
             #[cfg(not(test))]
             shares: Shares::new(share::Net::tailnet()),
             // No test asks the real Tailscale client: loopback stands in for the tailnet.
@@ -956,7 +962,8 @@ impl Relay {
                 status["devices"] = json!(all);
                 status["other_phones"] = json!(others);
                 status["last_push_at"] = json!(self.last_push_at(requester, identity));
-                status["share_possible"] = json!(self.shares.possible().await);
+                // Off: no, and the Tailscale client is not asked.
+                status["share_possible"] = json!(self.sharing.load(Ordering::SeqCst) && self.shares.possible().await);
                 Ok(status)
             }
             "send_test" => self.send_test(s, requester, identity).await,
@@ -1218,12 +1225,26 @@ impl Relay {
     /// `port_share`: lets the requester's own registered phone reach one port of this
     /// computer's loopback from its browsers, over the tailnet (share.rs). The answer is the
     /// address to open. Asking again for a port that is shared gives the same address.
+    /// Turns the port share on or off. Turned off, every open share ends with its
+    /// connections and its listener, and none is made until it is on again.
+    #[cfg_attr(not(test), allow(dead_code))] // the config is read once, at the start
+    fn set_sharing(&self, on: bool) {
+        self.sharing.store(on, Ordering::SeqCst);
+        if !on {
+            self.shares.close_all();
+        }
+    }
+
     async fn share_port(&self, s: &Server, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
         let who = requester.who();
         let Some(device) = self.own_device(requester, identity) else {
             info!("port_share from {who}: refused, no phone of theirs is registered here under that id");
             return Err(error("not_registered", concat!("Only an iPhone registered with this ", crate::beacon_name!(), " can open a page this way.")));
         };
+        if !self.sharing.load(Ordering::SeqCst) {
+            info!("port_share from {who}: it is turned off on this computer");
+            return Err(error("not_available", "Opening pages in this iPhone's browser is turned off on this computer."));
+        }
         let bad = |m: &str| Err(error("bad_request", m));
         let Some(port) = args.int("port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0) else { return bad("port must be a port number") };
         let Some(phone) = args.str("phone_ip").and_then(|a| a.parse::<std::net::IpAddr>().ok()).map(|ip| ip.to_canonical()) else { return bad("phone_ip must be the iPhone's Tailscale address") };
@@ -2011,32 +2032,38 @@ mod tests {
         relay_sensing(watch, dir, dry_run, sender, gateways, Arc::new(TestSense::default()))
     }
 
+    /// The options of `relay_sensing`.
+    fn options(dir: &std::path::Path, dry_run: bool, gateways: &[&str], sense: Arc<dyn Sense>) -> Options {
+        let config: Vec<String> = gateways.iter().map(|g| g.to_string()).collect();
+        Options {
+            dry_run,
+            label: None,
+            debounce: 30.0,
+            burst: 10.0,
+            per_minute: 10.0,
+            status_path: dir.join("status.json"),
+            gateways: Gateways::new(&config).0,
+            port_share: true,
+            key: Some(HelperKey::load_or_create(&dir.join("identity.key")).unwrap()),
+            state_dir: dir.to_path_buf(),
+            os: OS.into(),
+            name: None,
+            sense,
+            away_after: crate::desk::AWAY_AFTER,
+            sessions: vec![],
+            hold_cap: None,
+        }
+    }
+
     /// `relay_watching` on a computer the test controls.
     fn relay_sensing(watch: Vec<Option<Endpoint>>, dir: &std::path::Path, dry_run: bool, sender: Sender, gateways: &[&str], sense: Arc<dyn Sense>) -> Arc<Relay> {
         let env = Env { dry_run, debug_build: true, keys: Ok(vec![[7u8; 32]]), place: Err("test".into()), service: false, writable: false };
-        let config: Vec<String> = gateways.iter().map(|g| g.to_string()).collect();
         Relay::new(
             watch,
             DeviceStore::open(dir.join("devices.json")),
             sender,
             Updater::with_env(env, false, dir),
-            Options {
-                dry_run,
-                label: None,
-                debounce: 30.0,
-                burst: 10.0,
-                per_minute: 10.0,
-                status_path: dir.join("status.json"),
-                gateways: Gateways::new(&config).0,
-                key: Some(HelperKey::load_or_create(&dir.join("identity.key")).unwrap()),
-                state_dir: dir.to_path_buf(),
-                os: OS.into(),
-                name: None,
-                sense,
-                away_after: crate::desk::AWAY_AFTER,
-                sessions: vec![],
-                hold_cap: None,
-            },
+            options(dir, dry_run, gateways, sense),
         )
     }
 
@@ -2549,6 +2576,7 @@ mod tests {
                 per_minute: 10.0,
                 status_path: dir.join("status.json"),
                 gateways: Gateways::default(),
+                port_share: true,
                 key: None,
                 state_dir: dir.clone(),
                 os: OS.into(),
@@ -4563,6 +4591,45 @@ mod tests {
         r.stop();
         assert_eq!(r.shares.count(), 0);
         assert!(closed(format!("127.0.0.1:{}", opened["port"]).parse().unwrap()).await);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_port_share_turned_off_closes_what_is_open_and_makes_nothing() {
+        let dir = temp("share-off");
+        let r = relay(&dir, false);
+        let s = named_server("https://rex.example.ts.net");
+        let dev = Dev::start().await;
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let ask = json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"});
+        let opened = r.act(&s, "port_share", &ask, &alex).await.0.unwrap();
+        let at: std::net::SocketAddr = format!("127.0.0.1:{}", opened["port"]).parse().unwrap();
+        let mut open = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert_eq!((r.shares.count(), status(&r, &alex).await["share_possible"].clone()), (1, json!(true)));
+        // Off: the share, its connection and its listener go, and both answers say no,
+        // at once (what `share_possible` remembered of Tailscale does not hide it).
+        r.set_sharing(false);
+        assert_eq!(r.shares.count(), 0);
+        assert!(closed(at).await);
+        use tokio::io::AsyncReadExt;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), open.read(&mut [0u8; 16])).await.unwrap().unwrap_or(0), 0, "the open connection ended");
+        assert_eq!(code(&r, &s, "port_share", &alex, &ask).await, "not_available");
+        assert_eq!((r.shares.count(), status(&r, &alex).await["share_possible"].clone()), (0, json!(false)));
+        // Who holds a port is still answered: it opens nothing.
+        assert!(r.act(&s, "port_owner", &json!({"pid": std::process::id()}), &alex).await.0.is_ok() || code(&r, &s, "port_owner", &alex, &json!({"pid": std::process::id()})).await == "not_available");
+        // On again, without a restart.
+        r.set_sharing(true);
+        assert_eq!(status(&r, &alex).await["share_possible"], true);
+        let again = r.act(&s, "port_share", &ask, &alex).await.0.unwrap();
+        assert_eq!(r.shares.count(), 1);
+        assert!(again["port"].as_u64().is_some());
+        r.stop();
+        // A Beacon whose config turns it off starts with it off.
+        let off = Relay::new(vec![], DeviceStore::open(dir.join("devices-off.json")), Sender::Gateway, Updater::with_env(Env { dry_run: false, debug_build: true, keys: Ok(vec![[7u8; 32]]), place: Err("test".into()), service: false, writable: false }, false, &dir), Options { port_share: false, ..options(&dir, false, &[GATEWAY], Arc::new(TestSense::default())) });
+        off.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        assert_eq!(code(&off, &s, "port_share", &alex, &ask).await, "not_available");
+        assert_eq!((off.shares.count(), status(&off, &alex).await["share_possible"].clone()), (0, json!(false)));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

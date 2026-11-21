@@ -173,6 +173,10 @@ When it closes, by itself:
 - when the phone turns notifications from this computer off or is removed with
   `rex-duo-helper forget`, and when Beacon stops or restarts.
 
+To turn it off on a computer, put `"port_share": false` into Beacon's `config.json`
+(Relay/README.md has its location) and start Beacon again. Then nothing is shared, nothing
+listens, and the app does not offer "Open in Browser" for that computer.
+
 Beacon also answers the app's question of which processes are behind a port (their ids,
 names, process groups, the arguments they were started with and their folders, for your own
 processes only), so that Stop and Restart in the app's Ports list work for a server started

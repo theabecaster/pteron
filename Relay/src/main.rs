@@ -437,6 +437,7 @@ async fn run(o: RunOptions) -> i32 {
                 o.state_dir.join("status.json")
             },
             gateways,
+            port_share: cfg.port_share.unwrap_or(true),
             key,
             state_dir: o.state_dir.clone(),
             os: host::os(),

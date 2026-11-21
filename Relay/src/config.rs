@@ -18,6 +18,9 @@ pub struct Config {
     pub gateways: Option<Vec<String>>,
     /// `false` turns the update timer off; `rex-duo-helper update` and the app still update.
     pub auto_update: Option<bool>,
+    /// `false` turns the port share off on this computer (`port_share`, and `share_possible`
+    /// in `helper_status`). Read when Beacon starts.
+    pub port_share: Option<bool>,
     pub debounce_seconds: Option<f64>,
     pub rate_limit_burst: Option<f64>,
     pub rate_limit_per_minute: Option<f64>,
@@ -108,6 +111,8 @@ mod tests {
         assert_eq!(c.gateways.as_deref(), Some(&["https://push.example.com".to_string()][..]));
         assert_eq!(c.debounce_seconds, Some(5.0));
         assert_eq!(serde_json::from_str::<Config>("{}").unwrap().auto_update, None);
+        assert_eq!(serde_json::from_str::<Config>(r#"{"port_share": false}"#).unwrap().port_share, Some(false));
+        assert_eq!((c.port_share, serde_json::from_str::<Config>("{}").unwrap().port_share), (None, None));
     }
 
     #[test]

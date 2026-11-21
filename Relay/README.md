@@ -518,6 +518,7 @@ Every field is optional.
   "label": "rex-push-relay",
   "gateways": ["https://push.example.com"],
   "auto_update": true,
+  "port_share": true,
   "debounce_seconds": 30,
   "rate_limit_burst": 10,
   "rate_limit_per_minute": 10
@@ -529,7 +530,8 @@ watches the server it finds and the ones the list names, each once. `install --s
 address to the list and never a second time. Where there was no list it writes `["discover",
 "<addr>"]`, so discovery stays on, and it writes nothing when the address is Rex's default
 socket, which discovery finds anyway. `auto_update: false` turns the update timer off
-(Updates).
+(Updates). `port_share: false` turns the port share off on this computer (step 8, Turning it
+off).
 
 `gateways` adds push gateways to the allowlist. A phone names its gateway when it registers,
 and Beacon sends that phone's secret there, so it only takes a gateway it already knows:
@@ -1079,6 +1081,17 @@ The page's script asks for its own address again every 5 s (`cache: "no-store"`)
 only when the answer no longer carries `X-Pteron-Waiting`. A dev server can't keep the page
 there or fake it: the share takes that header out of everything it passes on. The next
 request after the port listens again is piped as before.
+
+**Turning it off.** `"port_share": false` in `config.json` turns the port share off on one
+computer. Like every field there it is read when Beacon starts, so it takes effect at
+Beacon's next start (restart the service, or log out and in); stopping Beacon closes every
+share, its connections and its listener. While it is off `port_share` answers
+`not_available`, `share_possible` is false without the Tailscale command being run, and
+nothing listens. `port_owner` stays on: it opens nothing and only answers a registered
+phone. Take the line out, or set it to `true`, and start Beacon again to turn it back on.
+There is no switch that reaches every Beacon from outside: the signed release list carries
+versions and files only, and a Beacon reads no setting from it. To take the port share away
+everywhere, publish a release without it.
 
 ### 9. Who holds a port, and how it was started (`port_owner`, from 0.7.0)
 
