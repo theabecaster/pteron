@@ -59,7 +59,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   watch), `GlanceActions` (answers the watch's Enter and Interrupt: status read, guard, one
   write), `NotificationActions` (the same two on a question's notification, through
   `GlanceActions`), `ScenePhases` (what each scene phase asks; servers
-  start at the first one that shows the app).
+  start at the first one that shows the app), `CloseNext` (what shows when the tab on screen
+  closes; docs/architecture.md).
 - `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `TerminalHostPool` keeps the panes on screen and parks the ones that left it last (docs/terminal.md, Parking); `Ghostty/` is the engine,

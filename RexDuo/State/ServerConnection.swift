@@ -160,8 +160,12 @@ final class ServerConnection: Identifiable {
         didSet {
             agentsMayHaveChanged()
             if !pendingOrder.tabs.isEmpty { releaseTabHolds() }
+            viewsChanged?(self, oldValue)
         }
     }
+    /// Told of every change to `views`, with the views before it, in the same turn: the app moves
+    /// off a tab that closed before anything draws the empty state (`CloseNext`).
+    @ObservationIgnored var viewsChanged: (@MainActor (ServerConnection, [String: SessionView]) -> Void)?
     /// A sidebar drag's new order, shown until the server's lists agree (`PendingOrder`).
     var pendingOrder = PendingOrder()
     /// Each pane's agent and program, for its name in menus: a title change writes nothing here.
@@ -944,8 +948,10 @@ final class ServerConnection: Identifiable {
         await act("close the pane", session: sid) { try await self.control.call("block.close", ["session_id": sid, "block_id": bid]) }
     }
 
-    func closeWindow(_ sid: String, _ wid: String) async {
-        await act("close the tab", session: sid) { try await self.control.call("session.close_window", ["session_id": sid, "window_id": wid]) }
+    /// True when the server closed it.
+    @discardableResult
+    func closeWindow(_ sid: String, _ wid: String) async -> Bool {
+        await act("close the tab", session: sid) { try await self.control.call("session.close_window", ["session_id": sid, "window_id": wid]) } != nil
     }
 
     func destroySession(_ sid: String) async {

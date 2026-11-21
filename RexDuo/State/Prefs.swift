@@ -192,6 +192,11 @@ final class Prefs {
     var lastSelection: Selection? {
         didSet { d.set(lastSelection.flatMap { try? JSONEncoder().encode($0) }, forKey: "lastSelection") }
     }
+    /// The tabs viewed lately, newest first (`TabHistory`): where the app goes when the tab on
+    /// screen closes. Nothing draws it, so a change re-renders nothing.
+    @ObservationIgnored var recentTabs: [Selection] {
+        didSet { d.set(try? JSONEncoder().encode(recentTabs), forKey: "recentTabs") }
+    }
     /// "Show Hidden Files" in the file browser. Not saved: each run starts with them hidden.
     @ObservationIgnored var showHiddenFiles = false
     /// The paths last inserted with Insert Path, newest first, per server and host
@@ -294,6 +299,7 @@ final class Prefs {
         pathRecents = d.dictionary(forKey: "pathRecents") as? [String: [String]] ?? [:]
         sidebarMode = d.string(forKey: "sidebarMode").flatMap(SidebarMode.init(rawValue:)) ?? .sessions
         lastSelection = d.data(forKey: "lastSelection").flatMap { try? JSONDecoder().decode(Selection.self, from: $0) }
+        recentTabs = d.data(forKey: "recentTabs").flatMap { try? JSONDecoder().decode([Selection].self, from: $0) } ?? []
         goToRecents = d.data(forKey: "goToRecents").flatMap { try? JSONDecoder().decode([GoToRecent].self, from: $0) } ?? []
         systemScheme = UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
         // Only the launch argument is left: `migrate` cleared the saved setting.

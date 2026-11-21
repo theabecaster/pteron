@@ -87,6 +87,11 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   drawn. An unknown `kind` is drawn as floating, an unknown `state` as normal, a null
   `layer_id` gets an ID from the layer's first block, and a layer without four numbers in
   `bounds` isn't drawn.
+- A session outlives its last tab: after the last pane closes (`block_closed`, `window_closed`) it
+  stays listed with an empty `session.view` (checked on preview.21, revision 18, with
+  `exit-empty: false`). `session.close_window` on the active tab makes the next tab active, else
+  the previous one. What the app shows then: [architecture.md](architecture.md), When the tab on
+  screen closes.
 - Other: `block.close`, `hosts.list`, `block_creator.list`, `data.connect`, `client.keymap`,
   `client.action`, `client.key`, `client.reply`.
 - Ports: `session.new_block` (dial tunnels), `session.list_blocks` (the sweep),

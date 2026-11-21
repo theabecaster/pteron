@@ -399,13 +399,13 @@ struct WindowScreen: View {
         closeTab()
     }
 
-    /// Closes this tab and shows its neighbor in the session (next, else previous), like Safari.
+    /// Closes this tab. The model then shows the tab viewed before it, else its neighbour, as it
+    /// does whenever the tab on screen closes (`CloseNext`).
     private func closeTab() {
-        let next = TabNav.neighbor(server, sessionID, windowID, by: 1) ?? TabNav.neighbor(server, sessionID, windowID, by: -1)
-        let server = server, sid = sessionID, wid = windowID, open = onOpen
+        let server = server, sid = sessionID, wid = windowID, model = model
         Task {
-            await server.closeWindow(sid, wid)
-            if let next, server.views[sid]?.window(next.windowID) != nil { open(next) }
+            guard await server.closeWindow(sid, wid) else { return }
+            model.closedTab(Selection(serverID: server.id, sessionID: sid, windowID: wid))
         }
     }
 

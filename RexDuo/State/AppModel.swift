@@ -272,15 +272,27 @@ final class AppModel {
     var lastCommand: CommandRequest?
     func perform(_ command: RexCommand) { lastCommand = CommandRequest(command: command) }
 
-    var servers: [ServerConnection] = []
+    var servers: [ServerConnection] = [] {
+        didSet {
+            for s in servers where s.viewsChanged == nil {
+                s.viewsChanged = { [weak self] s, old in self?.viewsChanged(on: s, old: old) }
+            }
+        }
+    }
     /// The tab on screen. Remembered, so the next launch opens it again; not in a test launch
     /// (`-autoOpen`), whose throwaway session must not replace the tab the owner had open.
     var selection: Selection? {
         didSet {
-            guard let selection, selection != oldValue, !Self.isTestLaunch else { return }
+            guard let selection, selection != oldValue else { return }
+            recentTabs = TabHistory.visiting(selection, recentTabs)
+            guard !Self.isTestLaunch else { return }
             prefs.lastSelection = selection
+            prefs.recentTabs = recentTabs
         }
     }
+    /// The tabs viewed, newest first, for what to show when the one on screen closes. Saved
+    /// across launches, except in a test launch, which starts empty and keeps only what it opened.
+    @ObservationIgnored private(set) var recentTabs: [Selection] = []
     private static let isTestLaunch = UserDefaults.standard.string(forKey: "autoOpen") != nil
     /// The pane shown when only one pane fits (compact width), per window.
     var focusedPane: [String: String] = [:]
@@ -376,6 +388,7 @@ final class AppModel {
     /// snapshot's writer; without one, a writer that is on only in the app's own launches.
     init(prefs: Prefs, connect: Bool = true, glance: GlanceWriter? = nil) {
         self.prefs = prefs
+        recentTabs = Self.isTestLaunch ? [] : prefs.recentTabs
         let mode = connect ? GlanceWriter.Mode.current() : .off
         // The App Group's container is looked up at the writer's first read or write, off the
         // main thread, not here on the launch path.
@@ -645,6 +658,44 @@ final class AppModel {
         selection = Selection(serverID: server.id, sessionID: session, windowID: window)
         if let block { focusedPane[window] = block }
         Task { await server.focusWindow(session, window) }
+    }
+
+    /// A server's views changed. When that took away the tab on screen (its last pane closed, it
+    /// was closed, its session ended), shows the next one `CloseNext` picks, in this same turn,
+    /// so the empty state never draws in between. Changes elsewhere move nothing.
+    private func viewsChanged(on server: ServerConnection, old: [String: SessionView]) {
+        guard let sel = selection, sel.serverID == server.id else { return }
+        let now = server.views[sel.sessionID]
+        guard now?.window(sel.windowID) == nil, let gone = old[sel.sessionID]?.window(sel.windowID) else { return }
+        // A sync that couldn't read a session that is still listed: its view comes back.
+        if now == nil, server.sessions.contains(where: { $0.id == sel.sessionID }) { return }
+        let moved = gone.allBlocks.lazy.compactMap { now?.windowContaining(block: $0.id)?.id }.first
+        moveOff(sel, on: server, order: old[sel.sessionID]?.windows.map(\.id) ?? [], movedTo: moved)
+    }
+
+    /// The phone's own Close Tab on the tab on screen: once the server has closed it, the next tab
+    /// shows without waiting for the session's view to be read again.
+    func closedTab(_ sel: Selection) {
+        guard selection == sel, let server = server(sel.serverID),
+              let order = server.views[sel.sessionID]?.windows.map(\.id), order.contains(sel.windowID) else { return }
+        moveOff(sel, on: server, order: order, movedTo: nil)
+    }
+
+    private func moveOff(_ sel: Selection, on server: ServerConnection, order: [String], movedTo: String?) {
+        let rule = CloseNext(
+            closed: sel, order: order, movedTo: movedTo,
+            machines: servers.map { s in
+                CloseNext.Machine(id: s.id, online: s === server || s.phase == .online, sessions: s.sessions.compactMap { e in
+                    s.views[e.id].map { v in
+                        let tabs = v.windows.map(\.id)
+                        return CloseNext.Session(id: e.id, windows: s === server && e.id == sel.sessionID ? tabs.filter { $0 != sel.windowID } : tabs,
+                                                 active: v.activeWindowID)
+                    }
+                })
+            },
+            recent: recentTabs, anySession: !Self.isTestLaunch)
+        guard let next = rule.next(), let s = self.server(next.serverID) else { return }
+        select(s, session: next.sessionID, window: next.windowID)
     }
 
     /// Back in the foreground: reconnect where needed and resync every server with its real state.

@@ -55,6 +55,38 @@ of the app builds the extension, and `RexDuoWatch`, which embeds `RexDuoWatchWid
 to draw them), and `RexDuoWatchTests` (the watch app's tests, in the scheme `RexDuoWatch`, on a
 watchOS simulator).
 
+## When the tab on screen closes
+
+Rex keeps a session whose last pane closed: it stays listed with no tabs (`session.view` has no
+`windows` and no `active_window_id`) until someone kills it, whatever the server's `exit-empty`
+says (that one is about the server stopping). The app doesn't kill it either; nothing shows that
+Rex.app does. It moves the screen instead, by one rule (`CloseNext`, `State/CloseNext.swift`):
+
+1. A pane of the closed tab is now in another tab of the session (Move Pane to Tab took the
+   last one): that tab.
+2. The session still has tabs: the one viewed most recently, else the closed tab's next
+   neighbour, then the previous one (Rex makes the same neighbour active after a close).
+3. The session is empty or gone: the session viewed most recently on the same machine, then on
+   another machine that is online, each at the tab viewed last there (else its active tab).
+4. None viewed: the first session with tabs on the same machine, then on another online machine.
+   Not in a test launch (`-autoOpen`), which only goes back where it was in that run.
+5. Nothing left: the empty state.
+
+- **Only the tab on screen.** `ServerConnection` hands every change of `views`, with the views
+  before it, to `AppModel` in the same turn; only a change that took the selected tab away moves
+  the screen. A tab or session closing elsewhere moves nothing, and so does a sync that couldn't
+  read a session it still lists.
+- **No empty state in between.** The move happens in the turn that changed the views, before
+  anything draws. The phone's own Close Tab moves as soon as the server answers
+  (`AppModel.closedTab`), without waiting for the view.
+- **Moving is selecting.** The next tab is shown as a tap would (`select`, which sends
+  `session.focus_window`); nothing is opened, resized or closed for it beyond what showing a tab
+  does (fit mode takes its pane).
+- **History.** `AppModel.recentTabs` (`TabHistory`): the last 32 tabs viewed, newest first, each
+  once, saved in `Prefs.recentTabs` across launches; a test launch starts empty and saves nothing.
+  Rex.app keeps the same kind of list (Go to Recent Session: "Shows the session you were in
+  before this one").
+
 ## Launch
 
 A launch opens no connection until the app is on its way to the screen.

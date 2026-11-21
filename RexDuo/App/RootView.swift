@@ -517,6 +517,9 @@ struct EmptyState: View {
     var strip: StripRoutes?
 
     var body: some View {
+        #if DEBUG
+        let _ = RenderCount.bump(.emptyStates)
+        #endif
         if prefs.navigation == .tabs {
             // The strip stays above whatever fills the tab's place, so every session and
             // machine is a tap away with no tab on screen, also while this machine is down.
