@@ -39,6 +39,11 @@ export const scenarios = {
 // collection off and on. Best of 30 runs each; measured 1.02 and 1.01.
 export const filter = { ratioToBefore: 1.15 };
 
+// A title and a waiting badge during a flood of progress reports (scripts/bench/flood.sh, an
+// app test in the simulator): the longest either may take to show, in seconds. The meta flush's
+// pace is 0.15 s.
+export const flood = { lagSeconds: 0.5 };
+
 // Pane switches on real panes (run.sh --switch), by simulated round trip in ms. Checked only
 // when the switch runs were made. A pane that comes back from the park draws its last screen
 // in its first frame: two frames at 60 Hz at most.

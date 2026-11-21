@@ -43,14 +43,16 @@
 # The app is terminated after every run and when the script ends or is interrupted, which also
 # drops its connection to the server.
 #
-# A full run (no --only) ends with scripts/bench/filter.sh: the stream's filter against the one
-# it replaced, measured on the Mac by a RexKit test, about 20 s.
+# A full run (no --only) ends with scripts/bench/filter.sh (the stream's filter against the one
+# it replaced, measured on the Mac by a RexKit test, about 20 s) and scripts/bench/flood.sh (how
+# long a title takes to show during a flood of progress reports, an app test in the simulator,
+# a Debug build of its own the first time).
 #
 # Environment: BENCH_DD (derived data, default build/dd-bench).
 set -euo pipefail
 
 self=$0   # inside a function, $0 is the function's name
-usage() { sed -n '2,47p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,49p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
 live=""; switch=""; warm=""; runs=3; only=""; out=""; build=1; fresh=0
@@ -253,5 +255,7 @@ fi
 # The stream's filter against the one it replaced: on the Mac, no simulator (filter.sh).
 if [[ -z $only ]]; then
   "$here/filter.sh" || failed=1
+  # A title's lag during a flood of progress reports: an app test, in the same simulator.
+  "$here/flood.sh" "$sim" || failed=1
 fi
 exit $failed
