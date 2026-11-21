@@ -145,7 +145,9 @@ From 0.7.0. Pteron shows a dev server's page inside the app. For "Open in Browse
 opens the page in Safari or any other browser on the phone, the computer's Beacon shares the
 server's port with that phone for as long as it is used. This works only on a computer that
 runs the regular Tailscale app, signed in to the same tailnet as the phone; on any other
-computer the app does not offer it.
+computer the app does not offer it: Beacon's status answer says whether a share could
+work (`share_possible`), which it finds out by asking the Tailscale app at most once a
+minute.
 
 What a share exposes, and to whom:
 

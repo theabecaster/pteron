@@ -26,7 +26,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// How long a command may take, and how much it may print.
-const WAIT: Duration = Duration::from_secs(5);
+pub const WAIT: Duration = Duration::from_secs(5);
 const PRINT_LIMIT: usize = 256 * 1024;
 
 /// True for an address Tailscale gives a device: `100.64.0.0/10` or `fd7a:115c:a1e0::/48`.
@@ -99,10 +99,24 @@ pub fn find<'a>(places: &[&'a str], usable: impl Fn(&Path) -> bool) -> Option<&'
     places.iter().map(|place| Path::new(*place)).find(|p| p.is_absolute() && usable(p))
 }
 
+/// The Tailscale client's command line: the first of `places` that `usable` takes.
+fn client_at(places: &[&str], usable: impl Fn(&Path) -> bool) -> Option<tokio::process::Command> {
+    crate::tools::async_command(find(places, usable)?)
+}
+
 /// The Tailscale client's command line on this computer.
 fn client() -> Option<tokio::process::Command> {
     let me = crate::platform::user_id();
-    crate::tools::async_command(find(&crate::platform::TAILSCALE, |p| crate::platform::is_own_program(p, me))?)
+    client_at(&crate::platform::TAILSCALE, |p| crate::platform::is_own_program(p, me))
+}
+
+/// What `client` says of this computer when asked for at most `wait`. None without a
+/// client (then nothing is started), without an answer in time, and when it is not running
+/// with an address.
+async fn status(client: Option<tokio::process::Command>, wait: Duration) -> Option<Tailnet> {
+    let mut command = client?;
+    command.args(["status", "--json", "--peers=false"]);
+    parse(std::str::from_utf8(&crate::tools::printed(command, PRINT_LIMIT, wait).await?).ok()?)
 }
 
 /// Asks the Tailscale client whose device `ip` is. None when there is no client to ask or
@@ -116,12 +130,11 @@ pub async fn whois(ip: IpAddr) -> Option<Option<u64>> {
     Some(std::str::from_utf8(&printed).ok().and_then(whois_user))
 }
 
-/// Asks the Tailscale client now. None when this computer does not run it.
+/// Asks the Tailscale client now, for at most `wait` (never more than `WAIT`). None when
+/// this computer does not run it.
 #[cfg_attr(test, allow(dead_code))] // tests never ask the real client
-pub async fn read() -> Option<Tailnet> {
-    let mut command = client()?;
-    command.args(["status", "--json", "--peers=false"]);
-    parse(std::str::from_utf8(&crate::tools::printed(command, PRINT_LIMIT, WAIT).await?).ok()?)
+pub async fn read(wait: Duration) -> Option<Tailnet> {
+    status(client(), wait.min(WAIT)).await
 }
 
 #[cfg(test)]
@@ -278,6 +291,58 @@ mod tests {
         for none in ["", "{}", "[]", "not json", "{\"BackendState\":\"Running\"}", "{\"BackendState\":\"Running\",\"Self\":null}"] {
             assert_eq!(parse(none), None, "{none:?}");
         }
+    }
+
+    /// A stand-in for the client in a folder of its own: it notes each run in `runs` and
+    /// prints `answer`.
+    #[cfg(unix)]
+    fn stand_in(dir: &Path, answer: &Value) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("answer"), answer.to_string()).unwrap();
+        let program = dir.join("tailscale");
+        std::fs::write(&program, format!("#!/bin/sh\necho \"$*\" >> '{0}/runs'\ncat '{0}/answer'\n", dir.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        program.to_str().unwrap().to_string()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_client_is_asked_only_where_there_is_one_and_says_whether_it_runs() {
+        let dir = std::env::temp_dir().join(format!("pf-client-{}", std::process::id()));
+        let runs = || std::fs::read_to_string(dir.join("runs")).unwrap_or_default();
+        // Found and running with an address.
+        let program = stand_in(&dir, &status());
+        let places = ["/nowhere/tailscale", program.as_str()];
+        let found = status_of(&places).await;
+        assert_eq!(found.map(|t| t.machine), Some("Desk".into()));
+        assert_eq!(runs(), "status --json --peers=false\n", "asked once, for itself alone");
+        // Found, and not running or without an address: nothing.
+        for state in ["Stopped", "NeedsLogin", "Starting"] {
+            let mut s = status();
+            s["BackendState"] = json!(state);
+            stand_in(&dir, &s);
+            assert_eq!(status_of(&places).await, None, "{state}");
+        }
+        let mut s = status();
+        s["Self"]["TailscaleIPs"] = json!([]);
+        stand_in(&dir, &s);
+        assert_eq!(status_of(&places).await, None);
+        // Not found: nothing, and nothing was started.
+        stand_in(&dir, &status());
+        let before = runs();
+        assert_eq!(super::status(client_at(&["/nowhere/tailscale", "tailscale"], |p| p.is_file()), WAIT).await, None);
+        assert_eq!(super::status(client_at(&places, |_| false), WAIT).await, None);
+        assert_eq!(runs(), before);
+        // One that does not answer in the time given: nothing.
+        std::fs::write(&program, "#!/bin/sh\nsleep 30\n").unwrap();
+        assert_eq!(super::status(client_at(&places, |p| p.is_file()), Duration::from_millis(200)).await, None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    async fn status_of(places: &[&str]) -> Option<Tailnet> {
+        super::status(client_at(places, |p| p.is_file()), WAIT).await
     }
 
     #[test]

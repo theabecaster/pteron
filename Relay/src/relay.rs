@@ -956,6 +956,7 @@ impl Relay {
                 status["devices"] = json!(all);
                 status["other_phones"] = json!(others);
                 status["last_push_at"] = json!(self.last_push_at(requester, identity));
+                status["share_possible"] = json!(self.shares.possible().await);
                 Ok(status)
             }
             "send_test" => self.send_test(s, requester, identity).await,
@@ -2275,7 +2276,7 @@ mod tests {
         assert_eq!(
             keys,
             ["can_update", "checked_at", "devices", "failing_since", "last_error", "last_push_at", "latest_version", "linger", "manifest_expires_at", "min_version", "notices", "os",
-                "other_phones", "paused", "registered", "update_available", "update_required", "updating", "version"]
+                "other_phones", "paused", "registered", "share_possible", "update_available", "update_required", "updating", "version"]
         );
         assert_eq!((status["registered"].as_bool(), status["version"].as_str()), (Some(true), Some(VERSION)));
 
@@ -2854,6 +2855,19 @@ mod tests {
         let alex = app("a1b2c3d4", Some(ALEX));
         let first = status(&r, &alex).await;
         assert_eq!((&first["os"], &first["devices"], &first["last_push_at"]), (&json!(OS), &json!(0), &Value::Null));
+        // Whether "Open in Browser" can work here: this computer is on a tailnet (in a
+        // test, loopback stands in for one).
+        assert_eq!(first["share_possible"], true);
+        // A reader that knows only the earlier fields reads the answer as before.
+        #[derive(serde::Deserialize)]
+        struct Earlier {
+            version: String,
+            registered: bool,
+            devices: u64,
+            os: String,
+        }
+        let earlier: Earlier = serde_json::from_value(first.clone()).unwrap();
+        assert_eq!((earlier.version.as_str(), earlier.registered, earlier.devices, earlier.os.as_str()), (VERSION, false, 0, OS));
         register(&r, &register_args(), ALEX).unwrap();
         assert_eq!(status(&r, &alex).await["devices"], 1);
         // Every phone on this helper counts, whoever registered it and whoever asks.

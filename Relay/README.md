@@ -774,7 +774,8 @@ anyone else gets `false`. A `token` argument is ignored; alone it removes nothin
  "update_required": false, "checked_at": "2026-11-17T12:00:00Z", "updating": false,
  "can_update": true, "last_error": null, "failing_since": null, "registered": true,
  "manifest_expires_at": "2027-05-16T12:00:00Z", "notices": "allowed", "linger": null,
- "os": "macOS 15.5", "devices": 2, "other_phones": 1, "last_push_at": 1794950000, "paused": false}
+ "os": "macOS 15.5", "devices": 2, "other_phones": 1, "last_push_at": 1794950000, "paused": false,
+ "share_possible": true}
 ```
 
 `latest_version`, `min_version` and `checked_at` are null until Beacon has checked.
@@ -803,6 +804,16 @@ Linux the `PRETTY_NAME` of `/etc/os-release` without its quotes, `"Linux"` when 
 `last_push_at` is the unix time in seconds of the last notification the gateway accepted from
 this Beacon for the caller's phone (a test counts), for the identity that registered it; null
 when there was none since Beacon started. It is kept in memory only.
+
+`share_possible` (from 0.7.0) is whether `port_share` could work on this computer now: the
+Tailscale command line is found (step 8, the same fixed paths and the same check of whose
+program it is) and says it is running with an address. Why not is not said. A Beacon before
+0.7.0 does not send the field; a reader treats that as false. The answer is looked up at
+most once in 60 seconds, however often `helper_status` is asked, and waits at most 2 seconds
+for the command (no answer in that time is `false`, also kept 60 seconds). Without the
+command line nothing is started at all. It says nothing about the caller's phone: whether
+that phone is a device of this computer's Tailscale user is checked by `port_share` itself.
+It is not in `status.json`.
 
 `action: "update_helper"`, no args. Only an identity that has a phone registered on this
 Beacon may call it; anyone else gets `refused`. Beacon checks now. Result `{"started":

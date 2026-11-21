@@ -106,6 +106,8 @@ pub struct Net {
     /// On which loopback addresses a port's listener is a process of this user. A test's
     /// answer can be changed while a share is open.
     holder: Asked<Arc<Mutex<Mine>>>,
+    /// How often the tailnet was read.
+    reads: Arc<AtomicUsize>,
     pub idle: Duration,
     pub waiting: Duration,
 }
@@ -113,7 +115,7 @@ pub struct Net {
 impl Net {
     #[cfg_attr(test, allow(dead_code))] // the tests put `loopback` in its place
     pub fn tailnet() -> Net {
-        Net { fixed: None, phone: tailscale::is_tailnet, who: Asked::System, holder: Asked::System, idle: IDLE, waiting: WAITING }
+        Net { fixed: None, phone: tailscale::is_tailnet, who: Asked::System, holder: Asked::System, reads: Arc::default(), idle: IDLE, waiting: WAITING }
     }
 
     /// Loopback in the tailnet's place, for tests: the computer is `tailnet` and a phone
@@ -121,7 +123,7 @@ impl Net {
     #[cfg(test)]
     pub fn loopback(tailnet: Option<Tailnet>) -> Net {
         let who = Asked::Fixed(Some(tailnet.as_ref().and_then(|t| t.user)));
-        Net { fixed: tailnet, phone: |ip| ip.is_loopback(), who, holder: Asked::Fixed(Arc::new(Mutex::new(Mine::BOTH))), idle: IDLE, waiting: WAITING }
+        Net { fixed: tailnet, phone: |ip| ip.is_loopback(), who, holder: Asked::Fixed(Arc::new(Mutex::new(Mine::BOTH))), reads: Arc::default(), idle: IDLE, waiting: WAITING }
     }
 
     /// The tailnet user `phone` belongs to, as the Tailscale client says; None when the
@@ -164,12 +166,15 @@ impl Net {
         Net::loopback(Some(Tailnet { name: Some("desk.example.ts.net".into()), machine: "desk".into(), ips, user: Some(1001) }))
     }
 
-    async fn read(&self) -> Option<Tailnet> {
+    /// This computer on its tailnet, asked for at most `wait`.
+    async fn read(&self, wait: Duration) -> Option<Tailnet> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         // A test never asks the real client.
         #[cfg(not(test))]
         if self.fixed.is_none() {
-            return tailscale::read().await;
+            return tailscale::read(wait).await;
         }
+        let _ = wait;
         self.fixed.clone()
     }
 }
@@ -344,7 +349,18 @@ pub struct Shares {
     all: Arc<AtomicUsize>,
     /// Asked before a connection is taken. Not set: every phone counts as registered.
     registered: Mutex<Option<Arc<Registered>>>,
+    /// Whether a share could be made when that was last looked at, and when.
+    possible: tokio::sync::Mutex<Option<(Instant, bool)>>,
 }
+
+/// How long the answer to "could a share be made here" is reused. A phone asks it with
+/// `helper_status`, which it may ask every few seconds; the answer costs a run of the
+/// Tailscale client.
+pub const POSSIBLE_FOR: Duration = Duration::from_secs(60);
+
+/// How long that question waits for the client. Shorter than a share's own wait, so
+/// that the status it is part of is answered inside the time an app gives it.
+const POSSIBLE_WAIT: Duration = Duration::from_secs(2);
 
 /// A listener on `ip`: on `port` when the system lets a share take the dev server's own
 /// number and nothing else has it there, else on a port the system picks.
@@ -373,7 +389,24 @@ impl Shares {
             opening: tokio::sync::Mutex::new(()),
             all: Arc::new(AtomicUsize::new(0)),
             registered: Mutex::new(None),
+            possible: tokio::sync::Mutex::new(None),
         })
+    }
+
+    /// Whether a share could be made here: the Tailscale client is found and says it is
+    /// running with an address. Looked at once in `POSSIBLE_FOR`; asked again inside that
+    /// time, nothing is run. One look at a time: a second asker waits for the first's
+    /// answer. Without a client nothing is ever started, and the answer is no.
+    pub async fn possible(&self) -> bool {
+        let mut kept = self.possible.lock().await;
+        if let Some((at, yes)) = *kept {
+            if at.elapsed() < POSSIBLE_FOR {
+                return yes;
+            }
+        }
+        let yes = self.net.read(POSSIBLE_WAIT).await.is_some();
+        *kept = Some((Instant::now(), yes));
+        yes
     }
 
     /// From now on `registered` is asked before a share takes a connection: a share whose
@@ -412,7 +445,7 @@ impl Shares {
         }
         // Until this request is settled the next one waits: it then finds the share made here.
         let _one_at_a_time = self.opening.lock().await;
-        let tailnet = self.net.read().await.ok_or(Refusal::NotAvailable)?;
+        let tailnet = self.net.read(tailscale::WAIT).await.ok_or(Refusal::NotAvailable)?;
         // The phone connects from an address of one kind, so the share listens on this
         // computer's address of that kind.
         let local = tailnet.ips.iter().copied().find(|ip| ip.is_ipv4() == ask.phone.is_ipv4()).ok_or(Refusal::NotAvailable)?;
@@ -1877,6 +1910,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn whether_a_share_could_be_made_is_looked_at_once_a_minute() {
+        let net = Net::testing();
+        let reads = net.reads.clone();
+        let all = Shares::new(net);
+        // Asked again and again inside the minute: looked at once.
+        for _ in 0..5 {
+            assert!(all.possible().await);
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+        tokio::time::pause();
+        tokio::time::advance(POSSIBLE_FOR - Duration::from_secs(1)).await;
+        assert!(all.possible().await);
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(all.possible().await && all.possible().await);
+        assert_eq!(reads.load(Ordering::Relaxed), 2);
+        tokio::time::resume();
+        // A computer where the client is missing, stopped or without an address: no, and
+        // that answer is kept as long.
+        let net = Net::loopback(None);
+        let reads = net.reads.clone();
+        let none = Shares::new(net);
+        assert!(!none.possible().await && !none.possible().await);
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
