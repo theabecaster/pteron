@@ -206,6 +206,63 @@ final class ControlWatchdogTests: XCTestCase {
         XCTAssertEqual(pings, 1, "5 s after the new request")
     }
 
+    // MARK: A slow call on a live host
+
+    /// Moves the clock `seconds` on in half seconds, with a host that answers every ping, and
+    /// `each` run at the start of every whole second. Returns when each ping went out.
+    private func run(_ seconds: Int, each: (() async -> Void)? = nil) async -> [Double] {
+        var sent: [Double] = []
+        var seen = pings
+        for step in 0..<(seconds * 2) {
+            if step % 2 == 0 { await each?() }
+            await clock.advance(by: 0.5)
+            if pings > seen {
+                seen = pings
+                sent.append(Double(step + 1) / 2)
+                sockets.last.answerPing()
+                await pump()
+            }
+        }
+        return sent
+    }
+
+    func testACallUnansweredForThirtySecondsOnAHostThatAnswersPingsCostsOnePingAndIsNeverDropped() async {
+        await connect()
+        let slow = await call("com.superlogical.terminal.format")
+        let sent = await run(30)
+        XCTAssertEqual(sent, [5], "one ping, 5 s in; its pong ends the watchdog until the next request")
+        XCTAssertEqual(control.state, .connected)
+        XCTAssertEqual(sockets.count, 1, "never dropped, never connected again")
+        // From here the keepalive alone asks: its timer looks every 30 s and pings when nothing
+        // came in for 30 s. The pong came at 5 s, so the look at 30 s passed; the looks at 60 s
+        // and 90 s ping.
+        let later = await run(60)
+        XCTAssertEqual(later, [30, 60], "60 s and 90 s after the welcome: one ping each 30 s")
+        XCTAssertEqual(control.state, .connected)
+        await answer(1)
+        let ok = await slow.value
+        XCTAssertTrue(ok, "and the answer is taken whenever it comes")
+    }
+
+    /// The worst case for the number of pings: requests keep going out, none is answered, and
+    /// only pongs come in. One ping for each 5 s of silence, and no more.
+    func testWithRequestsGoingOutEverySecondAndOnlyPongsBackThereIsOnePingPerFiveSeconds() async {
+        await connect()
+        let sent = await run(30) { [self] in await call() }
+        XCTAssertEqual(sent, [5, 10, 15, 20, 25, 30])
+        XCTAssertEqual(control.state, .connected)
+        XCTAssertEqual(sockets.count, 1)
+    }
+
+    func testOnCellularASlowCallCostsOnePingAtTenSeconds() async {
+        control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        await connect()
+        await call("com.superlogical.terminal.format")
+        let sent = await run(30)
+        XCTAssertEqual(sent, [10])
+        XCTAssertEqual(control.state, .connected)
+    }
+
     // MARK: The ping an upload paces itself with
 
     /// `ping()`, as `UploadPacer` calls it. Returns whether the pong came.

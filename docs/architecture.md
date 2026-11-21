@@ -291,6 +291,40 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   refusal says Rex lets in only devices on its Tailscale account. Every other case is worded
   without naming a product, and names the computer, never "the Mac".
 
+### Slow calls and the watchdog
+
+No control call has a deadline in the app, and the watchdog is not one. When a call is 5 s old
+(10 s on cellular) and nothing at all has come in since, the app sends one WebSocket ping. Only
+a ping with no pong in 10 s (20 s) drops the host. A pong ends the watchdog until the next
+request goes out, so a slow call on a host that is there costs one ping and nothing else, and
+its answer is taken whenever it comes. After that the 30 s keepalive is the only thing that
+asks. The most the watchdog can send is one ping for each 5 s (10 s) of silence, which needs
+requests that keep going out with none answered (`ControlWatchdogTests`).
+
+This rests on the server answering a ping while it works on a call. Rex answers a ping on the
+control connection at once, also during an upload ([rex-protocol.md](rex-protocol.md), Files),
+and it does not hold one call behind another (Ordered calls), so its reader is not kept by a
+call. A pong during a call that takes more than 5 s has not been measured on a server: if a
+server did hold its pong for 10 s (20 s), the host would be dropped 15 s (30 s) into that call
+and connected again, and the call would fail as sent with no answer.
+
+No answer time below is measured; "can be slow" is what the call's work suggests.
+
+| Call | Answer time | What the watchdog does |
+|---|---|---|
+| `write`, `resize`, `client.key`, `client.action` | short | nothing while answers come; one ping when a host is silent for 5 s |
+| `format` (a screen, All Output), `blob_read` | can be slow: grows with the scrollback | one ping at 5 s if nothing else comes in |
+| `ports`, `process`, `program_status`, `title`, `size` | can be slow: the host reads its processes | the same |
+| `list_dir` | can be slow: a large or remote folder | the same |
+| `upload_begin`, `download_begin`, `data.connect` | short: they answer a ticket | the same; the bytes go on a data socket, which has its own handshake deadline ([terminal.md](terminal.md), Reconnect) |
+| `session.new_block` (a dial tunnel) | can be slow: the host connects first | the same |
+| `session.create`, `new_window`, `new_split` | can be slow: a shell starts | the same |
+| `session.bootstrap`, `attach`, `view`, `list`, `hosts.list`, `block_creator.list`, `client.keymap` | can be slow on a busy host | the same |
+
+An upload sends no control call per message: it paces itself with `RexControl.ping()`, the
+connection's own ping with the pong deadline, so a host that stops answering during an upload
+is dropped like any other. A terminal's snapshot comes on its data socket, not as a call.
+
 ### The connection log
 
 What happened to the connections is kept in a file, so there is evidence after the app was closed
