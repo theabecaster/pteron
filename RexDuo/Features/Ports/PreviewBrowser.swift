@@ -134,9 +134,10 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private var barsAsked = false
     /// What the web view loads once it exists: the page, or a path typed before it did.
     private var firstLoad: URL?
-    private lazy var backItem = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goBack() })
-    private lazy var forwardItem = UIBarButtonItem(image: UIImage(systemName: "chevron.forward"), primaryAction: UIAction { [weak self] _ in self?.webView?.goForward() })
-    private lazy var reloadItem = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"), primaryAction: UIAction { [weak self] _ in self?.reload() })
+    /// The bar under the page and its arrows (`buildBottomBar`).
+    private var bottomBar: UIView?
+    private var backButton: UIButton?
+    private var forwardButton: UIButton?
     #if DEBUG
     /// Called after the chrome, the error page or what is shown over the page changed, and
     /// `gone` when the browser is released: tests wait on these, not on the clock. Debug builds
@@ -185,11 +186,6 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         nav.navigationBar.standardAppearance = bar
         nav.navigationBar.scrollEdgeAppearance = bar
         nav.navigationBar.compactAppearance = bar
-        let tools = UIToolbarAppearance()
-        tools.configureWithOpaqueBackground()
-        nav.toolbar.standardAppearance = tools
-        nav.toolbar.scrollEdgeAppearance = tools
-        nav.toolbar.compactAppearance = tools
         current = browser
         top.present(nav, animated: true)
         nav.presentationController?.delegate = browser
@@ -323,18 +319,67 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: makeMenu())
             more.accessibilityLabel = "More"
             navigationItem.rightBarButtonItem = more
-            backItem.accessibilityLabel = "Back"
-            forwardItem.accessibilityLabel = "Forward"
-            reloadItem.accessibilityLabel = "Reload"
-            let gap = UIBarButtonItem(systemItem: .fixedSpace)
-            gap.width = 28
-            toolbarItems = [backItem, gap, forwardItem, UIBarButtonItem(systemItem: .flexibleSpace), reloadItem]
-            itemsBuilt = true
             navigationController?.setNavigationBarHidden(false, animated: false)
-            navigationController?.setToolbarHidden(false, animated: false)
+            buildBottomBar()
+            itemsBuilt = true
         }
         refresh()
         DispatchQueue.main.async { [weak self] in self?.makeWebView() }
+    }
+
+    /// Back, forward and reload, under the page, where a toolbar has them and looking as its
+    /// buttons do. They are the browser's own buttons in its own view, not a `UIToolbar`:
+    /// UIKit (iOS 27.2) keeps a toolbar's items, their buttons and its model after a toolbar
+    /// that held items is gone, about 90 KB of the app's memory for every page opened.
+    private func buildBottomBar() {
+        let bar = UIView()
+        bar.backgroundColor = .systemBackground
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        let back = barButton("chevron.backward", "Back") { $0.webView?.goBack() }
+        let forward = barButton("chevron.forward", "Forward") { $0.webView?.goForward() }
+        let reload = barButton("arrow.clockwise", "Reload") { $0.reload() }
+        for button in [back, forward, reload] { bar.addSubview(button) }
+        // As a toolbar does at the largest text sizes: a long press shows the button large.
+        bar.addInteraction(UILargeContentViewerInteraction())
+        backButton = back
+        forwardButton = forward
+        bottomBar = bar
+        // The page ends where the bar begins, at a toolbar's height. Over a home indicator the
+        // buttons sit low in it, close to the indicator, as a toolbar's do.
+        let overIndicator = view.safeAreaInsets.bottom > 0
+        let room: CGFloat = overIndicator ? 52 : 56
+        additionalSafeAreaInsets.bottom = room
+        view.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            bar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            back.centerYAnchor.constraint(equalTo: bar.topAnchor, constant: overIndicator ? 33 : 28),
+            forward.centerYAnchor.constraint(equalTo: back.centerYAnchor),
+            reload.centerYAnchor.constraint(equalTo: back.centerYAnchor),
+            back.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 28),
+            forward.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 40),
+            reload.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -28),
+        ])
+    }
+
+    private func barButton(_ symbol: String, _ label: String, _ action: @escaping @MainActor (PreviewBrowser) -> Void) -> UIButton {
+        var style: UIButton.Configuration
+        if #available(iOS 26.0, *) { style = .glass() } else { style = .plain() }
+        style.image = UIImage(systemName: symbol)
+        style.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(weight: .medium)
+        style.cornerStyle = .capsule
+        let button = UIButton(configuration: style, primaryAction: UIAction { [weak self] _ in
+            if let self { action(self) }
+        })
+        button.accessibilityLabel = label
+        button.showsLargeContentViewer = true
+        button.largeContentTitle = label
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        return button
     }
 
     private func makeMenu() -> UIMenu {
@@ -370,7 +415,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         stack.setCustomSpacing(18, after: errorDetail)
         stack.translatesAutoresizingMaskIntoConstraints = false
         errorView.addSubview(stack)
-        view.addSubview(errorView)
+        // Under the bar with the arrows: reload is how a failed page is tried again from there.
+        if let bottomBar { view.insertSubview(errorView, belowSubview: bottomBar) } else { view.addSubview(errorView) }
         NSLayoutConstraint.activate([
             stack.centerYAnchor.constraint(equalTo: errorView.centerYAnchor),
             stack.leadingAnchor.constraint(equalTo: errorView.layoutMarginsGuide.leadingAnchor, constant: 16),
@@ -392,11 +438,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             navigationItem.titleView?.accessibilityLabel = "\(title), \(host)"
             (navigationItem.titleView as? UIStackView)?.sizeToFit()
         }
-        if itemsBuilt {
-            let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
-            if backItem.isEnabled != back { backItem.isEnabled = back }
-            if forwardItem.isEnabled != forward { forwardItem.isEnabled = forward }
-        }
+        let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
+        if let backButton, backButton.isEnabled != back { backButton.isEnabled = back }
+        if let forwardButton, forwardButton.isEnabled != forward { forwardButton.isEnabled = forward }
         #if DEBUG
         onChange?()
         #endif

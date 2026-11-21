@@ -1022,7 +1022,11 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
     Debug and benchmark builds mark the steps of an open as signpost intervals (`PreviewTrace`:
     subsystem `dev.abrahamgonzalez.rexduo`, category `PreviewBrowser`).
   - Chrome: Done, the page's title over its address, a menu (Copy Link, Share…), and back,
-    forward and reload. There is no button that leaves for another app: the address only works
+    forward and reload. The top bar is the navigation controller's. The three under the page
+    are the browser's own buttons in its own view, placed and drawn as a toolbar's: UIKit
+    (iOS 27.2) keeps a `UIToolbar`'s items, their buttons and its model after a toolbar that
+    held items is gone, about 90 KB for every page opened, and 100 opens must cost what 5 do.
+    There is no button that leaves for another app: the address only works
     inside this one.
   - The address shown is the one the user knows from the computer (`PreviewAddress`,
     `LocalhostLink.shown`): a tapped link's own host and port as written (`localhost:3000`,
