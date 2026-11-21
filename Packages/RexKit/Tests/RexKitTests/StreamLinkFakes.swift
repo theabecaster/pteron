@@ -163,14 +163,22 @@ final class FakeSocket: StreamSocket {
 
     func close() {
         closed = true
+        endPongs()
         deliver(.failure(URLError(.cancelled)))
     }
 
-    enum PingPlan { case answer, fail, silent }
+    enum PingPlan {
+        case answer, fail, silent
+        /// The ping goes through `awaitPong()` to a task that calls its handler as URLSession
+        /// has: with `first`, then, when `twice`, again at once with an error, and once more with
+        /// an error when the socket ends.
+        case urlSession(first: TwicePongTask.Answer, twice: Bool)
+    }
     /// How the socket answers a ping.
     var pingPlan = PingPlan.answer
     private(set) var pings = 0
     private(set) var aborted = false
+    private var pongTasks: [TwicePongTask] = []
 
     func ping() async throws {
         pings += 1
@@ -183,12 +191,22 @@ final class FakeSocket: StreamSocket {
         case .silent:
             // A half-open connection: no answer, ever.
             try await Task.sleep(for: .seconds(3600))
+        case .urlSession(let first, let twice):
+            let task = TwicePongTask(first, twice: twice)
+            pongTasks.append(task)
+            try await task.awaitPong()
         }
     }
 
     func abort() {
         aborted = true
+        endPongs()
         deliver(.failure(URLError(.cancelled)))
+    }
+
+    /// The socket ended: URLSession calls each pong handler (again) with an error.
+    private func endPongs() {
+        for t in pongTasks { t.callAgain(URLError(.cancelled)) }
     }
 
     private func deliver(_ r: Result<Data?, Error>) {
@@ -206,7 +224,41 @@ final class FakeSocket: StreamSocket {
     /// The connection drops, or the server closes it with `code`.
     func drop(code: Int = 0) {
         closeCode = code
+        endPongs()
         deliver(.failure(URLError(.networkConnectionLost)))
+    }
+}
+
+/// A WebSocket task's ping as URLSession has answered it: the handler can be called more than
+/// once, the later calls with an error, on URLSession's queue. Build 2611201727 crashed on it.
+final class TwicePongTask: PongSending, @unchecked Sendable {
+    // `@unchecked`: `handler` is only touched on `queue`.
+    enum Answer { case pong, fail, never }
+    private let first: Answer
+    private let twice: Bool
+    private let queue = DispatchQueue(label: "test.twice-pong")
+    private var handler: (@Sendable (Error?) -> Void)?
+
+    init(_ first: Answer, twice: Bool) {
+        self.first = first
+        self.twice = twice
+    }
+
+    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void) {
+        queue.async { [self] in
+            handler = pongReceiveHandler
+            switch first {
+            case .pong: pongReceiveHandler(nil)
+            case .fail: pongReceiveHandler(URLError(.networkConnectionLost))
+            case .never: break
+            }
+            if twice { pongReceiveHandler(URLError(.networkConnectionLost)) }
+        }
+    }
+
+    /// Calls the handler again, as URLSession does when the task ends.
+    func callAgain(_ error: Error) {
+        queue.async { [self] in handler?(error) }
     }
 }
 
