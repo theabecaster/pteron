@@ -156,8 +156,10 @@ pub fn process(pid: u32) -> Option<Process> {
 #[cfg(target_os = "linux")]
 pub fn process(pid: u32) -> Option<Process> {
     let dir = PathBuf::from(format!("/proc/{pid}"));
-    let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
-    let status = std::fs::read_to_string(dir.join("status")).ok()?;
+    // As bytes: a program's name in `stat` need not be UTF-8, and a file that is not read
+    // would be a process that is not seen.
+    let stat = proc_fs::text(&std::fs::read(dir.join("stat")).ok()?);
+    let status = proc_fs::text(&std::fs::read(dir.join("status")).ok()?);
     // Only the process's own user (and root) can read the link.
     let exe = std::fs::read_link(dir.join("exe")).ok();
     proc_fs::process(pid, &stat, &status, exe.as_deref().and_then(Path::to_str))
@@ -180,7 +182,7 @@ pub fn group_pids(pgid: u32) -> Option<Vec<u32>> {
 #[cfg(target_os = "linux")]
 pub fn group_pids(pgid: u32) -> Option<Vec<u32>> {
     let pids = std::fs::read_dir("/proc").ok()?.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok());
-    proc_fs::group(pids.map(|pid| (pid, std::fs::read_to_string(format!("/proc/{pid}/stat")).ok())), pgid)
+    proc_fs::group(pids.map(|pid| (pid, std::fs::read(format!("/proc/{pid}/stat")).ok().map(|bytes| proc_fs::text(&bytes)))), pgid)
 }
 
 /// How the process `pid` was started: its arguments and its working directory. None when
@@ -199,7 +201,7 @@ pub fn invocation(pid: u32) -> Option<Invocation> {
     let mut bytes = vec![];
     // One byte past the limit says that there was more.
     File::open(dir.join("cmdline")).ok()?.take(super::ARGV_MAX as u64 + 1).read_to_end(&mut bytes).ok()?;
-    let (argv, truncated) = proc_fs::cmdline(&bytes);
+    let (argv, truncated) = proc_fs::arguments(&bytes)?;
     let cwd = std::fs::read_link(dir.join("cwd")).ok().and_then(|p| p.to_str().map(String::from));
     Some(Invocation { argv, truncated, cwd })
 }
@@ -223,8 +225,10 @@ fn procargs(buf: &[u8]) -> Option<(Vec<Vec<u8>>, bool)> {
     }
     let mut rest = &buf[start..];
     let mut args = Vec::with_capacity(count.min(super::ARGS_MAX + 1));
-    // The last string counted that is not empty, kept or not, and its place.
+    // The last string counted that is not empty, kept or not, and its place; and whether
+    // any string counted, kept or not, has the form of a variable.
     let mut last: Option<(usize, &[u8])> = None;
+    let mut variable = false;
     for i in 0..count {
         let end = rest.iter().position(|b| *b == 0)?;
         // More than is ever kept: the rest is counted off without being held.
@@ -234,30 +238,42 @@ fn procargs(buf: &[u8]) -> Option<(Vec<Vec<u8>>, bool)> {
         if end > 0 {
             last = Some((i, &rest[..end]));
         }
+        variable |= is_variable(&rest[..end]);
         rest = &rest[end + 1..];
     }
     // The block does not say where the arguments end and the environment begins: the
     // count is all there is. A program that wrote a title over its arguments and their
     // NULs has fewer strings there than it counts, and the count then runs on into the
-    // environment and, when that is short, into the NULs behind it. Then the last string
-    // read that is not empty is a variable (`NAME=value`), or the title with the first
-    // variable behind it. So arguments are not used at all when that string is a
-    // variable, or has a `=` and is the first string or has empty strings behind it.
-    // (Real arguments of that form cost the process its arguments here; that is the
-    // safe side.)
-    let runs_on = last.is_some_and(|(i, text)| is_assignment(text) || (text.contains(&b'=') && (i == 0 || i + 1 < count)));
-    if runs_on {
+    // environment and, when that is short, into the NULs behind it. So the arguments
+    // are not used at all when either holds:
+    // - a counted string has the form of a variable (`is_variable`), wherever it stands;
+    // - the last counted string that is not empty holds a `=`, and it is the first
+    //   string or has empty strings behind it (a title with a variable run on to it,
+    //   and nothing or only NULs after).
+    // Real arguments of those forms (`make CC=clang`) cost the process its arguments
+    // here; that is the safe side.
+    let runs_on = last.is_some_and(|(i, text)| text.contains(&b'=') && (i == 0 || i + 1 < count));
+    if variable || runs_on {
         return None;
     }
     Some(super::capped(args.into_iter(), false))
 }
 
-/// True for `NAME=…` where `NAME` is a variable's name: a letter or `_`, then letters,
-/// digits and `_`.
-#[cfg(any(target_os = "macos", test))]
-fn is_assignment(text: &[u8]) -> bool {
+/// True for text of the form an environment variable has:
+/// - `NAME=…`, the name of capital letters, digits and `_`, not beginning with a digit
+///   (`PATH=/usr/bin`), as variables are written by convention;
+/// - anything beginning with `BASH_FUNC_` (a function bash hands on), and anything that
+///   holds `%%` (the same, by the end of its name) or `:_authtoken` in any case (npm's
+///   settings, which it hands on with names in small letters).
+///
+/// `--port=3000` and `cc=clang` are not of that form.
+fn is_variable(text: &[u8]) -> bool {
+    let holds = |part: &[u8]| text.windows(part.len()).any(|w| w.eq_ignore_ascii_case(part));
+    if text.starts_with(b"BASH_FUNC_") || text.windows(2).any(|w| w == b"%%") || holds(b":_authtoken") {
+        return true;
+    }
     let Some(name) = text.iter().position(|b| *b == b'=').map(|i| &text[..i]) else { return false };
-    name.first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') && name.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    name.first().is_some_and(|b| b.is_ascii_uppercase() || *b == b'_') && name.iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
 }
 
 /// The last part of a program's path.
@@ -301,6 +317,12 @@ mod proc_fs {
         })
     }
 
+    /// A `/proc` file as text. What is not UTF-8 in it (a program's name can be any
+    /// bytes) becomes U+FFFD, and the rest reads as it is.
+    pub fn text(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
     /// The process group in a `stat` file.
     pub fn pgid(stat: &str) -> Option<u32> {
         stat[stat.rfind(')')? + 1..].split_ascii_whitespace().nth(2)?.parse().ok()
@@ -338,9 +360,46 @@ mod proc_fs {
         crate::platform::capped(whole.split(|b| *b == 0), cut)
     }
 
+    /// `cmdline`, or None when the file holds a string of the form of a variable
+    /// (`is_variable`), wherever it stands.
+    ///
+    /// The kernel keeps the arguments and the environment apart, and the file is the
+    /// arguments. But the environment lies right behind them in the process's memory, and
+    /// when a program wrote over the NUL that ends its last argument (a title set in
+    /// place), the kernel reads on from there to the next NUL, and an older one to the
+    /// environment's end. What it reads on into is then in the file: glued to the last
+    /// string, which no form can show, or (older kernels) as strings of its own, which
+    /// this catches. Real arguments of that form (`make CC=clang`) cost the process its
+    /// arguments here; that is the safe side.
+    pub fn arguments(bytes: &[u8]) -> Option<(Vec<Vec<u8>>, bool)> {
+        (!bytes.split(|b| *b == 0).any(super::is_variable)).then(|| cmdline(bytes))
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn arguments_with_a_variable_among_them_are_not_used() {
+            let read = |bytes: &[u8]| arguments(bytes).map(|(argv, _)| argv.len());
+            assert_eq!(arguments(b"npm\0run\0dev\0"), Some(cmdline(b"npm\0run\0dev\0")));
+            // A flag with a value, and a name in small letters, are arguments.
+            assert_eq!((read(b"vite\0--port=3000\0"), read(b"make\0cc=clang\0"), read(b"x\0a b=c\0=x\01A=x\0")), (Some(2), Some(2), Some(4)));
+            // The form of a variable, in any place: the last, the middle, the first.
+            assert_eq!((read(b"make\0CC=clang\0"), read(b"env\0A=1\0server\0"), read(b"_X1=\0server\0")), (None, None, None));
+            assert_eq!((read(b"x\0BASH_FUNC_which%%=() { x; }\0y\0"), read(b"x\0fn%%=()\0"), read(b"x\0npm_config_//registry.example.com/:_authToken=abc\0")), (None, None, None));
+            // A title over the arguments with the environment read on behind it, as an
+            // older kernel gives it: strings of their own.
+            assert_eq!(read(b"my server: 3 workers\0PATH=/usr/bin\0API_TOKEN=secret\0"), None);
+            // Past what is kept, and in a piece the cut fell in: still seen.
+            let mut many = b"a\0".repeat(crate::platform::ARGS_MAX + 5);
+            assert_eq!(read(&many), Some(crate::platform::ARGS_MAX));
+            many.extend_from_slice(b"PATH=/usr");
+            assert_eq!(read(&many), None);
+            // Glued to the last argument (a newer kernel): nothing shows it, and it is
+            // returned. The limit that is documented.
+            assert_eq!(read(b"node\0server.js\0--port=3000PATH=/usr/bin\0"), Some(3));
+        }
 
         #[test]
         fn arguments_are_read_as_they_are_with_spaces_quotes_and_nothing() {
@@ -389,6 +448,12 @@ mod proc_fs {
             assert_eq!(pgid("4300 (tee) R 1 1) S 900 4200 900 34816 4200 0"), Some(4200), "a name with brackets and spaces of its own");
             assert_eq!((pgid(""), pgid("1 (x) S 0"), pgid("1 (x) S 0 -1 0")), (None, None, None));
             assert_eq!(group(all().into_iter(), 4200), Some(vec![4200, 4300]));
+            // A name that is not UTF-8: the process is read all the same, and counted.
+            let odd = text(b"4301 (\xff\xfe) \xc3(\x80) S 900 4200 900 34816 4200 4194304 0 0");
+            assert_eq!(pgid(&odd), Some(4200));
+            assert_eq!(group(all().into_iter().chain([(4301, Some(odd.clone()))]), 4200), Some(vec![4200, 4300, 4301]));
+            let read = process(4301, &odd, &text(b"Name:\t\xff\xfe\nUid:\t1000\t1001\t1000\t1000\n"), None).unwrap();
+            assert_eq!((read.ppid, read.pgid, read.uid), (900, 4200, 1001));
             assert_eq!(group(all().into_iter(), 4400), Some(vec![4400]));
             // No process in it; more in it than are listed; more processes than are looked at.
             assert_eq!(group(all().into_iter(), 5000), None);
@@ -600,7 +665,7 @@ mod mac {
             use std::process::Stdio;
             let here = std::env::temp_dir().canonicalize().unwrap();
             // A shell that waits for a line, started with arguments of every awkward kind.
-            let args = ["-c", "read line; :", "TOKEN=in-an-argument", "two words", "", "it's \"quoted\""];
+            let args = ["-c", "read line; :", "--token=in-an-argument", "two words", "", "it's \"quoted\""];
             let mut child = crate::tools::command("sh").unwrap().args(args).current_dir(&here).env("BEACON_TEST_SECRET", "never-read-out").stdin(Stdio::piped()).spawn().unwrap();
             let read = invocation(child.id());
             let me = process(child.id()).unwrap();
@@ -615,6 +680,12 @@ mod mac {
             // The environment stands right behind the arguments in what the kernel gives;
             // none of it comes out.
             assert!(!format!("{read:?}").contains("never-read-out") && !format!("{read:?}").contains("BEACON_TEST_SECRET"));
+            // An argument of the form of a variable: none of the arguments are given.
+            let mut child = crate::tools::command("sh").unwrap().args(["-c", "read line; :", "TOKEN=in-an-argument", "last"]).stdin(Stdio::piped()).spawn().unwrap();
+            let read = invocation(child.id());
+            drop(child.stdin.take());
+            child.wait().unwrap();
+            assert_eq!(read, None);
             // A process that has ended, and one that never was.
             assert!(invocation(child.id()).is_none() && invocation(0x7fff_fff0).is_none());
         }
@@ -831,11 +902,13 @@ pub fn raise_fd_limit() -> Option<u64> {
 /// Where the regular Tailscale client's command line is, in the order it is looked for.
 /// Full paths only: a service's `PATH` holds none of them, and no `PATH` is searched. On a
 /// Mac the app's own program comes first (it is the command line too), then where Homebrew
-/// links one; on Linux where a package puts it, NixOS's place, then a local install.
+/// links one; on Linux where a package puts it, then a local install. (NixOS's place is not
+/// among them: it leads into `/nix/store`, a folder its build group can write to, which
+/// the rule below does not take; the store is kept unchanged by policy, not by its mode.)
 #[cfg(target_os = "macos")]
 pub const TAILSCALE: [&str; 3] = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"];
 #[cfg(target_os = "linux")]
-pub const TAILSCALE: [&str; 4] = ["/usr/bin/tailscale", "/usr/sbin/tailscale", "/run/current-system/sw/bin/tailscale", "/usr/local/bin/tailscale"];
+pub const TAILSCALE: [&str; 3] = ["/usr/bin/tailscale", "/usr/sbin/tailscale", "/usr/local/bin/tailscale"];
 
 /// The group whose members administer this computer and can act as root there, so that
 /// what only they can change is as safe as what only root can: macOS's `admin` (the system
@@ -853,33 +926,63 @@ fn theirs_to_change(m: &std::fs::Metadata, user: UserId, admin: Option<u32>) -> 
     (m.uid() == 0 || m.uid() == user) && m.mode() & 0o002 == 0 && (m.mode() & 0o020 == 0 || admin == Some(m.gid()))
 }
 
-/// True when `path` is a program that only root, `user` or this computer's administrators
-/// could have put there or can replace: a file someone may run that is `theirs_to_change`,
-/// in folders that are, all the way up. A link is followed, and both ways to the file are
-/// held to that: the folders the name was looked up through, and the folders the file is
-/// really in. Anything else (a folder on the way that others can write to, a file of
-/// another user) is no program to run.
-pub fn is_own_program(path: &Path, user: UserId) -> bool {
+/// The real file of the program at `path`, when only root, `user` or this computer's
+/// administrators could have put it there or can replace it; None for anything else.
+///
+/// The path is followed name by name, links too, however many there are in a row. Every
+/// folder a name is looked up in on the way has to be `theirs_to_change` (the folder a
+/// link is in, the folders its target leads through, the folders the file is really in),
+/// and the file at the end has to be one someone may run that is `theirs_to_change`. What
+/// is returned has no link left in it, and is what was checked: it is the path to run.
+pub fn own_program(path: &Path, user: UserId) -> Option<PathBuf> {
     own_program_below(path, user, ADMIN_GROUP, Path::new("/"))
 }
 
-/// `is_own_program`, with the folders looked at from `top` down only (a test's files are
-/// in a temporary folder, and what is above that is the system's to say).
-fn own_program_below(path: &Path, user: UserId, admin: Option<u32>, top: &Path) -> bool {
-    let Ok(real) = std::fs::canonicalize(path) else { return false };
-    let Ok(top) = std::fs::canonicalize(top) else { return false };
-    if !std::fs::metadata(&real).is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0 && theirs_to_change(&m, user, admin)) {
-        return false;
+/// The most links followed on the way to a program.
+const LINKS_MAX: usize = 32;
+
+/// `own_program`, with the folders looked at from `top` down only (a test's files are in a
+/// temporary folder, and what is above that is the system's to say).
+fn own_program_below(path: &Path, user: UserId, admin: Option<u32>, top: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return None;
     }
-    // The name as given, with only its folders made real: the link itself stays a name in
-    // its folder, which is what has to be safe.
-    let named = path.parent().and_then(|dir| std::fs::canonicalize(dir).ok());
-    let Some(named) = named else { return false };
-    // And the name as written, for a folder on the way that is itself a link.
-    let written = path.parent().unwrap_or(path);
-    [named.as_path(), real.parent().unwrap_or(&real), written].iter().all(|dir| {
-        dir.ancestors().take_while(|d| d.starts_with(&top)).all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && theirs_to_change(&m, user, admin)))
-    })
+    let top = std::fs::canonicalize(top).ok()?;
+    // The names still to follow, the next one last.
+    let mut todo: Vec<std::ffi::OsString> = path.components().rev().map(|c| c.as_os_str().to_os_string()).collect();
+    // Where they have led so far: a real folder, with no link in its path.
+    let mut at = PathBuf::from("/");
+    let mut links = 0;
+    while let Some(name) = todo.pop() {
+        match Path::new(&name).components().next()? {
+            Component::RootDir | Component::Prefix(_) => at = PathBuf::from("/"),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                at.pop();
+            }
+            Component::Normal(_) => {
+                // Whoever can write to this folder can put something else under the name.
+                if at.starts_with(&top) && !std::fs::metadata(&at).is_ok_and(|m| m.is_dir() && theirs_to_change(&m, user, admin)) {
+                    return None;
+                }
+                let next = at.join(&name);
+                if std::fs::symlink_metadata(&next).ok()?.file_type().is_symlink() {
+                    links += 1;
+                    if links > LINKS_MAX {
+                        return None;
+                    }
+                    let target = std::fs::read_link(&next).ok()?;
+                    todo.extend(target.components().rev().map(|c| c.as_os_str().to_os_string()));
+                } else {
+                    at = next;
+                }
+            }
+        }
+    }
+    let runs = std::fs::symlink_metadata(&at).is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0 && theirs_to_change(&m, user, admin));
+    // The system's own reading of the path has to end at the same file.
+    (runs && std::fs::canonicalize(path).is_ok_and(|real| real == at)).then_some(at)
 }
 
 /// The system tool that names the process listening on TCP `port`, and its arguments: `lsof`
@@ -1100,8 +1203,8 @@ mod tests {
             assert_eq!(procargs(&titled(count, b"my server: 3 workers ")), None, "{count}");
         }
         // The same with fewer variables than the count asks strings for: the count runs
-        // through them into the NULs behind, and what it read last that is not empty is
-        // a variable, or the title with one behind it. Nothing is used.
+        // through them into the NULs behind: a variable is among what it read, or the
+        // last string that is not empty is the title with one behind it. Nothing is used.
         for run_on in [&b"TTTTTTTTFIRST=secret\0\0\0\0\0\0"[..], b"my server: 3 workers FIRST=secret\0\0\0\0\0\0", b"TTTT\0TTTFIRST=secret\0SECOND=secret\0\0\0\0\0"] {
             let mut b = block(4, "/usr/bin/server", &[], &[]);
             b.extend_from_slice(run_on);
@@ -1110,13 +1213,27 @@ mod tests {
         // A title that ends in the argument area, padded with NULs as libuv pads it
         // (node's `process.title`): the title and empty arguments, and no variable.
         assert_eq!(procargs(&titled(3, b"my title\0\0\0")), Some((vec![b"my title".to_vec(), vec![], vec![]], false)));
-        // What looks like a variable only counts at the end: `env A=1 server` is arguments.
-        assert_eq!(procargs(&block(3, "/usr/bin/env", &[b"env", b"A=1", b"server"], &env)).unwrap().0.len(), 3);
+        // A flag with a value, and a name in small letters, are arguments, in any place.
         assert_eq!(procargs(&block(2, "/usr/bin/x", &[b"x", b"--port=3000"], &env)).unwrap().0.len(), 2);
-        assert_eq!(procargs(&block(2, "/usr/bin/make", &[b"make", b"CC=clang"], &env)), None, "the safe side");
+        assert_eq!(procargs(&block(3, "/usr/bin/x", &[b"x", b"--port=3000", b"serve"], &env)).unwrap().0.len(), 3);
+        assert_eq!(procargs(&block(2, "/usr/bin/make", &[b"make", b"cc=clang"], &env)).unwrap().0.len(), 2);
+        // The form of a variable, in any place, costs the process its arguments: the
+        // safe side.
+        assert_eq!(procargs(&block(2, "/usr/bin/make", &[b"make", b"CC=clang"], &env)), None);
+        assert_eq!(procargs(&block(3, "/usr/bin/env", &[b"env", b"A=1", b"server"], &env)), None);
+        assert_eq!(procargs(&block(2, "/usr/bin/x", &[b"_X=1", b"server"], &env)), None);
+        for shaped in [&b"BASH_FUNC_which%%=() { x; }"[..], b"fn%%=() { x; }", b"npm_config_//registry.example.com/:_authToken=abc"] {
+            assert_eq!(procargs(&block(3, "/usr/bin/x", &[b"x", shaped, b"server"], &env)), None, "{}", String::from_utf8_lossy(shaped));
+        }
+        let many: Vec<&[u8]> = [vec![&b"a"[..]; crate::platform::ARGS_MAX + 5], vec![&b"PATH=/usr"[..]]].concat();
+        assert_eq!(procargs(&block(many.len() as i32, "/bin/sh", &many, &env)), None, "past what is kept");
+        // A `=` in the only string, or in the last one with empty strings behind it.
         assert_eq!(procargs(&block(1, "/usr/bin/x", &[b"a=b"], &env)), None);
-        for (text, yes) in [("PATH=/usr/bin", true), ("_X1=", true), ("A=", true), ("--port=3000", false), ("1A=x", false), ("a b=c", false), ("=x", false), ("plain", false), ("", false)] {
-            assert_eq!(is_assignment(text.as_bytes()), yes, "{text:?}");
+        assert_eq!(procargs(&block(3, "/usr/bin/x", &[b"x", b"--port=3000", b""], &env)), None);
+        for (text, yes) in [("PATH=/usr/bin", true), ("_X1=", true), ("A=", true), ("A1_B=x=y", true), ("cc=clang", false), ("Path=x", false), ("--port=3000", false), ("1A=x", false), ("A B=c", false), ("=x", false), ("PLAIN", false), ("", false),
+            ("BASH_FUNC_which%%=() { x; }", true), ("BASH_FUNC_x", true), ("my_fn%%=() { x; }", true), ("50%%", true), ("50%", false),
+            ("npm_config_//registry.example.com/:_authToken=abc", true), ("x:_AUTHTOKEN", true), ("npm_config_registry=https://registry.example.com/", false)] {
+            assert_eq!(is_variable(text.as_bytes()), yes, "{text:?}");
         }
         // Padding that is not NULs: not the form this reads.
         let mut odd = block(1, "/bin/s", &[b"sh"], &env);
@@ -1299,7 +1416,8 @@ mod tests {
         let group = std::fs::metadata(&dir).unwrap().gid();
         let chmod = |path: &Path, mode: u32| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
         // What is above the test's folder is the system's (a shared /tmp is open to all).
-        let own = |path: &Path, user: UserId, admin: Option<u32>| own_program_below(path, user, admin, &dir);
+        let resolved = |path: &Path, user: UserId, admin: Option<u32>| own_program_below(path, user, admin, &dir);
+        let own = |path: &Path, user: UserId, admin: Option<u32>| resolved(path, user, admin).is_some();
         chmod(&dir, 0o755);
         let bin = dir.join("opt/bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -1308,7 +1426,8 @@ mod tests {
         let program = bin.join("tailscale");
         std::fs::write(&program, "#!/bin/sh\n").unwrap();
         chmod(&program, 0o755);
-        assert!(own(&program, me, None));
+        assert_eq!(resolved(&program, me, None), Some(program.canonicalize().unwrap()));
+        assert!(!own(Path::new("opt/bin/tailscale"), me, None), "a full path only");
         // Someone else's file, one that others can write to, one that can't be run, a
         // folder, and nothing at all.
         assert!(!own(&program, me + 1, None));
@@ -1350,7 +1469,8 @@ mod tests {
         let real = cellar.join("tailscale");
         std::fs::rename(&program, &real).unwrap();
         std::os::unix::fs::symlink(&real, &program).unwrap();
-        assert!(own(&program, me, None));
+        // What is run is the file itself, by the path that was checked: no link is left in it.
+        assert_eq!(resolved(&program, me, None), Some(real.canonicalize().unwrap()));
         chmod(&dir.join("cellar/1.0"), 0o777);
         assert!(!own(&program, me, None), "the file's own folders");
         chmod(&dir.join("cellar/1.0"), 0o755);
@@ -1358,11 +1478,32 @@ mod tests {
         assert!(!own(&program, me, None), "the link's folder");
         assert!(own(&real, me, None), "the file by its real name is still fine");
         chmod(&bin, 0o755);
-        // A link that leads nowhere, and one that leads out to a file of the system's.
+        // Links in a row: a link in a safe folder that leads through a folder others can
+        // write to, to a file in a safe one. Whoever can write there can lead it anywhere.
+        let loose = dir.join("loose");
+        std::fs::create_dir_all(&loose).unwrap();
+        chmod(&loose, 0o755);
+        std::os::unix::fs::symlink(&real, loose.join("hop")).unwrap();
+        std::os::unix::fs::symlink(loose.join("hop"), bin.join("chained")).unwrap();
+        assert_eq!(resolved(&bin.join("chained"), me, None), Some(real.canonicalize().unwrap()), "every folder on the way is safe");
+        for open in [0o775, 0o777, 0o1777] {
+            chmod(&loose, open);
+            assert_eq!(resolved(&bin.join("chained"), me, None), None, "{open:o}");
+        }
+        chmod(&loose, 0o755);
+        // A link written with `..` in it, as Homebrew writes them, and a folder that is a link.
+        std::os::unix::fs::symlink("../../cellar/1.0/bin/tailscale", bin.join("relative")).unwrap();
+        assert_eq!(resolved(&bin.join("relative"), me, None), Some(real.canonicalize().unwrap()));
+        std::os::unix::fs::symlink(&cellar, dir.join("current")).unwrap();
+        assert_eq!(resolved(&dir.join("current/tailscale"), me, None), Some(real.canonicalize().unwrap()));
+        // A link that leads nowhere, and links that lead to each other.
         std::os::unix::fs::symlink(dir.join("nothing"), bin.join("dangling")).unwrap();
         assert!(!own(&bin.join("dangling"), me, None));
+        std::os::unix::fs::symlink(bin.join("round"), bin.join("around")).unwrap();
+        std::os::unix::fs::symlink(bin.join("around"), bin.join("round")).unwrap();
+        assert!(!own(&bin.join("round"), me, None));
         // The system's own tools are root's, in root's folders, for any user.
-        assert!(is_own_program(Path::new("/bin/sh"), me + 1));
+        assert_eq!(own_program(Path::new("/bin/sh"), me + 1), std::fs::canonicalize("/bin/sh").ok());
         assert_eq!(ADMIN_GROUP, if cfg!(target_os = "macos") { Some(80) } else { None });
         std::fs::remove_dir_all(dir).unwrap();
     }

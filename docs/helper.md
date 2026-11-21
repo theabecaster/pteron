@@ -181,7 +181,21 @@ started side by side for that job (`job_members`: 1 for a plain command, more fo
 such as `npm run dev | tee log`, and nothing when it can't tell), so that the app offers
 Restart only for a plain command. It only reports: Beacon never stops, signals or starts a
 process itself. Arguments go to your phone in that one answer and nowhere else: not to the
-log, a file or the push gateway. Environment variables are never read out. The details of both are in `Relay/README.md`, steps 8 and 9.
+log, a file or the push gateway. Environment variables are never read out.
+
+What is returned of a process: its id, its parent's, its group and session, its name and
+program file, its working folder, and its arguments. The arguments have a limit you should
+know. The system hands them over as a run of text that the program itself can write to, and
+nothing in it marks where they end. Beacon returns no arguments at all for a process when
+any of them looks like an environment variable (`NAME=value` with the name in capitals, and
+a few known forms that are not in capitals), or
+when the last one holds a `=` and only empty ones follow it. That costs a few programs
+their Restart (`make CC=clang`). It does not cover everything: a program that wrote over
+its own arguments and left no end mark behind them can still have the text that follows
+them in memory, which may be from its environment, returned as part of its last argument.
+Programs that set their own title usually leave an end mark, and then nothing follows.
+
+The details of both are in `Relay/README.md`, steps 8 and 9.
 
 ## What it sends, and where
 

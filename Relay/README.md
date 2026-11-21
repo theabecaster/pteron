@@ -972,19 +972,24 @@ the command line at fixed full paths, in this order, and runs the first that pas
 or the computer's administrators can change it or put another in its place: the file and
 every folder on the way to it belong to root or to that user, none can be written to by
 everyone, and none by its group unless the group is macOS's `admin` (whose members can act
-as root; the system itself makes `/Applications` writable by it). On Linux no group may. A
-link is followed, and both the folders the link is in and the folders the file is really in
-are held to this. A path that does not pass is skipped for the next.
+as root; the system itself makes `/Applications` writable by it). On Linux no group may.
+The path is followed name by name, links too (at most 32), and every folder a name is
+looked up in on the way is held to this: the folder a link is in, the folders its target
+leads through, the folders the file is really in. What Beacon then runs is the file itself
+by the path it checked, with no link left in it, not the name it started from. A path that
+does not pass is skipped for the next.
 
 | System | Paths, in order |
 |---|---|
 | macOS | `/Applications/Tailscale.app/Contents/MacOS/Tailscale` (the app's own program, which is the command line too), `/opt/homebrew/bin/tailscale`, `/usr/local/bin/tailscale` |
-| Linux | `/usr/bin/tailscale`, `/usr/sbin/tailscale`, `/run/current-system/sw/bin/tailscale` (NixOS), `/usr/local/bin/tailscale` |
+| Linux | `/usr/bin/tailscale`, `/usr/sbin/tailscale`, `/usr/local/bin/tailscale` |
 
 When none passes, or the one that does gives no answer to either question in time, the
 answer is `not_available`. A default Homebrew has its folders owned by the user with group
 `admin` (`/opt/homebrew/bin` on Apple silicon, `/usr/local/bin` on Intel), so its link passes
-on a Mac; a folder there that everyone or another group can write to does not.
+on a Mac; a folder there that everyone or another group can write to does not. NixOS has
+no path in the list: its `tailscale` leads into `/nix/store`, which the build group can
+write to, so the rule would refuse it, and `port_share` answers `not_available` there.
 
 From the status it reads `BackendState` (must be `Running`),
 `Self.TailscaleIPs` (only addresses in Tailscale's two ranges count), `Self.DNSName`,
@@ -1177,15 +1182,30 @@ in the same block as the arguments (`KERN_PROCARGS2`); Beacon reads only the cou
 arguments out of it and wipes the block. The block gives the count of arguments and where
 they begin, not where they end. A program that wrote over its arguments and their NULs (a
 title set in place) has fewer strings there than the count, and the count then runs on into
-the environment and, when that is short, into the NULs behind it. The rule: take the last
-of the counted strings that is not empty. When it has the form `NAME=value`, or holds an
-`=` and is the first string or has empty strings behind it, nothing is returned: `argv` is
-`null`. That also costs a process whose real last argument has that form (`make CC=clang`)
-its arguments, and with them Restart. What the rule can't catch: a program that wrote over
-the NUL of its last argument only, so that this argument runs on into a variable and the
-result does not have the form `NAME=value` (`--port=3000` with `PATH=…` behind it); and a
-variable that was set without that form. No program is known to do the first; the block has
-nothing that would show it.
+the environment and, when that is short, into the NULs behind it. The rule: `argv` is
+`null` for the process when either holds.
+
+- A counted string, wherever it stands (the first too), has the form of a variable: it
+  begins `NAME=` with the name of capital letters, digits and `_`, not beginning with a
+  digit; or it begins `BASH_FUNC_`; or it holds `%%` or, in any case, `:_authtoken` (names
+  of variables that are not written in capitals: the functions bash hands on, npm's
+  settings).
+- The last counted string that is not empty holds an `=`, and it is the first string or has
+  empty strings behind it.
+
+`--port=3000` and `cc=clang` are returned. `make CC=clang` and `env A=1 server` are not: a
+real argument of that form costs the process its arguments, and with them Restart.
+
+On Linux the kernel keeps the arguments apart from the environment, and `/proc/<pid>/cmdline`
+is the arguments. But when a program wrote over the NUL that ends its last argument, the
+kernel reads on from there into the environment, which lies right behind: to the next NUL,
+and an older kernel to the environment's end. So the first rule is applied to every string
+of the file as well (the second has nothing to go by there).
+
+The limit, on both systems: a program that wrote over its own arguments and left no NUL at
+their end has the text that follows them glued to its last argument, in one string. When
+that string does not match either rule, it is returned, and the text behind the argument
+with it. Nothing the kernel gives says where the argument ended.
 
 On a Mac the processes are read from the kernel (`proc_pidinfo`, `proc_pidpath`, `getsid`,
 `proc_listpgrppids`, `sysctl kern.procargs2`); on Linux from `/proc/<pid>/stat`, `status`, `cmdline` and the `exe`

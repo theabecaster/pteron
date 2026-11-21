@@ -22,7 +22,7 @@
 use crate::util::Json;
 use serde_json::Value;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How long a command may take, and how much it may print.
@@ -94,20 +94,23 @@ pub fn whois_user(json: &str) -> Option<u64> {
     (user == profile && !tagged(node)).then_some(user)
 }
 
-/// The first of `places` that is a full path and that `usable` takes.
-pub fn find<'a>(places: &[&'a str], usable: impl Fn(&Path) -> bool) -> Option<&'a Path> {
-    places.iter().map(|place| Path::new(*place)).find(|p| p.is_absolute() && usable(p))
+/// The program to run for the first of `places` that is a full path and that `real`
+/// gives one for: what `real` gave, not the place's own name.
+pub fn find(places: &[&str], real: impl Fn(&Path) -> Option<PathBuf>) -> Option<PathBuf> {
+    places.iter().map(|place| Path::new(*place)).filter(|p| p.is_absolute()).find_map(real)
 }
 
-/// The Tailscale client's command line: the first of `places` that `usable` takes.
-fn client_at(places: &[&str], usable: impl Fn(&Path) -> bool) -> Option<tokio::process::Command> {
-    crate::tools::async_command(find(places, usable)?)
+/// The Tailscale client's command line: the first of `places` that `real` gives a program for.
+fn client_at(places: &[&str], real: impl Fn(&Path) -> Option<PathBuf>) -> Option<tokio::process::Command> {
+    crate::tools::async_command(find(places, real)?)
 }
 
-/// The Tailscale client's command line on this computer.
+/// The Tailscale client's command line on this computer: the file a place leads to, by
+/// the very path that was checked (`platform::own_program`), so that a link changed after
+/// the check changes nothing about what runs.
 fn client() -> Option<tokio::process::Command> {
     let me = crate::platform::user_id();
-    client_at(&crate::platform::TAILSCALE, |p| crate::platform::is_own_program(p, me))
+    client_at(&crate::platform::TAILSCALE, |p| crate::platform::own_program(p, me))
 }
 
 /// What `client` says of this computer when asked for at most `wait`. None without a
@@ -331,18 +334,23 @@ mod tests {
         // Not found: nothing, and nothing was started.
         stand_in(&dir, &status());
         let before = runs();
-        assert_eq!(super::status(client_at(&["/nowhere/tailscale", "tailscale"], |p| p.is_file()), WAIT).await, None);
-        assert_eq!(super::status(client_at(&places, |_| false), WAIT).await, None);
+        assert_eq!(super::status(client_at(&["/nowhere/tailscale", "tailscale"], is_file), WAIT).await, None);
+        assert_eq!(super::status(client_at(&places, |_| None), WAIT).await, None);
         assert_eq!(runs(), before);
         // One that does not answer in the time given: nothing.
         std::fs::write(&program, "#!/bin/sh\nsleep 30\n").unwrap();
-        assert_eq!(super::status(client_at(&places, |p| p.is_file()), Duration::from_millis(200)).await, None);
+        assert_eq!(super::status(client_at(&places, is_file), Duration::from_millis(200)).await, None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
+    fn is_file(p: &Path) -> Option<PathBuf> {
+        p.is_file().then(|| p.to_path_buf())
+    }
+
+    #[cfg(unix)]
     async fn status_of(places: &[&str]) -> Option<Tailnet> {
-        super::status(client_at(places, |p| p.is_file()), WAIT).await
+        super::status(client_at(places, is_file), WAIT).await
     }
 
     #[test]
@@ -354,16 +362,20 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(places.to_vec(), ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]);
         } else {
-            assert_eq!(places.to_vec(), ["/usr/bin/tailscale", "/usr/sbin/tailscale", "/run/current-system/sw/bin/tailscale", "/usr/local/bin/tailscale"]);
+            assert_eq!(places.to_vec(), ["/usr/bin/tailscale", "/usr/sbin/tailscale", "/usr/local/bin/tailscale"]);
         }
         // The first one that is usable is taken, whichever that is; none usable is none.
         let list = ["/a/tailscale", "/b/tailscale", "/c/tailscale"];
-        assert_eq!(find(&list, |_| true), Some(Path::new("/a/tailscale")));
-        assert_eq!(find(&list, |p| p != Path::new("/a/tailscale")), Some(Path::new("/b/tailscale")));
-        assert_eq!(find(&list, |p| p == Path::new("/c/tailscale")), Some(Path::new("/c/tailscale")));
-        assert_eq!(find(&list, |_| false), None);
+        let itself = |p: &Path| Some(p.to_path_buf());
+        let only = |ok: fn(&Path) -> bool| move |p: &Path| ok(p).then(|| p.to_path_buf());
+        assert_eq!(find(&list, itself), Some("/a/tailscale".into()));
+        assert_eq!(find(&list, only(|p| p != Path::new("/a/tailscale"))), Some("/b/tailscale".into()));
+        assert_eq!(find(&list, only(|p| p == Path::new("/c/tailscale"))), Some("/c/tailscale".into()));
+        assert_eq!(find(&list, only(|_| false)), None);
+        // What is run is what the check gave for the place (the file a link leads to).
+        assert_eq!(find(&list, |p| (p == Path::new("/b/tailscale")).then(|| "/store/1.0/tailscale".into())), Some("/store/1.0/tailscale".into()));
         // A name without a folder would be looked up somewhere: it is never tried.
-        assert_eq!(find(&["tailscale", "bin/tailscale", "./tailscale"], |_| true), None);
-        assert_eq!(find(&["tailscale", "/d/tailscale"], |_| true), Some(Path::new("/d/tailscale")));
+        assert_eq!(find(&["tailscale", "bin/tailscale", "./tailscale"], itself), None);
+        assert_eq!(find(&["tailscale", "/d/tailscale"], itself), Some("/d/tailscale".into()));
     }
 }
