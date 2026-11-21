@@ -53,11 +53,11 @@ import UIKit
     }
 
     /// The list on a card of the popover's size, over the sidebar's color.
-    private func popover(_ theme: TermTheme, only: Set<String>? = nil, longCommand: Bool = false, menu: Bool = false) -> some View {
+    private func popover(_ theme: TermTheme, only: Set<String>? = nil, longCommand: Bool = false, menu: Bool = false,
+                         top: CGFloat = 70) -> some View {
         VStack(spacing: 16) {
             PortsListFrame(title: "Ports", isEmpty: false, theme: theme) { rows(theme, only: only, longCommand: longCommand) }
                 .frame(width: 300)
-                .frame(maxHeight: 560)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(theme.chrome.sidebar)
                 .clipShape(RoundedRectangle(cornerRadius: 22))
@@ -80,7 +80,7 @@ import UIKit
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 70)
+        .padding(.top, top)
         .background(theme.chrome.canvas)
         .environment(\.colorScheme, theme.isDark ? .dark : .light)
     }
@@ -123,10 +123,14 @@ import UIKit
         #expect(try await shoot(popover(theme, only: ["plain"], menu: true), "row-menu-17pro-\(tone)", size: Self.phone, dark: dark) > 8)
         #expect(try await shoot(popover(theme, only: ["plain", "confirm"], longCommand: true), "restart-long-command-17pro-\(tone)",
                                 size: Self.phone, dark: dark) > 8)
-        #expect(try await shoot(popover(theme, only: ["plain", "confirm", "failed"]), "restart-question-largest-type-17pro-\(tone)",
-                                size: Self.phone, dark: dark, category: .accessibilityExtraExtraExtraLarge) > 8)
-        #expect(try await shoot(popover(theme, only: ["plain", "confirm", "failed"]), "restart-question-largest-type-duo-folded-\(tone)",
-                                size: Self.duoFolded, dark: dark, category: .accessibilityExtraExtraExtraLarge) > 8)
+        // The largest text size: the question, then the rows that say how a Restart went.
+        let largest = UIContentSizeCategory.accessibilityExtraExtraExtraLarge
+        for (name, size) in [("17pro", Self.phone), ("duo-folded", Self.duoFolded)] {
+            #expect(try await shoot(popover(theme, only: ["confirm"], top: 20), "restart-question-largest-type-\(name)-\(tone)",
+                                    size: size, dark: dark, category: largest) > 8)
+            #expect(try await shoot(popover(theme, only: ["restarting", "failed", "still"], top: 20), "restart-states-largest-type-\(name)-\(tone)",
+                                    size: size, dark: dark, category: largest) > 8)
+        }
     }
 
     @Test(arguments: [false, true])

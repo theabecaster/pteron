@@ -185,13 +185,14 @@ struct PortRowFace: View {
                     .font(.system(size: 14 * scale))
                     .foregroundStyle(theme.fg.opacity(0.8))
                     .lineLimit(SidebarMetrics.lines(typeSize))
-                // The state follows the address on its line, so a narrow sidebar cuts the state
-                // and never the address.
+                // The state follows the address on its line, so a narrow list cuts the state
+                // and never the address. At the accessibility sizes the line may wrap, as the
+                // title does: one line there cuts the address itself.
                 Text([row.entry.name, state].compactMap { $0 }.joined(separator: " · "))
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(theme.chrome.tertiary)
-                    .lineLimit(1)
+                    .lineLimit(SidebarMetrics.lines(typeSize))
             }
             Spacer(minLength: 0)
         }
