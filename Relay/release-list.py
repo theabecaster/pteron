@@ -12,8 +12,8 @@ release: <list> is the new release's list. What the published list turns off is 
 it, so that a release never turns back on what was turned off: only <enable> takes a name out.
 `-` says nothing is published yet.
 
-resign: <list> has to be the published list, byte for byte: signing an older copy again
-would publish what that copy turns off, not what is turned off now.
+resign: <list> is a copy of the published list, which release.sh makes from the published
+one each time it runs.
 
 Either way the names have to be what a Beacon takes (Relay/src/update.rs, `names`): at most 32,
 each 1 to 64 small letters, digits and `_`. A list that turns something off, or did, says when
@@ -61,12 +61,10 @@ def main(argv):
     if len(argv) != 6 or argv[1] not in ("release", "resign"):
         stop("usage: release-list.py release|resign <list> <published list or -> <disable> <enable>")
     mode, path, published_path, disable, enable = argv[1:]
-    data, listed = load(path)
+    _, listed = load(path)
     published = None
     if published_path != "-":
-        published_data, published = load(published_path)
-        if mode == "resign" and published_data != data:
-            stop(f"{path} is not the list that is published: delete it and run again, and the published one is signed")
+        _, published = load(published_path)
     elif mode == "resign":
         stop("there is no published list to sign again")
     # What is turned off now: as the published list has it. (For --resign that is the list itself.)

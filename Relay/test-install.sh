@@ -202,8 +202,11 @@ zip_app "$box/app" "$relay/dist/Beacon-macOS.zip"
 release() { # release <key name> [options]: runs the copy of release.sh; other settings come from the caller's environment
   local key="$1"
   shift
-  # The list this copy wrote last stands for the published one: nothing is downloaded here.
-  (cd "$relay" && REXDUO_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" PUBLISHED_LIST="${PUBLISHED_LIST:-$relay/dist/release/manifest.json}" ./release.sh "$@")
+  # The list this copy wrote last, with its signature beside it, stands for the published
+  # one: nothing is downloaded here. Before the first there is none.
+  local list="$relay/dist/release/manifest.json"
+  [[ -f "$list" ]] || list=none
+  (cd "$relay" && REXDUO_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" PUBLISHED_LIST="${PUBLISHED_LIST:-$list}" ./release.sh "$@")
 }
 sign_with() { # sign_with <key name> <file> <signature file>
   "$OPENSSL" pkeyutl -sign -inkey "$box/$1.key" -rawin -in "$2" | "$OPENSSL" base64 -A > "$3"
@@ -355,6 +358,8 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 cp "$out/manifest.json" "$box/saved/with-fields.json"
+# It stands for the published list in the run below, so it is signed as one.
+sign_with primary "$out/manifest.json" "$out/manifest.json.sig"
 sleep 1
 ( export NEXT_KEY="$NEXT" EXPIRES_DAYS=200; release recovery --resign > "$box/resign.log" 2>&1 ) || { cat "$box/resign.log" >&2; fail "release.sh --resign"; }
 grep -q "Nothing was published" "$box/resign.log" || fail "--resign did not say it published nothing"
@@ -396,6 +401,7 @@ ok "release.sh: refuses an EXPIRES_DAYS that is not a number of days"
 ( export MIN_VERSION=9.0.0 EXPIRES_DAYS=45; release primary --skip-build > "$box/release.log" 2>&1 ) || { cat "$box/release.log" >&2; fail "release.sh with MIN_VERSION"; }
 grep -q '^  "min_version": "9.0.0",$' "$out/manifest.json" || fail "MIN_VERSION did not reach the manifest"
 sed -i '' 's/"min_version": "9.0.0"/"min_version": "9.8.7"/' "$out/manifest.json"
+sign_with primary "$out/manifest.json" "$out/manifest.json.sig"
 manifest_check 45 || fail "EXPIRES_DAYS did not set the expiry"
 ok "release.sh: MIN_VERSION sets min_version and EXPIRES_DAYS the expiry"
 python3 - "$out/manifest.json" <<'PY' || fail "a release list has more fields than it should"

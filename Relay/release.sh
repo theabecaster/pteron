@@ -59,9 +59,10 @@
 #                last took it from, so an older signed list played back can't turn anything
 #                back on.
 #
-# The published list is downloaded with gh (its signature is checked against update-key.pub)
-# before anything is written. PUBLISHED_LIST=<file> names a copy to use in its place, and a
-# file that is not there says nothing is published yet (the first release, a test).
+# The published list is downloaded with gh before anything is written, and its signature is
+# checked against update-key.pub. PUBLISHED_LIST=<file> names a copy to use in its place, with
+# its signature in <file>.sig, checked the same way; PUBLISHED_LIST=none says nothing is
+# published yet (the first release). Neither goes with --publish.
 #   expires_at   EXPIRES_DAYS from now (default 180). The helper, the app and setup.sh refuse
 #                the list after that, so a list must be signed again (--resign) before then even
 #                when nothing is released.
@@ -190,9 +191,16 @@ OUT="dist/release"
 DOC="../docs/helper.md"
 
 # The list as it is published now, in "$published"; no such file when nothing is published.
+# Its signature has to verify against the committed public keys, wherever it comes from.
 published="$work/published.json"
 if [[ -n "${PUBLISHED_LIST:-}" ]]; then
-  if [[ -f "$PUBLISHED_LIST" ]]; then cp "$PUBLISHED_LIST" "$published"; fi
+  [[ $PUBLISH -eq 0 ]] || die "PUBLISHED_LIST stands in for the published list, so nothing can be published with it: leave it out with --publish"
+  if [[ "$PUBLISHED_LIST" != none ]]; then
+    [[ -f "$PUBLISHED_LIST" ]] || die "PUBLISHED_LIST names no file: $PUBLISHED_LIST (PUBLISHED_LIST=none says nothing is published yet)"
+    [[ -f "$PUBLISHED_LIST.sig" ]] || die "no signature beside it: $PUBLISHED_LIST.sig"
+    verify "$PUBLISHED_LIST" "$PUBLISHED_LIST.sig" || die "the signature of $PUBLISHED_LIST does not verify"
+    cp "$PUBLISHED_LIST" "$published"
+  fi
 else
   command -v gh >/dev/null 2>&1 || die "gh is needed to read the published list (PUBLISHED_LIST=<file> names a copy to use in its place)"
   mkdir -p "$work/published"
@@ -262,13 +270,12 @@ PY
 
 if [[ $RESIGN -eq 1 ]]; then
   [[ $BUILD -eq 1 && ${#PACKAGE_ARGS[@]} -eq 0 ]] || die "--resign builds nothing: leave out --skip-build and --no-notarize"
-  # The list that is signed again is the published one. A copy here that is not that list is
-  # not signed: release-list.py refuses it.
+  # The list that is signed again is the published one, whatever copy is here: a run
+  # without --publish leaves its list here, and the run with --publish that follows starts
+  # from the published one again.
   [[ -f "$published" ]] || die "there is no published list to sign again"
-  if [[ ! -f "$OUT/manifest.json" ]]; then
-    mkdir -p "$OUT"
-    cp "$published" "$OUT/manifest.json"
-  fi
+  mkdir -p "$OUT"
+  cp "$published" "$OUT/manifest.json"
   python3 ./release-list.py resign "$OUT/manifest.json" "$published" "$DISABLE" "$ENABLE" || die "the list was not written"
   # Besides that, only the dates and, when asked, the next key change. The files it names
   # stay as they are.

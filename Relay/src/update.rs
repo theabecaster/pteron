@@ -85,6 +85,8 @@ const TRUSTED_KEYS_FILE: &str = "trusted_keys.json";
 const HIGH_WATER_FILE: &str = "update_high_water.json";
 /// What the release list last turned off (`Switches`).
 const SWITCHES_FILE: &str = "switches.json";
+/// Locked while a list is accepted (`lock_lists`). Holds nothing.
+const LISTS_LOCK_FILE: &str = "update_list.lock";
 /// The most handed-over keys kept. A fifth pushes out the oldest.
 pub const HANDED_LIMIT: usize = 4;
 /// The launchd job the old program runs as while it restarts the helper on a Mac.
@@ -507,18 +509,31 @@ fn load_high_water(state_dir: &Path) -> Option<Version> {
     read_json::<Value>(&state_dir.join(HIGH_WATER_FILE)).str("version").and_then(Version::parse)
 }
 
+/// Held while a list is accepted and what it says is remembered, by every process that
+/// does so for this state folder: an exclusive lock on a file there, waited for. None when
+/// the file can't be made or locked; the caller goes on without it.
+fn lock_lists(state_dir: &Path) -> Option<std::fs::File> {
+    std::fs::create_dir_all(state_dir).ok()?;
+    let file = crate::platform::open_private(&state_dir.join(LISTS_LOCK_FILE)).ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
 /// `accept_manifest` against what the state folder remembers, which it then brings up to
 /// date: the highest version seen, and a key the manifest hands over. Only a manifest that
 /// was accepted changes either, so a `next_key` in a list nobody trusted is never read.
 /// The same goes for what the list turns off (`Switches`).
 ///
-/// One list at a time in this process: the update timer, a look before a share and a check
-/// the app asked for may each bring one at the same moment, and each reads what is
-/// remembered, compares and writes. Taken one after the other, the list signed last is the
-/// one whose `disabled` stays, whichever of them came in first.
+/// One list at a time: the update timer, a look before a share and a check the app asked
+/// for may each bring one at the same moment, and so may a check run from the command line
+/// in a process of its own. Each reads what is remembered, compares and writes. Taken one
+/// after the other, the list signed last is the one whose `disabled` stays, whichever of
+/// them came in first. Within this process a mutex sees to that, and between processes a
+/// lock on a file in the state folder (`lock_lists`), which each waits for.
 fn accept_and_remember(state_dir: &Path, builtin: Vec<[u8; 32]>, data: &[u8], signature_file: &[u8], now: i64) -> Result<Manifest, Fault> {
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _others = lock_lists(state_dir);
     let mut trust = load_trust(state_dir, builtin);
     let high_water = load_high_water(state_dir);
     let m = accept_manifest(data, signature_file, &trust.keys(), high_water, now)?;
@@ -2537,7 +2552,7 @@ mod tests {
         assert_eq!(u.schedule(), (None, NORMAL_WAIT));
         let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         files.sort();
-        assert_eq!(files, [SWITCHES_FILE, HIGH_WATER_FILE]);
+        assert_eq!(files, [SWITCHES_FILE, HIGH_WATER_FILE, LISTS_LOCK_FILE]);
         // Inside ten minutes of an accepted list: nothing is fetched, however often it is asked.
         *next.lock().unwrap() = list("9.9.9", &[], 20);
         for _ in 0..5 {
@@ -2614,6 +2629,12 @@ mod tests {
         // Twelve lists signed at twelve times, half turning the port share off: whichever
         // order they are accepted in, by as many threads at once, what stays is what the
         // one signed last says, and the time kept is its time.
+        //
+        // Run once with the one-at-a-time rule taken out of `accept_and_remember`, this
+        // failed in each of three runs, in its first rounds: what stayed was a list signed
+        // earlier (the 7th, the 4th and the 1st of the twelve), twice with the port share
+        // on while the newest has it off. Two threads had each read what was kept before
+        // either wrote, and the older list was written last.
         let lists: Vec<(i64, bool, Vec<u8>, Vec<u8>)> = (1..=12)
             .map(|n| {
                 let off = n % 2 == 0;
@@ -2643,6 +2664,115 @@ mod tests {
                 }
             });
             assert_eq!((Switches::load(&dir), Switches::stored_at(&dir)), (vec!["port_share".to_string()], Some(RELEASED + 12)), "round {round}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_list_waits_while_another_process_takes_one() {
+        let (pair, public) = keypair();
+        let dir = temp("switch-flock");
+        let (data, sig) = signed(
+            &pair,
+            &|v: &mut Value| {
+                v["disabled"] = json!(["port_share"]);
+                v["signed_at"] = json!(iso8601(RELEASED + 10));
+            },
+            "0.7.0",
+        );
+        // Another process is at it: the state folder's lock is held through a file handle
+        // of its own, as a second process would hold it. (The mutex of this process is free.)
+        let theirs = lock_lists(&dir).expect("the lock");
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let (dir, done) = (&dir, &done);
+            let waiting = scope.spawn(move || {
+                let taken = accept_and_remember(dir, vec![public], &data, &sig, RELEASED).map(|m| m.version);
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+                taken
+            });
+            // It waits, and has written nothing.
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!done.load(std::sync::atomic::Ordering::SeqCst) && Switches::load(dir).is_empty() && load_high_water(dir).is_none());
+            // The other is done: this one goes on.
+            drop(theirs);
+            assert_eq!(waiting.join().unwrap().unwrap(), "0.7.0");
+        });
+        assert_eq!(Switches::load(&dir), ["port_share"]);
+        // The lock is free again afterwards, and is a file of this user alone that holds nothing.
+        drop(lock_lists(&dir).expect("free again"));
+        let meta = std::fs::metadata(dir.join(LISTS_LOCK_FILE)).unwrap();
+        assert_eq!(meta.len(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(meta.permissions().mode() & 0o077, 0);
+        }
+        // A folder where no lock can be made: the list is taken all the same.
+        let nowhere = dir.join("a-file");
+        std::fs::write(&nowhere, "x").unwrap();
+        assert!(lock_lists(&nowhere).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The part of release.sh that finds the published list, run by itself with what a
+    /// test gives it: `publish` as --publish, `named` as PUBLISHED_LIST. Its signature check
+    /// is a stand-in that takes `<file>.sig` when it holds "signed: " and the file's text
+    /// (the real one is openssl against update-key.pub). What it would go on with, or what
+    /// it said when it stopped. None without bash.
+    fn published_list(dir: &Path, publish: bool, named: Option<&str>) -> Option<Result<String, String>> {
+        let script = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("release.sh")).unwrap();
+        let from = script.find("published=\"$work/published.json\"\n").expect("release.sh finds the published list");
+        let part = &script[from..];
+        let part = &part[..part.find("\nfi\n").expect("where that part ends") + 4];
+        // With no PUBLISHED_LIST it downloads: here `gh` is a stand-in that only says so.
+        let whole = format!(
+            "set -euo pipefail\ndie() {{ echo \"release: $*\" >&2; exit 1; }}\nverify() {{ [[ \"$(cat \"$2\")\" == \"signed: $(cat \"$1\")\" ]]; }}\ngh() {{ echo downloads >&2; return 1; }}\nREPO=example/example\nPUBLISH={}\nwork=\"$1\"\n{part}if [[ -f \"$published\" ]]; then cat \"$published\"; else echo nothing; fi\n",
+            u8::from(publish)
+        );
+        let mut bash = crate::tools::command("bash")?;
+        bash.arg("-c").arg(whole).arg("bash").arg(dir).env_remove("PUBLISHED_LIST");
+        if let Some(named) = named {
+            bash.env("PUBLISHED_LIST", named);
+        }
+        let run = bash.output().ok()?;
+        Some(if run.status.success() { Ok(String::from_utf8_lossy(&run.stdout).trim().to_string()) } else { Err(String::from_utf8_lossy(&run.stderr).trim().to_string()) })
+    }
+
+    #[test]
+    fn release_sh_takes_a_named_list_in_the_published_ones_place_only_when_it_is_signed_and_nothing_is_published() {
+        let dir = temp("published-list");
+        let list = dir.join("manifest.json");
+        let name = list.to_str().unwrap();
+        // A Linux box without bash has no release.sh to run either.
+        let Some(nothing) = published_list(&dir, false, Some("none")) else {
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        };
+        // `none`: nothing is published yet.
+        assert_eq!(nothing.unwrap(), "nothing");
+        // A file that is not there is an error, not "nothing published".
+        let missing = published_list(&dir, false, Some(name)).unwrap().unwrap_err();
+        assert!(missing.contains("names no file") && missing.contains("PUBLISHED_LIST=none"), "{missing}");
+        // Its signature has to be beside it, and to verify.
+        std::fs::write(&list, "the list").unwrap();
+        let unsigned = published_list(&dir, false, Some(name)).unwrap().unwrap_err();
+        assert!(unsigned.contains("no signature beside it"), "{unsigned}");
+        std::fs::write(dir.join("manifest.json.sig"), "signed: another list").unwrap();
+        let wrong = published_list(&dir, false, Some(name)).unwrap().unwrap_err();
+        assert!(wrong.contains("does not verify"), "{wrong}");
+        std::fs::write(dir.join("manifest.json.sig"), "signed: the list").unwrap();
+        assert_eq!(published_list(&dir, false, Some(name)).unwrap().unwrap(), "the list");
+        // With --publish no named list is taken, signed or not, and not `none` either.
+        for named in [name, "none"] {
+            let refused = published_list(&dir, true, Some(named)).unwrap().unwrap_err();
+            assert!(refused.contains("nothing can be published with it"), "{refused}");
+        }
+        // Without one it is downloaded, with --publish and without, and one that can't be
+        // downloaded stops the script.
+        for publish in [false, true] {
+            let downloaded = published_list(&dir, publish, None).unwrap().unwrap_err();
+            assert!(downloaded.contains("downloads") && downloaded.contains("could not be downloaded"), "{downloaded}");
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2715,13 +2845,15 @@ mod tests {
         let twice = written(&dir, "resign", &again, Some(&again), "", "port_share,").unwrap().unwrap();
         assert_eq!((&twice["disabled"], &twice["signed_at"]), (&json!([]), &json!("2099-01-01T00:00:02Z")));
         assert_eq!(written(&dir, "resign", &fresh("0.7.0"), Some(&fresh("0.7.0")), "", "").unwrap().unwrap(), fresh("0.7.0"));
-        // A copy that is not the published list is not signed again: an older copy with
-        // the port share on, while the published one has it off.
+        // It is the published list that says what is off, whatever the copy to be signed
+        // says (release.sh makes that copy from the published list on every run; here it
+        // is an older one with the port share on, as a run without --publish may leave).
         let stale = with("0.7.0", json!([]), "2098-01-01T00:00:00Z");
-        for (list, published) in [(&stale, Some(&published)), (&fresh("0.7.0"), Some(&published)), (&published, None)] {
-            let refused = written(&dir, "resign", list, published, "", "").unwrap().unwrap_err();
-            assert!(refused.starts_with("release: ") && (refused.contains("not the list that is published") || refused.contains("no published list")), "{refused}");
-        }
+        let kept = written(&dir, "resign", &stale, Some(&published), "", "").unwrap().unwrap();
+        assert_eq!((&kept["disabled"], &kept["signed_at"]), (&json!(["port_share"]), &json!("2099-01-01T00:00:01Z")));
+        // Without a published list there is nothing to sign again.
+        let refused = written(&dir, "resign", &published, None, "", "").unwrap().unwrap_err();
+        assert!(refused.starts_with("release: ") && refused.contains("no published list"), "{refused}");
         // Names a Beacon would not take, asked for or carried over, and more than it takes.
         let many: Vec<String> = (0..MAX_DISABLED + 1).map(|n| format!("feature_{n}")).collect();
         let long = "x".repeat(MAX_FEATURE_NAME + 1);

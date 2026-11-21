@@ -399,7 +399,9 @@ a `size`, whatever its name, and picks its own by name.
   signed and that has not expired, the previous list of the same version included, and
   follows that list's `disabled` until it accepts one signed later.
   A list is good for 180 days from its signing. Each list is taken whole before the next
-  is looked at, in the order they come, whichever part of Beacon fetched it; each file in
+  is looked at, in the order they come, whichever part of Beacon fetched it and also when
+  `rex-duo-helper update` runs beside the service: whoever takes one holds a lock on
+  `update_list.lock` in the state folder meanwhile, and the other waits; each file in
   the state folder is written to a temporary file, renamed into place, and the folder
   synced. `Relay/release.sh --resign --disable <name>` and
   `--enable <name>` write the two fields (step 8, Turning it off).
@@ -1155,17 +1157,21 @@ downloads that list first (with `gh`; its signature has to verify) and writes `d
 with `Relay/release-list.py`:
 
 - `--resign` signs the published list, with `disabled`, `signed_at` and the expiry date
-  changed; versions and files stay as they are, so no Beacon updates because of it. A copy
-  in `Relay/dist/release` that is not the published list, byte for byte, is refused: delete
-  it and run again.
+  changed; versions and files stay as they are, so no Beacon updates because of it. Each
+  run puts the published list in place of whatever `Relay/dist/release/manifest.json` held,
+  so a run without `--publish` to read what would be signed, and then the same command with
+  `--publish`, sign the same thing.
 - A release carries over what the published list turns off. Only `--enable <name>` takes a
   name out; `--disable <name>` adds one.
 - `signed_at` is the time of signing, and at least one second after the published list's.
 - The names are checked as Beacon checks them: at most 32, each 1 to 64 small letters,
   digits and `_`. Anything else stops the script before a list is written.
 
-`PUBLISHED_LIST=<file>` names a copy to use in place of the download; a file that is not
-there says nothing is published yet (the first release, and `test-install.sh`).
+`PUBLISHED_LIST=<file>` names a copy to use in place of the download, for a run that
+publishes nothing (`test-install.sh`): its signature has to be in `<file>.sig` and to
+verify like the downloaded one's, and a file that is not there is an error.
+`PUBLISHED_LIST=none` says nothing is published yet. With `--publish` the list is always the
+downloaded one: `PUBLISHED_LIST` is refused there.
 
 ### 9. Who holds a port, and how it was started (`port_owner`, from 0.7.0)
 
