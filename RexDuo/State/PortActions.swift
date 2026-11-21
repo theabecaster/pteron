@@ -64,8 +64,6 @@ final class PortActions {
         var notify: @MainActor (String, Notice.Action?) -> Void = { Notice.shared.show($0, style: .neutral, action: $1) }
         /// A test launch's session label (`-autoOpen <label>`): only that session's panes are typed into.
         var only: @MainActor () -> String? = { UserDefaults.standard.string(forKey: "autoOpen") }
-        /// Types the Ctrl-C, once: through the pane's own input queue when it is on screen, else
-        /// as one call. `mayWrite` is asked as the last thing before the text is handed over.
         /// The connected computers and their ports. Nil: the model's servers, as held now.
         var machines: (@MainActor () -> [PortAddress.Machine])?
         /// Opens a web address that isn't a computer's own in the system's browser.
@@ -113,6 +111,8 @@ final class PortActions {
         var failedFor: TimeInterval = 30
         /// How long a Beacon may take to hand out a page's address.
         var shareLimit: TimeInterval = 8
+        /// Types the Ctrl-C, once: through the pane's own input queue when it is on screen, else
+        /// as one call. `mayWrite` is asked as the last thing before the text is handed over.
         var write: @MainActor (ServerConnection, _ session: String, _ block: String, _ limit: TimeInterval,
                                _ mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery = { server, sid, bid, limit, may in
             await LiveActionChannel(server).write("\u{3}", session: sid, block: bid, within: limit, mayWrite: may)
@@ -309,9 +309,12 @@ final class PortActions {
     /// The row shows: its process's owner is read, once per process and connection. Nothing is
     /// asked of a computer whose Beacon can't answer, and nothing twice at once.
     func learnOwner(_ server: ServerConnection, _ row: PortRow) {
+        let key = Self.key(server, row)
+        // A question asked of the process that held this port before is over: it must not
+        // come back if a later process gets the same number.
+        if let r = restarts[key], r.run.step == .confirming, r.pid != row.entry.pid { restarts[key] = nil }
         guard let pid = row.entry.pid, server.phase == .online, server.control.state == .connected,
               beacon(server).names != false else { return }
-        let key = Self.key(server, row)
         if let m = owners[key], m.pid == pid, m.serial == server.connectionSerial { return }
         guard asking.insert(key).inserted else { return }
         Task {
@@ -818,17 +821,22 @@ final class PortActions {
             if back { break }
             last = server.meta[bid]?.foregroundPID
         }
+        // The read named the shell. So must the foreground the app holds from Rex's events,
+        // which the last look before the write goes by: an event still on its way is waited
+        // for within the same limit, and one that names anything else ends the Restart.
+        if back {
+            back = await observed(parts.shellLimit - (parts.uptime() - began)) { server.meta[bid]?.foregroundPID == shell }
+        }
         guard back, advance(key, .shellBack(true)) == .typing else {
             _ = advance(key, .shellBack(false))
             return ended()
         }
         // The last look, with nothing between it and the write: this Restart is still the one
-        // typing, the port is still gone, no event has named another foreground since the read,
-        // no agent is in the pane, and the pane still shows a current screen.
-        let seen = server.currentMeta(bid)?.foregroundPID
+        // typing, the port is still gone, the foreground is still the job's own shell, no agent
+        // is in the pane, and the pane still shows a current screen.
         let delivery = await parts.type(server, command.typed, bid, parts.leaveLimit) { [weak self] in
             guard let self, self.restarts[key]?.run.mayWrite == .command else { return false }
-            return server.ports.value(bid)?.entry(port) == nil && server.currentMeta(bid)?.foregroundPID == seen
+            return server.ports.value(bid)?.entry(port) == nil && server.currentMeta(bid)?.foregroundPID == shell
                 && server.currentMeta(bid)?.agentKind == nil && self.parts.paneReady(server, bid)
         }
         // One that left and got no answer may have been typed: it is never typed again.

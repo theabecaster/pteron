@@ -1061,9 +1061,9 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
     screen, and nothing is typed until it is on screen with its catch-up fence down (5 s at
     most); one Ctrl-C goes as Stop sends it, with Stop's own checks; the port must go and the
     pane's processes (`terminal.process`, read at most three times) must name the very shell
-    that started the job as the foreground, within 10 s; the command and Return go once
-    through `sendOnce`, after a last look (the port still gone, no other foreground named
-    since the read, no agent, the screen still current); the row says "Restarting…" until the
+    that started the job as the foreground, and Rex's events must name it too, within 10 s;
+    the command and Return go once through `sendOnce`, after a last look (the port still
+    gone, the foreground the events name still that shell, no agent, the screen still current); the row says "Restarting…" until the
     port is back, 30 s at most. The row keeps its place in the list while its port is away
     (`ServerConnection.holdPortRow`).
   - Its waits are events with one deadline each, never a repeating timer: the pane's host
