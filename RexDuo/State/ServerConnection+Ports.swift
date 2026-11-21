@@ -292,7 +292,9 @@ extension ServerConnection {
 
 extension ServerConnection: TunnelServer {
     var tunnelClientID: String? { control.clientID }
-    var tunnelConnected: Bool { control.state == .connected }
+    /// Not in the background, and not after it before the control connection has answered
+    /// (`RexControl.holdsData`): a page's request dials nothing until then.
+    var tunnelConnected: Bool { control.state == .connected && !control.holdsData }
 
     func tunnelCall(_ method: String, _ payload: JSONObject) async throws -> JSONObject {
         try await control.call(method, payload)
@@ -302,8 +304,10 @@ extension ServerConnection: TunnelServer {
         await control.callInOrder(calls)
     }
 
+    /// The control connection's own: every connection it opens asks the computer's gate first,
+    /// and all of them are dropped when the control socket stops answering.
     func makeTunnelSession() -> TunnelSession? {
-        control.wsBase.map { TunnelSession(base: $0) }
+        control.makeTunnelSession()
     }
 
     func openTunnel(ticket: String, in session: TunnelSession?) async throws -> any TunnelSocket {

@@ -180,7 +180,12 @@ final class RevisionTests: XCTestCase {
             let server = try FakeRexServer()
             let address = await server.start()
             server.refuse(code: 1008, reason: reason)
-            let c = control(address)
+            // The taps below come seconds apart; the 10 s between one host's taps is another
+            // test's subject (`ControlTimingTests.testTapsOnOneHostAreTenSecondsApart`).
+            var policy = ReconnectPolicy()
+            policy.userSpacing = 0.1
+            let c = RexControl(address: address, client: ClientInfo(name: "Sample App", version: "0.1.0", label: "test"),
+                               governor: ReconnectGovernor(policy: policy))
             do {
                 try await c.connect()
                 XCTFail("refused servers don't welcome")

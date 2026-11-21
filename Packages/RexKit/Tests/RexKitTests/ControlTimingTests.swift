@@ -7,7 +7,9 @@ import XCTest
 /// opened is the point of most of them: each one is a packet to a computer that may be off.
 ///
 /// The policy is the app's (`ReconnectPolicy.standard`), with the jitter held at its middle, so
-/// the waits are 0.5 s, 10 s, 120 s, then 300 s.
+/// the waits before an episode's attempts are 0.5 s, 10 s, 120 s, then 300 s. An episode that
+/// begins with an attempt (`connect()`, the return) has no first wait: its second attempt follows
+/// by the 10 s.
 @MainActor
 final class ControlTimingTests: XCTestCase {
     private let policy = ReconnectPolicy.standard
@@ -82,7 +84,7 @@ final class ControlTimingTests: XCTestCase {
     private func goDormant() async {
         await beginConnect()
         await fail()
-        for step in 1...4 {
+        for step in 2...5 {
             await clock.advance(by: policy.delay(step: step))
             await fail()
         }
@@ -95,14 +97,15 @@ final class ControlTimingTests: XCTestCase {
 
     // MARK: The schedule (spec test 1)
 
-    func testTheScheduleIsHalfASecondTenSecondsTwoMinutesThenFiveMinutes() async {
+    func testAfterConnectTheScheduleIsTenSecondsTwoMinutesThenFiveMinutes() async {
         let first = await beginConnect()
         XCTAssertTrue(sockets.last.resumed)
         XCTAssertTrue(sockets.last.sentHello)
         sockets.last.failReceive(refused)
         let connected = await first.value
         XCTAssertFalse(connected, "the first attempt's failure is thrown to the caller")
-        let waits: [Double] = [0.5, 10, 120, 300, 300, 300]
+        // `connect()` was the first attempt: the second follows by the 10 s, not by the 0.5 s.
+        let waits: [Double] = [10, 120, 300, 300, 300, 300]
         for (i, wait) in waits.enumerated() {
             XCTAssertEqual(retries.count, i + 1)
             XCTAssertEqual(retries.last, wait)
@@ -118,51 +121,105 @@ final class ControlTimingTests: XCTestCase {
         XCTAssertEqual(triggers, [.first] + Array(repeating: .backoff, count: 6))
     }
 
-    /// Whatever the jitter draws, attempts from the third on are 2 minutes or more after the one
-    /// before, and the waits stay within a fifth of their length.
-    func testTheFloorHoldsUnderEveryJitter() async {
-        for draw in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            unit = draw
-            control.disconnect()
-            await pump()
-            // Long enough for the shared budget to forget the round before.
-            await clock.advance(by: 200)
-            retries = []
-            let from = sockets.count
-            await beginConnect()
-            var began = [clock.now]
+    func testAfterADropTheScheduleIsHalfASecondTenSecondsTwoMinutesThenFiveMinutes() async {
+        await connect()
+        sockets.last.failReceive(refused)
+        await pump()
+        let waits: [Double] = [0.5, 10, 120, 300, 300, 300]
+        for (i, wait) in waits.enumerated() {
+            XCTAssertEqual(retries.count, i + 1)
+            XCTAssertEqual(retries.last, wait)
+            let before = sockets.count
+            await clock.advance(by: wait - 0.01)
+            XCTAssertEqual(sockets.count, before)
+            await clock.advance(by: 0.01)
+            XCTAssertEqual(sockets.count, before + 1)
             sockets.last.failReceive(refused)
             await pump()
-            for _ in 0..<6 {
-                await clock.advance(by: retries.last!)
-                XCTAssertEqual(control.state, .connecting)
-                began.append(clock.now)
-                sockets.last.failReceive(refused)
-                await pump()
-            }
-            XCTAssertEqual(sockets.count - from, 7)
-            let gaps = zip(began, began.dropFirst()).map { $1.timeIntervalSince($0) }
-            XCTAssertLessThanOrEqual(gaps[0], 1)
-            XCTAssertTrue((8...12).contains(gaps[1]), "10 s within a fifth: \(gaps[1])")
-            for gap in gaps.dropFirst(2) { XCTAssertGreaterThanOrEqual(gap, 120, "draw \(draw)") }
-            XCTAssertTrue((120...144).contains(gaps[2]))
-            XCTAssertTrue((240...360).contains(gaps[3]))
         }
+    }
+
+    /// Whatever the jitter draws, and however an attempt ends (at once, or at its deadline),
+    /// every attempt from the third on starts 2 minutes or more after the one before STARTED.
+    /// The second follows the first by its 10 s, within a fifth.
+    func testTheFloorHoldsUnderEveryJitter() async {
+        for timesOut in [false, true] {
+            for draw in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                unit = draw
+                control.disconnect()
+                await pump()
+                // Long enough for the shared budget to forget the round before.
+                await clock.advance(by: 200)
+                retries = []
+                let from = sockets.count
+                await beginConnect()
+                var began = [clock.now]
+                for _ in 0..<6 {
+                    if timesOut { await clock.advance(by: 10) } else { sockets.last.failReceive(refused); await pump() }
+                    await clock.advance(by: retries.last!)
+                    XCTAssertEqual(control.state, .connecting)
+                    began.append(clock.now)
+                }
+                XCTAssertEqual(sockets.count - from, 7)
+                let gaps = zip(began, began.dropFirst()).map { $1.timeIntervalSince($0) }
+                let slack = timesOut ? 10.0 : 0
+                XCTAssertTrue((8 + slack...12 + slack).contains(gaps[0]), "10 s within a fifth: \(gaps[0])")
+                for gap in gaps.dropFirst() { XCTAssertGreaterThanOrEqual(gap, 120, "draw \(draw)") }
+                XCTAssertTrue((120 + slack...144 + slack).contains(gaps[1]))
+                XCTAssertTrue((240 + slack...360 + slack).contains(gaps[2]))
+            }
+        }
+    }
+
+    /// The same after a drop: 0.5 s, 10 s, and from the third attempt on the floor.
+    func testTheFloorHoldsAfterADropToo() async {
+        await connect()
+        await fail()
+        var began: [Date] = []
+        for _ in 0..<5 {
+            await clock.advance(by: retries.last!)
+            XCTAssertEqual(control.state, .connecting)
+            began.append(clock.now)
+            sockets.last.failReceive(refused)
+            await pump()
+        }
+        let gaps = zip(began, began.dropFirst()).map { $1.timeIntervalSince($0) }
+        XCTAssertEqual(gaps, [10, 120, 300, 300])
+    }
+
+    /// Nothing that asks brings the third attempt nearer than the floor to the second: not the
+    /// return, not the network, not a host the breaker let go.
+    func testNoTriggerBringsTheThirdAttemptInsideTheFloor() async {
+        await beginConnect()
+        await fail()
+        await clock.advance(by: 10)
+        await fail()
+        XCTAssertEqual(sockets.count, 2)
+        for _ in 0..<118 {
+            control.wake()
+            control.pathChanged(satisfied: true, expensive: false, interfaceChanged: true)
+            control.kick(.peer)
+            control.kick(.foreground)
+            await clock.advance(by: 1)
+        }
+        XCTAssertEqual(sockets.count, 2, "118 s after the second attempt began: none")
+        await clock.advance(by: 2.1)
+        XCTAssertEqual(sockets.count, 3, "at 120 s: one")
     }
 
     func testAWelcomeStartsTheScheduleOver() async {
         await beginConnect()
         await fail()
-        await clock.advance(by: 0.5)
-        await fail()
-        XCTAssertEqual(retries, [0.5, 10])
         await clock.advance(by: 10)
+        await fail()
+        XCTAssertEqual(retries, [10, 120])
+        await clock.advance(by: 120)
         sockets.last.welcome()
         await pump()
         XCTAssertEqual(control.state, .connected)
         XCTAssertEqual(reconnects, 1)
         await fail()
-        XCTAssertEqual(retries, [0.5, 10, 0.5])
+        XCTAssertEqual(retries, [10, 120, 0.5])
     }
 
     func testOneSocketThatFailsSeveralWaysCountsOnce() async {
@@ -184,13 +241,13 @@ final class ControlTimingTests: XCTestCase {
         control.onDormant = { wentDormant += 1 }
         await beginConnect()
         await fail()
-        for step in 1...3 {
+        for step in 2...4 {
             XCTAssertFalse(control.dormant)
             await clock.advance(by: policy.delay(step: step))
             await fail()
         }
         XCTAssertFalse(control.dormant, "four")
-        await clock.advance(by: policy.delay(step: 4))
+        await clock.advance(by: policy.delay(step: 5))
         await fail()
         XCTAssertTrue(control.dormant, "five")
         XCTAssertEqual(wentDormant, 1)
@@ -218,12 +275,16 @@ final class ControlTimingTests: XCTestCase {
 
     /// A computer that is off, with every attempt left to run into its deadline: the count of
     /// sockets over one hour and over a day with the app open.
-    func testAHostThatNeverAnswersGetsTenAttemptsInAnHourAndUnderOneHundredFiftyInADay() async {
+    func testAHostThatNeverAnswersGetsNineAttemptsInAnHourFiftyInEightAndUnderOneHundredFiftyInADay() async {
         await beginConnect()
         await clock.advance(by: 3600)
-        XCTAssertEqual(sockets.count, 10)
+        // At 0, 20, 150, 460 and 770 s, each running 10 s into its deadline; dormant at 780 s,
+        // then one per 610 s: 1390, 2000, 2610, 3220.
+        XCTAssertEqual(sockets.count, 9)
         XCTAssertTrue(control.dormant)
-        await clock.advance(by: 23 * 3600)
+        await clock.advance(by: 7 * 3600)
+        XCTAssertEqual(sockets.count, 50)
+        await clock.advance(by: 16 * 3600)
         XCTAssertEqual(sockets.count, 145)
     }
 
@@ -297,7 +358,7 @@ final class ControlTimingTests: XCTestCase {
         let old = sockets.last
         old.failReceive()
         _ = await first.value
-        await clock.advance(by: 0.5)
+        await clock.advance(by: 10)
         XCTAssertEqual(sockets.count, 2)
         old.deliverLate(#"{"type":"welcome","client":{"id":"client:old","reconnect_token":"old"}}"#)
         await pump()
@@ -318,7 +379,7 @@ final class ControlTimingTests: XCTestCase {
         XCTAssertTrue(sockets.last.cancelled)
 
         control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
-        await clock.advance(by: 0.5)
+        await clock.advance(by: 10)
         XCTAssertEqual(sockets.count, 2)
         await clock.advance(by: 14.99)
         XCTAssertEqual(control.state, .connecting)
@@ -330,7 +391,8 @@ final class ControlTimingTests: XCTestCase {
         await beginConnect()
         await clock.advance(by: 9)
         await fail()
-        await clock.advance(by: 0.5)
+        control.kick()
+        await pump()
         XCTAssertEqual(sockets.count, 2)
         await clock.advance(by: 2)
         XCTAssertEqual(control.state, .connecting, "the first attempt's 10 s are over; the second is 2 s old")
@@ -443,7 +505,7 @@ final class ControlTimingTests: XCTestCase {
         XCTAssertEqual(sockets.count, 2)
         XCTAssertEqual(triggers.last, .foreground)
         await fail()
-        XCTAssertEqual(retries, [0, 0.5], "at once only once")
+        XCTAssertEqual(retries, [0, 10], "at once only once: that was the episode's first attempt")
     }
 
     func testTheWakePongWaitIsFiveSecondsOnCellular() async {
@@ -489,18 +551,38 @@ final class ControlTimingTests: XCTestCase {
     func testATapTriesNowAndDoesNotStartTheScheduleOver() async {
         await beginConnect()
         await fail()
-        await clock.advance(by: 0.5)
-        await fail()
         await clock.advance(by: 10)
         await fail()
-        XCTAssertEqual(retries, [0.5, 10, 120])
+        XCTAssertEqual(retries, [10, 120])
         control.kick()
         await pump()
-        XCTAssertEqual(sockets.count, 4, "the attempt starts now, inside the floor: the user asked")
+        XCTAssertEqual(sockets.count, 3, "the attempt starts now, inside the floor: the user asked")
         await fail()
-        XCTAssertEqual(retries, [0.5, 10, 120, 300], "the next wait is the next step, not the first")
+        XCTAssertEqual(retries, [10, 120, 300], "the next wait is the next step, not the first")
         await clock.advance(by: 299)
-        XCTAssertEqual(sockets.count, 4, "and the wait that was running is gone")
+        XCTAssertEqual(sockets.count, 3, "and the wait that was running is gone")
+    }
+
+    /// Taps on one host are 10 s apart: a host that turns each attempt away at once is not
+    /// asked once per tap. The tap is not lost: its attempt comes when the 10 s are over.
+    func testTapsOnOneHostAreTenSecondsApart() async {
+        await beginConnect()
+        sockets.last.failReceive(refused)
+        await pump()
+        control.kick()
+        await pump()
+        XCTAssertEqual(sockets.count, 2)
+        sockets.last.failReceive(refused)
+        await pump()
+        for _ in 0..<9 {
+            control.kick()
+            await pump()
+            await clock.advance(by: 1)
+        }
+        XCTAssertEqual(sockets.count, 2, "nine taps in the 9 s after: none yet")
+        await clock.advance(by: 1)
+        XCTAssertEqual(sockets.count, 3, "at 10 s: the one they asked for")
+        XCTAssertEqual(triggers.last, .user)
     }
 
     func testATapGivesADormantHostOneAttemptAndItStaysDormant() async {
@@ -576,7 +658,97 @@ final class ControlTimingTests: XCTestCase {
             if sockets.last.isWaitingToReceive { sockets.last.failReceive() }
             await clock.advance(by: 1)
         }
-        XCTAssertLessThanOrEqual(sockets.count - from, 5, "ten minutes of changes")
+        XCTAssertLessThanOrEqual(sockets.count - from, 1, "ten minutes of changes: its own turn, no more")
+    }
+
+    /// A path that changes route every 5 s for an hour (`RouteWatch` settles each one), and a
+    /// host that is dormant: it is asked no more often than its ten minutes.
+    func testUnderAFlappingPathForAnHourADormantHostGetsAtMostSixAttempts() async {
+        await goDormant()
+        let watch = RouteWatch(policy: policy, clock: clock)
+        var changes = 0
+        watch.onChange = { [unowned self] in
+            changes += 1
+            control.pathChanged(satisfied: true, expensive: false, interfaceChanged: true)
+        }
+        let wifi = PathFacts(satisfied: true, interface: .wifi, tunnel: ["a"])
+        let cell = PathFacts(satisfied: true, expensive: true, interface: .cellular, tunnel: ["a"])
+        watch.report(wifi)
+        let from = sockets.count
+        for second in 0..<3600 {
+            if second % 5 == 0 { watch.report((second / 5) % 2 == 0 ? cell : wifi) }
+            if sockets.last.isWaitingToReceive { sockets.last.failReceive() }
+            await clock.advance(by: 1)
+        }
+        XCTAssertGreaterThan(changes, 600, "the route did change, hundreds of times")
+        XCTAssertLessThanOrEqual(sockets.count - from, 6)
+        XCTAssertGreaterThanOrEqual(sockets.count - from, 5)
+    }
+
+    /// `RouteWatch`: a burst of reports is one change, 2 s after the last; reports that change
+    /// no route are none; the first report is the start.
+    func testARouteChangeIsReportedOnceItHasSettled() async {
+        let watch = RouteWatch(policy: policy, clock: clock)
+        var changes = 0
+        watch.onChange = { changes += 1 }
+        let wifi = PathFacts(satisfied: true, interface: .wifi, tunnel: ["a"])
+        let cell = PathFacts(satisfied: true, expensive: true, interface: .cellular, tunnel: ["a"])
+        watch.report(wifi)
+        await clock.advance(by: 10)
+        XCTAssertEqual(changes, 0, "the first report is where the app started")
+        // A burst: ten reports in a second.
+        for i in 0..<10 {
+            watch.report(i % 2 == 0 ? cell : PathFacts(satisfied: false, interface: .none))
+            await clock.advance(by: 0.1)
+        }
+        watch.report(cell)
+        await clock.advance(by: 1.9)
+        XCTAssertEqual(changes, 0, "not settled yet")
+        await clock.advance(by: 0.2)
+        XCTAssertEqual(changes, 1)
+        // Cost and constraints alone: no change of route.
+        var same = cell
+        same.expensive = false
+        watch.report(same)
+        await clock.advance(by: 5)
+        XCTAssertEqual(changes, 1)
+        // Away and back to the same route inside the 2 s: none.
+        watch.report(wifi)
+        await clock.advance(by: 1)
+        watch.report(same)
+        await clock.advance(by: 5)
+        XCTAssertEqual(changes, 1)
+        // No path, then a path: one, when the path is back.
+        watch.report(PathFacts(satisfied: false, interface: .none))
+        await clock.advance(by: 5)
+        XCTAssertEqual(changes, 1, "no path is nothing to try on")
+        watch.report(same)
+        await clock.advance(by: 2)
+        XCTAssertEqual(changes, 2)
+        // Another tunnel address on the same interface.
+        watch.report(PathFacts(satisfied: true, interface: .cellular, tunnel: ["b"]))
+        await clock.advance(by: 2)
+        XCTAssertEqual(changes, 3)
+    }
+
+    /// A path report that is no change of route, after no path at all: the wait that had
+    /// stopped goes on, and nothing is asked on top of it.
+    func testAPathAgainWithNoChangeOfRouteLetsTheScheduleGoOn() async {
+        await beginConnect()
+        await fail()
+        await clock.advance(by: 10)
+        await fail()
+        XCTAssertEqual(retries, [10, 120])
+        await clock.advance(by: 30)
+        control.pathChanged(satisfied: false, expensive: false, interfaceChanged: false)
+        await clock.advance(by: 30)
+        control.pathChanged(satisfied: true, expensive: false, interfaceChanged: false)
+        await pump()
+        XCTAssertEqual(sockets.count, 2)
+        await clock.advance(by: 59)
+        XCTAssertEqual(sockets.count, 2)
+        await clock.advance(by: 1)
+        XCTAssertEqual(sockets.count, 3, "at the end of the 120 s it was waiting")
     }
 
     func testAPathReportThatChangesNoInterfaceAsksForNothing() async {
@@ -629,7 +801,7 @@ final class ControlTimingTests: XCTestCase {
     func testNothingIsTriedPingedOrWaitingInTheBackground() async {
         await beginConnect()
         await fail()
-        XCTAssertEqual(retries, [0.5])
+        XCTAssertEqual(retries, [10])
         control.enteredBackground()
         XCTAssertTrue(control.suspended)
         await clock.advance(by: 15)
@@ -649,7 +821,73 @@ final class ControlTimingTests: XCTestCase {
         XCTAssertEqual(sockets.count, 2, "back in front: one attempt")
         XCTAssertEqual(triggers.last, .foreground)
         await fail()
-        XCTAssertEqual(retries.last, 10, "and the schedule goes on from where it was")
+        XCTAssertEqual(retries.last, 120, "and the schedule goes on from where it was")
+    }
+
+    /// An attempt that is under way when the app goes to the background is given up: its
+    /// socket is dropped at once, and it is not taken for the host's failure.
+    func testAnAttemptUnderWayIsCancelledAtTheBackground() async {
+        let first = await beginConnect()
+        let s = sockets.last
+        control.enteredBackground()
+        XCTAssertTrue(s.cancelled)
+        XCTAssertTrue(isFailed)
+        let connected = await first.value
+        XCTAssertFalse(connected)
+        await clock.advance(by: 3600)
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(clock.waiting, 0)
+        XCTAssertFalse(control.dormant)
+        // A welcome that comes late on the socket that was dropped changes nothing.
+        s.deliverLate(#"{"type":"welcome","client":{"id":"client:old","reconnect_token":"old"}}"#)
+        await pump()
+        XCTAssertTrue(isFailed)
+        control.wake()
+        await pump()
+        XCTAssertEqual(sockets.count, 2, "back in front: one attempt")
+    }
+
+    // MARK: The verdict after the background (data paths wait for it)
+
+    func testDataIsHeldFromTheBackgroundUntilThePongOfTheReturn() async {
+        await connect()
+        var verdicts = 0
+        control.observeVerdict { verdicts += 1; return true }
+        XCTAssertFalse(control.holdsData)
+        control.enteredBackground()
+        XCTAssertTrue(control.holdsData, "in the background")
+        XCTAssertThrowsError(try control.openDataSocket(subprotocol: "rex.data.terminal.v1")) { _ in }
+        control.wake()
+        XCTAssertTrue(control.holdsData, "back, but the connection has not answered yet")
+        XCTAssertEqual(verdicts, 0)
+        await clock.advance(by: 1)
+        XCTAssertTrue(control.holdsData)
+        sockets.last.answerPing()
+        await pump()
+        XCTAssertFalse(control.holdsData, "the pong is the verdict")
+        XCTAssertEqual(verdicts, 1)
+        // The keepalive's pongs later are no verdicts.
+        await clock.advance(by: 30)
+        sockets.last.answerPing()
+        await pump()
+        XCTAssertEqual(verdicts, 1)
+    }
+
+    func testWithNoPongTheVerdictIsTheFreshWelcome() async {
+        await connect()
+        var verdicts = 0, connects = 0
+        control.observeVerdict { verdicts += 1; return true }
+        control.observeConnected { connects += 1; return true }
+        control.enteredBackground()
+        control.wake()
+        await clock.advance(by: 2.5)
+        XCTAssertEqual(sockets.count, 2, "no pong: the connection is made again")
+        XCTAssertTrue(control.holdsData)
+        sockets.last.welcome()
+        await pump()
+        XCTAssertFalse(control.holdsData)
+        XCTAssertEqual(connects, 1, "the welcome is told as every reconnect is")
+        XCTAssertEqual(verdicts, 0)
     }
 
     func testAConnectionInTheBackgroundIsNotPingedAndADropIsNotRetriedUntilTheReturn() async {
@@ -674,20 +912,18 @@ final class ControlTimingTests: XCTestCase {
     func testTheReturnHoldsABackingOffHostToTheFloor() async {
         await beginConnect()
         await fail()
-        await clock.advance(by: 0.5)
-        await fail()
         await clock.advance(by: 10)
         await fail()
-        XCTAssertEqual(sockets.count, 3)
+        XCTAssertEqual(sockets.count, 2)
         control.enteredBackground()
         await clock.advance(by: 20)
         control.wake()
         await pump()
-        XCTAssertEqual(sockets.count, 3, "20 s after its third attempt: not yet")
+        XCTAssertEqual(sockets.count, 2, "20 s after its second attempt began: not yet")
         await clock.advance(by: 99.9)
-        XCTAssertEqual(sockets.count, 3)
+        XCTAssertEqual(sockets.count, 2)
         await clock.advance(by: 0.2)
-        XCTAssertEqual(sockets.count, 4, "two minutes after it")
+        XCTAssertEqual(sockets.count, 3, "two minutes after it")
     }
 
     func testTheReturnLeavesADormantHostAloneUnlessItIsSelected() async {
@@ -697,8 +933,8 @@ final class ControlTimingTests: XCTestCase {
         control.wake()
         await pump()
         XCTAssertEqual(sockets.count, 5, "not selected: no attempt at the return")
-        // Its ten-minute turn is long due: it comes two minutes after the return, no sooner.
-        await clock.advance(by: 119)
+        // Its wait goes on from where the background stopped it: the whole ten minutes here.
+        await clock.advance(by: 599)
         XCTAssertEqual(sockets.count, 5)
         await clock.advance(by: 1)
         XCTAssertEqual(sockets.count, 6)
@@ -717,7 +953,140 @@ final class ControlTimingTests: XCTestCase {
         XCTAssertEqual(sockets.count, 7, "selected and past the floor: one attempt")
     }
 
+    /// A dormant host that is not selected, and visits to the app of 90 s each: its wait counts
+    /// the time in the foreground, so the visits add up to a turn. Never in the background, and
+    /// never two turns within ten minutes.
+    func testADormantHostIsNotStarvedByShortVisits() async {
+        await goDormant()
+        var began: [Date] = []
+        control.onAttempt = { [unowned self] _ in began.append(clock.now) }
+        var inBackground = false, triedInBackground = 0
+        for _ in 0..<80 {
+            // 90 s in front.
+            for _ in 0..<90 {
+                if sockets.last.isWaitingToReceive { sockets.last.failReceive() }
+                await clock.advance(by: 1)
+            }
+            control.enteredBackground()
+            inBackground = true
+            let n = began.count
+            await clock.advance(by: 300)
+            triedInBackground += began.count - n
+            inBackground = false
+            control.wake()
+            await pump()
+        }
+        _ = inBackground
+        XCTAssertEqual(triedInBackground, 0)
+        // Two hours in front, in 80 visits: about one turn per ten minutes of them.
+        XCTAssertGreaterThanOrEqual(began.count, 9, "the visits add up")
+        XCTAssertLessThanOrEqual(began.count, 12)
+        for gap in zip(began, began.dropFirst()).map({ $1.timeIntervalSince($0) }) {
+            XCTAssertGreaterThanOrEqual(gap, 600)
+        }
+    }
+
+    // MARK: What an observer of the state reads
+
+    /// Whoever hears of a failure reads the facts as they are after it: `dormant` at the fifth
+    /// silence, `retryStopped` at a 401.
+    func testAnObserverOfAFailureReadsTheFactsAfterIt() async {
+        var seen: [(dormant: Bool, stopped: Bool)] = []
+        control.onStateChange = { [unowned self] st in
+            if case .failed = st { seen.append((control.dormant, control.retryStopped)) }
+        }
+        await goDormant()
+        XCTAssertEqual(seen.map(\.dormant), [false, false, false, false, true], "dormant is set when the fifth failure is told")
+        control.kick()
+        await pump()
+        sockets.last.response = HTTPURLResponse(url: URL(string: "https://desk.example.ts.net")!, statusCode: 401,
+                                                httpVersion: nil, headerFields: nil)
+        sockets.last.failReceive(URLError(.badServerResponse))
+        await pump()
+        XCTAssertEqual(seen.last?.stopped, true, "and stopped when the 401 is told")
+    }
+
+    /// The deadline of an attempt ends with the attempt: after the welcome nothing sleeps on.
+    func testTheWelcomeDeadlineIsCancelledWhenTheAttemptEnds() async {
+        await connect()
+        XCTAssertEqual(clock.waiting, 0, "after the welcome")
+        await fail()
+        await clock.advance(by: 0.5)
+        XCTAssertEqual(control.state, .connecting)
+        XCTAssertEqual(clock.waiting, 1, "the attempt's deadline")
+        await fail()
+        XCTAssertEqual(clock.waiting, 1, "the failed attempt's deadline is gone: only the wait for the next is left")
+        control.disconnect()
+        await pump()
+        XCTAssertEqual(clock.waiting, 0, "after the disconnect")
+    }
+
     // MARK: Disconnect
+
+    /// A tap, then `disconnect()` before its attempt began: nothing is opened.
+    func testAnAttemptLetThroughBeforeDisconnectOpensNothing() async {
+        await beginConnect()
+        await fail()
+        control.kick()
+        control.disconnect()
+        await pump()
+        await clock.advance(by: 60)
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(control.state, .idle)
+        // The same for a wait that ends in the turn of the disconnect.
+        await beginConnect()
+        await fail()
+        control.kick(.foreground)
+        control.disconnect()
+        await clock.advance(by: 60)
+        XCTAssertEqual(sockets.count, 2)
+    }
+
+    // MARK: TLS
+
+    private let untrusted = URLError(.serverCertificateUntrusted)
+
+    /// A TLS failure is tried again on the normal schedule. It stops the retries only at the
+    /// third in a row while another host is connected: then the tunnel works and this host's
+    /// certificate is the trouble.
+    func testATLSFailureIsRetriedAndStopsOnlyAtTheThirdWhileAnotherHostIsUp() async {
+        await beginConnect()
+        for _ in 0..<6 {
+            sockets.last.failReceive(untrusted)
+            await pump()
+            XCTAssertFalse(control.retryStopped, "no other host is up: a tunnel half up fails TLS too")
+            await clock.advance(by: retries.last!)
+        }
+        XCTAssertFalse(control.dormant, "and it is not a silence")
+        sockets.last.welcome()
+        await pump()
+
+        // Another host of the same governor is connected.
+        let others = FakeControlSockets()
+        let other = RexControl(address: "https://other.example.ts.net",
+                               client: ClientInfo(name: "test", version: "0", label: "test"),
+                               clock: clock, sockets: others.factory, governor: governor)
+        Task { @MainActor in try? await other.connect() }
+        await pump()
+        others.last.welcome()
+        await pump()
+        sockets.last.failReceive(untrusted)
+        await pump()
+        for n in 1...2 {
+            XCTAssertFalse(control.retryStopped, "TLS failure \(n)")
+            await clock.advance(by: retries.last!)
+            sockets.last.failReceive(untrusted)
+            await pump()
+        }
+        XCTAssertTrue(control.retryStopped, "the third in a row")
+        let n = sockets.count
+        await clock.advance(by: 3600)
+        XCTAssertEqual(sockets.count, n, "only the user asks again")
+        control.kick()
+        await pump()
+        XCTAssertEqual(sockets.count, n + 1)
+        other.disconnect()
+    }
 
     func testDisconnectClosesTheSocketAndStopsEverything() async {
         await connect()

@@ -44,10 +44,19 @@ extension RexControl: StreamLink {
 
     func openDataSocket(subprotocol: String) throws -> any StreamSocket {
         guard let base = wsBase else { throw RexError.local("invalid server address") }
+        // The host's one gate, here so that no caller can go around it: no data socket without
+        // the control connection's welcome, and no terminal stream in the background or, after
+        // it, before that connection has answered (`holdsData`). A file's socket is not held
+        // then: it follows the answer to its `…_begin` call, so the connection answered a
+        // moment ago, and a send the user started goes on when they leave the app.
+        guard state == .connected, subprotocol != "rex.data.terminal.v1" || !holdsData else {
+            throw RexError.unsent("not connected")
+        }
         let task = session.webSocketTask(with: base.appendingPathComponent("api/data"), protocols: [subprotocol])
         task.maximumMessageSize = 1 << 20
         task.resume()
         let socket = URLSessionStreamSocket(task)
+        opened(socket)
         // Only terminal streams: a file's or a tunnel's bytes are not what the delay measures.
         guard !linkDelay.isZero, subprotocol == "rex.data.terminal.v1" else { return socket }
         return DelayedStreamSocket(socket, delay: linkDelay)

@@ -440,7 +440,7 @@ final class ConnectionLogTests: XCTestCase {
         await pump()
         await clock.advance(by: control.policy.connectDeadline(expensive: false))
         _ = await first.value
-        await clock.advance(by: 0.5)
+        await clock.advance(by: 10)
         uptime += 0.84
         sockets.last.welcome()
         await pump()
@@ -461,7 +461,8 @@ final class ConnectionLogTests: XCTestCase {
         XCTAssertEqual(lines, [
             "connecting by=first",
             "closed timeout code=-1001",
-            "retry in=500ms",
+            // `connect()` was the first attempt: the second follows by the 10 s.
+            "retry in=10000ms",
             "connecting by=backoff",
             "connected after=840ms",
             "closed lost code=-1005",

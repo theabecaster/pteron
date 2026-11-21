@@ -211,10 +211,13 @@ public final class TunnelSession: @unchecked Sendable {
 
     private let session: URLSession
     private let base: URL
+    private let gate: @MainActor @Sendable () -> Bool
 
-    /// `base` is the server's `wss://` origin (`RexControl.wsBase`).
-    public init(base: URL) {
+    /// `base` is the server's `wss://` origin (`RexControl.wsBase`). `gate`: the host's gate,
+    /// asked before every connection (`RexControl.makeTunnelSession` gives the host's own).
+    init(base: URL, gate: @escaping @MainActor @Sendable () -> Bool) {
         self.base = base
+        self.gate = gate
         let cfg = URLSessionConfiguration.ephemeral
         cfg.waitsForConnectivity = false
         cfg.timeoutIntervalForRequest = 20
@@ -228,6 +231,9 @@ public final class TunnelSession: @unchecked Sendable {
     /// A data connection that has had its handshake: HELLO with the ticket, then the WELCOME.
     public func open(ticket: String) async throws -> any TunnelSocket {
         guard let hello = DataFrame.ticketHello(ticket) else { throw RexError.local("bad ticket") }
+        // The host's one gate, here so that no caller can go around it: nothing is dialed
+        // without the control connection's welcome, in the background, or before its verdict.
+        guard await gate() else { throw RexError.unsent("not connected") }
         let task = session.webSocketTask(with: base.appendingPathComponent("api/data"), protocols: [BytesStream.subprotocol])
         task.maximumMessageSize = 1 << 20
         task.resume()
@@ -245,6 +251,14 @@ public final class TunnelSession: @unchecked Sendable {
 
     /// Cancels every connection and frees the session.
     public func invalidate() { session.invalidateAndCancel() }
+
+    /// Drops every connection with no close frame and keeps the session: the host stopped
+    /// answering. A browser's request that comes later dials again, through the gate.
+    public func abortAll() {
+        session.getAllTasks { tasks in
+            for t in tasks { t.cancel() }
+        }
+    }
 }
 
 final class URLSessionTunnelSocket: TunnelSocket, @unchecked Sendable {

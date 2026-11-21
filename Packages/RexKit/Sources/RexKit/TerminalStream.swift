@@ -362,7 +362,8 @@ public extension TerminalSink {
 /// Reconnecting. `RexControl` is the only thing that retries a lost connection. The stream:
 ///
 /// - When its data socket drops, sends one RESUME after `resumeDelay`, if the server can still
-///   have the stream (`canResume`). A RESUME needs no control connection.
+///   have the stream (`canResume`). A RESUME needs no ticket, but waits for the control
+///   connection like every socket to the host (`mayOpen`).
 /// - If that fails, or can't be tried, makes a fresh start (ticket, HELLO), which needs the control
 ///   connection. Without one it does nothing but wait (`waitingForControl`), showing
 ///   `.reconnecting`; `RexControl` tells it when it is connected again (`observeConnected`), and
@@ -507,6 +508,11 @@ public final class TerminalStream {
             self.controlConnected()
             return true
         }
+        control.observeVerdict { [weak self] in
+            guard let self else { return false }
+            self.controlAnswered()
+            return true
+        }
         wireFence()
     }
 
@@ -613,7 +619,7 @@ public final class TerminalStream {
     }
 
     /// The parked pane is on screen again. The fence goes up at once. If the server can still
-    /// have the stream, one RESUME follows right away, with no ticket and no control connection,
+    /// have the stream, one RESUME follows with no ticket, once the control connection lets it,
     /// and only the missed bytes arrive; otherwise, or if it is refused, a fresh start, which
     /// leaves the sink's screen as it is until the new snapshot begins.
     public func unpark() {
@@ -662,17 +668,26 @@ public final class TerminalStream {
         Task { await self.fullStart() }
     }
 
-    /// How long `wake()` waits for the data socket to answer a ping before it drops it.
+    /// How long `wake()` waits for the data socket to answer a ping before it drops it, when
+    /// the control connection has no verdict to wait for (the app was not in the background).
     var wakeTimeout: Duration = .milliseconds(2500)
+    /// After the background the stream has no deadline of its own: it follows the control
+    /// connection's verdict. Once that connection has answered, a data socket that still has
+    /// not gets this long, then it is dropped.
+    var wakeGrace: Duration = .milliseconds(500)
     /// The socket `wake()` pinged, until it answers.
     private var unansweredPing: ObjectIdentifier?
 
     /// Back in the foreground. A data socket that looks open may have died while the app was
-    /// suspended, and the screen would stay frozen until it times out. So it is pinged: a socket
-    /// that fails is handled like any drop, and one that doesn't answer within `wakeTimeout` is
-    /// dropped (`abort`, no status 1000). Either way the stream goes on with a RESUME while the
-    /// server keeps it, with no new snapshot and no control connection, else with a fresh start.
-    /// A socket that answers is live, and nothing happens.
+    /// suspended, and the screen would stay frozen until it times out. So it is pinged, on the
+    /// socket it has: a socket that fails is handled like any drop, and one that doesn't answer
+    /// is dropped (`abort`, no status 1000). When that is follows the control connection, which
+    /// alone judges a host after the background (`RexControl.awaitsVerdict`): no pong there
+    /// drops this socket with it (`hostDied()`), and a pong there gives this one `wakeGrace`
+    /// more. Without a verdict to wait for, the socket has `wakeTimeout`. Either way the stream
+    /// goes on with a RESUME while the server keeps it, with no new snapshot, once the control
+    /// connection lets it (`mayOpen`), else with a fresh start. A socket that answers is live,
+    /// and nothing happens.
     public func wake() {
         guard !stopped, live, let socket = ws else { return }
         let myGen = gen, sleep = self.sleep, timeout = wakeTimeout
@@ -692,12 +707,23 @@ public final class TerminalStream {
                 self.fence.arrived()
             }
         }
+        // The control connection's verdict decides (`controlAnswered()`, `hostDied()`).
+        guard !control.awaitsVerdict else { return }
         Task { [weak self] in
             await sleep(timeout)
             guard let self, self.unansweredPing == id else { return }
             self.unansweredPing = nil
             self.drop(socket, gen: myGen)
         }
+    }
+
+    /// The host's control socket got no answer (`RexControl.hostDied`): this stream's socket is
+    /// as dead. It is dropped with no close frame, so the server keeps the stream and the token
+    /// stays good; the drop raises the fence and the stream waits for the control connection.
+    func hostDied() {
+        guard !stopped, let socket = ws else { return }
+        unansweredPing = nil
+        socket.abort()
     }
 
     /// Ends a socket that stopped answering, if it is still this stream's: its `receive` fails,
@@ -748,7 +774,37 @@ public final class TerminalStream {
         pump()
     }
 
-    /// Nothing can be done until the control connection is back; `controlConnected()` goes on.
+    /// Back in the foreground, the control connection that was up answered its ping: a stream
+    /// that waited for that verdict goes on. Not a reconnect: no call was lost and nothing is
+    /// owed a new start.
+    private func controlAnswered() {
+        // The host is there. A data socket that was pinged at the return and still has not
+        // answered gets a moment more, then it is taken for dead.
+        if let id = unansweredPing, let socket = ws, ObjectIdentifier(socket) == id, !stopped {
+            let myGen = gen, sleep = self.sleep, grace = wakeGrace
+            Task { [weak self] in
+                await sleep(grace)
+                guard let self, self.unansweredPing == id else { return }
+                self.unansweredPing = nil
+                self.drop(socket, gen: myGen)
+            }
+        }
+        guard waitingForControl, !stopped, mayOpen else { return }
+        waitingForControl = false
+        let myGen = gen
+        Task {
+            guard myGen == self.gen, !self.stopped else { return }
+            if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+        }
+    }
+
+    /// The host's one gate, on the data side: a socket may be opened to it only while its
+    /// control connection has its welcome, and not in the background or, after it, before that
+    /// connection has answered (`RexControl.holdsData`).
+    private var mayOpen: Bool { link.isConnected && !control.holdsData }
+
+    /// Nothing can be done until the control connection is back, or has answered after the
+    /// background; `controlConnected()` or `controlAnswered()` goes on.
     private func waitForControl() {
         waitingForControl = true
         sink?.streamStatus(.reconnecting)
@@ -877,7 +933,7 @@ public final class TerminalStream {
         // sink is untouched until the HELLO, and the old stream stays resumable until then.
         if !fromSnapshot { token = nil }
         // A fresh start needs a ticket, and so the control connection. It isn't tried without.
-        guard link.isConnected else { waitForControl(); return }
+        guard mayOpen else { waitForControl(); return }
         let epoch = connectEpoch
         sink?.streamStatus(.connecting)
         do {
@@ -941,7 +997,7 @@ public final class TerminalStream {
             }
             return
         }
-        guard link.isConnected else { waitForControl(); return }
+        guard mayOpen else { waitForControl(); return }
         if (error as? RexError)?.code == "conflict", failedStarts == 0, attachRetries < Self.attachRetryLimit {
             attachRetries += 1
             let sleep = self.sleep
@@ -1021,9 +1077,10 @@ public final class TerminalStream {
     }
 
     private func openData(hello: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool = false) async throws {
-        // The host's one gate: no data socket while its control connection has no welcome. A
-        // host that is backing off, dormant or held is asked by the control connection alone.
-        guard link.isConnected else { throw RexError.unsent("not connected") }
+        // The host's one gate: no data socket while its control connection has no welcome, in
+        // the background, or before that connection's verdict after it. A host that is backing
+        // off, dormant or held is asked by the control connection alone.
+        guard mayOpen else { throw RexError.unsent("not connected") }
         let socket = try link.openDataSocket(subprotocol: "rex.data.terminal.v1")
         ws = socket
         do {
@@ -1179,15 +1236,16 @@ public final class TerminalStream {
     }
 
     /// One RESUME. It needs no ticket, but it is not tried while the host's control connection
-    /// has no welcome: the control connection alone asks a host that may be away, on its
-    /// schedule, and the stream waits for it with its token kept (`controlConnected()` resumes
-    /// if the server can still have the stream). If the RESUME fails, for any reason (a stale
+    /// has no welcome, nor in the background, nor after it before that connection has answered:
+    /// the control connection alone asks a host that may be away, on its schedule, and the
+    /// stream waits for it with its token kept (`controlConnected()` or `controlAnswered()`
+    /// resumes if the server can still have the stream). If the RESUME fails, for any reason (a stale
     /// token, a byte count the server doesn't accept), a fresh start follows, which reads the
     /// whole screen again. There is no second RESUME: after a refusal the server has ended the
     /// stream.
     private func resume(gen myGen: Int) async {
         guard myGen == gen, !stopped, let tok = token else { return }
-        guard link.isConnected else { waitForControl(); return }
+        guard mayOpen else { waitForControl(); return }
         do {
             try await openData(hello: DataFrame.resumeHello(token: tok, received: received), gen: myGen, fresh: false)
         } catch {

@@ -14,18 +14,24 @@ import Foundation
 public struct ReconnectPolicy: Sendable, Equatable {
     // MARK: Schedule
 
-    /// The wait before each next attempt, in seconds, by the number of waits taken in a row; the
-    /// last one repeats.
+    /// The wait before each attempt of an episode, in seconds, by the attempt's number; the last
+    /// one repeats. The first is the wait after a connection dropped: an episode that begins
+    /// with an attempt (`connect()`, the return to the foreground) has none before it, and its
+    /// second attempt follows by the second wait.
     public var waits: [Double] = [1, 10, 120, 300]
     /// The first wait is anywhere from 0 to its length.
     public var fullJitterFirst = true
     /// Every other wait is shorter or longer by up to this share of itself.
     public var jitter: Double = 0.2
-    /// No wait from the third on is shorter than this, jitter or not, and no trigger brings an
-    /// attempt nearer than this to the one before it once a host has had two.
+    /// From the third attempt of an episode on, no attempt starts sooner than this after the one
+    /// before it STARTED: no wait is shorter, jitter or not, and nothing that asks for an attempt
+    /// (the network, the return, the breaker letting a host go) brings one nearer. Only the user
+    /// does (`userSpacing`).
     public var floor: Double = 120
     /// Attempts of an episode that the floor doesn't hold back: the first and the second.
     public var attemptsBeforeFloor = 2
+    /// The user's taps give a host at most one attempt per this many seconds.
+    public var userSpacing: Double = 10
     /// A connection that drops right after the app came back is made again at once, once.
     public var retriesAtOnceAfterWake = true
 
@@ -35,6 +41,10 @@ public struct ReconnectPolicy: Sendable, Equatable {
     public var dormantAfter = 5
     /// A dormant host is tried once per this many seconds, in the foreground, within the budget.
     public var dormantInterval: Double = 600
+    /// TLS failures in a row after which a host is stopped, if the tunnel otherwise works
+    /// (another host is connected). Before that, and with no other host up, a TLS failure is
+    /// tried again on the normal schedule: a tunnel that is half up fails the same way.
+    public var tlsFinalAfter = 3
 
     // MARK: The budget hosts share
 
@@ -50,7 +60,8 @@ public struct ReconnectPolicy: Sendable, Equatable {
     // MARK: The tunnel breaker
 
     /// This many hosts failing with no answer within `breakerWindow` seconds open the breaker:
-    /// one test host is tried on its schedule and the others are held.
+    /// one test host is tried on its schedule and the others are held. Only a failure that says
+    /// something about the tunnel counts (`isTunnelEvidence`).
     public var breakerHosts = 2
     public var breakerWindow: Double = 30
     /// After the test host's welcome the held hosts start one at a time, this far apart.
@@ -73,6 +84,11 @@ public struct ReconnectPolicy: Sendable, Equatable {
     public var activityTimeout: Double = 5
     public var activityTimeoutExpensive: Double = 10
 
+    // MARK: The network path
+
+    /// A change of route counts once the path has been quiet for this long (`RouteWatch`).
+    public var routeSettle: Double = 2
+
     // MARK: Background
 
     /// Whether anything is tried, pinged or waiting to be tried in the background.
@@ -85,14 +101,36 @@ public struct ReconnectPolicy: Sendable, Equatable {
 
     // MARK: Decisions
 
-    /// The wait number `step` (from 1). `unit`: a number from 0 to 1 that places the wait within
-    /// its jitter; 0.5 is the middle.
+    /// The wait before attempt number `step` (from 1) of an episode. `unit`: a number from 0 to
+    /// 1 that places the wait within its jitter; 0.5 is the middle.
     public func delay(step: Int, unit: Double = 0.5) -> Double {
         let n = max(step, 1), u = min(max(unit, 0), 1)
         let plain = waits.isEmpty ? floor : waits[min(n, waits.count) - 1]
         if n == 1, fullJitterFirst { return plain * u }
         let jittered = plain * (1 + jitter * (2 * u - 1))
         return n > attemptsBeforeFloor ? max(floor, jittered) : max(0, jittered)
+    }
+
+    /// How long until the floor lets a host's next attempt start: 0 when it may start now.
+    /// `attempts`: attempts made in this episode. `sinceLastAttempt`: seconds since the last one
+    /// started, nil for none.
+    public func untilFloor(attempts: Int, sinceLastAttempt: Double?) -> Double {
+        guard attempts >= attemptsBeforeFloor, let since = sinceLastAttempt else { return 0 }
+        // Under a millisecond is now: a wait that short would not move a clock.
+        let left = floor - since
+        return left > 0.001 ? left : 0
+    }
+
+    /// Whether a failure with no answer says something about the tunnel: the host was connected
+    /// or was being tried for the first times in this episode. A host that was already backing
+    /// off or dormant timing out once more says nothing new, so it never opens the breaker.
+    /// `attempts`: attempts made in this episode, the failed one included; 0 for a connection
+    /// that dropped.
+    /// Whether a failure is TLS's.
+    public func isTLS(_ f: ConnectionFailure) -> Bool { ConnectionEvent.Cause.of(f).cause == .tls }
+
+    public func isTunnelEvidence(attempts: Int, dormant: Bool) -> Bool {
+        !dormant && attempts <= attemptsBeforeFloor
     }
 
     public func connectDeadline(expensive: Bool) -> Double { expensive ? connectDeadlineExpensive : connectDeadline }
@@ -109,14 +147,18 @@ public struct ReconnectPolicy: Sendable, Equatable {
         /// ordinary close. The normal schedule, and never dormant.
         case answered
         /// Trying again can't help until something is changed: not allowed, a 4xx, no common
-        /// API revision, TLS. Retries stop; only the user asks again.
+        /// API revision, TLS time after time while other hosts answer. Retries stop; only the
+        /// user asks again.
         case final
     }
 
-    public func kind(of f: ConnectionFailure) -> FailureKind {
+    /// `tlsInARow`: TLS failures of this host right before this one. `tunnelWorks`: another host
+    /// is connected.
+    public func kind(of f: ConnectionFailure, tlsInARow: Int = 0, tunnelWorks: Bool = false) -> FailureKind {
         let cause = ConnectionEvent.Cause.of(f)
         switch cause.cause {
-        case .auth, .tls, .revision, .badAddress: return .final
+        case .tls: return tunnelWorks && tlsInARow + 1 >= tlsFinalAfter ? .final : .answered
+        case .auth, .revision, .badAddress: return .final
         case .http: return (400...499).contains(cause.code) ? .final : .answered
         case .policy: return [4001, 4003, 4401, 4403].contains(cause.code) ? .final : .answered
         case .refused, .closed: return .answered
@@ -126,7 +168,8 @@ public struct ReconnectPolicy: Sendable, Equatable {
 
     public enum Kick: Equatable, Sendable {
         case ignore
-        /// One attempt now, outside the budget.
+        /// The user's attempt: now, outside the budget, the breaker and the floor, as soon as
+        /// fewer than `maxInFlight` attempts are under way.
         case now
         /// One attempt now if the budget has room.
         case budgeted
@@ -136,33 +179,45 @@ public struct ReconnectPolicy: Sendable, Equatable {
 
     /// What a request for an attempt gets on a host that is wanted and not connected.
     /// `attempts`: attempts made in this episode. `sinceLastAttempt`: seconds since the last one
-    /// began, nil for none.
+    /// began, nil for none; `sinceLastUser` and `sinceLastNetwork`: the same for the last one the
+    /// user and the network asked for. `dormantLeft`: what was left of a dormant host's wait when
+    /// the app went to the background.
     public func kick(_ trigger: AttemptTrigger, connecting: Bool, dormant: Bool, stopped: Bool, held: Bool,
                      selected: Bool, suspended: Bool, pathSatisfied: Bool, attempts: Int,
-                     sinceLastAttempt: Double?) -> Kick {
+                     sinceLastAttempt: Double?, sinceLastUser: Double? = nil,
+                     sinceLastNetwork: Double? = nil, dormantLeft: Double? = nil) -> Kick {
         if suspended, !worksInBackground { return .ignore }
         // One attempt per host at a time, whoever asks.
         if connecting { return .ignore }
         // The user is always let through: the breaker, the budget, the floor and the path
-        // monitor don't stand in the way of a tap.
-        if trigger == .user { return .now }
-        // The breaker let this host go.
-        if trigger == .peer { return stopped ? .ignore : .now }
+        // monitor don't stand in the way of a tap. Taps on one host are `userSpacing` apart.
+        if trigger == .user {
+            if let since = sinceLastUser, since < userSpacing { return .after(userSpacing - since) }
+            return .now
+        }
         if stopped || held || !pathSatisfied { return .ignore }
-        // The floor: from the third attempt on, never nearer than `floor` to the one before. A
-        // network change keeps it from the first.
-        let floored = trigger == .network || attempts >= attemptsBeforeFloor
-        let left = floored ? max(0, floor - (sinceLastAttempt ?? floor)) : 0
+        // The floor: from the third attempt on, never nearer than `floor` to the start of the
+        // one before. A network change keeps it from the first.
+        let left = trigger == .network ? max(0, floor - (sinceLastAttempt ?? floor))
+            : untilFloor(attempts: attempts, sinceLastAttempt: sinceLastAttempt)
         switch trigger {
         case .network:
+            // A path that keeps changing brings a dormant host's turn forward once per
+            // `dormantInterval`, so it is asked no more often than it would be anyway.
+            if dormant, let since = sinceLastNetwork, since < dormantInterval { return .ignore }
             return left > 0 ? .ignore : .budgeted
         case .foreground:
             if dormant {
-                // Dormant hosts are left alone at the return, except the selected one: their
-                // turn stays where it was, and is never nearer than the floor to the return, so
-                // coming back to the app does not by itself send a packet to a host that is off.
-                guard selected else { return .after(max(floor, dormantInterval - (sinceLastAttempt ?? dormantInterval))) }
+                // Dormant hosts are left alone at the return, except the selected one: coming
+                // back to the app does not by itself send a packet to a host that is off. Their
+                // wait goes on from where the background stopped it, so it counts time in the
+                // foreground only: short visits add up to a turn, and no turn is nearer than
+                // `dormantInterval` to the one before.
+                guard selected else { return .after(dormantLeft ?? dormantInterval) }
             }
+            return left > 0 ? .after(left) : .budgeted
+        case .peer:
+            // The breaker let this host go: its floor and the budget still hold.
             return left > 0 ? .after(left) : .budgeted
         default:
             return .ignore
@@ -170,66 +225,99 @@ public struct ReconnectPolicy: Sendable, Equatable {
     }
 }
 
-/// The attempts that hosts which are down may make together: a count within a moving window and
-/// a count under way. Pure; `ReconnectGovernor` keeps one.
+/// The attempts that hosts which are down may make together within a moving window (the count
+/// under way at once is the governor's, read from the hosts). Pure; `ReconnectGovernor` keeps one. Hosts are numbers the caller gives.
 struct AttemptBudget: Equatable {
-    /// When each counted attempt began, in seconds on the caller's clock.
-    private(set) var began: [Double] = []
+    /// Each counted attempt: its host and when it began, in seconds on the caller's clock.
+    private(set) var began: [(host: Int, at: Double)] = []
+
+    static func == (a: AttemptBudget, b: AttemptBudget) -> Bool {
+        a.began.map(\.host) == b.began.map(\.host) && a.began.map(\.at) == b.began.map(\.at)
+    }
 
     /// Nil: there is room, and the attempt is counted from `now`. Else the seconds until there is.
-    mutating func take(now: Double, inFlight: Int, policy: ReconnectPolicy) -> Double? {
-        began.removeAll { now - $0 >= policy.budgetWindow }
+    mutating func take(_ host: Int, now: Double, policy: ReconnectPolicy) -> Double? {
+        began.removeAll { now - $0.at >= policy.budgetWindow }
         if began.count >= policy.budgetAttempts, let oldest = began.first {
-            return max(0.001, policy.budgetWindow - (now - oldest))
+            return max(0.001, policy.budgetWindow - (now - oldest.at))
         }
-        // Full only until one of those under way ends, which is at most a deadline away.
-        if inFlight >= policy.maxInFlight { return policy.budgetSpacing }
-        began.append(now)
+        began.append((host, now))
         return nil
+    }
+
+    /// The host got its welcome: its attempts were not to a host that is down.
+    mutating func forget(_ host: Int) {
+        began.removeAll { $0.host == host }
     }
 }
 
 /// Whether the tunnel, and not the hosts, looks down: several hosts failing with no answer close
-/// together. Pure; `ReconnectGovernor` keeps one. Hosts are numbers the caller gives.
+/// together. One host is tried while it is open, and the hosts take turns at being that one, so
+/// a computer that is off can't keep the others held. Pure; `ReconnectGovernor` keeps one. Hosts
+/// are numbers the caller gives.
 struct TunnelBreaker: Equatable {
     private(set) var silent: [Int: Double] = [:]
     /// The one host that is tried while the breaker is open; nil while it is closed.
     private(set) var testHost: Int?
+    /// The hosts that had their turn in this round.
+    private(set) var tried: Set<Int> = []
     var isOpen: Bool { testHost != nil }
 
-    /// A host failed with no answer. `pick` chooses the test host among those that are down,
-    /// when this opens the breaker. True when it opened now.
-    mutating func failedSilently(_ host: Int, now: Double, policy: ReconnectPolicy, pick: () -> Int?) -> Bool {
+    /// A host failed with no answer, in a way that says something about the tunnel
+    /// (`ReconnectPolicy.isTunnelEvidence`). `order`: the hosts that are down, the likeliest to
+    /// answer first. True when this opened the breaker, with the first of them as the test host.
+    /// `mayOpen`: no host is connected. With one that is, the tunnel works, whatever the others do.
+    mutating func failedSilently(_ host: Int, now: Double, policy: ReconnectPolicy, mayOpen: Bool = true,
+                                 order: () -> [Int]) -> Bool {
         silent = silent.filter { now - $0.value < policy.breakerWindow }
         silent[host] = now
-        guard !isOpen, silent.count >= policy.breakerHosts, let test = pick() else { return false }
+        guard !isOpen, mayOpen, silent.count >= policy.breakerHosts, let test = order().first else { return false }
         testHost = test
+        tried = []
         return true
     }
 
     /// Whether the host may be tried on its schedule.
     func allows(_ host: Int) -> Bool { testHost == nil || testHost == host }
 
-    /// A host got its welcome: the tunnel works. True when that closed an open breaker.
-    mutating func welcomed(_ host: Int) -> Bool {
+    /// The tunnel works: a host got its welcome, or its side answered at all. True when that
+    /// closed an open breaker.
+    mutating func answered(_ host: Int) -> Bool {
         silent[host] = nil
         guard isOpen else { return false }
         testHost = nil
+        tried = []
         silent = [:]
         return true
     }
 
-    /// The test host failed again: another host takes its place, if `pick` names one, so a
-    /// computer that is really off can't keep the others held for good. Returns the new one.
-    mutating func retest(pick: () -> Int?) -> Int? {
-        guard isOpen, let next = pick() else { return nil }
-        testHost = next
-        return next
+    /// The test host can't be the one any more: it failed again with no answer, or it is gone.
+    /// The next host in `order` that had no turn in this round takes its place; when all had
+    /// one, a new round begins with the first. Returns the new test host: nil closes the breaker
+    /// (no host is left to try).
+    mutating func nextTurn(order: [Int]) -> Int? {
+        guard let was = testHost else { return nil }
+        tried.insert(was)
+        if order.allSatisfy({ tried.contains($0) }) { tried = [] }
+        testHost = order.first { !tried.contains($0) }
+        if testHost == nil {
+            tried = []
+            silent = [:]
+        }
+        return testHost
     }
 
-    /// A host is gone (removed or stopped). If it was the test host, `pick` names another.
-    mutating func removed(_ host: Int, pick: () -> Int?) {
+    /// The turn goes to `host` out of order (the selected one, at the return). False when the
+    /// breaker is closed.
+    mutating func give(_ host: Int) -> Bool {
+        guard isOpen else { return false }
+        testHost = host
+        return true
+    }
+
+    /// A host is gone (removed or stopped by the app).
+    mutating func forget(_ host: Int) {
         silent[host] = nil
-        if testHost == host { testHost = pick() }
+        tried.remove(host)
     }
 }

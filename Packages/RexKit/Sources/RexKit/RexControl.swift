@@ -58,7 +58,7 @@ public final class RexControl {
     public private(set) var state: State = .idle {
         didSet {
             inputActivity.connection(state == .connected)
-            onStateChange?(state)
+            if !publishesLater { onStateChange?(state) }
             if state == .connected, oldValue != .connected { notifyConnected() }
         }
     }
@@ -88,6 +88,14 @@ public final class RexControl {
     public private(set) var isHeld = false
     /// When the last welcome arrived.
     public private(set) var lastGood: Date?
+    /// The app was in the background and this connection has not yet shown that it still works:
+    /// set by `enteredBackground()`, ended by the pong to `wake()`'s ping or by a fresh welcome.
+    public private(set) var awaitsVerdict = false
+    /// No data path (a terminal stream, a RESUME included, a file's bytes, a port tunnel) may
+    /// open a socket to this host now: the app is in the background, or it is back and the
+    /// control connection has no verdict yet. A socket that looks up may have died while the app
+    /// was suspended, and only the control connection asks a host that may be away.
+    public var holdsData: Bool { suspended || awaitsVerdict }
 
     /// Which of this connection's terminal streams have typed input on its way.
     public let inputActivity = InputActivity()
@@ -123,20 +131,50 @@ public final class RexControl {
     public var onSocketDead: (() -> Void)?
     private var generation = 0
     private var wantConnected = false
-    /// Backoff waits taken in this episode; the welcome sets it back to 0.
-    private var steps = 0
     /// Failures in a row with no answer from the server's side.
     private var silentRun = 0
+    /// TLS failures in a row.
+    private var tlsRun = 0
+    /// What was left of a dormant host's wait when the app went to the background.
+    private var dormantLeft: Double?
+    /// When a dormant host's turn was due that a network change brought forward. Its next turn
+    /// is an interval after that, not after the early attempt: bringing a turn forward moves it
+    /// and adds none, so a path that keeps changing never gets a host asked more often.
+    private var forwardedTurn: Date?
+    /// The data sockets this connection opened (`openDataSocket`) and the tunnel sessions it
+    /// made, for `hostDied()`. Weak: one that is gone is simply not found.
+    private var dataSockets: [WeakSocket] = []
+    private var tunnelSessions: [WeakSession] = []
+    private struct WeakSocket {
+        weak var socket: (any StreamSocket)?
+    }
+    private struct WeakSession {
+        weak var session: TunnelSession?
+    }
+    /// How many data sockets `openDataSocket` has opened; tests count them.
+    private(set) var dataSocketsOpened = 0
     /// Attempts made in this episode: since `connect()` or the last welcome.
     private var attempts = 0
-    /// When the last attempt began.
+    /// When the last attempt began, and the last one the user and the network asked for.
     private var lastAttempt: Date?
+    private var lastUserAttempt: Date?
+    private var lastNetworkAttempt: Date?
     /// When the next attempt is due and what asks for it, kept while its wait is cancelled (the
     /// background, no network).
     private var nextAttemptAt: Date?
     private var nextTrigger = AttemptTrigger.backoff
     /// An attempt was let through and has not opened its socket yet.
     private var starting = false
+    /// An attempt is under way, or about to open its socket: what the governor counts.
+    var isAttempting: Bool { state == .connecting || starting }
+    /// What asked for the attempt that waits for room among the attempts under way
+    /// (`ReconnectGovernor.Grant.queued`); `slotFreed()` asks again with it.
+    private var queuedTrigger: AttemptTrigger?
+    /// The deadline of the attempt under way, cancelled when the attempt ends.
+    private var welcomeDeadline: Task<Void, Never>?
+    /// `handleDrop` sets the state, then the facts that go with it, then tells the observer, so
+    /// whoever hears of a failure reads `dormant`, `retryStopped` and `isHeld` as they are after it.
+    private var publishesLater = false
     /// The phone has a network path, and whether it is cellular or a hotspot (`pathChanged`).
     private var pathSatisfied = true
     private var pathExpensive = false
@@ -154,6 +192,7 @@ public final class RexControl {
     private let random: () -> Double
     private var retryTask: Task<Void, Never>?
     private var connectedObservers: [@MainActor () -> Bool] = []
+    private var verdictObservers: [@MainActor () -> Bool] = []
     /// The terminal streams that run on this connection, by block. Weak: a stream that went
     /// without `stop()` is simply not found.
     private var streams: [String: WeakStream] = [:]
@@ -220,6 +259,16 @@ public final class RexControl {
         }
         wantConnected = true
         suspended = false
+        // The first attempt is outside the budget, but not outside the breaker: while the tunnel
+        // looks down, a host that is new waits for its turn like the others.
+        if governor.request(governorID, exempt: true, now: clock.now.timeIntervalSinceReferenceDate) != .go {
+            isHeld = true
+            nextAttemptAt = clock.now
+            nextTrigger = .first
+            let f = ConnectionFailure.timedOut()
+            state = .failed(f)
+            throw f
+        }
         try await openSocket(.first)
     }
 
@@ -229,6 +278,10 @@ public final class RexControl {
         endEpisode()
         retryStopped = false
         nextAttemptAt = nil
+        awaitsVerdict = false
+        queuedTrigger = nil
+        welcomeDeadline?.cancel()
+        welcomeDeadline = nil
         governor.remove(governorID)
         generation += 1
         pingTimer?.cancel()
@@ -270,12 +323,24 @@ public final class RexControl {
     /// records it and plans the next attempt; the throw only tells the caller.
     private func openSocket(_ trigger: AttemptTrigger) async throws {
         guard let wsBase else { throw ConnectionFailure.invalidAddress(address) }
+        // Not after `disconnect()`: an attempt that was let through a moment before it (a tap,
+        // a wait that just ended) opens nothing.
+        guard wantConnected else {
+            starting = false
+            throw RexError.local("disconnected")
+        }
         retryStopped = false
         starting = false
+        dormantLeft = nil
         lastAttempt = clock.now
+        if trigger == .user { lastUserAttempt = clock.now }
+        if trigger == .network {
+            lastNetworkAttempt = clock.now
+            if dormant, let due = nextAttemptAt, due > clock.now { forwardedTurn = due }
+        }
         attempts += 1
         nextAttemptAt = nil
-        governor.began(governorID)
+        queuedTrigger = nil
         onAttempt?(trigger)
         // An attempt still waiting for its welcome is superseded by this one.
         resumeWelcome(throwing: RexError.local("superseded"))
@@ -305,9 +370,11 @@ public final class RexControl {
                 guard let err else { return }
                 Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
             }
-            // Welcome timeout.
-            Task { @MainActor in
+            // Welcome timeout. Cancelled when the attempt ends, so it never sleeps on after it.
+            welcomeDeadline?.cancel()
+            welcomeDeadline = Task { @MainActor in
                 await self.clock.sleep(seconds: deadline)
+                guard !Task.isCancelled else { return }
                 if self.welcomeWaiter != nil, gen == self.generation { self.handleDrop(gen: gen, failure: .timedOut()) }
             }
         }
@@ -446,30 +513,50 @@ public final class RexControl {
         pingTimer?.cancel()
         pingOut = nil
         let wasConnected = state == .connected
+        welcomeDeadline?.cancel()
+        welcomeDeadline = nil
         task?.cancel()
         task = nil
         failAll(RexError.local("connection lost"))
         resumeWelcome(throwing: failure)
+        // The state first, since the facts below and the governor read it; its observer is
+        // told after them (`publishesLater`).
+        publishesLater = true
         state = .failed(failure)
-        onSocketDead?()
+        publishesLater = false
         // While the phone has no network a failure says nothing about the host: it counts
         // toward nothing, and nothing is tried until a path is back.
-        let kind = policy.kind(of: failure)
+        let kind = policy.kind(of: failure, tlsInARow: tlsRun, tunnelWorks: governor.tunnelWorks(besides: governorID))
+        tlsRun = policy.isTLS(failure) ? tlsRun + 1 : 0
+        // No answer at all: whatever else is open to this host is as dead as this socket.
+        if kind == .silent { hostDied() }
         let silent = pathSatisfied && kind == .silent
         if pathSatisfied { silentRun = silent ? silentRun + 1 : 0 }
-        governor.failed(governorID, silent: silent, now: clock.now.timeIntervalSinceReferenceDate)
-        guard wantConnected else { return }
-        if governor.holds(governorID) { isHeld = true }
+        var wentDormant = false
+        if wantConnected, kind != .final, !dormant, silentRun >= policy.dormantAfter {
+            dormant = true
+            wentDormant = true
+        }
+        // What the failure says about the tunnel, for the breaker: nothing came back (and
+        // whether that is news), the server's side answered, or nothing can be told.
+        // A TLS failure is an answer too: bytes came back from the host.
+        let outcome: ReconnectGovernor.Outcome = silent
+            ? .silent(evidence: policy.isTunnelEvidence(attempts: attempts, dormant: dormant))
+            : pathSatisfied && (failure.peerAnswered || policy.isTLS(failure)) ? .answered : .unknown
         // Trying again would be turned away the same way. Only that stops; an ordinary close,
         // 1008 `event backlog exceeded` included, is tried again.
-        if kind == .final {
-            retryStopped = true
+        if wantConnected, kind == .final { retryStopped = true }
+        governor.failed(governorID, outcome, now: clock.now.timeIntervalSinceReferenceDate)
+        if wantConnected, governor.holds(governorID) { isHeld = true }
+        // Every fact is as it is after this failure: now the observers hear of it.
+        onStateChange?(state)
+        if wentDormant { onDormant?() }
+        onSocketDead?()
+        guard wantConnected else { return }
+        if retryStopped {
             cancelRetry()
+            governor.stopped(governorID)
             return
-        }
-        if !dormant, silentRun >= policy.dormantAfter {
-            dormant = true
-            onDormant?()
         }
         if policy.retriesAtOnceAfterWake, wasConnected, clock.now < retryAtOnceUntil, mayRetry {
             retryAtOnceUntil = .distantPast
@@ -485,16 +572,25 @@ public final class RexControl {
             && (!suspended || policy.worksInBackground)
     }
 
-    /// Sets the wait for the next attempt of the schedule: the next backoff step, or a dormant
-    /// host's interval.
+    /// Sets the wait for the next attempt of the schedule: the wait before the attempt that
+    /// comes next in this episode, or a dormant host's interval. A host the breaker holds arms no
+    /// wait, but its time goes on: when its turn comes, what is left of the wait is all it waits.
     private func planNext() {
-        guard mayRetry else { cancelRetry(); return }
-        if dormant {
-            plan(after: policy.dormantInterval, .backoff)
-        } else {
-            steps += 1
-            plan(after: policy.delay(step: steps, unit: random()), .backoff)
+        guard wantConnected, state != .connected, !retryStopped else { cancelRetry(); return }
+        var delay = dormant ? policy.dormantInterval : policy.delay(step: attempts + 1, unit: random())
+        if dormant, let due = forwardedTurn {
+            delay = max(delay, due.addingTimeInterval(policy.dormantInterval).timeIntervalSince(clock.now))
         }
+        forwardedTurn = nil
+        guard mayRetry else {
+            cancelRetry()
+            if isHeld {
+                nextAttemptAt = clock.now.addingTimeInterval(delay)
+                nextTrigger = .backoff
+            }
+            return
+        }
+        plan(after: delay, .backoff)
     }
 
     private func plan(after delay: Double, _ trigger: AttemptTrigger) {
@@ -530,9 +626,23 @@ public final class RexControl {
     /// A wait ended, or a trigger asked within the budget: the governor says whether the attempt
     /// goes now, later, or not while the breaker is open.
     private func scheduled(_ trigger: AttemptTrigger) async {
-        guard task == nil, !starting, mayRetry else { return }
-        // The first attempt of an episode, and a host the breaker let go, are outside the budget.
-        let exempt = attempts == 0 || trigger == .peer
+        guard task == nil, !starting else { return }
+        if trigger == .user {
+            starting = true
+            await tapped()
+            return
+        }
+        guard mayRetry else { return }
+        // The floor, whatever asked: from the third attempt on, none starts within `floor` of
+        // the start of the one before. A host the breaker let go keeps it too.
+        let since = lastAttempt.map { clock.now.timeIntervalSince($0) }
+        let left = policy.untilFloor(attempts: attempts, sinceLastAttempt: since)
+        if left > 0 {
+            plan(after: left, trigger)
+            return
+        }
+        // Only the first attempt of an episode is outside the budget.
+        let exempt = attempts == 0
         switch governor.request(governorID, exempt: exempt, now: clock.now.timeIntervalSinceReferenceDate) {
         case .go:
             starting = true
@@ -541,10 +651,46 @@ public final class RexControl {
             plan(after: seconds, trigger)
         case .held:
             isHeld = true
+        case .queued:
+            queuedTrigger = trigger
+        }
+    }
+
+    /// An attempt on another host ended: this one, which waited for room, asks again. No timer
+    /// ran meanwhile and nothing was logged.
+    func slotFreed() {
+        guard let trigger = queuedTrigger else { return }
+        queuedTrigger = nil
+        Task { @MainActor in await self.scheduled(trigger) }
+    }
+
+    /// The user's attempt: past the breaker, the budget, the floor and the path monitor, but not
+    /// past the count of attempts under way. With that full it waits for room.
+    private func tapped() async {
+        guard wantConnected, state != .connected, task == nil, !suspended || policy.worksInBackground else {
+            starting = false
+            return
+        }
+        switch governor.requestTap(governorID) {
+        case .go:
+            isHeld = false
+            await attempt(.user)
+        case .queued:
+            starting = false
+            queuedTrigger = .user
+        case .wait, .held:
+            starting = false
         }
     }
 
     private func attempt(_ trigger: AttemptTrigger) async {
+        // Nothing opens in the background, an attempt that was let through a moment ago included.
+        guard !suspended || policy.worksInBackground else {
+            starting = false
+            governor.failed(governorID, .unknown, now: clock.now.timeIntervalSinceReferenceDate)
+            return
+        }
+        starting = true
         let hadToken = reconnectToken != nil
         do {
             try await openSocket(trigger)
@@ -556,8 +702,9 @@ public final class RexControl {
 
     /// The episode is over: the welcome arrived, or the connection is not wanted.
     private func endEpisode() {
-        steps = 0
         silentRun = 0
+        tlsRun = 0
+        dormantLeft = nil
         attempts = 0
         dormant = false
         isHeld = false
@@ -567,22 +714,26 @@ public final class RexControl {
     /// Asks for one attempt: the user asked (the default), the network changed, the app came
     /// back, or the breaker let this host go. Does nothing while connected or not wanted.
     /// `ReconnectPolicy.kick` decides what the request gets. A user's request is always let
-    /// through, and does nothing while an attempt is under way; the others keep the floor and
-    /// the budget. The backoff never starts over here: only a welcome does that.
+    /// through, at most once per `userSpacing` and with fewer than `maxInFlight` attempts under
+    /// way, and does nothing while this host's attempt is under way; the others keep the floor
+    /// and the budget. The backoff never starts over here: only a welcome does that.
     public func kick(_ trigger: AttemptTrigger = .user) {
         guard wantConnected, state != .connected else { return }
         let since = lastAttempt.map { clock.now.timeIntervalSince($0) }
         switch policy.kick(trigger, connecting: state == .connecting || starting, dormant: dormant,
                            stopped: retryStopped, held: isHeld, selected: governor.isSelected(governorID),
                            suspended: suspended, pathSatisfied: pathSatisfied, attempts: attempts,
-                           sinceLastAttempt: since) {
+                           sinceLastAttempt: since,
+                           sinceLastUser: lastUserAttempt.map { clock.now.timeIntervalSince($0) },
+                           sinceLastNetwork: lastNetworkAttempt.map { clock.now.timeIntervalSince($0) },
+                           dormantLeft: dormantLeft) {
         case .ignore:
             rearm()
         case .now:
             cancelRetry()
             isHeld = false
             starting = true
-            Task { @MainActor in await self.attempt(trigger) }
+            Task { @MainActor in await self.tapped() }
         case .budgeted:
             cancelRetry()
             Task { @MainActor in await self.scheduled(trigger) }
@@ -593,31 +744,113 @@ public final class RexControl {
         }
     }
 
-    /// The app went to the background: nothing is tried or pinged there, and no wait stays
-    /// armed. A connection that is up is left as it is. `wake()` ends it.
+    /// The app went to the background: nothing is tried or pinged there, no wait stays armed,
+    /// and an attempt that is under way is given up. A connection that is up is left as it is,
+    /// but from now until its verdict after the return no data path opens a socket to this host
+    /// (`holdsData`). `wake()` ends it.
     public func enteredBackground() {
         suspended = true
         guard !policy.worksInBackground else { return }
+        awaitsVerdict = true
+        queuedTrigger = nil
+        // A dormant host's wait counts time in the foreground: what is left of it is kept. An
+        // attempt that is given up here was its turn all the same.
+        if dormant, retryTask != nil || state == .connecting {
+            dormantLeft = state == .connecting ? policy.dormantInterval
+                : max(0, (nextAttemptAt ?? clock.now).timeIntervalSince(clock.now))
+        }
         cancelRetry()
         pingTimer?.cancel()
         pingOut = nil
+        if state == .connecting { cancelAttempt() }
     }
 
-    /// The phone's network path changed. No path: nothing is tried until one is back, and what
-    /// fails meanwhile counts toward nothing. A path again, or another interface: a connection
-    /// that is up is pinged and never torn down (a tailnet address stays the same across
-    /// interfaces), and a host that is down gets one attempt if the floor allows.
+    // MARK: What else is open to the host
+
+    /// The control socket got no answer: every data socket and tunnel connection to this host
+    /// is dropped at once, with no close frame, so nothing goes on sending to a computer that
+    /// is away. A stream keeps its RESUME token and raises its fence as on any drop, and comes
+    /// back with the control connection's welcome, with only the bytes it missed.
+    private func hostDied() {
+        for s in streams.values { s.stream?.hostDied() }
+        let sockets = dataSockets
+        dataSockets = []
+        for s in sockets { s.socket?.abort() }
+        tunnelSessions.removeAll { $0.session == nil }
+        for t in tunnelSessions { t.session?.abortAll() }
+    }
+
+    /// A data socket was opened to this host.
+    func opened(_ socket: any StreamSocket) {
+        dataSocketsOpened += 1
+        dataSockets.removeAll { $0.socket == nil }
+        dataSockets.append(WeakSocket(socket: socket))
+    }
+
+    /// The session that carries one browser's tunnel connections to this host. Every connection
+    /// it opens asks this host's gate first (`TunnelSession.open`), and all of them are dropped
+    /// when the control socket dies. Nil when the address is invalid.
+    public func makeTunnelSession() -> TunnelSession? {
+        guard let wsBase else { return nil }
+        let session = TunnelSession(base: wsBase) { [weak self] in
+            guard let self else { return false }
+            return self.state == .connected && !self.holdsData
+        }
+        tunnelSessions.removeAll { $0.session == nil }
+        tunnelSessions.append(WeakSession(session: session))
+        return session
+    }
+
+    /// Gives up the attempt under way, as a lost connection: it counts as an attempt made (the
+    /// floor runs from its start) and as no failure of the host.
+    private func cancelAttempt() {
+        generation += 1
+        welcomeDeadline?.cancel()
+        welcomeDeadline = nil
+        task?.cancel()
+        task = nil
+        let f = ConnectionFailure(URLError(.networkConnectionLost))
+        resumeWelcome(throwing: f)
+        state = .failed(f)
+        governor.failed(governorID, .unknown, now: clock.now.timeIntervalSinceReferenceDate)
+    }
+
+    /// Calls `body` each time this connection, up since before the app left, has answered the
+    /// ping of the return (`wake()`), until it returns false. A fresh welcome is the other
+    /// verdict, and `observeConnected` reports that one.
+    public func observeVerdict(_ body: @escaping @MainActor () -> Bool) {
+        verdictObservers.append(body)
+    }
+
+    /// The connection that was up before the background answered: data paths may open again.
+    private func verdict() {
+        guard awaitsVerdict else { return }
+        awaitsVerdict = false
+        let current = verdictObservers
+        verdictObservers = []
+        let kept = current.filter { $0() }
+        verdictObservers = kept + verdictObservers
+    }
+
+    /// The phone's network path was reported. No path: nothing is tried until one is back, and
+    /// what fails meanwhile counts toward nothing. `interfaceChanged`: the route really changed
+    /// (`RouteWatch`: another kind of interface, other tunnel addresses, or a path after none,
+    /// once it has settled). Then a connection that is up is pinged and never torn down (a
+    /// tailnet address stays the same across interfaces), and a host that is down gets one
+    /// attempt if the floor allows. A report that is no such change asks for nothing: a wait
+    /// that no path had stopped goes on where it was.
     public func pathChanged(satisfied: Bool, expensive: Bool, interfaceChanged: Bool) {
         let was = pathSatisfied
         pathSatisfied = satisfied
         pathExpensive = expensive
         guard wantConnected else { return }
         guard satisfied else { cancelRetry(); return }
-        guard interfaceChanged || !was else { return }
         if state == .connected {
-            ping(deadline: policy.pongDeadline(expensive: expensive))
-        } else {
+            if interfaceChanged { ping(deadline: policy.pongDeadline(expensive: expensive)) }
+        } else if interfaceChanged {
             kick(.network)
+        } else if !was {
+            rearm()
         }
     }
 
@@ -625,17 +858,25 @@ public final class RexControl {
     func heldByBreaker() {
         guard wantConnected, state != .connected, !retryStopped else { return }
         isHeld = true
+        queuedTrigger = nil
         cancelRetry()
     }
 
-    /// This host is now the one the breaker tries: its schedule goes on.
+    /// This host is now the one the breaker tries: its schedule goes on, with what is left of
+    /// its wait. A dormant host waits a whole interval from its turn's beginning, so dormant
+    /// hosts that take turns are asked once per interval between them, not once each.
     func becameTestHost() {
         guard isHeld else { return }
         isHeld = false
-        rearm()
+        if dormant, mayRetry {
+            plan(after: policy.dormantInterval, .backoff)
+        } else {
+            rearm()
+        }
     }
 
-    /// The test host connected: this host goes after `delay` seconds.
+    /// A host answered, so the tunnel works: this host goes after `delay` seconds, if its floor
+    /// and the budget allow, else when they do.
     func releasedByBreaker(after delay: Double) {
         guard isHeld else { return }
         isHeld = false
@@ -661,13 +902,22 @@ public final class RexControl {
         if unreachableForTesting == false { unreachableForTesting = nil }
         #endif
         suspended = false
-        guard wantConnected else { return }
-        guard state == .connected, task != nil else { kick(.foreground); return }
+        guard wantConnected else { awaitsVerdict = false; return }
+        guard state == .connected, task != nil else {
+            // The selected host is the one the user came back for: if the breaker holds it, it
+            // takes the turn, and the policy then says whether it is tried now.
+            if isHeld { governor.giveTurnToSelected(governorID) }
+            kick(.foreground)
+            return
+        }
         startPings(gen: generation)
         let deadline = policy.wakePongDeadline(expensive: pathExpensive)
         // The socket usually fails by itself moments after the app wakes; that drop retries at once too.
         retryAtOnceUntil = clock.now.addingTimeInterval(deadline + 0.5)
-        ping(deadline: deadline, replacing: true) { [weak self] in self?.retryAtOnceUntil = .distantPast }
+        ping(deadline: deadline, replacing: true) { [weak self] in
+            self?.retryAtOnceUntil = .distantPast
+            self?.verdict()
+        }
     }
 
     /// Pings the connection once and returns with the pong. Throws when not connected, or when
@@ -729,7 +979,11 @@ public final class RexControl {
             features = Set((m["features"] as? [Any])?.compactMap { $0 as? String } ?? [])
             endEpisode()
             cancelRetry()
+            welcomeDeadline?.cancel()
+            welcomeDeadline = nil
             nextAttemptAt = nil
+            // A fresh welcome is a verdict too: the host is there.
+            awaitsVerdict = false
             lastGood = clock.now
             lastInbound = clock.now
             governor.welcomed(governorID)
