@@ -217,7 +217,9 @@ struct StripLayout: Equatable {
         let lead = leading(bar: i.bar), end = i.width - trailing
         guard let crease = creaseSpan(i) else { return (lead, end) }
         let before = crease.lowerBound - lead, after = end - max(lead, crease.upperBound)
-        let needed = hit + (i.bar || !i.hasPane ? 0 : hit)
+        // The pane menu needs its gap beside the chip too (the trailing parts' own rule), so a
+        // left page that is kept always shows it.
+        let needed = hit + (i.bar || !i.hasPane ? 0 : gap + hit)
         if before >= needed || before >= after { return (lead, max(lead, min(end, crease.lowerBound))) }
         return (max(lead, crease.upperBound), end)
     }

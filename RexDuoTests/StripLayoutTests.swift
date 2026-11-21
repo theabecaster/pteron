@@ -197,16 +197,16 @@ struct StripLayoutTests {
     /// The room the left page needs to keep the strip: the session chip as a hit target, and
     /// the pane menu as another where the strip holds one.
     private func leftPageNeeds(bar: Bool, pane: Bool = true) -> CGFloat {
-        StripLayout.leading(bar: bar) + StripLayout.hit + (bar || !pane ? 0 : StripLayout.hit)
+        StripLayout.leading(bar: bar) + StripLayout.hit + (bar || !pane ? 0 : StripLayout.gap + StripLayout.hit)
     }
 
     /// The session chip never crosses the strip's end. Down to a cap that leaves the left page
-    /// what it needs (56 pt beside a vertical bar, 92 pt without one) the strip stays there:
+    /// what it needs (56 pt beside a vertical bar, 98 pt without one) the strip stays there:
     /// the chip is a 44 pt glyph, and everything ends 3 pt short of the crease.
     @Test(arguments: [false, true])
     func theSessionChipEndsAtTheCrease(bar: Bool) throws {
         let lead = StripLayout.leading(bar: bar)
-        for cap in [leftPageNeeds(bar: bar), lead + 94, lead + 120, 200] as [CGFloat] {
+        for cap in [leftPageNeeds(bar: bar), lead + 100, lead + 120, 200] as [CGFloat] {
             var i = busy(867, bar: bar)
             // The longest name: without the crease its chip is 120 pt.
             i.sessionIdeal = 300
@@ -222,6 +222,8 @@ struct StripLayoutTests {
                 let f = try #require(l.frame(part))
                 #expect(f.minX >= chip.maxX + StripLayout.gap && f.maxX <= cap, "cap \(cap): \(part) at \(f)")
             }
+            // A left page that is kept always has the pane menu, where the strip holds it.
+            #expect(l.shows(.paneMenu) == !bar, "cap \(cap)")
             checkFrames(l, i, "cap \(cap), bar \(bar)")
         }
     }
@@ -236,8 +238,11 @@ struct StripLayoutTests {
             i.crease = CGRect(x: 4 + room + 3, y: 0, width: 40, height: 669)
             return StripLayout(i)
         }
-        #expect(strip(93).parts == [.session])
-        #expect(strip(94).parts == [.session, .paneMenu])
+        // Under 94 pt the left page isn't kept at all: the strip is past the crease, whole.
+        for room in [88, 90, 93] as [CGFloat] {
+            #expect(strip(room).start == 4 + room + 46 && strip(room).shows(.paneMenu), "\(room) pt")
+        }
+        #expect(strip(94).start == 4 && strip(94).parts == [.session, .paneMenu])
         #expect(strip(94).frame(.paneMenu) == CGRect(x: 54, y: 0, width: 44, height: 44))
         // 136 pt: after the pane menu a 49 pt pill has no room. The 37 pt count would have,
         // but it comes after the pill.
@@ -248,7 +253,7 @@ struct StripLayoutTests {
     }
 
     /// A crease that leaves the left page less than it needs (a cap under 56 pt beside a
-    /// vertical bar, under 92 pt without one, where the pane menu wants its place too): the
+    /// vertical bar, under 98 pt without one, where the pane menu wants its place too): the
     /// strip starts past the crease, 3 pt clear of it, so the session chip is whole and
     /// nothing is on the fold.
     @Test(arguments: [false, true])
@@ -278,11 +283,12 @@ struct StripLayoutTests {
             i.crease = CGRect(x: cap + 3, y: 0, width: 40, height: 669)
             return StripLayout(i)
         }
-        #expect(leftPageNeeds(bar: false, pane: false) == 48 && leftPageNeeds(bar: false) == 92)
+        #expect(leftPageNeeds(bar: false, pane: false) == 48 && leftPageNeeds(bar: false) == 98)
         #expect(strip(48, pane: false).end == 48 && strip(48, pane: false).start == 4)
         #expect(strip(47, pane: false).start == 93)
-        #expect(strip(91, pane: true).start == 137)
-        #expect(strip(92, pane: true).end == 92 && strip(92, pane: true).start == 4)
+        #expect(strip(91, pane: true).start == 137 && strip(97, pane: true).start == 143)
+        #expect(strip(98, pane: true).end == 98 && strip(98, pane: true).start == 4)
+        #expect(strip(98, pane: true).frame(.paneMenu) == CGRect(x: 54, y: 0, width: 44, height: 44))
     }
 
     /// A bar without that room on either side of the crease keeps the wider side, and the

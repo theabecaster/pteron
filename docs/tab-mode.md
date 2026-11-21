@@ -117,7 +117,7 @@ device or the orientation ([duo-layout.md](duo-layout.md)).
 - **Book mode.** The whole strip, New Tab included, is on the left page and ends 3 pt short of
   the crease. Flat, it runs the bar's width as the title bar does.
 - **A crease near the bar's start.** The strip stays before the crease while that side holds
-  the session chip as a hit target, and the pane menu as another where the strip has one. A
+  the session chip as a hit target, and the pane menu with its gap where the strip has one. A
   bar with less has its strip past the crease instead, 3 pt clear of it. With that room on
   neither side the strip keeps the wider side and the session chip is cut to it; under 16 pt
   it draws nothing. A trailing part needs its width and a 6 pt gap beside the session chip,
