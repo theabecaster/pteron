@@ -140,7 +140,7 @@ pub fn actions() -> Value {
         },
         {
             "name": "port_share", "kind": "client", "category": BEACON,
-            "title": "Open a Port in the Phone's Browser",
+            "title": "Open a Port in the iPhone's Browser",
             "description": "Let the calling iPhone's browsers reach a web server that listens on this computer, over Tailscale, for as long as it is used.",
             "args": {"type": "object", "properties": {
                 "block": {"type": "string", "description": "The pane the server runs in."},
@@ -1221,11 +1221,11 @@ impl Relay {
         let who = requester.who();
         let Some(device) = self.own_device(requester, identity) else {
             info!("port_share from {who}: refused, no phone of theirs is registered here under that id");
-            return Err(error("not_registered", concat!("Only a phone registered with this ", crate::beacon_name!(), " can open a page this way.")));
+            return Err(error("not_registered", concat!("Only an iPhone registered with this ", crate::beacon_name!(), " can open a page this way.")));
         };
         let bad = |m: &str| Err(error("bad_request", m));
         let Some(port) = args.int("port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0) else { return bad("port must be a port number") };
-        let Some(phone) = args.str("phone_ip").and_then(|a| a.parse::<std::net::IpAddr>().ok()).map(|ip| ip.to_canonical()) else { return bad("phone_ip must be the phone's Tailscale address") };
+        let Some(phone) = args.str("phone_ip").and_then(|a| a.parse::<std::net::IpAddr>().ok()).map(|ip| ip.to_canonical()) else { return bad("phone_ip must be the iPhone's Tailscale address") };
         // A pane's name is only held to tell its events from another's.
         let block = args.str("block").unwrap_or("");
         if block.len() > 200 {
@@ -1247,12 +1247,12 @@ impl Relay {
             })),
             Err(refusal) => {
                 let (code, message) = match refusal {
-                    Refusal::NotAvailable => ("not_available", "This computer doesn't run Tailscale, so its pages can't open in the phone's browser."),
-                    Refusal::BadPhone => ("bad_request", "phone_ip must be the phone's Tailscale address"),
+                    Refusal::NotAvailable => ("not_available", "This computer doesn't run Tailscale, so its pages can't open in this iPhone's browser."),
+                    Refusal::BadPhone => ("bad_request", "phone_ip must be the iPhone's Tailscale address"),
                     Refusal::NotListening => ("not_listening", "Nothing listens on that port right now."),
                     Refusal::Full => ("busy", "Too many pages are open this way. Close one and try again."),
-                    Refusal::NoPort => ("failed", "This computer couldn't listen for the phone."),
-                    Refusal::NotYourPhone => ("not_your_phone", "Tailscale doesn't say that this phone is a device of this computer's own user."),
+                    Refusal::NoPort => ("failed", "This computer couldn't listen for this iPhone."),
+                    Refusal::NotYourPhone => ("not_your_phone", "Tailscale doesn't say that this iPhone is a device of this computer's own user."),
                     Refusal::NotYourPort => ("refused", "That port doesn't open in a browser."),
                 };
                 info!("port_share from {who}: no share of port {port} ({code})");
@@ -1267,7 +1267,7 @@ impl Relay {
     async fn port_owner(&self, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
         if self.own_device(requester, identity).is_none() {
             info!("port_owner from {}: refused, no phone of theirs is registered here under that id", requester.who());
-            return Err(error("not_registered", concat!("Only a phone registered with this ", crate::beacon_name!(), " can ask that.")));
+            return Err(error("not_registered", concat!("Only an iPhone registered with this ", crate::beacon_name!(), " can ask that.")));
         }
         // The same answer for a process that is not there and one of another user. Nothing
         // read about a process (its arguments least of all) goes into an error or the log.

@@ -265,8 +265,8 @@ pub fn computer_name(server: &str) -> &str {
 pub fn blocked_text(kind: Option<&str>) -> &'static str {
     match kind {
         Some("permission") => "Needs your permission",
-        Some("question") => "Has a question for you",
-        Some("auth") => "Needs you to sign in",
+        Some("question") => "Has a question",
+        Some("auth") => "Needs your password",
         _ => "Waiting for you",
     }
 }
@@ -573,6 +573,11 @@ mod tests {
         assert_eq!(m.title, "Codex · Rex");
         assert_eq!(m.body, "Needs your permission");
         assert!(m.payload().get("window_id").is_none());
+        // One wording for each reason, the same as the app shows.
+        assert_eq!(blocked_text(Some("auth")), "Needs your password");
+        assert_eq!(blocked_text(Some("permission")), "Needs your permission");
+        assert_eq!(blocked_text(Some("question")), "Has a question");
+        assert_eq!((blocked_text(None), blocked_text(Some("something new"))), ("Waiting for you", "Waiting for you"));
     }
 
     #[test]
