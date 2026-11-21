@@ -106,6 +106,30 @@ import Testing
         #expect(ran.log.isEmpty)
         wait.dismissed()
         #expect(ran.log == ["rename"])
+        gate.open()
+    }
+
+    /// The view that held the wait is torn down with the popover and no dismissal is reported:
+    /// the timer keeps the wait alive until the cap, and the row still runs.
+    @Test func aWaitNobodyHoldsStillRunsItsRowAtTheCap() async throws {
+        let gate = Gate(), ran = Ran()
+        weak var gone: DismissalWait?
+        var timer: Task<Void, Never>?
+        do {
+            let wait = DismissalWait(sleep: { await gate.sleep($0) })
+            wait.hold { ran.log.append("settings") }
+            gone = wait
+            timer = wait.timer
+        }
+        try await started(gate)
+        #expect(gone != nil, "the timer holds it")
+        #expect(ran.log.isEmpty)
+        gate.open()
+        await timer?.value
+        #expect(ran.log == ["settings"])
+        timer = nil
+        for _ in 0..<10 { await Task.yield() }
+        #expect(gone == nil, "and lets it go after the cap")
     }
 
     /// Two rows held before the dismissal run in their order, under one cap; a row held after
@@ -143,6 +167,8 @@ import Testing
         #expect(wait.isWaiting)
         wait.dismissed()
         #expect(ran.log == ["outer", "inner"])
+        // The inner row's timer may not have reached its sleep yet: let it, then end it.
+        for _ in 0..<100 where gate.asked.count < 2 { await Task.yield() }
         gate.open()
     }
 }

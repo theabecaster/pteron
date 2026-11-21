@@ -33,10 +33,12 @@ final class DismissalWait {
     func hold(_ action: @escaping @MainActor () -> Void) {
         held.append(action)
         guard timer == nil else { return }
-        timer = Task { [weak self, sleep, cap] in
+        // The timer keeps the wait alive, for the cap at most: a popover torn down without a
+        // report, with the view that held this, still gets its row run.
+        timer = Task { [sleep, cap] in
             await sleep(cap)
             guard !Task.isCancelled else { return }
-            self?.release()
+            self.release()
         }
     }
 

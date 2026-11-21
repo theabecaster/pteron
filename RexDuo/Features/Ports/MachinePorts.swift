@@ -16,7 +16,9 @@ struct MachinePortsButton: View {
     @Environment(\.sidebarShown) private var sidebarShown
     @State private var seen = PortsSeen()
     @State private var open = false
-    @State private var wait = DismissalWait()
+
+    /// How long the popover takes to go, as the title menu waits.
+    private static let closeTime: Duration = .milliseconds(350)
 
     var body: some View {
         #if DEBUG
@@ -62,19 +64,21 @@ struct MachinePortsButton: View {
                 .presentationBackground(theme.chrome.sidebar)
                 .environment(model)
                 .environment(prefs)
-                .onDisappear { wait.dismissed() }
         }
         #if DEBUG
         .onAppear { if PortsList.openAtLaunch() { open = true } }
         #endif
     }
 
-    /// Closes the popover; what was tapped runs once it has gone (`DismissalWait`), so a page
-    /// or a pane comes up over the app and not over the popover.
+    /// Closes the popover; what was tapped runs once it has gone, so a page or a pane comes up
+    /// over the app and not over the popover.
     private var close: PortsList.Close {
         { action in
-            wait.hold(action)
             open = false
+            Task { @MainActor in
+                try? await Task.sleep(for: Self.closeTime)
+                action()
+            }
         }
     }
 
