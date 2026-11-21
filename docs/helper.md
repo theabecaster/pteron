@@ -177,6 +177,12 @@ To turn it off on a computer, put `"port_share": false` into Beacon's `config.js
 (Relay/README.md has its location) and start Beacon again. Then nothing is shared, nothing
 listens, and the app does not offer "Open in Browser" for that computer.
 
+Pteron's publisher can also turn it off in every Beacon at once, through the signed release
+list that Beacons already read for updates. A Beacon follows it at its next update check,
+within about 12 hours: open shares close, and nothing is shared until a later list turns it
+back on. Only a list that carries the publisher's signature can do either, and an older copy
+of the list can't undo a newer one. Nothing else on a computer can be switched this way.
+
 Beacon also answers the app's question of which processes are behind a port (their ids,
 names, process groups, the arguments they were started with and their folders, for your own
 processes only), so that Stop and Restart in the app's Ports list work for a server started

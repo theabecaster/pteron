@@ -381,8 +381,20 @@ a `size`, whatever its name, and picks its own by name.
 - `expires_at`: 180 days after signing (`EXPIRES_DAYS`). `Relay/release.sh --resign` signs the
   current list again with a new date, without building; do it before the date passes.
 - Every reader ignores a field it doesn't know, so older Beacons, the app and `setup.sh` read
-  a list with a new field as before. (`desk` and `signed_at` were a switch that never shipped;
-  `release.sh --resign` drops them from a list.)
+  a list with a new field as before. (`desk` was a switch that never shipped;
+  `release.sh --resign` drops it from a list.)
+- `disabled` and `signed_at` (read from 0.7.0 on): the features the publisher has turned
+  off in every Beacon, by name, and when that list was signed. `port_share` is the one name
+  there is; a name a Beacon doesn't know means nothing to it. They are part of the signed
+  file, so nothing but a list Beacon accepted (steps 2 to 4) can set them. Beacon keeps what
+  the newest such list said in `switches.json` (mode 0600) in the state folder, and takes
+  `disabled` only from a list whose `signed_at` is later than the one it kept: an older
+  signed list played back, with it on, can't undo a newer one. A list without `disabled`, or
+  with something there that is not a list of names, or without a valid `signed_at`, is
+  taken as a list and changes nothing about this. When the list can't be had or is not
+  accepted, what was kept stays, across restarts too. A Beacon that never accepted a list
+  with the field has everything on. `Relay/release.sh --resign --disable <name>` and
+  `--enable <name>` write the two fields (step 8, Turning it off).
 - `next_key` (handover): a manifest that passed steps 2 and 3 and names a base64 32-byte key
   adds that key to Beacon's trusted set, kept in `trusted_keys.json` (mode 0600) in the
   state folder. At most 4 are kept; a fifth pushes out the oldest. A `next_key` in a manifest
@@ -1089,9 +1101,31 @@ share, its connections and its listener. While it is off `port_share` answers
 `not_available`, `share_possible` is false without the Tailscale command being run, and
 nothing listens. `port_owner` stays on: it opens nothing and only answers a registered
 phone. Take the line out, or set it to `true`, and start Beacon again to turn it back on.
-There is no switch that reaches every Beacon from outside: the signed release list carries
-versions and files only, and a Beacon reads no setting from it. To take the port share away
-everywhere, publish a release without it.
+The publisher can turn the port share off in every Beacon at once, without a release: the
+signed release list names it in `disabled` (Updates has the rules of that field). A Beacon
+reads the list at every update check, which is at its start plus up to 10 minutes and then
+about every 12 hours (sooner after a check that could not reach the list), and when
+`rex-duo-helper update --check` or the app's update button runs one. The check that brings
+such a list closes every share with its connections and its listener before it ends; from
+then on `port_share` answers `not_available` and `share_possible` is false, at once and
+whatever was remembered of Tailscale. A later list with the name taken out turns it back
+on at the next check, without a restart. The port share is on only while neither the list
+nor this computer's `config.json` turns it off. So the longest a running Beacon that can
+reach the list goes on sharing after the list is published is one wait between checks,
+12.5 hours; one that is asleep or offline follows when it next checks, and keeps what it
+last knew until then. A Beacon with `"auto_update": false`, a dry run and a development
+build have no timer and read the list only when a check is asked for.
+
+```sh
+Relay/release.sh --resign --disable port_share             # writes and signs the list; publishes nothing
+Relay/release.sh --resign --disable port_share --publish   # the same, and uploads it
+Relay/release.sh --resign --enable port_share --publish    # on again
+```
+
+`--resign` takes the published list (it downloads it when `Relay/dist/release` has none),
+changes `disabled`, `signed_at` and the expiry date, and signs it; versions and files stay
+as they are, so no Beacon updates because of it. A release made while something is off
+has to be given `--disable` again, or a Beacon installed after it never hears of it.
 
 ### 9. Who holds a port, and how it was started (`port_owner`, from 0.7.0)
 

@@ -83,6 +83,8 @@ const MAX_CHECK_FILE: u64 = 1024;
 const TRUSTED_KEYS_FILE: &str = "trusted_keys.json";
 /// The highest manifest version accepted so far, in the state folder.
 const HIGH_WATER_FILE: &str = "update_high_water.json";
+/// What the release list last turned off (`Switches`).
+const SWITCHES_FILE: &str = "switches.json";
 /// The most handed-over keys kept. A fifth pushes out the oldest.
 pub const HANDED_LIMIT: usize = 4;
 /// The launchd job the old program runs as while it restarts the helper on a Mac.
@@ -216,7 +218,69 @@ pub struct Manifest {
     pub expires_at: i64,
     /// A key the publisher is moving to, for the helper to trust from now on.
     pub next_key: Option<[u8; 32]>,
+    /// The features the publisher has turned off (`disabled`), by name. None when the list
+    /// leaves the field out or holds anything there but a list of names: then the list says
+    /// nothing about them.
+    pub disabled: Option<Vec<String>>,
+    /// When the list was signed (`signed_at`), seconds since 1970. release.sh writes it with
+    /// `disabled`, each time later than the last (`Switches`).
+    pub signed_at: Option<i64>,
     pub assets: BTreeMap<String, Asset>,
+}
+
+/// The most names taken from a list's `disabled`, and the longest name.
+const MAX_DISABLED: usize = 32;
+const MAX_FEATURE_NAME: usize = 64;
+
+/// What the publisher has turned off in every Beacon, as the newest accepted release list
+/// that says so has it. Kept in the state folder, so it holds while the list can't be had
+/// and across restarts. Only `accept_and_remember` writes it, from a list whose signature,
+/// expiry and version were accepted; nothing that came over the network unverified can.
+///
+/// A list is taken for this only when it was signed later than the one that set what is
+/// kept (`signed_at`), so an older signed list played back can't turn back on what a newer
+/// one turned off. Nothing kept (no list ever said anything) means nothing is off.
+pub struct Switches;
+
+impl Switches {
+    /// The names turned off, as kept. Nothing kept, or a file that can't be read: none.
+    pub fn load(state_dir: &Path) -> Vec<String> {
+        let kept: Value = read_json(&state_dir.join(SWITCHES_FILE));
+        kept.get("disabled").and_then(names).unwrap_or_default()
+    }
+
+    /// When the list that set what is kept was signed.
+    fn stored_at(state_dir: &Path) -> Option<i64> {
+        read_json::<Value>(&state_dir.join(SWITCHES_FILE)).str("signed_at").and_then(parse_iso8601)
+    }
+
+    pub(crate) fn store(state_dir: &Path, disabled: &[String], signed_at: i64) {
+        write_json(&state_dir.join(SWITCHES_FILE), &json!({"disabled": disabled, "signed_at": iso8601(signed_at)}));
+    }
+
+    /// Takes what the accepted list `m` says, when it says anything and was signed later
+    /// than what is kept. A name this Beacon doesn't know is kept and means nothing here.
+    fn follow(state_dir: &Path, m: &Manifest) {
+        let Some(disabled) = &m.disabled else { return };
+        match (m.signed_at, Switches::stored_at(state_dir)) {
+            (Some(at), kept) if kept.map_or(true, |kept| at > kept) => {
+                if *disabled != Switches::load(state_dir) {
+                    info!("update: the release list turns off: {}", if disabled.is_empty() { "nothing".to_string() } else { disabled.join(", ") });
+                }
+                Switches::store(state_dir, disabled, at);
+            }
+            (Some(_), _) => {}
+            (None, _) => info!("update: the release list names what is turned off but not when it was signed; that is not taken"),
+        }
+    }
+}
+
+/// A list of feature names: short words of small letters, digits and `_`. None for anything
+/// else, one odd entry included.
+fn names(v: &Value) -> Option<Vec<String>> {
+    let list = v.as_array().filter(|a| a.len() <= MAX_DISABLED)?;
+    let name = |n: &Value| n.as_str().filter(|n| (1..=MAX_FEATURE_NAME).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')).map(String::from);
+    list.iter().map(name).collect()
 }
 
 /// A public key as update-key.pub and the manifest write it: the base64 of 32 bytes, 44
@@ -267,9 +331,11 @@ impl Manifest {
                 .ok_or_else(|| format!("the update manifest's {} size is not allowed", clip(name)))?;
             assets.insert(name.clone(), Asset { url: url.into(), sha256: sha256.to_ascii_lowercase(), size });
         }
-        // A field this helper doesn't know (such as `desk` and `signed_at`, which no released
-        // helper reads) never spoils the list.
-        Ok(Manifest { version: version.into(), min_version: min_version.into(), expires_at, next_key, assets })
+        // A field this helper doesn't know never spoils the list, and neither does one of
+        // these two that is not what it should be: the list is taken without it.
+        let disabled = v.get("disabled").and_then(names);
+        let signed_at = v.str("signed_at").and_then(parse_iso8601);
+        Ok(Manifest { version: version.into(), min_version: min_version.into(), expires_at, next_key, disabled, signed_at, assets })
     }
 }
 
@@ -444,6 +510,7 @@ fn load_high_water(state_dir: &Path) -> Option<Version> {
 /// `accept_manifest` against what the state folder remembers, which it then brings up to
 /// date: the highest version seen, and a key the manifest hands over. Only a manifest that
 /// was accepted changes either, so a `next_key` in a list nobody trusted is never read.
+/// The same goes for what the list turns off (`Switches`).
 fn accept_and_remember(state_dir: &Path, builtin: Vec<[u8; 32]>, data: &[u8], signature_file: &[u8], now: i64) -> Result<Manifest, Fault> {
     let mut trust = load_trust(state_dir, builtin);
     let high_water = load_high_water(state_dir);
@@ -455,6 +522,7 @@ fn accept_and_remember(state_dir: &Path, builtin: Vec<[u8; 32]>, data: &[u8], si
         info!("update: the release list handed over a new signing key; it is trusted from now on");
         write_json(&state_dir.join(TRUSTED_KEYS_FILE), &json!({"keys": trust.handed.iter().map(|k| base64(k)).collect::<Vec<_>>()}));
     }
+    Switches::follow(state_dir, &m);
     Ok(m)
 }
 
@@ -1511,6 +1579,8 @@ pub struct Updater {
     /// Check on a timer and install what is found.
     auto: bool,
     state: Mutex<State>,
+    /// What the release list has turned off (`Switches`), as read last from the state folder.
+    disabled: Mutex<Vec<String>>,
     /// Called after the state changed (the relay rewrites status.json).
     on_change: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -1569,8 +1639,28 @@ impl Updater {
             place: env.place.ok(),
             state_dir: state_dir.to_path_buf(),
             state: Mutex::new(state),
+            disabled: Mutex::new(Switches::load(state_dir)),
             on_change: Mutex::new(None),
         })
+    }
+
+    /// True when the publisher has turned `feature` off (the release list's `disabled`), by
+    /// the newest list this Beacon accepted that said anything, now or before a restart.
+    pub fn disabled(&self, feature: &str) -> bool {
+        self.disabled.lock().unwrap().iter().any(|name| name == feature)
+    }
+
+    /// Reads again what the state folder keeps as turned off: a check, here or from the
+    /// command line, may have written it.
+    fn reload_switches(&self) {
+        *self.disabled.lock().unwrap() = Switches::load(&self.state_dir);
+    }
+
+    /// `reload_switches`, and everything that follows a change.
+    #[cfg(test)]
+    pub(crate) fn switches_changed(&self) {
+        self.reload_switches();
+        self.change(|_| {});
     }
 
     pub fn set_on_change(&self, f: impl Fn() + Send + Sync + 'static) {
@@ -1622,6 +1712,8 @@ impl Updater {
         if r.at > now || own.is_some_and(|own| r.at <= own) {
             return false;
         }
+        // That check kept what its list turns off where this one reads it.
+        self.reload_switches();
         self.change(|s| s.take(r));
         true
     }
@@ -1646,7 +1738,17 @@ impl Updater {
     /// talks to the network before an install.
     pub async fn check(&self) -> Result<Plan, Fault> {
         let builtin = self.keys.clone().map_err(|why| Fault::new(Problem::NotSetUp, why))?;
-        match self.latest_manifest(builtin).await {
+        let latest = self.latest_manifest(builtin).await;
+        self.took(latest)
+    }
+
+    /// What follows the fetch in `check`: `latest` is the list as `accept_and_remember` gave
+    /// it. What the list turns off is read again before anyone is told of the change, so
+    /// whoever follows this (`set_on_change`) acts on it within the same check. A list that
+    /// was not had or not accepted leaves that as it was.
+    fn took(&self, latest: Result<Manifest, Fault>) -> Result<Plan, Fault> {
+        self.reload_switches();
+        match latest {
             Ok(m) => {
                 let plan = plan(&m, VERSION, platform_key(std::env::consts::OS, std::env::consts::ARCH)).map_err(|e| Fault::new(Problem::NoBuild, e));
                 note_expiry(m.expires_at, now() as i64);
@@ -2101,13 +2203,211 @@ mod tests {
     fn a_list_with_fields_this_helper_does_not_know_is_read_as_before() {
         let mut v: Value = serde_json::from_str(&manifest_json("0.4.0")).unwrap();
         v["desk"] = json!("on");
-        v["signed_at"] = json!(iso8601(RELEASED));
         v["presence"] = json!({"anything": [1, 2]});
         v["a_later_field"] = json!("whatever");
         let m = Manifest::parse(v.to_string().as_bytes()).unwrap();
         let plain = Manifest::parse(manifest_json("0.4.0").as_bytes()).unwrap();
-        // A list signed with the fields of the desk switch that never shipped reads as one without.
+        // A list signed with the field of the desk switch that never shipped reads as one without.
         assert_eq!(m, plain);
+        assert_eq!((&plain.disabled, plain.signed_at), (&None, None));
+        // What is turned off, and when the list was signed, are read when they are what
+        // they should be; anything else there leaves the rest of the list as it is.
+        v["disabled"] = json!(["port_share", "something_later"]);
+        v["signed_at"] = json!(iso8601(RELEASED));
+        let m = Manifest::parse(v.to_string().as_bytes()).unwrap();
+        assert_eq!((m.disabled.as_deref(), m.signed_at), (Some(&["port_share".to_string(), "something_later".to_string()][..]), Some(RELEASED)));
+        assert_eq!(Manifest { disabled: None, signed_at: None, ..m }, plain);
+        v["disabled"] = json!([]);
+        assert_eq!(Manifest::parse(v.to_string().as_bytes()).unwrap().disabled, Some(vec![]));
+        let long = "x".repeat(MAX_FEATURE_NAME + 1);
+        for odd in [json!("port_share"), json!({"port_share": true}), json!(["port_share", 1]), json!(["Port Share"]), json!([""]), json!([long]), json!(vec!["a"; MAX_DISABLED + 1]), Value::Null] {
+            v["disabled"] = odd.clone();
+            v["signed_at"] = json!("yesterday");
+            let m = Manifest::parse(v.to_string().as_bytes()).unwrap();
+            assert_eq!(m, plain, "{odd}");
+        }
+    }
+
+    /// The list as every released Beacon reads it: `Manifest` and `Manifest::parse` as they
+    /// are in the release tagged helper-v0.6.0, letter for letter. Between helper-v0.3.0 and
+    /// that release the function differs by one comment, and `accept_manifest`,
+    /// `verify_signatures`, `release_url_ok`, `key_from_base64` and `parse_iso8601` not at all.
+    mod released {
+        use super::super::*;
+
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct Manifest {
+            pub version: String,
+            pub min_version: String,
+            pub expires_at: i64,
+            pub next_key: Option<[u8; 32]>,
+            pub assets: BTreeMap<String, Asset>,
+        }
+
+        impl Manifest {
+        pub fn parse(data: &[u8]) -> Result<Manifest, String> {
+            let v: Value = serde_json::from_slice(data).map_err(|_| "the update manifest is not JSON")?;
+            let version = v.str("version").filter(|s| Version::parse(s).is_some()).ok_or("the update manifest has no valid version")?;
+            let min_version = v.str("min_version").filter(|s| Version::parse(s).is_some()).ok_or("the update manifest has no valid min_version")?;
+            // A release can't require more than itself: no helper could ever satisfy it.
+            if Version::parse(min_version) > Version::parse(version) {
+                return Err("the update manifest's min_version is newer than its version".into());
+            }
+            let expires_at = v.str("expires_at").and_then(parse_iso8601).ok_or("the update manifest has no valid expires_at")?;
+            let next_key = match v.get("next_key") {
+                None | Some(Value::Null) => None,
+                Some(k) => Some(k.as_str().and_then(key_from_base64).ok_or("the update manifest's next_key is not a key")?),
+            };
+            let mut assets = BTreeMap::new();
+            for (name, a) in v.get("assets").and_then(Value::as_object).ok_or("the update manifest lists no files")? {
+                let url = a.str("url").filter(|u| release_url_ok(u)).ok_or_else(|| format!("the update manifest's {} address is not allowed", clip(name)))?;
+                let sha256 = a
+                    .str("sha256")
+                    .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .ok_or_else(|| format!("the update manifest's {} hash is malformed", clip(name)))?;
+                let size = a
+                    .get("size")
+                    .and_then(Value::as_u64)
+                    .filter(|n| (1..=MAX_ASSET).contains(n))
+                    .ok_or_else(|| format!("the update manifest's {} size is not allowed", clip(name)))?;
+                assets.insert(name.clone(), Asset { url: url.into(), sha256: sha256.to_ascii_lowercase(), size });
+            }
+            // A field this helper doesn't know (such as `desk` and `signed_at`, which no released
+            // helper reads) never spoils the list.
+            Ok(Manifest { version: version.into(), min_version: min_version.into(), expires_at, next_key, assets })
+        }
+        }
+    }
+
+    #[test]
+    fn released_beacons_read_a_list_that_turns_something_off_as_they_read_any_other() {
+        let (pair, public) = keypair();
+        // As release.sh writes it: one field per line, the new ones among the rest.
+        let mut v: Value = serde_json::from_str(&manifest_json("0.7.0")).unwrap();
+        v["disabled"] = json!(["port_share"]);
+        v["signed_at"] = json!(iso8601(RELEASED + 60));
+        let data = format!("{}\n", serde_json::to_string_pretty(&v).unwrap()).into_bytes();
+        let sig = sign(&pair, &data);
+        // The signature is over the file's bytes as they were fetched, whatever they hold.
+        assert!(verify_signatures(&[public], &data, &sig).is_ok());
+        // The released reader takes each field by its name and leaves the rest.
+        let old = released::Manifest::parse(&data).expect("a released Beacon reads the list");
+        let plain = released::Manifest::parse(manifest_json("0.7.0").as_bytes()).unwrap();
+        assert_eq!(old, plain);
+        // And it is the list this Beacon reads, with what is turned off besides.
+        let new = accept_manifest(&data, &sig, &[public], Version::parse("0.6.0"), RELEASED).unwrap();
+        assert_eq!((&new.version, &new.min_version, new.expires_at, new.next_key, &new.assets), (&old.version, &old.min_version, old.expires_at, old.next_key, &old.assets));
+        assert_eq!(new.disabled, Some(vec!["port_share".to_string()]));
+    }
+
+    #[test]
+    fn what_the_list_turns_off_follows_the_newest_accepted_list_that_says_so() {
+        let (pair, public) = keypair();
+        let (stranger, _) = keypair();
+        let dir = temp("switches");
+        let off = || Switches::load(&dir);
+        // A list of `version`, signed by `by` `after` seconds after RELEASED when given,
+        // with `disabled` when given; accepted at `now`.
+        let accept = |by: &Ed25519KeyPair, disabled: Option<Value>, after: Option<i64>, version: &str, now: i64| {
+            let (data, sig) = signed(
+                by,
+                &|v| {
+                    if let Some(d) = &disabled {
+                        v["disabled"] = d.clone();
+                    }
+                    if let Some(t) = after {
+                        v["signed_at"] = json!(iso8601(RELEASED + t));
+                    }
+                },
+                version,
+            );
+            accept_and_remember(&dir, vec![public], &data, &sig, now).map(|m| m.version)
+        };
+        let port_share = || Some(json!(["port_share"]));
+        // Nothing was ever said: nothing is off, and nothing is kept.
+        assert!(accept(&pair, None, None, "0.7.0", RELEASED).is_ok());
+        assert!(off().is_empty() && !dir.join(SWITCHES_FILE).exists());
+        // Turned off.
+        assert!(accept(&pair, port_share(), Some(10), "0.7.0", RELEASED).is_ok());
+        assert_eq!((off(), Switches::stored_at(&dir)), (vec!["port_share".to_string()], Some(RELEASED + 10)));
+        // A list without the field (every list before this one, and a release made without
+        // it), or with something else there, is taken as a list and changes nothing here.
+        assert!(accept(&pair, None, None, "0.7.0", RELEASED).is_ok());
+        assert!(accept(&pair, None, Some(99), "0.7.1", RELEASED).is_ok());
+        for odd in [json!("off"), json!([1]), json!(["Port Share"])] {
+            assert!(accept(&pair, Some(odd), Some(50), "0.7.1", RELEASED).is_ok());
+        }
+        assert_eq!(off(), ["port_share"]);
+        // A list that is not accepted changes nothing: signed by a stranger, expired, or of
+        // a version older than one already seen.
+        assert_eq!(accept(&stranger, Some(json!([])), Some(60), "0.7.1", RELEASED).unwrap_err().problem, Problem::Rejected);
+        assert_eq!(accept(&pair, Some(json!([])), Some(60), "0.7.1", EXPIRES).unwrap_err().problem, Problem::Expired);
+        assert_eq!(accept(&pair, Some(json!([])), Some(60), "0.7.0", RELEASED).unwrap_err().problem, Problem::Replayed);
+        assert_eq!(off(), ["port_share"]);
+        // An accepted list that was signed before the one that turned it off, or at the same
+        // moment, or that does not say when: an older copy played back turns nothing on.
+        for earlier in [Some(5), Some(10), None] {
+            assert!(accept(&pair, Some(json!([])), earlier, "0.7.1", RELEASED).is_ok(), "{earlier:?}");
+            assert_eq!((off(), Switches::stored_at(&dir)), (vec!["port_share".to_string()], Some(RELEASED + 10)), "{earlier:?}");
+        }
+        // One signed later does. A name this Beacon doesn't know is kept and harms nothing.
+        assert!(accept(&pair, Some(json!(["something_later"])), Some(20), "0.7.1", RELEASED).is_ok());
+        assert_eq!((off(), Switches::stored_at(&dir)), (vec!["something_later".to_string()], Some(RELEASED + 20)));
+        assert!(accept(&pair, Some(json!([])), Some(30), "0.7.1", RELEASED).is_ok());
+        assert!(off().is_empty());
+        // And the older "off" can't come back over it either.
+        assert!(accept(&pair, port_share(), Some(10), "0.7.1", RELEASED).is_ok());
+        assert!(off().is_empty());
+        // A file someone damaged counts as nothing kept.
+        std::fs::write(dir.join(SWITCHES_FILE), "{\"disabled\": \"all\"}").unwrap();
+        assert!(off().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_check_acts_on_what_its_list_turns_off_and_a_failed_one_keeps_what_was() {
+        let (pair, public) = keypair();
+        let dir = temp("switch-check");
+        let env = || Env { dry_run: false, debug_build: true, keys: Ok(vec![public]), place: Err("test".into()), service: false, writable: false };
+        let u = Updater::with_env(env(), false, &dir);
+        assert!(!u.disabled("port_share"), "nothing ever verified: on");
+        // Whoever follows the updater is told within the check, with the new state there to read.
+        let seen = Arc::new(Mutex::new(vec![]));
+        let (told, weak) = (seen.clone(), Arc::downgrade(&u));
+        u.set_on_change(move || told.lock().unwrap().push(weak.upgrade().unwrap().disabled("port_share")));
+        let list = |disabled: Value, after: i64| {
+            let (data, sig) = signed(
+                &pair,
+                &|v| {
+                    v["disabled"] = disabled.clone();
+                    v["signed_at"] = json!(iso8601(RELEASED + after));
+                },
+                "0.7.0",
+            );
+            accept_and_remember(&dir, vec![public], &data, &sig, RELEASED)
+        };
+        let _ = u.took(list(json!(["port_share"]), 10));
+        assert!(u.disabled("port_share") && !u.disabled("something_else"));
+        assert_eq!(seen.lock().unwrap().last(), Some(&true));
+        // The list can't be had (offline), or is not accepted: what was verified last stays.
+        let _ = u.took(Err(Fault::new(Problem::Unreachable, "Could not get the update manifest.")));
+        let _ = u.took(Err(Fault::new(Problem::Rejected, "The update manifest was not accepted.")));
+        assert!(u.disabled("port_share"));
+        assert_eq!(seen.lock().unwrap().as_slice(), [true, true, true]);
+        // It holds across a restart, before any check.
+        assert!(Updater::with_env(env(), false, &dir).disabled("port_share"));
+        // A check the command line ran, in a process of its own, is taken the same way by
+        // the service when it next looks.
+        let service = Updater::with_env(env(), false, &dir);
+        let command = Updater::with_env(env(), false, &dir);
+        let _ = command.took(list(json!([]), 20));
+        command.report_check();
+        assert!(service.disabled("port_share"), "not before the service looks");
+        assert!(service.take_command_result());
+        assert!(!service.disabled("port_share"));
+        let _ = u.took(list(json!([]), 30));
+        assert!(!u.disabled("port_share") && !Updater::with_env(env(), false, &dir).disabled("port_share"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

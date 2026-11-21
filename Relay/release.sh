@@ -6,6 +6,10 @@
 #   Relay/release.sh --publish       # also create the GitHub releases (asks nothing: be sure)
 #   Relay/release.sh --resign        # sign the current release list again with a new expiry date.
 #                                    # Builds nothing. With --publish, uploads the list and install.sh.
+#   Relay/release.sh --resign --disable port_share
+#   Relay/release.sh --resign --enable port_share
+#                                    # the same, and turn a feature off or back on in every Beacon
+#                                    # that reads the list (below). Builds nothing.
 #
 # What a release is (the helper's updater, the phone app and setup.sh rely on every part):
 #   - a GitHub release tagged helper-v<version> with the Mac app (zipped, three times), the two
@@ -41,6 +45,19 @@
 #                Set MIN_VERSION to an older version when this release still works with it:
 #                until an installed helper has updated itself, which takes up to 12 hours,
 #                every phone says of it that it needs an update.
+#   disabled     with --disable <name> or --enable <name> (each may be given more than once):
+#                the features turned off in every Beacon from 0.7.0 on, by name (Relay/README.md,
+#                "Turning it off"; `port_share` is the one there is). A Beacon follows the newest
+#                list it accepted that has the field; a list without it changes nothing, and a
+#                Beacon that never saw one has everything on. --resign keeps the field the list
+#                has and applies --disable and --enable to it; --enable of the last name leaves
+#                an empty list, which is what turns it back on. A new release carries the field
+#                only when one of the two is given, so give --disable again with every release
+#                while something is to stay off: a Beacon installed after it would otherwise
+#                never hear of it. Beacons before 0.7.0, the app and setup.sh don't read it.
+#   signed_at    beside disabled: when the list was signed, each time later than the last. A
+#                Beacon takes `disabled` only from a list signed after the one it last took it
+#                from, so an older signed list played back can't turn anything back on.
 #   expires_at   EXPIRES_DAYS from now (default 180). The helper, the app and setup.sh refuse
 #                the list after that, so a list must be signed again (--resign) before then even
 #                when nothing is released.
@@ -65,6 +82,9 @@ PUBLISH=0
 BUILD=1
 RESIGN=0
 PACKAGE_ARGS=()
+# Feature names, each followed by a comma.
+DISABLE=""
+ENABLE=""
 
 die() {
   echo "release: $*" >&2
@@ -77,6 +97,11 @@ while [[ $# -gt 0 ]]; do
     --skip-build) BUILD=0 ;;
     --resign) RESIGN=1 ;;
     --no-notarize) PACKAGE_ARGS+=("--no-notarize") ;;
+    --disable | --enable)
+      [[ $# -ge 2 && "$2" =~ ^[a-z0-9_]{1,64}$ ]] || die "$1 takes a feature's name, such as port_share"
+      if [[ "$1" == --disable ]]; then DISABLE+="$2,"; else ENABLE+="$2,"; fi
+      shift
+      ;;
     *) die "unknown option $1" ;;
   esac
   shift
@@ -225,10 +250,11 @@ if [[ $RESIGN -eq 1 ]]; then
     mkdir -p "$OUT"
     gh release download helper-latest --repo "$REPO" --pattern manifest.json --dir "$OUT"
   fi
-  # Only the dates and, when asked, the next key change. The files it names stay as they are.
-  python3 - "$OUT/manifest.json" "$EXPIRES_AT" "$NEXT_KEY" <<'PY'
-import json, re, sys
-path, expires_at, next_key = sys.argv[1:]
+  # Only the dates and, when asked, the next key and what is turned off change. The files it
+  # names stay as they are.
+  python3 - "$OUT/manifest.json" "$EXPIRES_AT" "$NEXT_KEY" "$DISABLE" "$ENABLE" <<'PY'
+import datetime, json, re, sys
+path, expires_at, next_key, disable, enable = sys.argv[1:]
 with open(path) as f:
     manifest = json.load(f)
 if not re.fullmatch(r"\d+\.\d+\.\d+", str(manifest.get("version", ""))) or not isinstance(manifest.get("assets"), dict):
@@ -238,9 +264,28 @@ manifest["expires_at"] = expires_at
 if next_key:
     manifest["next_key"] = next_key
 manifest.setdefault("next_key", None)
-# Desk presence has no switch: the fields of the one that never shipped don't stay in a list.
+# Desk presence has no switch: the field of the one that never shipped doesn't stay in a list.
 manifest.pop("desk", None)
-manifest.pop("signed_at", None)
+# What is turned off: the list's own, with --disable added and --enable taken out.
+off = manifest.get("disabled")
+if disable or enable or isinstance(off, list):
+    names = set(n for n in off if isinstance(n, str)) if isinstance(off, list) else set()
+    names |= set(filter(None, disable.split(",")))
+    names -= set(filter(None, enable.split(",")))
+    manifest["disabled"] = sorted(names)
+    # Such a list says when it was signed, always later than the list it replaces: a Beacon
+    # takes what is turned off only from a list signed after the one it last took it from.
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    signed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
+    try:
+        before = datetime.datetime.strptime(str(manifest.get("signed_at", "")), stamp)
+        signed = max(signed, before + datetime.timedelta(seconds=1))
+    except ValueError:
+        pass
+    manifest["signed_at"] = signed.strftime(stamp)
+else:
+    manifest.pop("disabled", None)
+    manifest.pop("signed_at", None)
 with open(path, "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
@@ -252,6 +297,9 @@ PY
   rm -f "$OUT/install.sh"
   write_installer "$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' "$OUT/manifest.json")" "$EXPIRES_AT"
   echo "==> Signed Relay/$OUT/manifest.json again. It expires at $EXPIRES_AT."
+  if grep -q '^  "disabled": ' "$OUT/manifest.json"; then
+    echo "    Turned off in every Beacon that reads it: $(python3 -c 'import json, sys; print(", ".join(json.load(open(sys.argv[1]))["disabled"]) or "nothing")' "$OUT/manifest.json")."
+  fi
   note_installer
   if [[ $PUBLISH -eq 0 ]]; then
     echo "Nothing was published. Run again with --resign --publish."
@@ -334,9 +382,9 @@ for f in "${LINUX[@]}"; do
 done
 
 # One field per line (indent=2): setup.sh reads this file with sed and awk.
-python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "${LINUX[@]}" <<'PY'
+python3 - "$OUT" "$VERSION" "$BASE/$TAG" "$ZIP" "${EARLIER_ZIPS[0]}" "${EARLIER_ZIPS[1]}" "$MIN_VERSION" "$EXPIRES_AT" "$NEXT_KEY" "$DISABLE" "$ENABLE" "${LINUX[@]}" <<'PY'
 import datetime, hashlib, json, os, sys
-out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, *linux = sys.argv[1:]
+out, version, base, zip_name, beacon_zip_name, helper_zip_name, min_version, expires_at, next_key, disable, enable, *linux = sys.argv[1:]
 
 def number(v):
     return tuple(int(part) for part in v.split("."))
@@ -364,6 +412,11 @@ manifest = {
     "expires_at": expires_at,
     "next_key": next_key or None,
 }
+# What is turned off, when this release says: the names of --disable that --enable does not
+# take back. With it, when the list was signed (see --resign).
+if disable or enable:
+    manifest["disabled"] = sorted(set(filter(None, disable.split(","))) - set(filter(None, enable.split(","))))
+    manifest["signed_at"] = manifest["released_at"]
 manifest["assets"] = assets
 with open(os.path.join(out, "manifest.json"), "w") as f:
     json.dump(manifest, f, indent=2)

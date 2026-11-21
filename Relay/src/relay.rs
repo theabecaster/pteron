@@ -35,6 +35,9 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The port share's name in the release list's `disabled`.
+pub const PORT_SHARE: &str = "port_share";
+
 /// What a phone that still registers with an APNs token is told.
 pub const NEEDS_NEWER_APP: &str = concat!("This ", crate::beacon_name!(), " needs a newer ", crate::app_name!(), " app.");
 
@@ -300,8 +303,11 @@ pub struct Relay {
     /// The ports a phone's browsers reach over the tailnet (share.rs).
     shares: Arc<Shares>,
     /// Whether the port share is on. Off: `port_share` answers `not_available`,
-    /// `share_possible` is false, and no share is open (`set_sharing`).
+    /// `share_possible` is false, and no share is open (`set_sharing`). It is on only while
+    /// neither this computer's config nor the release list turns it off (`follow_switches`).
     sharing: AtomicBool,
+    /// False: this computer's config.json turns the port share off.
+    share_allowed: bool,
     /// Desk presence (desk.rs, hold.rs, presence.rs).
     desk: Mutex<Desk>,
     holds: Mutex<Holds>,
@@ -350,6 +356,8 @@ impl Relay {
             store: Mutex::new(store),
             notices: Mutex::new(notice::NoticeLimiter::default()),
             sender,
+            sharing: AtomicBool::new(o.port_share && !updater.disabled(PORT_SHARE)),
+            share_allowed: o.port_share,
             updater,
             gateways: o.gateways,
             key: o.key,
@@ -365,7 +373,6 @@ impl Relay {
             due_task: Mutex::new(None),
             status_path: o.status_path,
             stopping: AtomicBool::new(false),
-            sharing: AtomicBool::new(o.port_share),
             #[cfg(not(test))]
             shares: Shares::new(share::Net::tailnet()),
             // No test asks the real Tailscale client: loopback stands in for the tailnet.
@@ -414,19 +421,39 @@ impl Relay {
         self.shares.watch_registrations(move |id| relay.upgrade().is_none_or(|r| r.store().get(id).is_some()));
     }
 
+    /// From now on what the updater learns is acted on as it learns it: status.json
+    /// follows it, and so does what the release list turns off. Weak, so the two don't keep
+    /// each other alive.
+    fn follow_updater(self: &Arc<Self>) {
+        let relay = Arc::downgrade(self);
+        self.updater.set_on_change(move || {
+            if let Some(r) = relay.upgrade() {
+                if !r.stopping.load(Ordering::SeqCst) {
+                    r.follow_switches();
+                    r.write_status();
+                }
+            }
+        });
+    }
+
+    /// Turns the port share off when this computer's config or the release list says so,
+    /// and on again when neither does. Called after every update check, so a list that
+    /// turns it off closes every share within that check, and one that turns it back on
+    /// needs no restart.
+    fn follow_switches(&self) {
+        let on = self.share_allowed && !self.updater.disabled(PORT_SHARE);
+        if on != self.sharing.load(Ordering::SeqCst) {
+            info!("the port share is turned {}", if on { "on again" } else { "off by the release list" });
+            self.set_sharing(on);
+        }
+    }
+
     pub fn start(self: &Arc<Self>) {
         let n = self.store().devices.len();
         let mode = if self.dry_run { "dry run, no pushes are sent" } else { "pushes go through the gateway" };
         info!("{BEACON} {VERSION} starting; {n} registered device(s); {mode}");
         // status.json follows what the updater learns. Weak, so the two don't keep each other alive.
-        let relay = Arc::downgrade(self);
-        self.updater.set_on_change(move || {
-            if let Some(r) = relay.upgrade() {
-                if !r.stopping.load(Ordering::SeqCst) {
-                    r.write_status();
-                }
-            }
-        });
+        self.follow_updater();
         self.write_status();
         self.watch_shares();
         self.watch_power();
@@ -1227,7 +1254,6 @@ impl Relay {
     /// address to open. Asking again for a port that is shared gives the same address.
     /// Turns the port share on or off. Turned off, every open share ends with its
     /// connections and its listener, and none is made until it is on again.
-    #[cfg_attr(not(test), allow(dead_code))] // the config is read once, at the start
     fn set_sharing(&self, on: bool) {
         self.sharing.store(on, Ordering::SeqCst);
         if !on {
@@ -1242,7 +1268,7 @@ impl Relay {
             return Err(error("not_registered", concat!("Only an iPhone registered with this ", crate::beacon_name!(), " can open a page this way.")));
         };
         if !self.sharing.load(Ordering::SeqCst) {
-            info!("port_share from {who}: it is turned off on this computer");
+            info!("port_share from {who}: it is turned off");
             return Err(error("not_available", "Opening pages in this iPhone's browser is turned off on this computer."));
         }
         let bad = |m: &str| Err(error("bad_request", m));
@@ -4630,6 +4656,61 @@ mod tests {
         off.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
         assert_eq!(code(&off, &s, "port_share", &alex, &ask).await, "not_available");
         assert_eq!((off.shares.count(), status(&off, &alex).await["share_possible"].clone()), (0, json!(false)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_release_list_turns_the_port_share_off_and_on_within_a_check() {
+        let dir = temp("share-switch");
+        let r = relay(&dir, false);
+        r.follow_updater();
+        let s = named_server("https://rex.example.ts.net");
+        let dev = Dev::start().await;
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let ask = json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"});
+        let opened = r.act(&s, "port_share", &ask, &alex).await.0.unwrap();
+        let at: std::net::SocketAddr = format!("127.0.0.1:{}", opened["port"]).parse().unwrap();
+        let mut open = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert_eq!((r.shares.count(), status(&r, &alex).await["share_possible"].clone()), (1, json!(true)));
+        // A check that brought nothing new, and one that names something else: as before.
+        r.updater.switches_changed();
+        crate::update::Switches::store(&dir, &["something_later".to_string()], 100);
+        r.updater.switches_changed();
+        assert_eq!(r.shares.count(), 1);
+        // The check whose list turns it off: the share, its connection and its listener
+        // are gone when that check has ended, and both answers say no at once.
+        crate::update::Switches::store(&dir, &["something_later".to_string(), PORT_SHARE.to_string()], 200);
+        r.updater.switches_changed();
+        assert_eq!(r.shares.count(), 0);
+        assert!(closed(at).await);
+        use tokio::io::AsyncReadExt;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), open.read(&mut [0u8; 16])).await.unwrap().unwrap_or(0), 0, "the open connection ended");
+        assert_eq!(code(&r, &s, "port_share", &alex, &ask).await, "not_available");
+        assert_eq!((r.shares.count(), status(&r, &alex).await["share_possible"].clone()), (0, json!(false)));
+        // A check that could not have the list, or had one that was not accepted, wrote
+        // nothing: it stays off.
+        r.updater.switches_changed();
+        assert_eq!(code(&r, &s, "port_share", &alex, &ask).await, "not_available");
+        // A Beacon that starts while it is off starts with it off, before any check.
+        let env = || Env { dry_run: false, debug_build: true, keys: Ok(vec![[7u8; 32]]), place: Err("test".into()), service: false, writable: false };
+        let sense = || -> Arc<dyn Sense> { Arc::new(TestSense::default()) };
+        let again = Relay::new(vec![], DeviceStore::open(dir.join("devices.json")), Sender::Gateway, Updater::with_env(env(), false, &dir), options(&dir, false, &[GATEWAY], sense()));
+        assert_eq!(code(&again, &s, "port_share", &alex, &ask).await, "not_available");
+        assert_eq!(status(&again, &alex).await["share_possible"], false);
+        // The list turns it on again: it works without a restart.
+        crate::update::Switches::store(&dir, &[], 300);
+        r.updater.switches_changed();
+        assert_eq!(status(&r, &alex).await["share_possible"], true);
+        r.act(&s, "port_share", &ask, &alex).await.0.unwrap();
+        assert_eq!(r.shares.count(), 1);
+        r.stop();
+        // Off on this computer wins over a list that has it on.
+        let local = Relay::new(vec![], DeviceStore::open(dir.join("devices.json")), Sender::Gateway, Updater::with_env(env(), false, &dir), Options { port_share: false, ..options(&dir, false, &[GATEWAY], sense()) });
+        local.follow_updater();
+        local.updater.switches_changed();
+        assert_eq!(code(&local, &s, "port_share", &alex, &ask).await, "not_available");
+        assert_eq!(status(&local, &alex).await["share_possible"], false);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
