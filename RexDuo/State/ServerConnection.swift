@@ -215,6 +215,8 @@ final class ServerConnection: Identifiable {
     /// Called when the control connection's state changed: what `TunnelSuspicion` reads may
     /// have changed with it. Set by `AppModel`.
     @ObservationIgnored var linkChanged: (@MainActor () -> Void)?
+    /// Called when a sync has the sessions and tabs in for the first time on a connection.
+    @ObservationIgnored var firstSynced: (@MainActor () -> Void)?
     /// The connection dropped around a trip to the background and is being made again, while
     /// `phase` stays `.online` (`ForegroundWake`). The title bar's Glide breathes meanwhile.
     var waking = false
@@ -807,6 +809,7 @@ final class ServerConnection: Identifiable {
             // Sessions and tabs are in: the app can show them while metadata loads.
             if !synced, control.state == .connected {
                 synced = true
+                firstSynced?()
                 recovering = false
             }
             for sid in touchedSessions { refreshView(sid) }

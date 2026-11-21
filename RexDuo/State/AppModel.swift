@@ -529,7 +529,13 @@ final class AppModel {
             helperSetup.attach(s)
             s.agentsKnown = { [weak self] in self?.tidy.request() }
             s.tunnelShows = { [weak self] in self?.tunnel.shows ?? false }
-            s.linkChanged = { [weak self] in self?.checkTunnel() }
+            s.linkChanged = { [weak self, weak s] in
+                self?.checkTunnel()
+                if let s { self?.leadReported(s.id, synced: s.synced, failed: s.control.failedNow, dormant: s.control.dormant) }
+            }
+            s.firstSynced = { [weak self, weak s] in
+                if let s { self?.leadReported(s.id, synced: true, failed: false, dormant: false) }
+            }
             s.forward = forward
             palette.attach(s)
             return s
@@ -547,6 +553,12 @@ final class AppModel {
         #endif
         // Before the first scene shows, nothing connects (`sceneVisible`).
         guard mayConnect else { return }
+        // The list changed while the app runs: nobody waits a turn (that is for a launch).
+        staggered?.cancel()
+        leadWait?.cancel()
+        lead = nil
+        laterTurns = []
+        waitingToStart = []
         for s in servers { startServer(s) }
     }
 
@@ -556,6 +568,72 @@ final class AppModel {
     @ObservationIgnored private(set) var mayConnect = false
     /// Starts a server's connection. Tests record the calls instead.
     @ObservationIgnored var startServer: @MainActor (ServerConnection) -> Void = { $0.start() }
+
+    /// The servers whose turn to start has not come (`StartStagger`), and the one wait for them.
+    @ObservationIgnored private(set) var waitingToStart: Set<UUID> = []
+    @ObservationIgnored private var staggered: Task<Void, Never>?
+    /// The wait before a turn, in seconds. Tests end it by hand.
+    @ObservationIgnored var staggerSleep: @MainActor (Double) async -> Void = {
+        try? await Task.sleep(for: .milliseconds(Int(($0 * 1000).rounded())))
+    }
+
+    /// The computer the others wait for, until it has settled or a second has passed.
+    @ObservationIgnored private var lead: UUID?
+    /// The others, in the order they start, once the first has settled.
+    @ObservationIgnored private var laterTurns: [StartStagger.Turn] = []
+    /// The one wait for the first computer: `StartStagger.lead` at most.
+    @ObservationIgnored private var leadWait: Task<Void, Never>?
+
+    /// The launch's starts: the computer of the tab it opens at once, the others when it has
+    /// settled or after a second, whichever comes first, one at a time.
+    private func startInTurns() {
+        let plan = StartStagger.plan(servers: servers.map(\.id), first: (selection ?? prefs.lastSelection)?.serverID,
+                                     unit: { Double.random(in: 0...1) })
+        waitingToStart = Set(plan.later.map(\.id))
+        laterTurns = plan.later
+        lead = plan.later.isEmpty ? nil : plan.now.first
+        // In this same turn, with nothing before it.
+        for id in plan.now { if let s = server(id) { startServer(s) } }
+        guard lead != nil else { return }
+        let sleep = staggerSleep
+        leadWait = Task { [weak self] in
+            await sleep(StartStagger.lead)
+            guard !Task.isCancelled else { return }
+            self?.startTheOthers()
+        }
+    }
+
+    /// The first computer reports where it is. Once it has settled the others start.
+    func leadReported(_ id: UUID, synced: Bool, failed: Bool, dormant: Bool) {
+        guard id == lead, StartStagger.settled(synced: synced, failed: failed, dormant: dormant) else { return }
+        startTheOthers()
+    }
+
+    /// The others start now, one at a time: the first has settled, or its second is over.
+    private func startTheOthers() {
+        guard lead != nil else { return }
+        lead = nil
+        leadWait?.cancel()
+        leadWait = nil
+        let turns = laterTurns, sleep = staggerSleep
+        laterTurns = []
+        staggered = Task { [weak self] in
+            for t in turns {
+                if t.pause > 0 { await sleep(t.pause) }
+                guard !Task.isCancelled, let self else { return }
+                // Nothing starts in the background: the return starts whoever still waits.
+                if self.inBackground { continue }
+                self.startNow(t.id)
+            }
+        }
+    }
+
+    /// Starts a server that waits its turn, now: its turn came, the user opened it, or the app
+    /// is back from the background. Nothing for a server that is not waiting.
+    func startNow(_ id: UUID) {
+        guard waitingToStart.remove(id) != nil, let s = server(id) else { return }
+        startServer(s)
+    }
 
     /// The app's scene is on its way to the screen (its first `.inactive` or `.active` phase):
     /// start every server, once. A launch iOS makes in the background, to prewarm the app or
@@ -568,7 +646,7 @@ final class AppModel {
         // To check on a simulator when the servers were started: `eventMessage CONTAINS "SCENE_VISIBLE"`.
         NSLog("SCENE_VISIBLE servers=%d", servers.count)
         #endif
-        for s in servers { startServer(s) }
+        startInTurns()
         #if DEBUG
         // `-glanceDemo <scenario>`: a made-up snapshot for the widgets, written once.
         Task { await glance.writeDemo() }
@@ -760,6 +838,8 @@ final class AppModel {
         selection = Selection(serverID: server.id, sessionID: session, windowID: window)
         if let block { focusedPane[window] = block }
         reconnect.select(server.control)
+        // A computer the user opens does not wait its turn.
+        startNow(server.id)
         if tap { server.opened() }
         Task { await server.focusWindow(session, window) }
     }
@@ -816,7 +896,15 @@ final class AppModel {
         inBackground = false
         // The selected server is first in every order the governor keeps.
         reconnect.select(selection.flatMap { sel in servers.first { $0.id == sel.serverID } }?.control)
-        for s in servers { s.resume(fromBackground: fromBackground) }
+        // Back from the background: whoever still waited a turn starts now. At a launch they
+        // keep their turns: `resume` would start them all at once.
+        if fromBackground {
+            leadWait?.cancel()
+            lead = nil
+            laterTurns = []
+            for id in Array(waitingToStart) { startNow(id) }
+        }
+        for s in servers where !waitingToStart.contains(s.id) { s.resume(fromBackground: fromBackground) }
         forward.becameActive()
         push.becameActive()
         glance.becameActive()

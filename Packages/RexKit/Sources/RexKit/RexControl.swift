@@ -975,6 +975,12 @@ public final class RexControl {
         plan(after: delay, .peer)
     }
 
+    /// The last attempt failed and no connection is up: the state is `.failed`.
+    public var failedNow: Bool {
+        if case .failed = state { return true }
+        return false
+    }
+
     /// The app wants this host connected: `connect()` until `disconnect()`.
     var isWanted: Bool { wantConnected }
 
