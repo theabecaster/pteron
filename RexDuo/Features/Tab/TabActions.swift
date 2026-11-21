@@ -42,30 +42,35 @@ enum TabAction: Hashable, CaseIterable {
 
 /// Where the tab's actions show. Pure, so the tests check that none is out of reach: All Tabs leaves
 /// the vertical bar while the key bar is up and stays in the Pane Actions menu and the title menu.
+///
+/// The vertical bar, top to bottom: the root's items (`leadingItems`: Hide Keyboard while the
+/// pane's key bar is up, then the sidebar toggle or Sessions), then the tab's (`verticalBar`).
 enum TabActions {
-    /// The tab's items in the system's vertical bar, top to bottom, after the sidebar toggle. With
-    /// the keyboard up the bar has room for three items in all. So while the pane's key bar is up
-    /// with its hide key in the bar (`HideKeyboardItem`), Hide Keyboard replaces All Tabs and goes
-    /// last, after Pane Actions: the lowest item, nearest the keyboard (the bar is a column on
-    /// either side, the keyboard below its end). Nothing moves into the bar's overflow menu where
-    /// three items fit, and with the key bar gone the order is All Tabs, Pane Actions again.
+    /// The tab's items in the system's vertical bar, top to bottom, after the root's. With the
+    /// keyboard up the bar has room for three items in all. So while the pane's key bar is up with
+    /// its hide key in the bar (`HideKeyboardItem`), Hide Keyboard goes first, at the top of the
+    /// bar, the item used most then, and All Tabs leaves the tab's items. With the key bar gone,
+    /// Hide Keyboard leaves and the order is All Tabs, Pane Actions again. Nothing moves into the
+    /// bar's overflow menu where three items fit.
     static func verticalBar(zoomed: Bool, hidesKeyboard: Bool) -> [TabAction] {
-        (zoomed ? [.unzoom] : []) + (hidesKeyboard ? [.paneActions, .hideKeyboard] : [.allTabs, .paneActions])
+        (zoomed ? [.unzoom] : []) + (hidesKeyboard ? [.paneActions] : [.allTabs, .paneActions])
     }
 
-    /// The vertical bar's first item, which the root draws with no tab on screen too: the
-    /// sidebar toggle, and in tab mode Sessions, which opens the session chip's popover.
+    /// The vertical bar's leading item, first but for Hide Keyboard, which the root draws with no
+    /// tab on screen too: the sidebar toggle, and in tab mode Sessions, which opens the session
+    /// chip's popover.
     static func barLeading(_ navigation: NavigationStyle) -> TabAction {
         navigation == .tabs ? .sessions : .sidebar
     }
 
-    /// Everything in the vertical bar, top to bottom. Tab mode changes the first item and
-    /// nothing else, so the bar holds as many items either way.
+    /// Everything in the vertical bar, top to bottom, room aside: Hide Keyboard first while the
+    /// key bar is up, and only then. Tab mode changes the leading item and nothing else, so the bar
+    /// holds as many items either way.
     static func verticalBar(_ navigation: NavigationStyle, zoomed: Bool, hidesKeyboard: Bool) -> [TabAction] {
-        [barLeading(navigation)] + verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard)
+        (hidesKeyboard ? [.hideKeyboard] : []) + [barLeading(navigation)] + verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard)
     }
 
-    /// The items, the first (`barLeading`) among them, that the vertical bar fits above the keyboard and
+    /// The items, the root's among them, that the vertical bar fits above the keyboard and
     /// key bar. Three, except on the outer screen on its side with the bar on the left, where the
     /// bar's items start lower, past the camera, and two fit. The system reports neither the items'
     /// frames nor that offset, so this reads the facts the key bar already uses: the bar's column
@@ -78,24 +83,36 @@ enum TabActions {
         return column.minX < 1 && compactHeight ? 2 : 3
     }
 
-    /// Whether the bar's first item (`barLeading`: the sidebar toggle, or Sessions in tab mode)
-    /// keeps its place at the top of the vertical bar. While the key bar is up it gives its place
-    /// up first where the bar has no room for it beside Pane Actions and Hide Keyboard, and comes
-    /// back when the key bar goes, so Hide Keyboard never falls into the system's "…" menu.
+    /// Whether the bar's leading item (`barLeading`: the sidebar toggle, or Sessions in tab mode)
+    /// keeps its place, below Hide Keyboard while that shows. While the key bar is up it gives its
+    /// place up first where the bar has no room for it beside Hide Keyboard and Pane Actions, and
+    /// comes back when the key bar goes, so nothing falls into the system's "…" menu.
     static func showsBarLeading(hidesKeyboard: Bool, room: Int) -> Bool {
-        !hidesKeyboard || room > verticalBar(zoomed: false, hidesKeyboard: true).count
+        !hidesKeyboard || room > 1 + verticalBar(zoomed: false, hidesKeyboard: true).count
     }
 
-    /// The tab's items that fit in `room` (`keyBarRoom`) with the bar's first item as
-    /// `showsBarLeading` leaves it: while the key bar is up, items leave from the top (Unzoom, which
-    /// stays in the Pane Actions menu and the two-finger tap) until the rest fit, and Hide
-    /// Keyboard, last, always stays.
+    /// The root's items in the vertical bar, top to bottom: Hide Keyboard while the key bar is up,
+    /// and only then, then the leading item as `showsBarLeading` leaves it.
+    static func leadingItems(_ navigation: NavigationStyle, hidesKeyboard: Bool, room: Int) -> [TabAction] {
+        (hidesKeyboard ? [.hideKeyboard] : [])
+            + (showsBarLeading(hidesKeyboard: hidesKeyboard, room: room) ? [barLeading(navigation)] : [])
+    }
+
+    /// The tab's items that fit in `room` (`keyBarRoom`) below the root's (`leadingItems`): while
+    /// the key bar is up, items leave from the top (Unzoom, which stays in the Pane Actions menu
+    /// and the two-finger tap) until the rest fit, and Pane Actions, last, always stays.
     static func verticalBar(zoomed: Bool, hidesKeyboard: Bool, room: Int) -> [TabAction] {
         var items = verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard)
         guard hidesKeyboard else { return items }
-        let toggle = showsBarLeading(hidesKeyboard: true, room: room) ? 1 : 0
-        while toggle + items.count > room, items.count > 1 { items.removeFirst() }
+        let leading = leadingItems(.sidebar, hidesKeyboard: true, room: room).count
+        while leading + items.count > room, items.count > 1 { items.removeFirst() }
         return items
+    }
+
+    /// Everything the vertical bar shows in `room`, top to bottom: the root's items, then the tab's.
+    static func verticalBar(_ navigation: NavigationStyle, zoomed: Bool, hidesKeyboard: Bool, room: Int) -> [TabAction] {
+        leadingItems(navigation, hidesKeyboard: hidesKeyboard, room: room)
+            + verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard, room: room)
     }
 
     /// The Pane Actions menu's first section.

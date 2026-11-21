@@ -704,18 +704,18 @@ struct WindowScreen: View {
     /// Where the system has a vertical bar, the sidebar toggle and the tab's actions are toolbar items
     /// there (Apple: navigation at the top, then actions, each with a title and a symbol). The title
     /// and status stay in the title bar: text and custom views stay off the vertical axis.
-    /// While the active pane's key bar is up, Hide Keyboard (the key bar's hide key, which the bar
-    /// beside the keyboard takes in; `HideKeyboardItem`) replaces All Tabs, which has no room then,
-    /// and goes last, below Pane Actions, nearest the keyboard; All Tabs comes back when the key
-    /// bar goes (`TabActions.verticalBar`). The swap rides the keyboard's animation. Where the bar
-    /// fits fewer items above the keyboard (`TabActions.keyBarRoom`), Unzoom and then the sidebar
-    /// toggle leave it first, so Hide Keyboard never goes into the system's "…" menu.
+    /// While a pane's key bar is up, the root puts Hide Keyboard (the key bar's hide key, which the
+    /// bar beside the keyboard takes in; `HideKeyboardItem`) at the top of the bar, above the
+    /// sidebar toggle, and All Tabs, which has no room then, leaves these items; it comes back when
+    /// the key bar goes (`TabActions.verticalBar`). The swap rides the keyboard's animation. Where
+    /// the bar fits fewer items above the keyboard (`TabActions.keyBarRoom`), Unzoom and then the
+    /// sidebar toggle leave it first, so nothing goes into the system's "…" menu.
     @ToolbarContentBuilder
     private func barItems(_ theme: TermTheme, _ p: TabPresentation?) -> some ToolbarContent {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
-            let key = TerminalHostPool.Key(server: server.id, session: sessionID, block: b)
             let room = TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact)
-            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane == key, room: room)
+            // The same test the root's Hide Keyboard uses, so the bar counts what it shows.
+            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane != nil, room: room)
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if items.contains(.unzoom) {
                     Button { toggleZoom() } label: { Label(TabAction.unzoom.title, systemImage: TabAction.unzoom.symbol) }
@@ -724,11 +724,6 @@ struct WindowScreen: View {
                     Button { openOverview() } label: { Label(TabAction.allTabs.title, systemImage: TabAction.allTabs.symbol) }
                 }
                 paneMenu(w, block: b, p)
-                if items.contains(.hideKeyboard) {
-                    Button { pool?.host(for: key)?.hideKeyboard() } label: {
-                        Label(TabAction.hideKeyboard.title, systemImage: TabAction.hideKeyboard.symbol)
-                    }
-                }
             }
         }
     }

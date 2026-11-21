@@ -3,9 +3,10 @@ import UIKit
 
 /// The vertical bar's Hide Keyboard item. Where the system's vertical bar sits beside the keyboard
 /// (iPhone Duo), the key bar has no hide key of its own (`KeyBarPlacement.HideKey.verticalBar`):
-/// the tab's toolbar shows this item instead of All Tabs while the active pane's key bar is up,
-/// over the software keyboard or alone for a hardware one, last in the bar so it sits nearest the
-/// keyboard, and All Tabs again when the key bar goes (`TabActions.verticalBar`).
+/// the root's toolbar shows this item at the top of the bar, above the sidebar toggle, while a
+/// pane's key bar is up, over the software keyboard or alone for a hardware one, and nothing in its
+/// place when the key bar goes. All Tabs leaves the tab's items while it shows and comes back with
+/// it gone (`TabActions.verticalBar`).
 ///
 /// Each pane's host says when its key bar is up with its hide key in the vertical bar
 /// (`TerminalHost.barHidesKeyboard`); this keeps the one pane that has it. The change shows one

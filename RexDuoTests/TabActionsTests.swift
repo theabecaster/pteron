@@ -2,31 +2,40 @@ import CoreGraphics
 import Testing
 @testable import RexDuo
 
-/// The tab's actions in the vertical bar and its menus (`TabActions`): Hide Keyboard replaces All
-/// Tabs while the key bar is up and goes last, nearest the keyboard, and All Tabs stays within reach.
+/// The tab's actions in the vertical bar and its menus (`TabActions`): Hide Keyboard is the bar's
+/// top item while the key bar is up and absent while it is down, All Tabs leaves the bar while it
+/// shows, and every action stays within reach.
 struct TabActionsTests {
-    @Test func hideKeyboardReplacesAllTabsAndGoesLast() {
-        for zoomed in [false, true] {
-            let typing = TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: true)
-            let resting = TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: false)
-            // As many items either way, so the bar never overflows for it.
-            #expect(typing.count == resting.count)
-            #expect(Set(typing) == Set(resting).subtracting([.allTabs]).union([.hideKeyboard]))
-            #expect(resting.last == .paneActions)
-            #expect(Array(typing.dropLast()) == resting.filter { $0 != .allTabs })
+    @Test func hideKeyboardIsFirstWhileTheKeyboardIsUpAndAbsentWhenDown() {
+        for navigation in [NavigationStyle.sidebar, .tabs] {
+            for zoomed in [false, true] {
+                for room in [2, 3] {
+                    let up = TabActions.verticalBar(navigation, zoomed: zoomed, hidesKeyboard: true, room: room)
+                    let down = TabActions.verticalBar(navigation, zoomed: zoomed, hidesKeyboard: false, room: room)
+                    #expect(up.first == .hideKeyboard, "\(navigation), zoomed \(zoomed), room \(room)")
+                    #expect(up.filter { $0 == .hideKeyboard }.count == 1)
+                    #expect(!down.contains(.hideKeyboard))
+                    // Keyboard down, the bar is as it was before Hide Keyboard came to it.
+                    #expect(down == [TabActions.barLeading(navigation)] + (zoomed ? [.unzoom] : []) + [.allTabs, .paneActions])
+                }
+            }
         }
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: false) == [.allTabs, .paneActions])
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true) == [.paneActions, .hideKeyboard])
-        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: false) == [.unzoom, .allTabs, .paneActions])
-        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: true) == [.unzoom, .paneActions, .hideKeyboard])
     }
 
-    @Test func hideKeyboardIsTheLowestItemWhileTheKeyBarIsUp() {
-        // The bar lists its items top to bottom and the keyboard sits below its end in every
-        // posture, so the last item is the one nearest the keyboard.
-        for zoomed in [false, true] {
-            #expect(TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: true).last == .hideKeyboard)
-        }
+    @Test func theBarsOrderTopToBottom() {
+        // Keyboard up: Hide Keyboard, the leading item, Pane Actions.
+        #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sidebar, .paneActions])
+        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sessions, .paneActions])
+        // Zoomed, Unzoom leaves first where room is short.
+        #expect(TabActions.verticalBar(.sidebar, zoomed: true, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sidebar, .paneActions])
+        // Keyboard down: the bar as before.
+        #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: false, room: 3) == [.sidebar, .allTabs, .paneActions])
+        #expect(TabActions.verticalBar(.sidebar, zoomed: true, hidesKeyboard: false, room: 3) == [.sidebar, .unzoom, .allTabs, .paneActions])
+        // The tab's own items, after the root's.
+        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: false) == [.allTabs, .paneActions])
+        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true) == [.paneActions])
+        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: false) == [.unzoom, .allTabs, .paneActions])
+        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: true) == [.unzoom, .paneActions])
     }
 
     @Test func theBarsRoomAboveTheKeyboard() {
@@ -42,28 +51,31 @@ struct TabActionsTests {
         #expect(TabActions.keyBarRoom(column: nil, compactHeight: true) == 3)
     }
 
-    @Test func aShortBarGivesItsFirstItemUpWhileTheKeyBarIsUp() {
-        // Bar on the left of the outer screen on its side: Pane Actions, then Hide Keyboard.
+    @Test func aShortBarGivesItsLeadingItemUpWhileTheKeyBarIsUp() {
+        // Bar on the left of the outer screen on its side: Hide Keyboard, then Pane Actions.
         #expect(!TabActions.showsBarLeading(hidesKeyboard: true, room: 2))
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true, room: 2) == [.paneActions, .hideKeyboard])
-        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: true, room: 2) == [.paneActions, .hideKeyboard])
-        // The keyboard goes: the toggle and today's items come back.
+        #expect(TabActions.leadingItems(.sidebar, hidesKeyboard: true, room: 2) == [.hideKeyboard])
+        #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: true, room: 2) == [.hideKeyboard, .paneActions])
+        #expect(TabActions.verticalBar(.tabs, zoomed: true, hidesKeyboard: true, room: 2) == [.hideKeyboard, .paneActions])
+        // The keyboard goes: the toggle and the items as before come back.
         #expect(TabActions.showsBarLeading(hidesKeyboard: false, room: 2))
+        #expect(TabActions.leadingItems(.sidebar, hidesKeyboard: false, room: 2) == [.sidebar])
         #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: false, room: 2) == [.allTabs, .paneActions])
-        // Where three fit, the toggle stays.
+        // Where three fit, the toggle stays, below Hide Keyboard.
         #expect(TabActions.showsBarLeading(hidesKeyboard: true, room: 3))
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true, room: 3) == [.paneActions, .hideKeyboard])
+        #expect(TabActions.leadingItems(.tabs, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sessions])
     }
 
-    @Test func hideKeyboardNeverFallsIntoTheOverflowMenu() {
-        // In every room and state, what the bar shows fits it, and Hide Keyboard is shown, last.
-        for room in [2, 3] {
-            for zoomed in [false, true] {
-                let items = TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: true, room: room)
-                let toggle = TabActions.showsBarLeading(hidesKeyboard: true, room: room) ? 1 : 0
-                #expect(toggle + items.count <= room, "room \(room), zoomed \(zoomed)")
-                #expect(items.last == .hideKeyboard)
-                #expect(items.contains(.paneActions), "All Tabs and Unzoom stay reachable from its menu")
+    @Test func nothingFallsIntoTheOverflowMenuWhileTyping() {
+        // In every room and state, what the bar shows fits it, Hide Keyboard on top.
+        for navigation in [NavigationStyle.sidebar, .tabs] {
+            for room in [2, 3] {
+                for zoomed in [false, true] {
+                    let items = TabActions.verticalBar(navigation, zoomed: zoomed, hidesKeyboard: true, room: room)
+                    #expect(items.count <= room, "room \(room), zoomed \(zoomed)")
+                    #expect(items.first == .hideKeyboard)
+                    #expect(items.last == .paneActions, "All Tabs and Unzoom stay reachable from its menu")
+                }
             }
         }
     }
@@ -71,7 +83,7 @@ struct TabActionsTests {
     @Test func voiceOverFindsExactlyOneOfTheTwo() {
         for zoomed in [false, true] {
             for hides in [false, true] {
-                let items = TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: hides)
+                let items = TabActions.verticalBar(.sidebar, zoomed: zoomed, hidesKeyboard: hides)
                 #expect(items.filter { $0 == .allTabs || $0 == .hideKeyboard }.count == 1)
                 #expect(items.contains(.hideKeyboard) == hides)
             }
@@ -81,7 +93,7 @@ struct TabActionsTests {
     @Test func allTabsIsWithinReachWhileTyping() {
         // Out of the bar while the key bar is up, so in both menus: the Pane Actions menu, which
         // stays in the bar, and the title menu.
-        #expect(!TabActions.verticalBar(zoomed: false, hidesKeyboard: true).contains(.allTabs))
+        #expect(!TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: true).contains(.allTabs))
         #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true).contains(.paneActions))
         #expect(TabActions.paneMenuFirstSection.contains(.allTabs))
         #expect(TabActions.titleMenu.contains(.allTabs))

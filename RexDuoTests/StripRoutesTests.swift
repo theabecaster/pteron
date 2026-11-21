@@ -215,20 +215,23 @@ import Testing
 
     // MARK: The vertical bar and the palette
 
-    /// Tab mode changes the bar's first item and nothing else: Sessions for the sidebar toggle,
-    /// in every state of the bar, so it holds as many items either way.
+    /// Tab mode changes the bar's leading item and nothing else: Sessions for the sidebar toggle,
+    /// below Hide Keyboard while that shows, in every state of the bar, so it holds as many items
+    /// either way.
     @Test func theVerticalBarTradesTheSidebarToggleForSessions() {
         for zoomed in [false, true] {
             for typing in [false, true] {
                 let sidebar = TabActions.verticalBar(.sidebar, zoomed: zoomed, hidesKeyboard: typing)
                 let tabs = TabActions.verticalBar(.tabs, zoomed: zoomed, hidesKeyboard: typing)
-                #expect(sidebar.first == .sidebar && tabs.first == .sessions)
-                #expect(Array(sidebar.dropFirst()) == Array(tabs.dropFirst()))
-                #expect(Array(sidebar.dropFirst()) == TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: typing))
+                let lead = typing ? 1 : 0
+                #expect(sidebar[lead] == .sidebar && tabs[lead] == .sessions)
+                #expect(sidebar.count == tabs.count)
+                #expect(Array(sidebar.dropFirst(lead + 1)) == Array(tabs.dropFirst(lead + 1)))
+                #expect(Array(sidebar.dropFirst(lead + 1)) == TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: typing))
             }
         }
-        // With the keyboard up the bar has room for three.
-        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true) == [.sessions, .paneActions, .hideKeyboard])
+        // With the keyboard up the bar has room for three, Hide Keyboard on top.
+        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true) == [.hideKeyboard, .sessions, .paneActions])
         #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: false) == [.sessions, .allTabs, .paneActions])
         #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: false) == [.sidebar, .allTabs, .paneActions])
         #expect(TabAction.sessions.title == "Sessions" && TabAction.sidebar.symbol == "sidebar.left")

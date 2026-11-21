@@ -216,10 +216,20 @@ struct RootView: View {
                 // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
                 .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
-                    // While the key bar is up, the first item gives its place to Hide Keyboard where
-                    // the bar is short (`TabActions.showsBarLeading`), and comes back with the keyboard.
-                    if barEdge != nil, TabActions.showsBarLeading(hidesKeyboard: hostPool.hideKeyboard.pane != nil,
-                                                                  room: TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact)) {
+                    // While a pane's key bar is up, and only then, Hide Keyboard is the bar's top
+                    // item, above the leading one, which gives its place up where the bar is short
+                    // (`TabActions.leadingItems`) and comes back with the keyboard.
+                    let leading = barEdge == nil ? [] : TabActions.leadingItems(
+                        prefs.navigation, hidesKeyboard: hostPool.hideKeyboard.pane != nil,
+                        room: TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact))
+                    if leading.contains(.hideKeyboard), let pane = hostPool.hideKeyboard.pane {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button { hostPool.host(for: pane)?.hideKeyboard() } label: {
+                                Label(TabAction.hideKeyboard.title, systemImage: TabAction.hideKeyboard.symbol)
+                            }
+                        }
+                    }
+                    if leading.contains(TabActions.barLeading(prefs.navigation)) {
                         ToolbarItem(placement: .topBarLeading) {
                             if TabActions.barLeading(prefs.navigation) == .sessions {
                                 SessionsBarItem(theme: theme) { stripRoutes.run($0) }

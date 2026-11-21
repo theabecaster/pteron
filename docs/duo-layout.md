@@ -219,8 +219,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   - **Reorder** (`BoardOrderThrottle`). Agents that change state quickly reorder the tiles at
     most once a second, with a spring; a tile that comes or goes fades at once.
 - **Vertical bar.** Where `verticalBarEdge` reports a bar, the navigation bar shows and its items
-  go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. While the active
-  pane's key bar is up, they are Pane Actions, then Hide Keyboard (`TabActions`). The tab's title,
+  go there: the sidebar toggle (leading, top), then All Tabs and Pane Actions. While a pane's key
+  bar is up, they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
 - **Hide Keyboard.** The key bar's hide key, moved into the vertical bar beside the keyboard. It
@@ -231,17 +231,18 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   only gives the swap the keyboard's animation, so it happens with the keyboard. With the
   keyboard up the bar has room for three items (the outer screen upright, and on its side with
   the bar on the right): a fourth, in any placement or priority, sends Pane Actions or the
-  sidebar toggle into the system's "…" menu. So Hide Keyboard replaces All Tabs and goes last,
-  below Pane Actions: the bar's lowest item, nearest the keyboard. The bar is a column in every
-  posture that has one, with the keyboard below its end, so last is lowest everywhere. All Tabs
-  comes back when the key bar goes, with the order as before, and while typing it stays in the
-  Pane Actions menu's first section and in the title menu. VoiceOver finds one of the two in the
+  sidebar toggle into the system's "…" menu. So Hide Keyboard takes All Tabs' place in the count
+  and goes first, at the top of the bar above the sidebar toggle (the root draws both), since
+  while typing it is the item used most (owner's call, November 2026). With the keyboard down it
+  is not in the bar at all, and the bar is the sidebar toggle, All Tabs, Pane Actions, as before;
+  while typing All Tabs stays in the Pane Actions menu's first section and in the title menu.
+  VoiceOver finds one of the two in the
   bar, and one Hide Keyboard in every state: the item, or without a vertical bar the key bar's
   own. On its side with the bar on the left, the bar's items start lower, past the camera, and
   with the keyboard up only two fit (iOS 27.2 simulator, November 2026). There, while the key bar
-  is up, the first item (the sidebar toggle, or Sessions in tab mode) leaves the bar and it
-  shows Pane Actions, then Hide Keyboard; the first item comes back with the keyboard. Unzoom,
-  where it shows, leaves first in any posture, and stays in the Pane Actions menu. Hide Keyboard never goes into the "…" menu
+  is up, the leading item (the sidebar toggle, or Sessions in tab mode) leaves the bar and it
+  shows Hide Keyboard, then Pane Actions; the leading item comes back with the keyboard. Unzoom,
+  where it shows, leaves first in any posture, and stays in the Pane Actions menu. Nothing goes into the "…" menu
   (`TabActions.keyBarRoom`). The system reports neither the items' frames nor the camera's
   offset, so the room comes from the bar's column on the screen's left and a compact height.
 - **Key bar.** The keyboard keeps its full width and runs under the vertical bar; only the key
