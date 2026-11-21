@@ -1041,11 +1041,13 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
   (`ProcessNames.isShell`); the leader's arguments are there, whole and text (`argv` not null,
   not `truncated`, not `argv_lossy`); they are not the shell's own (a subshell or a function
   runs as a copy of the shell); the leader's folder is the shell's folder, so no `cd` is ever
-  typed; every argument has a spelling on one line (`ShellEscape`, with a literal `~` kept
+  typed; the job is one command and no pipeline (the Beacon's `job_members` is 1: the
+  shell started one process of the group; a pipeline's leader holds only its first part, and
+  an answer without the field gives no Restart); every argument has a spelling on one line (`ShellEscape`, with a literal `~` kept
   literal; an empty argument, a control character or a first word with `=` gives no Restart);
   the line is at most 300 characters; and no agent is in the pane or the group.
-  - It is not what the user typed: variables set in front (`PORT=4000 npm run dev`), an alias
-    and anything after a pipe are not in a process's arguments. So nothing says the command is
+  - It is not what the user typed: variables set in front (`PORT=4000 npm run dev`) and an
+    alias are not in a process's arguments. So nothing says the command is
     the same. The row asks instead, in place and never in an alert: "Restart: npm run dev" in
     monospace, "Runs this command again in its pane." under it, and Restart or Cancel.
   - After the tap, in this order, nothing twice (`PortRestart`): the Beacon is asked again and
@@ -1058,18 +1060,26 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
     since the read, no agent, the screen still current); the row says "Restarting…" until the
     port is back, 30 s at most. The row keeps its place in the list while its port is away
     (`ServerConnection.holdPortRow`).
+  - Its waits are events with one deadline each, never a repeating timer: the pane's host
+    says when the pane shows and its stream when the fence is down
+    (`ServerConnection.whenPaneCurrent`), and the port lists and the panes' foreground
+    processes are observed state that Rex's `ports_changed` and `process_changed` write.
   - Any step that doesn't hold ends it: one notice with Show Pane, the row says "Couldn't
     restart" with Show Pane for 30 s, and nothing is typed afterwards. A command that didn't
     leave is never sent later; one that left without an answer is never sent again.
 - **Open in Browser** (`PortBrowser`, `PortActions.openInBrowserNow`). The page in the
   iPhone's own browser, at an address the computer's Beacon hands out for that port and this
   iPhone (`port_share`; [helper.md](helper.md)). The item is in a row's menu and in
-  the browser's menu only while all of this holds: the Beacon has answered on this connection,
-  no answer has said this computer can't (`not_supported`, `not_available`, `not_registered`,
-  `not_your_phone`), the iPhone has a tailnet address (`PrivateNetwork.address`: 100.64.0.0/10
+  the browser's menu only while all of this holds: the Beacon's status says the computer can
+  (`helper_status`' `share_possible`, read where the app already reads the status and never
+  for this alone; a status without the field is a no), the Beacon has answered `port_owner`
+  on this connection, no answer has said otherwise (`not_supported`, `not_registered` and
+  `not_your_phone` for the connection; `not_available`, which can only follow a status that
+  said yes, until the next status is read), the iPhone has a tailnet address (`PrivateNetwork.address`: 100.64.0.0/10
   on a tunnel, or fd7a:115c:a1e0::/48), and the port is 80 or from 1024 up on the computer's
   loopback. A tap asks the Beacon, then opens the address with the system's browser. Nothing
-  else asks: showing a row or opening a page in the app never makes such an address.
+  else asks: showing a row or opening a page in the app never makes such an address. And a
+  tap is never how someone learns that their computer can't: there the item isn't shown.
   - A row whose page is out there adds "In browser" to its address line, and its Copy Link
     gives that address. The app takes the address to exist until a minute before the Beacon
     would end it unused (`idle_seconds`), on this connection and for the process that held the

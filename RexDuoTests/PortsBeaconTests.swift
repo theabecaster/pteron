@@ -12,16 +12,17 @@ final class PortsBeaconLogicTests: XCTestCase {
     }
 
     /// `npm run dev`: node (7) holds the port, npm (70) leads the group in front, zsh (60) started it.
-    static func wrapped(front: Int? = 70, leader: String = "npm", argv: [String]? = ["npm", "run", "dev"]) -> PortOwner {
+    static func wrapped(front: Int? = 70, leader: String = "npm", argv: [String]? = ["npm", "run", "dev"], members: Int? = 1) -> PortOwner {
         PortOwner(pid: 7, pgid: 70, ttyForegroundPGID: front, ancestry: [
             PortOwner.Link(pid: 7, ppid: 70, pgid: 70, sid: 60, name: "node", argv: ["node", "server.js"], cwd: "/home/alex/app"),
             PortOwner.Link(pid: 70, ppid: 60, pgid: 70, sid: 60, name: leader, argv: argv, cwd: "/home/alex/app"),
             PortOwner.Link(pid: 60, ppid: 1, pgid: 60, sid: 60, name: "zsh", argv: ["-zsh"], cwd: "/home/alex/app"),
-        ])
+        ], jobMembers: members)
     }
 
     static func json(_ o: PortOwner) -> JSONObject {
         ["pid": o.pid, "pgid": o.pgid, "tty_foreground_pgid": o.ttyForegroundPGID as Any, "foreground": o.ttyForegroundPGID == o.pgid,
+         "job_members": o.jobMembers as Any,
          "ancestry": o.ancestry.map { l in
              ["pid": l.pid, "ppid": l.ppid, "pgid": l.pgid, "sid": l.sid, "group_leader": l.groupLeader, "session_leader": l.sessionLeader,
               "name": l.name, "path": l.path, "argv": l.argv as Any, "argv_lossy": l.argvLossy, "truncated": l.truncated, "cwd": l.cwd as Any] as JSONObject
@@ -66,6 +67,17 @@ final class PortsBeaconLogicTests: XCTestCase {
         XCTAssertNil(PortStop.restart(entry: entry(), foregroundPID: 70, agent: false, owner: Self.wrapped(leader: "claude")))
         XCTAssertNil(PortStop.restart(entry: entry(), foregroundPID: 70, agent: false, owner: Self.wrapped(argv: nil)), "arguments that can't be read")
         XCTAssertNil(PortStop.restart(entry: entry(pid: 8), foregroundPID: 70, agent: false, owner: Self.wrapped()), "another process holds the port")
+        XCTAssertNil(PortStop.restart(entry: entry(), foregroundPID: 70, agent: false, owner: Self.wrapped(members: 2)), "a pipeline")
+        XCTAssertNil(PortStop.restart(entry: entry(), foregroundPID: 70, agent: false, owner: Self.wrapped(members: nil)),
+                     "a Beacon that doesn't say how many commands the job is")
+        XCTAssertEqual(PortStop.verdict(entry: entry(), foregroundPID: 70, agent: false, owner: Self.wrapped(members: 2)), .allowed,
+                       "Stop is for a pipeline too: the interrupt reaches all of it")
+    }
+
+    func testABeaconsStatusSaysWhetherItCanHandPagesOut() {
+        XCTAssertEqual(HelperVersion(["version": "0.7.0", "share_possible": true])?.sharePossible, true)
+        XCTAssertEqual(HelperVersion(["version": "0.7.0", "share_possible": false])?.sharePossible, false)
+        XCTAssertEqual(HelperVersion(["version": "0.6.0"])?.sharePossible, false, "a status without the field is a no")
     }
 
     // MARK: Words
@@ -93,6 +105,9 @@ final class PortsBeaconLogicTests: XCTestCase {
         }
         XCTAssertEqual(PortRestartCopy.confirm(RestartCommand(text: "npm run dev", shellPID: 60, leaderPID: 70)), "Restart: npm run dev")
         XCTAssertEqual(PortRestartCopy.detail, "Runs this command again in its pane.")
+        XCTAssertEqual(PortBrowser.notice(.refused(code: "not_registered", unknownAction: false), name: "localhost:3000", computer: "Desk"),
+                       "Couldn't open localhost:3000 in the browser: Pteron Beacon on Desk doesn't know this iPhone yet. Set it up in Settings → Notifications.")
+        XCTAssertEqual(PortBrowser.rowWords, "In browser")
         XCTAssertEqual(PortBrowser.notice(.refused(code: "not_listening", unknownAction: false), name: "localhost:3000", computer: "Desk"),
                        "Nothing is running on localhost:3000 now.")
     }
@@ -173,12 +188,24 @@ final class PortsBeaconServerTests: XCTestCase {
         var copied: [String] = []
         var typed: [String] = []
         var paneReady = true
+        var paneWaiters: [@MainActor () -> Void] = []
+        /// The Beacon's status, as the app last read it, and how many it has read.
+        var possible = true
+        var statuses = 1
         var revealed = 0
         var delivery = TerminalStream.Delivery.delivered
         /// Runs when the command was typed.
         var afterTyping: (@MainActor () -> Void)?
 
         func count(_ action: String) -> Int { asked.filter { $0.action == action }.count }
+
+        /// The pane comes on screen over a current screen.
+        func show() {
+            paneReady = true
+            let waiting = paneWaiters
+            paneWaiters = []
+            for body in waiting { body() }
+        }
     }
 
     /// A server whose pane 1a runs `npm` (process 70) in front; `node` (process 7) holds 5173.
@@ -210,7 +237,13 @@ final class PortsBeaconServerTests: XCTestCase {
             w.asked.append((action, args))
             return action == "port_owner" ? w.owner : w.share
         }
+        parts.uptime = { ProcessInfo.processInfo.systemUptime * 20 }
+        parts.sharePossible = { _ in w.possible }
+        parts.statusReads = { _ in w.statuses }
         parts.paneReady = { _, _ in w.paneReady }
+        parts.whenPaneReady = { _, _, body in
+            if w.paneReady { body() } else { w.paneWaiters.append(body) }
+        }
         parts.reveal = { _, _ in
             w.revealed += 1
             return true
@@ -324,6 +357,32 @@ final class PortsBeaconServerTests: XCTestCase {
         r.stop()
     }
 
+    func testOpenInBrowserGoesByTheBeaconsStatusAndNeverByATap() async throws {
+        let r = try await rig()
+        let row = try await ready(r)
+        let w = World(), ports = actions(w)
+        w.possible = false
+        await learned(ports, r, row, w)
+        XCTAssertFalse(ports.offersBrowser(r.server, row), "a computer that can't hand pages out never shows the item")
+        XCTAssertTrue(ports.offersStop(r.server, row))
+        XCTAssertEqual(w.count("port_share"), 0, "and nothing was asked to find that out")
+        // The next status says it can.
+        w.possible = true
+        w.statuses += 1
+        XCTAssertTrue(ports.offersBrowser(r.server, row))
+        // It said it could, and then can't: one calm line, and the item is away until the
+        // next status is read.
+        w.share = failure("not_available")
+        let outcome = await ports.openInBrowserNow(r.server, row)
+        XCTAssertEqual(outcome, .problem(.refused(code: "not_available", unknownAction: false)))
+        XCTAssertEqual(w.said.count, 1)
+        XCTAssertEqual(w.said.first?.hasSuffix(" can't open pages in this iPhone's browser right now. localhost:5173 still opens here."), true)
+        XCTAssertFalse(ports.offersBrowser(r.server, row))
+        w.statuses += 1
+        XCTAssertTrue(ports.offersBrowser(r.server, row), "a new status that still says yes brings it back")
+        r.stop()
+    }
+
     // MARK: Open in Browser (items 2 to 5)
 
     func testOpenInBrowserAsksForThePageAndOpensItsAddress() async throws {
@@ -400,7 +459,7 @@ final class PortsBeaconServerTests: XCTestCase {
     }
 
     func testAnswersThatTakeOpenInBrowserAwayForTheComputer() async throws {
-        for code in ["not_available", "not_your_phone", "not_registered", "not_supported"] {
+        for code in ["not_your_phone", "not_registered", "not_supported"] {
             let r = try await rig()
             let row = try await ready(r)
             let w = World(), ports = actions(w)
@@ -412,6 +471,8 @@ final class PortsBeaconServerTests: XCTestCase {
             XCTAssertEqual(w.opened, [], code)
             XCTAssertFalse(ports.offersBrowser(r.server, row), code)
             for other in r.server.portRows { XCTAssertFalse(ports.offersBrowser(r.server, other), "the whole computer: \(code)") }
+            w.statuses += 1
+            XCTAssertFalse(ports.offersBrowser(r.server, row), "for the whole connection, whatever the next status says: \(code)")
             XCTAssertNil(ports.note(r.server, row), code)
             XCTAssertTrue(ports.offersStop(r.server, row), "Stop is another matter: \(code)")
             r.stop()
@@ -531,7 +592,7 @@ final class PortsBeaconServerTests: XCTestCase {
         XCTAssertTrue(shown)
         try? await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(r.fake.calls(Self.write).count, 0, "no Ctrl-C into a pane that isn't on screen")
-        w.paneReady = true
+        w.show()
         await stopsOnInterrupt(r)
         let step = await run.value
         XCTAssertEqual(step, .done)
