@@ -246,27 +246,24 @@ private struct SessionChipSlot: View {
 /// The session popover's contents, for the session chip and for the vertical bar's Sessions
 /// item. It builds the rows in its own body, so the servers' sessions are read only while the
 /// popover is open, and the rows follow them meanwhile. A row's action closes the popover; one
-/// that puts something on screen runs once it has closed.
+/// that puts something on screen runs once the popover has gone (`DismissalWait`).
 struct SessionPopoverHost: View {
     @Environment(AppModel.self) private var model
     let theme: TermTheme
     let close: () -> Void
     let onAction: (SessionPopover.Action) -> Void
-
-    /// How long the popover takes to go, as the title menu waits.
-    static let closeTime: Duration = .milliseconds(350)
+    @State private var wait = DismissalWait()
 
     var body: some View {
         SessionPopoverView(popover: SessionPopover(model), theme: theme) { action in
-            close()
-            guard action.presents else { return onAction(action) }
             let run = onAction
-            Task { @MainActor in
-                try? await Task.sleep(for: Self.closeTime)
-                run(action)
-            }
+            if action.presents { wait.hold { run(action) } }
+            close()
+            if !action.presents { run(action) }
         }
         .presentationCompactAdaptation(.popover)
+        // The popover's content leaves when its dismissal has ended.
+        .onDisappear { wait.dismissed() }
     }
 }
 

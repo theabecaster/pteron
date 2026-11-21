@@ -114,7 +114,8 @@ import Testing
         let id = UUID(), sel = Selection(serverID: id, sessionID: "s", windowID: "w")
         let host = KnownHost(id: "h", label: "h", candidate: nil)
         let waits: [SessionPopover.Action] = [.add(host), .renameSession(id, session: "s", name: "s"),
-                                              .closeSession(id, session: "s", name: "s"), .goTo, .agents, .settings]
+                                              .closeSession(id, session: "s", name: "s"), .goTo, .agents, .settings,
+                                              .ports(id)]
         let atOnce: [SessionPopover.Action] = [.open(sel), .newSession(id), .reconnect(id), .useSidebar]
         #expect(waits.allSatisfy { $0.presents })
         #expect(!atOnce.contains { $0.presents })

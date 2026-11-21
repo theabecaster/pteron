@@ -16,6 +16,7 @@ struct MachinePortsButton: View {
     @Environment(\.sidebarShown) private var sidebarShown
     @State private var seen = PortsSeen()
     @State private var open = false
+    @State private var wait = DismissalWait()
 
     var body: some View {
         #if DEBUG
@@ -61,21 +62,19 @@ struct MachinePortsButton: View {
                 .presentationBackground(theme.chrome.sidebar)
                 .environment(model)
                 .environment(prefs)
+                .onDisappear { wait.dismissed() }
         }
         #if DEBUG
         .onAppear { if PortsList.openAtLaunch() { open = true } }
         #endif
     }
 
-    /// Closes the popover; what was tapped runs once it has gone, so a page or a pane comes up
-    /// over the app and not over the popover.
+    /// Closes the popover; what was tapped runs once it has gone (`DismissalWait`), so a page
+    /// or a pane comes up over the app and not over the popover.
     private var close: PortsList.Close {
         { action in
+            wait.hold(action)
             open = false
-            Task { @MainActor in
-                try? await Task.sleep(for: SessionPopoverHost.closeTime)
-                action()
-            }
         }
     }
 
@@ -165,10 +164,12 @@ struct PortsListFrame<Rows: View>: View {
 
 /// A machine's ports in a sheet, for tab mode, where there is no sidebar header to open them
 /// from: the session popover's machine heading does (`SessionPopover.Action.ports`). The same
-/// list and rows; a page or a pane comes up once the sheet has gone. Shown by
+/// list and rows; a page or a pane comes up once the sheet has gone (`DismissalWait`). Shown by
 /// `AppModel.showPorts(_:)`.
 struct PortsSheet: View {
     let server: ServerConnection
+    /// Holds a row's action until the sheet has gone; whoever shows the sheet reports that.
+    let wait: DismissalWait
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
 
@@ -177,11 +178,8 @@ struct PortsSheet: View {
         let model = model
         PortsSheetFrame(theme: theme, done: { model.portsShown = nil }) {
             PortsList(server: server, title: server.config.name, theme: theme) { action in
+                wait.hold(action)
                 model.portsShown = nil
-                Task { @MainActor in
-                    try? await Task.sleep(for: SessionPopoverHost.closeTime)
-                    action()
-                }
             }
         }
     }

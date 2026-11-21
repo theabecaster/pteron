@@ -37,6 +37,8 @@ struct RootView: View {
     @State private var hostPool = TerminalHostPool()
     /// Tab mode's rename alert and close confirmations, which the sidebar's list shows itself.
     @State private var stripDialogs = SidebarActions()
+    /// What a row of the ports sheet opens, held until the sheet has gone.
+    @State private var portsWait = DismissalWait()
     #if DEBUG
     @State private var simIndex = 0
     @State private var simKeyboard: CGFloat = 0
@@ -77,9 +79,12 @@ struct RootView: View {
                 AgentsSheet().environment(model)
             }
             .sheet(isPresented: Binding(get: { model.portsShown != nil }, set: { if !$0 { model.portsShown = nil } }),
-                   onDismiss: { model.helperSetup.presentPending() }) {
+                   onDismiss: {
+                       portsWait.dismissed()
+                       model.helperSetup.presentPending()
+                   }) {
                 if let server = model.server(model.portsShown) {
-                    PortsSheet(server: server).environment(model)
+                    PortsSheet(server: server, wait: portsWait).environment(model)
                 }
             }
             .helperSetupCover(model: model)
