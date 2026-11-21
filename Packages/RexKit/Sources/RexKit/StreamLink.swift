@@ -62,11 +62,13 @@ final class URLSessionStreamSocket: StreamSocket {
     func receive() async throws -> Data? {
         let task = self.task
         return try await withCheckedThrowingContinuation { c in
+            // Once only, as the pong handler (`ResumeOnce`): the same task calls both back.
+            let once = ResumeOnce(c)
             task.receive { result in
                 switch result {
-                case .success(.data(let d)): c.resume(returning: d)
-                case .success: c.resume(returning: nil)
-                case .failure(let e): c.resume(throwing: e)
+                case .success(.data(let d)): once.resume(returning: d)
+                case .success: once.resume(returning: nil)
+                case .failure(let e): once.resume(throwing: e)
                 }
             }
         }
@@ -74,14 +76,7 @@ final class URLSessionStreamSocket: StreamSocket {
 
     func close() { task.cancel(with: .normalClosure, reason: nil) }
 
-    func ping() async throws {
-        let task = self.task
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            task.sendPing { err in
-                if let err { c.resume(throwing: err) } else { c.resume() }
-            }
-        }
-    }
+    func ping() async throws { try await task.awaitPong() }
 
     func abort() { task.cancel() }
 

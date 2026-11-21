@@ -181,8 +181,10 @@ final class LoopbackConnection: TunnelLocal, @unchecked Sendable {
             sent = []
         }
         try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+            // A system callback resumes once only (`ResumeOnce`).
+            let once = ResumeOnce(done)
             connection.send(content: data, completion: .contentProcessed { e in
-                if let e { done.resume(throwing: e) } else { done.resume() }
+                if let e { once.resume(throwing: e) } else { once.resume() }
             })
         }
     }

@@ -104,6 +104,9 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   status 1000 close and the stream goes on with a RESUME, as after any drop. One that answers is
   live. Transient chips ("Reconnecting…") wait out the wake's grace (`ForegroundWake.grace`).
   The fence is up from the wake until the socket has answered and the stream is quiet.
+  URLSession can call a pong handler twice, the second time with an error, so the ping (and the
+  socket's receive) resumes through `ResumeOnce`: only the first call counts. A second resume of
+  a checked continuation is a fatal error; build 2611201727 crashed that way at Try Again.
 
 ## The catch-up fence
 

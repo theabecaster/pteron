@@ -261,14 +261,7 @@ final class URLSessionTunnelSocket: TunnelSocket, @unchecked Sendable {
         }
     }
 
-    func ping() async throws {
-        let task = self.task
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            task.sendPing { err in
-                if let err { c.resume(throwing: err) } else { c.resume() }
-            }
-        }
-    }
+    func ping() async throws { try await task.awaitPong() }
 
     func close() { task.cancel(with: .normalClosure, reason: nil) }
 
