@@ -165,6 +165,8 @@ public final class RexControl {
     private var nextTrigger = AttemptTrigger.backoff
     /// An attempt was let through and has not opened its socket yet.
     private var starting = false
+    /// The attempt under way took a new socket for a change of route, and takes no other.
+    private var moved = false
     /// An attempt is under way, or about to open its socket: what the governor counts.
     var isAttempting: Bool { state == .connecting || starting }
     /// What asked for the attempt that waits for room among the attempts under way
@@ -323,14 +325,18 @@ public final class RexControl {
     /// records it and plans the next attempt; the throw only tells the caller.
     private func openSocket(_ trigger: AttemptTrigger) async throws {
         guard let wsBase else { throw ConnectionFailure.invalidAddress(address) }
+        // The state is checked here, where the socket is opened, whatever its caller checked.
         // Not after `disconnect()`: an attempt that was let through a moment before it (a tap,
-        // a wait that just ended) opens nothing.
-        guard wantConnected else {
+        // a wait that just ended) opens nothing. And only `connect()` starts over what is
+        // there: any other attempt that finds a socket under way, or the connection up, opens
+        // nothing and leaves that socket alone.
+        guard wantConnected, trigger == .first || (state != .connected && task == nil) else {
             starting = false
-            throw RexError.local("disconnected")
+            throw RexError.local(wantConnected ? "not needed" : "disconnected")
         }
         retryStopped = false
         starting = false
+        moved = false
         dormantLeft = nil
         lastAttempt = clock.now
         if trigger == .user { lastUserAttempt = clock.now }
@@ -355,30 +361,52 @@ public final class RexControl {
             throw f
         }
         #endif
-        let url = wsBase.appendingPathComponent("api/control")
-        let t = makeSocket(url, ["rex.control.v1"])
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            welcomeWaiter = c
+            startSocket(wsBase, gen: gen)
+        }
+    }
+
+    /// Makes the socket of generation `gen`, sends the hello on it and sets the deadline for its
+    /// welcome. The keepalive starts with the welcome (`handle`).
+    private func startSocket(_ wsBase: URL, gen: Int) {
+        let t = makeSocket(wsBase.appendingPathComponent("api/control"), ["rex.control.v1"])
         t.maximumMessageSize = 8 * 1024 * 1024
         task = t
         t.resume()
-
+        receiveLoop(t, gen: gen)
         let helloText = JSONCodec.encode(Self.hello(client: client, reconnectToken: reconnectToken))
-        let deadline = policy.connectDeadline(expensive: pathExpensive)
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            welcomeWaiter = c
-            receiveLoop(t, gen: gen)
-            t.send(.string(helloText)) { err in
-                guard let err else { return }
-                Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
-            }
-            // Welcome timeout. Cancelled when the attempt ends, so it never sleeps on after it.
-            welcomeDeadline?.cancel()
-            welcomeDeadline = Task { @MainActor in
-                await self.clock.sleep(seconds: deadline)
-                guard !Task.isCancelled else { return }
-                if self.welcomeWaiter != nil, gen == self.generation { self.handleDrop(gen: gen, failure: .timedOut()) }
-            }
+        t.send(.string(helloText)) { err in
+            guard let err else { return }
+            Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
         }
-        startPings(gen: gen)
+        // Welcome timeout. Cancelled when the attempt ends, so it never sleeps on after it.
+        let deadline = policy.connectDeadline(expensive: pathExpensive)
+        welcomeDeadline?.cancel()
+        welcomeDeadline = Task { @MainActor in
+            await self.clock.sleep(seconds: deadline)
+            guard !Task.isCancelled else { return }
+            if self.welcomeWaiter != nil, gen == self.generation { self.handleDrop(gen: gen, failure: .timedOut()) }
+        }
+    }
+
+    /// The route changed under an attempt (`pathChanged` with `interfaceChanged`): its socket
+    /// may be on a route that is gone. The attempt takes a new socket, in this turn, and stays
+    /// the same attempt: what waits for its welcome goes on waiting, the old socket's callbacks
+    /// are dropped by their generation, and the new socket has its own full deadline. It is not
+    /// counted as another attempt of the episode and asks the budget for nothing, but the floor
+    /// runs from its start, and it is reported as an attempt. `ReconnectPolicy.kick` allows one
+    /// per attempt.
+    private func moveAttempt(_ trigger: AttemptTrigger) {
+        guard let wsBase, wantConnected, state == .connecting, welcomeWaiter != nil, let old = task else { return }
+        moved = true
+        lastAttempt = clock.now
+        onAttempt?(trigger)
+        old.cancel()
+        generation += 1
+        // Said again, so the connection log gets this socket as its own line.
+        state = .connecting
+        startSocket(wsBase, gen: generation)
     }
 
     /// The hello: the newest revision this client speaks and no minimum, so the server picks the
@@ -683,7 +711,8 @@ public final class RexControl {
         }
     }
 
-    private func attempt(_ trigger: AttemptTrigger) async {
+    /// One attempt that is not `connect()`'s. Not private: a test runs it at the moment it wants.
+    func attempt(_ trigger: AttemptTrigger) async {
         // Nothing opens in the background, an attempt that was let through a moment ago included.
         guard !suspended || policy.worksInBackground else {
             starting = false
@@ -716,7 +745,9 @@ public final class RexControl {
     /// `ReconnectPolicy.kick` decides what the request gets. A user's request is always let
     /// through, at most once per `userSpacing` and with fewer than `maxInFlight` attempts under
     /// way, and does nothing while this host's attempt is under way; the others keep the floor
-    /// and the budget. The backoff never starts over here: only a welcome does that.
+    /// and the budget. No request cancels an attempt under way or opens a second socket beside
+    /// it; a change of route alone moves it to a new socket, once (`moveAttempt`). The backoff
+    /// never starts over here: only a welcome does that.
     public func kick(_ trigger: AttemptTrigger = .user) {
         guard wantConnected, state != .connected else { return }
         let since = lastAttempt.map { clock.now.timeIntervalSince($0) }
@@ -726,9 +757,11 @@ public final class RexControl {
                            sinceLastAttempt: since,
                            sinceLastUser: lastUserAttempt.map { clock.now.timeIntervalSince($0) },
                            sinceLastNetwork: lastNetworkAttempt.map { clock.now.timeIntervalSince($0) },
-                           dormantLeft: dormantLeft) {
+                           dormantLeft: dormantLeft, moved: moved) {
         case .ignore:
             rearm()
+        case .move:
+            moveAttempt(trigger)
         case .now:
             cancelRetry()
             isHeld = false
@@ -983,6 +1016,7 @@ public final class RexControl {
             lastGood = clock.now
             lastInbound = clock.now
             governor.welcomed(governorID)
+            startPings(gen: generation)
             state = .connected
             welcomeWaiter?.resume()
             welcomeWaiter = nil

@@ -131,7 +131,8 @@ final class ReconnectPolicyTests: XCTestCase {
     func testNothingIsAskedInTheBackgroundOrWhileAnAttemptIsUnderWay() {
         for t in AttemptTrigger.allCases {
             XCTAssertEqual(kick(t, suspended: true), .ignore)
-            XCTAssertEqual(kick(t, connecting: true), .ignore)
+            // A network change moves the attempt to a new socket (`ControlKickTests`).
+            XCTAssertEqual(kick(t, connecting: true), t == .network ? .move : .ignore)
         }
     }
 

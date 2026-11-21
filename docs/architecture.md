@@ -200,6 +200,12 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     reports ask for nothing. The return to the foreground pings what is up, moves a backing-off
     host forward subject to the floor, and leaves a dormant host alone unless it is selected.
     With no path nothing is tried and a failure counts toward nothing.
+  - *An attempt under way:* no request cancels it or opens a second socket beside it, and the
+    state is checked where the socket is opened (`openSocket`), so an attempt that was let
+    through a turn earlier can't replace a socket that has since got its welcome or open one
+    after a stop. A change of route (`RouteWatch`) alone gives the attempt a new socket, once
+    (`moveAttempt`): the same attempt, with the old socket dropped, a full deadline for the new
+    one and the floor counted from it. A launch opens one socket per server (`ControlKickTests`).
   - *Liveness:* a ping when nothing came in for 30 s, and at once when a request got nothing
     back for 5 s (10 s on cellular); no pong in 10 s (20 s) is a dead connection. The connect
     deadline is 10 s (15 s), the wake pong 2.5 s (5 s).

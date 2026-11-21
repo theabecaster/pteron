@@ -34,6 +34,9 @@ public struct ReconnectPolicy: Sendable, Equatable {
     public var userSpacing: Double = 10
     /// A connection that drops right after the app came back is made again at once, once.
     public var retriesAtOnceAfterWake = true
+    /// A change of route while an attempt is under way gives that attempt a new socket, once:
+    /// the one it has may be on a route that is gone, and would hold the host until its deadline.
+    public var movesAttemptOnRouteChange = true
 
     // MARK: Dormant, stopped
 
@@ -175,20 +178,27 @@ public struct ReconnectPolicy: Sendable, Equatable {
         case budgeted
         /// Not yet: set the wait to end in that many seconds, if none ends sooner.
         case after(Double)
+        /// The attempt under way takes a new socket in place of the one it has. It stays the
+        /// same attempt: what waits for its welcome goes on waiting.
+        case move
     }
 
     /// What a request for an attempt gets on a host that is wanted and not connected.
     /// `attempts`: attempts made in this episode. `sinceLastAttempt`: seconds since the last one
     /// began, nil for none; `sinceLastUser` and `sinceLastNetwork`: the same for the last one the
     /// user and the network asked for. `dormantLeft`: what was left of a dormant host's wait when
-    /// the app went to the background.
+    /// the app went to the background. `moved`: the attempt under way already took a new socket.
     public func kick(_ trigger: AttemptTrigger, connecting: Bool, dormant: Bool, stopped: Bool, held: Bool,
                      selected: Bool, suspended: Bool, pathSatisfied: Bool, attempts: Int,
                      sinceLastAttempt: Double?, sinceLastUser: Double? = nil,
-                     sinceLastNetwork: Double? = nil, dormantLeft: Double? = nil) -> Kick {
+                     sinceLastNetwork: Double? = nil, dormantLeft: Double? = nil, moved: Bool = false) -> Kick {
         if suspended, !worksInBackground { return .ignore }
-        // One attempt per host at a time, whoever asks.
-        if connecting { return .ignore }
+        // One attempt per host at a time, whoever asks. A tap, the return and a host the breaker
+        // let go leave it alone. A change of route moves it to a new socket, once, so a route
+        // that keeps changing can neither keep a connect from ending nor open a socket per change.
+        if connecting {
+            return trigger == .network && movesAttemptOnRouteChange && pathSatisfied && !moved ? .move : .ignore
+        }
         // The user is always let through: the breaker, the budget, the floor and the path
         // monitor don't stand in the way of a tap. Taps on one host are `userSpacing` apart.
         if trigger == .user {
