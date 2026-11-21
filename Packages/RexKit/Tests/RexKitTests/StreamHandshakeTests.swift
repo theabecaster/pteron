@@ -157,6 +157,49 @@ final class StreamHandshakeTests: XCTestCase {
         XCTAssertEqual(link.count("data.connect"), 1)
     }
 
+    /// The control connection gives its verdict (a wake) while the retry waits its pause, and
+    /// the RESUME that follows times out too. There is one retry from there, not two: the
+    /// first one's pause ends and it does nothing.
+    func testAWakeDuringTheRetrysPauseLeavesOneRetryLaneAtThePolicysRate() async {
+        let link = FakeLink()
+        let r = await silentResume(link)
+        // The pauses between retries pass only when the test says so.
+        r.log.held = [.seconds(3), .seconds(6)]
+        link.plans = [.silent, .silent, .silent]
+        r.gate.pass()
+        let first = await eventually { r.log.asked.contains(.seconds(3)) }
+        XCTAssertTrue(first, "the retry waits 3 s")
+        XCTAssertEqual(link.sockets.count, 2)
+
+        // The wake: the control connection is there, and the stream that waited for it resumes.
+        link.connect()
+        let second = await eventually { link.sockets.count == 3 && link.sockets[2].isResume }
+        XCTAssertTrue(second)
+        // That RESUME gets no answer either.
+        let waiting = await eventually { r.gate.waiting == 1 }
+        XCTAssertTrue(waiting)
+        r.gate.pass()
+        let next = await eventually { r.log.asked.contains(.seconds(6)) }
+        XCTAssertTrue(next, "the next retry waits 6 s: the policy's rate, counted over both")
+        XCTAssertTrue(link.sockets[2].aborted)
+
+        // The first retry's pause ends now. Its turn was taken: it opens nothing.
+        r.log.release(.seconds(3))
+        await settle()
+        await settle()
+        XCTAssertEqual(link.sockets.count, 3, "one lane: the old retry did nothing")
+        // The one retry that counts.
+        r.log.release(.seconds(6))
+        let third = await eventually { link.sockets.count == 4 }
+        XCTAssertTrue(third)
+        XCTAssertTrue(link.sockets[3].isResume)
+        await settle()
+        XCTAssertEqual(link.sockets.count, 4, "exactly one")
+        XCTAssertEqual(r.log.backoffs, [.seconds(3), .seconds(6)])
+        XCTAssertEqual(link.count("data.connect"), 1)
+        XCTAssertEqual(TerminalStream.retryDelays, [.seconds(3), .seconds(6), .seconds(12), .seconds(24), .seconds(30)])
+    }
+
     func testAnAnswerJustBeforeTheDeadlineEndsIt() async {
         let link = FakeLink()
         let r = await silentResume(link)

@@ -725,9 +725,14 @@ public final class TerminalStream {
     /// background. The token is kept, and the fence is up since the drop that led here, so
     /// nothing typed goes out. The stream does not ask the host again by itself: the control
     /// connection is asked whether the host is there (`checkLiveness`). No pong drops the host,
-    /// and its next welcome resumes this stream (`controlConnected()`). A pong lets the stream
-    /// try once more, after the pause that follows any failed start, with a RESUME while the
-    /// server can still have the stream.
+    /// and its next welcome resumes this stream (`controlConnected()`). After a pong the stream
+    /// tries again after the pause that follows any failed start (3 s, then 6, 12, 24, and 30 s
+    /// from there), with a RESUME for as long as the server can still have the stream and a
+    /// fresh start after that. One such retry waits at a time (`retrySerial`).
+    /// Counts what may start this stream after a RESUME timed out, so the retry that waits its
+    /// pause does nothing once something else has started it.
+    private var retrySerial = 0
+
     private func resumeTimedOut(gen myGen: Int) {
         sink?.streamStatus(.reconnecting)
         waitingForControl = true
@@ -738,11 +743,17 @@ public final class TerminalStream {
         control.checkLiveness()
         let epoch = connectEpoch, delay = Self.retryDelay(afterFailures: failedStarts)
         let sleep = self.sleep, link = self.link
+        // One retry at a time: whatever else starts this stream meanwhile (the control
+        // connection's verdict or welcome, a fresh start) takes this one's place.
+        retrySerial += 1
+        let serial = retrySerial
         Task { [weak self] in
             guard (try? await link.ping()) != nil else { return }
+            guard let self, serial == self.retrySerial else { return }
             await sleep(delay)
-            guard let self, myGen == self.gen, !self.stopped, self.waitingForControl,
+            guard serial == self.retrySerial, myGen == self.gen, !self.stopped, self.waitingForControl,
                   epoch == self.connectEpoch, self.mayOpen else { return }
+            self.retrySerial += 1
             self.waitingForControl = false
             if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
         }
@@ -832,6 +843,7 @@ public final class TerminalStream {
     /// The control connection is connected (again).
     private func controlConnected() {
         connectEpoch += 1
+        retrySerial += 1
         attachRetries = 0
         if waitingForControl, !stopped {
             waitingForControl = false
@@ -860,6 +872,7 @@ public final class TerminalStream {
             }
         }
         guard waitingForControl, !stopped, mayOpen else { return }
+        retrySerial += 1
         waitingForControl = false
         let myGen = gen
         Task {
@@ -991,6 +1004,7 @@ public final class TerminalStream {
         // `stop()` may have run between the call that asked for this start and the start itself.
         guard !stopped else { return }
         gen += 1
+        retrySerial += 1
         wakeReader()
         resyncing = false
         snapshotState = .none
