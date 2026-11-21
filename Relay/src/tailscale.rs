@@ -96,7 +96,7 @@ pub fn whois_user(json: &str) -> Option<u64> {
 
 /// The first of `places` that is a full path and that `usable` takes.
 pub fn find<'a>(places: &[&'a str], usable: impl Fn(&Path) -> bool) -> Option<&'a Path> {
-    places.iter().map(Path::new).find(|p| p.is_absolute() && usable(p))
+    places.iter().map(|place| Path::new(*place)).find(|p| p.is_absolute() && usable(p))
 }
 
 /// The Tailscale client's command line on this computer.
