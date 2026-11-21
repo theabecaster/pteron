@@ -390,7 +390,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         var style: UIButton.Configuration
         if #available(iOS 26.0, *) { style = .glass() } else { style = .plain() }
         style.image = UIImage(systemName: symbol)
-        style.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(weight: .medium)
+        // A fixed size, as a toolbar's items have: a symbol that grew with the text size would
+        // outgrow its button. The large content viewer shows it bigger.
+        style.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)
         style.cornerStyle = .capsule
         let button = UIButton(configuration: style, primaryAction: UIAction { [weak self] _ in
             if let self { action(self) }
