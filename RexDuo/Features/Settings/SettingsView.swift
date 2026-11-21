@@ -21,7 +21,7 @@ enum SettingsPage: String, Hashable, CaseIterable {
     }
 
     /// The navigation path that shows this page, so Back leads where a tap would have come from:
-    /// Add Server goes back to Computers, a theme to Appearance.
+    /// Add Computer goes back to Computers, a theme to Appearance.
     var path: [SettingsPage] {
         guard self != .main else { return [] }
         return (parent.map { [$0] } ?? []) + [self]
@@ -250,12 +250,13 @@ struct AddServerView: View {
                     Label("Pair via QR Code", systemImage: "qrcode.viewfinder")
                 }
             } footer: {
-                SettingsFooter("On your computer, run `rex server tailscale pair`, then scan the code it shows.", theme)
+                SettingsFooter(Self.scanFooter, theme)
+                    .accessibilityLabel(PairingCopy.spoken(Self.scanFooter))
             }
             .settingsRows(theme)
 
             Section {
-                TextField("Address", text: $address, prompt: Text(verbatim: "studio.your-tailnet.ts.net"))
+                TextField("Address", text: $address, prompt: Text(verbatim: "studio-rex.your-tailnet.ts.net"))
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
@@ -273,8 +274,13 @@ struct AddServerView: View {
                 SettingsFooter("This iPhone needs to be on the same private network as the computer.", theme)
             }
             .settingsRows(theme)
+
+            Section {
+                Button("How to Set Up a Computer") { model.openGuide() }
+            }
+            .settingsRows(theme)
         }
-        .navigationTitle("Add Server")
+        .navigationTitle("Add Computer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -285,12 +291,13 @@ struct AddServerView: View {
         .pairingCover(isPresented: $showPairing, model: model) { addressFocused = true }
     }
 
+    static let scanFooter = PairingCopy.showCode + " Then scan the code."
+
+    /// A typed address takes the same way as a scanned one: the check, the computer's card, the
+    /// Beacon offer and the landing, in the pairing sheet over this page.
     private func add(_ url: URL) {
-        let n = name.trimmingCharacters(in: .whitespaces)
-        prefs.servers.append(ServerConfig(name: n.isEmpty ? ServerConfig.name(for: url) : n, url: url.absoluteString))
-        model.rebuildServers()
-        model.closeGuide()
-        dismiss()
+        model.preparePairing(typed: url, name: name)
+        showPairing = true
     }
 }
 

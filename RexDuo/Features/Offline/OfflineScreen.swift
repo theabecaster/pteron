@@ -30,6 +30,11 @@ struct OfflineCopy: Equatable {
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: Messages.outOfRangeShort,
                                message: "Can't reach \(server) from this network.",
                                hint: "Connect this iPhone to the same network or VPN as \(server), then try again.")
+        case .hostNotFound where tailnet:
+            // On a tailnet, but not the computer's: another Tailscale account.
+            return OfflineCopy(symbol: "network.slash", title: "Can't find \(server)",
+                               message: Messages.otherTailscaleAccount(server),
+                               hint: Messages.otherTailscaleAccountFix)
         case .hostNotFound:
             return OfflineCopy(symbol: "network.slash", title: "Can't find \(server)",
                                message: "This iPhone is on a private network, but \(server) isn't on it.",

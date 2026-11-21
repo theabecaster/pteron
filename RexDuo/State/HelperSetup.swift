@@ -510,7 +510,7 @@ enum SetupError: Equatable {
         case .interrupted: "The install stopped before it finished."
         case .notificationsOff: "Notifications are off for \(Brand.appName)."
         case .identityChanged: "\(Brand.beaconName) on \(name) has changed. Only trust Beacon if you reinstalled it on \(name)."
-        case .manual: "Rex on \(name) is too old to install \(Brand.beaconName) from here. Update Rex on \(name), or install Beacon by hand.\n\(NotificationCopy.manualSteps.joined(separator: "\n"))"
+        case .manual: "Rex on \(name) is too old to install \(Brand.beaconName) from here. Update Rex on \(name), or install Beacon by hand.\nMac: drag \(Brand.beaconName) to Applications and open it once.\nLinux: run the command below."
         }
     }
 

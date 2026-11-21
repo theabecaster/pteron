@@ -1022,12 +1022,16 @@ struct NotificationStatusTests {
 
     @Test func theSheetsHaveTheirWords() {
         // The row says "Install Beacon by hand", its button "How", and the sheet is those steps:
-        // where to get the program, under its real name, then what to do with it on each system.
+        // where to get the program, under its real name, for each system; Linux's line is the
+        // install command of docs/helper.md, to copy.
         #expect(NotificationCopy.manualTitle == "Install by Hand")
         #expect(NotificationCopy.manualSteps == [
             "Mac: download \(Brand.beaconName) from github.com/theabecaster/pteron/releases, drag it to Applications and open it once.",
-            "Linux: run curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh",
+            "Linux: run this command, which downloads and installs \(Brand.beaconName):",
         ])
+        #expect(NotificationCopy.linuxInstall
+            == "curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh")
+        #expect(SetupError.manual.message(name: "Studio").hasSuffix("Linux: run the command below."))
         #expect(NotificationCopy.noDetails(name: "Studio") == "\(Brand.beaconName) on Studio isn't answering.")
     }
 }

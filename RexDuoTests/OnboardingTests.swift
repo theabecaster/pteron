@@ -108,14 +108,111 @@ import Testing
     private final class Spy {
         var pair = 0, enterAddress = 0, getTailscale = 0, close = 0
         var total: Int { pair + enterAddress + getTailscale + close }
+        /// What `NetworkWatch` says.
+        var onTailnet = false
+        /// Closes the App Store page Get Tailscale opened.
+        var closeStore: (@MainActor () -> Void)?
     }
 
     private func flow(_ start: OnboardingStart = .welcome) -> (OnboardingModel, Spy) {
         let spy = Spy()
         let flow = OnboardingModel(start: start, effects: .init(
             pair: { spy.pair += 1 }, enterAddress: { spy.enterAddress += 1 },
-            getTailscale: { spy.getTailscale += 1 }, close: { spy.close += 1 }))
+            getTailscale: { closed in spy.getTailscale += 1; spy.closeStore = closed }, close: { spy.close += 1 },
+            onTailnet: { spy.onTailnet }))
         return (flow, spy)
+    }
+
+    // MARK: I Have a Pairing Code
+
+    /// On a tailnet the code's address can answer: the scanner, as before. Off it, the checklist
+    /// at its Tailscale step, with no scanner first.
+    @Test func aPairingCodeGoesToTheScannerOnlyOnATailnet() {
+        let (on, onSpy) = flow()
+        onSpy.onTailnet = true
+        on.havePairingCode()
+        #expect(onSpy.pair == 1 && on.step == .welcome && !on.scanWhenConnected)
+
+        let (off, offSpy) = flow()
+        off.havePairingCode()
+        #expect(offSpy.pair == 0)
+        #expect(off.step == .connect && off.scanWhenConnected)
+        #expect(offSpy.total == 0, "nothing opens, nothing is asked")
+    }
+
+    /// The tailnet comes up on the checklist: the scanner opens once, and only while nothing
+    /// covers the checklist.
+    @Test func theScannerOpensByItselfOnce() {
+        let (f, spy) = flow()
+        f.havePairingCode()
+        f.checklistChanged(onTailnet: false, covered: false)
+        #expect(spy.pair == 0)
+        f.checklistChanged(onTailnet: true, covered: true)
+        #expect(spy.pair == 0, "a sheet or the background: not in front")
+        // The App Store page is up: wait for it to close.
+        f.getTailscale()
+        f.checklistChanged(onTailnet: true, covered: false)
+        #expect(spy.pair == 0 && f.storeShown)
+        spy.closeStore?()
+        #expect(!f.storeShown)
+        f.checklistChanged(onTailnet: true, covered: false)
+        #expect(spy.pair == 1 && !f.scanWhenConnected)
+        // Back from the scanner (Cancel), the tailnet flapping: never again.
+        f.checklistChanged(onTailnet: false, covered: false)
+        f.checklistChanged(onTailnet: true, covered: false)
+        #expect(spy.pair == 1)
+    }
+
+    /// Only from "I Have a Pairing Code", and only while its checklist is still in front.
+    @Test func theScannerOpensByItselfOnlyFromThatPath() {
+        // Skip and Get Started reach the checklist without it.
+        let (skipped, s1) = flow()
+        skipped.skip()
+        skipped.checklistChanged(onTailnet: true, covered: false)
+        let (walked, s2) = flow()
+        walked.getStarted(); walked.next(); walked.next()
+        walked.checklistChanged(onTailnet: true, covered: false)
+        let (reopened, s3) = flow(.checklist)
+        reopened.checklistChanged(onTailnet: true, covered: false)
+        #expect(s1.pair + s2.pair + s3.pair == 0)
+        // Leaving the checklist drops it: Back, Scan Code, Enter Address, Not Now.
+        let leaves: [@MainActor (OnboardingModel) -> Void] = [{ $0.back() }, { $0.pair() }, { $0.enterAddress() }, { $0.close() }]
+        for leave in leaves {
+            let (f, spy) = flow()
+            f.havePairingCode()
+            leave(f)
+            let before = spy.pair
+            #expect(!f.scanWhenConnected)
+            if f.step != .connect { f.skip() }
+            f.checklistChanged(onTailnet: true, covered: false)
+            #expect(spy.pair == before)
+        }
+    }
+
+    // MARK: The checklist's words
+
+    @Test func theChecklistSaysEachStepPlainly() {
+        #expect(ChecklistCopy.steps == 4)
+        #expect(ChecklistCopy.header == "\(Brand.appName) reaches your computer through Tailscale, a free private network for your own devices.")
+        #expect(ChecklistCopy.tailscaleFirst
+            == "First connect this iPhone with Tailscale, a free private network for your own devices. The camera opens once it's on.")
+        #expect(ChecklistCopy.rex == "Rex on your computer")
+        #expect(ChecklistCopy.rexDetail == "\(Brand.appName) shows your Rex sessions. Rex is a terminal app for Mac and Linux.")
+        #expect(ChecklistCopy.tailscale == "Connect this iPhone with Tailscale")
+        #expect(ChecklistCopy.rexTailscale == "Turn on Tailscale in Rex")
+        #expect(ChecklistCopy.rexJoins == "Rex joins Tailscale by itself; the computer's Tailscale app isn't needed.")
+        #expect(ChecklistCopy.linuxSignIn.contains("`rex server tailscale login`") && ChecklistCopy.linuxSignIn.contains("`--tailscale`"))
+        #expect(ChecklistCopy.pairCode == "Show the pairing code")
+        #expect(ChecklistCopy.noPair == "No Pair option? Update Rex.")
+    }
+
+    /// VoiceOver: where the step is, and done or not only where the app can tell.
+    @Test func voiceOverReadsEachStepWithItsPlace() {
+        #expect(ChecklistCopy.spoken(step: 2, title: ChecklistCopy.tailscale, done: true)
+            == "Step 2 of 4, Connect this iPhone with Tailscale, done")
+        #expect(ChecklistCopy.spoken(step: 2, title: ChecklistCopy.tailscale, done: false)
+            == "Step 2 of 4, Connect this iPhone with Tailscale, not done")
+        #expect(ChecklistCopy.spoken(step: 1, title: ChecklistCopy.rex, done: nil) == "Step 1 of 4, Rex on your computer")
     }
 
     @Test func theFirstRunGoesForwardAndBackThroughEveryStep() {

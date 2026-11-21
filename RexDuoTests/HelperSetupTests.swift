@@ -958,7 +958,6 @@ struct HelperSetupTests {
         #expect(HelperOfferCard.footnote("studio") == "\(Brand.appName) opens a tab on studio to install Beacon. Nothing runs as an administrator.")
         #expect(HelperOfferCard.skippedLine("studio")
             == "You won't get notifications from studio while \(Brand.appName) is closed. You can install \(Brand.beaconName) anytime in Settings → Notifications.")
-        #expect(HelperOfferCard.skipHold == 3)
         #expect(PasswordCard.title == "Keep notifications coming after you log out?")
         #expect(PasswordCard.message(name: "studio", account: "sam")
             == "studio stops \(Brand.beaconName) when you log out, unless you allow Beacon to keep running. Allowing that takes the password for sam on studio.")

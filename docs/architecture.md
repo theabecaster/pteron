@@ -22,7 +22,7 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 ## Data flow
 
 1. `RexDuoApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
-2. `AppModel` builds a `ServerConnection` per configured server (Settings → Servers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions). None connects until a scene shows (Launch, below).
+2. `AppModel` builds a `ServerConnection` per configured server (Settings → Computers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions). None connects until a scene shows (Launch, below).
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
    loads block metadata (program status, title, process), hosts and the keymap. The first
    sync with a server process also reads the creator list.
@@ -281,7 +281,9 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   `contentsRect` jumps, looping keyframes), off while not in a window, still with Reduce Motion.
 - A `*.ts.net` server out of reach while this iPhone has no Tailscale address says "Tailscale isn't
   connected on this iPhone." and offers Get Tailscale (`TailscaleApp`) instead of Open Settings.
-  Every other case is worded without naming a product.
+  At a `*.ts.net` address, can't-find says Tailscale here is signed in to another account and a
+  refusal says Rex lets in only devices on its Tailscale account. Every other case is worded
+  without naming a product, and names the computer, never "the Mac".
 
 ### The connection log
 
@@ -334,13 +336,23 @@ user shares.
   `AppModel.guide` is set, so the launch peel opens onto it. Otherwise nothing of it exists.
 - Steps (`OnboardingModel`): the welcome (Glide over `SignalStatic`, Get Started, I Have a Pairing
   Code); two cards (what the app is, answering agents), paged with a spring, each with one motion
-  the first time it shows; the checklist: Tailscale on this iPhone, Tailscale turned on in Rex
-  (Mac or Linux), the pairing code, then Scan Code, Enter Address or Not Now. Back and Skip are in
-  the bar. Steps cross-fade; Reduce Motion keeps only the fades. Each screen lays out like the
+  the first time it shows; the checklist (`ChecklistCopy`): Rex on the computer (Get Rex, Rex's
+  installation page; nothing ticks it), Tailscale on this iPhone, Tailscale turned on in Rex
+  (Mac or Linux), the pairing code, then Scan Code or Enter Address. VoiceOver reads each
+  step as "Step n of 4, title", with done or not done only for the Tailscale step. Back, and Skip
+  or Not Now, are toolbar items of the guide's own navigation stack (`BarLabel`): a plain
+  navigation bar on iPhones, the system's vertical bar on the Duo, where they carry symbols; the
+  root's bar is hidden while the guide shows, and each step's main button stays at the bottom of
+  the screen, in reach. Steps cross-fade; Reduce Motion keeps only the fades. Each screen lays out like the
   offline screen (`OfflineLayout`): two pages on the unfolded Duo, nothing on the crease.
+- I Have a Pairing Code opens the scanner only when this iPhone is on a tailnet. Off it, it opens
+  the checklist with the Tailscale step marked as the one to do and a header that says why
+  (`scanWhenConnected`); when `NetworkWatch` reports the tailnet up and nothing covers the
+  checklist (a sheet, the App Store page, the app in the background), the scanner opens by
+  itself after a beat to see the tick, once. Back, Scan Code, Enter Address and Not Now drop it.
 - The Tailscale tick reads `NetworkWatch`, with no polling of its own (`PrivateNetwork`: IPv4
   100.64.0.0/10 only on a `utun` tunnel, since a cellular network can hand out that range;
-  IPv6 fd7a:115c:a1e0::/48 anywhere). It only tells, and nothing waits for it. Get Tailscale shows
+  IPv6 fd7a:115c:a1e0::/48 anywhere). Apart from the pairing code above, it only tells. Get Tailscale shows
   the App Store page in the app (`SKStoreProductViewController`; Safari where it can't load).
 - It asks for no permission: the scanner asks for the camera when Scan Code opens it, and the
   Beacon offer after pairing asks for notifications.
@@ -366,8 +378,20 @@ opens) and `PairingModel` (`State/Pairing.swift`) takes it from there, one step 
    never retried, and its label has no device id, so the helper doesn't take it for the phone
    being open. A call that fails leaves its fields unknown, and `IdentityCopy` words the card
    from what the computer did say.
-4. Add & Open. The server is saved, connects and registers for pushes like any other, and
-   `AppModel.openWhenReady` lands on its active tab once its sessions are in.
+4. Add & Open (Add, when the computer says it has no session). The server is saved, connects
+   and registers for pushes like any other, and `AppModel.openWhenReady` lands on its active tab
+   once its sessions are in. A computer with none leaves the empty state saying "No sessions on
+   <name> yet." with New Session (`EmptyStateCopy`).
+
+A failed check is worded by `PairingProblem`. A tailnet name this iPhone can't reach while it is
+on no tailnet gets one line, "This computer is on a private network this iPhone isn't part of
+yet…", with Get Tailscale, and Try Again once `NetworkWatch` reports the tailnet up
+(`PairingProblem.offTailnet`); a tailnet name not found while on a tailnet is another Tailscale
+account. Out of range and can't-find never offer Add Anyway. A refusal and a guessed address
+that isn't there offer Scan Code. An address typed in Settings → Add Computer takes the same
+path from step 2 (`AppModel.preparePairing(typed:name:)`), in that page's own pairing sheet.
+On the unfolded Duo the cards and the Beacon offer sit on the page past the crease
+(`PairingLayout.cardRect`).
 
 The camera's picture freezes under a dim from the moment a code is read; the cards sit on it.
 `AppModel.startPairing(prefilled:name:guessed:)` starts at step 2 for an address that didn't come

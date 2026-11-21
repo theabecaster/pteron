@@ -354,6 +354,15 @@ final class AppModel {
                                     name: name ?? ServerConfig.name(for: url))
         showPairing = true
     }
+
+    /// The same flow for an address typed in Settings → Add Computer, whose own pairing sheet
+    /// presents it there (Settings is up, so the root's can't). Typed, so it may be http, and
+    /// it is never `guessed`: a failed check keeps its offers. A blank name comes from the address.
+    func preparePairing(typed url: URL, name: String) {
+        let typed = name.trimmingCharacters(in: .whitespaces)
+        pairingStart = PairingStart(candidate: PairingCode.Candidate(url: url, guessed: false),
+                                    name: typed.isEmpty ? ServerConfig.name(for: url) : typed)
+    }
     /// The page Settings opens at next; Settings clears it.
     var settingsStart: SettingsPage?
     @ObservationIgnored let prefs: Prefs

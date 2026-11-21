@@ -11,6 +11,8 @@ struct ServersPage: View {
     @Environment(Prefs.self) private var prefs
     let theme: TermTheme
 
+    static let footer = "Each computer runs Rex. " + PairingCopy.showCode + " Then scan the code."
+
     var body: some View {
         SettingsList(theme: theme) {
             Section {
@@ -19,7 +21,8 @@ struct ServersPage: View {
                     Label("Add Computer", systemImage: "plus")
                 }
             } footer: {
-                SettingsFooter("Run `rex server tailscale pair` on a computer running Rex, then scan the code it shows.", theme)
+                SettingsFooter(Self.footer, theme)
+                    .accessibilityLabel(PairingCopy.spoken(Self.footer))
             }
             .settingsRows(theme)
         }

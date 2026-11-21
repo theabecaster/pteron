@@ -153,6 +153,20 @@ struct ConnectionProblemTests {
             == "Connect this iPhone to the same network or VPN as Studio, then try again.")
         #expect(OfflineAction.serverSettings.title == "Computer Settings")
         #expect(OfflineCopy.short(.offPrivateNetwork) == "Out of range" && OfflineCopy.short(.hostNotFound) == "Not found")
+        let asleep = OfflineCopy.of(.notAnswering, server: "Studio", address: "")
+        #expect(asleep.message == "It may be asleep, or Rex isn't running there.")
+    }
+
+    /// A Linux computer is never called a Mac: every line names the computer instead.
+    @Test func copyNeverSaysMacForAComputer() {
+        for kind in ConnectionProblem.Kind.allCases {
+            for address in ["x", "https://box-rex.tail1234.ts.net"] {
+                let c = OfflineCopy.of(kind, server: "Box", address: address)
+                for text in [c.title, c.message, c.hint ?? ""] {
+                    #expect(!text.contains("Mac"), "\(kind): \(text)")
+                }
+            }
+        }
     }
 
     /// Tailscale is named only where the computer's address is a Tailscale one: off Tailscale the
@@ -180,6 +194,9 @@ struct ConnectionProblemTests {
             } else if kind == .notAllowed {
                 #expect(c.message == "Rex only accepts devices signed in to the same Tailscale account as Studio.")
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == nil)
+            } else if kind == .hostNotFound {
+                #expect(c.message == "Tailscale on this iPhone is signed in to a different account than Studio.")
+                #expect(c.hint == "Sign in with the account you used in Rex.")
             } else {
                 // A bad address quotes the address, so only its title stays the same.
                 if kind != .badAddress { #expect(c == OfflineCopy.of(kind, server: "Studio", address: "x")) }

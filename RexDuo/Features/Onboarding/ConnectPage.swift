@@ -2,27 +2,36 @@ import GlanceModel
 import SwiftUI
 import UIKit
 
-/// The checklist: the three things that connect a computer, in order, then Scan Code.
+/// The checklist: the four things that connect a computer, in order, then Scan Code. Its words
+/// are `ChecklistCopy`.
 ///
-/// 1. Tailscale on this iPhone. Its tick comes from `NetworkWatch` (a Tailscale address on this
-///    iPhone) and changes as Tailscale comes and goes. It only tells; nothing waits for it.
-/// 2. Rex serving over Tailscale on the computer, for Rex's Mac app or its command line.
-/// 3. Pairing: where the computer shows its code. Scan Code opens the scanner; Enter Address and
-///    Not Now are always there.
+/// 1. Rex on the computer, with a link to get it. Nothing can tick it: it only tells.
+/// 2. Tailscale on this iPhone. Its tick comes from `NetworkWatch` (a Tailscale address on this
+///    iPhone) and changes as Tailscale comes and goes. Nothing waits for it, except a pairing code
+///    tapped on the welcome off the tailnet: this step is then the one to do, and the scanner
+///    opens by itself once the tick comes (`OnboardingModel.scanWhenConnected`).
+/// 3. Rex serving over Tailscale on the computer, for Rex's Mac app or its command line.
+/// 4. Pairing: where the computer shows its code. Scan Code opens the scanner; Enter Address, and
+///    Not Now in the bar, are always there.
 struct ConnectPage: View {
     @Bindable var flow: OnboardingModel
     let theme: TermTheme
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
     /// Scan Code and the links under it, measured: the steps get the room above.
     @State private var actionsHeight: CGFloat = 110
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Never claimed without a Tailscale address on this iPhone. Unknown (tests) reads as no.
     private var tailscaleOn: Bool { model.network?.snapshot.onPrivateNetwork == true }
+    /// Something is over the checklist, so it isn't in front: a sheet, or the app isn't active.
+    private var covered: Bool { model.showPairing || model.showSettings || scenePhase != .active }
+    /// The scanner is due: a pairing code waited for the tailnet, it is up, nothing covers this.
+    private var scanDue: Bool { flow.scanWhenConnected && tailscaleOn && !covered && !flow.storeShown }
 
     var body: some View {
         VStack(spacing: 0) {
-            GuideBar(theme: theme, back: flow.canGoBack ? { flow.back() } : nil)
             GuideRegion { layout, size in
                 // The buttons stay in sight at the bottom; the steps scroll above them when they
                 // need more room (a short window, large text).
@@ -57,6 +66,13 @@ struct ConnectPage: View {
         .onChange(of: tailscaleOn) { _, on in
             if on { UIAccessibility.post(notification: .announcement, argument: "Tailscale is connected on this iPhone.") }
         }
+        // A beat to see the tick, then the scanner. Cancelled when anything it needs changes.
+        .task(id: scanDue) {
+            guard scanDue else { return }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            flow.checklistChanged(onTailnet: tailscaleOn, covered: covered)
+        }
     }
 
     /// `glide`: Glide's width, 0 for none (a short window).
@@ -69,7 +85,7 @@ struct ConnectPage: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(theme.fg)
                 .accessibilityAddTraits(.isHeader)
-            Text("\(Brand.appName) connects to your computer privately, through Tailscale.")
+            Text(flow.scanWhenConnected ? ChecklistCopy.tailscaleFirst : ChecklistCopy.header)
                 .font(.subheadline)
                 .foregroundStyle(theme.chrome.secondary)
         }
@@ -80,7 +96,23 @@ struct ConnectPage: View {
 
     private var checklist: some View {
         VStack(spacing: 0) {
-            row(1, "Tailscale on this iPhone", done: tailscaleOn) {
+            // Nothing the app can see ticks it: it is there for someone who doesn't have Rex yet.
+            row(1, ChecklistCopy.rex, done: nil) {
+                detail(LocalizedStringKey(ChecklistCopy.rexDetail))
+                if let url = PairingCopy.getRex {
+                    Button { openURL(url) } label: {
+                        Label("Get Rex", systemImage: "safari")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(theme.accent)
+                            .frame(minHeight: 36)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens Rex's installation page in Safari.")
+                }
+            }
+            separator
+            row(2, ChecklistCopy.tailscale, done: tailscaleOn, current: flow.scanWhenConnected) {
                 if tailscaleOn {
                     detail("Connected.", color: theme.chrome.done)
                 } else {
@@ -97,7 +129,7 @@ struct ConnectPage: View {
                 }
             }
             separator
-            row(2, "Turn on Tailscale in Rex") {
+            row(3, ChecklistCopy.rexTailscale, done: nil) {
                 Picker("Computer", selection: $flow.computer) {
                     ForEach(OnboardingModel.Computer.allCases) { Text($0.title).tag($0) }
                 }
@@ -109,18 +141,20 @@ struct ConnectPage: View {
                     path("In Rex: Settings → Server → Tailscale → Serve over Tailscale.")
                 case .linux:
                     CommandChip(command: "rex server tailscale on", theme: theme)
-                    detail("If it asks you to sign in, \(code("rex server status")) shows the link.")
+                    detail(LocalizedStringKey(ChecklistCopy.linuxSignIn))
                 }
-                detail("Sign in with the same account as on this iPhone.")
+                detail(LocalizedStringKey(ChecklistCopy.rexJoins))
+                detail(LocalizedStringKey(ChecklistCopy.sameAccount))
             }
             separator
-            row(3, "Show the pairing code") {
+            row(4, ChecklistCopy.pairCode, done: nil) {
                 switch flow.computer {
                 case .mac:
-                    path("In Rex: Settings → Server → Remote Address → Pair.")
+                    path("In Rex: \(PairingCopy.macPath).")
                 case .linux:
-                    CommandChip(command: "rex server tailscale pair", theme: theme)
+                    CommandChip(command: PairingCopy.command, theme: theme)
                 }
+                detail(LocalizedStringKey(ChecklistCopy.noPair))
                 detail("Then tap Scan Code.")
             }
         }
@@ -137,30 +171,25 @@ struct ConnectPage: View {
                 flow.pair()
             }
             .accessibilityHint("Opens the camera, to scan the code the computer shows.")
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { secondary }
-                VStack(spacing: 0) { secondary }
-            }
+            // Not Now is in the bar, with Back.
+            GuideLink(title: "Enter Address", theme: theme) { flow.enterAddress() }
         }
-    }
-
-    @ViewBuilder
-    private var secondary: some View {
-        GuideLink(title: "Enter Address", theme: theme) { flow.enterAddress() }
-        GuideLink(title: flow.closeTitle, theme: theme, quiet: true) { flow.close() }
     }
 
     // MARK: Parts
 
-    private func row<Content: View>(_ n: Int, _ title: String, done: Bool = false,
+    /// `done`: nil for a step the app can't check. `current`: the step to do now, marked in the
+    /// accent until it is done.
+    private func row<Content: View>(_ n: Int, _ title: String, done: Bool?, current: Bool = false,
                                     @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            StepBadge(number: n, done: done, theme: theme)
+            StepBadge(number: n, done: done == true, current: current, theme: theme)
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(theme.fg)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(ChecklistCopy.spoken(step: n, title: title, done: done))
                 content()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -187,11 +216,7 @@ struct ConnectPage: View {
             .font(.footnote)
             .foregroundStyle(theme.fg)
             .fixedSize(horizontal: false, vertical: true)
-            .accessibilityLabel(text.replacingOccurrences(of: " → ", with: ", "))
-    }
-
-    private func code(_ command: String) -> Text {
-        Text(command).font(Font(RexFont.ui(UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 12))))
+            .accessibilityLabel(PairingCopy.spoken(text))
     }
 }
 
@@ -199,6 +224,7 @@ struct ConnectPage: View {
 private struct StepBadge: View {
     let number: Int
     let done: Bool
+    var current = false
     let theme: TermTheme
     @ScaledMetric(relativeTo: .subheadline) private var side: CGFloat = 24
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -212,10 +238,10 @@ private struct StepBadge: View {
                     .foregroundStyle(theme.bg)
                     .transition(reduceMotion ? .opacity : .scale(scale: 0.4).combined(with: .opacity))
             } else {
-                Circle().stroke(theme.chrome.divider, lineWidth: 1.5)
+                Circle().stroke(current ? theme.accent : theme.chrome.divider, lineWidth: 1.5)
                 Text("\(number)")
                     .font(.system(size: side * 0.5, weight: .semibold))
-                    .foregroundStyle(theme.chrome.secondary)
+                    .foregroundStyle(current ? theme.accent : theme.chrome.secondary)
             }
         }
         .frame(width: side, height: side)
@@ -224,8 +250,9 @@ private struct StepBadge: View {
     }
 }
 
-/// A command to run on the computer, in Rex's terminal font. A tap copies it.
-private struct CommandChip: View {
+/// A command to run on the computer, in Rex's terminal font. A tap copies it. The checklist's,
+/// and Beacon's install line where it is installed by hand.
+struct CommandChip: View {
     let command: String
     let theme: TermTheme
     @ScaledMetric(relativeTo: .footnote) private var size: CGFloat = 12

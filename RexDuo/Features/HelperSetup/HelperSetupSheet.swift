@@ -192,6 +192,10 @@ struct HelperSetupSheet: View {
                 .foregroundStyle(theme.fg)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            if error == .manual {
+                CommandChip(command: NotificationCopy.linuxInstall, theme: theme)
+                    .padding(.top, 12)
+            }
             VStack(spacing: 4) {
                 ForEach(Array(error.actions(hasTab: state.hasTab && details).enumerated()), id: \.offset) { index, action in
                     button(action, filled: index == 0 && action != .close && action != .showDetails, state, theme)

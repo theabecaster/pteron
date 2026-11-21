@@ -306,6 +306,7 @@ private struct ManualStepsSheet: View {
             ForEach(NotificationCopy.manualSteps, id: \.self) { step in
                 Text(step).fixedSize(horizontal: false, vertical: true)
             }
+            CommandChip(command: NotificationCopy.linuxInstall, theme: theme)
         }
     }
 }

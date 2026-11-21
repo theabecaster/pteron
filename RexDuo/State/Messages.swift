@@ -19,6 +19,12 @@ enum Messages {
     }
     static let outOfRangeShort = "Out of range"
 
+    /// This iPhone is on a tailnet, but not the one the computer's Tailscale name is on.
+    static func otherTailscaleAccount(_ name: String) -> String {
+        "Tailscale on this iPhone is signed in to a different account than \(name)."
+    }
+    static let otherTailscaleAccountFix = "Sign in with the account you used in Rex."
+
     /// Known before anything was tried: the computer is offline.
     static func offline(_ name: String) -> String { "\(capitalized(name)) is offline. Try again when it's back." }
 

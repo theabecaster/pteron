@@ -666,9 +666,12 @@ struct NoServersRow: View {
     let theme: TermTheme
     @Environment(AppModel.self) private var model
 
+    static let text = "No computers yet. " + PairingCopy.showCode + " Then scan the code."
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("No computers yet. On your computer, run `rex server tailscale pair`, then scan the code it shows.")
+            Text(LocalizedStringKey(Self.text))
+                .accessibilityLabel(PairingCopy.spoken(Self.text))
                 .font(.footnote)
                 .foregroundStyle(theme.chrome.secondary)
                 .fixedSize(horizontal: false, vertical: true)

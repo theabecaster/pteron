@@ -247,9 +247,11 @@ is on its way;
   last read of the release list failed (no row while it is fine). When no helper answers it reads "Pteron Beacon on <name>
   isn't answering." For a computer whose install is under way or failed, Show Details brings
   back the install's sheet instead, at the installer's output (`showSetupDetails`).
-- **How:** beside "Install Beacon by hand". A small sheet, "Install by Hand", with where to
-  download Pteron Beacon and the step for a Mac ("drag Pteron Beacon to Applications and open
-  it once") and for Linux ("run rex-duo-helper install"; `NotificationCopy.manualSteps`).
+- **How:** beside "Install Beacon by hand". A small sheet, "Install by Hand", with the step
+  for a Mac (download Pteron Beacon from the releases page, drag it to Applications and open it
+  once) and for Linux, the install line of docs/helper.md as a command to copy
+  (`NotificationCopy.manualSteps`, `NotificationCopy.linuxInstall`). The install sheet's "too
+  old to install from here" card shows the same command.
 - **Trust…:** a confirm, "Trust Beacon on <name>?", "Did you reinstall or remove Beacon on
   <name>? If you did, trust it. If you didn't, don't: something else is answering for it."
   Trust, Cancel. The confirm is shown for the key the helper offers at that moment
@@ -332,7 +334,7 @@ The app can install Pteron Beacon on the user's own Mac or Linux computer. `Stat
 helper is connected on the server's own machine, the server's owner and this iPhone's login are
 not two different known logins, and no install for it is running. After pairing it is a page
 after "added" ("Get notifications from <Name>?", Install / Skip; Skip is remembered in
-`Prefs.helperOfferSkipped`). In Settings → Notifications a computer's switch, its Retry, Update
+`Prefs.helperOfferSkipped`, leaves at once and says in a toast what skipping means). In Settings → Notifications a computer's switch, its Retry, Update
 and Repair buttons and "Reinstall Beacon" in its menu start it.
 
 **What runs.** An install turns the master switch and that computer's switch on and asks iOS

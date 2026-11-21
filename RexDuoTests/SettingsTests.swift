@@ -110,7 +110,7 @@ import UIKit
     @Test func everyWayInLandsOnItsPage() async throws {
         let titles: [SettingsPage: String] = [
             .main: "Settings", .servers: "Computers", .appearance: "Appearance", .keyboard: "Keyboard",
-            .notifications: "Notifications", .about: "About", .addServer: "Add Server",
+            .notifications: "Notifications", .about: "About", .addServer: "Add Computer",
             .darkTheme: "Dark Theme", .lightTheme: "Light Theme", .acknowledgements: "Acknowledgements",
         ]
         for page in SettingsPage.allCases {

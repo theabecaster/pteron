@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import Observation
 
 /// Where the setup guide starts.
@@ -26,11 +27,41 @@ enum FirstRun {
     }
 }
 
+/// The checklist's words (`ConnectPage`). Tailscale is explained where a screen first names it.
+enum ChecklistCopy {
+    static let steps = 4
+
+    static let header = "\(Brand.appName) reaches your computer through Tailscale, a free private network for your own devices."
+    /// The header for someone who came from "I Have a Pairing Code" off the tailnet.
+    static let tailscaleFirst = "First connect this iPhone with Tailscale, a free private network for your own devices. The camera opens once it's on."
+
+    static let rex = "Rex on your computer"
+    static let rexDetail = "\(Brand.appName) shows your Rex sessions. Rex is a terminal app for Mac and Linux."
+    static let tailscale = "Connect this iPhone with Tailscale"
+    static let rexTailscale = "Turn on Tailscale in Rex"
+    /// Markdown: commands in code type. Flags from `rex server tailscale on --help`.
+    static let linuxSignIn = "If it asks you to sign in, run `rex server tailscale login` and open the link on any device. Tailscale stays on until Rex restarts; start the server with `--tailscale` to keep it on."
+    static let rexJoins = "Rex joins Tailscale by itself; the computer's Tailscale app isn't needed."
+    static let sameAccount = "Sign in with the same account as on this iPhone."
+    static let pairCode = "Show the pairing code"
+    static let noPair = "No Pair option? Update Rex."
+
+    /// What VoiceOver says for a step's title. `done` is nil for a step the app can't check,
+    /// which is never called done or not done.
+    static func spoken(step: Int, title: String, done: Bool?) -> String {
+        let head = "Step \(step) of \(steps), \(title)"
+        guard let done else { return head }
+        return head + (done ? ", done" : ", not done")
+    }
+}
+
 /// The guide's steps and what each control does. It exists only while the guide is on screen.
 ///
 /// Nothing in it asks for a permission: the camera is asked for by the scanner that `pair` opens,
 /// and notifications by the Beacon offer after a computer is added. Nothing in it waits on the
-/// network or gates a step: every screen can be skipped or left.
+/// network or gates a step: every screen can be skipped or left. The one thing it does on its own:
+/// a pairing code tapped off the tailnet opens the scanner once the tailnet comes up
+/// (`scanWhenConnected`), which `NetworkWatch` reports.
 @MainActor
 @Observable
 final class OnboardingModel {
@@ -55,12 +86,15 @@ final class OnboardingModel {
     struct Effects {
         /// "Pair via QR Code", over the guide.
         var pair: @MainActor () -> Void = {}
-        /// Settings → Add Server, over the guide.
+        /// Settings → Add Computer, over the guide.
         var enterAddress: @MainActor () -> Void = {}
-        /// The Tailscale app's App Store page, in the app.
-        var getTailscale: @MainActor () -> Void = {}
+        /// The Tailscale app's App Store page, in the app. It calls its argument once the page is
+        /// gone.
+        var getTailscale: @MainActor (_ closed: @escaping @MainActor () -> Void) -> Void = { _ in }
         /// The guide goes (Not Now).
         var close: @MainActor () -> Void = {}
+        /// Whether this iPhone is on a tailnet now (`NetworkWatch`). Unknown reads as no.
+        var onTailnet: @MainActor () -> Bool = { false }
     }
 
     private(set) var step: Step
@@ -69,6 +103,13 @@ final class OnboardingModel {
     var computer: Computer = .mac
     /// Opened from Setup Guide: the checklist is all there is, with nothing to go back to.
     let reopened: Bool
+    /// "I Have a Pairing Code" was tapped while this iPhone wasn't on a tailnet: the checklist
+    /// shows its Tailscale step as the one to do, and the scanner opens by itself, once, when the
+    /// tailnet comes up while the checklist is still in front. Any other way off the checklist
+    /// drops it.
+    private(set) var scanWhenConnected = false
+    /// The App Store page is over the guide.
+    private(set) var storeShown = false
     @ObservationIgnored private let effects: Effects
 
     init(start: OnboardingStart, effects: Effects) {
@@ -76,12 +117,14 @@ final class OnboardingModel {
         step = start == .checklist ? .connect : .welcome
         self.effects = effects
         #if DEBUG
-        // `-guideStep agents|tour|connect` (testing): the first run opened at that step.
+        // `-guideStep agents|tour|connect|pairingCode` (testing): the first run opened at that
+        // step; `pairingCode` is "I Have a Pairing Code" tapped on the welcome.
         if !reopened {
             switch UserDefaults.standard.string(forKey: "guideStep") {
             case "tour": step = .tour
             case "agents": step = .tour; card = .agents
             case "connect": step = .connect
+            case "pairingCode": havePairingCode()
             default: break
             }
         }
@@ -125,13 +168,51 @@ final class OnboardingModel {
             }
         case .connect:
             guard !reopened else { return }
+            scanWhenConnected = false
             card = Card.allCases.last
             step = .tour
         }
     }
 
-    func pair() { effects.pair() }
-    func enterAddress() { effects.enterAddress() }
-    func getTailscale() { effects.getTailscale() }
-    func close() { effects.close() }
+    /// "I Have a Pairing Code": the scanner when this iPhone is on a tailnet, where a code's
+    /// address can answer. Otherwise the checklist at its Tailscale step, so the scan doesn't end
+    /// at a computer this iPhone can't reach.
+    func havePairingCode() {
+        if effects.onTailnet() {
+            effects.pair()
+        } else {
+            scanWhenConnected = true
+            step = .connect
+        }
+    }
+
+    /// What the checklist sees changed: the tailnet, or something over it (a sheet, the App Store
+    /// page, the app in the background). Opens the scanner once, for a pairing code that waited
+    /// on the tailnet, when the tailnet is up and nothing covers the checklist.
+    func checklistChanged(onTailnet: Bool, covered: Bool) {
+        guard scanWhenConnected, step == .connect, onTailnet, !covered, !storeShown else { return }
+        scanWhenConnected = false
+        effects.pair()
+    }
+
+    /// Scan Code.
+    func pair() {
+        scanWhenConnected = false
+        effects.pair()
+    }
+
+    func enterAddress() {
+        scanWhenConnected = false
+        effects.enterAddress()
+    }
+
+    func getTailscale() {
+        storeShown = true
+        effects.getTailscale { [weak self] in self?.storeShown = false }
+    }
+
+    func close() {
+        scanWhenConnected = false
+        effects.close()
+    }
 }

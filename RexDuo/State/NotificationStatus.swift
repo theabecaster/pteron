@@ -733,13 +733,13 @@ enum NotificationCopy {
     /// "Show Details" on a computer where no helper answers.
     static func noDetails(name: String) -> String { "\(Brand.beaconName) on \(name) isn't answering." }
 
-    /// "How": installing the helper by hand, one step per line.
+    /// "How": installing the helper by hand, one step per line; `linuxInstall` follows the last.
     static let manualSteps = [
         "Mac: download \(Brand.beaconName) from github.com/theabecaster/pteron/releases, drag it to Applications and open it once.",
-        "Linux: run \(linuxInstall)",
+        "Linux: run this command, which downloads and installs \(Brand.beaconName):",
     ]
 
-    /// The one line that installs Beacon on Linux (docs/helper.md, Linux).
+    /// The Linux install line (docs/helper.md, Linux), shown as a command to copy.
     static let linuxInstall = "curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh"
 
     /// Added to the install sheet's last screen while iOS has notifications turned off.

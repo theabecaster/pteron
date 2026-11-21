@@ -1,14 +1,17 @@
 import SwiftUI
 
 /// The first screen: Glide over the static, and a card that says what the app is, with Get
-/// Started and, for someone whose computer already shows a code, a way straight to the scanner.
+/// Started and, for someone whose computer already shows a code, a way straight to the scanner
+/// (by the Tailscale step when this iPhone isn't on a tailnet yet).
 struct WelcomePage: View {
     let flow: OnboardingModel
     let theme: TermTheme
+    @Environment(AppModel.self) private var model
+
+    private var onTailnet: Bool { model.network?.snapshot.onPrivateNetwork == true }
 
     var body: some View {
         VStack(spacing: 0) {
-            GuideBar(theme: theme, skip: flow.skip)
             GuideRegion { layout, size in
                 ZStack(alignment: .topLeading) {
                     if let art = layout.art {
@@ -50,8 +53,9 @@ struct WelcomePage: View {
                     Haptic.tap()
                     flow.getStarted()
                 }
-                GuideLink(title: "I Have a Pairing Code", theme: theme) { flow.pair() }
-                    .accessibilityHint("Opens the camera, to scan the code Rex shows on your computer.")
+                GuideLink(title: "I Have a Pairing Code", theme: theme) { flow.havePairingCode() }
+                    .accessibilityHint(onTailnet ? "Opens the camera, to scan the code Rex shows on your computer."
+                                                 : "Shows how to connect this iPhone with Tailscale, then opens the camera.")
             }
             .padding(.top, 24)
         }

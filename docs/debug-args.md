@@ -11,16 +11,20 @@ builds.
 - The first-run guide (architecture.md, First run) shows on a fresh install by itself; none of
   the test launches above shows it. `-onboardingDone NO` brings it back for one run on an install
   with no server that left it (Release too: it is the saved flag's key). `-guideStep
-  tour|agents|connect` opens it at the first card, the second card or the checklist;
-  `-guideComputer linux` picks Linux on the checklist; `-guideDemo YES` plays it through by
-  itself (Get Started, Continue, Continue, Linux, Back, Skip, Not Now), for a recording. With
-  `-simulateNetwork offPrivate` the Tailscale step shows unticked.
+  tour|agents|connect|pairingCode` opens it at the first card, the second card, the checklist,
+  or wherever "I Have a Pairing Code" leads (the scanner on a tailnet, else the checklist at its
+  Tailscale step); `-guideComputer linux` picks Linux on the checklist; `-guideDemo YES` plays
+  it through by itself (Get Started, Continue, Continue, Linux, Back, Skip, Not Now), for a
+  recording. With `-simulateNetwork offPrivate` the Tailscale step shows unticked.
 - `-simulateOffline <kind>`: every server shows that offline screen and none connects. Kinds:
   `noInternet`, `offPrivateNetwork`, `hostNotFound`, `notAnswering`, `notAllowed`, `insecure`,
   `updateServer`, `updateApp`, `badAddress`, `unknown`, `tunnelDown` (every computer silent
   together). `-simulateRetrying YES` holds Try Again in "Trying…".
 - `-simulateNetwork offline|offPrivate|onPrivate`: pretend the phone has no path, is off the
-  tailnet, or on it, so real errors classify as they would there.
+  tailnet, or on it, so real errors classify as they would there. With `offPrivate`,
+  `-simulateTailnetAfter <seconds>` has the phone join the tailnet that long after launch, as
+  when Tailscale is turned on: the guide's pairing code then opens the scanner by itself, and a
+  scanned code's Tailscale card offers Try Again.
 - `-wakeTest drop|unreachable`: as the app goes to the background, drop the control connection, as
   iOS does a suspended app's sockets on a device (a simulator keeps them). `drop` reconnects on
   the return, inside the wake's grace: no offline screen. `unreachable` fails every attempt from

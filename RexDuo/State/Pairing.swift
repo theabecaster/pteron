@@ -97,40 +97,95 @@ enum PairingCode {
     }
 }
 
+/// Where a computer shows its pairing code, in the words every screen that says it uses: Rex's
+/// Mac app first, then the command, which works on any computer.
+enum PairingCopy {
+    /// In Rex's Mac app (Rex's docs, Mac settings: Settings > Server > Remote Address).
+    static let macPath = "Settings → Server → Remote Address → Pair"
+    static let command = "rex server tailscale pair"
+    /// Markdown: the command in code type.
+    static let showCode = "On your computer, in Rex: \(macPath). Or run `\(command)`."
+    /// The same, as VoiceOver says it: pauses for the arrows, no backticks.
+    static func spoken(_ text: String) -> String {
+        text.replacingOccurrences(of: " → ", with: ", ").replacingOccurrences(of: "`", with: "")
+    }
+    /// Rex's own installation page, for Mac and Linux.
+    static let getRex = URL(string: "https://www.superlogical.com/rex/docs/installation")
+}
+
 /// Why a scanned server wasn't added straight away, and what the person can do about it. Worded
 /// like the offline screen: the app says what it can see.
 struct PairingProblem: Equatable {
-    enum Action: Equatable { case tryAgain, addAnyway }
+    enum Action: Equatable {
+        case tryAgain, addAnyway, getTailscale
+        /// Back to the camera, for a code from that computer.
+        case scanCode
+    }
 
     var symbol: String
-    var title: String
+    /// Nil for a problem that is one line.
+    var title: String?
     var message: String
     /// A short technical line, shown collapsed. Only for a failure the app can't explain.
     var detail: String?
-    /// Besides Cancel, which is always there.
+    /// Besides Cancel, which is always there. `offered(onTailnet:)` is what the card shows.
     var actions: [Action]
+    /// The computer is on a tailnet and this iPhone is on none: Get Tailscale while that lasts,
+    /// Try Again once the tailnet is up.
+    var needsTailnet = false
 
-    static func of(_ problem: ConnectionProblem, foreignTailnet: Bool) -> PairingProblem {
+    /// What the card offers now. Only a problem that waits on the tailnet changes with it.
+    func offered(onTailnet: Bool) -> [Action] {
+        guard needsTailnet else { return actions }
+        return onTailnet ? [.tryAgain] : [.getTailscale]
+    }
+
+    /// A code's computer at a tailnet name didn't answer, and this iPhone is on no tailnet: the
+    /// one thing to fix is here, so the card says so and names Tailscale. A first run has no
+    /// saved servers for `isForeignTailnet` to compare with, so this doesn't depend on them.
+    static let offTailnet = PairingProblem(
+        symbol: "antenna.radiowaves.left.and.right.slash", title: nil,
+        message: "This computer is on a private network this iPhone isn't part of yet. Connect this iPhone with Tailscale, then try again.",
+        actions: [.getTailscale, .tryAgain], needsTailnet: true)
+
+    /// Whether a failed check is `offTailnet`'s case: a tailnet name, a failure that means it
+    /// wasn't reached (a refusal, TLS, a version mismatch or no network at all keep their own
+    /// words), and this iPhone not on a tailnet.
+    static func needsTailnet(_ problem: ConnectionProblem, at url: URL, onTailnet: Bool) -> Bool {
+        guard !onTailnet, PairingCode.tailnet(of: url) != nil else { return false }
+        switch problem.kind {
+        case .offPrivateNetwork, .hostNotFound, .notAnswering, .unknown, .tunnelDown: return true
+        case .noInternet, .notAllowed, .insecure, .updateServer, .updateApp, .badAddress: return false
+        }
+    }
+
+    /// `tailnetName`: the computer's name when its address is a tailnet name, so the words can say
+    /// what that means with Tailscale. Out of range and can't-find never offer Add Anyway: a
+    /// computer saved there could never connect.
+    static func of(_ problem: ConnectionProblem, foreignTailnet: Bool, tailnetName: String? = nil) -> PairingProblem {
         let offNetwork = PairingProblem(
-            symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
-            message: "This iPhone can't reach that computer's private network. Connect it to the same network or VPN as that computer, then try again.",
-            actions: [.tryAgain, .addAnyway])
+            symbol: "antenna.radiowaves.left.and.right.slash", title: Messages.outOfRangeShort,
+            message: Messages.outOfRange("that computer"),
+            actions: [.tryAgain])
         switch problem.kind {
         case .noInternet:
             return PairingProblem(symbol: "wifi.slash", title: "No connection",
                                   message: "This iPhone is offline right now. Connect it to a network, then try again.",
                                   actions: [.tryAgain])
-        case .offPrivateNetwork, .hostNotFound:
+        case .offPrivateNetwork:
             return offNetwork
+        case .hostNotFound:
+            return tailnetName.map(otherAccount) ?? offNetwork
         case .notAnswering:
-            if foreignTailnet { return offNetwork }
-            return PairingProblem(symbol: "moon.zzz", title: "Not answering",
-                                  message: "That computer isn't answering. It may be asleep, or Rex isn't open there.",
+            if foreignTailnet { return tailnetName.map(otherAccount) ?? offNetwork }
+            return PairingProblem(symbol: "moon.zzz", title: Messages.asleepShort,
+                                  message: Messages.asleep("that computer"),
                                   actions: [.tryAgain, .addAnyway])
         case .notAllowed:
             return PairingProblem(symbol: "lock", title: "Not allowed in",
-                                  message: "That computer didn't let this iPhone in. It may belong to a different account.",
-                                  actions: [])
+                                  message: tailnetName.map { "Rex on \($0) only lets in devices on its Tailscale account." }
+                                      ?? "That computer didn't let this iPhone in. It may belong to a different account.",
+                                  actions: [.scanCode])
         case .updateServer:
             return PairingProblem(symbol: "arrow.down.circle", title: "Update Rex on that computer",
                                   message: "Rex there is too old for this version of \(Brand.appName). Update Rex on that computer, then try again.",
@@ -149,6 +204,13 @@ struct PairingProblem: Equatable {
                                   message: "Something stopped this iPhone from reaching that computer.",
                                   detail: problem.detail, actions: [.tryAgain, .addAnyway])
         }
+    }
+
+    /// This iPhone is on a tailnet, but not the one the computer's name is on.
+    static func otherAccount(_ name: String) -> PairingProblem {
+        PairingProblem(symbol: "network.slash", title: "Can't find \(name)",
+                       message: Messages.otherTailscaleAccount(name) + " " + Messages.otherTailscaleAccountFix,
+                       actions: [.tryAgain])
     }
 }
 
@@ -175,6 +237,9 @@ struct IdentityCopy: Equatable {
     var owner: String?
     /// Only when no helper is running on the computer.
     var helper: String?
+    /// The computer said it has no sessions: there is no tab to open, so the button only adds.
+    var noSessions = false
+    var addTitle: String { noSessions ? "Add" : "Add & Open" }
 
     /// Only what the computer said. A count or a helper it didn't report is left out, never
     /// shown as "none".
@@ -200,7 +265,8 @@ struct IdentityCopy: Equatable {
             sessions: shown,
             more: shown.isEmpty ? 0 : max(0, (id.sessionCount ?? 0) - shown.count),
             owner: id.belongsToSomeoneElse ? id.owner.map { "This computer belongs to \($0)." } : nil,
-            helper: id.hasHelper == false ? "Notifications need \(Brand.beaconName) on this computer." : nil)
+            helper: id.hasHelper == false ? "Notifications need \(Brand.beaconName) on this computer." : nil,
+            noSessions: id.sessionCount == 0)
     }
 }
 
@@ -213,7 +279,7 @@ extension PairingProblem {
             return of(problem, foreignTailnet: foreignTailnet)
         default:
             return PairingProblem(symbol: "qrcode.viewfinder", title: "Can't find that computer",
-                                  message: "Pair it with a QR code from that computer.", actions: [])
+                                  message: "Pair it with a QR code from that computer.", actions: [.scanCode])
         }
     }
 }
@@ -258,6 +324,8 @@ final class PairingModel {
     @ObservationIgnored private let probe: (URL) async -> PairingCheck
     @ObservationIgnored private let onExisting: (ServerConfig) -> Void
     @ObservationIgnored private let onAdd: (ServerConfig) -> Void
+    /// Whether this iPhone is on a tailnet now (`NetworkWatch`).
+    @ObservationIgnored private let onTailnet: () -> Bool
     /// Counts checks, so an answer to one the person has left is dropped.
     @ObservationIgnored private var attempt = 0
     @ObservationIgnored private var check: Task<Void, Never>?
@@ -271,8 +339,10 @@ final class PairingModel {
     @ObservationIgnored private var rejectionWatch: Task<Void, Never>?
 
     init(servers: @escaping () -> [ServerConfig], probe: @escaping (URL) async -> PairingCheck,
-         onExisting: @escaping (ServerConfig) -> Void, onAdd: @escaping (ServerConfig) -> Void) {
+         onExisting: @escaping (ServerConfig) -> Void, onAdd: @escaping (ServerConfig) -> Void,
+         onTailnet: @escaping () -> Bool = { false }) {
         self.servers = servers
+        self.onTailnet = onTailnet
         self.probe = probe
         self.onExisting = onExisting
         self.onAdd = onAdd
@@ -325,15 +395,17 @@ final class PairingModel {
         return true
     }
 
+    /// Checks the same address again, keeping the code. For a problem that waits on the tailnet,
+    /// only once it is up.
     func tryAgain() {
-        guard case .problem(let url, let problem) = step, problem.actions.contains(.tryAgain) else { return }
+        guard case .problem(let url, let problem) = step, problem.offered(onTailnet: onTailnet()).contains(.tryAgain) else { return }
         check(url)
     }
 
     /// Saves the server though it didn't answer; it shows as offline until it does. Only for a
     /// problem that offers it.
     func addAnyway() {
-        guard case .problem(let url, let problem) = step, problem.actions.contains(.addAnyway) else { return }
+        guard case .problem(let url, let problem) = step, problem.offered(onTailnet: onTailnet()).contains(.addAnyway) else { return }
         add(url, nil)
     }
 
@@ -364,14 +436,23 @@ final class PairingModel {
             let result = await probe(url)
             guard let self, mine == self.attempt, !Task.isCancelled else { return }
             switch result {
+            case .problem(let problem) where !self.guessed && PairingProblem.needsTailnet(problem, at: url, onTailnet: self.onTailnet()):
+                self.step = .problem(url, .offTailnet)
             case .problem(let problem):
                 let foreign = PairingCode.isForeignTailnet(url, servers: self.servers())
+                let tailnetName = PairingCode.tailnet(of: url) != nil ? self.displayName(url) : nil
                 self.step = .problem(url, self.guessed ? .guessed(problem, foreignTailnet: foreign)
-                                                        : .of(problem, foreignTailnet: foreign))
+                                                        : .of(problem, foreignTailnet: foreign, tailnetName: tailnetName))
             case .reachable(let identity):
                 self.step = .found(url, identity)
             }
         }
+    }
+
+    /// What the cards call the computer: the name being given to it, else its host's.
+    private func displayName(_ url: URL) -> String {
+        let typed = name.trimmingCharacters(in: .whitespaces)
+        return typed.isEmpty ? ServerConfig.name(for: url) : typed
     }
 
     private func stopCheck() {

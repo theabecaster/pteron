@@ -45,35 +45,47 @@ struct OnboardingScreen: View {
                 model?.showPairing = true
             },
             enterAddress: { [weak model] in model?.openSettings(at: .addServer) },
-            getTailscale: { TailscaleApp.showInAppStore() },
-            close: { [weak model] in model?.closeGuide() })))
+            getTailscale: { closed in TailscaleApp.showInAppStore(onClose: closed) },
+            close: { [weak model] in model?.closeGuide() },
+            onTailnet: { [weak model] in model?.network?.snapshot.onPrivateNetwork == true })))
     }
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
-        ZStack {
-            theme.bg.ignoresSafeArea()
-            // Only behind the welcome, where Glide and its card sit on it as on the offline screen.
-            // Off screen it is gone, with its animations.
-            if flow.step == .welcome {
-                SignalStatic(theme: theme, level: .locked)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                    .transition(.opacity)
-            }
+        // Its own navigation stack, for its bar: Back, then Skip or Not Now. On the Duo the system
+        // puts them in its vertical bar; elsewhere they are a plain navigation bar
+        // (docs/duo-layout.md). The root's bar is hidden while the guide covers it.
+        NavigationStack {
             ZStack {
-                switch flow.step {
-                case .welcome: WelcomePage(flow: flow, theme: theme).transition(section)
-                case .tour: TourPage(flow: flow, theme: theme).transition(section)
-                case .connect: ConnectPage(flow: flow, theme: theme).transition(section)
+                theme.bg.ignoresSafeArea()
+                // Only behind the welcome, where Glide and its card sit on it as on the offline
+                // screen. Off screen it is gone, with its animations.
+                if flow.step == .welcome {
+                    SignalStatic(theme: theme, level: .locked)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .transition(.opacity)
+                }
+                ZStack {
+                    switch flow.step {
+                    case .welcome: WelcomePage(flow: flow, theme: theme).transition(section)
+                    case .tour: TourPage(flow: flow, theme: theme).transition(section)
+                    case .connect: ConnectPage(flow: flow, theme: theme).transition(section)
+                    }
                 }
             }
+            .toolbar { bar }
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .navigationBarTitleDisplayMode(.inline)
         }
+        .tint(theme.accent)
         .animation(.smooth(duration: 0.35), value: flow.step)
-        .onChange(of: flow.step) { _, _ in
-            // VoiceOver starts again at the top of the new screen.
-            UIAccessibility.post(notification: .screenChanged, argument: nil)
+        .onChange(of: flow.step) { _, step in
+            // VoiceOver starts again at the top of the new screen. A pairing code that has to wait
+            // for Tailscale says why the checklist came instead of the camera.
+            let why = step == .connect && flow.scanWhenConnected ? ChecklistCopy.tailscaleFirst : nil
+            UIAccessibility.post(notification: .screenChanged, argument: why)
         }
         #if DEBUG
         .task { await playDemo() }
@@ -101,6 +113,34 @@ struct OnboardingScreen: View {
         }
     }
     #endif
+
+    /// Back where there is a step to go back to; Skip before the checklist, Not Now (Close, when
+    /// reopened) on it. The step's own button stays at the bottom of the screen, in reach.
+    @ToolbarContentBuilder
+    private var bar: some ToolbarContent {
+        if flow.canGoBack {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: back) { Label("Back", systemImage: "chevron.backward") }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if flow.canSkip {
+                Button(action: flow.skip) { BarLabel(title: "Skip", symbol: "forward.end") }
+                    .accessibilityHint("Goes to the steps to connect a computer.")
+            } else {
+                Button(action: flow.close) { BarLabel(title: flow.closeTitle, symbol: "xmark") }
+            }
+        }
+    }
+
+    /// The tour's cards go back with its spring, or a short cross-fade with Reduce Motion.
+    private func back() {
+        if flow.step == .tour {
+            withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : TourPage.spring) { flow.back() }
+        } else {
+            flow.back()
+        }
+    }
 
     /// Between steps: a cross-fade, with a slight settle unless Reduce Motion is on.
     private var section: AnyTransition {
@@ -153,45 +193,36 @@ struct GuideColumn<Content: View>: View {
     }
 }
 
-/// Back on the leading side, Skip on the trailing one, each only where it applies.
-struct GuideBar: View {
-    let theme: TermTheme
-    var back: (() -> Void)?
-    var skip: (() -> Void)?
+/// A bar button's label: the word alone on a horizontal bar, as iOS shows Skip and Cancel there;
+/// the word and its symbol where the Duo's vertical bar is, which takes only items with a symbol
+/// (docs/duo-layout.md). The bar's edge comes from the system (iOS 27.1+) or the root's probe.
+struct BarLabel: View {
+    let title: String
+    let symbol: String
+    @Environment(\.verticalBarEdge) private var rootEdge
 
     var body: some View {
-        HStack(spacing: 0) {
-            if let back {
-                Button(action: back) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left").font(.body.weight(.semibold))
-                        Text("Back")
-                    }
-                    .foregroundStyle(theme.accent)
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Back")
-            }
-            Spacer(minLength: 0)
-            if let skip {
-                Button(action: skip) {
-                    Text("Skip")
-                        .foregroundStyle(theme.chrome.secondary)
-                        .padding(.horizontal, 16)
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("Goes to the steps to connect a computer.")
+        if #available(iOS 27.1, *) {
+            Vertical(title: title, symbol: symbol, rootEdge: rootEdge)
+        } else {
+            Text(title)
+        }
+    }
+
+    @available(iOS 27.1, *)
+    private struct Vertical: View {
+        let title: String
+        let symbol: String
+        let rootEdge: HorizontalEdge?
+        @Environment(\.toolbarVerticalEdge) private var edge
+
+        var body: some View {
+            if edge ?? rootEdge != nil {
+                Label(title, systemImage: symbol)
+            } else {
+                Text(title)
             }
         }
-        .font(.body)
-        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-        .padding(.horizontal, 4)
-        .frame(height: 44)
     }
 }
 

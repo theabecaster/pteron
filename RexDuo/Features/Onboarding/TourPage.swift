@@ -25,7 +25,6 @@ struct TourPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GuideBar(theme: theme, back: { go { flow.back() } }, skip: flow.skip)
             GuideRegion { layout, size in
                 ZStack(alignment: .topLeading) {
                     pager(layout, size)

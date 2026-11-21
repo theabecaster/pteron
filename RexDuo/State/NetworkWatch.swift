@@ -20,7 +20,22 @@ final class NetworkWatch {
     /// `log`: the connection log, which gets a line when the path's facts change.
     init(log: ConnectionLog? = nil) {
         override = Self.debugOverride
-        if let override { snapshot = override; return }
+        if let override {
+            snapshot = override
+            #if DEBUG
+            // `-simulateTailnetAfter <seconds>` (testing): an `offPrivate` iPhone joins the tailnet
+            // that long after launch, as when Tailscale is turned on.
+            let after = UserDefaults.standard.double(forKey: "simulateTailnetAfter")
+            if after > 0, override.onPrivateNetwork == false {
+                primed = true
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(after * 1_000_000_000))
+                    self?.apply(NetworkSnapshot(reachable: true, onPrivateNetwork: true))
+                }
+            }
+            #endif
+            return
+        }
         monitor.pathUpdateHandler = { [weak self] path in
             // On the monitor's queue: the interface scan stays off the main thread.
             let tunnel = PrivateNetwork.tunnelAddresses()

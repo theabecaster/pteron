@@ -226,7 +226,8 @@ struct RootView: View {
                 .background(EdgeReveal(enabled: !shown && prefs.navigation == .sidebar) { revealSidebar() })
                 // Only where the system has a vertical bar: the toggle and the tab's actions go there.
                 // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
-                .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
+                // While the setup guide covers the app, its own bar is the one (`OnboardingScreen`).
+                .toolbar(barEdge == nil || model.guide != nil ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
                     // While a pane's key bar is up, and only then, Hide Keyboard is the bar's top
                     // item, above the leading one, which gives its place up where the bar is short
@@ -541,6 +542,8 @@ struct EmptyState: View {
     @Binding var sidebarVisible: Bool
     /// Tab mode: what the strip's session chip and waiting pill run.
     var strip: StripRoutes?
+    /// New Session is creating the first session.
+    @State private var creating = false
 
     var body: some View {
         #if DEBUG
@@ -582,16 +585,21 @@ struct EmptyState: View {
 
     private var message: some View {
         let theme = prefs.theme(for: scheme)
+        let copy = EmptyStateCopy.decide(model.servers.map {
+            EmptyStateCopy.Computer(name: $0.config.name, online: $0.phase == .online, synced: $0.synced, sessions: $0.sessions.count)
+        }, tabs: prefs.navigation == .tabs)
         return VStack(spacing: 14) {
             Image(systemName: "terminal")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(theme.chrome.tertiary)
-            Text(LocalizedStringKey(statusText))
+            Text(LocalizedStringKey(copy.text))
                 .font(.subheadline)
                 .foregroundStyle(theme.chrome.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 30)
-            if model.servers.isEmpty {
+                .accessibilityLabel(PairingCopy.spoken(copy.text))
+            switch copy {
+            case .noComputer:
                 PrimaryButton(title: "Pair via QR Code", busy: false, theme: theme) { model.showPairing = true }
                 Button("Enter Address") { model.openSettings(at: .addServer) }
                     .font(.subheadline.weight(.medium))
@@ -600,26 +608,73 @@ struct EmptyState: View {
                     .font(.footnote)
                     .foregroundStyle(theme.chrome.secondary)
                     .frame(minWidth: 200, minHeight: 44)
-            } else if prefs.navigation == .tabs {
+            case .noSessions(_, let index):
+                PrimaryButton(title: "New Session", busy: creating, theme: theme) { newSession(on: model.servers[index]) }
+            case .pickTab where prefs.navigation == .tabs:
                 Button("Change Session") { strip?.changeSession() }
                     .frame(minHeight: 44)
-            } else if !sidebarVisible {
+            case .pickTab where !sidebarVisible:
                 Button("Show Sidebar") { sidebarVisible = true }
                     .frame(minHeight: 44)
+            case .pickTab, .loading, .connecting:
+                EmptyView()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg.ignoresSafeArea())
     }
 
-    private var statusText: String {
-        if model.servers.isEmpty {
-            return "On your computer, run `rex server tailscale pair`, then scan the code it shows."
+    /// The first session on a computer that has none, through the same call as New Session
+    /// elsewhere; its first tab opens.
+    private func newSession(on s: ServerConnection) {
+        guard !creating else { return }
+        Haptic.tap()
+        creating = true
+        Task {
+            defer { creating = false }
+            if let id = await s.createSession(label: nil), let w = s.views[id]?.windows.first {
+                model.select(s, session: id, window: w.id)
+            }
         }
-        if model.servers.contains(where: { $0.phase == .online }) {
-            return prefs.navigation == .tabs ? "Pick a session." : "Pick a tab in the sidebar."
+    }
+}
+
+/// What the tab's place says with no tab on screen. Pure, so it is tested.
+enum EmptyStateCopy: Equatable {
+    /// No computer yet: where the pairing code is.
+    case noComputer
+    /// Every connected computer has loaded its sessions and none has one: the first of them.
+    case noSessions(name: String, index: Int)
+    /// Sessions are there; `tabs` is tab mode, where the strip is above.
+    case pickTab(tabs: Bool)
+    /// Connected, sessions not in yet: nothing is claimed about them.
+    case loading
+    case connecting
+
+    struct Computer {
+        var name: String
+        var online: Bool
+        var synced: Bool
+        var sessions: Int
+    }
+
+    static func decide(_ computers: [Computer], tabs: Bool) -> EmptyStateCopy {
+        if computers.isEmpty { return .noComputer }
+        let online = computers.indices.filter { computers[$0].online }
+        guard let first = online.first else { return .connecting }
+        if online.contains(where: { computers[$0].sessions > 0 }) { return .pickTab(tabs: tabs) }
+        guard online.allSatisfy({ computers[$0].synced }) else { return .loading }
+        return .noSessions(name: computers[first].name, index: first)
+    }
+
+    var text: String {
+        switch self {
+        case .noComputer: PairingCopy.showCode + " Then scan the code."
+        case .noSessions(let name, _): "No sessions on \(name) yet."
+        case .pickTab(let tabs): tabs ? "Pick a session." : "Pick a tab in the sidebar."
+        case .loading: "Loading your sessions…"
+        case .connecting: "Connecting to Rex…"
         }
-        return "Connecting to Rex…"
     }
 }
 

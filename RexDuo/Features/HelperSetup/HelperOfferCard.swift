@@ -3,18 +3,16 @@ import SwiftUI
 import UIKit
 
 /// "Get notifications from <Name>?": the page after a computer is added, when it has no helper.
-/// Install hands over to the install sheet. Skip says what that means for three seconds, then
-/// leaves; Settings → Notifications keeps Install.
+/// Install hands over to the install sheet. Skip leaves at once and says what that means in a
+/// toast; Settings → Notifications keeps Install.
 struct HelperOfferCard: View {
     let name: String
     let theme: TermTheme
     let onInstall: () -> Void
     /// Skip was tapped: remember it.
     let onSkip: () -> Void
-    /// The line after Skip has been up long enough.
+    /// The page goes, after Skip.
     let onLeave: () -> Void
-
-    @State private var skipped = false
 
     static func title(_ name: String) -> String { "Get notifications from \(name)?" }
     static func message(_ name: String) -> String {
@@ -23,67 +21,51 @@ struct HelperOfferCard: View {
     static func footnote(_ name: String) -> String {
         "\(Brand.appName) opens a tab on \(name) to install Beacon. Nothing runs as an administrator."
     }
+    /// The toast after Skip.
     static func skippedLine(_ name: String) -> String {
         "You won't get notifications from \(name) while \(Brand.appName) is closed. You can install \(Brand.beaconName) anytime in Settings → Notifications."
     }
-    /// How long the line after Skip stays before the page leaves.
-    static let skipHold: TimeInterval = 3
 
     var body: some View {
         SetupCard(theme: theme) {
-            if skipped {
-                Text(Self.skippedLine(name))
-                    .font(.subheadline)
-                    .foregroundStyle(theme.chrome.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.vertical, 10)
-                    .transition(.opacity)
-            } else {
-                Image(systemName: "bell.badge")
-                    .font(.system(size: 34))
-                    .foregroundStyle(theme.fg.opacity(0.85))
-                    .frame(width: 56, height: 44)
-                    .padding(.bottom, 14)
-                    .accessibilityHidden(true)
-                Text(Self.title(name))
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(theme.fg)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 6)
-                    .accessibilityAddTraits(.isHeader)
-                Text(Self.message(name))
-                    .font(.subheadline)
-                    .foregroundStyle(theme.chrome.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                VStack(spacing: 4) {
-                    PrimaryButton(title: "Install", busy: false, theme: theme) {
-                        Haptic.tap()
-                        onInstall()
-                    }
-                    SetupTextButton(title: "Skip", theme: theme) {
-                        onSkip()
-                        withAnimation(.easeInOut(duration: 0.2)) { skipped = true }
-                        UIAccessibility.post(notification: .announcement, argument: Self.skippedLine(name))
-                    }
+            Image(systemName: "bell.badge")
+                .font(.system(size: 34))
+                .foregroundStyle(theme.fg.opacity(0.85))
+                .frame(width: 56, height: 44)
+                .padding(.bottom, 14)
+                .accessibilityHidden(true)
+            Text(Self.title(name))
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(theme.fg)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 6)
+                .accessibilityAddTraits(.isHeader)
+            Text(Self.message(name))
+                .font(.subheadline)
+                .foregroundStyle(theme.chrome.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 4) {
+                PrimaryButton(title: "Install", busy: false, theme: theme) {
+                    Haptic.tap()
+                    onInstall()
                 }
-                .padding(.top, 20)
-                Text(Self.footnote(name))
-                    .font(.caption.italic())
-                    .foregroundStyle(theme.chrome.tertiary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
-                    .padding(.bottom, 8)
+                SetupTextButton(title: "Skip", theme: theme) {
+                    onSkip()
+                    Notice.shared.show(Self.skippedLine(name), style: .neutral)
+                    UIAccessibility.post(notification: .announcement, argument: Self.skippedLine(name))
+                    onLeave()
+                }
             }
-        }
-        .task(id: skipped) {
-            guard skipped else { return }
-            try? await Task.sleep(nanoseconds: UInt64(Self.skipHold * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            onLeave()
+            .padding(.top, 20)
+            Text(Self.footnote(name))
+                .font(.caption.italic())
+                .foregroundStyle(theme.chrome.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
         }
     }
 }

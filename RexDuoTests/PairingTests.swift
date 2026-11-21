@@ -79,28 +79,55 @@ struct PairingTests {
 
     // MARK: What a failed check offers
 
-    private func problem(_ kind: ConnectionProblem.Kind, foreign: Bool = false) -> PairingProblem {
-        .of(ConnectionProblem(kind: kind, detail: "NSURLErrorDomain -1"), foreignTailnet: foreign)
+    private func problem(_ kind: ConnectionProblem.Kind, foreign: Bool = false, tailnet: String? = nil) -> PairingProblem {
+        .of(ConnectionProblem(kind: kind, detail: "NSURLErrorDomain -1"), foreignTailnet: foreign, tailnetName: tailnet)
     }
 
-    @Test func offThePrivateNetworkOffersAllThree() {
+    @Test func offThePrivateNetworkOnlyTriesAgain() {
+        // Saved there, the computer could never connect: no Add Anyway.
         for kind in [ConnectionProblem.Kind.offPrivateNetwork, .hostNotFound] {
             let p = problem(kind)
-            #expect(p.message.hasPrefix("This iPhone can't reach that computer's private network."))
-            #expect(p.actions == [.tryAgain, .addAnyway])
+            #expect(p.message == "Can't reach that computer from this network. Connect this iPhone to the same network or VPN as that computer, then try again.")
+            #expect(p.actions == [.tryAgain])
             #expect(p.detail == nil)
         }
     }
 
+    /// Add Anyway only where the computer may answer later: asleep, or a failure the app can't
+    /// explain. Never out of range or can't-find, which no wait fixes.
+    @Test func addAnywayShowsOnlyWhereItCanWork() {
+        // A check of one address never finds `tunnelDown`.
+        let with = ConnectionProblem.Kind.allCases.filter { $0 != .tunnelDown && problem($0).actions.contains(.addAnyway) }
+        #expect(Set(with) == [.notAnswering, .badAddress, .unknown])
+        #expect(!problem(.hostNotFound, tailnet: "studio").actions.contains(.addAnyway))
+        #expect(!problem(.notAnswering, foreign: true, tailnet: "studio").actions.contains(.addAnyway))
+        #expect(!PairingProblem.offTailnet.offered(onTailnet: false).contains(.addAnyway))
+        #expect(!PairingProblem.offTailnet.offered(onTailnet: true).contains(.addAnyway))
+    }
+
+    /// On a tailnet but not the computer's: Tailscale signed in to another account, in those words.
+    @Test func aTailnetComputerNotFoundIsAnotherAccount() {
+        let p = problem(.hostNotFound, tailnet: "studio")
+        #expect(p.title == "Can't find studio")
+        #expect(p.message == "Tailscale on this iPhone is signed in to a different account than studio. Sign in with the account you used in Rex.")
+        #expect(p.actions == [.tryAgain])
+        #expect(problem(.notAnswering, foreign: true, tailnet: "studio") == p)
+        // On its own tailnet, a silent computer is asleep, as before.
+        #expect(problem(.notAnswering, tailnet: "studio").title == "Not answering")
+        let refused = problem(.notAllowed, tailnet: "studio")
+        #expect(refused.message == "Rex on studio only lets in devices on its Tailscale account.")
+        #expect(refused.actions == [.scanCode])
+    }
+
     @Test func aSilentComputerOnAnotherTailnetReadsAsOffItsNetwork() {
-        #expect(problem(.notAnswering).message.hasPrefix("That computer isn't answering."))
+        #expect(problem(.notAnswering).message == "That computer isn't answering. It may be asleep, or Rex isn't running there. Wake it or open Rex, then try again.")
         #expect(problem(.notAnswering, foreign: true) == problem(.offPrivateNetwork))
     }
 
-    @Test func notAllowedOnlyCancels() {
+    @Test func notAllowedLeadsToAScan() {
         let p = problem(.notAllowed, foreign: true)
         #expect(p.message == "That computer didn't let this iPhone in. It may belong to a different account.")
-        #expect(p.actions.isEmpty)
+        #expect(p.actions == [.scanCode])
     }
 
     @Test func offlineCanOnlyTryAgain() {
@@ -111,7 +138,8 @@ struct PairingTests {
         #expect(problem(.unknown).detail == "NSURLErrorDomain -1")
         #expect(problem(.insecure).detail == "NSURLErrorDomain -1")
         #expect(problem(.insecure).actions == [.tryAgain])
-        for kind in ConnectionProblem.Kind.allCases where ![.unknown, .insecure, .badAddress].contains(kind) {
+        // A check of one address never finds `tunnelDown`.
+        for kind in ConnectionProblem.Kind.allCases where ![.unknown, .insecure, .badAddress, .tunnelDown].contains(kind) {
             #expect(problem(kind).detail == nil, "\(kind)")
         }
     }
@@ -142,6 +170,8 @@ struct PairingTests {
         /// The probe waits like a slow network, and notes when its task is cancelled.
         var sleeps = false
         var sawCancel = false
+        /// What `NetworkWatch` says about this iPhone. On, so the old cases read as before.
+        var onTailnet = true
         private(set) var model: PairingModel!
 
         init(servers: [ServerConfig]) {
@@ -159,7 +189,8 @@ struct PairingTests {
                     return .reachable(self.identity)
                 },
                 onExisting: { self.existing.append($0) },
-                onAdd: { self.added.append($0) })
+                onAdd: { self.added.append($0) },
+                onTailnet: { self.onTailnet })
         }
 
         /// Lets the check's task run to its answer.
@@ -217,10 +248,10 @@ struct PairingTests {
 
     @Test func aFailedCheckCanBeRetriedOrAddedAnyway() async throws {
         let rig = Rig(servers: [mac])
-        rig.answers = [ConnectionProblem(kind: .offPrivateNetwork, detail: "d"), ConnectionProblem(kind: .notAnswering, detail: "d")]
-        rig.model.scanned("https://studio-rex.tail999999.ts.net")
+        rig.answers = [ConnectionProblem(kind: .notAnswering, detail: "d"), ConnectionProblem(kind: .notAnswering, detail: "d")]
+        rig.model.scanned("https://studio-rex.tail1234.ts.net")
         await rig.settle()
-        let url = try #require(URL(string: "https://studio-rex.tail999999.ts.net"))
+        let url = try #require(URL(string: "https://studio-rex.tail1234.ts.net"))
         guard case .problem(url, let first) = rig.model.step else { Issue.record("\(rig.model.step)"); return }
         #expect(first.actions == [.tryAgain, .addAnyway])
 
@@ -241,13 +272,90 @@ struct PairingTests {
         rig.model.scanned("https://studio-rex.tail999999.ts.net")
         await rig.settle()
         guard case .problem(_, let p) = rig.model.step else { Issue.record("\(rig.model.step)"); return }
-        #expect(p.actions.isEmpty)
+        #expect(p.actions == [.scanCode])
+        #expect(p.message == "Rex on studio only lets in devices on its Tailscale account.")
         rig.model.addAnyway()
         rig.model.tryAgain()
         rig.model.add()
         #expect(rig.added.isEmpty)
         #expect(rig.probed.count == 1)
         guard case .problem = rig.model.step else { Issue.record("\(rig.model.step)"); return }
+    }
+
+    // MARK: A code's computer on a tailnet this iPhone isn't on
+
+    /// Unreachable at a tailnet name with no tailnet here: the one line, Get Tailscale, and the code
+    /// kept. Try Again comes only once the tailnet is up, and runs one check per tap.
+    @Test func offTheTailnetTheCardSaysConnectTailscaleThenTryAgain() async throws {
+        let rig = Rig(servers: [])
+        rig.onTailnet = false
+        rig.answers = [ConnectionProblem(kind: .offPrivateNetwork, detail: "d")]
+        #expect(rig.model.scanned("https://studio-rex.tail1234.ts.net"))
+        await rig.settle()
+        let url = try #require(URL(string: "https://studio-rex.tail1234.ts.net"))
+        #expect(rig.model.step == .problem(url, .offTailnet))
+        #expect(PairingProblem.offTailnet.title == nil)
+        #expect(PairingProblem.offTailnet.message
+            == "This computer is on a private network this iPhone isn't part of yet. Connect this iPhone with Tailscale, then try again.")
+        #expect(PairingProblem.offTailnet.offered(onTailnet: false) == [.getTailscale])
+        // No tailnet yet: Try Again does nothing.
+        rig.model.tryAgain()
+        rig.model.addAnyway()
+        #expect(rig.probed.count == 1 && rig.added.isEmpty)
+        // The tailnet comes up: one tap, one check, no loop.
+        rig.onTailnet = true
+        #expect(PairingProblem.offTailnet.offered(onTailnet: true) == [.tryAgain])
+        rig.model.tryAgain()
+        await rig.settle()
+        #expect(rig.probed == [url, url])
+        #expect(rig.model.step == .found(url, nil))
+        await Task.yield()
+        #expect(rig.probed.count == 2)
+    }
+
+    /// Which card a failed check gets, for each case the owner named.
+    @Test func thePostScanCardForEachCase() async throws {
+        let url = try #require(URL(string: "https://studio-rex.tail1234.ts.net"))
+        func card(_ kind: ConnectionProblem.Kind?, onTailnet: Bool, address: String = "https://studio-rex.tail1234.ts.net",
+                  guessed: Bool = false) async -> PairingModel.Step {
+            let rig = Rig(servers: [])
+            rig.onTailnet = onTailnet
+            rig.answers = [kind.map { ConnectionProblem(kind: $0, detail: "d") }]
+            if guessed {
+                rig.model.start(PairingCode.Candidate(url: URL(string: address)!, guessed: true), name: "studio")
+            } else {
+                rig.model.scanned(address)
+            }
+            await rig.settle()
+            return rig.model.step
+        }
+        // Unreachable and no tailnet here: Tailscale first.
+        for kind in [ConnectionProblem.Kind.offPrivateNetwork, .hostNotFound, .notAnswering, .unknown] {
+            #expect(await card(kind, onTailnet: false) == .problem(url, .offTailnet), "\(kind)")
+        }
+        // Unreachable while on a tailnet: today's words (asleep, or another account).
+        #expect(await card(.notAnswering, onTailnet: true) == .problem(url, problem(.notAnswering, tailnet: "studio")))
+        #expect(await card(.hostNotFound, onTailnet: true) == .problem(url, .otherAccount("studio")))
+        // Reachable: the card.
+        #expect(await card(nil, onTailnet: false) == .found(url, nil))
+        // What isn't about reaching it keeps its words, off the tailnet too.
+        #expect(await card(.noInternet, onTailnet: false) == .problem(url, problem(.noInternet)))
+        #expect(await card(.notAllowed, onTailnet: false) == .problem(url, problem(.notAllowed, tailnet: "studio")))
+        // An address that isn't a tailnet name, and a guessed one, never get the Tailscale line.
+        let lan = try #require(URL(string: "https://192.168.1.20:8443"))
+        #expect(await card(.offPrivateNetwork, onTailnet: false, address: lan.absoluteString) == .problem(lan, problem(.offPrivateNetwork)))
+        guard case .problem(_, let g) = await card(.offPrivateNetwork, onTailnet: false, guessed: true) else {
+            Issue.record("no problem"); return
+        }
+        #expect(g.title == "Can't find that computer")
+    }
+
+    @Test func aComputerWithNoSessionsIsOnlyAdded() {
+        #expect(IdentityCopy.of(ServerIdentity(sessionCount: 0)).addTitle == "Add")
+        #expect(IdentityCopy.of(ServerIdentity(sessionCount: 2, sessions: ["a", "b"])).addTitle == "Add & Open")
+        // Unknown is not none.
+        #expect(IdentityCopy.of(ServerIdentity()).addTitle == "Add & Open")
+        #expect(IdentityCopy.of(nil).addTitle == "Add & Open")
     }
 
     @Test func addingTwiceSavesOnce() async {
@@ -530,7 +638,7 @@ struct PairingTests {
             await rig.settle()
             guard case .problem(_, let p) = rig.model.step else { Issue.record("\(rig.model.step)"); continue }
             #expect(p.message == "Pair it with a QR code from that computer.")
-            #expect(p.actions.isEmpty)
+            #expect(p.actions == [.scanCode])
             rig.model.addAnyway()
             #expect(rig.added.isEmpty)
         }
@@ -548,6 +656,32 @@ struct PairingTests {
         await listed.settle()
         guard case .problem(_, let q) = listed.model.step else { Issue.record("\(listed.model.step)"); return }
         #expect(q.actions == [.tryAgain, .addAnyway])
+    }
+
+    /// Settings → Add Computer: a typed address goes through the same check and card, under the
+    /// typed name, with the usual offers when it fails.
+    @Test func aTypedAddressRunsTheCheck() async throws {
+        let suite = "pairing-typed-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(prefs: Prefs(defaults: defaults), connect: false)
+        let typed = try #require(ServerConfig.url(from: "http://127.0.0.1:8765"))
+        model.preparePairing(typed: typed, name: "  ")
+        #expect(model.pairingStart == AppModel.PairingStart(candidate: .init(url: typed, guessed: false), name: ServerConfig.name(for: typed)))
+        #expect(!model.showPairing, "Settings' own sheet presents it")
+        model.preparePairing(typed: typed, name: " Desk ")
+        #expect(model.pairingStart?.name == "Desk")
+        #expect(model.prefs.servers.isEmpty, "nothing is saved before the check")
+
+        let rig = Rig(servers: [])
+        let start = try #require(model.pairingStart)
+        rig.model.start(start.candidate, name: start.name)
+        #expect(rig.model.step == .checking(typed))
+        await rig.settle()
+        #expect(rig.probed == [typed])
+        #expect(rig.model.step == .found(typed, nil))
+        rig.model.add()
+        #expect(rig.added.map(\.name) == ["Desk"])
     }
 
     @Test func startPairingOpensTheFlowAtAnAddress() throws {
@@ -573,7 +707,7 @@ struct PairingTests {
         #expect(ServerProbe.failure(status: 426) == nil)
         let refused = ConnectionProblem.classify(try #require(ServerProbe.failure(status: 403)), network: net)
         #expect(refused.kind == .notAllowed)
-        #expect(PairingProblem.of(refused, foreignTailnet: false).actions.isEmpty)
+        #expect(PairingProblem.of(refused, foreignTailnet: false).actions == [.scanCode])
         for status in [200, 302, 404, 502] {
             let p = ConnectionProblem.classify(try #require(ServerProbe.failure(status: status)), network: net)
             #expect(p.kind == .notAnswering, "\(status)")
@@ -769,5 +903,50 @@ struct PairingTests {
         // A crease too near an edge to leave a page is not followed.
         let edge = Division(frame: CGRect(x: 100, y: 0, width: 0, height: 669), isActive: false)
         #expect(PairingLayout.decide(size: CGSize(width: 951, height: 669), division: edge) == .sideBySide(camera: 476))
+    }
+
+    /// The cards and the Beacon offer sit on the page past the crease, never across it.
+    @Test func cardsSitOnOnePage() {
+        let book = CGSize(width: 951, height: 669)
+        let vertical = Division(frame: CGRect(x: 470, y: 0, width: 11, height: 669), isActive: false)
+        #expect(PairingLayout.cardRect(size: book, division: vertical) == CGRect(x: 481, y: 0, width: 470, height: 669))
+        let tall = CGSize(width: 669, height: 951)
+        let horizontal = Division(frame: CGRect(x: 0, y: 470, width: 669, height: 11), isActive: true)
+        #expect(PairingLayout.cardRect(size: tall, division: horizontal) == CGRect(x: 0, y: 481, width: 669, height: 470))
+        // No fold, or one too near an edge: the whole window.
+        #expect(PairingLayout.cardRect(size: book, division: nil) == CGRect(origin: .zero, size: book))
+        let edge = Division(frame: CGRect(x: 100, y: 0, width: 0, height: 669), isActive: false)
+        #expect(PairingLayout.cardRect(size: book, division: edge) == CGRect(origin: .zero, size: book))
+    }
+
+    /// Every place that says where the code is says it the same way: the Mac app first.
+    @Test func whereTheCodeIsReadsTheSameEverywhere() {
+        #expect(PairingCopy.showCode == "On your computer, in Rex: Settings → Server → Remote Address → Pair. Or run `rex server tailscale pair`.")
+        #expect(PairingCopy.spoken(PairingCopy.showCode)
+            == "On your computer, in Rex: Settings, Server, Remote Address, Pair. Or run rex server tailscale pair.")
+        for text in [PairingSheet.instructions, EmptyStateCopy.noComputer.text, AddServerView.scanFooter, ServersPage.footer, NoServersRow.text] {
+            #expect(text.contains(PairingCopy.showCode), "\(text)")
+        }
+        #expect(PairingCopy.getRex?.absoluteString == "https://www.superlogical.com/rex/docs/installation")
+    }
+
+    /// The tab's place with no tab: never "Pick a tab" where there is none.
+    @Test func theEmptyStateSaysWhatIsThere() {
+        typealias C = EmptyStateCopy.Computer
+        #expect(EmptyStateCopy.decide([], tabs: false) == .noComputer)
+        #expect(EmptyStateCopy.decide([C(name: "Studio", online: false, synced: false, sessions: 0)], tabs: false) == .connecting)
+        // Connected, sessions not in yet: nothing is claimed.
+        #expect(EmptyStateCopy.decide([C(name: "Studio", online: true, synced: false, sessions: 0)], tabs: false) == .loading)
+        // Loaded and none: New Session on it.
+        let none = EmptyStateCopy.decide([C(name: "Down", online: false, synced: false, sessions: 0),
+                                          C(name: "Studio", online: true, synced: true, sessions: 0)], tabs: true)
+        #expect(none == .noSessions(name: "Studio", index: 1))
+        #expect(none.text == "No sessions on Studio yet.")
+        // Any connected computer with a session: pick a tab.
+        let some = EmptyStateCopy.decide([C(name: "Studio", online: true, synced: true, sessions: 0),
+                                          C(name: "Box", online: true, synced: false, sessions: 2)], tabs: false)
+        #expect(some == .pickTab(tabs: false))
+        #expect(some.text == "Pick a tab in the sidebar.")
+        #expect(EmptyStateCopy.pickTab(tabs: true).text == "Pick a session.")
     }
 }

@@ -29,6 +29,20 @@ enum PairingLayout: Equatable {
         }
         return .stacked(camera: nil)
     }
+
+    /// Where the cards go: the page after a fold the layout follows (the trailing one, or the
+    /// lower one), so a card never lies across it; otherwise the whole window.
+    static func cardRect(size: CGSize, division: Division?) -> CGRect {
+        let all = CGRect(origin: .zero, size: size)
+        guard let d = division else { return all }
+        if d.isVertical, d.frame.minX >= minPage, size.width - d.frame.maxX >= minPage {
+            return CGRect(x: d.frame.maxX, y: 0, width: size.width - d.frame.maxX, height: size.height)
+        }
+        if !d.isVertical, d.frame.minY >= minPage, size.height - d.frame.maxY >= minPage {
+            return CGRect(x: 0, y: d.frame.maxY, width: size.width, height: size.height - d.frame.maxY)
+        }
+        return all
+    }
 }
 
 /// "Pair via QR Code": scan the code a computer shows for `rex server tailscale pair`, check that
@@ -56,12 +70,16 @@ struct PairingSheet: View {
     /// The computer just added has no helper: the page that offers to install it.
     @State private var offer: ServerConfig?
 
+    private var onTailnet: Bool { model.network?.snapshot.onPrivateNetwork == true }
+
     var body: some View {
         let theme = prefs.theme(for: scheme)
         NavigationStack {
             GeometryReader { geo in
                 if let pairing {
-                    content(pairing, theme, PairingLayout.decide(size: geo.size, division: RootView.division(geo)))
+                    let division = RootView.division(geo)
+                    content(pairing, theme, PairingLayout.decide(size: geo.size, division: division),
+                            cards: PairingLayout.cardRect(size: geo.size, division: division))
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
@@ -71,7 +89,10 @@ struct PairingSheet: View {
             .toolbar {
                 // Once the server is added there is nothing left to cancel.
                 if pairing?.isFinished != true {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    // A symbol too, so the Duo's vertical bar takes it (`BarLabel`).
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button { dismiss() } label: { BarLabel(title: "Cancel", symbol: "xmark") }
+                    }
                 }
                 if pairing?.step == .scanning, access == .granted, CameraAccess.hasTorch {
                     ToolbarItem(placement: .primaryAction) {
@@ -96,6 +117,11 @@ struct PairingSheet: View {
             // VoiceOver moves to the new step's card.
             UIAccessibility.post(notification: .screenChanged, argument: nil)
         }
+        .onChange(of: onTailnet) { _, on in
+            // A card that waits on the tailnet now offers Try Again.
+            guard on, case .problem(_, let problem)? = pairing?.step, problem.needsTailnet else { return }
+            UIAccessibility.post(notification: .announcement, argument: "Tailscale is connected on this iPhone.")
+        }
         .onChange(of: pairing?.rejection) { _, text in
             if let text { UIAccessibility.post(notification: .announcement, argument: text) }
         }
@@ -109,9 +135,10 @@ struct PairingSheet: View {
     // MARK: Steps
 
     /// The camera stays where it is for the whole run. Once a code is read its picture freezes
-    /// under a dim, and the card for that step sits on top.
+    /// under a dim, and the card for that step sits on top, in `cards`: the page past the fold
+    /// when there is one, so no card lies across it.
     @ViewBuilder
-    private func content(_ pairing: PairingModel, _ theme: TermTheme, _ layout: PairingLayout) -> some View {
+    private func content(_ pairing: PairingModel, _ theme: TermTheme, _ layout: PairingLayout, cards: CGRect) -> some View {
         let scanning = pairing.step == .scanning
         ZStack {
             if access == .granted {
@@ -122,13 +149,22 @@ struct PairingSheet: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(!scanning)
             }
-            if let offer {
-                offerPage(offer, theme)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
-            } else {
-                card(pairing, theme)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+        }
+        // The window's size, whatever the scanner asks for (large text), so the cards over it
+        // keep the window's frame and scroll in it.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topLeading) {
+            Group {
+                if let offer {
+                    offerPage(offer, theme)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+                } else {
+                    card(pairing, theme)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+                }
             }
+            .frame(width: cards.width, height: cards.height)
+            .offset(x: cards.minX, y: cards.minY)
         }
         .animation(.smooth(duration: 0.3), value: pairing.step)
         .animation(.smooth(duration: 0.3), value: offer)
@@ -174,14 +210,30 @@ struct PairingSheet: View {
         case .done:
             EmptyView()
         case .problem(let url, let problem):
-            PairingCard(theme: theme, glyph: .glitch(problem.symbol), title: problem.title, message: problem.message) {
-                if problem.actions.contains(.tryAgain) {
+            let offered = problem.offered(onTailnet: onTailnet)
+            PairingCard(theme: theme, glyph: .glitch(problem.symbol), title: problem.title, message: problem.message,
+                        leadMessage: problem.title == nil) {
+                if offered.contains(.getTailscale) {
+                    PrimaryButton(title: "Get Tailscale", busy: false, theme: theme) {
+                        Haptic.tap()
+                        TailscaleApp.showInAppStore()
+                    }
+                    .accessibilityHint("Opens Tailscale in the App Store.")
+                }
+                if offered.contains(.tryAgain) {
                     PrimaryButton(title: "Try Again", busy: false, theme: theme) {
                         Haptic.tap()
                         pairing.tryAgain()
                     }
                 }
-                if problem.actions.contains(.addAnyway) {
+                if offered.first == .scanCode {
+                    PrimaryButton(title: "Scan Code", busy: false, theme: theme) {
+                        Haptic.tap()
+                        scanCode(pairing)
+                    }
+                    .accessibilityHint("Opens the camera, to scan the code the computer shows.")
+                }
+                if offered.contains(.addAnyway) {
                     SecondaryButton(title: "Add Anyway", theme: theme) { pairing.addAnyway() }
                 }
                 SecondaryButton(title: "Cancel", theme: theme) { dismiss() }
@@ -272,9 +324,13 @@ struct PairingSheet: View {
         .accessibilityValue(pairing.rejection ?? "Looking for a pairing code")
     }
 
+    /// Under the camera: where the code is, then what to do with it.
+    static let instructions = PairingCopy.showCode + " Then point the camera at the code."
+
     private func instructions(_ theme: TermTheme) -> some View {
         VStack(spacing: 6) {
-            Text("On your computer, run\n`rex server tailscale pair`\nthen point the camera at the code it shows.")
+            Text(LocalizedStringKey(Self.instructions))
+                .accessibilityLabel(PairingCopy.spoken(Self.instructions))
                 .font(.subheadline)
                 .foregroundStyle(theme.chrome.secondary)
                 .multilineTextAlignment(.center)
@@ -283,6 +339,8 @@ struct PairingSheet: View {
                 .padding(.horizontal, 24)
             SecondaryButton(title: "Enter Address Instead", theme: theme, action: enterAddress)
         }
+        // Large text, capped: past it the lines would leave the camera no room.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 
     /// The offline screen's collapsed technical line.
@@ -306,7 +364,7 @@ struct PairingSheet: View {
             .accessibilityLabel(showDetails ? "Hide Details" : "Show Details")
             if showDetails {
                 Text(text)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(theme.chrome.secondary)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
@@ -325,6 +383,16 @@ struct PairingSheet: View {
     private func enterAddress() {
         onEnterAddress()
         dismiss()
+    }
+
+    /// To the camera from a card, also from a run that started without one (a picked computer,
+    /// a typed address): the camera is asked for now, when it is about to be used.
+    private func scanCode(_ pairing: PairingModel) {
+        let ask = picked
+        picked = false
+        pairing.rescan()
+        guard ask else { return }
+        Task { access = await CameraAccess.resolve() }
     }
 
     private func begin() async {
@@ -356,7 +424,8 @@ struct PairingSheet: View {
                         leave(config)
                     }
                 }
-            })
+            },
+            onTailnet: { [model] in model.network?.snapshot.onPrivateNetwork == true })
         pairing = p
         if let start = model.pairingStart {
             // No camera, so no permission question: the card stands on the plain background.
@@ -428,6 +497,8 @@ private struct PairingCard<Actions: View, Header: View>: View {
     let title: String?
     let message: String
     var monospacedMessage = false
+    /// The message is all the card says: in the title's colour, a size up.
+    var leadMessage = false
     @ViewBuilder var actions: Actions
     @ViewBuilder var header: Header
 
@@ -471,8 +542,8 @@ private struct PairingCard<Actions: View, Header: View>: View {
             }
             header
             Text(message)
-                .font(monospacedMessage ? .system(.footnote, design: .monospaced) : .subheadline)
-                .foregroundStyle(theme.chrome.secondary)
+                .font(monospacedMessage ? .system(.footnote, design: .monospaced) : leadMessage ? .body : .subheadline)
+                .foregroundStyle(leadMessage ? theme.fg : theme.chrome.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 4) { actions }
@@ -492,10 +563,10 @@ private struct PairingCard<Actions: View, Header: View>: View {
 }
 
 extension PairingCard where Header == EmptyView {
-    init(theme: TermTheme, glyph: Glyph, title: String, message: String, monospacedMessage: Bool = false,
-         @ViewBuilder actions: () -> Actions) {
+    init(theme: TermTheme, glyph: Glyph, title: String?, message: String, monospacedMessage: Bool = false,
+         leadMessage: Bool = false, @ViewBuilder actions: () -> Actions) {
         self.init(theme: theme, glyph: glyph, title: title, message: message, monospacedMessage: monospacedMessage,
-                  actions: actions, header: { EmptyView() })
+                  leadMessage: leadMessage, actions: actions, header: { EmptyView() })
     }
 }
 
@@ -533,7 +604,7 @@ private struct IdentityCard: View {
                 }
             }
             .padding(.bottom, 12)
-            AddButton(done: added, theme: theme) { pairing.add() }
+            AddButton(title: copy.addTitle, done: added, theme: theme) { pairing.add() }
             SecondaryButton(title: "Not This One", theme: theme, action: decline)
                 .opacity(added ? 0 : 1)
                 .accessibilityHidden(added)
@@ -580,8 +651,10 @@ private struct IdentityCard: View {
     }
 }
 
-/// The capsule button for Add & Open: once added, its label turns into a checkmark in place.
+/// The capsule button for Add & Open (Add, for a computer with no session to open): once added,
+/// its label turns into a checkmark in place.
 private struct AddButton: View {
+    let title: String
     let done: Bool
     let theme: TermTheme
     let action: () -> Void
@@ -590,7 +663,7 @@ private struct AddButton: View {
     var body: some View {
         Button { if !done { action() } } label: {
             ZStack {
-                Text("Add & Open").opacity(done ? 0 : 1)
+                Text(title).opacity(done ? 0 : 1)
                 Image(systemName: "checkmark")
                     .font(.body.weight(.bold))
                     .opacity(done ? 1 : 0)
@@ -607,7 +680,7 @@ private struct AddButton: View {
         }
         .buttonStyle(.plain)
         .animation(reduceMotion ? .easeInOut(duration: 0.15) : .spring(duration: 0.3, bounce: 0.35), value: done)
-        .accessibilityLabel(done ? "Added" : "Add and Open")
+        .accessibilityLabel(done ? "Added" : title.replacingOccurrences(of: "&", with: "and"))
     }
 }
 
