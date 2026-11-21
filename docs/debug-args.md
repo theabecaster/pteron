@@ -246,7 +246,10 @@ builds.
   `scripts/bench/ports-loop.sh <sim-id>` runs 100 and fails when they end more than 1 MB over
   30. `-portsLoopHold <seconds>` keeps each page up that long, for a
   screenshot (`-portsLoop 1 -portsLoopHold 10`), and `-portsLoopLandscape YES` turns the iPhone
-  on its side first. Use it with `-autoOpen zz-none -sizing mirror`, so no pane is touched.
+  on its side first. `-portsLoopBare YES` opens a sheet with only a `WKWebView` in place of the
+  browser (the script's `--bare`), and `-portsLoopReadHold <seconds>` waits after each reading,
+  with `Documents/perf/portsLoop-at-<k>` written first, for a memory tool to look. The script
+  also prints the last reading less the one after 5, which fails nothing. Use it with `-autoOpen zz-none -sizing mirror`, so no pane is touched.
   Also in the benchmark's `BENCH` build.
 - `-forceStatus '<text>'`: every pane shows its status chip with this text once it opens and each
   time it is live, to look at the chip over any output. With `-replay <file>` it needs no server.

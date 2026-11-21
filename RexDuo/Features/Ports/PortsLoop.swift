@@ -1,6 +1,7 @@
 #if DEBUG || BENCH
 import Network
 import UIKit
+import WebKit
 
 /// `-portsLoop <n>` (Debug and benchmark builds): opens the browser `n` times on a page this
 /// app serves to itself on loopback, as fast as each page loads, closing it each time. No
@@ -16,7 +17,10 @@ import UIKit
 /// and `scripts/bench/ports-loop.sh` fails when 100 opens end more than 1 MB over 30.
 ///
 /// `-portsLoopHold <seconds>` keeps each page up that long, for a screenshot, and
-/// `-portsLoopLandscape YES` turns the iPhone on its side first.
+/// `-portsLoopLandscape YES` turns the iPhone on its side first. `-portsLoopBare YES` opens a
+/// sheet that holds only a `WKWebView` in place of the browser, to tell what the system costs
+/// from what the browser does. `-portsLoopReadHold <seconds>` waits that long after each
+/// reading, with `Documents/perf/portsLoop-at-<k>` written first, for a memory tool to look.
 @MainActor
 enum PortsLoop {
     /// The open after which the memory is level.
@@ -48,18 +52,29 @@ enum PortsLoop {
             window.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
             await pause(2)
         }
+        let bare = defaults.bool(forKey: "portsLoopBare")
+        let readHold = defaults.double(forKey: "portsLoopReadHold")
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("perf")
         var afterFive = 0.0, afterThirty = 0.0, afterAll = 0.0
         for n in 1...opens {
-            guard PreviewBrowser.present(PreviewPage(load: url, shown: "localhost:3000"), over: root.view, onClose: {}) else {
-                return say("PORTS_LOOP failed: nothing to present from")
+            if bare {
+                let sheet = BareSheet(url)
+                root.present(sheet, animated: true)
+                for _ in 0..<100 where sheet.web.title != LoopPage.title { await pause(0.05) }
+                await pause(hold)
+                sheet.dismiss(animated: true)
+            } else {
+                guard PreviewBrowser.present(PreviewPage(load: url, shown: "localhost:3000"), over: root.view, onClose: {}) else {
+                    return say("PORTS_LOOP failed: nothing to present from")
+                }
+                var top = root
+                while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+                let browser = (top as? UINavigationController)?.viewControllers.first as? PreviewBrowser
+                // Until the page is in (5 s at most).
+                for _ in 0..<100 where browser?.shownTitle != LoopPage.title { await pause(0.05) }
+                await pause(hold)
+                browser?.close()
             }
-            var top = root
-            while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-            let browser = (top as? UINavigationController)?.viewControllers.first as? PreviewBrowser
-            // Until the page is in (5 s at most).
-            for _ in 0..<100 where browser?.shownTitle != LoopPage.title { await pause(0.05) }
-            await pause(hold)
-            browser?.close()
             await pause(1.2)
             if n == 5 || n == warm || n == opens {
                 // What a close lets go of is gone by then.
@@ -69,6 +84,11 @@ enum PortsLoop {
                 if n == 5 { afterFive = megabytes }
                 if n == warm { afterThirty = megabytes }
                 afterAll = megabytes
+                if readHold > 0 {
+                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try? Data().write(to: folder.appendingPathComponent("portsLoop-at-\(n)"))
+                    await pause(readHold)
+                }
             }
         }
         page.stop()
@@ -77,7 +97,6 @@ enum PortsLoop {
         let result: [String: Any] = [
             "opens": opens, "afterFiveMB": afterFive, "afterThirtyMB": afterThirty, "afterAllMB": afterAll, "growthMB": growth,
         ]
-        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("perf")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) {
             try? data.write(to: folder.appendingPathComponent("portsLoop.json"))
@@ -90,6 +109,28 @@ enum PortsLoop {
 
     private static func say(_ line: String) {
         NSLog("%@", line)
+    }
+}
+
+/// A sheet with a web view and nothing else, for `-portsLoopBare`.
+private final class BareSheet: UIViewController {
+    let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+    private let url: URL
+
+    init(_ url: URL) {
+        self.url = url
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        web.frame = view.bounds
+        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(web)
+        web.load(URLRequest(url: url))
     }
 }
 
