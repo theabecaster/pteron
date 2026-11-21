@@ -38,7 +38,7 @@ use crate::util::Json;
 use crate::{debug, info};
 use serde_json::Value;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -351,6 +351,13 @@ pub struct Shares {
     registered: Mutex<Option<Arc<Registered>>>,
     /// Whether a share could be made when that was last looked at, and when.
     possible: tokio::sync::Mutex<Option<(Instant, bool)>>,
+    /// False once sharing is turned off (`close_all`), until `turn_on`. It changes only
+    /// under the lock of `list`, and a share is added to the list only under that lock
+    /// while it is true: none can be added after the list was emptied.
+    enabled: AtomicBool,
+    /// Run just before a share is added, in a test.
+    #[cfg(test)]
+    before_adding: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// How long the answer to "could a share be made here" is reused. A phone asks it with
@@ -390,6 +397,9 @@ impl Shares {
             all: Arc::new(AtomicUsize::new(0)),
             registered: Mutex::new(None),
             possible: tokio::sync::Mutex::new(None),
+            enabled: AtomicBool::new(true),
+            #[cfg(test)]
+            before_adding: Mutex::new(None),
         })
     }
 
@@ -443,6 +453,9 @@ impl Shares {
         if !(self.net.phone)(ask.phone) {
             return Err(Refusal::BadPhone);
         }
+        if !self.enabled.load(Ordering::SeqCst) {
+            return Err(Refusal::NotAvailable);
+        }
         // Until this request is settled the next one waits: it then finds the share made here.
         let _one_at_a_time = self.opening.lock().await;
         let tailnet = self.net.read(tailscale::WAIT).await.ok_or(Refusal::NotAvailable)?;
@@ -451,6 +464,9 @@ impl Shares {
         let local = tailnet.ips.iter().copied().find(|ip| ip.is_ipv4() == ask.phone.is_ipv4()).ok_or(Refusal::NotAvailable)?;
         {
             let mut list = self.list.lock().unwrap();
+            if !self.enabled.load(Ordering::SeqCst) {
+                return Err(Refusal::NotAvailable);
+            }
             if let Some(s) = list.iter_mut().find(|s| s.ask.device == ask.device && s.ask.port == ask.port && s.ask.phone == ask.phone && s.addr.ip() == local) {
                 s.ask = ask;
                 s.live.touch();
@@ -489,7 +505,17 @@ impl Shares {
             return Err(Refusal::NotListening);
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        if let Some(hook) = self.before_adding.lock().unwrap().as_ref() {
+            hook();
+        }
         let mut list = self.list.lock().unwrap();
+        // Sharing may have been turned off while this request was looked at. Asked under
+        // the lock that turns it off and adds the share, so that none is added after: the
+        // listener made above is let go of here.
+        if !self.enabled.load(Ordering::SeqCst) {
+            return Err(Refusal::NotAvailable);
+        }
         // Checked again under the lock that adds it: two requests at once can't pass the cap.
         if list.len() >= MAX_SHARES {
             return Err(Refusal::Full);
@@ -504,7 +530,15 @@ impl Shares {
 
     /// Ends every share `gone` picks: its listener closes, and its connections with it.
     fn close(&self, why: &str, gone: impl Fn(&Share) -> bool) -> usize {
+        self.close_and(why, gone, true)
+    }
+
+    /// `close`, and with `go_on` false no share is added from here on either.
+    fn close_and(&self, why: &str, gone: impl Fn(&Share) -> bool, go_on: bool) -> usize {
         let mut list = self.list.lock().unwrap();
+        if !go_on {
+            self.enabled.store(false, Ordering::SeqCst);
+        }
         let before = list.len();
         list.retain(|s| {
             if !gone(s) {
@@ -554,8 +588,16 @@ impl Shares {
         self.close("the phone is no longer registered", |s| s.ask.device == device)
     }
 
+    /// Sharing is turned off, or Beacon stops: every share ends, and no share is made
+    /// from here on, one that is being looked at right now included, until `turn_on`.
     pub fn close_all(&self) -> usize {
-        self.close(concat!(crate::beacon_name!(), " is stopping"), |_| true)
+        self.close_and(concat!(crate::beacon_name!(), " is stopping or sharing is turned off"), |_| true, false)
+    }
+
+    /// Sharing is on again.
+    pub fn turn_on(&self) {
+        let _list = self.list.lock().unwrap();
+        self.enabled.store(true, Ordering::SeqCst);
     }
 
     /// How many shares answer with the waiting page now.
@@ -1910,6 +1952,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn no_share_is_added_once_sharing_was_turned_off() {
+        let dev = Dev::start().await;
+        let all = shares();
+        // Sharing is turned off at the last moment of a request: after it was found in
+        // order and its listener was made, before the share is added.
+        let (weak, closed) = (Arc::downgrade(&all), Arc::new(AtomicUsize::new(0)));
+        let count = closed.clone();
+        *all.before_adding.lock().unwrap() = Some(Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            weak.upgrade().unwrap().close_all();
+        }));
+        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotAvailable));
+        assert_eq!((all.count(), closed.load(Ordering::SeqCst)), (0, 1));
+        // Nothing listens for it: on a Mac the share would have had the dev server's own
+        // number on this address, which is free again; no connection reached the server
+        // beyond the one that looked whether it runs.
+        *all.before_adding.lock().unwrap() = None;
+        let taken = dev.seen.connections.load(Ordering::SeqCst);
+        // It stays off for every request, also one for a share that would be there already.
+        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotAvailable));
+        assert_eq!((all.count(), dev.seen.connections.load(Ordering::SeqCst)), (0, taken));
+        // On again: it works, and what is open then is found by the next request.
+        all.turn_on();
+        let opened = all.open(ask(dev.port())).await.unwrap();
+        assert_eq!(all.open(ask(dev.port())).await, Ok(opened.clone()));
+        assert_eq!(all.count(), 1);
+        // Off with a share open: it closes, and the same request is refused from then on.
+        assert_eq!(all.close_all(), 1);
+        assert_eq!(all.open(ask(dev.port())).await, Err(Refusal::NotAvailable));
+        assert!(shut(at(&opened)).await);
     }
 
     #[tokio::test]

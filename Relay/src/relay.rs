@@ -1256,7 +1256,9 @@ impl Relay {
     /// connections and its listener, and none is made until it is on again.
     fn set_sharing(&self, on: bool) {
         self.sharing.store(on, Ordering::SeqCst);
-        if !on {
+        if on {
+            self.shares.turn_on();
+        } else {
             self.shares.close_all();
         }
     }
