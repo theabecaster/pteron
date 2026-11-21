@@ -4577,11 +4577,13 @@ mod tests {
         // Asked again, it is the same share.
         assert_eq!(r.act(&s, "port_share", &ask, &alex).await.0.unwrap(), opened);
         assert_eq!(r.shares.count(), 1);
-        // A port nothing listens on is not shared.
-        let gone = Dev::start().await;
-        let silent = json!({"block": "block:1", "port": gone.port(), "phone_ip": "127.0.0.1"});
-        gone.stop().await;
+        // A port nothing listens on is not shared. (The port is held, bound and not
+        // listening, so that no other test's server gets its number meanwhile.)
+        let held = tokio::net::TcpSocket::new_v4().unwrap();
+        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let silent = json!({"block": "block:1", "port": held.local_addr().unwrap().port(), "phone_ip": "127.0.0.1"});
         assert_eq!(code(&r, &s, "port_share", &alex, &silent).await, "not_listening");
+        drop(held);
         assert_eq!(r.shares.count(), 1);
         r.stop();
         std::fs::remove_dir_all(dir).unwrap();
