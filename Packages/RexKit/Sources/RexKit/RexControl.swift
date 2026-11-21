@@ -71,7 +71,7 @@ public final class RexControl {
     /// Called after a dropped connection is re-established (state must be re-read).
     public var onReconnected: ((_ resumed: Bool) -> Void)?
 
-    private var task: URLSessionWebSocketTask?
+    private var task: (any ControlSocket)?
     /// Also used by `TerminalStream` for the data sockets, so both share one configuration.
     let session: URLSession
     /// Calls waiting for their answer, by request id.
@@ -79,10 +79,16 @@ public final class RexControl {
     private var nextID = 0
     private var reconnectToken: String?
     private var welcomeWaiter: CheckedContinuation<Void, Error>?
-    private var pingTimer: Timer?
+    private var pingTimer: (any ControlTimer)?
+    /// Time and the socket of each attempt: the system's, or a test's (`ControlSeam.swift`).
+    private let clock: any ControlClock
+    private let makeSocket: ControlSocketFactory
+    /// Called when the next attempt is set for `delay` seconds from now: 0 at once, else the
+    /// backoff's step. For the connection log; nothing else depends on it.
+    public var onRetryScheduled: ((_ delay: Double) -> Void)?
     private var generation = 0
     private var wantConnected = false
-    private var retryDelay: Double = 1
+    private var retryDelay = RexControl.firstRetryDelay
     private var retryTask: Task<Void, Never>?
     private var connectedObservers: [@MainActor () -> Bool] = []
     /// The terminal streams that run on this connection, by block. Weak: a stream that went
@@ -93,14 +99,23 @@ public final class RexControl {
     }
 
     /// `address` is the server's HTTPS address, e.g. `https://mac.tailnet.ts.net`.
-    public init(address: String, client: ClientInfo) {
+    public convenience init(address: String, client: ClientInfo) {
+        self.init(address: address, client: client, clock: SystemControlClock(), sockets: nil)
+    }
+
+    /// `clock` and `sockets` replace the system's time and URLSession's socket, for tests. Nil
+    /// `sockets` makes each socket from this connection's URLSession.
+    init(address: String, client: ClientInfo, clock: any ControlClock, sockets: ControlSocketFactory?) {
         self.address = address
         self.wsBase = Self.webSocketBase(for: address)
         self.client = client
+        self.clock = clock
         let cfg = URLSessionConfiguration.default
         cfg.waitsForConnectivity = false
         cfg.timeoutIntervalForRequest = 20
-        self.session = URLSession(configuration: cfg)
+        let session = URLSession(configuration: cfg)
+        self.session = session
+        self.makeSocket = sockets ?? { url, protocols in session.webSocketTask(with: url, protocols: protocols) }
     }
 
     /// The WebSocket origin (`wss://host[:port]`) for a server address, or nil if the address has
@@ -139,7 +154,7 @@ public final class RexControl {
         retryTask?.cancel()
         retryTask = nil
         generation += 1
-        pingTimer?.invalidate()
+        pingTimer?.cancel()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         failAll(RexError.local("disconnected"))
@@ -173,6 +188,14 @@ public final class RexControl {
         }
     }
 
+    /// How long an attempt waits for the welcome before it counts as failed.
+    static let welcomeTimeout: Double = 8
+    /// Seconds between keepalive pings on a connection that is up.
+    static let pingInterval: TimeInterval = 30
+    /// The backoff's first step and its cap, in seconds; each failure doubles the step.
+    static let firstRetryDelay: Double = 1
+    static let maxRetryDelay: Double = 15
+
     /// Opens a socket and waits for the welcome. Every failure goes through `handleDrop`, which
     /// records it and schedules the next attempt; the throw only tells the caller.
     private func openSocket() async throws {
@@ -192,7 +215,7 @@ public final class RexControl {
         }
         #endif
         let url = wsBase.appendingPathComponent("api/control")
-        let t = session.webSocketTask(with: url, protocols: ["rex.control.v1"])
+        let t = makeSocket(url, ["rex.control.v1"])
         t.maximumMessageSize = 8 * 1024 * 1024
         task = t
         t.resume()
@@ -207,7 +230,7 @@ public final class RexControl {
             }
             // Welcome timeout.
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                await self.clock.sleep(seconds: Self.welcomeTimeout)
                 if self.welcomeWaiter != nil, gen == self.generation { self.handleDrop(gen: gen, failure: .timedOut()) }
             }
         }
@@ -240,7 +263,7 @@ public final class RexControl {
 
     /// The failure plus what the socket task knows: the upgrade's HTTP status, the close code and
     /// the reason sent with it.
-    private func failure(_ error: Error, _ t: URLSessionWebSocketTask?) -> ConnectionFailure {
+    private func failure(_ error: Error, _ t: (any ControlSocket)?) -> ConnectionFailure {
         let status = (t?.response as? HTTPURLResponse)?.statusCode
         let close = t.flatMap { $0.closeCode == .invalid ? nil : $0.closeCode.rawValue }
         let reason = close == nil ? nil : t?.closeReason.flatMap { String(data: $0, encoding: .utf8) }
@@ -249,20 +272,18 @@ public final class RexControl {
     }
 
     private func startPings(gen: Int) {
-        pingTimer?.invalidate()
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, gen == self.generation, let t = self.task else { return }
-                t.sendPing { err in
-                    if let err {
-                        Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
-                    }
+        pingTimer?.cancel()
+        pingTimer = clock.every(Self.pingInterval) { [weak self] in
+            guard let self, gen == self.generation, let t = self.task else { return }
+            t.sendPing { err in
+                if let err {
+                    Task { @MainActor in self.handleDrop(gen: gen, failure: self.failure(err, t)) }
                 }
             }
         }
     }
 
-    private func receiveLoop(_ t: URLSessionWebSocketTask, gen: Int) {
+    private func receiveLoop(_ t: any ControlSocket, gen: Int) {
         t.receive { [weak self] result in
             // Decode here, on URLSession's queue: a screen-read reply is up to ~1 MB and takes
             // milliseconds to parse. Order is kept because the next receive starts only after this
@@ -292,7 +313,7 @@ public final class RexControl {
     private func handleDrop(gen: Int, failure: ConnectionFailure) {
         guard gen == generation else { return }
         generation += 1
-        pingTimer?.invalidate()
+        pingTimer?.cancel()
         task?.cancel()
         task = nil
         failAll(RexError.local("connection lost"))
@@ -307,19 +328,20 @@ public final class RexControl {
             retryTask = nil
             return
         }
-        if Date() < retryAtOnceUntil {
+        if clock.now < retryAtOnceUntil {
             retryAtOnceUntil = .distantPast
             scheduleRetry(after: 0)
             return
         }
         scheduleRetry(after: retryDelay)
-        retryDelay = min(retryDelay * 2, 15)
+        retryDelay = min(retryDelay * 2, Self.maxRetryDelay)
     }
 
     private func scheduleRetry(after delay: Double) {
         retryTask?.cancel()
-        retryTask = Task { @MainActor [weak self] in
-            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+        onRetryScheduled?(delay)
+        retryTask = Task { @MainActor [weak self, clock] in
+            if delay > 0 { await clock.sleep(seconds: delay) }
             guard let self, !Task.isCancelled, self.wantConnected, self.task == nil else { return }
             self.retryTask = nil
             await self.attempt()
@@ -330,7 +352,7 @@ public final class RexControl {
         let hadToken = reconnectToken != nil
         do {
             try await openSocket()
-            retryDelay = 1
+            retryDelay = Self.firstRetryDelay
             onReconnected?(hadToken)
         } catch {
             // Already handled: `handleDrop` recorded it and scheduled the next try.
@@ -341,7 +363,7 @@ public final class RexControl {
     /// or the user asked. Does nothing while connected or not wanted.
     public func kick() {
         guard wantConnected, state != .connected else { return }
-        retryDelay = 1
+        retryDelay = Self.firstRetryDelay
         retryTask?.cancel()
         retryTask = nil
         Task { @MainActor in await self.attempt() }
@@ -367,7 +389,7 @@ public final class RexControl {
         let gen = generation
         unansweredPing = gen
         // The socket usually fails by itself moments after the app wakes; that drop retries at once too.
-        retryAtOnceUntil = Date().addingTimeInterval(Self.wakeTimeout + 0.5)
+        retryAtOnceUntil = clock.now.addingTimeInterval(Self.wakeTimeout + 0.5)
         t.sendPing { [weak self] err in
             Task { @MainActor in
                 guard let self, self.unansweredPing == gen else { return }
@@ -375,8 +397,8 @@ public final class RexControl {
                 if let err { self.handleDrop(gen: gen, failure: self.failure(err, t)) } else { self.retryAtOnceUntil = .distantPast }
             }
         }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.wakeTimeout * 1_000_000_000))
+        Task { @MainActor [weak self, clock] in
+            await clock.sleep(seconds: Self.wakeTimeout)
             guard let self, self.unansweredPing == gen else { return }
             self.unansweredPing = nil
             self.handleDrop(gen: gen, failure: .timedOut())
@@ -537,7 +559,7 @@ public final class RexControl {
     }
 
     /// Registers `answer` for a new request and hands the request to the socket, in this turn.
-    private func send(_ method: String, _ payload: JSONObject?, on t: URLSessionWebSocketTask,
+    private func send(_ method: String, _ payload: JSONObject?, on t: any ControlSocket,
                       answer: @escaping (Result<DecodedJSON, Error>) -> Void) {
         nextID += 1
         let id = String(nextID)
