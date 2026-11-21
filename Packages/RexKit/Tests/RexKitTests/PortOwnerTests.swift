@@ -11,14 +11,14 @@ final class PortOwnerTests: XCTestCase {
     /// `npm run dev` typed into zsh: node (4242) holds the port, under sh, under npm (4200),
     /// the leader of the group in front.
     private func wrapped(front: Int? = 4200, npm: [String]? = ["npm", "run", "dev"], npmCwd: String? = "/home/alex/app",
-                         shellCwd: String? = "/home/alex/app", lossy: Bool = false, cut: Bool = false) -> PortOwner {
+                         shellCwd: String? = "/home/alex/app", lossy: Bool = false, cut: Bool = false, members: Int? = 1) -> PortOwner {
         PortOwner(pid: 4242, pgid: 4200, ttyForegroundPGID: front, ancestry: [
             Link(pid: 4242, ppid: 4201, pgid: 4200, sid: 900, name: "node", argv: ["node", "/home/alex/app/node_modules/.bin/next", "dev"], cwd: "/home/alex/app"),
             Link(pid: 4201, ppid: 4200, pgid: 4200, sid: 900, name: "sh", argv: ["sh", "-c", "next dev"], cwd: "/home/alex/app"),
             Link(pid: 4200, ppid: 900, pgid: 4200, sid: 900, name: "npm", argv: npm, argvLossy: lossy, truncated: cut, cwd: npmCwd),
             Link(pid: 900, ppid: 850, pgid: 900, sid: 900, name: "zsh", argv: ["-zsh"], cwd: shellCwd),
             Link(pid: 850, ppid: 1, pgid: 850, sid: 850, name: "rex", argv: ["rex", "serve"], cwd: "/"),
-        ])
+        ], jobMembers: members)
     }
 
     private func command(_ o: PortOwner) -> String? {
@@ -165,7 +165,7 @@ final class PortOwnerTests: XCTestCase {
         copy.ancestry[3].argv = ["zsh", "-i"]
         XCTAssertEqual(refusal(copy), .notFromShell)
         // The holder leads its own group and nothing above it is in the chain.
-        let alone = PortOwner(pid: 77, pgid: 77, ttyForegroundPGID: nil, ancestry: [Link(pid: 77, ppid: 1, pgid: 77, name: "postgres", argv: ["postgres"])])
+        let alone = PortOwner(pid: 77, pgid: 77, ttyForegroundPGID: nil, ancestry: [Link(pid: 77, ppid: 1, pgid: 77, name: "postgres", argv: ["postgres"])], jobMembers: 1)
         XCTAssertEqual(refusal(alone), .noJob)
         // The group's leader has gone: the chain holds no leader.
         var orphan = wrapped()
@@ -178,8 +178,33 @@ final class PortOwnerTests: XCTestCase {
         let o = PortOwner(pid: 500, pgid: 500, ttyForegroundPGID: 500, ancestry: [
             Link(pid: 500, ppid: 90, pgid: 500, name: "python3", argv: ["python3", "-m", "http.server", "8765"], cwd: "/srv/site"),
             Link(pid: 90, ppid: 1, pgid: 90, name: "-bash", argv: ["-bash"], cwd: "/srv/site"),
-        ])
+        ], jobMembers: 1)
         XCTAssertEqual(command(o), "python3 -m http.server 8765")
+    }
+
+    func testAPipelineOrAJobOfUnknownSizeGivesNoCommand() {
+        XCTAssertEqual(command(wrapped(members: 1)), "npm run dev")
+        XCTAssertEqual(refusal(wrapped(members: 2)), .notOneCommand, "`npm run dev | tee log`: the arguments are only the first part")
+        XCTAssertEqual(refusal(wrapped(members: 0)), .notOneCommand)
+        XCTAssertEqual(refusal(wrapped(members: nil)), .notOneCommand, "the computer doesn't say")
+        // The same from a reply: 1, 2, null and a field that isn't there (an older Beacon).
+        func reply(_ members: Any?) -> JSONObject {
+            var r: JSONObject = ["pid": 500, "pgid": 500, "tty_foreground_pgid": 500, "foreground": true, "ancestry": [
+                ["pid": 500, "ppid": 90, "pgid": 500, "sid": 90, "group_leader": true, "session_leader": false, "name": "python3", "path": "",
+                 "argv": ["python3", "-m", "http.server"], "argv_lossy": false, "truncated": false, "cwd": "/srv/site"] as JSONObject,
+                ["pid": 90, "ppid": 1, "pgid": 90, "sid": 90, "group_leader": true, "session_leader": true, "name": "bash", "path": "",
+                 "argv": ["-bash"], "argv_lossy": false, "truncated": false, "cwd": "/srv/site"] as JSONObject,
+            ]]
+            if let members { r["job_members"] = members }
+            return r
+        }
+        XCTAssertEqual(PortOwner(reply(1))?.jobMembers, 1)
+        XCTAssertEqual(PortOwner(reply(1)).flatMap(command), "python3 -m http.server")
+        XCTAssertEqual(PortOwner(reply(2)).flatMap(refusal), .notOneCommand)
+        XCTAssertNil(PortOwner(reply(NSNull()))?.jobMembers)
+        XCTAssertEqual(PortOwner(reply(NSNull())).flatMap(refusal), .notOneCommand)
+        XCTAssertEqual(PortOwner(reply(nil)).flatMap(refusal), .notOneCommand)
+        XCTAssertNotNil(PortOwner(reply(nil)), "the rest of the answer still serves Stop")
     }
 
     // MARK: Restart's steps
@@ -264,9 +289,11 @@ final class PortOwnerTests: XCTestCase {
     }
 
     func testWhichAnswersTakeOpenInBrowserAway() {
-        for code in ["not_supported", "not_available", "not_registered", "not_your_phone"] {
+        for code in ["not_supported", "not_registered", "not_your_phone"] {
             XCTAssertEqual(PortBeaconAnswer.share(code: code, unknownAction: false), .hide, code)
         }
+        XCTAssertEqual(PortBeaconAnswer.share(code: "not_available", unknownAction: false), .hideUntilStatus,
+                       "the computer said it could: it may say so again")
         for code in ["not_listening", "busy", "failed", "refused", "bad_request", "timeout", ""] {
             XCTAssertEqual(PortBeaconAnswer.share(code: code, unknownAction: false), .keep, code)
         }

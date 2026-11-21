@@ -72,12 +72,16 @@ public struct PortOwner: Equatable, Sendable {
     public var ttyForegroundPGID: Int?
     /// The holder first, then its parents.
     public var ancestry: [Link]
+    /// How many processes of the holder's group the job's shell started itself: 1 for one
+    /// command, more for a pipeline (`npm run dev | tee log`). Nil when the computer doesn't say.
+    public var jobMembers: Int?
 
-    public init(pid: Int, pgid: Int, ttyForegroundPGID: Int?, ancestry: [Link]) {
+    public init(pid: Int, pgid: Int, ttyForegroundPGID: Int?, ancestry: [Link], jobMembers: Int? = nil) {
         self.pid = pid
         self.pgid = pgid
         self.ttyForegroundPGID = ttyForegroundPGID
         self.ancestry = ancestry
+        self.jobMembers = jobMembers
     }
 
     /// A `port_owner` result. Nil when it names no holder, when its first link is not the
@@ -93,6 +97,7 @@ public struct PortOwner: Equatable, Sendable {
         self.pgid = pgid
         ttyForegroundPGID = result.int("tty_foreground_pgid")
         ancestry = links
+        jobMembers = result.int("job_members")
     }
 
     /// The links of the holder's own process group: what one interrupt reaches together.
@@ -124,9 +129,10 @@ public struct PortOwner: Equatable, Sendable {
 /// The command a Restart types: the arguments the pane's job was started with, spelled so a
 /// shell at its prompt reads them back as the same words (`ShellEscape`). Pure, so it is tested.
 ///
-/// It is not what the user typed. Variables set before the command (`PORT=4000 npm run dev`),
-/// an alias, and anything after a pipe are not in a process's arguments, so nothing here or on
-/// screen says the two are the same: the row shows the text, and the user confirms that text.
+/// It is not what the user typed. Variables set before the command (`PORT=4000 npm run dev`)
+/// and an alias are not in a process's arguments, so nothing here or on screen says the two
+/// are the same: the row shows the text, and the user confirms that text. A pipeline has no
+/// command here at all: the leader's arguments are only its first part.
 public struct RestartCommand: Equatable, Sendable {
     /// One line, without the Return.
     public var text: String
@@ -163,12 +169,16 @@ public struct RestartCommand: Equatable, Sendable {
         case tooLong
         /// The job runs somewhere else than its shell is: the app never types `cd`.
         case elsewhere
+        /// The job is a pipeline, or the computer doesn't say that it is one command: the
+        /// leader's arguments are then only a part of what was run.
+        case notOneCommand
     }
 
     /// The command for the job that holds `owner`'s port, or why there is none.
     /// `isShell`: whether a program's name is a shell's.
     public static func make(_ owner: PortOwner, isShell: (String) -> Bool) -> Result<RestartCommand, Refusal> {
         guard let (leader, shell) = owner.job else { return .failure(.noJob) }
+        guard owner.jobMembers == 1 else { return .failure(.notOneCommand) }
         guard isShell(programName(shell)) else { return .failure(.notFromShell) }
         guard let argv = leader.argv, !argv.isEmpty, !leader.truncated, !leader.argvLossy else { return .failure(.unreadable) }
         // A subshell or a shell function runs as a copy of the shell, with the shell's own
@@ -353,6 +363,9 @@ public enum PortBeaconAnswer: Equatable, Sendable {
     public enum Share: Equatable, Sendable {
         /// This computer can't do it at all, for this connection: the item goes away.
         case hide
+        /// It said it could and now can't: the item goes until it says so again
+        /// (`helper_status`' `share_possible`, the next time the app reads it).
+        case hideUntilStatus
         /// It can, not for this port or not now: the item stays.
         case keep
     }
@@ -362,7 +375,8 @@ public enum PortBeaconAnswer: Equatable, Sendable {
     public static func share(code: String, unknownAction: Bool) -> Share {
         if unknownAction { return .hide }
         switch code {
-        case "not_supported", "not_available", "not_registered", "not_your_phone": return .hide
+        case "not_supported", "not_registered", "not_your_phone": return .hide
+        case "not_available": return .hideUntilStatus
         default: return .keep
         }
     }
