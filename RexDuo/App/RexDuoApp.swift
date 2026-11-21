@@ -6,6 +6,8 @@ struct RexDuoApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var prefs: Prefs
     @State private var model: AppModel
+    /// Takes the system's crash and hang reports for as long as the app runs.
+    private let diagnosticReports: DiagnosticReportsSubscriber?
     @Environment(\.scenePhase) private var phase
 
     /// Unit tests run inside this app. The test host must not connect: fit mode would claim and
@@ -24,6 +26,10 @@ struct RexDuoApp: App {
         // An offline replay or demo has no server either.
         let connect = !Self.isTestHost && !Self.runsOffline
         let log = connect ? ConnectionDiagnostics.launchLog() : nil
+        // Crash and hang reports are taken from the first moment; the system hands over the
+        // ones of earlier launches then.
+        diagnosticReports = connect ? DiagnosticReportsSubscriber(reports: .standard) : nil
+        diagnosticReports?.start()
         let model = AppModel(prefs: prefs, connect: connect, log: log)
         _model = State(initialValue: model)
         // For an action on a notification in a launch that never shows a view.

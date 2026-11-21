@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import RexKit
 import SwiftUI
 
@@ -41,6 +42,51 @@ enum ConnectionDiagnostics {
     /// The log as text, with the servers numbered as Settings lists them.
     static func export(_ log: ConnectionLog, servers: [ServerConfig]) async -> String {
         await log.export(servers: servers.map(key))
+    }
+
+    // MARK: The file the user shares
+
+    /// The text of the file Settings → About shares: the connection log, then the crash and hang
+    /// reports, newest first. Computers are numbered, never named, and nothing in it is an
+    /// address: the log holds numbers only, and a report is the system's own.
+    static func report(log: ConnectionLog?, servers: [ServerConfig], reports: [DiagnosticReports.Report],
+                       version: String) async -> String {
+        var text = "\(Brand.appName) diagnostics\nversion \(version)\n\n"
+        if let log {
+            log.flush()
+            text += await export(log, servers: servers)
+        } else {
+            text += "Connection log\nnone\n"
+        }
+        text += "\nCrash and hang reports\nreports \(reports.count)\n"
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withInternetDateTime]
+        stamp.timeZone = TimeZone(secondsFromGMT: 0)
+        for r in reports {
+            text += "\n\(stamp.string(from: r.date))\n"
+            text += String(decoding: r.json, as: UTF8.self) + "\n"
+        }
+        return text
+    }
+
+    /// Where the shared file is written: a folder of its own in the temporary directory, emptied
+    /// before each file and after the share sheet closes.
+    static var shareFolder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("DiagnosticsShare", isDirectory: true)
+    }
+
+    /// Writes `text` as the file to share and returns it. An earlier file goes first.
+    static func writeShareFile(_ text: String, in folder: URL = shareFolder) throws -> URL {
+        clearShareFile(in: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("\(Brand.appName) Diagnostics.txt")
+        try Data(text.utf8).write(to: file, options: .atomic)
+        return file
+    }
+
+    /// Removes the shared file: the share sheet closed, sent or not.
+    static func clearShareFile(in folder: URL = shareFolder) {
+        try? FileManager.default.removeItem(at: folder)
     }
 
     static func scene(_ phase: ScenePhase) -> ConnectionEvent.Scene? {

@@ -194,10 +194,17 @@ struct NotificationsPage: View {
     }
 }
 
-/// Settings → About: the version, the setup guide again, and the licences.
+/// Settings → About: the version, the setup guide again, the licences, and Send Diagnostics.
 struct AboutPage: View {
     @Environment(AppModel.self) private var model
     let theme: TermTheme
+    /// The file on its way to the share sheet.
+    @State private var shared: DiagnosticsShare?
+    /// The file is being written: a second tap makes no second one.
+    @State private var preparing = false
+
+    static let diagnosticsFooter = "Shares a text file of connection events and crash reports. "
+        + "It has no computer names or addresses, and it stays on this iPhone unless you share it."
 
     var body: some View {
         SettingsList(theme: theme) {
@@ -208,9 +215,55 @@ struct AboutPage: View {
                 NavigationLink(value: SettingsPage.acknowledgements) { Text("Acknowledgements") }
             }
             .settingsRows(theme)
+            // Evidence for a problem after the fact. Nothing is made or sent until this is tapped,
+            // and then only the system's share sheet opens: the user picks where it goes.
+            Section {
+                Button("Send Diagnostics") { sendDiagnostics() }
+                    .disabled(preparing)
+            } footer: {
+                SettingsFooter(Self.diagnosticsFooter, theme)
+            }
+            .settingsRows(theme)
         }
         .navigationTitle("About")
         .navigationBarTitleDisplayMode(.inline)
         .settingsBar(theme)
+        .sheet(item: $shared, onDismiss: { ConnectionDiagnostics.clearShareFile() }) { file in
+            DiagnosticsShareSheet(file: file.url)
+                .presentationDetents([.medium, .large])
+        }
     }
+
+    private func sendDiagnostics() {
+        guard !preparing, shared == nil else { return }
+        preparing = true
+        let log = model.connectionLog, servers = model.prefs.servers
+        Task {
+            defer { preparing = false }
+            let text = await ConnectionDiagnostics.report(log: log, servers: servers, reports: DiagnosticReports.standard.all(),
+                                                          version: SettingsView.version)
+            guard let url = try? ConnectionDiagnostics.writeShareFile(text) else {
+                Notice.shared.show("Couldn't write the diagnostics file.")
+                return
+            }
+            shared = DiagnosticsShare(url: url)
+        }
+    }
+}
+
+/// The diagnostics file, for the sheet that shares it.
+struct DiagnosticsShare: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// The system's share sheet with the diagnostics file.
+private struct DiagnosticsShareSheet: UIViewControllerRepresentable {
+    let file: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [file], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
