@@ -17,7 +17,7 @@ import UserNotifications
     static let servers = [PushAction.Server(id: serverID, url: address, hostName: nil)]
     static let delivered = Date(timeIntervalSince1970: 1_800_000_000)
     static let changed = "The question changed. Open \(Brand.appName) to see it."
-    static let failed = "Couldn't send. Open \(Brand.appName)."
+    static let failed = "The connection to the computer dropped. Open \(Brand.appName) to check."
     static let answered = "Already answered a moment ago. Open \(Brand.appName) if it's still waiting."
 
     /// The payload's own fields, as Beacon sends them for a question that names its wait.

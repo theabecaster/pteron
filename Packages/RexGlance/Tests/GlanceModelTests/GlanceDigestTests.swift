@@ -17,7 +17,7 @@ import Testing
 
     @Test func noServersAsksToPair() throws {
         let d = try digest("unpaired")
-        #expect(d.kind == .unpaired && d.headline == .text("No machines paired") && d.tap == .pair)
+        #expect(d.kind == .unpaired && d.headline == .text("No computers yet") && d.tap == .pair)
     }
 
     @Test func nobodyWaitingOpensTheAppAndSomebodyWaitingJumps() throws {
@@ -35,7 +35,7 @@ import Testing
         #expect(d.counts.waiting == 2 && d.counts.working == 2)
         #expect(d.rows.map(\.agent.block) == ["block:1", "block:9"])
         #expect(d.rows.map(\.machineName) == ["Studio", "Laptop"])
-        #expect(d.machineLine == "2 of 3 machines connected")
+        #expect(d.machineLine == "2 of 3 computers connected")
         #expect(d.machines.map(\.name) == ["Studio", "Laptop"])
     }
 
@@ -64,7 +64,7 @@ import Testing
         s.machines[2].counts = .init(waiting: 1)
         s.machines[2].waiting = [GlanceDemo.wait(40, "codex", "Codex", "hexagon", "Go on?", "x › y", why: "question", minutes: 1, now: now)]
         let e = GlanceDigest(s, now: now)
-        #expect(e.headline == .text("1 needs you") && e.rows.map(\.stale) == [false, true])
+        #expect(e.headline == .text("1 waiting") && e.rows.map(\.stale) == [false, true])
         #expect(e.rows[0].agent.since > e.rows[1].agent.since)
     }
 
@@ -84,9 +84,9 @@ import Testing
     @Test func ageShowsAndThenDims() throws {
         #expect(try digest("several").age == .current)
         let aging = try digest("several", after: 600)
-        #expect(aging.age == .asOf(now) && !aging.dimmed && aging.headline == .text("2 need you") && aging.glow == .waiting)
+        #expect(aging.age == .asOf(now) && !aging.dimmed && aging.headline == .text("2 waiting") && aging.glow == .waiting)
         let old = try digest("several", after: 2 * 3600)
-        #expect(old.age == .refresh && old.dimmed && old.glow == nil && old.headline == .text("2 need you"))
+        #expect(old.age == .refresh && old.dimmed && old.glow == nil && old.headline == .text("2 waiting"))
         #expect(try digest("aging").age == .asOf(now.addingTimeInterval(-600)))
         #expect(try digest("old").age == .refresh)
     }
@@ -99,7 +99,7 @@ import Testing
         for hidden in [false, true] {
             let a = old.accessory(private: hidden)
             #expect(a.age == .current && a.dimmed && a.since == nil)
-            #expect(a.hand && a.count == 2 && a.title == .text("2 need you") && a.inline == .text("2 need you · 3 working"))
+            #expect(a.hand && a.count == 2 && a.title == .text("2 waiting") && a.inline == .text("2 waiting · 3 working"))
             let said = [a.detail, a.fallback].compactMap { $0 }
             #expect(!said.contains { $0.contains("refresh") })
         }
@@ -159,16 +159,16 @@ import Testing
     @Test func lockedItCarriesCountsOnly() throws {
         let d = try digest("several")
         let open = d.accessory(private: false)
-        #expect(open.hand && open.count == 2 && open.title == .text("2 need you"))
+        #expect(open.hand && open.count == 2 && open.title == .text("2 waiting"))
         #expect(open.detail == "Claude · api › tests" && open.since == now.addingTimeInterval(-12 * 60))
-        #expect(open.inline == .text("2 need you · 3 working"))
+        #expect(open.inline == .text("2 waiting · 3 working"))
         let locked = d.accessory(private: true)
         #expect(locked.detail == nil)
         // The counts stay.
-        #expect(locked.hand && locked.count == 2 && locked.title == .text("2 need you") && locked.fallback == "3 working")
-        #expect(locked.inline == .text("2 need you · 3 working"))
+        #expect(locked.hand && locked.count == 2 && locked.title == .text("2 waiting") && locked.fallback == "3 working")
+        #expect(locked.inline == .text("2 waiting · 3 working"))
         // No name and no place of any agent is left in it.
-        let words = [locked.fallback ?? "", "2 need you · 3 working"]
+        let words = [locked.fallback ?? "", "2 waiting · 3 working"]
         for row in d.rows { for w in words { #expect(!w.contains(row.agent.name) && !w.contains(row.agent.place)) } }
     }
 

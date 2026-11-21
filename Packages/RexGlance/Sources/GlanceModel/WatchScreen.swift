@@ -42,7 +42,7 @@ public enum WatchText {
         case .changed: "Not sent. It no longer waits for this."
         case .unreachable: "Not sent. Your iPhone can't reach the computer."
         case .unconfirmed: "Couldn't confirm. Check the pane."
-        case .noPhone: "Not sent. iPhone not reachable."
+        case .noPhone: "Not sent. Can't reach your iPhone."
         }
     }
 }
@@ -52,7 +52,7 @@ public enum WatchText {
 /// watch's own words where it differs. The views only lay it out.
 public struct WatchScreen: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
-        /// Nothing to list: one line says why (`WatchText.open`, "No machines paired").
+        /// Nothing to list: one line says why (`WatchText.open`, "No computers yet").
         case message(String)
         case agents
     }
@@ -69,7 +69,7 @@ public struct WatchScreen: Equatable, Sendable {
         public var name: String
         public var kind: String?
         public var symbol: String
-        /// "Needs permission": the app's words for what it waits for.
+        /// "Needs your permission": the app's words for what it waits for.
         public var words: String
         public var place: String
         /// The machine's name, for the detail screen.
@@ -150,15 +150,23 @@ public struct WatchScreen: Equatable, Sendable {
         }
     }
 
-    /// What a waiting agent waits for, as the app's sidebar and board say it (a test in the app
-    /// holds the two together).
+    /// What a waiting agent waits for: the one wording for the app's sidebar, board, toasts and
+    /// palette, the widgets and the watch (a test in the app holds them together). Beacon's
+    /// notifications say the same (Relay/src/push.rs).
     public static func words(why: String?) -> String {
         switch why {
-        case "permission": "Needs permission"
+        case "permission": "Needs your permission"
         case "question": "Has a question"
-        case "auth": "Needs password"
+        case "auth": "Needs your password"
         default: "Waiting for you"
         }
+    }
+
+    /// The same after a name, in a sentence: "Claude needs your permission".
+    public static func sentence(_ who: String, why: String?) -> String {
+        let said = words(why: why)
+        let verb = said == words(why: nil) ? "is waiting for you" : said.prefix(1).lowercased() + said.dropFirst()
+        return "\(who) \(verb)"
     }
 
     /// The watch's colors: the theme chosen for Dark Mode when it is a dark theme, else the
@@ -188,7 +196,7 @@ public extension GlanceDigest.Accessory {
     /// The words a watch face curves beside the corner's count. Nil when the corner shows the
     /// mark alone.
     var cornerLabel: String? {
-        guard let count else { return nil }
-        return hand ? (count == 1 ? "needs you" : "need you") : "working"
+        guard count != nil else { return nil }
+        return hand ? "waiting" : "working"
     }
 }

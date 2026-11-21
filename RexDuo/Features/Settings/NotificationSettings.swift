@@ -43,10 +43,9 @@ struct NotificationSettingsSection: View {
         let push = model.push
         let master = push.master
         let computers = master.showsComputers ? push.computers : []
+        // No header: the page's title says Notifications already, and so does the switch.
         Section {
             masterRow(master)
-        } header: {
-            SettingsHeader(MasterStatus.title, theme)
         } footer: {
             SettingsFooter(MasterStatus.footer, theme)
         }

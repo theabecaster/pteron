@@ -35,7 +35,7 @@ enum NotificationFix: Equatable, Sendable {
         case .openSettings: "Open Settings"
         case .how: "How"
         case .continueSetup: "Continue"
-        case .retry: "Retry"
+        case .retry: "Try Again"
         case .update: "Update"
         case .repair: "Repair"
         case .trust: "Trust…"
@@ -53,7 +53,7 @@ enum NotificationMenuItem: Equatable, Sendable {
         case .showDetails: "Show Details"
         case .reinstall: "Reinstall Beacon"
         case .remove: "Remove Beacon…"
-        case .cancel: "Cancel Install"
+        case .cancel: "Stop Install"
         }
     }
 
@@ -172,6 +172,12 @@ struct ComputerFacts: Equatable, Sendable {
 
     enum Failure: Equatable, Sendable {
         case download, check, noRoom, notAllowed, notStarted
+        /// The computer or its macOS is one Beacon doesn't run on: trying again can't help.
+        case cantRun
+        /// Nobody is logged in on the computer's screen.
+        case notLoggedIn
+        /// Another install was running there.
+        case busy
 
         var text: String {
             switch self {
@@ -180,8 +186,14 @@ struct ComputerFacts: Equatable, Sendable {
             case .noRoom: "No room for Beacon"
             case .notAllowed: "Didn't let Beacon install"
             case .notStarted: "Beacon didn't start"
+            case .cantRun: "Beacon can't run here"
+            case .notLoggedIn: "Log in on the computer"
+            case .busy: "Another install is running"
             }
         }
+
+        /// Try Again can work: not where Beacon can't run at all.
+        var canRetry: Bool { self != .cantRun }
     }
 
     /// This phone's connection to the notification service for this computer.
@@ -267,7 +279,7 @@ struct ComputerStatus: Equatable, Sendable {
         guard let version, (1...24).contains(version.count),
               version.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ".-+".unicodeScalars.contains($0)) })
         else { return nil }
-        return NotificationLine(text: "Version \(version)", tint: .secondary)
+        return NotificationLine(text: "Beacon \(version)", tint: .secondary)
     }
 
     /// The line of a computer that is on while the app does not yet know all is well there: its
@@ -275,9 +287,12 @@ struct ComputerStatus: Equatable, Sendable {
     /// A row that is on always has a line, so this stands where the version will.
     static let connectingLine = NotificationLine(text: "Connecting…", tint: .none, spinner: true)
 
+    /// The line of a computer without Beacon, beside its off switch.
+    static let installLine = NotificationLine(text: "Turn on to install Beacon", tint: .secondary)
+
     /// The line of a computer the notification service took no secret for, because the phone
     /// has as many computers there as the service holds for one phone.
-    static let fullLine = "Too many computers for this phone"
+    static let fullLine = "Too many computers for this iPhone"
 
     /// The first state that applies decides the row: Removing, Turns off when the computer is
     /// back, Offline, a failed removal, off, Helper changed, an install, Helper too old, Helper
@@ -341,13 +356,15 @@ struct ComputerStatus: Equatable, Sendable {
             case .clickAllow:
                 return ComputerStatus(switchOn: true, line: working("Click Allow for \(Brand.beaconName)"), menu: [.showDetails, .cancel])
             case .failed(let why):
-                return ComputerStatus(switchOn: true, line: problem(why.text), fix: .retry, menu: [.showDetails, .remove])
+                return ComputerStatus(switchOn: true, line: problem(why.text), fix: why.canRetry ? .retry : nil,
+                                      menu: [.showDetails, .remove])
             case .manual:
                 return ComputerStatus(switchOn: true, line: problem("Install Beacon by hand"), fix: .how,
                                       menu: [.showDetails])
             }
         }
-        if !installed { return ComputerStatus(switchOn: false) }
+        // Off with no Beacon: the line says what turning it on does.
+        if !installed { return ComputerStatus(switchOn: false, line: Self.installLine) }
         if !f.choice { return ComputerStatus(switchOn: false, menu: [.showDetails, .remove]) }
         if f.changed {
             return ComputerStatus(switchOn: true, line: problem("Beacon has changed"), fix: .trust, menu: standard)
@@ -437,7 +454,10 @@ extension ComputerFacts.Setup {
         case .network, .noDownloader, .release: self = .failed(.download)
         case .verify: self = .failed(.check)
         case .write: self = .failed(.noRoom)
-        case .appManagement, .noGUI, .busy, .unsupportedComputer, .oldMacOS: self = .failed(.notAllowed)
+        case .appManagement: self = .failed(.notAllowed)
+        case .unsupportedComputer, .oldMacOS: self = .failed(.cantRun)
+        case .noGUI: self = .failed(.notLoggedIn)
+        case .busy: self = .failed(.busy)
         case .notStarted, .noSystemd, .interrupted: self = .failed(.notStarted)
         case .manual: self = .manual
         case .identityChanged, .notificationsOff: return nil
@@ -641,10 +661,8 @@ struct HelperDetails: Equatable, Sendable {
         case .at(let date): out.append(Row(label: "Last notification", value: Self.ago(date, now: now)))
         case nil: break
         }
-        switch updateCheck {
-        case .ok: out.append(Row(label: "Update check", value: "OK"))
-        case .failed: out.append(Row(label: "Update check", value: "Couldn't check"))
-        }
+        // Only a failed check says anything: "OK" told nothing the version row doesn't.
+        if updateCheck == .failed { out.append(Row(label: "Update check", value: "Couldn't check")) }
         return out
     }
 
@@ -675,7 +693,7 @@ enum NotificationCopy {
     /// Enter or Interrupt on a notification, and the agent no longer waits for that.
     static let actionChanged = "The question changed. Open \(Brand.appName) to see it."
     /// The same, and the computer couldn't be reached or didn't answer.
-    static let actionFailed = "Couldn't send. Open \(Brand.appName)."
+    static let actionFailed = "The connection to the computer dropped. Open \(Brand.appName) to check."
     /// The same, and another action answered this wait a moment ago, so nothing was typed.
     static let actionAnswered = "Already answered a moment ago. Open \(Brand.appName) if it's still waiting."
 
@@ -694,18 +712,18 @@ enum NotificationCopy {
     static func removeConfirm(name: String, devices: Int?, otherPhones: Int? = nil) -> Confirm {
         let others: String
         if let n = otherPhones ?? devices.map({ $0 - 1 }) {
-            others = n > 0 ? " and to \(n) other phone\(n == 1 ? "" : "s")" : ""
+            others = n > 0 ? " and to \(n) other iPhone\(n == 1 ? "" : "s")" : ""
         } else {
-            others = " and to any other phone that uses Beacon"
+            others = " and to any other iPhone that uses Beacon"
         }
         return Confirm(title: "Remove \(Brand.beaconName) from \(name)?",
-                       message: "\(name) will stop sending notifications to this phone\(others).", confirm: "Remove")
+                       message: "\(name) will stop sending notifications to this iPhone\(others).", confirm: "Remove")
     }
 
     /// "Trust…" on a helper that has changed.
     static func trustConfirm(name: String) -> Confirm {
         Confirm(title: "Trust Beacon on \(name)?",
-                message: "Did you reinstall or remove Beacon on \(name)? If you did, trust it. If you didn't, don't: something else is answering for it.",
+                message: "Did you reinstall or remove Beacon on \(name)? If you did, trust it. If you didn't, don't: something else is answering for it. Cancel, then choose Reinstall Beacon.",
                 confirm: "Trust")
     }
 
@@ -717,10 +735,12 @@ enum NotificationCopy {
 
     /// "How": installing the helper by hand, one step per line.
     static let manualSteps = [
-        "On the computer, download \(Brand.beaconName) from github.com/theabecaster/pteron/releases.",
-        "Mac: drag \(Brand.beaconName) to Applications and open it once.",
-        "Linux: run rex-duo-helper install.",
+        "Mac: download \(Brand.beaconName) from github.com/theabecaster/pteron/releases, drag it to Applications and open it once.",
+        "Linux: run \(linuxInstall)",
     ]
+
+    /// The one line that installs Beacon on Linux (docs/helper.md, Linux).
+    static let linuxInstall = "curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh"
 
     /// Added to the install sheet's last screen while iOS has notifications turned off.
     static let turnOnInSettings = "Turn on notifications in iOS Settings to be notified."

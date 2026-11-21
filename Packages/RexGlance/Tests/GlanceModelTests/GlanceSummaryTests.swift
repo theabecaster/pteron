@@ -70,10 +70,10 @@ import Testing
         func digest(_ name: String) throws -> GlanceDigest { GlanceDigest(try #require(GlanceDemo.snapshot(name, now: now)), now: now) }
         #expect(try digest("quiet").headline == .text("All quiet"))
         #expect(try digest("working").headline == .text("3 working"))
-        #expect(try digest("one").headline == .text("1 needs you"))
-        #expect(try digest("several").headline == .text("2 need you"))
-        #expect(try digest("many").headline == .text("11 need you"))
-        #expect(try digest("machines").headline == .text("2 need you"))
+        #expect(try digest("one").headline == .text("1 waiting"))
+        #expect(try digest("several").headline == .text("2 waiting"))
+        #expect(try digest("many").headline == .text("11 waiting"))
+        #expect(try digest("machines").headline == .text("2 waiting"))
         #expect(try digest("unpaired").kind == .unpaired)
         #expect(GlanceDemo.snapshot("none", now: now) == nil && GlanceDemo.snapshot("newer", now: now) == nil)
         for name in GlanceDemo.scenarios where !["none", "newer"].contains(name) { #expect(GlanceDemo.snapshot(name, now: now) != nil) }

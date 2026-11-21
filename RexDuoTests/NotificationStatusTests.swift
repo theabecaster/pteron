@@ -81,7 +81,7 @@ struct NotificationStatusTests {
     // MARK: A computer's row
 
     @Test func healthy() {
-        #expect(row() == ComputerStatus(switchOn: true, switchEnabled: true, line: line("Version 0.3.1", .secondary), fix: nil,
+        #expect(row() == ComputerStatus(switchOn: true, switchEnabled: true, line: line("Beacon 0.3.1", .secondary), fix: nil,
                                         menu: [.sendTest, .showDetails, .reinstall, .remove]))
     }
 
@@ -98,9 +98,11 @@ struct NotificationStatusTests {
     }
 
     @Test func helperNotInstalledWithTheSwitchOff() {
-        // The stored choice is on for a new computer; with no helper there the switch shows off.
+        // The stored choice is on for a new computer; with no helper there the switch shows off,
+        // and the line says what turning it on does, so the switch isn't a bare one.
         for choice in [true, false] {
-            #expect(row { $0.helper = .notInstalled; $0.choice = choice } == ComputerStatus(switchOn: false, menu: []))
+            #expect(row { $0.helper = .notInstalled; $0.choice = choice }
+                == ComputerStatus(switchOn: false, line: line("Turn on to install Beacon", .secondary), menu: []))
         }
     }
 
@@ -132,12 +134,24 @@ struct NotificationStatusTests {
         let reasons: [(ComputerFacts.Failure, String)] = [
             (.download, "Couldn't download Beacon"), (.check, "The download didn't pass its check"),
             (.noRoom, "No room for Beacon"), (.notAllowed, "Didn't let Beacon install"),
-            (.notStarted, "Beacon didn't start"),
+            (.notStarted, "Beacon didn't start"), (.notLoggedIn, "Log in on the computer"),
+            (.busy, "Another install is running"),
         ]
         for (reason, text) in reasons {
             let s = row { $0.helper = .notInstalled; $0.setup = .failed(reason) }
             #expect(s == ComputerStatus(switchOn: true, line: line(text, .warning), fix: .retry, menu: [.showDetails, .remove]))
         }
+        #expect(NotificationFix.retry.title == "Try Again")
+        // Where Beacon can't run, Try Again can't help: the row has no button.
+        let cantRun = row { $0.helper = .notInstalled; $0.setup = .failed(.cantRun) }
+        #expect(cantRun == ComputerStatus(switchOn: true, line: line("Beacon can't run here", .warning), fix: nil,
+                                          menu: [.showDetails, .remove]))
+        // Each install error lands on the line that says it.
+        #expect(ComputerFacts.Setup(SetupError.unsupportedComputer) == .failed(.cantRun))
+        #expect(ComputerFacts.Setup(SetupError.oldMacOS) == .failed(.cantRun))
+        #expect(ComputerFacts.Setup(SetupError.noGUI) == .failed(.notLoggedIn))
+        #expect(ComputerFacts.Setup(SetupError.busy) == .failed(.busy))
+        #expect(ComputerFacts.Setup(SetupError.appManagement) == .failed(.notAllowed))
     }
 
     @Test func helperTooOld() {
@@ -172,7 +186,7 @@ struct NotificationStatusTests {
 
     @Test func noRoomForAnotherComputerAtTheNotificationService() {
         let s = row { $0.full = true; $0.link = .pending }
-        #expect(s == ComputerStatus(switchOn: true, line: line("Too many computers for this phone", .warning), fix: .retry,
+        #expect(s == ComputerStatus(switchOn: true, line: line("Too many computers for this iPhone", .warning), fix: .retry,
                                     menu: [.reinstall, .remove]))
     }
 
@@ -261,7 +275,7 @@ struct NotificationStatusTests {
         let order: [(String, (inout ComputerFacts) -> Void)] = [
             ("Too many tries. Try again in an hour.", { $0.limit = RateLimit(retryAt: Self.noon.addingTimeInterval(3600), now: Self.noon) }),
             ("Couldn't reconnect", { $0.link = .failed }),
-            ("Too many computers for this phone", { $0.full = true }),
+            ("Too many computers for this iPhone", { $0.full = true }),
             ("Beacon isn't running", { $0.helper = .notRunning }),
             ("Beacon needs an update", { $0.tooOld = true }),
             ("Installing…", { $0.setup = .working(.installing) }),
@@ -438,18 +452,17 @@ struct NotificationStatusTests {
         let d = HelperDetails(status: try status(#"{"version":"0.3.0","os":"macOS 15.5","devices":3,"last_push_at":1799999880}"#))
         #expect(d.devices == 3)
         #expect(d.rows(now: now) == [.init(label: "Beacon version", value: "0.3.0"), .init(label: "System", value: "macOS 15.5"),
-                                     .init(label: "Last notification", value: "2 minutes ago"),
-                                     .init(label: "Update check", value: "OK")])
+                                     .init(label: "Last notification", value: "2 minutes ago")])
     }
 
     @Test func aMissingFieldHasNoRowAndNullIsNever() throws {
         // A helper from before these fields.
         let old = HelperDetails(status: try status(#"{"version":"0.2.0"}"#))
-        #expect(old.rows() == [.init(label: "Beacon version", value: "0.2.0"), .init(label: "Update check", value: "OK")])
+        #expect(old.rows() == [.init(label: "Beacon version", value: "0.2.0")])
         #expect(old.devices == nil && old.lastNotification == nil)
         let never = HelperDetails(status: try status(#"{"version":"0.3.0","os":"Ubuntu 24.04.1 LTS","last_push_at":null}"#))
-        #expect(never.rows().dropLast().last == .init(label: "Last notification", value: "Never"))
-        #expect(HelperDetails(status: [:]).rows() == [.init(label: "Update check", value: "OK")])
+        #expect(never.rows().last == .init(label: "Last notification", value: "Never"))
+        #expect(HelperDetails(status: [:]).rows() == [])
     }
 
     @Test func fieldsOfTheWrongKindAreLeftOut() throws {
@@ -481,16 +494,16 @@ struct NotificationStatusTests {
     @Test func theConfirmCountsTheOtherPhones() {
         let one = NotificationCopy.removeConfirm(name: "Studio", devices: 1)
         #expect(one.title == "Remove \(Brand.beaconName) from Studio?")
-        #expect(one.message == "Studio will stop sending notifications to this phone.")
+        #expect(one.message == "Studio will stop sending notifications to this iPhone.")
         #expect(one.confirm == "Remove" && one.cancel == "Cancel")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 2).message
-                == "Studio will stop sending notifications to this phone and to 1 other phone.")
+                == "Studio will stop sending notifications to this iPhone and to 1 other iPhone.")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 4).message
-                == "Studio will stop sending notifications to this phone and to 3 other phones.")
+                == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 0).message
-                == "Studio will stop sending notifications to this phone.")
+                == "Studio will stop sending notifications to this iPhone.")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: nil).message
-                == "Studio will stop sending notifications to this phone and to any other phone that uses Beacon.")
+                == "Studio will stop sending notifications to this iPhone and to any other iPhone that uses Beacon.")
     }
 
     @Test func theConfirmUsesTheHelpersCountOfOtherPhonesWhenItGivesOne() throws {
@@ -498,16 +511,16 @@ struct NotificationStatusTests {
             let d = HelperDetails(status: try status(json))
             return NotificationCopy.removeConfirm(name: "Studio", devices: d.devices, otherPhones: d.otherPhones).message
         }
-        // Four phones, three of them this user's own: one other phone.
-        #expect(try message(#"{"devices":4,"other_phones":1}"#) == "Studio will stop sending notifications to this phone and to 1 other phone.")
-        #expect(try message(#"{"devices":4,"other_phones":2}"#) == "Studio will stop sending notifications to this phone and to 2 other phones.")
-        #expect(try message(#"{"devices":4,"other_phones":0}"#) == "Studio will stop sending notifications to this phone.")
-        #expect(try message(#"{"other_phones":3}"#) == "Studio will stop sending notifications to this phone and to 3 other phones.")
+        // Four phones, three of them this user's own: one other iPhone.
+        #expect(try message(#"{"devices":4,"other_phones":1}"#) == "Studio will stop sending notifications to this iPhone and to 1 other iPhone.")
+        #expect(try message(#"{"devices":4,"other_phones":2}"#) == "Studio will stop sending notifications to this iPhone and to 2 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":0}"#) == "Studio will stop sending notifications to this iPhone.")
+        #expect(try message(#"{"other_phones":3}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
         // A helper that does not give the count: one fewer than its phones, as before.
-        #expect(try message(#"{"devices":4}"#) == "Studio will stop sending notifications to this phone and to 3 other phones.")
-        #expect(try message(#"{"devices":4,"other_phones":true}"#) == "Studio will stop sending notifications to this phone and to 3 other phones.")
-        #expect(try message(#"{"devices":4,"other_phones":-1}"#) == "Studio will stop sending notifications to this phone and to 3 other phones.")
-        #expect(try message("{}") == "Studio will stop sending notifications to this phone and to any other phone that uses Beacon.")
+        #expect(try message(#"{"devices":4}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":true}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":-1}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
+        #expect(try message("{}") == "Studio will stop sending notifications to this iPhone and to any other iPhone that uses Beacon.")
         #expect(HelperDetails(status: try status(#"{"other_phones":2}"#)).otherPhones == 2)
     }
 
@@ -535,7 +548,7 @@ struct NotificationStatusTests {
             }
         }
         let steps: [ComputerFacts.Step] = [.downloading, .checking, .installing, .starting, .connecting]
-        let failures: [ComputerFacts.Failure] = [.download, .check, .noRoom, .notAllowed, .notStarted]
+        let failures: [ComputerFacts.Failure] = [.download, .check, .noRoom, .notAllowed, .notStarted, .cantRun, .notLoggedIn, .busy]
         var states: [(inout ComputerFacts) -> Void] = [
             { _ in }, { $0.updateAvailable = true }, { $0.version = nil }, { $0.choice = false }, { $0.online = false },
             { $0.online = false; $0.choice = false; $0.pauseWaits = true }, { $0.helper = .notInstalled },
@@ -587,7 +600,7 @@ struct NotificationStatusTests {
         #expect(sentences.count > 100)
         for sentence in sentences {
             // The command-line program keeps its file name, shown only inside the command to run.
-            let words = sentence.replacingOccurrences(of: "run rex-duo-helper install", with: "")
+            let words = sentence.replacingOccurrences(of: NotificationCopy.linuxInstall, with: "")
             for old in ["add-on", "Add-on", "add\u{2011}on", "helper", "Helper"] {
                 #expect(!words.contains(old), "\(sentence)")
             }
@@ -696,7 +709,7 @@ struct NotificationStatusTests {
                 if f.removal == .failed || f.setup == .failed(.download) { #expect(shown.fix == nil) }
             }
             let healthy = ComputerStatus.make(facts { $0.installable = installable })
-            #expect(healthy.line == line("Version 0.3.1", .secondary) && healthy.menu == [.sendTest, .showDetails])
+            #expect(healthy.line == line("Beacon 0.3.1", .secondary) && healthy.menu == [.sendTest, .showDetails])
             // Retry of the link to the notification service is the phone's own, and stays.
             #expect(ComputerStatus.make(facts { $0.installable = installable; $0.link = .failed }).fix == .retry)
             #expect(ComputerStatus.make(facts { $0.installable = installable; $0.helper = .notRunning }).fix == nil)
@@ -744,7 +757,7 @@ struct NotificationStatusTests {
         #expect(lines.contains("Couldn't reach the notification service"))
         #expect(long.rows.allSatisfy { $0.name == NotificationSimulation.longName })
         // The last one is healthy: a long name over the version.
-        #expect(long.rows.last?.status.line?.text == "Version 0.3.1")
+        #expect(long.rows.last?.status.line?.text == "Beacon 0.3.1")
     }
     #endif
 
@@ -858,10 +871,10 @@ struct NotificationStatusTests {
 
     @Test func aHealthyRowShowsTheVersionAndNothingAfterIt() {
         let healthy = row { $0.version = "0.3.1" }
-        #expect(healthy == ComputerStatus(switchOn: true, line: line("Version 0.3.1", .secondary), fix: nil,
+        #expect(healthy == ComputerStatus(switchOn: true, line: line("Beacon 0.3.1", .secondary), fix: nil,
                                           menu: [.sendTest, .showDetails, .reinstall, .remove]))
         // Only what a version looks like is shown.
-        #expect(ComputerStatus.versionLine("0.4.0-beta.2")?.text == "Version 0.4.0-beta.2")
+        #expect(ComputerStatus.versionLine("0.4.0-beta.2")?.text == "Beacon 0.4.0-beta.2")
         #expect(ComputerStatus.versionLine("0.3.1, up to date") == nil)
         #expect(ComputerStatus.versionLine(String(repeating: "1", count: 25)) == nil)
         // Every other state has its own line in the version's place.
@@ -886,7 +899,7 @@ struct NotificationStatusTests {
         #expect(row { $0.link = .pending } == connecting)
         #expect(row { $0.link = .pending; $0.version = nil } == connecting)
         // The version arrives: healthy.
-        #expect(row { $0.version = "0.3.0" }.line == line("Version 0.3.0", .secondary))
+        #expect(row { $0.version = "0.3.0" }.line == line("Beacon 0.3.0", .secondary))
         // The result of a test has a line of its own without it.
         #expect(row { $0.version = nil; $0.test = .sent }.line?.text == "Test notification sent")
     }
@@ -926,7 +939,7 @@ struct NotificationStatusTests {
         words += NotificationSimulation.details.rows().flatMap { [$0.label, $0.value] }
         #expect(words.allSatisfy { !$0.localizedCaseInsensitiveContains("up to date") })
         let healthy = try #require(NotificationSimulation(name: "healthy")).rows[0].status.line
-        #expect(healthy == line("Version 0.3.1", .secondary))
+        #expect(healthy == line("Beacon 0.3.1", .secondary))
         let older = try #require(NotificationSimulation(name: "update-available")).rows[0].status
         #expect(older.line == line("Update available", .secondary) && older.fix == .update)
         #expect(NotificationSimulation(name: "healthy-older") == nil && NotificationSimulation(name: "cannot-check") == nil)
@@ -983,16 +996,16 @@ struct NotificationStatusTests {
     }
 
     @Test func detailsSayHowTheAppsOwnUpdateCheckWent() throws {
-        // Fine until the app's read of the release list has failed.
-        #expect(HelperDetails(status: ["version": "0.3.0"]).rows().last == .init(label: "Update check", value: "OK"))
+        // Nothing to say until the app's read of the release list has failed.
+        #expect(HelperDetails(status: ["version": "0.3.0"]).rows().last == .init(label: "Beacon version", value: "0.3.0"))
         var details = HelperDetails(status: ["version": "0.3.0"])
         details.updateCheck = .failed
         #expect(details.rows().last == .init(label: "Update check", value: "Couldn't check"))
         // The add-on's own failed checks are not the screen's: its reason is not shown.
         let own = HelperDetails(status: ["version": "0.3.0", "last_error": "The release list could not be downloaded.",
                                          "failing_since": 1_799_990_000])
-        #expect(own.updateCheck == .ok && own.rows().last == .init(label: "Update check", value: "OK"))
-        #expect(HelperDetails(status: ["last_error": "x"]).rows() == [.init(label: "Update check", value: "OK")])
+        #expect(own.updateCheck == .ok && own.rows().last == .init(label: "Beacon version", value: "0.3.0"))
+        #expect(HelperDetails(status: ["last_error": "x"]).rows() == [])
     }
 
     // MARK: What the screen adds
@@ -1012,9 +1025,8 @@ struct NotificationStatusTests {
         // where to get the program, under its real name, then what to do with it on each system.
         #expect(NotificationCopy.manualTitle == "Install by Hand")
         #expect(NotificationCopy.manualSteps == [
-            "On the computer, download \(Brand.beaconName) from github.com/theabecaster/pteron/releases.",
-            "Mac: drag \(Brand.beaconName) to Applications and open it once.",
-            "Linux: run rex-duo-helper install.",
+            "Mac: download \(Brand.beaconName) from github.com/theabecaster/pteron/releases, drag it to Applications and open it once.",
+            "Linux: run curl -fsSL https://github.com/theabecaster/pteron/releases/download/helper-latest/install.sh | sh",
         ])
         #expect(NotificationCopy.noDetails(name: "Studio") == "\(Brand.beaconName) on Studio isn't answering.")
     }

@@ -413,3 +413,10 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - Pure logic: its own type, with tests in `RexDuoTests` or `Packages/RexKit/Tests`.
 - Something an extension needs too (a link, later the snapshot widgets read): `GlanceModel` in
   `Packages/RexGlance`, Foundation only, with tests in `Packages/RexGlance/Tests`.
+- A message the user reads: the words in `State/Messages.swift` where it says something the app
+  says elsewhere too (a computer is offline, not sent, the pane closed, Rex there is too old).
+  An error is worded from its code (`Messages.reason`), never from the server's text, an
+  error's `localizedDescription` or an action's id; RexKit reports what happened
+  (`TerminalStream.Notice`) and the app words it. A computer is named by its name, never "the
+  server" or "the Mac". Why an agent waits is `WatchScreen.words(why:)` in `GlanceModel`, the
+  one set for the app, the widgets and the watch.

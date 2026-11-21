@@ -719,9 +719,9 @@ final class ServerEventsTests: XCTestCase {
         XCTAssertEqual(ConnectionProblem.classify(failure("event backlog exceeded"), network: net).kind, .notAllowed)
         XCTAssertEqual(ConnectionProblem.classify(failure(nil), network: net).kind, .notAllowed)
         XCTAssertTrue(ConnectionProblem.Kind.updateServer.isDecisive && ConnectionProblem.Kind.updateApp.isDecisive)
-        XCTAssertEqual(OfflineCopy.of(.updateServer, server: "This Mac", address: "").title, "Update Rex on your Mac")
-        XCTAssertEqual(OfflineCopy.short(.updateServer), "Needs a Rex update")
-        XCTAssertEqual(OfflineCopy.short(.updateApp), "Needs an app update")
+        XCTAssertEqual(OfflineCopy.of(.updateServer, server: "Studio", address: "").title, "Update Rex on Studio")
+        XCTAssertEqual(OfflineCopy.short(.updateServer), "Update Rex")
+        XCTAssertEqual(OfflineCopy.short(.updateApp), "Update \(Brand.appName)")
         XCTAssertNil(OfflineAction.secondary(for: .updateServer))
     }
 }

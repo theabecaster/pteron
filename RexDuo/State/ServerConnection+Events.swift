@@ -1,3 +1,4 @@
+import GlanceModel
 import Foundation
 import RexKit
 
@@ -207,16 +208,9 @@ extension ServerConnection {
 
     func notifyBlocked(_ sid: String, _ bid: String, _ st: ProgramStatus, _ m: BlockMeta) {
         let who = m.agentKind?.displayName ?? st.app ?? "A program"
-        let why: String
-        switch st.waitingFor {
-        case "permission": why = "needs permission"
-        case "question": why = "has a question"
-        case "auth": why = "needs a password"
-        default: why = "is waiting for you"
-        }
         let place = label(for: sid, block: bid)
         notifier.post(AgentAlert(serverID: id, sessionID: sid, windowID: views[sid]?.windowContaining(block: bid)?.id,
-                                 blockID: bid, title: "\(who) \(why)",
+                                 blockID: bid, title: WatchScreen.sentence(who, why: st.waitingFor),
                                  body: [place.isEmpty ? nil : place, st.text].compactMap { $0 }.joined(separator: " — "),
                                  date: Date()))
         notifier.waitingHaptic()

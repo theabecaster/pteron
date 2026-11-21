@@ -100,7 +100,7 @@ public struct GlanceDigest: Equatable, Sendable {
 
     public static var openText: String { "Open \(Brand.appName)" }
     public static var refreshText: String { "Open \(Brand.appName) to refresh" }
-    public static let unpairedText = "No machines paired"
+    public static let unpairedText = "No computers yet"
     /// The Home Screen sizes' word for the same: what to do, since a tap does it.
     public static let pairText = "Pair a computer"
     public static let noAgentsText = "No agents running"
@@ -161,7 +161,7 @@ public struct GlanceDigest: Equatable, Sendable {
         if live.isEmpty {
             (headline, urgency) = (.lastSeen(down.compactMap(\.seen).max() ?? s.asOf), .offline)
         } else if total.waiting > 0 {
-            (headline, urgency) = (.text(total.waiting == 1 ? "1 needs you" : "\(total.waiting) need you"), .waiting)
+            (headline, urgency) = (.text("\(total.waiting) waiting"), .waiting)
         } else if total.error > 0 {
             (headline, urgency) = (.text(total.error == 1 ? "1 error" : "\(total.error) errors"), .error)
         } else if total.working > 0 {
@@ -245,8 +245,8 @@ public struct GlanceDigest: Equatable, Sendable {
     static func machineLine(_ machines: [GlanceSnapshot.Machine]) -> String {
         let live = machines.filter { $0.link == .live }.count
         if machines.count <= 2, live == machines.count || live == 0 { return machines.map(\.name).joined(separator: " · ") }
-        if live == 0 { return "\(machines.count) machines" }
-        return "\(live) of \(machines.count) machines connected"
+        if live == 0 { return machines.count == 1 ? "1 computer" : "\(machines.count) computers" }
+        return "\(live) of \(machines.count) computers connected"
     }
 
     /// The rows a size has room for, and how many waiting agents are left over: "+N more".
@@ -303,7 +303,7 @@ public struct GlanceDigest: Equatable, Sendable {
         public var since: Date?
         /// `.current` or `.asOf`, never `.refresh`.
         public var age: Age
-        /// Inline: "2 need you · 3 working".
+        /// Inline: "2 waiting · 3 working".
         public var inline: Headline
         public var dimmed: Bool
     }

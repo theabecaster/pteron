@@ -134,14 +134,31 @@ struct ConnectionProblemTests {
 
     @Test func copyNamesTheServer() {
         #expect(OfflineCopy.of(.notAnswering, server: "Studio", address: "").title == "Studio isn't answering")
-        #expect(OfflineCopy.of(.notAnswering, server: "This Mac", address: "").title == "Your Mac isn't answering")
-        #expect(OfflineCopy.of(.hostNotFound, server: "This Mac", address: "").message
-            == "This iPhone is on a private network, but your Mac isn't on it.")
+        #expect(OfflineCopy.of(.notAnswering, server: "studio", address: "").title == "Studio isn't answering")
+        #expect(OfflineCopy.of(.hostNotFound, server: "Studio", address: "").message
+            == "This iPhone is on a private network, but Studio isn't on it.")
+        // Every kind names the computer, never "the Mac" or "server", and says "running", not "open".
+        for kind in ConnectionProblem.Kind.allCases {
+            for address in ["x", "https://studio-rex.tail1234.ts.net"] {
+                let c = OfflineCopy.of(kind, server: "Studio", address: address)
+                for text in [c.title, c.message, c.hint ?? ""] {
+                    #expect(!text.contains("the Mac") && !text.contains("Mac's"), "\(kind): \(text)")
+                    #expect(!text.localizedCaseInsensitiveContains("server"), "\(kind): \(text)")
+                    #expect(!text.contains("Rex is open") && !text.contains("isn't open"), "\(kind): \(text)")
+                }
+            }
+        }
+        #expect(OfflineCopy.of(.notAnswering, server: "Studio", address: "").hint == "Check that Studio is awake and Rex is running.")
+        #expect(OfflineCopy.of(.offPrivateNetwork, server: "Studio", address: "x").hint
+            == "Connect this iPhone to the same network or VPN as Studio, then try again.")
+        #expect(OfflineAction.serverSettings.title == "Computer Settings")
+        #expect(OfflineCopy.short(.offPrivateNetwork) == "Out of range" && OfflineCopy.short(.hostNotFound) == "Not found")
     }
 
-    /// Tailscale is named only where the server's address is a Tailscale one and the phone is off
-    /// Tailscale: there the fix is on this iPhone. Every other case words it as before. (The
-    /// tunnel's own message is the other place, and has its own tests below.)
+    /// Tailscale is named only where the computer's address is a Tailscale one: off Tailscale the
+    /// fix is on this iPhone, and a computer that doesn't answer or let this iPhone in may be a
+    /// Tailscale matter too. Every other case words it as for any address. (The tunnel's own
+    /// message is the other place, and has its own tests below.)
     @Test func copyNamesTailscaleOnlyForATailscaleAddressOffTheTailnet() {
         for kind in ConnectionProblem.Kind.allCases where kind != .tunnelDown {
             for address in ["x", "http://192.168.1.20:8765"] {
@@ -157,6 +174,12 @@ struct ConnectionProblemTests {
             if kind == .offPrivateNetwork {
                 #expect(c.message == "Tailscale isn't connected on this iPhone.")
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == .getTailscale)
+            } else if kind == .notAnswering {
+                #expect(c.hint == "Check that Studio is awake and Rex is running. If no computer connects, turn Tailscale off and on.")
+                #expect(OfflineAction.secondary(for: kind, address: tailnet) == nil)
+            } else if kind == .notAllowed {
+                #expect(c.message == "Rex only accepts devices signed in to the same Tailscale account as Studio.")
+                #expect(OfflineAction.secondary(for: kind, address: tailnet) == nil)
             } else {
                 // A bad address quotes the address, so only its title stays the same.
                 if kind != .badAddress { #expect(c == OfflineCopy.of(kind, server: "Studio", address: "x")) }

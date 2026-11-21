@@ -21,7 +21,7 @@ enum SettingsPage: String, Hashable, CaseIterable {
     }
 
     /// The navigation path that shows this page, so Back leads where a tap would have come from:
-    /// Add Server goes back to Servers, a theme to Appearance.
+    /// Add Server goes back to Computers, a theme to Appearance.
     var path: [SettingsPage] {
         guard self != .main else { return [] }
         return (parent.map { [$0] } ?? []) + [self]
@@ -165,7 +165,7 @@ struct SettingsTopLevel: View {
         let current = prefs.theme
         SettingsList(theme: theme) {
             Section {
-                row(.servers, "Servers", "server.rack",
+                row(.servers, "Computers", "desktopcomputer",
                     value: SettingsSummary.servers(total: servers.count, connected: connected))
                 row(.appearance, "Appearance", "textformat.size",
                     value: SettingsSummary.appearance(theme: current.name, fontSize: prefs.fontSize),
@@ -213,6 +213,8 @@ struct ServerDot: View {
                     Image(systemName: "antenna.radiowaves.left.and.right.slash")
                         .font(.system(size: 11))
                         .foregroundStyle(theme.chrome.tertiary)
+                        // The row says the status in words.
+                        .accessibilityHidden(true)
                 }
             }
         }

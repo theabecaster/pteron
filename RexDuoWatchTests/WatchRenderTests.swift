@@ -278,7 +278,7 @@ import WidgetKit
 
     @Test func theCornersWords() {
         func label(_ scenario: String) -> String? { GlanceDigest(reading(scenario), now: Self.now).accessory(private: false).cornerLabel }
-        #expect(label("one") == "needs you" && label("several") == "need you" && label("working") == "working")
+        #expect(label("one") == "waiting" && label("several") == "waiting" && label("working") == "working")
         #expect(label("quiet") == nil && label("none") == nil)
     }
 

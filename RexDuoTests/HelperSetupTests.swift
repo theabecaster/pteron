@@ -561,8 +561,8 @@ struct HelperSetupTests {
         first.handle(record("download", progress: 10))
         #expect(first.step == .downloading && first.progress == 10)
         #expect(s.title(name: "studio") == "Installing on studio")
-        #expect(state(.repair).title(name: "studio") == "Repairing on studio")
-        #expect(state(.reinstall).title(name: "studio") == "Repairing on studio")
+        #expect(state(.repair).title(name: "studio") == "Reinstalling on studio")
+        #expect(state(.reinstall).title(name: "studio") == "Reinstalling on studio")
     }
 
     /// What the terminal says is never enough: Connected needs the helper's proof and its
@@ -764,7 +764,7 @@ struct HelperSetupTests {
             (16, .busy, "Another install is already running on studio."),
             (17, .notStarted, "\(Brand.beaconName) is installed but didn't start."),
             (18, .noGUI, "Log in on studio, then try again."),
-            (19, .noSystemd, "studio doesn't start background services the usual way. Show details says how to start \(Brand.beaconName)."),
+            (19, .noSystemd, "studio doesn't start background services the usual way. Show Details says how to start \(Brand.beaconName)."),
             (20, .appManagement, "studio didn't let Rex replace the old \(Brand.beaconName). On studio, drag \(Brand.beaconName) from Applications to the Trash, then try again."),
             (21, .oldMacOS, "\(Brand.beaconName) needs macOS 14 or later."),
             (-1, .interrupted, "The install stopped before it finished."),
@@ -962,7 +962,7 @@ struct HelperSetupTests {
         #expect(PasswordCard.title == "Keep notifications coming after you log out?")
         #expect(PasswordCard.message(name: "studio", account: "sam")
             == "studio stops \(Brand.beaconName) when you log out, unless you allow Beacon to keep running. Allowing that takes the password for sam on studio.")
-        #expect(PasswordCard.wrongLine == "That password didn't work. Try again, or choose Not now.")
+        #expect(PasswordCard.wrongLine == "That password didn't work. Try again, or choose Not Now.")
         #expect(PasswordCard.aside("studio") == "Your password goes straight to studio and isn't saved on this iPhone.")
     }
 

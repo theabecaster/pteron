@@ -16,11 +16,11 @@ saw them. It connects to nothing: it reads the snapshot the app wrote (below).
 | `systemMedium` | the headline, the machine line and the other counts; on the right the agent waiting longest as a row, and the strip of agent tiles (up to 8, "+N"). No agents: Glide, "No agents running" and the machines | a row or a waiting agent's tile: `rexduo://pane?…`; elsewhere as small |
 | `systemLarge` | someone waits: the headline; what the longest-waiting agent asks; up to 4 waiting agents; the strip; a card per machine where there is room. Nobody waits: a Glide hero with the headline, the strip, one card per machine | as medium |
 | `accessoryCircular` | a raised hand over the waiting count; with nobody waiting, the mark over the working count in an arc; else the mark | `waiting` |
-| `accessoryRectangular` | "2 need you"; "Claude · api › tests"; "waiting 12 minutes" or the age | `waiting` |
+| `accessoryRectangular` | "2 waiting"; "Claude · api › tests"; "waiting 12 minutes" or the age | `waiting` |
 | `accessoryInline` | "2 need you · 3 working" | the app |
 
 - **Configured the iOS way, by size.** There are no widget settings and no intent.
-- **The headline** is the agent board's: "2 need you", "1 error", "3 working", "All done",
+- **The headline** is the agent board's: "2 waiting", "1 error", "3 working", "All done",
   "All quiet", counted over the machines that were connected at the write (`GlanceDigest`;
   a test in the app holds it to `AgentBoard` over the board's own demo scenarios).
 - **Many machines.** The headline sums them, a machine's name shows only when there are
@@ -320,8 +320,8 @@ counts, orders, dates and dims as they do.
 | Snapshot | The watch app |
 |---|---|
 | none yet, one it can't read, or a higher `v` | the mark and "Open Pteron on iPhone" |
-| no servers | "No machines paired" |
-| agents | the headline ("2 need you"), the machine line when there are several, the age when there is one; the waiting agents, the longest wait first: ring, name, "Needs permission" (the sidebar's words), "12 minutes", place; "+N more"; then one row of counts per machine |
+| no computers | "No computers yet" |
+| agents | the headline ("2 waiting"), the computer line when there are several, the age when there is one; the waiting agents, the longest wait first: ring, name, "Needs your permission" (the sidebar's words: `WatchScreen.words(why:)`, one set for every surface), "12 minutes", place; "+N more"; then one row of counts per machine |
 | a machine that was down at the write | its agents dimmed and last, with no running wait time; the headline says "Last seen 12:04" |
 | over an hour old | everything dimmed, no running wait times, "Open Pteron on iPhone to refresh" |
 
@@ -334,8 +334,8 @@ counts, orders, dates and dims as they do.
   | Family | Shows |
   |---|---|
   | `accessoryCircular` | a raised hand over the waiting count; else the mark over the working count in an arc; else the mark |
-  | `accessoryCorner` | the count with "needs you", "need you" or "working" curved beside it; else the mark |
-  | `accessoryRectangular` (also the Smart Stack) | "2 need you"; "Claude · api › tests"; "waiting 12 minutes" or the age |
+  | `accessoryCorner` | the count with "waiting" or "working" curved beside it; else the mark |
+  | `accessoryRectangular` (also the Smart Stack) | "2 waiting"; "Claude · api › tests"; "waiting 12 minutes" or the age |
   | `accessoryInline` | "2 need you · 3 working" |
 
   The circular, rectangular and inline families are the iPhone Lock Screen's views and the
@@ -405,7 +405,7 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
   | `changed` | the guard refused, or the pane or session is gone | "Not sent. It no longer waits for this." |
   | `unreachable` | the phone couldn't reach the computer; nothing left the phone | "Not sent. Your iPhone can't reach the computer." |
   | `unconfirmed` | the write left and no answer came, or no reply came from the phone in 30 s | "Couldn't confirm. Check the pane." |
-  | (none) | the message never reached the phone | "Not sent. iPhone not reachable." |
+  | (none) | the message never reached the phone | "Not sent. Can't reach your iPhone." |
 
 - **Nothing is tried again by itself,** on either device. While an action is on its way the
   buttons are gone ("Sending…"). After `sent`, `changed` or `unconfirmed` they stay gone for
@@ -468,7 +468,7 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
   deep blue at the top fading to black by the middle (`containerBackground` for the
   navigation); black with the wrist down. On a screen with nothing to list, Glide is drawn in
   the icon's gradient (mint, cyan, sky, indigo, violet) over a soft indigo halo.
-- **State colors:** the headline takes its state's color ("2 need you" waiting, "3 working"
+- **State colors:** the headline takes its state's color ("2 waiting" waiting, "3 working"
   working, "All done" done, "1 error" error); "All quiet" is the foreground. An old snapshot
   keeps the foreground, dimmed, and "Last seen" stays secondary: a stale watch never shows a
   warning color. A machine's counts are each in their state's color (idle secondary), except

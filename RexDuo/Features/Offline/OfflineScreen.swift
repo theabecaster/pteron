@@ -11,51 +11,56 @@ struct OfflineCopy: Equatable {
     /// The one thing to check, when there is one.
     var hint: String?
 
+    /// The computer is named by its name throughout; Tailscale only where the address is a
+    /// Tailscale one, where the fix may be in Tailscale.
     static func of(_ kind: ConnectionProblem.Kind, server name: String, address: String) -> OfflineCopy {
-        // "This Mac" is the default name; mid-sentence it reads as "your Mac".
-        let server = name == "This Mac" ? "your Mac" : name
-        let Server = server.prefix(1).uppercased() + server.dropFirst()
+        let server = name
+        let Server = Messages.capitalized(name)
+        let tailnet = TailscaleApp.isTailnetAddress(address)
         switch kind {
         case .noInternet:
             return OfflineCopy(symbol: "wifi.slash", title: "No connection",
                                message: "This iPhone is offline right now. \(Brand.appName) reconnects as soon as a network is back.")
-        case .offPrivateNetwork where TailscaleApp.isTailnetAddress(address):
+        case .offPrivateNetwork where tailnet:
             // A Tailscale address and no Tailscale here: the one thing to fix is on this iPhone.
-            return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
+            return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: Messages.outOfRangeShort,
                                message: "Tailscale isn't connected on this iPhone.",
-                               hint: "Turn it on in the Tailscale app, signed in as on the computer.")
+                               hint: "Turn it on in the Tailscale app, signed in to the same Tailscale account as \(server).")
         case .offPrivateNetwork:
-            return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Out of range",
+            return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: Messages.outOfRangeShort,
                                message: "Can't reach \(server) from this network.",
-                               hint: "Make sure this iPhone is on the same network or VPN as the Mac.")
+                               hint: "Connect this iPhone to the same network or VPN as \(server), then try again.")
         case .hostNotFound:
             return OfflineCopy(symbol: "network.slash", title: "Can't find \(server)",
                                message: "This iPhone is on a private network, but \(server) isn't on it.",
-                               hint: "Check that the Mac is on the same network, and that its address in Settings is right.")
+                               hint: "Check that \(server) is on the same network, and that its address in Settings is right.")
         case .notAnswering:
+            // On Tailscale a computer that is awake can still not answer while Tailscale is stuck
+            // on this iPhone: turning it off and on is the fix when no computer connects.
             return OfflineCopy(symbol: "moon.zzz", title: "\(Server) isn't answering",
-                               message: "The Mac may be asleep, or Rex isn't open there.",
-                               hint: "Check that the Mac is awake and Rex is open.")
+                               message: "It may be asleep, or Rex isn't running there.",
+                               hint: "Check that \(server) is awake and Rex is running."
+                                   + (tailnet ? " If no computer connects, turn Tailscale off and on." : ""))
         case .notAllowed:
             return OfflineCopy(symbol: "lock", title: "\(Server) didn't let this iPhone in",
-                               message: "Rex only accepts devices signed in to the same account as the Mac.",
+                               message: "Rex only accepts devices signed in to the same \(tailnet ? "Tailscale " : "")account as \(server).",
                                hint: "Sign this iPhone in to that account, then try again.")
         case .insecure:
             return OfflineCopy(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify \(server)",
                                message: "The secure connection failed, so \(Brand.appName) stopped there.",
-                               hint: "Use the Mac's full https:// address in Settings.")
+                               hint: "Use the full https:// address of \(server) in Settings.")
         case .updateServer:
             return OfflineCopy(symbol: "arrow.down.circle", title: "Update Rex on \(server)",
                                message: "Rex there is too old for this version of \(Brand.appName).",
-                               hint: "Update Rex on the Mac, then try again.")
+                               hint: "Update Rex on \(server), then try again.")
         case .updateApp:
             return OfflineCopy(symbol: "arrow.down.circle", title: "Update \(Brand.appName)",
                                message: "\(Server) runs a newer Rex than this version of \(Brand.appName) works with.",
                                hint: "Update \(Brand.appName), then try again.")
         case .badAddress:
             return OfflineCopy(symbol: "link", title: "That address won't work",
-                               message: "“\(address)” isn't a server address.",
-                               hint: "Use the full https:// address of the Mac in Settings.")
+                               message: "“\(address)” isn't a computer's address.",
+                               hint: "Use the full https:// address of \(server) in Settings.")
         case .unknown:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't reach \(server)",
                                message: "Something interrupted the connection. \(Brand.appName) keeps trying.")
@@ -70,13 +75,13 @@ struct OfflineCopy: Equatable {
     static func short(_ kind: ConnectionProblem.Kind) -> String {
         switch kind {
         case .noInternet: return "No internet connection"
-        case .offPrivateNetwork: return "Off the private network"
-        case .hostNotFound: return "Not on this network"
-        case .notAnswering: return "Not answering"
+        case .offPrivateNetwork: return Messages.outOfRangeShort
+        case .hostNotFound: return "Not found"
+        case .notAnswering: return Messages.asleepShort
         case .notAllowed: return "Not allowed in"
         case .insecure: return "Can't verify"
-        case .updateServer: return "Needs a Rex update"
-        case .updateApp: return "Needs an app update"
+        case .updateServer: return "Update Rex"
+        case .updateApp: return "Update \(Brand.appName)"
         case .badAddress: return "Address won't work"
         case .unknown: return "Can't connect"
         // The row is one computer's: it says what that computer does.
@@ -104,7 +109,7 @@ enum OfflineAction: Equatable {
     var title: String {
         switch self {
         case .openSettings: return "Open Settings"
-        case .serverSettings: return "Server Settings"
+        case .serverSettings: return "Computer Settings"
         case .getTailscale: return "Get Tailscale"
         }
     }
@@ -304,7 +309,7 @@ struct OfflineScreen: View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(spacing: 4))
         layout {
             if problem.kind == .badAddress {
-                PrimaryButton(title: "Server Settings", busy: false, theme: theme) { model.openSettings(at: .servers) }
+                PrimaryButton(title: OfflineAction.serverSettings.title, busy: false, theme: theme) { model.openSettings(at: .servers) }
             } else {
                 PrimaryButton(title: "Try Again", busyTitle: "Trying…", busy: server.retrying, theme: theme) {
                     Haptic.tap()
@@ -327,7 +332,7 @@ struct OfflineScreen: View {
     @ViewBuilder
     private func showSidebar(_ theme: TermTheme, height: CGFloat) -> some View {
         if prefs.navigation == .tabs {
-            // No sidebar to show: the Change Session palette lists every machine's sessions.
+            // No sidebar to show: the Change Session palette lists every computer's sessions.
             Button("Change Session") { model.perform(.goTo(.sessions)) }
                 .font(.footnote)
                 .foregroundStyle(theme.chrome.secondary)

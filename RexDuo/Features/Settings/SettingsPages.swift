@@ -5,7 +5,7 @@ import SwiftUI
 // section header that would only repeat it is left out; Notifications keeps its own, as its
 // screen was (docs/notifications.md).
 
-/// Settings → Servers: the list, with swipe and long-press actions, and Add Server.
+/// Settings → Computers: the list, with swipe and long-press actions, and Add Computer.
 struct ServersPage: View {
     @Environment(AppModel.self) private var model
     @Environment(Prefs.self) private var prefs
@@ -16,14 +16,14 @@ struct ServersPage: View {
             Section {
                 ForEach(model.servers) { s in serverRow(s) }
                 NavigationLink(value: SettingsPage.addServer) {
-                    Label("Add Server", systemImage: "plus")
+                    Label("Add Computer", systemImage: "plus")
                 }
             } footer: {
-                SettingsFooter("A server is a computer running Rex. Run `rex server tailscale pair` on it, then scan the code it shows.", theme)
+                SettingsFooter("Run `rex server tailscale pair` on a computer running Rex, then scan the code it shows.", theme)
             }
             .settingsRows(theme)
         }
-        .navigationTitle("Servers")
+        .navigationTitle("Computers")
         .navigationBarTitleDisplayMode(.inline)
         .settingsBar(theme)
     }
@@ -61,9 +61,11 @@ struct ServersPage: View {
             }
         }
         .contextMenu {
-            Button { s.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+            if s.offersReconnect {
+                Button { s.reconnect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+            }
             if saved {
-                Button(role: .destructive, action: remove) { Label("Remove Server", systemImage: "trash") }
+                Button(role: .destructive, action: remove) { Label("Remove Computer", systemImage: "trash") }
             }
         }
     }
@@ -105,7 +107,7 @@ struct AppearancePage: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(theme.bg))
                     .accessibilityHidden(true)
             } footer: {
-                SettingsFooter("Follows Light and Dark Mode. Pinch a pane to change the text size there.", theme)
+                SettingsFooter("Follows Light and Dark Mode. Pinch any pane to change it too.", theme)
             }
             .settingsRows(theme)
 
@@ -115,7 +117,7 @@ struct AppearancePage: View {
                     ForEach(NavigationStyle.allCases) { Text($0.title).tag($0) }
                 }
             } footer: {
-                SettingsFooter("Sidebar lists machines, sessions and tabs at the side. Tabs puts the session's tabs in a strip above the pane, as on the Mac.", theme)
+                SettingsFooter("Sidebar lists computers, sessions and tabs at the side. Tabs puts the session's tabs in a strip above the pane, as in the Rex app.", theme)
             }
             .settingsRows(theme)
             }

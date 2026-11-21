@@ -130,29 +130,29 @@ are the phone's registration, each computer's secret and each helper's pinned ke
 
 | State | Switch | Status line | Fix | Menu |
 |---|---|---|---|---|
-| Healthy: Beacon is the latest version or newer, or the app has no release list to compare it with | on | "Version <version>" (secondary) | none | Send Test Notification, Show Details, Reinstall Beacon, Remove Beacon… |
+| Healthy: Beacon is the latest version or newer, or the app has no release list to compare it with | on | "Beacon <version>" (secondary) | none | Send Test Notification, Show Details, Reinstall Beacon, Remove Beacon… |
 | Beacon is older than the latest version | on | "Update available" (secondary) | Update | as healthy |
 | On and reachable, and Beacon has not taken this phone on this connection yet or has not said its version | on | spinner + "Connecting…" | none | Show Details, Reinstall Beacon, Remove Beacon… |
 | Off by the user | off | none | none | Show Details, Remove Beacon… |
 | Offline | as chosen | "Offline" (secondary) | none | none |
 | Turned off while it could not be reached, until its Beacon has heard | off | "Turns off when it's back" (secondary) | none | none |
-| Beacon not installed | off | none | none | none |
+| Beacon not installed | off | "Turn on to install Beacon" (secondary) | none | none |
 | Not installed, and the computer's Rex can't run the installer (or the computer is someone else's) | on | "Install Beacon by hand" | How | Show Details |
-| Setting up | on | spinner + "Downloading…", "Checking…", "Installing…", "Starting…", "Connecting…" | none | Show Details, Cancel Install |
-| Setting up, waiting for the person | on | "Waiting for you" | Continue | Show Details, Cancel Install |
-| Setup failed | on | "Couldn't download Beacon", "The download didn't pass its check", "No room for Beacon", "Didn't let Beacon install" or "Beacon didn't start" | Retry | Show Details, Remove Beacon… |
+| Setting up | on | spinner + "Downloading…", "Checking…", "Installing…", "Starting…", "Connecting…" | none | Show Details, Stop Install |
+| Setting up, waiting for the person | on | "Waiting for you" | Continue | Show Details, Stop Install |
+| Setup failed | on | "Couldn't download Beacon", "The download didn't pass its check", "No room for Beacon", "Didn't let Beacon install", "Beacon didn't start", "Log in on the computer" or "Another install is running" | Try Again; none for "Beacon can't run here" (an unsupported computer or macOS) | Show Details, Remove Beacon… |
 | Beacon too old: below the oldest version the release list allows (`min_version`), or too old to take the registration and say its version | on | "Beacon needs an update" | Update | Reinstall Beacon, Remove Beacon… |
 | Updating itself, after Update or by itself | on | spinner + "Updating…" | none | Reinstall Beacon, Remove Beacon… |
 | Beacon installed but not running | on | "Beacon isn't running" | Repair | Reinstall Beacon, Remove Beacon… |
 | Repairing the connection to the notification service | on | spinner + "Reconnecting…" | none | Reinstall Beacon, Remove Beacon… |
-| Repair did not work | on | "Couldn't reconnect" | Retry | Reinstall Beacon, Remove Beacon… |
+| Repair did not work | on | "Couldn't reconnect" | Try Again | Reinstall Beacon, Remove Beacon… |
 | Beacon changed | on | "Beacon has changed" | Trust… (a confirm) | Reinstall Beacon, Remove Beacon… |
-| The notification service holds as many computers for this phone as it takes (`409 too_many_secrets`) | on | "Too many computers for this phone" | Retry; the app does not try again by itself | Reinstall Beacon, Remove Beacon… |
-| Mac needs a click | on | spinner + "Click Allow for Pteron Beacon" | none | Show Details, Cancel Install |
+| The notification service holds as many computers for this phone as it takes (`409 too_many_secrets`) | on | "Too many computers for this iPhone" | Try Again; the app does not try again by itself | Reinstall Beacon, Remove Beacon… |
+| Mac needs a click | on | spinner + "Click Allow for Pteron Beacon" | none | Show Details, Stop Install |
 | The notification service asked the phone to wait | on | "Too many tries. Try again in N minutes." under an hour, "…in an hour." or "…in N hours." from an hour on, "…tomorrow." when the wait ends at or after the next midnight in UTC, "…later." when the service gave no time (`RateLimit.text`, from `Retry-After`) | none; the app tries again by itself when the wait is over | Remove Beacon… |
 | A test was sent, for 3 s | on | "Test notification sent" (secondary), or why it was not | none | as healthy |
 | Removing | off, disabled | spinner + "Removing…" | none | none |
-| Remove failed | as chosen | "Couldn't remove Beacon" | Retry | Show Details |
+| Remove failed | as chosen | "Couldn't remove Beacon" | Try Again | Show Details |
 
 When two things are true the first of these decides the row: Removing, Turns off when the
 computer is back, Offline, Remove failed, off, Beacon changed, an install, Updating, Beacon too
@@ -206,7 +206,7 @@ is asked for its status.
 on this connection that it holds the phone's secret and is not paused, while the app puts
 right a helper that lost the phone or holds it paused, and while a try failed and the next one
 is on its way;
-"Couldn't reconnect" once the app's own tries are used up, with Retry to start them again.
+"Couldn't reconnect" once the app's own tries are used up, with Try Again to start them again.
 
 - **Switch on:** resumes this phone on that computer (`set_push_paused` false), after signing
   it up there if it never was. With no helper there (`Prefs.helperSeen` tells "never had one"
@@ -243,9 +243,8 @@ is on its way;
   is the mapping.
 - **Show Details:** a small read-only sheet titled with the computer's name: "Beacon version",
   "System" (`os`), "Last notification" (`last_push_at`: "2 minutes ago", "Never" for null, no
-  row when the field is absent), from `helper_status` (`HelperDetails`), and "Update check",
-  which is the app's own read of the release list: "OK", or "Couldn't check" when its last
-  read failed. When no helper answers it reads "Pteron Beacon on <name>
+  row when the field is absent), from `helper_status` (`HelperDetails`), and "Update check: Couldn't check" when the app's own
+  last read of the release list failed (no row while it is fine). When no helper answers it reads "Pteron Beacon on <name>
   isn't answering." For a computer whose install is under way or failed, Show Details brings
   back the install's sheet instead, at the installer's output (`showSetupDetails`).
 - **How:** beside "Install Beacon by hand". A small sheet, "Install by Hand", with where to
@@ -404,7 +403,7 @@ echo is off and `process.foreground.path` is `pkttyagent` or `loginctl` in `/usr
 
 **Without the sheet.** "Hide" in the sheet (`HelperSetupCenter.hide`) closes it and lets the
 install go on; the computer's row shows where it stands, "Continue" or "Show Details" (`show`)
-brings the sheet back, and "Cancel Install" stops it. How an install ended stays for the row
+brings the sheet back, and "Stop Install" stops it. How an install ended stays for the row
 until the next one (`HelperSetupCenter.failures`); one that failed with its sheet closed keeps
 its tab until then, so "Show Details" still has the installer's output.
 
@@ -416,7 +415,7 @@ the installer's name is never touched.
 
 Before anything closes, the app reads the session from the server (`session.view`) and closes
 only what is still its own (`SetupTabClose.decide`). This holds for every close: a script that
-ended well, Done, Close, Try Again, Stop, "Cancel Install", and a tab left over on a connection.
+ended well, Done, Close, Try Again, "Stop Install", and a tab left over on a connection.
 
 | What the session holds now | What is closed | The entry |
 |---|---|---|
@@ -431,7 +430,7 @@ ended well, Done, Close, Try Again, Stop, "Cancel Install", and a tab left over 
 - The script fails: the tab stays, because "Show details" shows its terminal (the app's
   terminal view in mirror mode, taking no touches). It closes on Close or Try Again in the
   sheet (Try Again closes the old tab before its run opens a new one), on Stop or the row's
-  "Cancel Install", and when the sheet goes away after the installer's output was on screen.
+  "Stop Install", and when the sheet goes away after the installer's output was on screen.
 - After each sync with a server the app closes every tab in its list for that server that no
   run in this app session uses (`SetupSessionCloser.connected`). That covers a failed run's
   tab when the app was killed before the person was done with it, and a close the server did

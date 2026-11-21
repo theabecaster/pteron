@@ -22,7 +22,7 @@ import Testing
     }
 
     @Test func noServersSaysSo() {
-        #expect(screen("unpaired").kind == .message("No machines paired"))
+        #expect(screen("unpaired").kind == .message("No computers yet"))
     }
 
     @Test func aMachineNeverReachedIsThePlaceholder() {
@@ -34,9 +34,9 @@ import Testing
     @Test func waitingAgentsAreListedLongestWaitFirstWithTheAppsWords() {
         let s = screen("several")
         #expect(s.kind == .agents)
-        #expect(s.headline == .text("2 need you") && s.urgency == .waiting)
+        #expect(s.headline == .text("2 waiting") && s.urgency == .waiting)
         #expect(s.rows.map(\.name) == ["Claude", "Aider"])
-        #expect(s.rows.map(\.words) == ["Needs permission", "Has a question"])
+        #expect(s.rows.map(\.words) == ["Needs your permission", "Has a question"])
         #expect(s.rows[0].place == "api › tests" && s.rows[0].machine == "Studio" && s.rows[0].listedMachine == nil)
         #expect(s.rows[0].since == now.addingTimeInterval(-12 * 60))
         #expect(s.rows.allSatisfy { !$0.lastKnown })
@@ -57,9 +57,12 @@ import Testing
     }
 
     @Test func theWordsForEveryReason() {
-        #expect(WatchScreen.words(why: "permission") == "Needs permission")
+        #expect(WatchScreen.words(why: "permission") == "Needs your permission")
         #expect(WatchScreen.words(why: "question") == "Has a question")
-        #expect(WatchScreen.words(why: "auth") == "Needs password")
+        #expect(WatchScreen.words(why: "auth") == "Needs your password")
+        #expect(WatchScreen.sentence("Claude", why: "auth") == "Claude needs your password")
+        #expect(WatchScreen.sentence("Claude", why: "question") == "Claude has a question")
+        #expect(WatchScreen.sentence("Claude", why: nil) == "Claude is waiting for you")
         #expect(WatchScreen.words(why: nil) == "Waiting for you")
         #expect(WatchScreen.words(why: "something new") == "Waiting for you")
     }
@@ -73,7 +76,7 @@ import Testing
 
     @Test func severalMachinesNameEachRowAndGetALine() {
         let s = screen("machines")
-        #expect(s.machineLine == "2 of 3 machines connected")
+        #expect(s.machineLine == "2 of 3 computers connected")
         #expect(s.rows.map(\.listedMachine) == ["Studio", "Laptop"])
         // The machine never reached has no counts row.
         #expect(s.machines.map(\.name) == ["Studio", "Laptop"])

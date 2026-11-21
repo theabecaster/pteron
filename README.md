@@ -34,10 +34,10 @@ empty screen, and in Settings → About) opens its checklist again.
    Address → **Pair**; anywhere, `rex server tailscale pair`. Pteron checks the computer, shows
    its name, account and sessions, and **Add & Open** takes you to its active tab. You can also
    type the computer's address (such as `studio-rex.your-tailnet.ts.net`) with **Enter Address**,
-   or in Settings → Servers → Add Server under **Or Enter Its Address**.
+   or in Settings → Computers → Add Computer under **Or Enter Its Address**.
 
 Repeat step 3 for each computer. A computer that Rex already knows about shows up under
-**Not added** in the sidebar, with an **Add** button.
+**Not Added** in the sidebar, with an **Add** button.
 
 ## Using Pteron
 
@@ -133,11 +133,17 @@ config. A few defaults:
 | ⌥⌘ and an arrow, ⌘] and ⌘[ | Move between panes |
 | ⇧⌘Return | Zoom the pane |
 | ⌘K | Change session |
+| ⌘P, ⇧⌘P | Go to Anything, the command palette |
 | ⌘+, ⌘-, ⌘0 | Text size |
 | ⌘, | Settings |
 
 Option works as Alt (Meta) in the terminal unless your keyboard layout needs it to type a
 character.
+
+A tab's floating windows show as they do in the Rex app; on a narrow screen one at a time, as a
+sheet over the tab, and the pane menu's Floating Windows section lists them. On an iPhone Duo
+standing folded as a tent, the outer screen shows the agent board: who is waiting for you, at a
+glance.
 
 ### Text size and theme
 
@@ -162,10 +168,9 @@ Pteron can tell you when an agent needs your input, when it finishes, or when a 
 for attention. While the app is open, these show as a short banner at the top for panes you
 aren't looking at. While it is closed, they arrive as iPhone notifications.
 
-To get notifications while the app is closed, each computer needs a small add-on, the Pteron
-add-on (on the computer the program is called Pteron Beacon). It runs on Mac and Linux
-computers and keeps itself up to date. After you add a computer, Pteron offers to install the
-add-on on it; tap **Install**.
+To get notifications while the app is closed, each computer needs Pteron Beacon, a small
+program that runs on Mac and Linux computers and keeps itself up to date. After you add a
+computer, Pteron offers to install Beacon on it; tap **Install**.
 
 Everything else is in Settings → Notifications:
 
@@ -173,17 +178,17 @@ Everything else is in Settings → Notifications:
   first time you turn it on, iOS asks for permission. If notifications are turned off for
   Pteron in iOS Settings, the switch shows off and says so; tap **Open Settings** to turn them on.
 - **Choose computers.** With the switch on, each computer has its own switch. Turning a
-  computer on installs the add-on on that computer if it has none; turning it off stops
-  notifications from that computer only, and leaves the add-on installed. A computer that
+  computer on installs Beacon on that computer if it has none ("Turn on to install Beacon");
+  turning it off stops notifications from that computer only, and leaves Beacon installed. A computer that
   can't be reached when you turn it off shows "Turns off when … is back" and stops then.
-- **See how a computer is doing.** A computer that works shows the add-on's version under its
-  name. Otherwise that line says what is wrong, with one button to fix it: **Update**,
-  **Repair**, **Retry**, **Continue** or **Trust…**.
+- **See how a computer is doing.** A computer that works shows its Beacon version under its
+  name ("Beacon 0.6.1"). Otherwise that line says what is wrong, with one button to fix it when
+  one can: **Update**, **Repair**, **Try Again**, **Continue** or **Trust…**.
 - **Send a test.** Touch and hold a computer, or tap **…**, and choose **Send Test
   Notification**. The computer sends one notification to this iPhone.
-- **Remove the add-on.** In the same menu, choose **Remove Add-on…**. It stops notifications
-  from that computer to every phone that used the add-on, and removes the add-on from the
-  computer. **Reinstall Add-on** and **Show Details** are there too.
+- **Remove Beacon.** In the same menu, choose **Remove Beacon…**. It stops notifications
+  from that computer to every iPhone that used Beacon, and removes Beacon from the
+  computer. **Reinstall Beacon** and **Show Details** are there too.
 
 ## Privacy and security
 
@@ -197,7 +202,7 @@ Everything else is in Settings → Notifications:
   name and when it was added, plus daily counts for its limits. It keeps fingerprints of keys,
   never the keys themselves, and it never stores or logs what a notification says. Turning
   notifications off stops each computer from sending and keeps your phone's entry for when you
-  turn them on again; removing an add-on deletes that computer's entry, and entries unused for
+  turn them on again; removing Beacon deletes that computer's entry, and entries unused for
   180 days are deleted.
 - **Beacons are checked.** The app checks each Beacon's identity before it trusts it, and warns
   you if a computer's Beacon changes. Beacon updates are signed and checked before they install.
@@ -205,7 +210,7 @@ Everything else is in Settings → Notifications:
 ## Troubleshooting
 
 **The app says it can't reach a computer, or it is "Out of range".**
-Check that Tailscale is connected on the iPhone and that the computer is on the same tailnet.
+Check that Tailscale is connected on the iPhone and that the computer is on the same Tailscale account.
 Pteron reconnects by itself as soon as it can.
 
 **"Isn't answering".**
@@ -216,18 +221,18 @@ The iPhone is signed in to Tailscale with a different account than the computer.
 the same account.
 
 **"Can't verify" or "That address won't work".**
-Use the computer's full Tailscale address (`https://…ts.net`) in Settings → Servers, or pair
+Use the computer's full Tailscale address (`https://…ts.net`) in Settings → Computers, or pair
 again with `rex server tailscale pair`.
 
 **Notifications don't arrive.**
-Open Settings → Notifications and look at the line under the computer's name. "Add-on isn't
-running": tap **Repair**. "Add-on needs an update": tap **Update**. If iOS has turned
+Open Settings → Notifications and look at the line under the computer's name. "Beacon isn't
+running": tap **Repair**. "Beacon needs an update": tap **Update**. If iOS has turned
 notifications off for Pteron, the section says so and offers **Open Settings**. The computer
-has to be on and Rex has to be running for the add-on to see your agents.
+has to be on and Rex has to be running for Beacon to see your agents.
 
-**"Add-on on … has changed".**
-The add-on on that computer was replaced. Tap **Trust…** if you reinstalled or removed it
-yourself; otherwise choose **Reinstall Add-on** from the computer's menu.
+**"Beacon has changed".**
+Beacon on that computer was replaced. Tap **Trust…** if you reinstalled or removed it
+yourself; otherwise choose **Reinstall Beacon** from the computer's menu.
 
 ## Building from source
 

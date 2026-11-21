@@ -63,8 +63,8 @@ struct HelperSetupSheet: View {
         .tint(theme.accent)
         .preferredColorScheme(theme.isDark ? .dark : .light)
         .interactiveDismissDisabled()
-        .alert("Stop installing?", isPresented: $confirmStop) {
-            Button("Stop", role: .destructive) { model.helperSetup.close(run, cancelled: true) }
+        .alert("Stop installing \(Brand.beaconName)?", isPresented: $confirmStop) {
+            Button("Stop Install", role: .destructive) { model.helperSetup.close(run, cancelled: true) }
             Button("Keep Going", role: .cancel) {}
         } message: {
             Text("\(run.name) keeps the \(Brand.beaconName) it had before, if any.")
@@ -117,9 +117,9 @@ struct HelperSetupSheet: View {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 if details, state.hasTab {
-                    SetupTextButton(title: "Show details", theme: theme, minWidth: 110) { showDetails = true }
+                    SetupTextButton(title: "Show Details", theme: theme, minWidth: 110) { showDetails = true }
                 }
-                SetupTextButton(title: "Cancel", theme: theme, minWidth: 80) {
+                SetupTextButton(title: "Stop Install", theme: theme, minWidth: 80) {
                     if state.hasTab { confirmStop = true } else { model.helperSetup.close(run, cancelled: true) }
                 }
             }
@@ -209,7 +209,7 @@ struct HelperSetupSheet: View {
         case .openSettings: ("Open Settings", {
             if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
         })
-        case .showDetails: ("Show details", { showDetails = true })
+        case .showDetails: ("Show Details", { showDetails = true })
         case .close: ("Close", { model.helperSetup.close(self.run, cancelled: false) })
         }
         if filled {

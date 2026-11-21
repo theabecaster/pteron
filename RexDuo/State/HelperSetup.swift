@@ -505,12 +505,12 @@ enum SetupError: Equatable {
         case .busy: "Another install is already running on \(name)."
         case .notStarted: "\(Brand.beaconName) is installed but didn't start."
         case .noGUI: "Log in on \(name), then try again."
-        case .noSystemd: "\(name) doesn't start background services the usual way. Show details says how to start \(Brand.beaconName)."
+        case .noSystemd: "\(name) doesn't start background services the usual way. Show Details says how to start \(Brand.beaconName)."
         case .appManagement: "\(name) didn't let Rex replace the old \(Brand.beaconName). On \(name), drag \(Brand.beaconName) from Applications to the Trash, then try again."
         case .interrupted: "The install stopped before it finished."
         case .notificationsOff: "Notifications are off for \(Brand.appName)."
         case .identityChanged: "\(Brand.beaconName) on \(name) has changed. Only trust Beacon if you reinstalled it on \(name)."
-        case .manual: "Rex on \(name) is too old to install \(Brand.beaconName) from here. Update Rex on \(name), or install Beacon by hand.\nMac: drag \(Brand.beaconName) to Applications and open it once.\nLinux: run rex-duo-helper install."
+        case .manual: "Rex on \(name) is too old to install \(Brand.beaconName) from here. Update Rex on \(name), or install Beacon by hand.\n\(NotificationCopy.manualSteps.joined(separator: "\n"))"
         }
     }
 
@@ -832,7 +832,7 @@ struct SetupState: Equatable {
     // MARK: What the sheet says
 
     func title(name: String) -> String {
-        kind == .install ? "Installing on \(name)" : "Repairing on \(name)"
+        kind == .install ? "Installing on \(name)" : "Reinstalling on \(name)"
     }
 
     enum Mark: Equatable { case done, current, pending }

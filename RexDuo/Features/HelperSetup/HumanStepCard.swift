@@ -13,7 +13,7 @@ struct HumanStepCard: View {
     /// The words of the Mac's card. They name the program as the Mac's own question does.
     static func allowCopy(name: String) -> (title: String, message: String, aside: String) {
         ("Click Allow for \(Brand.beaconName) on \(name)",
-         "\(name) asks whether \(Brand.beaconName) may show notifications. Beacon only shows a short notice on \(name) when a phone connects. This iPhone gets notifications either way.",
+         "\(name) asks whether \(Brand.beaconName) may show notifications. Beacon only shows a short notice on \(name) when an iPhone connects. This iPhone gets notifications either way.",
          "\(name) may also say \(Brand.beaconName) added a background item. That message is expected.")
     }
 
