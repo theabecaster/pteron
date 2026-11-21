@@ -199,6 +199,8 @@ final class PortsBeaconServerTests: XCTestCase {
         var statuses = 1
         var revealed = 0
         var delivery = TerminalStream.Delivery.delivered
+        /// The limits of a Stop and a Restart run out when a test fires them, never by themselves.
+        let clock = HeldClock()
         /// Runs when the command was typed.
         var afterTyping: (@MainActor () -> Void)?
 
@@ -232,8 +234,20 @@ final class PortsBeaconServerTests: XCTestCase {
         XCTAssertEqual(step, .confirming, "a tap that was on its way restarts nothing")
         XCTAssertEqual(w.typed, [])
         XCTAssertEqual(r.fake.calls(Self.write).count, 0)
+        // The new process's row showed. A later process that gets the first one's number is
+        // not asked the first one's question.
+        ports.learnOwner(r.server, next)
+        sendPorts(r, [5173], pid: 7)
+        sendForeground(r, pid: 70, name: "npm")
+        let back = await eventually { r.server.portRow(row.id)?.entry.pid == 7 && r.server.meta["block:1a"]?.foregroundPID == 70 }
+        XCTAssertTrue(back)
+        let reused = try XCTUnwrap(r.server.portRow(row.id))
+        XCTAssertNil(ports.note(r.server, reused), "the question went with its process")
         r.stop()
     }
+
+    private static let failedFor: TimeInterval = 2000
+    private static let revealLimit: TimeInterval = 41
 
     private func rig(foreground: JSONObject = ["pid": 70, "name": "npm"]) async throws -> Rig {
         let r = try await Rig(revision: 18, creators: .result(PortsTests.creators()))
@@ -244,12 +258,17 @@ final class PortsBeaconServerTests: XCTestCase {
         return r
     }
 
-    /// Waits run at a twentieth of their length.
+    /// Every wait is on the test's clock: a limit runs out when the test fires it. The limits
+    /// a test fires each have a length of their own, so one is told from another.
     private func actions(_ w: World) -> PortActions {
         var parts = PortActions.Parts()
-        parts.sleep = { try? await Task.sleep(nanoseconds: UInt64(max($0, 0) / 20 * 1_000_000_000)) }
-        parts.failedFor = 2000
-        parts.revealLimit = 40
+        let clock = w.clock
+        parts.sleep = { await clock.sleep($0) }
+        addTeardownBlock { clock.end() }
+        parts.failedFor = Self.failedFor
+        parts.revealLimit = Self.revealLimit
+        XCTAssertEqual(Set([parts.shellLimit, parts.portLimit, parts.revealLimit, parts.failedFor, parts.readLimit, parts.leaveLimit,
+                            parts.stillAfter, parts.shareLimit]).count, 7, "only the read's limit and Stop's look share a length, and no test fires those")
         parts.only = { nil }
         parts.notify = { text, action in
             w.said.append(text)
@@ -263,7 +282,7 @@ final class PortsBeaconServerTests: XCTestCase {
             w.asked.append((action, args))
             return action == "port_owner" ? w.owner : w.share
         }
-        parts.uptime = { ProcessInfo.processInfo.systemUptime * 20 }
+        parts.uptime = { clock.now }
         parts.sharePossible = { _ in w.possible }
         parts.statusReads = { _ in w.statuses }
         parts.paneReady = { _, _ in w.paneReady }
@@ -619,11 +638,14 @@ final class PortsBeaconServerTests: XCTestCase {
         XCTAssertNil(ports.restartCommand(r.server, row), "no Restart before the Beacon named the job")
         await learned(ports, r, row, w)
         XCTAssertEqual(ports.restartCommand(r.server, row)?.text, "npm run dev")
+        let waits = w.clock.pending, asked = w.count("port_owner")
         ports.askRestart(r.server, row)
         guard case .confirm(let command)? = ports.note(r.server, row) else { return XCTFail("the row asks") }
         XCTAssertEqual(PortRestartCopy.confirm(command), "Restart: npm run dev")
         XCTAssertFalse(ports.offersStop(r.server, row))
-        try? await Task.sleep(for: .milliseconds(300))
+        // The question started nothing that could type later: no wait is out, and nothing was asked.
+        XCTAssertEqual(w.clock.pending, waits)
+        XCTAssertEqual(w.count("port_owner"), asked)
         XCTAssertEqual(r.fake.calls(Self.write).count, 0)
         XCTAssertEqual(w.typed, [])
         ports.dismissRestart(r.server, row)
@@ -642,9 +664,9 @@ final class PortsBeaconServerTests: XCTestCase {
         w.afterTyping = { [self] in sendPorts(r, [5173], pid: 8) }
         let run = Task { await ports.restartNow(r.server, row) }
         // The pane is shown first, and nothing is typed until it shows a current screen.
-        let shown = await eventually { w.revealed == 1 }
+        // The Restart is parked on the pane: it goes on only when the pane says it shows.
+        let shown = await eventually { w.revealed == 1 && w.paneWaiters.count == 1 }
         XCTAssertTrue(shown)
-        try? await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(r.fake.calls(Self.write).count, 0, "no Ctrl-C into a pane that isn't on screen")
         w.show()
         await stopsOnInterrupt(r)
@@ -674,6 +696,8 @@ final class PortsBeaconServerTests: XCTestCase {
         XCTAssertEqual(ports.note(r.server, row), .restarting)
         XCTAssertEqual(PortRowView.words(.restarting), "Restarting…")
         // The port never comes back.
+        let waited = await w.clock.fireWhenWaiting(ports.parts.portLimit)
+        XCTAssertTrue(waited)
         let step = await run.value
         XCTAssertEqual(step, .failed(.noPort))
         XCTAssertEqual(ports.note(r.server, row), .restartFailed)
@@ -710,7 +734,12 @@ final class PortsBeaconServerTests: XCTestCase {
         await learned(ports, r, row, w)
         ports.askRestart(r.server, row)
         w.paneReady = false
-        let step = await ports.restartNow(r.server, row)
+        let run = Task { await ports.restartNow(r.server, row) }
+        let parked = await eventually { w.paneWaiters.count == 1 }
+        XCTAssertTrue(parked)
+        let waited = await w.clock.fireWhenWaiting(Self.revealLimit)
+        XCTAssertTrue(waited)
+        let step = await run.value
         XCTAssertEqual(step, .failed(.paneNotReady))
         XCTAssertEqual(w.revealed, 1)
         XCTAssertEqual(r.fake.calls(Self.write).count, 0)
@@ -725,7 +754,12 @@ final class PortsBeaconServerTests: XCTestCase {
         await learned(ports, r, row, w)
         ports.askRestart(r.server, row)
         // The Ctrl-C goes, and the server ignores it.
-        let step = await ports.restartNow(r.server, row)
+        let run = Task { await ports.restartNow(r.server, row) }
+        let stopped = await eventually { r.fake.calls(Self.write).count == 1 }
+        XCTAssertTrue(stopped)
+        let waited = await w.clock.fireWhenWaiting(ports.parts.shellLimit)
+        XCTAssertTrue(waited)
+        let step = await run.value
         XCTAssertEqual(step, .failed(.stillRunning))
         XCTAssertEqual(r.fake.calls(Self.write).count, 1)
         XCTAssertEqual(w.typed, [], "no command into a pane whose program still runs")
@@ -743,11 +777,42 @@ final class PortsBeaconServerTests: XCTestCase {
         XCTAssertTrue(stopped)
         // The port goes, and an editor is in front, not the shell.
         r.fake.reply(Self.process, ["foreground": ["pid": 91, "name": "vim"] as JSONObject])
+        let reads = r.fake.calls(Self.process).count
         sendPorts(r, [])
         sendForeground(r, pid: 91, name: "vim")
+        // The pane's processes are read, they name the editor, and the wait goes on to its limit.
+        let read = await eventually { r.fake.calls(Self.process).count > reads }
+        XCTAssertTrue(read)
+        let waited = await w.clock.fireWhenWaiting(ports.parts.shellLimit)
+        XCTAssertTrue(waited)
         let step = await run.value
         XCTAssertEqual(step, .failed(.stillRunning))
         XCTAssertEqual(w.typed, [])
+        r.stop()
+    }
+
+    func testRestartTypesNoCommandWhenTheReadNamesTheShellAndTheEventsNameAnother() async throws {
+        let r = try await rig()
+        let row = try await ready(r)
+        let w = World(), ports = actions(w)
+        await learned(ports, r, row, w)
+        ports.askRestart(r.server, row)
+        let run = Task { await ports.restartNow(r.server, row) }
+        let stopped = await eventually { r.fake.calls(Self.write).count == 1 }
+        XCTAssertTrue(stopped)
+        // The read says the job's shell (60) is in front; Rex's events say an editor is. The
+        // last look before the write goes by the events, so they must name the shell too.
+        r.fake.reply(Self.process, ["foreground": ["pid": 60, "name": "zsh"] as JSONObject])
+        let reads = r.fake.calls(Self.process).count
+        sendPorts(r, [])
+        sendForeground(r, pid: 91, name: "vim")
+        let read = await eventually { r.fake.calls(Self.process).count > reads }
+        XCTAssertTrue(read)
+        let waited = await w.clock.fireWhenWaiting(ports.parts.shellLimit)
+        XCTAssertTrue(waited)
+        let step = await run.value
+        XCTAssertEqual(step, .failed(.stillRunning))
+        XCTAssertEqual(w.typed, [], "nothing is typed in front of a program the events name")
         r.stop()
     }
 
@@ -763,7 +828,13 @@ final class PortsBeaconServerTests: XCTestCase {
         let step = await run.value
         XCTAssertEqual(step, .failed(.notTyped))
         w.delivery = .delivered
-        try? await Task.sleep(for: .milliseconds(500))
+        // Everything the Restart left behind has run: its last timer takes the row's "Couldn't
+        // restart" away, and no wait is out after it.
+        XCTAssertEqual(ports.note(r.server, row), .restartFailed)
+        let waited = await w.clock.fireWhenWaiting(Self.failedFor)
+        XCTAssertTrue(waited)
+        let cleared = await eventually { ports.note(r.server, row) == nil }
+        XCTAssertTrue(cleared)
         XCTAssertEqual(w.typed, [], "an unsent command stays unsent")
         XCTAssertEqual(w.said.count, 1)
         XCTAssertEqual(w.said.first?.hasSuffix(" stopped, but its command wasn't sent. Start it again in its pane."), true)

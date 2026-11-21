@@ -116,9 +116,16 @@ final class PortsPlaceServerTests: XCTestCase {
         var actions: [String?] = []
     }
 
-    private func actions(_ said: Said, stillAfter: TimeInterval = 5, only: String? = nil) -> PortActions {
+    /// With a clock, every wait of a Stop is on it: its look after `stillAfter` comes when the
+    /// test fires it.
+    private func actions(_ said: Said, clock: HeldClock? = nil, only: String? = nil) -> PortActions {
         var parts = PortActions.Parts()
-        parts.stillAfter = stillAfter
+        if let clock {
+            parts.sleep = { await clock.sleep($0) }
+            addTeardownBlock { clock.end() }
+            // A length no other wait of a Stop has, so the test fires this one and no other.
+            parts.stillAfter = 7
+        }
         parts.only = { only }
         parts.notify = { text, action in
             said.texts.append(text)
@@ -520,9 +527,11 @@ final class PortsPlaceServerTests: XCTestCase {
     func testAProgramThatKeepsItsPortIsMarkedStillRunningAndStopCanBeTappedAgain() async throws {
         let r = try await rig()
         let row = try await ready(r)
-        let said = Said(), ports = actions(said, stillAfter: 0.3)
+        let said = Said(), clock = HeldClock(), ports = actions(said, clock: clock)
         _ = await ports.stopNow(r.server, row)
         XCTAssertEqual(ports.status(r.server, row), .stopping)
+        let waited = await clock.fireWhenWaiting(ports.parts.stillAfter)
+        XCTAssertTrue(waited)
         let still = await eventually { ports.status(r.server, row) == .stillRunning }
         XCTAssertTrue(still)
         XCTAssertEqual(r.fake.count(Self.write), 1, "never a second interrupt by itself")
@@ -536,13 +545,17 @@ final class PortsPlaceServerTests: XCTestCase {
     func testAPortThatWentTakesItsMarkWithIt() async throws {
         let r = try await rig()
         let row = try await ready(r)
-        let said = Said(), ports = actions(said, stillAfter: 0.4)
+        let said = Said(), clock = HeldClock(), ports = actions(said, clock: clock)
         _ = await ports.stopNow(r.server, row)
         sendPorts(r, block: "block:1a", [])
         let gone = await eventually { !r.server.portRows.contains { $0.id == row.id } }
         XCTAssertTrue(gone, "the row goes when the server says the port is gone")
-        await quiet(600)
-        XCTAssertNil(ports.status(r.server, row))
+        // The look after the Ctrl-C finds the port gone and takes the mark away.
+        XCTAssertEqual(ports.status(r.server, row), .stopping)
+        let waited = await clock.fireWhenWaiting(ports.parts.stillAfter)
+        XCTAssertTrue(waited)
+        let cleared = await eventually { ports.status(r.server, row) == nil }
+        XCTAssertTrue(cleared)
         // The same port again, held by a new process: a fresh row, with no mark from before.
         sendPorts(r, block: "block:1a", [5173], pid: 70)
         _ = await eventually { r.server.portRows.contains { $0.id == row.id } }
