@@ -367,8 +367,9 @@ final class ServerConnection: Identifiable {
     }
 
     /// `deviceID` ends the client label (` #<id>`), which is how the helper recognizes this phone.
+    /// `log`: the connection log, which gets this connection's state changes and retries.
     init(config: ServerConfig, prefs: Prefs, notifier: AgentNotifier, push: PushRegistrar? = nil,
-         network: NetworkWatch? = nil, deviceID: String) {
+         network: NetworkWatch? = nil, deviceID: String, log: ConnectionLog? = nil) {
         self.prefs = prefs
         self.config = config
         self.notifier = notifier
@@ -386,7 +387,13 @@ final class ServerConnection: Identifiable {
         if delay > 0 { control.linkDelay = LinkDelay(roundTrip: .milliseconds(delay)) }
         #endif
         control.onEvent = { [weak self] seq, ev in self?.receive(seq: seq, event: ev) }
-        control.onStateChange = { [weak self] st in self?.controlChanged(st) }
+        // The log knows the server by its id alone: no name and no address.
+        let reporter = log.map { ConnectionReporter(log: $0, server: ConnectionDiagnostics.key(config)) }
+        control.onStateChange = { [weak self] st in
+            reporter?.changed(st)
+            self?.controlChanged(st)
+        }
+        control.onRetryScheduled = { reporter?.retryScheduled(after: $0) }
         control.onReconnected = { [weak self] _ in
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)

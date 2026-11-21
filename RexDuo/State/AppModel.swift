@@ -371,6 +371,8 @@ final class AppModel {
 
     /// The phone's network. Nil in tests and the test host.
     @ObservationIgnored let network: NetworkWatch?
+    /// What happened to the connections, kept across launches. Nil in tests and the test host.
+    @ObservationIgnored let connectionLog: ConnectionLog?
     /// Writes the snapshot the widgets read. It does nothing in tests, the test host and test
     /// launches (`GlanceWriter.Mode`).
     @ObservationIgnored let glance: GlanceWriter
@@ -386,9 +388,11 @@ final class AppModel {
     /// `connect: false` builds no servers (unit tests and the test host). With `connect`, the
     /// servers are built here and none is started: `sceneVisible()` starts them. `glance`: the
     /// snapshot's writer; without one, a writer that is on only in the app's own launches.
-    init(prefs: Prefs, connect: Bool = true, glance: GlanceWriter? = nil) {
+    /// `log`: the connection log (`ConnectionDiagnostics`); nil records nothing.
+    init(prefs: Prefs, connect: Bool = true, glance: GlanceWriter? = nil, log: ConnectionLog? = nil) {
         self.prefs = prefs
         recentTabs = Self.isTestLaunch ? [] : prefs.recentTabs
+        connectionLog = log
         let mode = connect ? GlanceWriter.Mode.current() : .off
         // The App Group's container is looked up at the writer's first read or write, off the
         // main thread, not here on the launch path.
@@ -406,7 +410,7 @@ final class AppModel {
         push = PushRegistrar(prefs: prefs, deviceID: PushIdentity.deviceID(vendorID: UIDevice.current.identifierForVendor),
                              release: ReleaseCheck(fetcher: fetcher))
         helperSetup = HelperSetupCenter(push: push, prefs: prefs, fetcher: fetcher)
-        network = connect ? NetworkWatch() : nil
+        network = connect ? NetworkWatch(log: log) : nil
         push.servers = { [weak self] in self?.servers ?? [] }
         push.setup = helperSetup
         // An install's sheet takes the screen once Settings has closed.
@@ -474,7 +478,7 @@ final class AppModel {
             if let s = old[cfg.id], s.config == cfg { return s }
             old[cfg.id]?.stop()
             let s = ServerConnection(config: cfg, prefs: prefs, notifier: notifier, push: push, network: network,
-                                     deviceID: push.deviceID)
+                                     deviceID: push.deviceID, log: connectionLog)
             helperSetup.attach(s)
             s.agentsKnown = { [weak self] in self?.tidy.request() }
             s.forward = forward

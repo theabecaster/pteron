@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import RexKit
 
 /// Watches the phone's network with `NWPathMonitor`, off the main thread, and reports a
 /// `NetworkSnapshot` on the main actor when it changes. A change is the cue to retry servers that
@@ -14,14 +15,19 @@ final class NetworkWatch {
     @ObservationIgnored private let override: NetworkSnapshot?
     @ObservationIgnored private var primed = false
 
-    init() {
+    /// `log`: the connection log, which gets a line when the path's facts change.
+    init(log: ConnectionLog? = nil) {
         override = Self.debugOverride
         if let override { snapshot = override; return }
         monitor.pathUpdateHandler = { [weak self] path in
             // On the monitor's queue: the interface scan stays off the main thread.
-            let snap = NetworkSnapshot(reachable: path.status == .satisfied, onPrivateNetwork: PrivateNetwork.isConnected(),
+            let tailnet = PrivateNetwork.isConnected()
+            let snap = NetworkSnapshot(reachable: path.status == .satisfied, onPrivateNetwork: tailnet,
                                        route: path.availableInterfaces.map(\.name).joined(separator: ","),
                                        expensive: path.isExpensive)
+            // Four yes-or-no facts and no interface name; the log leaves out a repeat.
+            log?.record(.network(.init(satisfied: path.status == .satisfied, expensive: path.isExpensive,
+                                       constrained: path.isConstrained, tailnet: tailnet)))
             Task { @MainActor in self?.apply(snap) }
         }
         monitor.start(queue: DispatchQueue(label: "dev.abrahamgonzalez.rexduo.network", qos: .utility))

@@ -36,7 +36,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 
 - `Packages/RexKit`: the protocol layer. `RexControl` (control socket and RPC), models,
   `TerminalStream` (data socket, reconnect, input queue, `APCFilter`, `DataFrame`), file transfer,
-  folder listing (`DirLister`) and `ShellEscape`. Foundation only,
+  folder listing (`DirLister`), `ShellEscape` and the connection log (`ConnectionLog`). Foundation only,
   so it tests on macOS.
 - `Packages/RexGlance`: what the app shares with its extensions (docs/glance.md). `GlanceModel`
   holds `Brand` (the product's names), the `rexduo:` links that open the app (`DeepLink`,
@@ -55,6 +55,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   on a watchOS simulator with the scheme `RexDuoWatch`.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
+  `ConnectionDiagnostics` (the connection log's file; docs/architecture.md, The connection log),
   `GlanceWriter` (the snapshot's one writer), `GlanceBridge` (sends each written snapshot to the
   watch), `GlanceActions` (answers the watch's Enter and Interrupt: status read, guard, one
   write), `NotificationActions` (the same two on a question's notification, through

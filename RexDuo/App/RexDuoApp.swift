@@ -21,7 +21,9 @@ struct RexDuoApp: App {
         let prefs = Prefs.shared
         _prefs = State(initialValue: prefs)
         // An offline replay or demo has no server either.
-        let model = AppModel(prefs: prefs, connect: !Self.isTestHost && !Self.runsOffline)
+        let connect = !Self.isTestHost && !Self.runsOffline
+        let log = connect ? ConnectionDiagnostics.launchLog() : nil
+        let model = AppModel(prefs: prefs, connect: connect, log: log)
         _model = State(initialValue: model)
         // For an action on a notification in a launch that never shows a view.
         AppDelegate.launching(with: model)
@@ -88,6 +90,7 @@ struct RexDuoApp: App {
         // `initial`: the phase the scene starts in counts too (old and new are then the same).
         .onChange(of: phase, initial: true) { old, p in
             guard !Self.isTestHost else { return }
+            ConnectionDiagnostics.phaseChanged(p, log: model.connectionLog)
             for step in ScenePhases.steps(for: p, initial: old == p) {
                 switch step {
                 case .sceneVisible:

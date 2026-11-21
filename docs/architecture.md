@@ -177,6 +177,44 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   connected on this iPhone." and offers Get Tailscale (`TailscaleApp`) instead of Open Settings.
   Every other case is worded without naming a product.
 
+### The connection log
+
+What happened to the connections is kept in a file, so there is evidence after the app was closed
+or crashed. Nothing shows it; `ConnectionLog.export` gives it as text for a diagnostics file the
+user shares.
+
+- **Where:** `Application Support/Diagnostics/connections.clog` (`State/ConnectionDiagnostics.swift`),
+  left out of backups. Application Support and not Caches, which the system may empty. The types
+  are in RexKit: `ConnectionEvent` (one line), `ConnectionJournal` (the rings and the file's
+  format), `ConnectionLog` (the queue and the file), `ConnectionReporter` (a `RexControl`'s states
+  as events).
+- **What it holds:** per server the newest 200 events of its control connection: `connecting`,
+  `connected` (with the milliseconds the attempt took), `closed` (a kind such as timeout, lost,
+  reset, refused, unreachable, dns, tls, http, auth, closed, policy, revision, plus the error
+  code, the HTTP status or close code, and the POSIX or TLS code under it), `retry` (the wait
+  before the next attempt) and `stopped`. And 200 events of the app: each launch with its build
+  number, each scene phase, and each change of the network path as four yes-or-no facts
+  (satisfied, expensive, constrained, a Tailscale address on an interface). At most 12 server
+  rings; one server more pushes out the ring that was quiet longest.
+- **The privacy rule:** an event is numbers only (`ConnectionEvent` has no text field). No host
+  name, tailnet name, address, URL, computer label, session or pane name, terminal content or
+  token can be in the file or in the exported text. A server is a hash of its id (a random UUID),
+  salted with a number made on the device, and the export calls it "Server 1", "Server 2" in
+  Settings' order; a failure keeps its codes and never its message or the server's close reason.
+  `ConnectionLogTests.testNoNameOrAddressReachesTheFileOrTheExport` holds the rule. A new kind of
+  event keeps it: add a number, never a string.
+- **Cost:** only a change of connection state, of the network path or of the scene's phase
+  records; nothing per frame, per key or on the terminal's feed path. `record` reads the time and
+  hands the event to a serial utility queue (under a microsecond on the caller). The file is
+  written on that queue at most once per 0.5 s however many events came, and at once when the
+  app goes to the background. A write appends 32 bytes per event; every 400 appended events the
+  file is written again from the rings, atomically, so it stays under 96 KB.
+- **Damage:** every event has a check byte. A file that is not the format or holds a damaged
+  event is dropped whole and started again; a file that ends inside an event (the app died in a
+  write) keeps the whole events before it. A file that is there and can't be read (the phone was
+  not unlocked yet) is left alone, and that launch's events stay in memory. Reading it never
+  fails the launch.
+
 ## First run
 
 `Features/Onboarding` is a short setup guide for an install with no computer yet.
@@ -242,6 +280,14 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - Models and pure helpers (`APCFilter`, `DataFrame`, `TerminalLayout`, `SplitGeometry`) are
   value types.
 - Reconnects bump a generation counter; every socket callback checks it before touching state.
+- `RexControl` reads time and opens its socket through a seam (`ControlSeam.swift`): a
+  `ControlClock` (now, a wait, a repeating timer) and a factory of `ControlSocket`s, whose
+  requirements are `URLSessionWebSocketTask`'s own methods. The app always gets the system's clock
+  and URLSession's task; tests pass a clock they move by hand and sockets whose callbacks they
+  call themselves (`ControlTimingTests`), so the backoff, the deadlines and the generation checks
+  are tested without a server or a real wait.
+- `ConnectionLog` is called from the main actor and from the network monitor's queue; its state
+  lives on its own serial queue, where the file is read and written.
 - Ports' relay (`TunnelRelay`) runs off the main actor: after `data.connect` the bytes go between
   the phone's loopback connection (Network, on its own queue) and the tunnel's data connection
   (its own URLSession per open page, with a background delegate queue), 64 KiB at a time, each
