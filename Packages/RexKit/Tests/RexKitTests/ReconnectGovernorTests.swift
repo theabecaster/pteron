@@ -223,10 +223,11 @@ final class ReconnectGovernorTests: XCTestCase {
     /// The owner's case. One computer is off and selected; two are healthy. The phone comes
     /// back on a tunnel that is slow to wake: every host's first attempt runs into its deadline,
     /// so the breaker opens, and the host that is off is the first one it tries (it was the last
-    /// one good: the worst order). The healthy hosts are back without a tap, 41 s after the
-    /// return on Wi-Fi: 2.5 s for the pings, then four attempts of 10 s in turn (the off host,
-    /// each healthy host's first, the off host again) before a healthy host's second attempt
-    /// answers. The host that is off gets no attempt inside its floor in all of that.
+    /// one good: the worst order). The healthy hosts are back without a tap, about 44 s after
+    /// the return on Wi-Fi: 2.5 s for the pings, then four attempts of 10 s in turn (the off
+    /// host, each healthy host's first, the off host again), then a healthy host's second
+    /// attempt answers and the other follows half a second later. The host that is off gets no
+    /// attempt inside its floor in all of that.
     func testAnOffSelectedHostDoesNotStrandHealthyOnesOnASlowReturn() async {
         makeHosts(3)
         await connectAll()
@@ -257,7 +258,7 @@ final class ReconnectGovernorTests: XCTestCase {
             await clock.advance(by: 1)
         }
         let took = try! XCTUnwrap(back, "the healthy hosts never came back")
-        XCTAssertLessThanOrEqual(took, 45, "the healthy hosts were back \(took) s after the return")
+        XCTAssertLessThanOrEqual(took, 50, "the healthy hosts were back \(took) s after the return")
         XCTAssertEqual(taps, 0, "without a tap")
         XCTAssertFalse(governor.breakerOpen)
         // The host that is off: no attempt inside its floor, and few in the 15 minutes.
