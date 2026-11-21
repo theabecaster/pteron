@@ -91,11 +91,14 @@ enum GhosttyScrollMath {
 /// the difference (`bounce`, the same shift a rubber band at the bottom uses). While the
 /// viewport follows the active area and the user has not scrolled the covered rows back into
 /// view, the render thread holds that shift at the pin (`GhosttyScrollMath.pin`), so the row the
-/// program writes on stays above the keyboard as the screen fills. A shift the user left short of
-/// the pin holds while nothing is written, or while a finger or the scroll's momentum holds the
-/// view (`setTouching`); output after that goes back to the pin, so the newest rows and the cursor
-/// never stream on under the keyboard. Those moves count in `rebase` like any other move the
-/// terminal makes by itself.
+/// program writes on stays above the keyboard as the screen fills: the view sticks to the
+/// bottom (`following`). A user scroll that leaves the pin leaves it, and output never brings it
+/// back: new rows take the shift down by as much, so what the user reads holds still, and once
+/// the covered rows are used up the viewport goes on into the scrollback (`holdReadingPlace`).
+/// It sticks again at the pin (a scroll back there, or a release within a row of it, which the
+/// scroll view takes to the pin), on input or the jump to the bottom (`.bottom`), and when the
+/// keyboard shows over a view at the bottom. Those moves count in `rebase` like any other move
+/// the terminal makes by itself.
 ///
 /// `@unchecked Sendable`: `lock` guards the block marked so. The render-side block is only
 /// touched inside `GhosttyCore.lockFrame` (terminal and render state locks held), which only one
@@ -138,6 +141,9 @@ final class GhosttyScrollState: @unchecked Sendable {
         var alternateScreen = false
         /// At the bottom, the grid's shift stays at the pin as the screen fills (see "The cover").
         var following = true
+        /// The shift that keeps the last row with content above the cover, as of the last frame at
+        /// the bottom.
+        var pin = 0
 
         var maxRow: Int { GhosttyScrollMath.maxRow(total: total, len: len) }
     }
@@ -157,7 +163,8 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// Pixels the find bar covers at the view's bottom, apart from the keyboard's cover.
     private var findInsetWanted = 0
     private var findInsetTaken = 0
-    private var touchingWanted = false
+    /// The grid was resized or reset since the last frame.
+    private var gridChangedWanted = false
     private var latest = Snapshot()
     private var sent = Snapshot()
     private var publishScheduled = false
@@ -184,10 +191,10 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// The shift that keeps the last row with content above the cover (last frame's).
     private var pin = 0
     private var following = true
-    /// A finger or the scroll's momentum holds the view, as of this frame.
-    private var touching = false
     private var frameActive = true
     private var frameRows = 0
+    /// Last frame's screen was the alternate one.
+    private var frameAlternate = false
     /// This frame's request was a position from the scroll view: its shift is the user's.
     private var positioned = false
     /// This frame's request set the shift at the bottom (a position there, or lines through the
@@ -240,11 +247,11 @@ final class GhosttyScrollState: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// A finger or the scroll's momentum holds the view: output leaves a shift short of the pin
-    /// where it is until it lets go (see "The cover"). Doesn't ask for a frame.
-    func setTouching(_ on: Bool) {
+    /// The grid was resized or reset: rows that move in the next frame were not written below
+    /// the view, and `holdReadingPlace` leaves them alone. Any thread; doesn't ask for a frame.
+    func gridChanged() {
         lock.lock()
-        touchingWanted = on
+        gridChangedWanted = true
         lock.unlock()
     }
 
@@ -290,7 +297,8 @@ final class GhosttyScrollState: @unchecked Sendable {
             overscanGeneration = generation
         }
         let cell = max(1, cellHeightPx)
-        if cell != cellHeight {
+        let cellChanged = cell != cellHeight
+        if cellChanged {
             cellHeight = cell
             fraction = 0
         }
@@ -299,8 +307,14 @@ final class GhosttyScrollState: @unchecked Sendable {
         // Where the terminal is now. If that isn't where we left it, it moved by itself.
         var truth = GhosttyScrollMath.position(offset: active ? bar.maxRow : min(bar.offset, bar.maxRow),
                                                fraction: fraction, cellHeight: cell)
-        rebase += truth - position
+        let grown = truth - position
+        rebase += grown
         position = truth
+        var tracking = false
+        ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+        ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        let alternate = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
 
         lock.lock()
         let request = pending
@@ -310,19 +324,35 @@ final class GhosttyScrollState: @unchecked Sendable {
         coverTaken = wanted
         let insetWanted = findInsetWanted
         findInsetTaken = insetWanted
-        touching = touchingWanted
+        let gridChanged = gridChangedWanted
+        gridChangedWanted = false
         lock.unlock()
         if wanted != cover || insetWanted != findInset {
+            // The keyboard shows over a view at the bottom: the prompt comes above it, whatever
+            // the user left before it hid. With nothing covered there is no pin to be short of.
+            if cover == 0, wanted > 0 { following = true }
             cover = wanted
             findInset = insetWanted
             coverChanged = true
-            if covered == 0 { pin = 0 }
+            if covered == 0 {
+                pin = 0
+                following = true
+            }
         }
 
         movedViewport = false
         appliedReveal = false
         positioned = false
         shiftedAtBottom = false
+        // New rows under a view the user scrolled off the pin: it holds still (`holdReadingPlace`).
+        // Not for rows a resize, a reset, a new cell size or a change of screen moved.
+        if grown > 0, active, !following, covered > 0, !gridChanged, !cellChanged, !alternate, !frameAlternate,
+           bar.len == frameRows {
+            if holdReadingPlace(t, grown: grown, maxRow: bar.maxRow, cell: cell) {
+                (bar, active) = Self.read(t)
+                movedViewport = true
+            }
+        }
         if let request {
             let before = (bar.offset, active)
             // What the scroll view's offset stands for: the row position plus the shift.
@@ -340,9 +370,9 @@ final class GhosttyScrollState: @unchecked Sendable {
                 bounce = r.bounce
                 positioned = true
                 // At the pin or past it the shift follows the screen again; short of it, the
-                // user is looking at the covered rows and it stays where they left it until
-                // output arrives with nothing holding the view (`finishFrame`, which also decides
-                // again with this frame's pin).
+                // user is looking at the covered rows, and it holds where they left it under
+                // output (`holdReadingPlace`) until they come back to it, type or jump
+                // (`finishFrame` decides again with this frame's pin).
                 following = r.bottom && bounce >= pin - 1
                 shiftedAtBottom = r.bottom
             case .lines(let n):
@@ -379,7 +409,7 @@ final class GhosttyScrollState: @unchecked Sendable {
                 }
             }
             (bar, active) = Self.read(t)
-            movedViewport = before != (bar.offset, active)
+            movedViewport = movedViewport || before != (bar.offset, active)
             if active { fraction = 0 }
             truth = GhosttyScrollMath.position(offset: active ? bar.maxRow : min(bar.offset, bar.maxRow),
                                                fraction: fraction, cellHeight: cell)
@@ -402,11 +432,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         renderBounce = bounce
         frameActive = active
         frameRows = bar.len
-
-        var tracking = false
-        ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
-        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
-        ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        frameAlternate = alternate
 
         var snap = Snapshot()
         snap.total = bar.total
@@ -419,10 +445,10 @@ final class GhosttyScrollState: @unchecked Sendable {
         snap.position = position
         snap.rebase = rebase
         snap.appliedSequence = appliedSequence
-        snap.programScroll = GhosttyScrollRouting.captures(mouseTracking: tracking,
-                                                           alternateScreen: screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
-        snap.alternateScreen = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+        snap.programScroll = GhosttyScrollRouting.captures(mouseTracking: tracking, alternateScreen: alternate)
+        snap.alternateScreen = alternate
         snap.following = following
+        snap.pin = pin
         frameSnapshot = snap
         publish(snap)
     }
@@ -431,14 +457,18 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// viewport follows the screen, and keeps it inside a cover that became smaller. Runs where
     /// `prepareFrame` does (render side), before the frame builder reads `renderBounce`.
     /// `contentRows`: the screen's rows from the top through the last one with content or the
-    /// cursor. `output`: the terminal changed since the last frame (its rows are dirty).
-    func finishFrame(contentRows: Int, output: Bool) {
+    /// cursor.
+    func finishFrame(contentRows: Int) {
         guard covered > 0 || coverChanged else { return }
         let newCover = coverChanged
         coverChanged = false
         guard frameActive else { return }
         pin = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
         var changed = false
+        if frameSnapshot.pin != pin {
+            frameSnapshot.pin = pin
+            changed = true
+        }
         if shiftedAtBottom {
             // Decided against this frame's pin: the request was read with the last frame's.
             let follows = bounce >= pin - 1
@@ -447,12 +477,6 @@ final class GhosttyScrollState: @unchecked Sendable {
                 frameSnapshot.following = follows
                 changed = true
             }
-        } else if !following, output, !positioned, !touching {
-            // Output below a shift the user left among the covered rows, now that nothing holds
-            // the view: back to the pin, so what is written shows above the keyboard.
-            following = true
-            frameSnapshot.following = true
-            changed = true
         }
         // A position holds the user's shift, unless the cover changed under it: then both apply,
         // and a view that follows goes to the new pin in this frame, not the next.
@@ -471,6 +495,32 @@ final class GhosttyScrollState: @unchecked Sendable {
             changed = true
         }
         if changed { publish(frameSnapshot) }
+    }
+
+    /// `grown` new pixels of rows came in below a view the user left off the pin among the
+    /// covered rows, and the viewport moved down with them: the shift goes down by as much, so
+    /// what shows holds still, as it does in the scrollback. Past the covered rows the viewport
+    /// goes into the scrollback to the place that showed. Output never takes such a view back to
+    /// the pin: the user is reading. True when the viewport moved.
+    private func holdReadingPlace(_ t: GhosttyTerminal, grown: Int, maxRow: Int, cell: Int) -> Bool {
+        let before = position + bounce
+        // What showed before the rows came in.
+        let shown = before - grown
+        var moved = false
+        if bounce >= grown {
+            bounce -= grown
+        } else {
+            let r = GhosttyScrollMath.resolve(px: max(0, shown), maxRow: maxRow, cellHeight: cell)
+            scroll(t, GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW) { $0.row = r.row }
+            let (bar, active) = Self.read(t)
+            fraction = active ? 0 : r.fraction
+            bounce = 0
+            position = GhosttyScrollMath.position(offset: active ? bar.maxRow : min(bar.offset, bar.maxRow),
+                                                  fraction: fraction, cellHeight: cell)
+            moved = true
+        }
+        rebase += position + bounce - before
+        return moved
     }
 
     /// The fraction can only show while a row below the viewport was captured.
@@ -506,7 +556,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         latest = snap
         let news = snap.total != sent.total || snap.len != sent.len || snap.rebase != sent.rebase
             || snap.cellHeight != sent.cellHeight || snap.programScroll != sent.programScroll
-            || snap.alternateScreen != sent.alternateScreen
+            || snap.alternateScreen != sent.alternateScreen || snap.pin != sent.pin
         guard news, !publishScheduled, publishHandler != nil else {
             lock.unlock()
             return

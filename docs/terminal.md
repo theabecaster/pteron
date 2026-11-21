@@ -233,10 +233,17 @@ is not a cold start.
   view has that much more room at the bottom: dragging down brings the covered rows into view,
   then the scrollback, in one motion. Typing returns to the bottom. A view in the scrollback
   doesn't move when the keyboard shows or hides.
-  - A view left among the covered rows stays there while nothing is written and while a finger
-    or the scroll's momentum holds it. The next output takes it back to the pin, so a server's
-    log and the cursor never stream on under the key bar (a slight drag, then letting go). A view
-    in the scrollback stays where it is under output, as before.
+  - Stick to the bottom, as chat apps and terminals do. At the pin the view follows the screen:
+    output, a cover change and a refit keep the newest rows and the cursor above the key bar. A
+    scroll off the pin of any size leaves it, and output never brings the view back: new rows
+    take the shift down by as much, so what the user reads holds still, and once the covered rows
+    are used up the view goes on into the scrollback, where output leaves it as before. A drag
+    a row or more past the covered rows still puts the keyboard away (Gestures).
+  - The view sticks again when it comes back to the pin: a scroll there, or a drag or fling that
+    comes to rest within a row of it, which UIKit ends at the pin (a nudge while tapping sticks
+    too); on any key or paste; on the jump-to-bottom button; and when the keyboard shows again
+    over a view at the bottom. The button counts rows from the pin, so it also shows for a view
+    half a screen up among the covered rows.
   - Whether a view at the bottom follows is decided against the pin of the frame that applies
     the scroll, so a cover change in the same frame (the keyboard's top measured again, the emoji
     keyboard) can't leave the shift short of the pin.

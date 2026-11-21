@@ -263,14 +263,21 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         tellPlace()
     }
 
-    /// Tells the view's `scrollPlaceHook` how far the view is from the newest line. An offset
-    /// among the rows the keyboard covers is past the last row position, so it counts as the bottom.
+    /// The offset at which the newest rows show: the last row position, plus the shift that keeps
+    /// them above the keyboard while it covers the view (the pin). In the scrollback the pin of
+    /// the screen below isn't drawn; a screen with scrollback above it is full, so the whole cover.
+    var pinnedBottom: CGFloat {
+        let pin = state.active ? CGFloat(state.pin) / scale : coveredBottom
+        return CGFloat(state.maxRow * state.cellHeight) / scale + min(max(pin, 0), coveredBottom)
+    }
+
+    /// Tells the view's `scrollPlaceHook` how far the view is from the newest line, as it shows
+    /// with the keyboard up: rows the user scrolled down over the covered ones count as well.
     private func tellPlace() {
         guard let view, let hook = view.scrollPlaceHook else { return }
         let cell = view.cellSize.height
         guard cell > 0 else { return }
-        let end = CGFloat(state.maxRow * state.cellHeight) / scale
-        hook(GhosttyScrollPlace(rowsAbove: Double(max(0, (end - surface.contentOffset.y) / cell)), total: state.total,
+        hook(GhosttyScrollPlace(rowsAbove: Double(max(0, (pinnedBottom - surface.contentOffset.y) / cell)), total: state.total,
                                 rebase: state.rebase, sequence: state.appliedSequence, programScroll: state.programScroll))
     }
 
@@ -282,25 +289,42 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         toldReading = false
         updateIndicator()
-        core.scroll.setTouching(true)
     }
 
-    // While a finger or the momentum holds the view, output leaves a shift among the covered rows
-    // where it is; once they let go it returns to the pin (`GhosttyScrollState`, "The cover").
-    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { core.scroll.setTouching(false) }
+    /// A drag let go, or a fling that will come to rest, within a row of the pin with the
+    /// keyboard up ends at the pin: a nudge, or a scroll back down, sticks to the bottom again.
+    /// Further up it ends where UIKit takes it, and output leaves it there (`GhosttyScrollState`,
+    /// "The cover").
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                   targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        guard coveredBottom > 0, let view else { return }
+        let target = targetContentOffset.pointee.y
+        let pinned = pinnedBottom
+        if Self.sticks(target: target, pinned: pinned, cell: view.cellSize.height) {
+            targetContentOffset.pointee.y = pinned
+        }
     }
 
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { core.scroll.setTouching(false) }
+    /// A release that comes to rest at `target` sticks to the bottom (`pinned`): from a row
+    /// above it on down.
+    nonisolated static func sticks(target: CGFloat, pinned: CGFloat, cell: CGFloat) -> Bool {
+        target < pinned && target >= pinned - max(cell, 1)
+    }
 
     /// A finger took the view a row or more into the scrollback while the keyboard covers it:
     /// the user is reading, and the view says so once for the drag (`readingHook`).
     private func noteReading() {
         guard cover > 0, !toldReading, userMoving, let view else { return }
         let end = CGFloat(state.maxRow * state.cellHeight) / scale
-        guard surface.contentOffset.y < end - view.cellSize.height else { return }
+        guard Self.reads(offset: surface.contentOffset.y, end: end, cell: view.cellSize.height) else { return }
         toldReading = true
         view.readingHook?()
+    }
+
+    /// An offset a row or more into the scrollback, past every covered row (`end` is the last row
+    /// position): far enough to put the keyboard away. Anywhere among the covered rows is not.
+    nonisolated static func reads(offset: CGFloat, end: CGFloat, cell: CGFloat) -> Bool {
+        offset < end - cell
     }
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { animating = false }
 
@@ -317,7 +341,6 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             surface.setContentOffset(surface.contentOffset, animated: false)
             applying = false
             animating = false
-            core.scroll.setTouching(false)
         }
         lastRequest = core.scrollViewport(request)
     }

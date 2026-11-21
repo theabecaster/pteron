@@ -835,9 +835,7 @@ final class GhosttyFrameBuilder {
         ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_OVERSCAN, &captured)
         overscanBelow = Int(captured.below)
         if captured.below == 0 { core.scroll.clearRenderFraction() }
-        if core.scroll.needsContentRows {
-            core.scroll.finishFrame(contentRows: contentRows(cursorRow: cursorRow), output: dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE)
-        }
+        if core.scroll.needsContentRows { core.scroll.finishFrame(contentRows: contentRows(cursorRow: cursorRow)) }
         let offset = core.scroll.renderFraction + core.scroll.renderBounce
         if offset != scrollOffset {
             scrollOffset = offset

@@ -167,8 +167,8 @@ builds.
   scroll two pages back first and type that much later.
 - `-keyboardTest '<step>;<step>…'`: show and hide the software keyboard over the active pane once
   it is live (`Features/Terminal/KeyboardTest.swift`): `up`, `down`, `scroll:<points>`,
-  `type:<text>`, `jump` (a tap on the jump-to-bottom button), `wait:<s>`. Each step logs the
-  grid, the cover, the scroll position, the button's state, `jump=` and `unseen=`, and whether
+  `drag:<points>` (a drag let go there, which ends at the pin within a row of it), `type:<text>`, `jump` (a tap on the jump-to-bottom button), `wait:<s>`. Each step logs the
+  grid, the cover, the scroll position (`y=<offset>/<offset at the pin>` in points), the button's state, `jump=` and `unseen=`, and whether
   the terminal is first responder, `first=` (`KEYBOARD_TEST`). A second line per step gives, on
   screen, the keyboard's last reported end frame `kb=x,y,wxh` (`null` before any report), the key
   bar's frame `bar=` (`none` out of a window), the pane's bottom `paneBottom=` (at or above the

@@ -884,6 +884,86 @@ final class GhosttyScrollViewTests: XCTestCase {
         let cell = view.cellSize.height
         XCTAssertEqual(scroller.surface.contentOffset.y, 291 * cell, accuracy: 0.01, "still pinned to the bottom")
     }
+
+    /// Lets a drag go at the current offset with no momentum, as UIKit asks the delegate, and
+    /// returns where it will come to rest.
+    private func letGo(_ view: GhosttyTerminalView) -> CGFloat {
+        let surface = view.scroller.surface
+        var target = surface.contentOffset
+        view.scroller.scrollViewWillEndDragging(surface, withVelocity: .zero, targetContentOffset: &target)
+        view.scroller.setOffset(target.y, animated: false)
+        frame(view)
+        return target.y
+    }
+
+    func testAReleaseWithinARowOfThePinSticksAndOneFurtherUpStaysUnderOutput() {
+        // 100 lines and the cursor's row on a screen of 20, the keyboard over 8 of them.
+        let view = make(100, rows: 20)
+        let scroller = view.scroller
+        let surface = scroller.surface
+        let cell = view.cellSize.height
+        view.setCover(8 * cell)
+        frame(view)
+        var pinned = scroller.pinnedBottom
+        XCTAssertEqual(pinned, 89 * cell, accuracy: 0.5, "the last row position plus the cover")
+        XCTAssertEqual(surface.contentOffset.y, pinned, accuracy: 0.5)
+        // A nudge, let go half a row up: back to the pin, and output follows there.
+        scroller.setOffset(pinned - cell / 2, animated: false)
+        frame(view)
+        XCTAssertEqual(letGo(view), pinned, accuracy: 0.01)
+        XCTAssertTrue(view.core.scroll.snapshot.following)
+        // Two rows up: it stays where it was let go, through output.
+        scroller.setOffset(pinned - 2 * cell, animated: false)
+        frame(view)
+        let held = letGo(view)
+        XCTAssertEqual(held, pinned - 2 * cell, accuracy: 0.01)
+        XCTAssertFalse(view.core.scroll.snapshot.following)
+        for i in 101...105 {
+            view.feed(text: "\(i) line\r\n")
+            frame(view)
+            XCTAssertEqual(surface.contentOffset.y, held, accuracy: 0.34, "after line \(i)")
+            XCTAssertFalse(view.core.scroll.snapshot.following, "after line \(i)")
+        }
+        // A key: back to the pin, below the new rows.
+        view.scrollToBottomForInput()
+        frame(view)
+        pinned = scroller.pinnedBottom
+        XCTAssertEqual(pinned, 94 * cell, accuracy: 0.5)
+        XCTAssertEqual(surface.contentOffset.y, pinned, accuracy: 0.5)
+        XCTAssertTrue(view.core.scroll.snapshot.following)
+    }
+
+    func testAFlingThatComesToRestNearThePinSticks() {
+        XCTAssertTrue(GhosttyScroller.sticks(target: 99.5, pinned: 100, cell: 17))
+        XCTAssertTrue(GhosttyScroller.sticks(target: 83, pinned: 100, cell: 17))
+        XCTAssertFalse(GhosttyScroller.sticks(target: 82.9, pinned: 100, cell: 17), "more than a row up")
+        XCTAssertFalse(GhosttyScroller.sticks(target: 100, pinned: 100, cell: 17), "already there")
+        XCTAssertFalse(GhosttyScroller.sticks(target: 120, pinned: 100, cell: 17), "past it, into the blank rows")
+    }
+
+    func testTheJumpButtonCountsRowsFromThePinAndOnlyTheScrollbackPutsTheKeyboardAway() {
+        let view = make(100, rows: 20)
+        let scroller = view.scroller
+        let cell = view.cellSize.height
+        var place = GhosttyScrollPlace()
+        view.scrollPlaceHook = { place = $0 }
+        view.setCover(8 * cell)
+        frame(view)
+        XCTAssertEqual(place.rowsAbove, 0, accuracy: 0.05)
+        let pinned = scroller.pinnedBottom
+        // Six rows up, among the covered rows: half of the 12 that show, so the button shows.
+        scroller.setOffset(pinned - 6 * cell, animated: false)
+        XCTAssertEqual(place.rowsAbove, 6, accuracy: 0.05)
+        var rule = JumpToBottomRule()
+        _ = rule.update(.init(rowsAbove: place.rowsAbove, screenRows: 12, blocked: false, total: place.total,
+                              rebase: place.rebase, sequence: place.sequence))
+        XCTAssertTrue(rule.shown)
+        // The keyboard goes only a row or more past the covered rows (the last row position).
+        let end = 81 * cell
+        XCTAssertFalse(GhosttyScroller.reads(offset: pinned - 6 * cell, end: end, cell: cell))
+        XCTAssertFalse(GhosttyScroller.reads(offset: end - cell / 2, end: end, cell: cell))
+        XCTAssertTrue(GhosttyScroller.reads(offset: end - 1.01 * cell, end: end, cell: cell))
+    }
 }
 
 extension GhosttyScrollTests {
@@ -949,20 +1029,20 @@ extension GhosttyScrollTests {
         let end = s.maxRow * cell
         // The scroll view, having applied the rebase, is at the last position plus the cover.
         // A drag down by two rows shows two of the covered rows; the viewport stays at the bottom.
-        core.scroll.setTouching(true)
         core.scrollViewport(.position(px: end + 2 * cell, rebaseSeen: s.rebase))
         XCTAssertTrue(frame.update(core: core))
         s = core.scroll.snapshot
         XCTAssertTrue(s.active)
         XCTAssertEqual(s.bounce, 2 * cell)
         XCTAssertFalse(s.following)
-        // Output doesn't pull the view back from under the finger.
-        core.feed(lines(101...105))
+        // Output doesn't pull the view back: one new row takes one row of the shift.
+        core.feed(lines(101...101))
         core.sync()
         _ = frame.update(core: core)
         s = core.scroll.snapshot
         XCTAssertTrue(s.active)
-        XCTAssertEqual(s.bounce, 2 * cell)
+        XCTAssertFalse(s.following)
+        XCTAssertEqual(s.bounce, cell)
         // On into the scrollback: no shift there.
         core.scrollViewport(.position(px: 50 * cell, rebaseSeen: s.rebase))
         _ = frame.update(core: core)
@@ -1090,33 +1170,142 @@ extension GhosttyScrollTests {
         }
     }
 
-    func testOutputBringsALetGoViewInTheCoveredRowsBackAboveTheCover() {
-        // The reproduction: a slight drag into the covered rows, let go, while a server logs.
+    /// The first row drawn, as its line number (the frame's shift is whole rows here).
+    private func topLine(_ core: GhosttyCore) -> Int? {
+        let s = core.scroll.snapshot
+        return number(core, row: s.active ? s.bounce / max(1, s.cellHeight) : 0)
+    }
+
+    /// The pin's first case: the keyboard comes up over a view at the bottom and the prompt sits
+    /// above it, then stays there as output streams.
+    func testTheKeyboardShowingBringsThePromptAboveItAndOutputKeepsItThere() {
         let (core, frame) = make(100)
         let cell = core.scroll.snapshot.cellHeight
         core.scroll.setCover(px: 4 * cell)
         _ = frame.update(core: core)
-        var s = core.scroll.snapshot
-        core.scroll.setTouching(true)
-        core.scrollViewport(.position(px: s.position + 3 * cell, rebaseSeen: s.rebase))
-        _ = frame.update(core: core)
-        core.scroll.setTouching(false)
-        // Let go with nothing written: the view stays where the finger left it.
-        _ = frame.update(core: core)
-        s = core.scroll.snapshot
-        XCTAssertFalse(s.following)
-        XCTAssertEqual(s.bounce, 3 * cell)
-        // The next line returns to the pin in its own frame, and every line after shows above
-        // the cover, the cursor's row with it.
+        XCTAssertTrue(core.scroll.snapshot.following)
+        assertCursorAboveCover(core, frame, cover: 4 * cell, "on show")
         for i in 101...110 {
             core.feed(lines(i...i))
             core.sync()
             _ = frame.update(core: core)
             assertCursorAboveCover(core, frame, cover: 4 * cell, "after line \(i)")
         }
+        XCTAssertTrue(core.scroll.snapshot.following)
+    }
+
+    /// The report: a small scroll with the keyboard up, to read, snapped back to the prompt on
+    /// the next output. What shows now holds still: new rows take the shift down, then the view
+    /// goes on into the scrollback, and only input brings it back.
+    func testASmallScrollWithTheKeyboardUpHoldsStillUnderOutput() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        // Two rows up from the pin: still among the covered rows, so the keyboard stays.
+        core.scrollViewport(.position(px: s.position + 2 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertFalse(s.following)
+        let top = topLine(core)
+        let rebase = s.rebase
+        XCTAssertNotNil(top)
+        for i in 101...108 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            s = core.scroll.snapshot
+            XCTAssertFalse(s.following, "after line \(i): output never takes the view back to the pin")
+            XCTAssertEqual(topLine(core), top, "after line \(i): what the user reads holds still")
+            XCTAssertEqual(s.rebase, rebase, "after line \(i): the scroll view has nothing to move")
+        }
+        XCTAssertFalse(s.active, "past the covered rows the view went on into the scrollback")
+        XCTAssertEqual(s.bounce, 0)
+        // A key or the jump-to-bottom button: back to the pin, the cursor above the keyboard.
+        core.scrollViewport(.bottom)
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertTrue(s.following)
+        XCTAssertEqual(s.bounce, 4 * cell)
+        assertCursorAboveCover(core, frame, cover: 4 * cell, "after the jump")
+    }
+
+    func testAViewOffThePinStaysOffItThroughAKeyboardHeightChangeAndARefit() {
+        let (core, frame) = make(100)
+        let atlas = GhosttyGlyphAtlas(pointSize: 12, scale: 2)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        core.scrollViewport(.position(px: s.position + 2 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        let top = topLine(core)
+        // The keyboard's top measured again (the emoji keyboard, the key bar): nothing moves.
+        for cover in [5 * cell, 3 * cell, 4 * cell] {
+            core.scroll.setCover(px: cover)
+            _ = frame.update(core: core)
+            s = core.scroll.snapshot
+            XCTAssertFalse(s.following, "cover \(cover)")
+            XCTAssertEqual(s.bounce, 2 * cell, "cover \(cover)")
+            XCTAssertEqual(topLine(core), top, "cover \(cover)")
+        }
+        // A refit with the keyboard up (a fold): the view stays off the pin, and output after it
+        // still leaves what shows alone.
+        core.resize(cols: 40, rows: 12, cellWidthPx: atlas.metrics.cellWidth, cellHeightPx: atlas.metrics.cellHeight)
+        core.sync()
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertFalse(s.following, "after the refit")
+        let refitTop = topLine(core)
+        XCTAssertNotNil(refitTop)
+        core.feed(lines(101...101))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertFalse(core.scroll.snapshot.following, "output after the refit")
+        XCTAssertEqual(topLine(core), refitTop, "output after the refit")
+    }
+
+    func testTheKeyboardShowingAgainBringsThePromptAboveItWhereverTheViewWasLeft() {
+        // Off the pin among the covered rows, the keyboard put away with the hide key, then
+        // brought back with a tap: the prompt comes above it, with or without output.
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        core.scrollViewport(.position(px: s.position + 2 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        XCTAssertFalse(core.scroll.snapshot.following)
+        core.scroll.setCover(px: 0)
+        _ = frame.update(core: core)
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
         s = core.scroll.snapshot
         XCTAssertTrue(s.following)
         XCTAssertEqual(s.bounce, 4 * cell)
+        assertCursorAboveCover(core, frame, cover: 4 * cell, "on show")
+    }
+
+    func testAViewOffThePinOnAShortScreenHoldsAsTheScreenFills() {
+        // Blank rows under the content: lines that fill them move no row, and the shift the user
+        // left stays where it is.
+        let (core, frame) = make(7)
+        let cell = core.scroll.snapshot.cellHeight
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        XCTAssertEqual(s.bounce, 2 * cell)
+        core.scrollViewport(.position(px: s.position + cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        XCTAssertFalse(core.scroll.snapshot.following)
+        core.feed(lines(8...8))
+        core.sync()
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertFalse(s.following)
+        XCTAssertEqual(s.bounce, cell)
     }
 
     func testOutputLeavesAViewInTheScrollbackStill() {

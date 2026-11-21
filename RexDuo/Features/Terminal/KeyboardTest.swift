@@ -11,6 +11,9 @@ import UIKit
 /// - `up`: show the software keyboard, as a tap on the pane does, even with a hardware keyboard.
 /// - `down`: put it away, as the key bar's hide key does.
 /// - `scroll:<points>`: scroll by that much, negative into the scrollback.
+/// - `drag:<points>`: the same as a drag let go there, without momentum: it ends at the pin
+///   within a row of it (`GhosttyScroller.scrollViewWillEndDragging`). A real drag a row past the
+///   covered rows also puts the keyboard away; this one doesn't.
 /// - `type:<text>`: type it (`\n` is Return).
 /// - `jump`: tap the jump-to-bottom button, as a finger does. Nothing happens while it is hidden.
 /// - `wait:<seconds>`: pause.
@@ -55,6 +58,14 @@ enum KeyboardTest {
         case "scroll":
             let scroller = host.term.scroller
             scroller.setOffset(scroller.surface.contentOffset.y + CGFloat(Double(arg) ?? 0), animated: false)
+        case "drag":
+            let scroller = host.term.scroller
+            let surface = scroller.surface
+            scroller.scrollViewWillBeginDragging(surface)
+            scroller.setOffset(surface.contentOffset.y + CGFloat(Double(arg) ?? 0), animated: false)
+            var target = surface.contentOffset
+            scroller.scrollViewWillEndDragging(surface, withVelocity: .zero, targetContentOffset: &target)
+            scroller.setOffset(target.y, animated: false)
         case "type":
             host.term.send(txt: arg.replacingOccurrences(of: "\\n", with: "\r"))
         case "jump":
@@ -69,9 +80,10 @@ enum KeyboardTest {
 
     private static func log(_ step: String, _ host: TerminalHost) {
         let s = host.term.scrollSnapshot
-        NSLog("KEYBOARD_TEST %@ grid=%dx%d pane=%.0f terminal=%.0f cover=%.0f offset=%d/%d shift=%d active=%d following=%d jump=%d unseen=%d first=%d",
+        NSLog("KEYBOARD_TEST %@ grid=%dx%d pane=%.0f terminal=%.0f cover=%.0f offset=%d/%d shift=%d y=%.1f/%.1f active=%d following=%d jump=%d unseen=%d first=%d",
               step, host.term.cols, host.term.rows, host.bounds.height, host.term.bounds.height, host.term.scroller.cover,
-              s.offset, s.maxRow, s.fraction + s.bounce, s.active ? 1 : 0, s.following ? 1 : 0,
+              s.offset, s.maxRow, s.fraction + s.bounce, host.term.scroller.surface.contentOffset.y, host.term.scroller.pinnedBottom,
+              s.active ? 1 : 0, s.following ? 1 : 0,
               host.jumpButton.shown ? 1 : 0, host.jumpButton.unseen ? 1 : 0, host.term.isFirstResponder ? 1 : 0)
         // Where the keyboard said it is, where the key bar is and where the pane ends: with the
         // keyboard up the pane ends at or above the bar's top.

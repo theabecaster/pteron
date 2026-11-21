@@ -541,6 +541,7 @@ final class GhosttyCore: @unchecked Sendable {
                 ghostty_terminal_resize(t, UInt16(clamping: self.cols), UInt16(clamping: self.rows),
                                         self.cellWidthPx, self.cellHeightPx)
             }
+            scroll.gridChanged()
             termLock.unlock()
             onDirty?()
             noteFindChanged()
@@ -564,6 +565,7 @@ final class GhosttyCore: @unchecked Sendable {
             if let t = terminal {
                 ghostty_terminal_reset(t)
                 promptWatch.reset()
+                scroll.gridChanged()
                 input.sync(from: t)
             }
             termLock.unlock()
@@ -663,6 +665,7 @@ final class GhosttyCore: @unchecked Sendable {
             // Same grid, our cell pixel size (for pixel-based mouse and size reports). The API
             // has no option for the pixel size alone.
             ghostty_terminal_resize(restored, c, r, cellWidthPx, cellHeightPx)
+            scroll.gridChanged()
             if wasHeld {
                 // Put the mode back, so the program's own reset ends the hold, and begin the hold
                 // ourselves: a mode set by hand calls no callback. The frame held is the

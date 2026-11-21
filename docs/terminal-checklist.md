@@ -299,7 +299,10 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
 6. **Keyboard (45, 45a, 45b, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
    stays at the bottom both times, and `stty size` says the same before and after. With the
    keyboard up, drag down: the covered rows, then the scrollback, and the keyboard goes away
-   without the text jumping; a tap brings it back. Hold the space bar and slide: the cursor moves along the line.
+   without the text jumping; a tap brings it back. With the keyboard up and a slow loop printing,
+   drag a few rows down and let go: the text you read holds still, nothing snaps back to the
+   prompt, and the keyboard stays; a key or the jump-to-bottom button brings the prompt back
+   above the keyboard. A nudge of less than a row ends back at the prompt. Hold the space bar and slide: the cursor moves along the line.
    Drag half a screen into the scrollback: the jump-to-bottom button comes up in the bottom
    trailing corner, and its arrow takes the cursor's color when a command prints below. Tap it:
    the view returns to the prompt, the keyboard stays down and the pane's focus doesn't change.
