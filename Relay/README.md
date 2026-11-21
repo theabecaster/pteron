@@ -1110,11 +1110,31 @@ such a list closes every share with its connections and its listener before it e
 then on `port_share` answers `not_available` and `share_possible` is false, at once and
 whatever was remembered of Tailscale. A later list with the name taken out turns it back
 on at the next check, without a restart. The port share is on only while neither the list
-nor this computer's `config.json` turns it off. So the longest a running Beacon that can
-reach the list goes on sharing after the list is published is one wait between checks,
-12.5 hours; one that is asleep or offline follows when it next checks, and keeps what it
-last knew until then. A Beacon with `"auto_update": false`, a dry run and a development
-build have no timer and read the list only when a check is asked for.
+nor this computer's `config.json` turns it off. Beacon also reads the list again when a share is asked for and it has not accepted a
+list in the last 10 minutes, before it answers: `port_share` from a registered phone gets
+the list and its signature first, puts them through the same checks as any update check
+(signature, expiry, version, `signed_at`), obeys what they turn off, and then answers. It
+tries that at most once in 10 minutes, whether it got the list or not, so a network that is
+down slows one request and not every one; it waits 3 seconds at most, and requests that
+come meanwhile wait for the same try. Without an accepted list in that time it goes by
+what it kept. This look reads the switch and nothing else: it plans and installs no update,
+downloads no program, and leaves the update timer's schedule and its waits after a failed
+check as they are. It happens whatever `auto_update` says and in a dry run, since it is a
+safety control and no update; a build without an update key can't check a list and does
+not ask for one.
+
+How long after the list is published a Beacon obeys it:
+
+| Beacon | At most |
+|---|---|
+| a share is asked for | 10 minutes (one look in 10 minutes), when the list can be had in 3 seconds |
+| shares are open and nothing new is asked | 12.5 hours (one wait between update checks) |
+| nothing is open | 12.5 hours; it has nothing to close |
+| asleep, or without a way to the list | at its next check or ask after it is back; it keeps what it last knew |
+| `"auto_update": false`, a dry run, a development build | at the next ask for a share, or a check that is asked for (`rex-duo-helper update --check`, the app's update button): they have no timer |
+
+`share_possible` goes by what Beacon last knew and starts no look, so it can still say
+true for up to those 12.5 hours where the request then answers `not_available`.
 
 ```sh
 Relay/release.sh --resign --disable port_share             # writes and signs the list; publishes nothing

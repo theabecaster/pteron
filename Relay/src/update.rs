@@ -1492,6 +1492,35 @@ fn read_check_file(state_dir: &Path) -> Option<Reported> {
 
 // MARK: The updater
 
+/// How long an accepted list counts as the last word on what is turned off before
+/// something that may be turned off is done (`Updater::look_at_switches`), and the least
+/// time between two goes at getting one for that.
+pub const SWITCH_LOOK_EVERY: Duration = Duration::from_secs(10 * 60);
+/// How long such a look may take in all.
+pub const SWITCH_LOOK_WAIT: Duration = Duration::from_secs(3);
+
+/// What gives a test's release list and its signature.
+#[cfg(test)]
+pub(crate) type ListSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<u8>, Vec<u8>), String>> + Send>> + Send + Sync>;
+
+/// A release list for a test, signed with a key of the test's own (the first value, to be
+/// trusted by the test's updater): this very version, with `disabled` signed `after` seconds
+/// from now.
+#[cfg(test)]
+pub(crate) fn list_for_test(version: &str, disabled: &[&str], after: i64) -> ([u8; 32], Vec<u8>, Vec<u8>) {
+    use ring::signature::KeyPair;
+    let pair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[9u8; 32]).unwrap();
+    let at = now() as i64;
+    let list = json!({
+        "version": version, "min_version": "0.3.0", "released_at": iso8601(at), "expires_at": iso8601(at + 86_400), "next_key": null,
+        "disabled": disabled, "signed_at": iso8601(at + after),
+        "assets": {"linux-x86_64": {"url": format!("{RELEASE_PREFIX}helper-v{version}/rex-duo-helper-linux-x86_64"), "sha256": "cd".repeat(32), "size": 456}}
+    });
+    let data = format!("{}\n", serde_json::to_string_pretty(&list).unwrap()).into_bytes();
+    let sig = format!("{}\n", crate::util::base64url(pair.sign(&data).as_ref())).into_bytes();
+    (pair.public_key().as_ref().try_into().unwrap(), data, sig)
+}
+
 #[derive(Clone, Debug, Default)]
 struct State {
     latest_version: Option<String>,
@@ -1581,6 +1610,14 @@ pub struct Updater {
     state: Mutex<State>,
     /// What the release list has turned off (`Switches`), as read last from the state folder.
     disabled: Mutex<Vec<String>>,
+    /// When this process last accepted a list, whoever asked for it.
+    accepted: Mutex<Option<tokio::time::Instant>>,
+    /// When `look_at_switches` last went for the list, whatever came of it. One goes at a
+    /// time: whoever else asks meanwhile waits here for it and then finds it done.
+    looked: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+    /// The list and its signature, as a test hands them over in the network's place.
+    #[cfg(test)]
+    list_source: Mutex<Option<ListSource>>,
     /// Called after the state changed (the relay rewrites status.json).
     on_change: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -1640,6 +1677,10 @@ impl Updater {
             state_dir: state_dir.to_path_buf(),
             state: Mutex::new(state),
             disabled: Mutex::new(Switches::load(state_dir)),
+            accepted: Mutex::new(None),
+            looked: tokio::sync::Mutex::new(None),
+            #[cfg(test)]
+            list_source: Mutex::new(None),
             on_change: Mutex::new(None),
         })
     }
@@ -1648,6 +1689,84 @@ impl Updater {
     /// the newest list this Beacon accepted that said anything, now or before a restart.
     pub fn disabled(&self, feature: &str) -> bool {
         self.disabled.lock().unwrap().iter().any(|name| name == feature)
+    }
+
+    /// Before something the release list may have turned off is done: reads the list again
+    /// when this Beacon has not accepted one for `SWITCH_LOOK_EVERY`, so that what its
+    /// publisher turned off is obeyed by then and not only at the next update check.
+    ///
+    /// The list goes through `accept_and_remember` like any other (signature, expiry,
+    /// version, `signed_at`), and whoever follows the updater is told before this returns.
+    /// It is a look at the switches and nothing else: no update is planned, nothing is
+    /// downloaded or installed, and the state the update timer goes by (when the last check
+    /// was, how it ended, its backoff) is not touched.
+    ///
+    /// It goes for the list at most once in `SWITCH_LOOK_EVERY`, whether it got it or not,
+    /// so that a network that is down slows one request and not every one; one at a time
+    /// (others wait for it and then go on); and for `SWITCH_LOOK_WAIT` at most. Without a
+    /// list in that time, or with one that is not accepted, what is kept stays.
+    ///
+    /// The update timer being off (`auto_update: false`, a dry run) does not stop this: it
+    /// is a safety control, not an update. A build without an update key can't verify a
+    /// list and does not ask for one.
+    pub async fn look_at_switches(&self) {
+        let Ok(builtin) = self.keys.clone() else { return };
+        if !self.has_list_source() {
+            return;
+        }
+        let fresh = |at: Option<tokio::time::Instant>| at.is_some_and(|at| at.elapsed() < SWITCH_LOOK_EVERY);
+        let mut looked = self.looked.lock().await;
+        if fresh(*self.accepted.lock().unwrap()) || fresh(*looked) {
+            return;
+        }
+        *looked = Some(tokio::time::Instant::now());
+        match tokio::time::timeout(SWITCH_LOOK_WAIT, self.fetch_list()).await {
+            Ok(Ok((data, sig))) => match accept_and_remember(&self.state_dir, builtin, &data, &sig, now() as i64) {
+                Ok(_) => *self.accepted.lock().unwrap() = Some(tokio::time::Instant::now()),
+                Err(e) => info!("update: looked at the release list for what is turned off: {e}"),
+            },
+            Ok(Err(e)) => info!("update: could not get the release list to see what is turned off: {e}"),
+            Err(_) => info!("update: the release list did not come in time to see what is turned off"),
+        }
+        drop(looked);
+        self.reload_switches();
+        self.change(|_| {});
+    }
+
+    /// The release list and its signature, as they are published.
+    async fn fetch_list(&self) -> Result<(Vec<u8>, Vec<u8>), String> {
+        #[cfg(test)]
+        {
+            let source = self.list_source.lock().unwrap().clone();
+            match source {
+                Some(source) => source().await,
+                None => Err("a test has no release list".into()),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let data = fetch_small(RELEASES, MANIFEST_URL, MAX_MANIFEST).await?;
+            let sig = fetch_small(RELEASES, &format!("{MANIFEST_URL}.sig"), MAX_SIGNATURE).await.map_err(|e| format!("its signature: {e}"))?;
+            Ok((data, sig))
+        }
+    }
+
+    /// False only in a test that set no list: tests never ask the network.
+    fn has_list_source(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.list_source.lock().unwrap().is_some()
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    }
+
+    /// From now on `source` gives the list and its signature in the network's place.
+    #[cfg(test)]
+    pub(crate) fn set_list_source(&self, source: ListSource) {
+        *self.list_source.lock().unwrap() = Some(source);
     }
 
     /// Reads again what the state folder keeps as turned off: a check, here or from the
@@ -1750,6 +1869,7 @@ impl Updater {
         self.reload_switches();
         match latest {
             Ok(m) => {
+                *self.accepted.lock().unwrap() = Some(tokio::time::Instant::now());
                 let plan = plan(&m, VERSION, platform_key(std::env::consts::OS, std::env::consts::ARCH)).map_err(|e| Fault::new(Problem::NoBuild, e));
                 note_expiry(m.expires_at, now() as i64);
                 // The version is known even when this platform has no file for it.
@@ -2361,6 +2481,122 @@ mod tests {
         // A file someone damaged counts as nothing kept.
         std::fs::write(dir.join(SWITCHES_FILE), "{\"disabled\": \"all\"}").unwrap();
         assert!(off().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A list source that counts how often it is asked and gives what `next` holds then,
+    /// after `delay`.
+    fn source(asked: &Arc<Mutex<u32>>, next: &Arc<Mutex<Result<(Vec<u8>, Vec<u8>), String>>>, delay: Duration) -> ListSource {
+        let (asked, next) = (asked.clone(), next.clone());
+        Arc::new(move || {
+            *asked.lock().unwrap() += 1;
+            let answer = next.lock().unwrap().clone();
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                answer
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn the_list_is_looked_at_again_before_something_it_may_turn_off_at_most_every_ten_minutes() {
+        let dir = temp("switch-look");
+        let list = |version: &str, disabled: &[&str], after: i64| {
+            let (_, data, sig) = list_for_test(version, disabled, after);
+            Ok((data, sig))
+        };
+        let (public, ..) = list_for_test(VERSION, &[], 0);
+        let env = || Env { dry_run: false, debug_build: true, keys: Ok(vec![public]), place: Err("test".into()), service: false, writable: false };
+        let u = Updater::with_env(env(), false, &dir);
+        let asked = Arc::new(Mutex::new(0));
+        // A newer version than this one, with the port share turned off.
+        let next = Arc::new(Mutex::new(list("9.9.9", &["port_share"], 10)));
+        // Nothing to ask: nothing is asked (a test without a list never goes to the network).
+        u.look_at_switches().await;
+        assert_eq!(*asked.lock().unwrap(), 0);
+        u.set_list_source(source(&asked, &next, Duration::ZERO));
+        let told = Arc::new(Mutex::new(0));
+        let counter = told.clone();
+        u.set_on_change(move || *counter.lock().unwrap() += 1);
+        tokio::time::pause();
+        // No list was accepted yet: one fetch, and what it turns off holds when this returns.
+        u.look_at_switches().await;
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share"), *told.lock().unwrap()), (1, true, 1));
+        // It read the switches and nothing else: no update was planned or begun, nothing
+        // was downloaded, and the timer's own state knows of no check.
+        assert_eq!(u.updating(), None);
+        let status = u.status();
+        assert_eq!((&status["latest_version"], &status["checked_at"], &status["update_available"], &status["updating"]), (&Value::Null, &Value::Null, &json!(false), &json!(false)));
+        assert_eq!(u.schedule(), (None, NORMAL_WAIT));
+        let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        files.sort();
+        assert_eq!(files, [SWITCHES_FILE, HIGH_WATER_FILE]);
+        // Inside ten minutes of an accepted list: nothing is fetched, however often it is asked.
+        *next.lock().unwrap() = list("9.9.9", &[], 20);
+        for _ in 0..5 {
+            u.look_at_switches().await;
+        }
+        tokio::time::advance(SWITCH_LOOK_EVERY - Duration::from_secs(1)).await;
+        u.look_at_switches().await;
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (1, true));
+        // After them: one more, and the list that turns it back on is obeyed.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        u.look_at_switches().await;
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (2, false));
+        // A list that can't be had counts as a go too: the next ask does not try again,
+        // and what was kept stays.
+        *next.lock().unwrap() = Err("no route".into());
+        tokio::time::advance(SWITCH_LOOK_EVERY).await;
+        u.look_at_switches().await;
+        u.look_at_switches().await;
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (3, false));
+        // So does one that is not accepted (an older copy with it off changes nothing
+        // either, but that one is accepted as a list).
+        let (_, data, _) = list_for_test("9.9.9", &["port_share"], 30);
+        *next.lock().unwrap() = Ok((data, b"AAAA\n".to_vec()));
+        tokio::time::advance(SWITCH_LOOK_EVERY).await;
+        u.look_at_switches().await;
+        u.look_at_switches().await;
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (4, false));
+        // A regular check that accepted a list counts as well.
+        tokio::time::advance(SWITCH_LOOK_EVERY).await;
+        let (_, data, sig) = list_for_test("9.9.9", &[], 40);
+        let _ = u.took(accept_and_remember(&dir, vec![public], &data, &sig, now() as i64));
+        u.look_at_switches().await;
+        assert_eq!(*asked.lock().unwrap(), 4);
+        tokio::time::resume();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_slow_list_is_given_three_seconds_and_asks_at_once_share_one_fetch() {
+        let dir = temp("switch-slow");
+        let (public, data, sig) = list_for_test(VERSION, &["port_share"], 10);
+        let env = Env { dry_run: true, debug_build: true, keys: Ok(vec![public]), place: Err("test".into()), service: false, writable: false };
+        // The update timer is off here (a dry run, `auto_update: false`): it looks all the same.
+        let u = Updater::with_env(env, false, &dir);
+        assert!(!u.auto);
+        let asked = Arc::new(Mutex::new(0));
+        let next = Arc::new(Mutex::new(Ok((data, sig))));
+        tokio::time::pause();
+        // Slower than the box: every ask at once is answered when the box ends, by one
+        // fetch, with what was kept (nothing: on).
+        u.set_list_source(source(&asked, &next, Duration::from_secs(30)));
+        let began = tokio::time::Instant::now();
+        tokio::join!(u.look_at_switches(), u.look_at_switches(), u.look_at_switches());
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (1, false));
+        // (The clock is the runtime's, which counts in whole milliseconds.)
+        let boxed = |took: Duration| took >= SWITCH_LOOK_WAIT && took < SWITCH_LOOK_WAIT + Duration::from_millis(10);
+        assert!(boxed(began.elapsed()), "{:?}", began.elapsed());
+        u.look_at_switches().await;
+        assert!(*asked.lock().unwrap() == 1 && boxed(began.elapsed()), "no second go inside ten minutes");
+        // One that comes inside the box: asks at once still make one fetch, and all of
+        // them go on with what it said.
+        tokio::time::advance(SWITCH_LOOK_EVERY).await;
+        u.set_list_source(source(&asked, &next, Duration::from_secs(2)));
+        tokio::join!(u.look_at_switches(), u.look_at_switches(), u.look_at_switches());
+        assert_eq!((*asked.lock().unwrap(), u.disabled("port_share")), (2, true));
+        tokio::time::resume();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

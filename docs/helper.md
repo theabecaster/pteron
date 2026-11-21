@@ -179,8 +179,9 @@ listens, and the app does not offer "Open in Browser" for that computer.
 
 Pteron's publisher can also turn it off in every Beacon at once, through the signed release
 list that Beacons already read for updates. A Beacon follows it at its next update check,
-within about 12 hours: open shares close, and nothing is shared until a later list turns it
-back on. Only a list that carries the publisher's signature can do either, and an older copy
+within about 12 hours, and looks at the list again whenever a share is asked for and its
+last look is more than 10 minutes old: open shares close, and nothing is shared until a
+later list turns it back on. Only a list that carries the publisher's signature can do either, and an older copy
 of the list can't undo a newer one. Nothing else on a computer can be switched this way.
 
 Beacon also answers the app's question of which processes are behind a port (their ids,

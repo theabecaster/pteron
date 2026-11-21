@@ -260,7 +260,8 @@ Relay/release.sh --publish       # also publish to GitHub Releases (add --skip-b
   --publish` signs the published list again with `"disabled": ["port_share"]` and uploads it;
   no file and no version changes, so nothing updates. Every Beacon from 0.7.0 on closes its
   shares and shares nothing from its next update check on (12.5 hours at most for one that
-  is running and online). `--enable port_share` turns it back on the same way. Run it first
+  is running and online), and refuses a new share within 10 minutes of the publish, since
+  it looks at the list again before it makes one. `--enable port_share` turns it back on the same way. Run it first
   without `--publish` and read the list it wrote. While it is off, give `--disable
   port_share` with every new release too (Relay/README.md, step 8, Turning it off).
 - The manifest expires after 180 days (`EXPIRES_DAYS`). `Relay/release.sh --resign --publish`

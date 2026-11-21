@@ -1267,6 +1267,9 @@ impl Relay {
             info!("port_share from {who}: refused, no phone of theirs is registered here under that id");
             return Err(error("not_registered", concat!("Only an iPhone registered with this ", crate::beacon_name!(), " can open a page this way.")));
         };
+        // The release list may have turned the port share off since the last update check:
+        // it is looked at again first when that was a while ago, and obeyed before this goes on.
+        self.updater.look_at_switches().await;
         if !self.sharing.load(Ordering::SeqCst) {
             info!("port_share from {who}: it is turned off");
             return Err(error("not_available", "Opening pages in this iPhone's browser is turned off on this computer."));
@@ -4711,6 +4714,61 @@ mod tests {
         local.updater.switches_changed();
         assert_eq!(code(&local, &s, "port_share", &alex, &ask).await, "not_available");
         assert_eq!(status(&local, &alex).await["share_possible"], false);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_share_is_asked_for_only_after_a_look_at_what_the_list_turned_off() {
+        let dir = temp("share-look");
+        let (public, ..) = crate::update::list_for_test(VERSION, &[], 0);
+        let env = Env { dry_run: false, debug_build: true, keys: Ok(vec![public]), place: Err("test".into()), service: false, writable: false };
+        let r = Relay::new(vec![], DeviceStore::open(dir.join("devices.json")), Sender::Gateway, Updater::with_env(env, false, &dir), options(&dir, false, &[GATEWAY], Arc::new(TestSense::default())));
+        r.follow_updater();
+        let s = named_server("https://rex.example.ts.net");
+        let (one, two) = (Dev::start().await, Dev::start().await);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let ask = |dev: &Dev| json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"});
+        // The list as published now, and how often it was fetched.
+        let published = Arc::new(Mutex::new(crate::update::list_for_test(VERSION, &[], 10)));
+        let fetched = Arc::new(Mutex::new(0));
+        let (list, count) = (published.clone(), fetched.clone());
+        r.updater.set_list_source(Arc::new(move || {
+            *count.lock().unwrap() += 1;
+            let (_, data, sig) = list.lock().unwrap().clone();
+            Box::pin(async move { Ok((data, sig)) })
+        }));
+        // Time is moved on by hand, and runs as it does while a share is asked for.
+        async fn later(by: Duration) {
+            tokio::time::pause();
+            tokio::time::advance(by).await;
+            tokio::time::resume();
+        }
+        // The first ask looks, finds it on, and is answered; one who is not registered
+        // makes no fetch at all.
+        assert_eq!(code(&r, &s, "port_share", &app("ffff0000", Some(ALEX)), &ask(&one)).await, "not_registered");
+        assert_eq!(*fetched.lock().unwrap(), 0);
+        let opened = r.act(&s, "port_share", &ask(&one), &alex).await.0.unwrap();
+        let at: std::net::SocketAddr = format!("127.0.0.1:{}", opened["port"]).parse().unwrap();
+        assert_eq!((r.shares.count(), *fetched.lock().unwrap()), (1, 1));
+        // The publisher turns it off. An ask inside ten minutes of that look still goes by it.
+        *published.lock().unwrap() = crate::update::list_for_test(VERSION, &["port_share"], 20);
+        later(crate::update::SWITCH_LOOK_EVERY - Duration::from_secs(1)).await;
+        r.act(&s, "port_share", &ask(&one), &alex).await.0.unwrap();
+        assert_eq!((r.shares.count(), *fetched.lock().unwrap()), (1, 1));
+        // The first ask after them looks again: it is this very ask that is refused, and
+        // the share that was open is closed.
+        later(Duration::from_secs(1)).await;
+        assert_eq!(code(&r, &s, "port_share", &alex, &ask(&two)).await, "not_available");
+        assert_eq!((r.shares.count(), *fetched.lock().unwrap()), (0, 2));
+        assert_eq!(status(&r, &alex).await["share_possible"], false);
+        assert!(closed(at).await);
+        // Turned on again: the next look lets it through.
+        *published.lock().unwrap() = crate::update::list_for_test(VERSION, &[], 30);
+        later(crate::update::SWITCH_LOOK_EVERY).await;
+        r.act(&s, "port_share", &ask(&two), &alex).await.0.unwrap();
+        assert_eq!((r.shares.count(), *fetched.lock().unwrap()), (1, 3));
+        r.stop();
         std::fs::remove_dir_all(dir).unwrap();
     }
 
