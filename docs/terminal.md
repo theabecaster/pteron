@@ -1017,6 +1017,8 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
     load starts at once, and it joins the view on the turn after that. The error page is put
     together the first time a load fails. Pages keep their cookies and storage in the app's one
     WebKit store, so a login on a dev server is still there the next time its page opens.
+    Debug and benchmark builds mark the steps of an open as signpost intervals (`PreviewTrace`:
+    subsystem `dev.abrahamgonzalez.rexduo`, category `PreviewBrowser`).
   - Chrome: Done, the page's title over its address, a menu (Copy Link, Share…), and back,
     forward and reload. There is no button that leaves for another app: the address only works
     inside this one.

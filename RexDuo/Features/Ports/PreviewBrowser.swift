@@ -164,6 +164,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     static func present(_ page: PreviewPage, over view: UIView?, onAddress: (@MainActor (String, PreviewBrowser) -> Void)? = nil,
                         onClose: @escaping () -> Void) -> Bool {
         guard var top = view?.window?.rootViewController else { return false }
+        let trace = PreviewTrace.begin("present")
+        defer { PreviewTrace.end(trace) }
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
         let browser = PreviewBrowser(page: page, onAddress: onAddress, onClose: onClose)
         if let view, let holder = UIResponder.rexCurrentFirstResponder() as? UIView, holder.isDescendant(of: view) {
@@ -197,15 +199,44 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// main thread is never held for all three together. Nothing is made before a page opens.
     override func viewDidLoad() {
         super.viewDidLoad()
+        let trace = PreviewTrace.begin("viewDidLoad")
+        defer { PreviewTrace.end(trace) }
         view.backgroundColor = .systemBackground
         errorView.isHidden = true
-        buildChrome()
+        PreviewTrace.measure("buildChrome") { buildChrome() }
         refresh()
         DispatchQueue.main.async { [weak self] in self?.makeWebView() }
     }
 
+    #if DEBUG || BENCH
+    private var transitionTrace: PreviewTrace.Interval?
+    private var laidOut = false
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Once: the view appears again each time something shown over it goes.
+        if !laidOut { transitionTrace = PreviewTrace.begin("transition") }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        PreviewTrace.end(transitionTrace)
+        transitionTrace = nil
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if !laidOut {
+            laidOut = true
+            PreviewTrace.event("firstLayout")
+        }
+    }
+    #endif
+
     private func makeWebView() {
         guard !closed, webView == nil else { return }
+        let trace = PreviewTrace.begin("makeWebView")
+        defer { PreviewTrace.end(trace) }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = Self.siteData()
         config.allowsInlineMediaPlayback = true
@@ -222,6 +253,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     private func attach(_ web: WKWebView) {
         guard !closed, webView === web else { return }
+        let trace = PreviewTrace.begin("attach")
+        defer { PreviewTrace.end(trace) }
         web.translatesAutoresizingMaskIntoConstraints = false
         web.allowsBackForwardNavigationGestures = true
         view.insertSubview(web, at: 0)
