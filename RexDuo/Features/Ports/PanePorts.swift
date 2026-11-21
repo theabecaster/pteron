@@ -152,6 +152,9 @@ final class PanePorts {
     // MARK: Browser
 
     private func browse(_ link: LocalhostLink) {
+        guard let forward = server.forward else {
+            return notify("Couldn't open \(link.name). Try again in a moment.")
+        }
         Task {
             // A page the computer already hands out to this phone's browser loads from there.
             // Nothing is asked for a page that isn't: opening in the app makes no such address.
@@ -165,9 +168,6 @@ final class PanePorts {
                     return
                 }
                 return
-            }
-            guard let forward = server.forward else {
-                return notify("Couldn't open \(link.name). Try again in a moment.")
             }
             let target = PortForward.Target(sessionID: sessionID, port: link.port, dialHost: link.dialHost)
             guard let local = try? await forward.open(target, on: server), let url = link.url(localPort: local) else {

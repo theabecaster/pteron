@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import XCTest
 @testable import RexKit
 @testable import RexDuo
@@ -106,7 +107,7 @@ final class PortsBeaconLogicTests: XCTestCase {
         XCTAssertEqual(PortRestartCopy.confirm(RestartCommand(text: "npm run dev", shellPID: 60, leaderPID: 70)), "Restart: npm run dev")
         XCTAssertEqual(PortRestartCopy.detail, "Runs this command again in its pane.")
         XCTAssertEqual(PortBrowser.notice(.refused(code: "not_registered", unknownAction: false), name: "localhost:3000", computer: "Desk"),
-                       "Couldn't open localhost:3000 in the browser: Pteron Beacon on Desk doesn't know this iPhone yet. Set it up in Settings → Notifications.")
+                       "Couldn't open localhost:3000 in the browser: \(Brand.beaconName) on Desk doesn't know this iPhone yet. Set it up in Settings → Notifications.")
         XCTAssertEqual(PortBrowser.rowWords, "In browser")
         XCTAssertEqual(PortBrowser.notice(.refused(code: "not_listening", unknownAction: false), name: "localhost:3000", computer: "Desk"),
                        "Nothing is running on localhost:3000 now.")
@@ -146,20 +147,24 @@ final class PortsBeaconLogicTests: XCTestCase {
 
     @MainActor
     func testTheBrowsersMenuHasOpenInBrowserOnlyWhileItCanOpen() {
-        var offered = false
-        var opened: [String] = [], handed: String?
-        let outside = PreviewBrowser.Outside(offered: { offered }, open: { rest, _ in opened.append(rest) }, link: { _ in handed })
+        @MainActor final class Told {
+            var offered = false
+            var opened: [String] = []
+            var handed: String?
+        }
+        let told = Told()
+        let outside = PreviewBrowser.Outside(offered: { told.offered }, open: { rest, _ in told.opened.append(rest) }, link: { _ in told.handed })
         let page = PreviewPage(load: URL(string: "http://localhost:51000/")!, shown: "localhost:3000")
         let plain = PreviewBrowser(page: page, onClose: {})
         XCTAssertFalse(plain.offersOutside, "no way out, no item")
         let browser = PreviewBrowser(page: page, outside: outside, onClose: {})
         XCTAssertFalse(browser.offersOutside, "hazard 12: no item while the computer can't hand the page out")
-        offered = true
+        told.offered = true
         XCTAssertTrue(browser.offersOutside)
         browser.openOutside()
-        XCTAssertEqual(opened, ["/"])
+        XCTAssertEqual(told.opened, ["/"])
         XCTAssertEqual(browser.linkText, "http://localhost:3000/")
-        handed = "http://desk.example.ts.net:3000/"
+        told.handed = "http://desk.example.ts.net:3000/"
         XCTAssertEqual(browser.linkText, "http://desk.example.ts.net:3000/", "Copy Link gives the address that works in the browser")
     }
 }
@@ -328,6 +333,30 @@ final class PortsBeaconServerTests: XCTestCase {
         r.stop()
     }
 
+    func testABeaconFromBeforeTheseActionsShowsNothingNewHoweverItSaysSo() async throws {
+        // An older Beacon names the action it doesn't know in its message, with another code.
+        let r = try await rig()
+        let row = try await ready(r)
+        let w = World(), ports = actions(w)
+        w.owner = .failure(HelperFailure(code: "bad_request", message: "unknown action: port_owner"))
+        w.share = .failure(HelperFailure(code: "bad_request", message: "unknown action: port_share"))
+        // Its status has no `share_possible` either.
+        w.possible = HelperVersion(["version": "0.6.0"])?.sharePossible ?? true
+        await learned(ports, r, row, w)
+        XCTAssertFalse(ports.offersBrowser(r.server, row))
+        XCTAssertFalse(ports.offersStop(r.server, row), "no Stop through a wrapper")
+        XCTAssertNil(ports.restartCommand(r.server, row))
+        XCTAssertNil(ports.note(r.server, row))
+        ports.askRestart(r.server, row)
+        XCTAssertNil(ports.note(r.server, row), "Restart can't even be asked for")
+        ports.learnOwner(r.server, row)
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(w.count("port_owner"), 1)
+        XCTAssertEqual(w.count("port_share"), 0)
+        XCTAssertEqual(w.said, [])
+        r.stop()
+    }
+
     func testAnOwnerIsReadOncePerProcess() async throws {
         let r = try await rig()
         let row = try await ready(r)
@@ -424,9 +453,11 @@ final class PortsBeaconServerTests: XCTestCase {
         let share = await ports.existingShare(r.server, block: "block:1a", link)
         XCTAssertEqual(share?.page("/admin")?.absoluteString, "http://desk.example.ts.net:5173/admin")
         XCTAssertEqual(w.count("port_share"), 2, "the one that exists is asked for again, which keeps it")
-        XCTAssertNil(await ports.existingShare(r.server, block: "block:1a", LocalhostLink(lan: URL(string: "http://10.0.0.246:5173/")!)!),
+        let got4 = await ports.existingShare(r.server, block: "block:1a", LocalhostLink(lan: URL(string: "http://10.0.0.246:5173/")!)!)
+        XCTAssertNil(got4,
                      "a LAN address opens the old way")
-        XCTAssertNil(await ports.existingShare(r.server, block: "block:1a", LocalhostLink(port: 9999, dialHost: "127.0.0.1")), "an unlisted port")
+        let got3 = await ports.existingShare(r.server, block: "block:1a", LocalhostLink(port: 9999, dialHost: "127.0.0.1"))
+        XCTAssertNil(got3, "an unlisted port")
         r.stop()
     }
 
@@ -444,14 +475,16 @@ final class PortsBeaconServerTests: XCTestCase {
         ports.copyLink(r.server, row)
         XCTAssertEqual(w.copied, ["http://localhost:5173"])
         let link = LocalhostLink(port: 5173, dialHost: "127.0.0.1")
-        XCTAssertNil(await ports.existingShare(r.server, block: "block:1a", link))
+        let got1 = await ports.existingShare(r.server, block: "block:1a", link)
+        XCTAssertNil(got1)
         XCTAssertEqual(w.count("port_share"), 1, "the app's own open asks for none")
         _ = await ports.openInBrowserNow(r.server, row)
         XCTAssertEqual(w.count("port_share"), 2)
         XCTAssertEqual(ports.note(r.server, row), .inBrowser)
         // The computer ended it early: the app's next open finds out, and loads the old way.
         w.share = failure("not_listening")
-        XCTAssertNil(await ports.existingShare(r.server, block: "block:1a", link))
+        let got2 = await ports.existingShare(r.server, block: "block:1a", link)
+        XCTAssertNil(got2)
         XCTAssertNil(ports.note(r.server, row))
         XCTAssertTrue(ports.offersBrowser(r.server, row), "the item stays: it may work the next time")
         XCTAssertEqual(w.said, [], "an open in the app says nothing about it")
