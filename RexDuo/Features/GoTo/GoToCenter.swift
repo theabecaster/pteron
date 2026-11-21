@@ -238,7 +238,7 @@ final class GoToCenter {
                   let w = v.window(sel.windowID), block.map({ w.block($0) != nil }) ?? true else {
                 remember(nil, removing: id)
                 close()
-                Notice.shared.show(block == nil ? "That tab closed." : "That pane closed.")
+                Notice.shared.show(block == nil ? "That tab closed." : Messages.paneClosed)
                 return
             }
             remember(id)
@@ -298,17 +298,17 @@ final class GoToCenter {
         guard let server = model.server(serverID) else { return }
         if let t = target, let b = t.blockID {
             guard let host = pool?.host(for: TerminalHostPool.Key(server: serverID, session: t.sessionID, block: b)) else {
-                Notice.shared.show("That pane closed.")
+                Notice.shared.show(Messages.paneClosed)
                 return
             }
             let id = origins.started(server: serverID, serial: server.connectionSerial, action: name, title: title, at: Date())
             showRunning(id, title: title)
             host.runFromPalette(name, args: args, title: title, ended: { [weak self] _ in self?.runEnded(id) },
-                                skipped: { n in if n > 0 { Notice.shared.show("Ran \(title). Some steps only run on the Mac.", style: .neutral) } })
+                                skipped: { n in if n > 0 { Notice.shared.show("Ran \(title). Some steps run only in the Rex app.", style: .neutral) } })
             return
         }
         guard server.control.state == .connected else {
-            Notice.shared.show(TerminalStream.droppedMessage(title))
+            Notice.shared.show(Messages.didNotRun(title, computer: server.config.name))
             return
         }
         let id = origins.started(server: serverID, serial: server.connectionSerial, action: name, title: title, at: Date())
@@ -318,9 +318,9 @@ final class GoToCenter {
                 let queued = try await server.runAction(name: name, args: args)
                 self?.performQueued(queued, title: title)
             } catch let e as RexError where e.neverSent {
-                Notice.shared.show(TerminalStream.droppedMessage(title))
+                Notice.shared.show(Messages.didNotRun(title, computer: server.config.name))
             } catch let e as RexError where e.code != "client" {
-                Notice.shared.show("Couldn't run \(title). \(e.message)")
+                Notice.shared.show(Messages.couldNot("run \(title)", e, computer: server.config.name))
             } catch {
                 // Sent, and the answer was lost: nobody knows whether it ran.
             }
@@ -329,7 +329,7 @@ final class GoToCenter {
     }
 
     /// The client actions a run with no pane asked for: the app's commands run; the rest
-    /// need a pane or the Mac.
+    /// need a pane or the Rex app.
     private func performQueued(_ queued: [JSONObject], title: String) {
         var skipped = 0
         for q in queued {
@@ -339,7 +339,7 @@ final class GoToCenter {
             }
             model.perform(c)
         }
-        if skipped > 0 { Notice.shared.show("Ran \(title). Some steps only run on the Mac.", style: .neutral) }
+        if skipped > 0 { Notice.shared.show("Ran \(title). Some steps run only in the Rex app.", style: .neutral) }
     }
 
     /// A key ran a Lua or block action: kept, so a question it asks shows in the palette.
@@ -474,7 +474,7 @@ final class GoToCenter {
                 self?.origins.answered(p.runID)
             } catch let e as RexError where e.code == "bad_request" {
                 keep = true
-                Notice.shared.show("Rex didn't accept that answer.")
+                Notice.shared.show("Rex didn't accept that answer. Check it and answer again.")
             } catch {}
             guard let self else { return }
             self.replying = false

@@ -388,12 +388,12 @@ final class PortsTests: XCTestCase {
         // An unlisted port's question with no pane left to ask over.
         let b = pane()
         b.open(URL(string: "http://localhost:3000/")!, asked: false)
-        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:3000: its pane is closed.")
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:3000. That pane closed.")
 
         // No forward to show pages with.
         r.server.forward = nil
         pane().open(URL(string: "http://localhost:5173/")!, asked: false)
-        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: the app isn't ready to show pages yet.")
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173. Try again in a moment.")
 
         // The phone couldn't listen.
         let failing = PortForward(tag: { "a1b2c3d4" }, ledger: TunnelLedger(defaults: UserDefaults(suiteName: UUID().uuidString)!),
@@ -401,7 +401,7 @@ final class PortsTests: XCTestCase {
         r.server.forward = failing
         pane().open(URL(string: "http://localhost:5173/")!, asked: false)
         _ = await eventually { !notes.isEmpty }
-        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: the phone couldn't get ready to show it.")
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173 on this iPhone. Try again in a moment.")
 
         // No window to show the page in: the forward closes too.
         let forward = PortForward(tag: { "a1b2c3d4" }, ledger: TunnelLedger(defaults: UserDefaults(suiteName: UUID().uuidString)!),
@@ -412,16 +412,16 @@ final class PortsTests: XCTestCase {
         offScreen.view = view
         offScreen.open(URL(string: "http://localhost:5173/")!, asked: false)
         _ = await eventually { !notes.isEmpty }
-        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: its pane is no longer on screen.")
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173: its pane is no longer on screen. Show the pane, then try again.")
         XCTAssertNil(forward.forward)
 
         // Offline and debugger ports, as before, through the same notice.
         pane().open(URL(string: "http://localhost:9229/")!, asked: false)
-        XCTAssertEqual(notes.popLast(), "Debugger ports don't open on the phone.")
+        XCTAssertEqual(notes.popLast(), "Debugger ports don't open on this iPhone.")
         r.fake.close(code: 1001, reason: "bye")
         _ = await eventually { r.server.control.state != .connected }
         pane().open(URL(string: "http://localhost:5173/")!, asked: false)
-        XCTAssertEqual(notes.popLast(), "Desk is offline, so localhost:5173 can't open.")
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173. Desk is offline. Try again when it's back.")
         XCTAssertTrue(notes.isEmpty)
         r.stop()
     }

@@ -65,7 +65,7 @@ struct PaneHostView: UIViewRepresentable {
         }
         let p = prefs
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
-        stream.showsNotices()
+        stream.showsNotices(computer: server.config.name, keymap: server.keymap)
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
         // Read when the pane checks its fit (`TerminalHost.checkFit`), never per frame.
@@ -464,9 +464,14 @@ struct ParkWatcher: View {
 
 extension TerminalStream {
     /// Where a pane's stream says what it could not do: a failure in the error style, and input
-    /// the catch-up fence dropped in the neutral one, since nothing failed.
-    func showsNotices() {
-        onActionFailed = { Notice.shared.show($0) }
-        onFenceNotice = { Notice.shared.show($0, style: .neutral) }
+    /// the catch-up fence dropped in the neutral one, since nothing failed. An action is named as
+    /// the palette names it, never by its id.
+    func showsNotices(computer: String, keymap: KeymapStore?) {
+        let title: (String) -> String = { [weak keymap] id in
+            let t = keymap?.title(forAction: id) ?? id
+            return t == id ? "the action" : t
+        }
+        onActionFailed = { RexDuo.Notice.shared.show(Messages.stream($0, computer: computer, title: title)) }
+        onFenceNotice = { RexDuo.Notice.shared.show(Messages.stream($0, computer: computer, title: title), style: .neutral) }
     }
 }

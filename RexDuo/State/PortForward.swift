@@ -14,6 +14,8 @@ protocol TunnelServer: AnyObject {
     /// longer owned by it after a long drop.
     var tunnelClientID: String? { get }
     var tunnelConnected: Bool { get }
+    /// The computer's name, for what the user is told.
+    var tunnelName: String { get }
     func tunnelCall(_ method: String, _ payload: JSONObject) async throws -> JSONObject
     func tunnelCallsInOrder(_ calls: [(method: String, payload: JSONObject)]) async -> [Result<JSONObject, Error>]
     /// A data connection to the block that has had its handshake.
@@ -367,10 +369,10 @@ final class PortForward {
         guard !f.refusedShown else { return }
         f.refusedShown = true
         if e?.neverSent == true || e?.code == "client" {
-            notify("Couldn't open localhost:\(f.target.port): the connection to the computer dropped.")
+            notify("Couldn't open localhost:\(f.target.port). \(Messages.notSent(f.server.tunnelName))")
         } else {
-            notify(e?.code == "conflict" ? "The computer has too many panes open to show this page."
-                                        : "Couldn't open the page through Rex.")
+            notify(e?.code == "conflict" ? "\(Messages.capitalized(f.server.tunnelName)) has too many panes open to show this page."
+                                        : "Couldn't open the page. Try again.")
         }
     }
 

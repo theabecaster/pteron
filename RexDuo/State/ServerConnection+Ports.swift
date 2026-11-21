@@ -295,6 +295,7 @@ extension ServerConnection: TunnelServer {
     /// Not in the background, and not after it before the control connection has answered
     /// (`RexControl.holdsData`): a page's request dials nothing until then.
     var tunnelConnected: Bool { control.state == .connected && !control.holdsData }
+    var tunnelName: String { config.name }
 
     func tunnelCall(_ method: String, _ payload: JSONObject) async throws -> JSONObject {
         try await control.call(method, payload)

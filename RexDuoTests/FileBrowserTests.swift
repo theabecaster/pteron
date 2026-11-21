@@ -394,7 +394,7 @@ struct FolderModelTests {
         #expect(BrowserCopy.problem(.denied, path: "/srv/x", home: "/home/dev", machine: "studio", mac: true)
             == "Rex on studio isn't allowed to read this folder.")
         #expect(BrowserCopy.problem(.denied, path: "/home/dev/Documents/tax", home: "/home/dev", machine: "studio", mac: true)
-            == "Rex on studio isn't allowed to read this folder. Give Rex access in System Settings › Privacy & Security.")
+            == "Rex on studio isn't allowed to read this folder. Give Rex access in System Settings → Privacy & Security.")
         #expect(BrowserCopy.problem(.denied, path: "/home/dev/Documents", home: "/home/dev", machine: "studio", mac: false)
             == "Rex on studio isn't allowed to read this folder.")
         #expect(BrowserCopy.problem(.gone, path: "/x", home: "", machine: "studio", mac: false) == "This folder is gone.")

@@ -102,12 +102,13 @@ struct HelperFailure: Error, Equatable {
     /// The helper has seen the gateway refuse this secret and won't take it again.
     var isSecretDropped: Bool { code == "secret_dropped" || message.contains("secret_dropped") }
 
-    /// The line Settings shows.
+    /// The line Settings shows: worded from the code, never Beacon's own text, which is for logs.
     func sentence(helper name: String) -> String {
-        let said = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = said.isEmpty ? "the request failed" : said
-        let end = text.last.map { ".!?".contains($0) } == true ? "" : "."
-        return "\(Brand.beaconName) on \(name): \(text)\(end)"
+        switch code {
+        case "not_your_device": "\(Brand.beaconName) on \(name) belongs to another account."
+        case "", "client", "timeout": "\(Brand.beaconName) on \(name) didn't answer."
+        default: "\(Brand.beaconName) on \(name) refused this iPhone."
+        }
     }
 }
 

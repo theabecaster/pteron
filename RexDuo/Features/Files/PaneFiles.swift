@@ -126,6 +126,7 @@ final class PaneFiles {
         opener = FileOpener(control: server.control, sessionID: sessionID, blockID: blockID)
         lister = DirLister(control: server.control, sessionID: sessionID, blockID: blockID)
         sender.target = { [weak self] in self?.target ?? "this computer" }
+        sender.computer = { [weak self] in self?.machineName ?? "this computer" }
         picker.onPicked = { [weak self] files in self?.send(files) }
         prepare = { ImagePrep.prepare($0) }
         opener.onFolder = { [weak self] path in self?.browse(.browse, at: path) ?? false }
@@ -276,14 +277,14 @@ final class PaneFiles {
         if let title = pasteFileTitle {
             rows.append(Row(title: title, symbol: "doc.on.clipboard") { [weak self] in self?.pasteFiles() })
         }
-        rows.append(Row(title: "Photos", symbol: "photo") { [weak self] in self?.pickPhotos() })
+        rows.append(Row(title: FilesCommand.insertPhoto.title, symbol: "photo") { [weak self] in self?.pickPhotos() })
         if AttachPicker.cameraAvailable {
             rows.append(Row(title: "Camera", symbol: "camera") { [weak self] in
                 guard let self, let view = self.view else { return }
                 self.picker.takePhoto(over: view)
             })
         }
-        rows.append(Row(title: "Files", symbol: "folder") { [weak self] in self?.pickFiles() })
+        rows.append(Row(title: FilesCommand.insertFile.title, symbol: "folder") { [weak self] in self?.pickFiles() })
         return rows
     }
 
@@ -425,7 +426,7 @@ final class PaneFiles {
     func send(_ files: [StagedFile]) {
         guard support.upload == true else {
             FileStaging.discard(files)
-            Notice.shared.show("This computer's Rex can't take files. Update Rex there.")
+            Notice.shared.show(Messages.updateRex(machineName, to: "send files"))
             return
         }
         // The user picked files, not a place on the screen: they go once the pane is current.
@@ -454,18 +455,18 @@ final class PaneFiles {
     }
 
     /// The files that waited for the pane to be current don't go: the pane left the screen,
-    /// closed, or stayed behind for `currentWait`. Said as any send that didn't happen, with Retry.
+    /// closed, or stayed behind for `currentWait`. Said as any send that didn't happen, with Try Again.
     private func notSent() {
         guard let (_, files) = waiting else { return }
         waiting = nil
-        let retry = Notice.Action(title: "Retry") { [weak self] in
+        let retry = Notice.Action(title: "Try Again") { [weak self] in
             if let self { self.send(files) } else { FileStaging.discard(files) }
         }
         Notice.shared.show(Self.notSentText(files.map(\.name)), style: .neutral, action: retry)
     }
 
     static func notSentText(_ names: [String]) -> String {
-        "Not sent: \(SendTarget.what(names)). The pane was still reconnecting."
+        "Didn't send \(SendTarget.what(names)): the pane was still reconnecting. Try again in a moment."
     }
 
     func cancel() { sender.cancel() }

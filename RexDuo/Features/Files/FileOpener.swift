@@ -72,9 +72,10 @@ enum PathGuess {
         case .notAFile: return "\(name) isn't a file that can be opened."
         case .noPermission: return "Rex on \(machine) isn't allowed to read \(name)."
         case .tooBig(let size): return "\(name) is too big to open here (\(SendTarget.size(size)); up to \(SendTarget.size(FileOpener.limit)))."
-        case .unsupported: return "This computer's Rex can't send files. Update Rex there."
-        case .refused(let m): return "Couldn't open \(name): \(m)"
-        case .lost: return "Couldn't open \(name): the connection was lost."
+        case .unsupported: return Messages.updateRex(machine, to: "open files")
+        case .refused: return "\(Messages.capitalized(machine)) refused \(name)."
+        case .saveFailed: return "Couldn't save \(name) on this iPhone. Free up space, then try again."
+        case .lost: return "Couldn't open \(name). \(Messages.notSent(machine))"
         case .cancelled: return "Didn't open \(name)."
         }
     }
@@ -175,7 +176,7 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 let f = error as? FileDownloader.Failure ?? .lost(error.localizedDescription)
                 // A folder is something to browse, where the pane's computer lists folders.
                 if f == .folder, destination == .preview(textHint: false), self.onFolder?(path) == true { return }
-                let retry = Notice.Action(title: "Retry") { self.fetch(path, machine: machine, to: destination, over: view) }
+                let retry = Notice.Action(title: "Try Again") { self.fetch(path, machine: machine, to: destination, over: view) }
                 switch f {
                 case .cancelled: Notice.shared.show(PathGuess.message(f, path: path, machine: machine), style: .neutral)
                 case .lost: Notice.shared.show(PathGuess.message(f, path: path, machine: machine), action: retry)

@@ -121,11 +121,15 @@ struct HelperTrustTests {
         #expect(HelperFailure(code: "invalid", message: "token must be the APNs device token in hex").isLegacyRefusal)
     }
 
+    /// Worded from the code: Beacon's own text never reaches the screen.
     @MainActor @Test func aFailureReadsAsOneSentence() {
         #expect(HelperFailure(code: "not_your_device", message: "Another account registered this iPhone.").sentence(helper: "Studio")
-                == "\(Brand.beaconName) on Studio: Another account registered this iPhone.")
-        #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio: timed out.")
-        #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio: the request failed.")
+                == "\(Brand.beaconName) on Studio belongs to another account.")
+        #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio didn't answer.")
+        #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio didn't answer.")
+        let odd = HelperFailure(code: "bad_request", message: "presence_key must be a key")
+        #expect(odd.sentence(helper: "Studio") == "\(Brand.beaconName) on Studio refused this iPhone.")
+        #expect(!odd.sentence(helper: "Studio").contains("presence_key"))
     }
 
     // MARK: Labels

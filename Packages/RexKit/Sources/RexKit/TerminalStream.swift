@@ -392,9 +392,26 @@ public final class TerminalStream {
     public let sessionID: String
     public let blockID: String
     public weak var sink: TerminalSink?
-    /// Called with a short message for the user when a key-bound server action fails, or when
-    /// typed input was dropped because the connection broke while it was being sent (see `send`).
-    public var onActionFailed: (@MainActor (String) -> Void)?
+    /// Called when a key-bound server action fails, or when typed input was dropped because the
+    /// connection broke while it was being sent (see `send`). The app words it (`Notice`).
+    public var onActionFailed: (@MainActor (Notice) -> Void)?
+
+    /// What went wrong with input or an action, for the app to put in words. RexKit holds no
+    /// user-facing text: it says what happened, and the app says it to the user.
+    public enum Notice: Equatable, Sendable {
+        /// The catch-up fence dropped input: the pane changed under it.
+        case paneChanged
+        /// The fence dropped input: the stream was not back in time, or the pane had no screen.
+        case stillReconnecting
+        /// Typed input was sent and the connection broke before the answer: it may have arrived.
+        case inputLost
+        /// An action never left this client. `title` is the name the caller gave, if any.
+        case actionNotSent(action: String, title: String?)
+        /// An action was sent and the connection broke before the answer: it may have run.
+        case actionLost(action: String, title: String?)
+        /// The server refused an action, with its error's code.
+        case actionRefused(action: String, title: String?, code: String)
+    }
 
     /// Called each time the server has answered a write of typed text. For measuring.
     public var onWritten: (@MainActor () -> Void)?
@@ -483,13 +500,10 @@ public final class TerminalStream {
     let fence = CatchUpFence()
     /// The screen may be behind the program: typed input is held and everything else dropped.
     public var isFenced: Bool { fence.isUp }
-    /// What the user is told when the fence dropped input.
-    public static let fenceDroppedMessage = "The pane changed. Nothing was sent."
-    /// Input dropped because the stream was not back in time, or the pane had no screen yet.
-    public static let fenceWaitingMessage = "Not sent: the pane was still reconnecting."
-    /// Tells the user that the fence dropped input: nothing failed, so the app shows it in its
-    /// neutral style. Without one, `onActionFailed` gets the text.
-    public var onFenceNotice: (@MainActor (String) -> Void)?
+    /// Tells the user that the fence dropped input (`.paneChanged`, or `.stillReconnecting` when
+    /// the stream was not back in time or the pane had no screen yet): nothing failed, so the app
+    /// shows it in its neutral style. Without one, `onActionFailed` gets it.
+    public var onFenceNotice: (@MainActor (Notice) -> Void)?
     /// True once the sink has been given a screen (a snapshot or a screen read).
     private var hasScreen = false
 
@@ -533,8 +547,8 @@ public final class TerminalStream {
         fence.onFlush = { [weak self] bytes in self?.enqueueText(bytes) }
         fence.onDropped = { [weak self] why in
             guard let self else { return }
-            let text = why == .changed ? Self.fenceDroppedMessage : Self.fenceWaitingMessage
-            if let say = self.onFenceNotice { say(text) } else { self.onActionFailed?(text) }
+            let notice: Notice = why == .changed ? .paneChanged : .stillReconnecting
+            if let say = self.onFenceNotice { say(notice) } else { self.onActionFailed?(notice) }
         }
         fence.drained = { [weak self] done in
             guard let sink = self?.sink else { return done() }
@@ -1285,8 +1299,10 @@ public final class TerminalStream {
     }
     /// A server call bound to a key (`client.action`, `client.key`).
     private struct Work {
-        /// The action's name, for the message when it fails; nil for a forwarded key.
+        /// The action's id, for the notice when it fails; nil for a forwarded key.
         let action: String?
+        /// The name a palette pick gave it, for the same notice.
+        var title: String? = nil
         /// Picked from the palette: dropped, never sent later, if it can't leave now.
         var fromPalette = false
         /// Told once how the call ended: true when the server answered without an error. Not
@@ -1319,7 +1335,6 @@ public final class TerminalStream {
     private var inputRetryScheduled = false
     /// A slow action (a Lua function may run for seconds) holds typing back at most this long.
     var actionHold: Duration = .milliseconds(1500)
-    static let inputLostMessage = "The connection dropped while sending. Check the pane before typing that again."
 
     /// Types `bytes` into the terminal. Returns false if they were dropped, which happens in two
     /// cases: the stream is stopped, or the bytes aren't valid UTF-8.
@@ -1446,15 +1461,16 @@ public final class TerminalStream {
             if link.isConnected { retryInputSoon() }
         case .unsent, .refused:
             if case .work(let work) = item, let action = work.action {
-                onActionFailed?("Couldn't run \(action). \((failure as? RexError)?.message ?? failure.localizedDescription)")
+                onActionFailed?(Self.unsent(failure) ? .actionNotSent(action: action, title: work.title)
+                                                     : .actionRefused(action: action, title: work.title, code: Self.code(failure)))
             }
             if current { pump() }
         case .unknown:
             if current { dropQueue() }
             if case .work(let work) = item, let action = work.action {
-                onActionFailed?("Couldn't run \(action). The connection dropped.")
+                onActionFailed?(.actionLost(action: action, title: work.title))
             } else {
-                onActionFailed?(Self.inputLostMessage)
+                onActionFailed?(.inputLost)
             }
             if current { pump() }
         }
@@ -1464,20 +1480,20 @@ public final class TerminalStream {
     /// connection: the user picked it for now. One whose answer was lost ends quietly, as nobody
     /// knows whether it ran; what was typed behind it goes, as for a key.
     private func paletteWorkFailed(_ work: Work, failure: Error, current: Bool) {
-        let title = work.action ?? "the action"
+        let action = work.action ?? ""
         switch Self.fate(of: failure) {
         case .unsent:
-            onActionFailed?(Self.droppedMessage(title))
+            onActionFailed?(.actionNotSent(action: action, title: work.title))
         case .refused:
-            onActionFailed?("Couldn't run \(title). \((failure as? RexError)?.message ?? failure.localizedDescription)")
+            onActionFailed?(.actionRefused(action: action, title: work.title, code: Self.code(failure)))
         case .unknown:
             if current { dropQueue() }
         }
         if current { pump() }
     }
 
-    /// What a palette pick says when it couldn't leave.
-    public static func droppedMessage(_ title: String) -> String { "Didn't run \(title): the connection dropped." }
+    private nonisolated static func unsent(_ error: Error) -> Bool { (error as? RexError)?.neverSent == true }
+    private nonisolated static func code(_ error: Error) -> String { (error as? RexError)?.code ?? "" }
 
     private nonisolated static func fate(of error: Error) -> Fate {
         guard let e = error as? RexError else { return .unknown }
@@ -1576,7 +1592,7 @@ public final class TerminalStream {
                         then: @escaping @MainActor ([JSONObject]) -> Void) {
         let palette = origin == .palette
         if palette, stopped || !link.isConnected {
-            onActionFailed?(Self.droppedMessage(title ?? action))
+            onActionFailed?(.actionNotSent(action: action, title: title))
             ended?(false)
             return
         }
@@ -1586,7 +1602,7 @@ public final class TerminalStream {
             ended?(false)
             return
         }
-        var work = Work(action: palette ? (title ?? action) : action) { [sessionID, blockID, link] in
+        var work = Work(action: action, title: palette ? title : nil) { [sessionID, blockID, link] in
             var p: JSONObject = ["action": action, "origin": origin.rawValue, "session_id": sessionID, "block_id": blockID]
             if let args, !args.isEmpty { p["args"] = args }
             let r = try await link.call("client.action", p)

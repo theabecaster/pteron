@@ -71,15 +71,15 @@ extension ServerConnection {
             return true
         } catch {
             noteMissing(method, error)
-            Notice.shared.show(Self.moveFailure(error))
+            Notice.shared.show(moveFailure(error))
             refreshView(sid)
             return false
         }
     }
 
-    static func moveFailure(_ error: Error) -> String {
+    func moveFailure(_ error: Error) -> String {
         if (error as? RexError)?.code == "conflict" { return "That tab can't take another pane." }
-        return "Couldn't move the pane. \(short(error))"
+        return "Couldn't move the pane. \(reason(error))"
     }
 
     /// Move Pane to New Tab: a tab with a placeholder shell, then, in one turn and in order, the
@@ -100,7 +100,7 @@ extension ServerConnection {
             ])
         } catch {
             noteMissing("session.new_window", error)
-            Notice.shared.show("Couldn't move the pane. \(Self.short(error))")
+            Notice.shared.show("Couldn't move the pane. \(reason(error))")
             refreshView(sid)
             return nil
         }
@@ -119,11 +119,11 @@ extension ServerConnection {
             guard case .failure(let e) = result else { continue }
             noteMissing(call.method, e)
             #if DEBUG
-            NSLog("PANES move to new tab: %@ failed: %@", call.method, Self.short(e))
+            NSLog("PANES move to new tab: %@ failed: %@", call.method, String(describing: e))
             #endif
         }
         if case .failure(let e) = results[0] {
-            Notice.shared.show(Self.moveFailure(e))
+            Notice.shared.show(moveFailure(e))
             refreshView(sid)
             return nil
         }
@@ -142,7 +142,7 @@ extension ServerConnection {
             for await e in g where failure == nil { failure = e }
         }
         refreshView(sid)
-        if let failure { Notice.shared.show("Couldn't balance the splits. \(Self.short(failure))") }
+        if let failure { Notice.shared.show("Couldn't balance the splits. \(reason(failure))") }
     }
 
     private func resizeForBalance(_ sid: String, _ c: SplitBalance.Change) async -> Error? {
@@ -168,7 +168,7 @@ extension ServerConnection {
             failure = failure ?? e
         }
         refreshView(sid)
-        if let failure { Notice.shared.show("Couldn't close the panes. \(Self.short(failure))") }
+        if let failure { Notice.shared.show("Couldn't close the panes. \(reason(failure))") }
     }
 
     // MARK: Order
@@ -212,7 +212,7 @@ extension ServerConnection {
                 self.noteMissing(method, error)
                 self.refreshView(sid)
                 if (error as? RexError)?.code == "not_found" { return }
-                Notice.shared.show("Couldn't move the tab. \(Self.short(error))")
+                Notice.shared.show("Couldn't move the tab. \(self.reason(error))")
             }
         }
     }
@@ -250,7 +250,7 @@ extension ServerConnection {
                 self.noteMissing(method, error)
                 let code = (error as? RexError)?.code
                 if code == "not_found" || code == "session_not_found" { return }
-                Notice.shared.show("Couldn't move the session. \(Self.short(error))")
+                Notice.shared.show("Couldn't move the session. \(self.reason(error))")
             }
         }
     }

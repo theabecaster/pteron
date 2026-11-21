@@ -47,15 +47,17 @@ enum BrowserCopy {
         switch p {
         case .denied:
             let line = "Rex on \(machine) isn't allowed to read this folder."
-            return mac && isProtected(path, home: home) ? line + " Give Rex access in System Settings › Privacy & Security." : line
+            return mac && isProtected(path, home: home) ? line + " Give Rex access in System Settings → Privacy & Security." : line
         case .gone: return "This folder is gone."
         case .unreadable, .refused: return "Couldn't read this folder."
-        case .lost: return "Couldn't reach \(machine)."
+        case .lost: return lost(machine)
         case .unsupported: return unsupported(machine)
         }
     }
 
-    static func unsupported(_ machine: String) -> String { "\(machine)'s Rex can't list folders." }
+    static func unsupported(_ machine: String) -> String { Messages.updateRex(machine, to: "browse folders") }
+
+    static func lost(_ machine: String) -> String { "The connection to \(machine) dropped. Try again when it's back." }
 
     /// The folders macOS keeps from programs until the user allows them.
     static func isProtected(_ path: String, home: String) -> Bool {
@@ -169,11 +171,11 @@ private struct FolderScreen: View {
     private func lines(_ facts: BrowserModel.Facts) -> [String] {
         var out: [String] = []
         if !facts.paneOpen {
-            out.append("This pane closed.")
+            out.append(Messages.thisPaneClosed)
         } else if !facts.canList {
             if folder.hasListing { out.append(BrowserCopy.unsupported(model.machine)) }
         } else if folder.phase == .failed(.lost), folder.hasListing {
-            out.append("Couldn't reach \(model.machine).")
+            out.append(BrowserCopy.lost(model.machine))
         }
         if facts.paneOpen, case .elsewhere(let program) = facts.insert {
             out.append(BrowserCopy.elsewhere(program, computer: model.computer))
@@ -274,7 +276,7 @@ private struct FolderScreen: View {
                     StatusLine(glyph: problem == .denied ? "lock" : "folder.badge.questionmark", text: text, theme: theme,
                                button: DirPath.parent(folder.path) == nil ? nil : ("Go Up", { model.goUp() }))
                 case .lost, .refused:
-                    StatusLine(glyph: "wifi.slash", text: text, theme: theme, button: ("Retry", { Task { await folder.load() } }))
+                    StatusLine(glyph: "wifi.slash", text: text, theme: theme, button: ("Try Again", { Task { await folder.load() } }))
                 case .unsupported:
                     StatusLine(glyph: "folder.badge.questionmark", text: text, theme: theme)
                 }

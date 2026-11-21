@@ -358,7 +358,7 @@ enum OutputReadFailure: Error, Equatable {
     case styledTooLarge
     /// Large output on an expensive network, and the user said no.
     case declined
-    case refused(String)
+    case refused
 }
 
 /// One All Output read: `terminal.format` with the first chunk, then `blob_read` with the same id
@@ -500,7 +500,7 @@ final class OutputReader {
             case "method_not_found", "revision_too_low": throw .unsupported(method)
             case "not_found": throw .notFound
             case "client": throw .connection
-            default: throw e.neverSent ? .connection : .refused(e.message)
+            default: throw e.neverSent ? .connection : .refused
             }
         } catch {
             try check(source, serial)
@@ -770,7 +770,7 @@ final class PaneShare {
 
     private func shareAllOutput(styled: Bool, anchor: ShareAnchor) {
         guard server.phase == .online else {
-            return Notice.shared.show("Needs a connection to the computer.", style: .neutral)
+            return Notice.shared.show(Messages.offline(server.config.name), style: .neutral)
         }
         let job = OutputShare(pane: self, styled: styled, anchor: anchor)
         job.start()
@@ -954,7 +954,7 @@ final class OutputShare {
     private var paneExists: Bool { server.views[sessionID]?.windowContaining(block: blockID) != nil }
 
     private var retry: Notice.Action {
-        Notice.Action(title: "Retry") { [weak pane, styled, anchor] in pane?.share(.allOutput, styled: styled, anchor: anchor) }
+        Notice.Action(title: "Try Again") { [weak pane, styled, anchor] in pane?.share(.allOutput, styled: styled, anchor: anchor) }
     }
 
     private func failed(_ error: OutputReadFailure) {
@@ -962,8 +962,8 @@ final class OutputShare {
         case .cancelled, .declined:
             break
         case .styledTooLarge:
-            Notice.shared.show("Too much output to share styled.", style: .neutral,
-                               action: Notice.Action(title: "Share Plain") { [weak pane, anchor] in
+            Notice.shared.show("Too much output to share with colors.", style: .neutral,
+                               action: Notice.Action(title: "Share as Plain Text") { [weak pane, anchor] in
                                    pane?.share(.allOutput, styled: false, anchor: anchor)
                                })
         case .unsupported(let method):
@@ -975,7 +975,7 @@ final class OutputShare {
             if paneExists {
                 Notice.shared.show("Couldn't read the output.", action: retry)
             } else {
-                Notice.shared.show("The pane has closed.", style: .neutral)
+                Notice.shared.show(Messages.paneClosed, style: .neutral)
             }
         }
     }
@@ -985,8 +985,8 @@ final class OutputShare {
         guard await FileStaging.networkIsExpensive() else { return true }
         guard let view = pane?.host else { return false }
         return await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
-            TerminalPrompt.ask(over: view, title: "Read \(SendTarget.size(Int64(bytes))) on cellular?",
-                               message: "All of the pane's output, to share.", confirm: "Read") { c.resume(returning: $0) }
+            TerminalPrompt.ask(over: view, title: "Download \(SendTarget.size(Int64(bytes))) on cellular?",
+                               message: "All of the pane's output, to share.", confirm: "Download") { c.resume(returning: $0) }
         }
     }
 

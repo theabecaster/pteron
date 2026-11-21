@@ -112,8 +112,10 @@ public final class FileUploader {
         case unsupported
         /// `cancel()` was called.
         case cancelled
-        /// The server refused the upload; its message.
+        /// The server refused the upload; its message, for logs (the app words it).
         case refused(String)
+        /// A file couldn't be read on this device.
+        case unreadable(String)
         /// The server refused the bytes (4006): the file changed size while it was read.
         case brokeRule
         /// The connection was lost, or the server didn't answer.
@@ -257,7 +259,7 @@ public final class FileUploader {
             throw Failure.lost("no ticket")
         }
         let source: any UploadSource
-        do { source = try item.open() } catch { throw Failure.refused("Couldn't read \(item.name).") }
+        do { source = try item.open() } catch { throw Failure.unreadable(item.name) }
         let socket = try openSocket()
         self.socket = socket
         defer { if self.socket === socket { self.socket = nil } }
@@ -422,6 +424,8 @@ public final class FileDownloader {
         /// Larger than the limit; the file's size.
         case tooBig(Int64)
         case refused(String)
+        /// The bytes came, and this device couldn't save them.
+        case saveFailed
         case lost(String)
         case cancelled
     }
@@ -506,7 +510,7 @@ public final class FileDownloader {
             await writer.finish()
             throw cancelled ? Failure.cancelled : Failure.lost(error.localizedDescription)
         }
-        if let error = await writer.finish() { throw Failure.refused("Couldn't save it: \(error.localizedDescription)") }
+        if await writer.finish() != nil { throw Failure.saveFailed }
         if cancelled { throw Failure.cancelled }
         guard socket.closeCode == BytesStream.normal else { throw Failure.lost("closed with \(socket.closeCode)") }
         return .downloaded(info)

@@ -7,7 +7,7 @@ final class StreamParkTests: XCTestCase {
     typealias Sink = StreamFenceTests.Sink
     private static let write = "com.superlogical.terminal.write"
 
-    private var notices: [String] = []
+    private var notices: [TerminalStream.Notice] = []
     private var streams: [TerminalStream] = []
 
     private func current(_ link: FakeLink) async -> (TerminalStream, Sink, SleepLog) {
@@ -142,7 +142,7 @@ final class StreamParkTests: XCTestCase {
         XCTAssertTrue(down)
         await settle()
         XCTAssertEqual(link.written, [])
-        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+        XCTAssertEqual(notices, [.paneChanged])
     }
 
     // Hazard 9.
@@ -162,7 +162,7 @@ final class StreamParkTests: XCTestCase {
         await catchUp(s, link)
         await settle()
         XCTAssertEqual(link.written, [])
-        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+        XCTAssertEqual(notices, [.paneChanged])
     }
 
     // Hazard 9.
@@ -259,7 +259,7 @@ final class StreamParkTests: XCTestCase {
         XCTAssertTrue(down)
         await settle()
         XCTAssertEqual(link.written, [])
-        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+        XCTAssertEqual(notices, [.paneChanged])
     }
 
     func testAReturnToAStreamThatIsNotLiveChangesNothing() async {

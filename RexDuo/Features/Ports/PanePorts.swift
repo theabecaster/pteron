@@ -97,9 +97,9 @@ final class PanePorts {
                 if !opened { self?.notify("Couldn't open \(name).") }
             }
         case .refuse:
-            notify("Debugger ports don't open on the phone.")
+            notify("Debugger ports don't open on this iPhone.")
         case .offline:
-            notify("\(server.config.name) is offline, so \(LocalhostLink(url)?.name ?? "this page") can't open.")
+            notify("Couldn't open \(LocalhostLink(url)?.name ?? "this page"). \(Messages.offline(server.config.name))")
         case .open(let link):
             browse(link)
         case .ask(let link):
@@ -111,7 +111,7 @@ final class PanePorts {
                 TerminalPrompt.ask(over: view, title: question, message: "Nothing in this pane listens on that port right now.",
                                    confirm: "Open", answer: answer)
             } else {
-                notify("Couldn't open \(link.name): its pane is closed.")
+                notify("Couldn't open \(link.name). \(Messages.paneClosed)")
             }
         }
     }
@@ -121,7 +121,7 @@ final class PanePorts {
     /// The pane menu's row: the port's page over http.
     func open(_ entry: PortEntry) {
         guard server.phase == .online else {
-            notify("\(server.config.name) is offline, so \(entry.name) can't open.")
+            notify("Couldn't open \(entry.name). \(Messages.offline(server.config.name))")
             return
         }
         browse(LocalhostLink(port: entry.port, dialHost: entry.dialHost))
@@ -131,12 +131,12 @@ final class PanePorts {
 
     private func browse(_ link: LocalhostLink) {
         guard let forward = server.forward else {
-            return notify("Couldn't open \(link.name): the app isn't ready to show pages yet.")
+            return notify("Couldn't open \(link.name). Try again in a moment.")
         }
         let target = PortForward.Target(sessionID: sessionID, port: link.port, dialHost: link.dialHost)
         Task {
             guard let local = try? await forward.open(target, on: server), let url = link.url(localPort: local) else {
-                notify("Couldn't open \(link.name): the phone couldn't get ready to show it.")
+                notify("Couldn't open \(link.name) on this iPhone. Try again in a moment.")
                 return
             }
             #if DEBUG
@@ -146,7 +146,7 @@ final class PanePorts {
             let opened = forward.forward
             guard BrowserPresenter.present(url, over: view, onClose: { forward.close(opened) }) else {
                 forward.close(opened)
-                notify("Couldn't open \(link.name): its pane is no longer on screen.")
+                notify("Couldn't open \(link.name): its pane is no longer on screen. Show the pane, then try again.")
                 return
             }
         }

@@ -14,6 +14,7 @@ final class FakeTunnelServer: TunnelServer {
     var synced = true
     var tunnelClientID: String? = "client:1"
     var tunnelConnected = true
+    var tunnelName = "Desk"
     /// Every call, in order: `method block_id-or-session`.
     var calls: [String] = []
     /// Answers `session.list_blocks`.
@@ -547,7 +548,7 @@ final class PortForwardTests: XCTestCase {
             listener.accept?(a)
             listener.accept?(b)
             await settle { a.resets == 1 && b.resets == 1 }
-            XCTAssertEqual(notices, ["Couldn't open localhost:5173: the connection to the computer dropped."], "\(error)")
+            XCTAssertEqual(notices, ["Couldn't open localhost:5173. \(Messages.notSent("Desk"))"], "\(error)")
             XCTAssertEqual(server.missing, 0, "the server still makes tunnels")
             f.close()
         }

@@ -7,7 +7,7 @@ final class StreamInputTests: XCTestCase {
     typealias Sink = StreamSnapshotHandoffTests.Sink
     private static let write = "com.superlogical.terminal.write"
 
-    private var notices: [String] = []
+    private var notices: [TerminalStream.Notice] = []
     private var streams: [TerminalStream] = []
 
     private func stream(_ link: FakeLink) -> (TerminalStream, SleepLog) {
@@ -117,7 +117,7 @@ final class StreamInputTests: XCTestCase {
         link.held = []
         link.disconnect()
         _ = await eventually { !self.notices.isEmpty }
-        XCTAssertEqual(notices, [TerminalStream.inputLostMessage])
+        XCTAssertEqual(notices, [.inputLost])
         link.connect()
         await settle()
         XCTAssertEqual(link.inputTrace, ["w:rm x\r"], "the server may have run it: it must not run twice")
@@ -138,7 +138,7 @@ final class StreamInputTests: XCTestCase {
         link.held = []
         link.disconnect()
         _ = await eventually { !self.notices.isEmpty }
-        XCTAssertEqual(notices, ["Couldn't run dev_layout. The connection dropped."])
+        XCTAssertEqual(notices, [.actionLost(action: "dev_layout", title: nil)])
         link.connect()
         await settle()
         XCTAssertEqual(link.inputTrace, ["client.action"])
@@ -164,7 +164,7 @@ final class StreamInputTests: XCTestCase {
         action(s, "nope")
         s.send(text: "a")
         _ = await eventually { link.written == ["a"] }
-        XCTAssertEqual(notices, ["Couldn't run nope. no such action"])
+        XCTAssertEqual(notices, [.actionRefused(action: "nope", title: nil, code: "not_found")])
     }
 
     func testSlowActionHoldsTypingOnlySoLong() async {
@@ -244,7 +244,7 @@ final class StreamInputTests: XCTestCase {
         await catchUp(s, link)
         await settle()
         XCTAssertEqual(link.written, [])
-        XCTAssertEqual(notices, [TerminalStream.fenceDroppedMessage])
+        XCTAssertEqual(notices, [.paneChanged])
     }
 
     // MARK: Bytes
@@ -406,7 +406,7 @@ final class StreamInputTests: XCTestCase {
         let (s, _) = stream(link)
         var ended: [Bool] = []
         palette(s) { ended.append($0) }
-        XCTAssertEqual(notices, ["Didn't run Dev Layout: the connection dropped."], "at once, in the same turn")
+        XCTAssertEqual(notices, [.actionNotSent(action: "dev_layout", title: "Dev Layout")], "at once, in the same turn")
         XCTAssertEqual(ended, [false])
         link.connect()
         await settle()
@@ -423,7 +423,7 @@ final class StreamInputTests: XCTestCase {
         _ = await eventually { link.written == ["x"] }
         await settle()
         XCTAssertEqual(link.inputTrace, ["w:x"], "never sent later")
-        XCTAssertEqual(notices, ["Didn't run Dev Layout: the connection dropped."])
+        XCTAssertEqual(notices, [.actionNotSent(action: "dev_layout", title: "Dev Layout")])
         XCTAssertEqual(ended, [false])
     }
 
@@ -433,7 +433,7 @@ final class StreamInputTests: XCTestCase {
         link.failures["client.action"] = [RexError(code: "not_found", message: "no such action", status: 404)]
         palette(s)
         _ = await eventually { !self.notices.isEmpty }
-        XCTAssertEqual(notices, ["Couldn't run Dev Layout. no such action"])
+        XCTAssertEqual(notices, [.actionRefused(action: "dev_layout", title: "Dev Layout", code: "not_found")])
     }
 
     func testAPalettePickWhoseAnswerWasLostEndsQuietly() async {

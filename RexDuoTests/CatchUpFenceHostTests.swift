@@ -167,7 +167,7 @@ final class CatchUpFenceHostTests: XCTestCase {
 
     func testReportsFromTheEngineAreDroppedWhileFenced() {
         let (host, stream) = makeHost()
-        var notices: [String] = []
+        var notices: [TerminalStream.Notice] = []
         stream.onActionFailed = { notices.append($0) }
         let click = Array("\u{1b}[<0;10;5M".utf8)
         // Current: a report is queued like any input (no connection here, so it waits).
@@ -184,12 +184,12 @@ final class CatchUpFenceHostTests: XCTestCase {
 
     func testATypedPathIsDroppedWhileFencedAndSaysSo() {
         let (host, stream) = makeHost()
-        var notices: [String] = []
+        var notices: [TerminalStream.Notice] = []
         stream.onActionFailed = { notices.append($0) }
         stream.start()
         host.insertPath("~/Documents/report.txt ")
         XCTAssertFalse(stream.hasPendingInput)
-        XCTAssertEqual(notices, ["Not sent: the pane was still reconnecting."], "nothing had come: no screen yet")
+        XCTAssertEqual(notices, [.stillReconnecting], "nothing had come: no screen yet")
         stream.stop()
     }
 
@@ -262,13 +262,13 @@ final class CatchUpFenceHostTests: XCTestCase {
     func testWhatTheFenceDroppedIsSaidInTheNeutralStyle() {
         let (host, stream) = makeHost()
         Notice.shared.dismiss()
-        stream.showsNotices()
+        stream.showsNotices(computer: "Desk", keymap: nil)
         stream.start()
         host.insertPath("~/notes.txt ")
-        XCTAssertEqual(Notice.shared.message, "Not sent: the pane was still reconnecting.")
+        XCTAssertEqual(Notice.shared.message, Messages.stillReconnecting)
         XCTAssertEqual(Notice.shared.style, .neutral)
         Notice.shared.dismiss()
-        stream.onActionFailed?("Couldn't run Clear.")
+        stream.onActionFailed?(.actionRefused(action: "pane.clear", title: nil, code: "bad_request"))
         XCTAssertEqual(Notice.shared.style, .error, "a failure keeps its own style")
         Notice.shared.dismiss()
         stream.stop()

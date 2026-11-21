@@ -573,7 +573,7 @@ final class ShareTests: XCTestCase {
         await run(share)
         XCTAssertFalse(presented)
         XCTAssertEqual(Notice.shared.message, "Couldn't read the output.")
-        XCTAssertEqual(Notice.shared.actionTitle, "Retry")
+        XCTAssertEqual(Notice.shared.actionTitle, "Try Again")
         XCTAssertEqual(Set(shared()), Set(before))
         XCTAssertFalse(Notice.shared.jobRunning)
     }
@@ -584,7 +584,7 @@ final class ShareTests: XCTestCase {
         fake.failures[OutputReader.blobRead] = [RexError(code: "not_found", message: "gone"), RexError(code: "not_found", message: "gone")]
         share.source = fake
         await run(share)
-        XCTAssertEqual(Notice.shared.message, "The pane has closed.")
+        XCTAssertEqual(Notice.shared.message, Messages.paneClosed)
         XCTAssertNil(Notice.shared.actionTitle)
     }
 
@@ -594,8 +594,8 @@ final class ShareTests: XCTestCase {
         fake.reportedTotal = OutputReader.styledLimit + 1
         share.source = fake
         await run(share)
-        XCTAssertEqual(Notice.shared.message, "Too much output to share styled.")
-        XCTAssertEqual(Notice.shared.actionTitle, "Share Plain")
+        XCTAssertEqual(Notice.shared.message, "Too much output to share with colors.")
+        XCTAssertEqual(Notice.shared.actionTitle, "Share as Plain Text")
         XCTAssertEqual(fake.requests.count, 1)
     }
 

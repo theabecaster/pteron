@@ -45,7 +45,7 @@ final class StreamFenceTests: XCTestCase {
         }
     }
 
-    private var notices: [String] = []
+    private var notices: [TerminalStream.Notice] = []
     private var streams: [TerminalStream] = []
 
     private func stream(_ link: FakeLink) -> (TerminalStream, Sink, SleepLog) {
@@ -76,9 +76,9 @@ final class StreamFenceTests: XCTestCase {
         return link.sockets.last!
     }
 
-    private var message: String { TerminalStream.fenceDroppedMessage }
+    private var message: TerminalStream.Notice { .paneChanged }
     /// For keys dropped though nothing came: the stream was not back, or there was no screen.
-    private var waiting: String { TerminalStream.fenceWaitingMessage }
+    private var waiting: TerminalStream.Notice { .stillReconnecting }
 
     // MARK: Up and down
 
@@ -632,11 +632,11 @@ final class StreamFenceTests: XCTestCase {
     func testKeysThatExpiredOrHadNoScreenAreSaidToBeWaitingNotChanged() async {
         let link = FakeLink()
         let (s, _, _) = stream(link)
-        var calm: [String] = []
+        var calm: [TerminalStream.Notice] = []
         s.onFenceNotice = { calm.append($0) }
         s.start()
         s.send(text: "x")
-        XCTAssertEqual(calm, [TerminalStream.fenceWaitingMessage], "a pane with no screen yet")
+        XCTAssertEqual(calm, [.stillReconnecting], "a pane with no screen yet")
         await catchUp(s, link)
         // Output during a catch-up: the other text.
         let socket = await dropAndWaitForResume(link, s)
@@ -644,7 +644,7 @@ final class StreamFenceTests: XCTestCase {
         socket.push(FakeLink.welcome() + Array("out".utf8))
         let down = await eventually { !s.isFenced }
         XCTAssertTrue(down)
-        XCTAssertEqual(calm, [TerminalStream.fenceWaitingMessage, TerminalStream.fenceDroppedMessage])
+        XCTAssertEqual(calm, [.stillReconnecting, .paneChanged])
         XCTAssertEqual(notices, [], "not through the failure notice when the app gave a calm one")
         XCTAssertEqual(link.written, [])
     }

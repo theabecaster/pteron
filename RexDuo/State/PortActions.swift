@@ -108,7 +108,7 @@ final class PortActions {
     @discardableResult
     func showPane(_ server: ServerConnection, _ row: PortRow) -> Bool {
         guard let model, model.openPane(server, session: row.sessionID, window: nil, block: row.blockID) else {
-            parts.notify("That pane closed.", nil)
+            parts.notify(Messages.paneClosed, nil)
             return false
         }
         return true
@@ -131,7 +131,7 @@ final class PortActions {
             return .refused(.notForeground)
         }
         guard server.phase == .online, server.control.state == .connected else {
-            return fail(key, .offline, "\(server.config.name) is offline, so \(name) can't be stopped from here.")
+            return fail(key, .offline, "Couldn't stop \(name). \(Messages.offline(server.config.name))")
         }
         marks[key] = Mark(status: .stopping, pid: pid)
         let control = server.control
@@ -153,7 +153,7 @@ final class PortActions {
             marks[key] = nil
             return .gone
         case .unknownProcess, .notForeground, .agent:
-            return fail(key, .refused(verdict), "Couldn't stop \(name): something else is in front in its pane now. Nothing was sent.", server, row)
+            return fail(key, .refused(verdict), "Couldn't stop \(name): another program is running in its pane now. Nothing was sent.", server, row)
         }
         // From here on nothing is tried twice. The last look, with nothing between it and the
         // write: the port is still that process's, and no event has named another foreground.
@@ -165,9 +165,9 @@ final class PortActions {
             watch(server, key: key, block: bid, port: port, pid: pid)
             return .sent
         case .unsent:
-            return fail(key, .unsent, "Couldn't stop \(name): the interrupt didn't leave the phone. Nothing was sent.", server, row)
+            return fail(key, .unsent, "Couldn't stop \(name): the connection dropped. Nothing was sent.", server, row)
         case .refused:
-            return fail(key, .closed, "Couldn't stop \(name): its pane closed.")
+            return fail(key, .closed, "Couldn't stop \(name). \(Messages.paneClosed)")
         }
     }
 

@@ -95,7 +95,7 @@ final class ShareCompatibilityTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
             XCTAssertFalse(Notice.shared.jobRunning)
             XCTAssertEqual(Notice.shared.message, "Couldn't read the output.")
-            XCTAssertEqual(Notice.shared.actionTitle, "Retry")
+            XCTAssertEqual(Notice.shared.actionTitle, "Try Again")
 
             // Retry: a fresh `format` on the new connection.
             _ = await eventually(8) { rig.server.connectionSerial > serial && rig.server.phase == .online }
@@ -157,7 +157,7 @@ final class ShareCompatibilityTests: XCTestCase {
         XCTAssertEqual(notice.message?.hasPrefix("Sending zz.txt"), true, notice.message ?? "")
         XCTAssertEqual(notice.actionTitle, "Cancel")
         _ = await eventually(4) { !sender.busy }
-        XCTAssertEqual(notice.message, "This computer's Rex can't take files. Update Rex there.")
+        XCTAssertEqual(notice.message, "Update Rex on this computer to send files.")
         XCTAssertNil(notice.progress)
         rig.stop()
     }

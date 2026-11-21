@@ -13,6 +13,8 @@ final class FileSender {
     let blockID: String
     /// Where the send goes, in words ("Claude", "studio"), read when it starts.
     var target: () -> String = { "this computer" }
+    /// The pane's computer by name, for what Rex there can't do.
+    var computer: () -> String = { "this computer" }
     private var uploader: FileUploader?
     private var background: BackgroundTask?
     private var cutOff = false
@@ -120,7 +122,7 @@ final class FileSender {
 
     private func failed(_ f: FileUploader.Failure, files: [StagedFile], to: String, over view: UIView?) {
         let what = SendTarget.what(files.map(\.name))
-        let retry = Notice.Action(title: "Retry") { [weak self, weak view] in self?.send(files, over: view) }
+        let retry = Notice.Action(title: "Try Again") { [weak self, weak view] in self?.send(files, over: view) }
         switch f {
         case .cancelled where cutOff:
             Notice.shared.show("Sending \(what) stopped in the background.", action: retry)
@@ -129,19 +131,21 @@ final class FileSender {
             Notice.shared.show("Didn't send \(what).", style: .neutral)
         case .unsupported:
             FileStaging.discard(files)
-            Notice.shared.show("This computer's Rex can't take files. Update Rex there.")
+            Notice.shared.show(Messages.updateRex(computer(), to: "send files"))
         case .unconfirmed:
             FileStaging.discard(files)
-            Notice.shared.show("Sent \(what), but \(to) didn't confirm it. Check the pane before sending it again.")
+            Notice.shared.show("Sent \(what), but \(to) didn't confirm it. \(Messages.sentUnknown)")
         case .tooLarge:
             FileStaging.discard(files)
             Notice.shared.show(SendTarget.tooLarge(what))
         case .brokeRule:
             Notice.shared.show("Couldn't send \(what): it changed while it was read.", action: retry)
-        case .refused(let message):
-            Notice.shared.show("Couldn't send \(what): \(message)", action: retry)
+        case .refused:
+            Notice.shared.show("\(Messages.capitalized(computer())) refused \(what).", action: retry)
+        case .unreadable(let name):
+            Notice.shared.show("Couldn't read \(name) on this iPhone.", action: retry)
         case .lost:
-            Notice.shared.show("Couldn't send \(what) to \(to): the connection was lost.", action: retry)
+            Notice.shared.show("Couldn't send \(what). \(Messages.notSent(computer()))", action: retry)
         }
     }
 

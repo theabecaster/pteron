@@ -981,16 +981,14 @@ final class ServerConnection: Identifiable {
             if let sid { refreshView(sid) }
             return r
         } catch {
-            Notice.shared.show("Couldn't \(what). \(Self.short(error))")
+            Notice.shared.show(Messages.couldNot(what, error, computer: config.name))
             if let sid { refreshView(sid) }
             return nil
         }
     }
 
-    static func short(_ error: Error) -> String {
-        let s = (error as? RexError).map { $0.message } ?? error.localizedDescription
-        return s.count > 80 ? String(s.prefix(80)) : s
-    }
+    /// Why a call failed, in words (`Messages.reason`): never the server's own text.
+    func reason(_ error: Error) -> String { Messages.reason(error, computer: config.name) }
 
     @discardableResult
     func createSession(label: String?) async -> String? {

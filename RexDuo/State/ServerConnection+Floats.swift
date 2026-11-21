@@ -62,6 +62,6 @@ extension ServerConnection {
             failure = failure ?? e
         }
         refreshView(sid)
-        if let failure { Notice.shared.show("Couldn't minimize the floating windows. \(Self.short(failure))") }
+        if let failure { Notice.shared.show("Couldn't minimize the floating windows. \(reason(failure))") }
     }
 }

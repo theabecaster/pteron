@@ -95,7 +95,7 @@ final class PaneFilesTests: XCTestCase {
             XCTAssertTrue(files.showsAttachKey)
             XCTAssertTrue(files.canOpen)
             for m in [Self.upload, Self.download, Self.list] { XCTAssertEqual(rig.fake.count(m), 0, "\(m) at \(revision ?? 0)") }
-            XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Photos", "Files"], Self.computerRows])
+            XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Insert Photo…", "Insert File…"], Self.computerRows])
         }
     }
 
@@ -105,7 +105,7 @@ final class PaneFilesTests: XCTestCase {
         files.checkSupport()
         XCTAssertEqual(files.support, FileSupport(upload: true, download: true, listDir: false))
         XCTAssertEqual(rig.fake.count(Self.list), 0, "the list says it is missing: no call")
-        XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Photos", "Files"]], "only the sending rows")
+        XCTAssertEqual(stripPasteRow(titles(files.menu())), [["Insert Photo…", "Insert File…"]], "only the sending rows")
         XCTAssertFalse(files.offers(.browse))
         XCTAssertFalse(files.offers(.insertPath))
         XCTAssertTrue(files.offers(.insertFile) && files.offers(.insertPhoto))
@@ -156,9 +156,9 @@ final class PaneFilesTests: XCTestCase {
         defer { board.items = saved }
         let camera = AttachPicker.cameraAvailable ? ["Camera"] : []
         board.items = [[UTType.png.identifier: UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).pngData { _ in }]]
-        XCTAssertEqual(titles(files.menu()), [["Paste Image", "Photos"] + camera + ["Files"], Self.computerRows])
+        XCTAssertEqual(titles(files.menu()), [["Paste Image", "Insert Photo…"] + camera + ["Insert File…"], Self.computerRows])
         board.items = []
-        XCTAssertEqual(titles(files.menu()), [["Photos"] + camera + ["Files"], Self.computerRows], "no clipboard image: no Paste row")
+        XCTAssertEqual(titles(files.menu()), [["Insert Photo…"] + camera + ["Insert File…"], Self.computerRows], "no clipboard image: no Paste row")
         XCTAssertFalse(titles(files.menu()).joined().contains("Send Original"))
     }
 
@@ -221,9 +221,9 @@ final class PaneFilesTests: XCTestCase {
         files.send([stagedFile()])
         XCTAssertNil(Notice.shared.message, "it waits")
         files.close()
-        XCTAssertEqual(Notice.shared.message, "Not sent: notes.txt. The pane was still reconnecting.")
+        XCTAssertEqual(Notice.shared.message, "Didn't send notes.txt: the pane was still reconnecting. Try again in a moment.")
         XCTAssertEqual(Notice.shared.style, .neutral)
-        XCTAssertEqual(Notice.shared.actionTitle, "Retry")
+        XCTAssertEqual(Notice.shared.actionTitle, "Try Again")
         Notice.shared.dismiss()
         files.close()
         XCTAssertNil(Notice.shared.message, "said once")
