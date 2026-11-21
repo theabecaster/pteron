@@ -39,6 +39,7 @@ struct WindowScreen: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Environment(\.verticalSizeClass) private var vSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Where the system's vertical bar is, if any: the tab's actions go there as toolbar items.
     @Environment(\.verticalBarEdge) private var barEdge
     /// That bar's column in screen coordinates, for the room it has above the keyboard.
@@ -191,6 +192,7 @@ struct WindowScreen: View {
             if keyboardUp != liveKeyboard.up { keyboardUp = liveKeyboard.up }
         }
         .onChange(of: bookFits, initial: true) { _, fits in onBookFits(fits) }
+        .onChange(of: window.flatMap { activeBlock($0) }, initial: true) { _, b in noteTiled(b) }
         // The server's view put the raised float in front: its order holds from here.
         .onChange(of: window?.visibleFloating.last?.id) { _, front in
             if let r = raised, r.layer == front { raised = nil }
@@ -214,6 +216,8 @@ struct WindowScreen: View {
             // going never rebuilds the panes below. Empty in a tab without one.
             .overlay(alignment: .topLeading) { floatWindows(w, theme, p) }
             .clipped()
+            // Narrow: the float sheet, unclipped so its backing runs on under the home indicator.
+            .overlay(alignment: .topLeading) { sheet(w, theme, p) }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
                 let rest = PaneLayout.restCanvas(kept: canvasSize, now: s, keyboardUp: keyboardUp)
                 if rest != canvasSize { canvasSize = rest }
@@ -255,7 +259,8 @@ struct WindowScreen: View {
         guard !w.visibleFloating.isEmpty else { return nil }
         return TabPresentation.decide(.init(window: w, narrow: mode == .narrow, zoomed: w.zoomedBlockID != nil || zoomedHere,
                                             active: activeBlock(w), canvas: canvasSize, fontSize: prefs.fontSize,
-                                            crease: floatCrease, front: frontOverride))
+                                            crease: floatCrease, front: frontOverride,
+                                            tiledShown: PhoneState.shared.sheets[windowID]?.tiled))
     }
 
     /// A float the phone raised, until the server's view or time takes over. Another connection's
@@ -314,9 +319,12 @@ struct WindowScreen: View {
     }
 
     /// Terminal swipe or pane command: +1 next pane, -1 previous pane. No wrap: at either end, a bump.
-    private func switchPane(_ w: WindowInfo, by dir: Int) {
-        let ids = w.pageBlockIDs
-        guard let cur = activeBlock(w), let i = ids.firstIndex(of: cur) else { return }
+    /// Under the float sheet, from the pane swiped (`from`, else the active one) among its own
+    /// group: the tiled panes, or the float's (`FloatSheet.group`).
+    private func switchPane(_ w: WindowInfo, by dir: Int, from: String? = nil) {
+        guard let cur = from ?? activeBlock(w) else { return }
+        let ids = paneGroup(w, from: cur)
+        guard let i = ids.firstIndex(of: cur) else { return }
         guard ids.indices.contains(i + dir) else { Haptic.bump(); return }
         pick(w, ids[i + dir], forward: dir > 0)
     }
@@ -462,9 +470,12 @@ struct WindowScreen: View {
             restore: {
                 if let l = window?.minimizedFloating.first { restoreFloat(l.id) }
             },
+            sheet: { verb in sheetTest(verb) },
             state: { [model] in
                 PanesTest.describe(server.views[sid], current: model.selection?.windowID ?? "")
                     + " shown=" + (model.selection.flatMap { model.focusedPane[$0.windowID] }.map { String($0.suffix(4)) } ?? "-")
+                    + " sheet=" + (window.flatMap { sheetLayer(presentation($0)) }.map { String($0.suffix(4)) } ?? "-")
+                    + "/" + (PhoneState.shared.sheets[wid]?.detent == .medium ? "medium" : "large")
                     + " sessions=" + server.orderedSessions.map { $0.label }.joined(separator: ",")
             })
     }
@@ -661,6 +672,125 @@ struct WindowScreen: View {
         Task { await server.restoreFloat(sid, layer) }
     }
 
+    // MARK: Float sheet (narrow)
+
+    /// The panes a swipe or Next Pane walks from `block`: under the float sheet its own group
+    /// (`FloatSheet.group`), else every page.
+    private func paneGroup(_ w: WindowInfo, from block: String) -> [String] {
+        if case .floatSheet? = presentation(w) { return FloatSheet.group(w, from: block) }
+        return w.pageBlockIDs
+    }
+
+    /// The layer in the sheet, while it shows.
+    private func sheetLayer(_ p: TabPresentation?) -> String? {
+        if case .floatSheet(let s)? = p { return s.shown?.layer }
+        return nil
+    }
+
+    /// Keeps the tiled pane last active, which stays shown under the sheet. Only a narrow tab
+    /// with a float keeps one.
+    private func noteTiled(_ b: String?) {
+        guard mode == .narrow, let b, let w = window, !w.floating.isEmpty, w.floatingLayer(of: b) == nil,
+              PhoneState.shared.sheets[windowID]?.tiled != b else { return }
+        PhoneState.shared.sheets[windowID, default: FloatSheet.Phone()].tiled = b
+    }
+
+    /// Shows a float in the sheet: its pane becomes the active one. A tap raises it on the Mac
+    /// (`raise`); a swipe on the grabber doesn't, unless the keyboard is up and typing goes there.
+    private func showFloat(_ layer: String, forward fw: Bool? = nil, raise: Bool, large: Bool = true) {
+        guard let w = window, let l = w.visibleFloating.first(where: { $0.id == layer }),
+              let b = FloatSheet.pane(of: l, focused: w.focusedBlockID) else { return }
+        if let fw { forward = fw }
+        Haptic.selection()
+        withAnimation(.snappy(duration: 0.28)) {
+            if large { PhoneState.shared.sheets[windowID, default: FloatSheet.Phone()].detent = .large }
+            model.focusedPane[w.id] = b
+        }
+        if raise { tapFloat(b) }
+    }
+
+    /// A float minimized on the Mac, from the floats' menu: shown again there, then in the sheet.
+    private func showMinimized(_ layer: String) {
+        PhoneState.shared.sheets[windowID, default: FloatSheet.Phone()].detent = .large
+        restoreFloat(layer)
+    }
+
+    /// Back to the tab: the tiled pane shown under the sheet becomes active again, on the phone
+    /// only. The float stays as it is on the Mac.
+    private func hideSheet() {
+        guard let w = window, case .floatSheet(let s)? = presentation(w) else { return }
+        let target: String?
+        switch s.tiled {
+        case .page(let id, _): target = id
+        case .splits: target = PhoneState.shared.sheets[windowID]?.tiled.flatMap { w.tiledPageIDs.contains($0) ? $0 : nil } ?? w.tiledPageIDs.first
+        case .empty: target = nil
+        }
+        guard let target else { return }
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .snappy(duration: 0.25)) { model.focusedPane[w.id] = target }
+    }
+
+    /// The floats' control of a narrow tab, for the title bar, the tab strip or the vertical bar;
+    /// nil without a float to list.
+    private func floatsControl(_ w: WindowInfo, _ p: TabPresentation?, style: FloatsControl.Style, height: CGFloat = 44) -> FloatsControl? {
+        let canRestore = PaneArrange.isAvailable(.restore, target: nil, support: server.capabilities.paneSupport)
+        guard mode == .narrow, FloatsMenu.has(w, canRestore: canRestore) else { return nil }
+        let canHide = !w.tiledPageIDs.isEmpty
+        return FloatsControl(server: server, window: w, front: frontOverride, shown: sheetLayer(p), style: style, height: height,
+                             onShow: { showFloat($0, raise: true) }, onRestore: { showMinimized($0) },
+                             onHide: canHide ? { hideSheet() } : nil)
+    }
+
+    @ViewBuilder
+    private func sheet(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+        if case .floatSheet(let s)? = p, let shown = s.shown { floatSheet(w, s, shown, theme) }
+    }
+
+    private func floatSheet(_ w: WindowInfo, _ s: FloatSheet.Layout, _ shown: FloatSheet.Shown, _ theme: TermTheme) -> some View {
+        FloatSheetView(server: server, sessionID: sessionID, window: w, layout: s, shown: shown, active: activeBlock(w),
+                       theme: theme, canvas: canvasSize, keyboardUp: keyboardUp,
+                       mediumAllowed: vSize != .compact && s.hasTiled,
+                       stored: PhoneState.shared.sheets[windowID]?.detent ?? .large, slide: slide,
+                       actions: FloatSheetView.Actions(
+                           tap: { id in
+                               if PhoneState.shared.sheets[windowID]?.detent == .medium {
+                                   withAnimation(.snappy(duration: 0.3)) { PhoneState.shared.sheets[windowID]?.detent = .large }
+                               }
+                               tapFloat(id)
+                           },
+                           swipePane: { id, dir in if let w = window { switchPane(w, by: dir, from: id) } },
+                           show: { layer, fw in showFloat(layer, forward: fw, raise: liveKeyboard.up, large: false) },
+                           detent: { d in
+                               PhoneState.shared.sheets[windowID, default: FloatSheet.Phone()].detent = d
+                               // Medium is for looking: typing lifts the sheet again.
+                               if d == .medium, liveKeyboard.up, let b = activeBlock(w) { host(b)?.hideKeyboard() }
+                           },
+                           hide: { hideSheet() }))
+            .transition(reduceMotion ? .opacity : .move(edge: .bottom))
+    }
+
+    #if DEBUG
+    /// `-panesTest` `sheet:<verb>`: large, medium, hide, next, prev, or show<n> (the n-th drawn
+    /// float from the front, as the floats' menu shows it).
+    private func sheetTest(_ verb: String) {
+        guard let w = window else { return }
+        let floats = FloatLayout.ordered(w.visibleFloating, front: frontOverride).reversed().map(\.id)
+        let shown = sheetLayer(presentation(w))
+        switch verb {
+        case "large", "medium":
+            withAnimation(.snappy(duration: 0.3)) {
+                PhoneState.shared.sheets[windowID, default: FloatSheet.Phone()].detent = verb == "large" ? .large : .medium
+            }
+        case "hide": hideSheet()
+        case "next", "prev":
+            if let s = shown, let n = FloatSheet.step(floats, from: s, by: verb == "next" ? 1 : -1) {
+                showFloat(n, forward: verb == "next", raise: liveKeyboard.up, large: false)
+            }
+        default:
+            if verb.hasPrefix("show"), let n = Int(verb.dropFirst(4)), floats.indices.contains(n - 1) { showFloat(floats[n - 1], raise: true) }
+        }
+    }
+    #endif
+
     /// Runs the tab-scoped `RexCommand`s; RootView runs the app-wide ones.
     private func handle(_ r: CommandRequest) {
         guard r.command.isWindowCommand, PhoneState.shared.claim(r) else { return }
@@ -696,7 +826,8 @@ struct WindowScreen: View {
     /// Opens the palette on this tab's active pane: its commands and actions run there.
     private func openGoTo(_ scope: GoToScope, _ w: WindowInfo) {
         model.palette.open(scope, target: GoToTarget(serverID: server.id, sessionID: sessionID, windowID: windowID,
-                                                     blockID: activeBlock(w), canZoom: canZoom(w)))
+                                                     blockID: activeBlock(w), canZoom: canZoom(w),
+                                                     canSwitchPane: activeBlock(w).map { paneGroup(w, from: $0).count > 1 }))
     }
 
     // MARK: Title bar
@@ -715,7 +846,8 @@ struct WindowScreen: View {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
             let room = TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact)
             // The same test the root's Hide Keyboard uses, so the bar counts what it shows.
-            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane != nil, room: room)
+            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane != nil, room: room,
+                                               floats: prefs.navigation == .sidebar && floatsControl(w, p, style: .bar) != nil)
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if items.contains(.unzoom) {
                     Button { toggleZoom() } label: { Label(TabAction.unzoom.title, systemImage: TabAction.unzoom.symbol) }
@@ -724,6 +856,7 @@ struct WindowScreen: View {
                     Button { openOverview() } label: { Label(TabAction.allTabs.title, systemImage: TabAction.allTabs.symbol) }
                 }
                 paneMenu(w, block: b, p)
+                if items.contains(.floats) { floatsControl(w, p, style: .bar) }
             }
         }
     }
@@ -773,12 +906,13 @@ struct WindowScreen: View {
             },
             newTab: { newTab() },
             unzoom: { toggleZoom() },
-            stepPane: { dir in if let w = window { switchPane(w, by: dir) } },
+            stepPane: { dir in if let w = window { switchPane(w, by: dir, from: p?.pageCurrent) } },
             jump: jump,
             sessions: { strip?.run($0) })
         return TabStrip(target: StripTarget(server: server, sessionID: sessionID, windowID: w?.id, block: block),
-                        dots: dots, visible: visible, zoomed: zoomedHere, bar: barEdge != nil,
-                        height: barHeight, theme: theme, actions: actions) {
+                        dots: dots, dotsCurrent: p?.pageCurrent, visible: visible, zoomed: zoomedHere, bar: barEdge != nil,
+                        height: barHeight, theme: theme, actions: actions,
+                        floats: w.flatMap { floatsControl($0, p, style: .titleBar, height: barHeight) }) {
             if let w, let block { paneMenu(w, block: block, p) }
         }
     }
@@ -813,9 +947,10 @@ struct WindowScreen: View {
                 WaitingPill(visible: visible, theme: theme, onJump: jump)
                     .layoutPriority(1)
                 if let dots, dots.count > 1 {
-                    PaneDots(ids: dots, current: b, theme: theme) { switchPane(w, by: $0) }
+                    PaneDots(ids: dots, current: p?.pageCurrent ?? b, theme: theme) { switchPane(w, by: $0, from: p?.pageCurrent) }
                 }
                 if !bar {
+                    if mode == .narrow { floatsControl(w, p, style: .titleBar, height: height) }
                     if zoomedHere { unzoomButton(theme, height: height) }
                     paneMenu(w, block: b, p)
                         .labelStyle(.iconOnly)
@@ -883,10 +1018,13 @@ struct WindowScreen: View {
                 AttachMenuItem(pool: pool, key: TerminalHostPool.Key(server: server.id, session: sessionID, block: block))
                 PaneMenuItems(server: server, sessionID: sessionID, window: w, block: block,
                               onSwap: { swap(with: $0) }, onMove: { moveToTab($0) }, onMoveToNewTab: { moveToNewTab() },
-                              onBalance: { balance() }, onCloseOthers: { requestCloseOthers() },
-                              onMinimize: { minimizeFloat() }, onRestore: { restoreFloat($0) })
+                              onBalance: { balance() }, onCloseOthers: { requestCloseOthers() })
                 PortsMenuRow(server: server, sessionID: sessionID, block: block) { host(block)?.ports?.open($0) }
             }
+            FloatMenuSection(server: server, sessionID: sessionID, window: w, block: block,
+                             sheet: mode == .narrow ? (frontOverride, sheetLayer(p)) : nil,
+                             onMinimize: { minimizeFloat() }, onMinimizeAll: { minimizeAllFloats() },
+                             onRestore: { showMinimized($0) }, onShow: { showFloat($0, raise: true) })
             Section {
                 Button(role: .destructive) { requestClose(block) } label: { Label("Close Pane", systemImage: "xmark.square") }
                 Button(role: .destructive) { requestCloseTab() } label: { Label("Close Tab", systemImage: "xmark") }
@@ -928,10 +1066,27 @@ struct WindowScreen: View {
         guard let p else { return useSplits(w) ? CanvasLook(splits: true) : CanvasLook(block: activeBlock(w)) }
         switch p {
         case .pages(_, let current): return CanvasLook(block: current)
+        case .floatSheet(let s):
+            switch s.tiled {
+            case .splits: return CanvasLook(splits: true)
+            case .page(let id, let ids): return CanvasLook(block: id, active: id == activeBlock(w), pages: ids.count > 1)
+            case .empty: return CanvasLook(block: nil, active: false, pages: false)
+            }
         case .floating(.splits, _): return CanvasLook(splits: true)
         case .floating(.single(let id), _): return CanvasLook(block: id, active: id == activeBlock(w), pages: false)
         case .floating(.empty, _): return CanvasLook(block: nil, active: false, pages: false)
         }
+    }
+
+    /// A tap on a tiled pane: it becomes active, here and on the Mac. Under the float sheet that
+    /// is the way back to the tab, so the sheet goes down with it.
+    private func focusTiled(_ w: WindowInfo, _ b: String, _ p: TabPresentation?) {
+        if sheetLayer(p) != nil {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .snappy(duration: 0.25)) { model.focusedPane[w.id] = b }
+        } else {
+            model.focusedPane[w.id] = b
+        }
+        Task { await server.focus(sessionID, block: b) }
     }
 
     @ViewBuilder
@@ -943,11 +1098,8 @@ struct WindowScreen: View {
                 let radius = rounded ? PaneLayout.singleRadius : 0
                 ZStack {
                     PaneView(server: server, sessionID: sessionID, blockID: b, active: look.active,
-                             onFocus: look.active ? {} : {
-                                 model.focusedPane[w.id] = b
-                                 Task { await server.focus(sessionID, block: b) }
-                             },
-                             onSwipe: look.pages ? { dir in switchPane(w, by: dir) } : nil,
+                             onFocus: look.active ? {} : { focusTiled(w, b, p) },
+                             onSwipe: look.pages ? { dir in switchPane(w, by: dir, from: b) } : nil,
                              restSize: PaneLayout.single(canvas: canvasSize, rounded: rounded))
                         .id(b)
                         .padding(PaneLayout.clearance(radius: radius))
@@ -970,10 +1122,7 @@ struct WindowScreen: View {
                         let r = book?.rect(leaf.rect) ?? leaf.rect
                         let frame = PaneLayout.split(r, in: size)
                         PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
-                                 onFocus: {
-                                     model.focusedPane[w.id] = leaf.id
-                                     Task { await server.focus(sessionID, block: leaf.id) }
-                                 },
+                                 onFocus: { focusTiled(w, leaf.id, p) },
                                  restSize: PaneLayout.splitRest(r, canvas: canvasSize))
                         .id(leaf.id)
                         .padding(PaneLayout.clearance(radius: PaneLayout.splitRadius))

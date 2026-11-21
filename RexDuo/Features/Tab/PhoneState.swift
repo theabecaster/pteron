@@ -10,6 +10,10 @@ final class PhoneState {
     /// Tabs (window IDs) zoomed on the phone: shown one pane at a time instead of splits or two pages.
     var zoomed: Set<String> = []
 
+    /// Narrow tabs' float sheets (window IDs): the size each keeps and the tiled pane shown under
+    /// it (`FloatSheet.Phone`).
+    var sheets: [String: FloatSheet.Phone] = [:]
+
     /// When each blocked pane started waiting, as first seen by the app. "Jump" goes to the oldest.
     @ObservationIgnored var waitingSince: [String: Date] = [:]
     @ObservationIgnored private var handled: UUID?
@@ -111,6 +115,10 @@ enum Waiting {
     static func prepare(_ model: AppModel, _ item: Item) -> Selection {
         let k = item.key
         model.focusedPane[k.windowID] = k.blockID
+        // A float's agent: a narrow tab shows it in its sheet, at full size.
+        if item.server.views[k.sessionID]?.window(k.windowID)?.floatingLayer(of: k.blockID) != nil {
+            PhoneState.shared.sheets[k.windowID, default: FloatSheet.Phone()].detent = .large
+        }
         let server = item.server
         if let w = server.views[k.sessionID]?.window(k.windowID), let layer = w.floatingLayer(of: k.blockID), layer.minimized,
            server.capabilities.paneSupport.has(.restore) {

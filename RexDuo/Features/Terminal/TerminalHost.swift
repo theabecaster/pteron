@@ -116,6 +116,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane's size with the software keyboard down, from the layout around it; nil when
     /// that isn't known. The grid is fitted to its height while the keyboard covers the pane.
     private var restSize: CGSize?
+    /// The bottom a float sheet leaves below the screen (`setSheetCover`).
+    private(set) var sheetCover: CGFloat = 0
     /// The program is on the alternate screen (`alternateScreenHook`).
     private(set) var alternateScreen = false
     /// The size the server confirmed for this pane in fit mode.
@@ -1311,6 +1313,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         setNeedsLayout()
     }
 
+    /// How much of the pane's bottom a float sheet at its medium size leaves below the screen
+    /// (`FloatSheet`). The bounds don't change, so the grid and the claim don't either; it covers
+    /// the pane as the keyboard does, and the row the program writes on stays in view.
+    func setSheetCover(_ points: CGFloat) {
+        let c = max(0, points)
+        guard abs(c - sheetCover) > 0.5 else { return }
+        sheetCover = c
+        positionTerm()
+    }
+
     /// The pane's size with the software keyboard down (`restSize`).
     func setRestSize(_ size: CGSize?) {
         guard size != restSize else { return }
@@ -1749,7 +1761,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             zoomer.contentOffset = .zero
             // Under find's hold on the alternate screen the keyboard hides the program's bottom
             // rows and shifts nothing, unless the current match is under it.
-            let cover = TerminalLayout.cover(terminal: size.height, pane: bounds.height)
+            let cover = TerminalLayout.cover(terminal: size.height, pane: bounds.height - sheetCover)
             let holds = findHold != nil && alternateScreen
             term.setCover(holds && !(finder?.liftsForMatch ?? false) ? 0 : cover)
         } else {

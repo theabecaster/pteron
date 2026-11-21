@@ -155,8 +155,20 @@ public struct WindowInfo: Identifiable, Sendable {
     /// then the drawn floating windows' panes, front first. A minimized float isn't in it. With no
     /// floating layer it is `orderedBlockIDs`.
     public var pageBlockIDs: [String] {
+        let tiled = tiledPageIDs
+        return tiled + floatPageIDs.filter { !tiled.contains($0) }
+    }
+
+    /// The tiled panes in reading order, the tiled layer's blocks without a place last.
+    public var tiledPageIDs: [String] {
         var ids = layout?.leaves.map(\.id) ?? []
         for b in tiled?.blocks ?? [] where !ids.contains(b.id) { ids.append(b.id) }
+        return ids
+    }
+
+    /// The drawn floating windows' panes, front first, each window's in reading order.
+    public var floatPageIDs: [String] {
+        var ids: [String] = []
         for layer in visibleFloating.reversed() {
             for id in (layer.layout?.leaves.map(\.id) ?? []) + layer.blocks.map(\.id) where !ids.contains(id) { ids.append(id) }
         }

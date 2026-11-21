@@ -202,8 +202,11 @@ builds.
   `moveTo:<n>`, `newTab`, `balance`, `closeOthers` (confirmed), `tab:+1`, `tab:-1`, `dragTab:<gap>`,
   `dragSession:<gap>`, `wait:<s>`, and for floating windows `tapFloat:<n>` (a tap on the first
   pane of the n-th drawn float from the back, from 1), `minimize`, `minimizeAll` and `restore`
-  (the first minimized float's row). After each it logs `PANES_STATE` with the session's tabs,
-  their panes, split ratios and floating layers, the tab shown and the pane shown; a float tap
+  (the first minimized float's row), and for a narrow window's float sheet `sheet:large`,
+  `sheet:medium`, `sheet:hide` (back to the tab), `sheet:next`, `sheet:prev` (a swipe on the
+  grabber) and `sheet:show<n>` (the n-th float from the front in the floats' menu). After each it logs `PANES_STATE` with the session's tabs,
+  their panes, split ratios and floating layers, the tab shown, the pane shown and the sheet's
+  float and size (`sheet=<layer>/<size>`); a float tap
   logs `FLOATS_TAP` with what it sent. Only in a `zz-` session you made.
 - `-portsTest '<step>;<step>…'`: drive ports in the active pane once it is live
   (`Features/Ports/PortsTest.swift` lists the steps): `list`, `menu:<port>`, `link:<url>`,

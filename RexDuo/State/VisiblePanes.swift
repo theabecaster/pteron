@@ -30,10 +30,11 @@ enum VisiblePanes {
         return out
     }
 
-    /// The panes a tab shows: only the active one when it shows one pane at a time (`single`),
-    /// else every pane of its splits. A minimized float's pane is never one.
+    /// The panes a tab without a float on screen shows: only the active one when it shows one
+    /// pane at a time (`single`), else every tiled pane of its splits. A minimized float's pane
+    /// is never one.
     nonisolated static func inTab(_ w: WindowInfo, active: String, single: Bool) -> Set<String> {
-        single ? [active] : Set(w.pageBlockIDs)
+        single ? [active] : Set(w.tiledPageIDs)
     }
 
     /// The panes a tab with a floating window on screen shows (`TabPresentation`): the page

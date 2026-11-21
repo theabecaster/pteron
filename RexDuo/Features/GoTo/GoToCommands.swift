@@ -166,7 +166,7 @@ enum GoToCommands {
             case .toggleZoom: return t.canZoom
             case .nextTab: return TabNav.neighbor(server, t.sessionID, t.windowID, by: 1) != nil
             case .previousTab: return TabNav.neighbor(server, t.sessionID, t.windowID, by: -1) != nil
-            case .nextPane, .previousPane: return window.pageBlockIDs.count > 1
+            case .nextPane, .previousPane: return t.canSwitchPane ?? (window.pageBlockIDs.count > 1)
             case .find: return block?.isTerminal == true
             case .closePane, .splitRight, .splitDown, .clear: return block != nil
             case .balanceSplits, .closeOtherPanes, .moveToTab, .moveToNewTab, .moveTab, .minimizeFloat, .minimizeAllFloats:

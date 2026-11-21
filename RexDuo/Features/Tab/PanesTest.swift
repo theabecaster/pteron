@@ -13,7 +13,10 @@ import RexKit
 ///   `dragSession:<gap>`: the same for this session among its machine's.
 /// - `tapFloat:<n>`: a tap on the first pane of the n-th drawn floating window, from the back.
 ///   `minimize`, `minimizeAll`: Minimize and its all key. `restore`: the first minimized
-///   float's row in Arrange.
+///   float's row in the pane menu.
+/// - `sheet:<verb>`, a narrow window's float sheet: `large`, `medium`, `hide` (back to the tab),
+///   `next`, `prev` (a sideways swipe on the grabber), `show<n>` (the n-th float from the front in
+///   the floats' menu).
 /// - `wait:<seconds>`: pause.
 ///
 /// After each step it logs `PANES_STATE` with the session's tabs and each tab's panes and split
@@ -35,6 +38,8 @@ enum PanesTest {
         var minimize: () -> Void = {}
         var minimizeAll: () -> Void = {}
         var restore: () -> Void = {}
+        /// The narrow float sheet: `large`, `medium`, `hide`, `next`, `prev`, `show<n>`.
+        var sheet: (String) -> Void = { _ in }
         var state: () -> String
     }
 
@@ -64,6 +69,7 @@ enum PanesTest {
                 case "minimize": a.minimize()
                 case "minimizeAll": a.minimizeAll()
                 case "restore": a.restore()
+                case "sheet": a.sheet(arg)
                 case "wait": try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
                 default: NSLog("PANES_TEST unknown step %@", step)
                 }

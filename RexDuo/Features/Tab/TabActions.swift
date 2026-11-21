@@ -2,7 +2,7 @@ import Foundation
 
 /// A tab action, with the title and symbol it shows everywhere it appears.
 enum TabAction: Hashable, CaseIterable {
-    case splitRight, splitDown, newTab, allTabs, unzoom, hideKeyboard, paneActions, goTo, rename
+    case splitRight, splitDown, newTab, allTabs, unzoom, hideKeyboard, paneActions, goTo, rename, floats
     /// The vertical bar's first item: the sidebar toggle, or in tab mode the sessions.
     case sidebar, sessions
 
@@ -17,6 +17,7 @@ enum TabAction: Hashable, CaseIterable {
         case .paneActions: "Pane Actions"
         case .goTo: "Go to Anything…"
         case .rename: "Rename Tab…"
+        case .floats: "Floating Windows"
         case .sidebar: "Sidebar"
         case .sessions: "Sessions"
         }
@@ -34,6 +35,8 @@ enum TabAction: Hashable, CaseIterable {
         case .paneActions: "square.split.2x2"
         case .goTo: "magnifyingglass"
         case .rename: "pencil"
+        // Not All Tabs' square.on.square: a window over a window.
+        case .floats: "macwindow.on.rectangle"
         case .sidebar: "sidebar.left"
         case .sessions: "rectangle.stack"
         }
@@ -51,9 +54,12 @@ enum TabActions {
     /// its hide key in the bar (`HideKeyboardItem`), Hide Keyboard goes first, at the top of the
     /// bar, the item used most then, and All Tabs leaves the tab's items. With the key bar gone,
     /// Hide Keyboard leaves and the order is All Tabs, Pane Actions again. Nothing moves into the
-    /// bar's overflow menu where three items fit.
-    static func verticalBar(zoomed: Bool, hidesKeyboard: Bool) -> [TabAction] {
-        (zoomed ? [.unzoom] : []) + (hidesKeyboard ? [.paneActions] : [.allTabs, .paneActions])
+    /// bar's overflow menu where three items fit. Floating Windows (a narrow tab with a float)
+    /// comes last, after Pane Actions, with the keyboard down only: it goes while typing without
+    /// moving another item, and the sheet's grabber and the Pane Actions menu keep the floats in
+    /// reach.
+    static func verticalBar(zoomed: Bool, hidesKeyboard: Bool, floats: Bool = false) -> [TabAction] {
+        (zoomed ? [.unzoom] : []) + (hidesKeyboard ? [.paneActions] : [.allTabs, .paneActions] + (floats ? [.floats] : []))
     }
 
     /// The vertical bar's leading item, first but for Hide Keyboard, which the root draws with no
@@ -101,8 +107,8 @@ enum TabActions {
     /// The tab's items that fit in `room` (`keyBarRoom`) below the root's (`leadingItems`): while
     /// the key bar is up, items leave from the top (Unzoom, which stays in the Pane Actions menu
     /// and the two-finger tap) until the rest fit, and Pane Actions, last, always stays.
-    static func verticalBar(zoomed: Bool, hidesKeyboard: Bool, room: Int) -> [TabAction] {
-        var items = verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard)
+    static func verticalBar(zoomed: Bool, hidesKeyboard: Bool, room: Int, floats: Bool = false) -> [TabAction] {
+        var items = verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard, floats: floats)
         guard hidesKeyboard else { return items }
         let leading = leadingItems(.sidebar, hidesKeyboard: true, room: room).count
         while leading + items.count > room, items.count > 1 { items.removeFirst() }

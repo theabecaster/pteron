@@ -233,10 +233,18 @@ once with fit:
    and the split stroke; the tiled pane under it is drawn as before. A second float overlaps it.
 2. Tap the back float: it comes to the front at once and stays there (`session_view_changed`
    shows it in front on the server). Tap it four more times: nothing more is sent.
-3. Arrange ▸ Floating Windows ▸ Minimize: the float goes, the row for it appears; tap the row:
+3. Pane menu ▸ Floating Windows ▸ Minimize: the float goes, the row for it appears; tap the row:
    it is back in front. With only floats left in the tab, Minimize hides on the last one.
-4. Folded (`-simulateDuo folded`): one pane at a time, tiled first, then the front float; the
-   dots count them. A minimized float isn't a page.
+4. Folded (the Duo, or `-simulateDuo folded`): the tab looks as without floats, the dots count
+   tiled panes only. The floats' glyph with its count is in the title bar (or last in the
+   vertical bar). Pick a float: it rises in a sheet at Large, the tab peeking above. Drag the
+   grabber down: Medium, with the prompt still in view; down again: back to the tab, its pane
+   active. Swipe the grabber sideways with three floats: the next one shows, nothing is sent
+   (`PANES_STATE` focus unchanged). Tap the float: Large, raised on the Mac. With a two-pane
+   float the panes stack in the sheet; on its side (compact height) they page, with dots in the
+   grabber. `FIT_RESIZE` logs one line per pane, none on a size change or the keyboard.
+   Reduce Motion: every change fades. VoiceOver: the grabber says "2 of 3" and swipes up or
+   down. `-panesTest 'sheet:show1;sheet:medium;sheet:next;sheet:hide'` drives the same paths.
 5. Book (`-simulateDuo book`) with one tiled pane and a float across the crease: the float sits
    on one page, the tiled pane spans the fold as before.
 6. Fit mode: the float's pane resizes on the Mac to its drawn frame once; minimized, the Mac gets

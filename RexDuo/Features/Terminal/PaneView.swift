@@ -17,12 +17,14 @@ struct PaneView: View {
     /// The pane's size with the software keyboard down, when the layout knows it
     /// (`TerminalHost.setRestSize`).
     var restSize: CGSize? = nil
+    /// The bottom a float sheet leaves below the screen (`TerminalHost.setSheetCover`).
+    var sheetCover: CGFloat = 0
 
     @Environment(Prefs.self) private var prefs
 
     var body: some View {
         PaneHostView(server: server, sessionID: sessionID, blockID: blockID, active: active,
-                     onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand, restSize: restSize)
+                     onFocus: onFocus, onSwipe: onSwipe, onCommand: onCommand, restSize: restSize, sheetCover: sheetCover)
     }
 }
 
@@ -36,6 +38,7 @@ struct PaneHostView: UIViewRepresentable {
     var onSwipe: ((Int) -> Void)?
     var onCommand: ((RexCommand) -> Void)?
     var restSize: CGSize?
+    var sheetCover: CGFloat = 0
 
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
@@ -98,6 +101,7 @@ struct PaneHostView: UIViewRepresentable {
         host.setFontSize(p.fontSize)
         host.setSizing(p.sizing)
         host.setRestSize(restSize)
+        host.setSheetCover(sheetCover)
         host.onCommand = commandHandler
         host.isActive = active
         host.onFocus = onFocus

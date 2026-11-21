@@ -787,9 +787,10 @@ The Mac's pane commands, in the pane menu and on the keymap's keys (`Features/Ta
 ## Floating windows
 
 A tab's floating layers (Rex's floating panes, "floating windows" in the Mac's menus) are drawn
-above its tiled panes where the Mac places them. View-only: the phone raises, focuses, minimizes
-and shows them again, and never moves or resizes one (`Features/Tab/TabPresentation.swift`,
-`FloatLayout.swift`, `State/ServerConnection+Floats.swift`).
+above its tiled panes where the Mac places them in a wide window, and one at a time in a sheet
+over the tab in a narrow one. View-only: the phone raises, focuses, minimizes and shows them
+again, and never moves or resizes one (`Features/Tab/TabPresentation.swift`, `FloatLayout.swift`,
+`FloatSheet.swift`, `State/ServerConnection+Floats.swift`).
 
 - **No float, no change.** Only a tab with a floating window on screen has a `TabPresentation`.
   Every other tab, one whose floats are all minimized included, runs the screen's split-or-page
@@ -797,10 +798,57 @@ and shows them again, and never moves or resizes one (`Features/Tab/TabPresentat
 - **One decision per body.** `TabPresentation.decide` is read by the canvas, the floats, the
   dots, the Waiting pill and Zoom. Book mode's sidebar collapse still asks about the tiled
   splits alone, with the sidebar collapsed: beside the sidebar they may show as pages under a
-  float, and the float must not keep the sidebar open. Zoom (the server's or the phone's) and narrow
-  windows give pages: one pane at a time, the tiled panes then the floats' panes front first,
-  minimized ones left out, with dots and swipes as any tab. A wide window draws floating windows
-  when the tiled splits are legible and every float can be placed; else pages.
+  float, and the float must not keep the sidebar open. Zoom (the server's or the phone's) gives
+  pages: one pane at a time, the tiled panes then the floats' panes front first, minimized ones
+  left out, with dots and swipes as any tab. A narrow window gives the float sheet (below). A
+  wide window draws floating windows when the tiled splits are legible and every float can be
+  placed; else pages.
+- **The float sheet** (narrow windows: folded, iPhone portrait, SE, half the inner screen;
+  `FloatSheet`). A float is never one of the tab's pages there: the tiled panes show exactly as
+  in a narrow tab without floats (legible splits, else one at a time with the title bar's dots,
+  which count tiled panes only), and one float at a time shows in a sheet over them, as Maps and
+  Music show theirs.
+  - *One rule.* The sheet shows exactly while the tab's active pane is a drawn float's. Showing a
+    float makes its pane active; going back to the tab makes the tiled pane shown under the
+    sheet active again (`PhoneState.sheets` keeps which, and the size), on the phone only.
+    Every path that points the phone at a pane (a tap, the Waiting pill, a link, the palette, a
+    server focus on a float at open) shows or hides the sheet with it, and a hidden sheet's
+    float never takes the keyboard (`ActivePane`).
+  - *Sizes.* Large leaves about 15 % of the tab above it (24 pt at most while typing); Medium
+    about 55 %; compact height and a tab with no tiled pane have Large only, and a tab with no
+    tiled pane can't hide it. Typing or a tap on the float lifts it to Large; Medium while
+    typing puts the keyboard down.
+  - *Look.* The canvas less 4 pt each side, top corners 12, the terminal's color with a stroke
+    and a soft shadow, running on under the home indicator. A 36 pt grabber strip in the title
+    bar's color: the handle, the shown pane's status and name (never its title), page dots when
+    the float pages its panes, the floats' dots when there are several, and a chevron (44 pt)
+    that goes back to the tab. No badge, nothing on the panes.
+  - *Gestures, on the grabber only* (the panes keep theirs): up and down change the size and a
+    drag down past Medium goes back to the tab, by where the drag would coast; sideways shows the
+    next or previous float, front first, no wrap; a tap switches Large and Medium. A drag picks
+    its axis once, past 10 pt. A tap on the tab above goes back to it, with that pane active. A
+    float whose splits keep 40 × 8 cells in the sheet shows them; else one pane at a time, and a
+    sideways swipe on the pane walks its panes. Next and Previous Pane walk the active pane's
+    group, the tiled panes or the float's, never from one into the other.
+  - *The Mac.* A tap or the floats' menu raises as a tap does (`FloatTap`); a swipe on the
+    grabber changes only the phone, unless the keyboard is up and typing goes there next. Going
+    back to the tab sends nothing.
+  - *No resize.* The sheet's panes claim their grid once, at Large with the keyboard down
+    (`FloatSheet.Geometry.rest`). A size change moves the sheet by position only: at Medium the
+    part below the screen counts as covered, as the keyboard covers a pane
+    (`TerminalHost.setSheetCover`, set once the sheet rests), so the row the program writes on
+    stays in view and nothing is sent. The keyboard covers the sheet as any pane.
+  - *Floats' control.* One glyph (`macwindow.on.rectangle`) with the count in the title bar (in
+    tab mode, in the strip's slot beside the pane menu), and last in the vertical bar with the
+    keyboard down when the sidebar navigates, only while the tab has a float to list. Its menu:
+    the drawn floats front first (the shown one ticked), those minimized on the Mac (shown again
+    there, then in the sheet), and Back to the Tab. Its own view, so tab mode's strip can host it.
+  - *Motion.* The sheet slides up from the bottom and between floats as pages do; Reduce Motion
+    fades instead, a size change included. Only the shown float is in the view tree: the
+    others park as panes off screen do.
+  - *VoiceOver.* The grabber is one adjustable element ("Floating window, <name>", "2 of 3"):
+    swiping up or down on it shows another float; its actions switch the size and go back to
+    the tab. The control says how many floating windows there are.
 - **Where a float is drawn** (`FloatLayout.place`). Rex's rects are window fractions; they map to
   the area the splits use (the canvas inset by 3 pt). A layer grows as one unit around its
   center until each of its panes keeps 40 × 8 cells, then stays inside the area. Across a
@@ -824,9 +872,12 @@ and shows them again, and never moves or resizes one (`Features/Tab/TabPresentat
   tap focuses as a tiled pane does. A raise that fails says nothing.
 - **Active pane** (`ActivePane`). Never one in a float that isn't drawn (minimized on the Mac,
   say): the next pane on screen takes the keyboard instead.
-- **Floating Windows**, in Arrange: Minimize (the active pane's float; hidden when it holds the
-  tab's last panes on screen, which the server refuses) and each minimized float by its first
-  pane's name, which shows it again in front (`set_layer_state` normal with `focus`). Keys:
+- **Floating Windows**, a section of the pane menu of its own while the tab has a float
+  (`FloatMenuSection`), not inside Arrange: Minimize (the active pane's float; hidden when it
+  holds the tab's last panes on screen, which the server refuses), Minimize All when it does more
+  than Minimize, and each minimized float by its first pane's name, which shows it again in front
+  (`set_layer_state` normal with `focus`). In a narrow window the drawn floats not in the sheet
+  are rows too, so the sheet stays in reach where the title bar steps aside. Keys:
   `pane.minimize_floating` and `pane.minimize_all_floating` ("Minimize Floating Window(s)", no
   default keys). Minimize All sends every drawn float's minimize in order in one turn, keeping
   the front one when no tiled pane is left; a refusal shows one notice.
@@ -834,8 +885,10 @@ and shows them again, and never moves or resizes one (`Features/Tab/TabPresentat
   float or a page a swipe away as not. Jumping to an agent in a minimized float shows the float
   again first.
 - **Fit.** A float claims the grid of the frame it is drawn at (grown or narrowed), as a split
-  pane does; one no longer drawn parks after 0.5 s (`scheduleStop`) and lets its claim go 10 s
-  after it left (Parking).
+  pane does, and in the sheet the grid of the sheet at Large; one no longer drawn parks after
+  0.5 s (`scheduleStop`) and lets its claim go 10 s after it left (Parking). A claim resizes the
+  float's pane only: the layer's bounds on the Mac stay as they were (checked against Rex,
+  2026-11-20: a float at [0.15, 0.2, 0.7, 0.5] kept them after its pane took 56×32).
 - **Compatibility.** Drawing is data-driven: no `layers`, a null `layer_id` (an ID from the
   layer's first block, stable across raises) and an unknown kind (floating) or state (normal)
   all draw; a float without usable bounds is skipped. Minimize, the rows, the keys and the raise

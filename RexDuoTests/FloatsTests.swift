@@ -79,14 +79,14 @@ struct FloatsTests {
 
     // MARK: Pages
 
-    @Test func pagesLeaveOutMinimizedFloatsAndASwipeFromTheLastTiledPaneReachesTheFrontFloat() {
+    @Test func zoomedPagesLeaveOutMinimizedFloatsAndASwipeFromTheLastTiledPaneReachesTheFrontFloat() {
         let w = Self.window(tiled: Self.two, tiledBlocks: ["A", "B"], floats: [
             Self.float("layer:back", "F", [0.1, 0.1, 0.4, 0.4]),
             Self.float("layer:m", "M", [0.2, 0.2, 0.4, 0.4], state: "minimized"),
             Self.float("layer:front", "G", [0.5, 0.5, 0.4, 0.4]),
         ])
-        guard case .pages(let ids, let current)? = Self.decide(w, narrow: true, active: "B") else {
-            Issue.record("narrow is pages")
+        guard case .pages(let ids, let current)? = Self.decide(w, narrow: true, zoomed: true, active: "B") else {
+            Issue.record("zoomed is pages, narrow or wide")
             return
         }
         #expect(ids == ["A", "B", "G", "F"])
@@ -95,9 +95,16 @@ struct FloatsTests {
         #expect(!ids.contains("M"))
     }
 
-    @Test func narrowIsAlwaysPages() {
+    /// Narrow windows never draw floating windows nor page into them: the float sheet
+    /// (`FloatSheetTests`), however big the canvas.
+    @Test func narrowIsAlwaysTheFloatSheet() {
         let w = Self.window(tiled: Self.one, tiledBlocks: ["A"], floats: [Self.floatF])
-        #expect(Self.decide(w, narrow: true, canvas: CGSize(width: 3000, height: 3000))?.pageIDs == ["A", "F"])
+        guard case .floatSheet(let s)? = Self.decide(w, narrow: true, active: "A", canvas: CGSize(width: 3000, height: 3000)) else {
+            Issue.record("narrow is the sheet")
+            return
+        }
+        #expect(s.tiled == .page("A", ids: ["A"]) && s.shown == nil && s.floats == ["layer:f"])
+        #expect(Self.decide(w, narrow: true, active: "A")?.pageIDs == ["A"], "a float is never a page")
     }
 
     @Test func zoomShowsTheZoomedPaneAsAnyZoomedTabDoes() {
@@ -285,7 +292,9 @@ struct FloatsTests {
         let wide = Self.decide(w)!
         #expect(VisiblePanes.inTab(w, wide) == ["A", "F"], "a drawn float is on screen; a minimized one isn't")
         let narrow = Self.decide(w, narrow: true, active: "A")!
-        #expect(VisiblePanes.inTab(w, narrow) == ["A"], "a page a swipe away isn't on screen")
+        #expect(VisiblePanes.inTab(w, narrow) == ["A"], "the sheet down: the float isn't on screen")
+        let zoomed = Self.decide(w, narrow: true, zoomed: true, active: "A")!
+        #expect(VisiblePanes.inTab(w, zoomed) == ["A"], "a page a swipe away isn't on screen")
         // Only minimized floats: the tab's splits are on screen, the float isn't.
         let minimized = Self.window(tiled: Self.two, tiledBlocks: ["A", "B"],
                                     floats: [Self.float("layer:m", "M", [0.1, 0.1, 0.4, 0.4], state: "minimized")])

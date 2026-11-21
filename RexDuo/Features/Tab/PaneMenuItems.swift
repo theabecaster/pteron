@@ -2,8 +2,8 @@ import SwiftUI
 import RexKit
 
 /// "Arrange ▸" in the pane menu: Swap With, Move to Tab, Balance Splits and Close Other Panes…
-/// for a tab with several panes, and Floating Windows (Minimize, then each minimized float to
-/// show again) for a tab with floats. Its own view, so only it reads the server's support, the
+/// for a tab with several panes. Floating Windows is a section of the pane menu of its own
+/// (`FloatMenuSection`), from the same model. Its own view, so only it reads the server's support, the
 /// session's tabs and the panes' names: a change there redraws this row, not the tab screen. The
 /// names never come from a title (`PaneName`), so an agent's spinning title rebuilds nothing.
 struct PaneMenuItems: View {
@@ -16,16 +16,11 @@ struct PaneMenuItems: View {
     let onMoveToNewTab: () -> Void
     let onBalance: () -> Void
     let onCloseOthers: () -> Void
-    /// Minimizes the active pane's floating window.
-    var onMinimize: () -> Void = {}
-    /// Shows a minimized floating window again, by its layer.
-    var onRestore: (String) -> Void = { _ in }
-
     var body: some View {
         #if DEBUG
         let _ = RenderCount.bump(.paneMenuItems)
         #endif
-        if let m = PaneMenuModel.make(server: server, sessionID: sessionID, window: window, block: block) {
+        if let m = PaneMenuModel.make(server: server, sessionID: sessionID, window: window, block: block), m.arrange {
             Menu {
                 if !m.swap.isEmpty {
                     Section("Swap With") {
@@ -51,14 +46,6 @@ struct PaneMenuItems: View {
                         Button(role: .destructive, action: onCloseOthers) {
                             Label("Close Other Panes…", systemImage: "xmark.square")
                         }
-                    }
-                }
-                if m.minimize || !m.minimized.isEmpty {
-                    Section("Floating Windows") {
-                        if m.minimize {
-                            Button(action: onMinimize) { Label("Minimize", systemImage: "minus.square") }
-                        }
-                        ForEach(m.minimized) { r in Button { onRestore(r.id) } label: { row(r) } }
                     }
                 }
             } label: {
@@ -95,8 +82,13 @@ struct PaneMenuModel: Equatable {
     var closeOthers = false
     /// Minimize applies to the pane's floating window.
     var minimize = false
+    /// Minimize All has more to do than Minimize: several floats, or one that isn't the pane's.
+    var minimizeAll = false
     /// The tab's minimized floating windows, each a row that shows it again (`id` is its layer).
     var minimized: [Row] = []
+
+    /// Arrange's submenu has an item.
+    var arrange: Bool { !swap.isEmpty || !tabs.isEmpty || newTab || balance || closeOthers }
 
     /// What the pane's server, session and names give. Reads only the server's support, the
     /// session's tabs and the name table, never a title.
@@ -129,6 +121,10 @@ struct PaneMenuModel: Equatable {
         }
         m.closeOthers = PaneArrange.isAvailable(.closeOthers, target: t, support: support)
         m.minimize = PaneArrange.isAvailable(.minimize, target: t, support: support)
+        if PaneArrange.isAvailable(.minimizeAll, target: t, support: support) {
+            let all = FloatArrange.minimizeAll(t.window)
+            m.minimizeAll = all.count > 1 || (all.count == 1 && !m.minimize)
+        }
         if PaneArrange.isAvailable(.restore, target: t, support: support) {
             m.minimized = minimizedRows(t.window, names: names)
         }
@@ -138,8 +134,14 @@ struct PaneMenuModel: Equatable {
     /// A tab's minimized floating windows, back to front, each by its first pane's name; one with
     /// several panes says how many.
     static func minimizedRows(_ w: WindowInfo, names: Names) -> [Row] {
+        layerRows(w, w.minimizedFloating, names: names)
+    }
+
+    /// Floating windows by their first pane's name, in the order given; one with several panes
+    /// says how many.
+    static func layerRows(_ w: WindowInfo, _ layers: [LayerInfo], names: Names) -> [Row] {
         let rows = paneRows(w, names: names)
-        return w.minimizedFloating.compactMap { layer in
+        return layers.compactMap { layer in
             let ids = layer.layout?.leaves.map(\.id) ?? layer.blocks.map(\.id)
             guard let first = ids.first else { return nil }
             let r = rows.first { $0.id == first }

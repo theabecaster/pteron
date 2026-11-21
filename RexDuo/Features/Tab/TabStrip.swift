@@ -40,6 +40,9 @@ struct TabStrip<PaneMenu: View>: View {
     let target: StripTarget?
     /// The panes the dots page through, when one shows at a time.
     var dots: [String] = []
+    /// The pane the dots mark, when it isn't the active one (a narrow tab's float sheet: the
+    /// tiled pane under it).
+    var dotsCurrent: String?
     /// The panes on screen: agents waiting there are in view already.
     var visible: Set<String> = []
     var zoomed = false
@@ -48,6 +51,8 @@ struct TabStrip<PaneMenu: View>: View {
     var height: CGFloat = 44
     let theme: TermTheme
     var actions = StripActions()
+    /// A narrow tab's floating windows control (`FloatsControl`); nil without a float.
+    var floats: FloatsControl?
     /// The Pane Actions menu, as the title bar shows it.
     @ViewBuilder var paneMenu: PaneMenu
 
@@ -62,7 +67,8 @@ struct TabStrip<PaneMenu: View>: View {
             let layout = StripLayout(.init(width: geo.size.width, height: height,
                                            originX: geo.frame(in: .global).minX - rootOrigin.x, crease: bookCrease,
                                            bar: bar, hasSession: session != nil, hasPane: target?.block != nil,
-                                           zoomed: zoomed, panes: dots.count, waiting: waiting))
+                                           zoomed: zoomed, panes: dots.count, waiting: waiting,
+                                           hasFloatsControl: floats != nil))
             ZStack(alignment: .topLeading) {
                 ForEach(layout.parts, id: \.self) { part in
                     if let frame = layout.frame(part) {
@@ -89,7 +95,7 @@ struct TabStrip<PaneMenu: View>: View {
                 TabChips(target: target, session: session, layout: layout, theme: theme, actions: actions)
             }
         case .dots:
-            if let block = target?.block {
+            if let block = dotsCurrent ?? target?.block {
                 if layout.dots == .count {
                     PaneCount(ids: dots, current: block, theme: theme, onStep: actions.stepPane)
                 } else {
@@ -102,8 +108,7 @@ struct TabStrip<PaneMenu: View>: View {
             IconButton(symbol: TabAction.unzoom.symbol, label: TabAction.unzoom.title, height: height, action: actions.unzoom)
                 .foregroundStyle(theme.accent)
         case .floats:
-            // The slot is kept by the layout; the control comes with floating windows' own change.
-            EmptyView()
+            floats
         case .newTab:
             IconButton(symbol: "plus", label: TabAction.newTab.title, height: height, action: actions.newTab)
         case .paneMenu:

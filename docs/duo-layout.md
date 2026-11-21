@@ -156,9 +156,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     Floating windows).
 - **Floating windows by posture.** Wide windows (unfolded, book, tabletop, iPhone landscape)
   draw them where the Mac places them, grown until each pane is legible. Narrow windows (folded,
-  iPhone portrait, half the inner screen) always show one pane at a time: the tiled panes, then
-  the floats' panes front first, with dots. A tab whose floats are all minimized is laid out as
-  if it had none.
+  iPhone portrait, half the inner screen) lay the tiled panes out as without floats and show one
+  float at a time in a sheet over them, from the title bar's floats glyph ([terminal.md](terminal.md),
+  Floating windows, The float sheet). A tab whose floats are all minimized is laid out as if it
+  had none.
 - **Tent mode** (`TentDetector`, `Features/Board`). Folded back and stood on a desk as a tent,
   the phone shows the agent board on its outer screen instead of the tab: who needs you, read
   from a meter away.

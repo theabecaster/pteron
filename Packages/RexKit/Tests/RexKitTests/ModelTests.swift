@@ -95,9 +95,13 @@ struct SessionTests {
           {"layer_id": "front", "kind": "floating", "bounds": [0.5, 0.5, 0.5, 0.5], "layout": {"block_id": "C", "rect": [0.5, 0.5, 0.5, 0.5]}, "blocks": [{"block_id": "C"}]}]}
         """))
         #expect(w.pageBlockIDs == ["A", "C", "B"])
+        // Split in two for a narrow window, where the floats aren't pages: the same order.
+        #expect(w.tiledPageIDs == ["A"] && w.floatPageIDs == ["C", "B"])
+        #expect(floatsWindow.tiledPageIDs + floatsWindow.floatPageIDs == floatsWindow.pageBlockIDs)
         // No floating layer: the same as orderedBlockIDs.
         let plain = WindowInfo(json(#"{"window_id": "p", "layers": [{"layer_id": "t", "kind": "tiled", "layout": {"rect": [0, 0, 1, 1], "split": {"direction": "horizontal", "ratio": 0.5, "before": {"block_id": "A", "rect": [0, 0, 0.5, 1]}, "after": {"block_id": "B", "rect": [0.5, 0, 0.5, 1]}}}, "blocks": [{"block_id": "A"}, {"block_id": "B"}]}]}"#))
         #expect(plain.pageBlockIDs == plain.orderedBlockIDs)
+        #expect(plain.tiledPageIDs == ["A", "B"] && plain.floatPageIDs.isEmpty)
         #expect(plain.floating.isEmpty && plain.visibleFloating.isEmpty)
     }
 

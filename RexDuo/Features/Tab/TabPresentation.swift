@@ -2,14 +2,16 @@ import CoreGraphics
 import RexKit
 
 /// The pane a tab treats as active, the one typing goes to: the pane picked on the phone, else
-/// the zoomed one, else the server's focus, else the first. Never one in a floating window that
-/// isn't drawn (minimized on the Mac, say), so a hidden pane never takes the keyboard.
+/// the zoomed one, else the server's focus, else the first tiled pane (the front float's first
+/// with none). Never one in a floating window that isn't drawn (minimized on the Mac, say), so a
+/// hidden pane never takes the keyboard. In a narrow window the float sheet shows exactly while
+/// the active pane is a float's (`FloatSheet`), so a hidden sheet's float is never active either.
 enum ActivePane {
     static func of(_ w: WindowInfo, phone: String?) -> String? {
         if let f = phone, w.allBlocks.contains(where: { $0.id == f }), !w.isHidden(f) { return f }
         if let z = w.zoomedBlockID, !w.isHidden(z) { return z }
         if let f = w.focusedBlockID, !w.isHidden(f) { return f }
-        return w.pageBlockIDs.first
+        return w.tiledPageIDs.first ?? w.floatPageIDs.first
     }
 }
 
@@ -34,11 +36,15 @@ enum TabPresentation: Equatable {
     /// The tiled layer, with the floating windows above it, front last. Wide windows only.
     case floating(tiled: TiledLook, floats: [FloatLayout.Frame])
     /// One pane at a time with page dots: the tiled panes, then the floats' panes, front first.
+    /// Zoomed tabs only.
     case pages(ids: [String], current: String)
+    /// Narrow windows: the tiled panes as a narrow tab without floats shows them, and one float
+    /// at a time in a sheet over them while a float's pane is active (`FloatSheet`).
+    case floatSheet(FloatSheet.Layout)
 
     struct Input {
         var window: WindowInfo
-        /// A narrow window (folded Duo, iPhone portrait): never floating windows.
+        /// A narrow window (folded Duo, iPhone portrait): the float sheet, never floating windows.
         var narrow: Bool
         /// Zoomed, on the server or on the phone: the shown pane alone, as in any tab.
         var zoomed: Bool
@@ -50,6 +56,8 @@ enum TabPresentation: Equatable {
         var crease: FloatLayout.Crease?
         /// A layer raised on the phone that the server hasn't put in front yet.
         var front: String?
+        /// Narrow: the tiled pane shown last, which stays shown under the sheet.
+        var tiledShown: String? = nil
     }
 
     /// Nil when no floating window is on screen: the caller then runs its own logic.
@@ -60,7 +68,8 @@ enum TabPresentation: Equatable {
         let ids = w.pageBlockIDs
         let current = i.active.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first ?? ""
         let pages = TabPresentation.pages(ids: ids, current: current)
-        if i.zoomed || i.narrow { return pages }
+        if i.zoomed { return pages }
+        if i.narrow { return .floatSheet(FloatSheet.layout(i)) }
         let leaves = w.layout?.leaves ?? []
         let tiled: TiledLook
         switch leaves.count {
@@ -78,16 +87,36 @@ enum TabPresentation: Equatable {
         return .floating(tiled: tiled, floats: frames)
     }
 
-    /// The panes the dots and a swipe move through; nil while several show at once.
+    /// The panes the title bar's dots count; nil while several show at once. Under the float
+    /// sheet, the tiled pages only: the sheet has its own.
     var pageIDs: [String]? {
-        if case .pages(let ids, _) = self { return ids }
-        return nil
+        switch self {
+        case .pages(let ids, _): return ids
+        case .floatSheet(let s):
+            if case .page(_, let ids) = s.tiled { return ids }
+            return nil
+        case .floating: return nil
+        }
+    }
+
+    /// The pane the title bar's dots mark.
+    var pageCurrent: String? {
+        switch self {
+        case .pages(_, let current): return current
+        case .floatSheet(let s):
+            if case .page(let current, _) = s.tiled { return current }
+            return nil
+        case .floating: return nil
+        }
     }
 
     /// Zoom shows one pane of several on screen.
     var canZoom: Bool {
-        if case .floating = self { return true }
-        return false
+        switch self {
+        case .floating: return true
+        case .pages: return false
+        case .floatSheet(let s): return s.shown != nil || s.tiled == .splits
+        }
     }
 
     /// The panes on screen: the page shown, or the tiled panes drawn and every float's panes.
@@ -95,6 +124,15 @@ enum TabPresentation: Equatable {
         switch self {
         case .pages(_, let current):
             return [current]
+        case .floatSheet(let s):
+            var out: Set<String>
+            switch s.tiled {
+            case .empty: out = []
+            case .splits: out = Set(w.layout?.leaves.map(\.id) ?? [])
+            case .page(let id, _): out = [id]
+            }
+            if let shown = s.shown { out.formUnion(shown.page.map { [$0] } ?? shown.ids) }
+            return out
         case .floating(let tiled, let floats):
             var out = Set(floats.flatMap { $0.leaves.map(\.id) })
             switch tiled {

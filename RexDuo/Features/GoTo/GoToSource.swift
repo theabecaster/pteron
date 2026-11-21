@@ -48,6 +48,9 @@ struct GoToTarget: Equatable {
     var blockID: String?
     /// The tab shows splits now (or is zoomed on the phone), so Zoom Pane applies.
     var canZoom = false
+    /// Next and Previous Pane have somewhere to go (the tab's own rule, `WindowScreen.paneGroup`);
+    /// nil: more than one page.
+    var canSwitchPane: Bool? = nil
 }
 
 /// One row's searchable copy: raw strings and flags only, so it crosses to `GoToSearcher`.
