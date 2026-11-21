@@ -362,7 +362,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     func openAttachMenu(open: Bool = true) {
         guard let button = attachButton, let cap = button.superview else { return }
         if cap.isDescendant(of: stack) { scroll.scrollRectToVisible(scroll.convert(cap.bounds, from: cap), animated: false) }
-        if open { button.performPrimaryAction() }
+        // Off screen (the keyboard is down) the menu has nothing to show from: UIKit raises
+        // on a menu's preview for a view that is in no window.
+        if open, button.window != nil { button.performPrimaryAction() }
     }
     #endif
 

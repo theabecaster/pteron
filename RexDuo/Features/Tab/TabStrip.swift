@@ -260,6 +260,9 @@ private struct SessionChipSlot: View {
             SessionPopoverHost(theme: theme, close: { open = false }, onAction: onAction)
                 .environment(model)
         }
+        #if DEBUG
+        .modifier(StripPopoverOpens(opener: .chip, open: $open))
+        #endif
     }
 }
 
@@ -279,6 +282,14 @@ struct SessionPopoverHost: View {
             .presentationCompactAdaptation(.popover)
             // The popover's content leaves when its dismissal has ended.
             .onDisappear { wait.dismissed() }
+            #if DEBUG
+            .task {
+                // `-stripRow`: the row's tap, as a finger's.
+                guard let row = StripPopoverTest.takeRow() else { return }
+                try? await Task.sleep(for: StripPopoverTest.rowDelay)
+                if let action = StripPopoverTest.action(row, in: SessionPopover(model)) { tap(action) }
+            }
+            #endif
     }
 
     /// A row's tap: the popover closes, and the row runs at once or, when it puts something on
@@ -310,6 +321,9 @@ struct SessionsBarItem: View {
             SessionPopoverHost(theme: theme, close: { open = false }, onAction: onAction)
                 .environment(model)
         }
+        #if DEBUG
+        .modifier(StripPopoverOpens(opener: .bar, open: $open))
+        #endif
     }
 }
 

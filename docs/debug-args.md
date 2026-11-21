@@ -155,7 +155,16 @@ builds.
 - `-showAgents YES`: open the Agents sheet at launch (`AgentsSheet`, the Agents list for a layout
   without the sidebar).
 - `-showPorts YES`: the first machine's ports button in the sidebar opens its popover as soon as
-  it shows, once (`PortsList`).
+  it shows, once (`PortsList`). In tab mode, which has no such button, the first computer that
+  connects has its ports sheet opened instead (`PortsSheet`).
+- `-stripPopover chip|bar` (tab mode): open the session popover from the session chip, or from
+  the vertical bar's Sessions item where the system has that bar, once, `-stripPopoverAfter`
+  seconds (default 3) after the control shows. `-stripRow <name>` then taps a row,
+  `-stripRowAfter` seconds (default 2) after the popover shows, as a finger does: the popover
+  closes and what the row presents waits for it ([tab-mode.md](tab-mode.md), The dismissal
+  wait). Rows: `settings`, `agents`, `goTo`, `useSidebar`, `renameSession` and `closeSession`
+  (the session on screen), `add` (the first computer that isn't added), `ports` (the first
+  heading with a ports globe). `StripPopoverTest`.
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
   ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`, `portButtons` for the machines' ports buttons and `portRows` for the rows of their lists), how many
   progress values were written (`progressWrites`), how often the tab screen and the pane

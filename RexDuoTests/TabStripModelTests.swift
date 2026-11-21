@@ -255,6 +255,34 @@ struct SessionPopoverTests {
         #expect(p.rows[0].action == nil && p.rows[5].action == nil)
     }
 
+    #if DEBUG
+    /// `-stripRow <name>` taps what a finger would: the footer's rows, the menu of the session
+    /// on screen, the first computer that isn't added and the first heading's ports. A row the
+    /// popover lacks is nothing.
+    @Test func theTestArgumentFindsEachRow() {
+        let host = KnownHost(id: "h1", label: "attic", candidate: nil)
+        let p = SessionPopover(machines: [machine(desk, "desk", [session("work"), session("play")]),
+                                          machine(cloud, "cloud", ports: 2, [session("deploy")])],
+                               hosts: [host], current: Selection(serverID: desk, sessionID: "play", windowID: "w1"))
+        func action(_ row: StripPopoverTest.Row) -> SessionPopover.Action? { StripPopoverTest.action(row, in: p) }
+        #expect(action(.settings) == .settings && action(.agents) == .agents && action(.goTo) == .goTo)
+        #expect(action(.useSidebar) == .useSidebar)
+        #expect(action(.renameSession) == .renameSession(desk, session: "play", name: "play"))
+        #expect(action(.closeSession) == .closeSession(desk, session: "play", name: "play"))
+        #expect(action(.add) == .add(host))
+        #expect(action(.ports) == .ports(cloud))
+        // Every row that puts something on screen waits for the popover; Switch to Sidebar doesn't.
+        for row in StripPopoverTest.Row.allCases {
+            #expect(action(row)?.presents == (row != .useSidebar), "\(row)")
+        }
+
+        let bare = SessionPopover(machines: [machine(desk, "desk", [])], current: nil)
+        #expect(StripPopoverTest.action(.add, in: bare) == nil && StripPopoverTest.action(.ports, in: bare) == nil)
+        #expect(StripPopoverTest.action(.renameSession, in: bare) == nil && StripPopoverTest.action(.settings, in: bare) == .settings)
+        #expect(StripPopoverTest.Row(rawValue: "ribbon") == nil)
+    }
+    #endif
+
     /// The footer: Go to Anything, Agents, Settings and the way back to the sidebar. Change
     /// Session isn't a row: the popover is that list already.
     @Test func theFooterIsTheSidebarsOtherPlacesAndTheWayBack() {

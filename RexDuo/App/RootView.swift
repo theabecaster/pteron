@@ -87,6 +87,9 @@ struct RootView: View {
                     PortsSheet(server: server, wait: portsWait).environment(model)
                 }
             }
+            #if DEBUG
+            .modifier(PortsSheetAtLaunch())
+            #endif
             .helperSetupCover(model: model)
             .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
                 model.openSettings(at: .addServer)
