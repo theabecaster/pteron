@@ -1025,7 +1025,7 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
     forward and reload. The top bar is the navigation controller's. The three under the page
     are the browser's own buttons in its own view, placed and drawn as a toolbar's: UIKit
     (iOS 27.2) keeps a `UIToolbar`'s items, their buttons and its model after a toolbar that
-    held items is gone, about 90 KB for every page opened, and 100 opens must cost what 5 do
+    held items is gone, about 90 KB for every page opened, and 100 opens must cost what 30 do
     (`-portsLoop`, `scripts/bench/ports-loop.sh`). `PreviewBarLayout` puts them where that
     toolbar's items are on each shape: under the page on an iPhone upright or on its side and
     in a sheet that floats, and in the system's vertical bar on the iPhone Duo, from the

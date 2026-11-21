@@ -4,16 +4,24 @@ import UIKit
 
 /// `-portsLoop <n>` (Debug and benchmark builds): opens the browser `n` times on a page this
 /// app serves to itself on loopback, as fast as each page loads, closing it each time. No
-/// computer is needed and no pane is touched. It reads the app's memory after 5 opens and
-/// after the last, logs `PORTS_LOOP opens=<k> footprint=<MB>` for both and
-/// `PORTS_LOOP done growth=<MB>`, and writes `Documents/perf/portsLoop.json`. Every page opened
-/// must cost what the fifth did: `scripts/bench/ports-loop.sh` fails when 100 opens end more
-/// than 1 MB over 5.
+/// computer is needed and no pane is touched. It reads the app's memory after 5 opens, after
+/// 30 and after the last, logs `PORTS_LOOP opens=<k> footprint=<MB>` for each and
+/// `PORTS_LOOP done growth=<MB>`, and writes `Documents/perf/portsLoop.json`.
+///
+/// The growth is the last reading less the one after 30 opens (after 5 in a shorter run). In
+/// a build without memory tools the app's memory rises by about 5 MB over the first 25 or so
+/// opens, in two steps, and then stays level (iOS 27.2 simulator), so a reading after 5 opens
+/// is not yet the level. A page that leaves something behind shows after that: every open
+/// from the 30th on must cost nothing, and `scripts/bench/ports-loop.sh` fails when 100 opens
+/// end more than 1 MB over 30.
 ///
 /// `-portsLoopHold <seconds>` keeps each page up that long, for a screenshot, and
 /// `-portsLoopLandscape YES` turns the iPhone on its side first.
 @MainActor
 enum PortsLoop {
+    /// The open after which the memory is level.
+    private static let warm = 30
+
     private static var opens: Int? {
         let n = UserDefaults.standard.integer(forKey: "portsLoop")
         return n > 0 ? n : nil
@@ -40,7 +48,7 @@ enum PortsLoop {
             window.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
             await pause(2)
         }
-        var afterFive = 0.0, afterAll = 0.0
+        var afterFive = 0.0, afterThirty = 0.0, afterAll = 0.0
         for n in 1...opens {
             guard PreviewBrowser.present(PreviewPage(load: url, shown: "localhost:3000"), over: root.view, onClose: {}) else {
                 return say("PORTS_LOOP failed: nothing to present from")
@@ -53,19 +61,22 @@ enum PortsLoop {
             await pause(hold)
             browser?.close()
             await pause(1.2)
-            if n == 5 || n == opens {
+            if n == 5 || n == warm || n == opens {
                 // What a close lets go of is gone by then.
                 await pause(6)
                 let megabytes = Double(PerfSystem.footprint()) / 1_048_576
                 say(String(format: "PORTS_LOOP opens=%d footprint=%.2f MB", n, megabytes))
                 if n == 5 { afterFive = megabytes }
+                if n == warm { afterThirty = megabytes }
                 afterAll = megabytes
             }
         }
         page.stop()
-        let growth = opens > 5 ? afterAll - afterFive : 0
+        let growth = opens > warm ? afterAll - afterThirty : opens > 5 ? afterAll - afterFive : 0
         say(String(format: "PORTS_LOOP done growth=%.2f MB", growth))
-        let result: [String: Any] = ["opens": opens, "afterFiveMB": afterFive, "afterAllMB": afterAll, "growthMB": growth]
+        let result: [String: Any] = [
+            "opens": opens, "afterFiveMB": afterFive, "afterThirtyMB": afterThirty, "afterAllMB": afterAll, "growthMB": growth,
+        ]
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("perf")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) {

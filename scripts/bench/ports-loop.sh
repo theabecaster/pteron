@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Opens and closes the app's browser many times in a simulator and checks that the app's memory
-# does not grow with every page: what 100 opens leave must be within 1 MB of what 5 leave.
+# does not grow with every page: what 100 opens leave must be within 1 MB of what 30 leave
+# (the memory rises once over the first 25 or so opens and is level after; `PortsLoop` says more).
 #
 #   scripts/bench/ports-loop.sh <simulator id> [--opens N] [--skip-build]
 #
@@ -14,7 +15,7 @@
 set -euo pipefail
 
 self=$0
-usage() { sed -n '2,13p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,14p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
 opens=100; build=1
@@ -57,7 +58,7 @@ file="$data/Documents/perf/portsLoop.json"
 rm -f "$file"
 xcrun simctl launch "$sim" $bundle -portsLoop $opens -autoOpen zz-none -sizing mirror >/dev/null
 
-# 8 s to start, about 2.5 s an open, and two settles of 6 s.
+# 8 s to start, about 2.5 s an open, and three settles of 6 s.
 limit=$(( 40 + opens * 4 ))
 waited=0
 until [[ -f $file ]]; do
@@ -72,6 +73,7 @@ cat "$file"; echo
 python3 - "$file" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
-print("%d opens: %.2f MB after 5, %.2f MB after all, growth %.2f MB (limit 1.00)" % (r["opens"], r["afterFiveMB"], r["afterAllMB"], r["growthMB"]))
+print("%d opens: %.2f MB after 5, %.2f MB after 30, %.2f MB after all, growth %.2f MB (limit 1.00)"
+      % (r["opens"], r["afterFiveMB"], r["afterThirtyMB"], r["afterAllMB"], r["growthMB"]))
 sys.exit(0 if r["growthMB"] <= 1.0 else 1)
 PY
