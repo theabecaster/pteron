@@ -145,6 +145,11 @@ builds.
   keyboard. `-settings <page>`: open Settings at that page: `main` (the top level), `servers`,
   `appearance`, `keyboard`, `notifications`, `about`, or a page under one of them, `addServer`,
   `darkTheme`, `lightTheme` or `acknowledgements`, whose Back then leads to its parent.
+- `-navigation tabs|sidebar`: use that navigation style for this run ([tab-mode.md](tab-mode.md)).
+  It is the setting's own key (`Prefs.navigation`), so it works in Release too and needs no code:
+  the argument stands in for the saved choice and leaves it as it was. A change in Settings
+  during the run applies at once and is saved; the next launch with the argument starts from the
+  argument again.
 - `-sidebarMode agents`: start the sidebar in Agents mode (overrides the saved mode for one run). `-sidebarCollapsed '("m:<server id>",
   "s:<server id>:<session id>")'`: fold those groups for this run (`SidebarCollapse` keys).
 - `-showAgents YES`: open the Agents sheet at launch (`AgentsSheet`, the Agents list for a layout
