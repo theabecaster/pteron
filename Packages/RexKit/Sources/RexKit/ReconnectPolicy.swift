@@ -100,6 +100,11 @@ public struct ReconnectPolicy: Sendable, Equatable {
     public init() {}
 
     /// The values in use.
+    /// The slowest link the app is built for, in bytes a second (64 kbit/s). One reply must
+    /// arrive whole inside the watchdog's wait and the pong deadline together even at this
+    /// rate, or a live host looks silent (`BlobChunks`).
+    public var slowestRate: Double = 8 * 1024
+
     public static let standard = ReconnectPolicy()
 
     // MARK: Decisions

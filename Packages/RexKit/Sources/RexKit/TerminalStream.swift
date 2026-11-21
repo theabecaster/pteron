@@ -1118,14 +1118,8 @@ public final class TerminalStream {
             offset = total - Self.snapshotLimit
             skipPartialLine = true
         }
-        var tail = ""
-        for _ in 0..<40 {
-            let more = try await blockCall("com.superlogical.terminal.blob_read",
-                                           args: ["id": id, "offset": offset, "max_bytes": 900_000])
-            let data = more.str("data") ?? ""
-            tail += data
-            offset += data.utf8.count
-            if more.bool("eof") == true || data.isEmpty { break }
+        var tail = try await BlobChunks.read(from: offset, total: total) { [self] offset, size in
+            try await blockCall("com.superlogical.terminal.blob_read", args: ["id": id, "offset": offset, "max_bytes": size])
         }
         if skipPartialLine, let nl = tail.firstIndex(of: "\n") {
             tail = String(tail[tail.index(after: nl)...])
