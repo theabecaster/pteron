@@ -56,7 +56,9 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   on a watchOS simulator with the scheme `RexDuoWatch`.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
-  `ConnectionDiagnostics` (the connection log's file; docs/architecture.md, The connection log),
+  `ConnectionDiagnostics` (the connection log's file and the file Send Diagnostics shares;
+  docs/architecture.md, The connection log), `DiagnosticReports` (the system's crash and hang
+  reports, the newest 20), `StartStagger` (which computer a launch starts first),
   `TunnelProbe` (asks Tailscale's own service on the phone, for that log only),
   `GlanceWriter` (the snapshot's one writer), `GlanceBridge` (sends each written snapshot to the
   watch), `GlanceActions` (answers the watch's Enter and Interrupt: status read, guard, one

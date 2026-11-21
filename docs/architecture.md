@@ -208,7 +208,8 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     one and the floor counted from it. A launch opens one socket per server (`ControlKickTests`).
   - *Liveness:* a ping when nothing came in for 30 s, and at once when a request got nothing
     back for 5 s (10 s on cellular); no pong in 10 s (20 s) is a dead connection. The connect
-    deadline is 10 s (15 s), the wake pong 2.5 s (5 s). There is one watchdog per connection,
+    deadline is 10 s (15 s), the wake pong 2.5 s (5 s), and the hold on a drop after a return
+    (`ForegroundWake.grace`) 5 s (8 s). There is one watchdog per connection,
     not a deadline per call: while any call waits (typed input is one), the silence is counted
     from the later of the last frame in and the oldest waiting call, and one wait is set for
     what is left of it. Frames that keep arriving keep it quiet however long a call takes. It
@@ -272,7 +273,7 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   `recovering` keeps the screen up, saying the signal is back, until the sessions have reloaded.
 - Waking up isn't a problem (`State/ForegroundWake.swift`). iOS suspends the app and its sockets
   die, so a return to the foreground usually finds the connection down for a moment. A drop
-  while in the background, or within 5 s after the return, is held: `phase` stays `.online`, the
+  while in the background, or within 5 s after the return (8 s on cellular), is held: `phase` stays `.online`, the
   tab keeps its last frame with no dim, input queues as usual, and `ServerConnection.waking` puts
   a small Glide beside the tab's title, breathing, if it lasts over a second (`WakingMark`, Core
   Animation, still with Reduce Motion; the sidebar's dot turns grey and still). On the return
@@ -366,6 +367,74 @@ user shares.
   write) keeps the whole events before it. A file that is there and can't be read (the phone was
   not unlocked yet) is left alone, and that launch's events stay in memory. Reading it never
   fails the launch.
+
+### Send Diagnostics
+
+Settings → About has a Send Diagnostics row (`AboutPage`). It is an action, not a setting: no
+badge, no prompt, nothing made or sent until the tap.
+
+- **What a tap does:** `ConnectionDiagnostics.report` builds one text: the connection log's
+  export, then the crash and hang reports, newest first. `writeShareFile` writes it to a folder
+  of its own in the temporary directory, and the system's share sheet opens with that file. The
+  user picks where it goes. The file is removed when the sheet closes, and before the next one
+  is written. A second tap while one is being written makes no second file.
+- **Crash and hang reports:** `DiagnosticReportsSubscriber` takes MetricKit's diagnostic
+  payloads from launch, and `DiagnosticReports` keeps the newest 20 as files in
+  `Application Support/Diagnostics/Reports`, left out of backups; a report over 512 KB is not
+  kept. The system delivers them at most once a day, on its own queue, usually at the launch
+  after the crash. The app takes no daily metrics and runs nothing between deliveries: no
+  timer and no work per frame.
+- **The privacy rule holds for the whole file.** The log has no text in it (above). A report
+  is the system's JSON cut down to a fixed list of fields before it is stored
+  (`DiagnosticReports.clean`, the lists `groups`, `numbers` and `texts`): the kinds of
+  diagnostic, the call stacks as binary names, UUIDs and offsets, the exception's type, code
+  and signal, the hang's or launch's duration, the app's version and build, the device model,
+  the system's version and the architecture, and the report's two times. Everything else is
+  dropped, the system's free text among it (a termination reason, an exception's message, the
+  memory region's description), with the bundle id, the region format and the process id. A
+  binary's path is cut to its name, and a kept text with anything of a path, an address or a
+  link in it is dropped. The app adds its version and nothing else
+  (`DiagnosticReportsTests`).
+
+### What a launch and a sync ask of the tunnel
+
+On Wi-Fi a launch and a sync are as they always were, except for which computer starts first.
+The caps below apply only on an expensive path (cellular or a hotspot), read from the same word
+the cellular deadlines go by (`RexControl.onExpensivePath`).
+
+- **A launch starts one computer first** (`StartStagger`, `AppModel.startInTurns`): the one of
+  the tab the launch opens (the tab viewed last), in the same turn as before, with no wait
+  ahead of it. The others start when it has settled: its first sync has the sessions and tabs
+  in, or its connection failed, or it went dormant (`AppModel.leadReported`). A second is the
+  longest they wait. They then start 250 to 500 ms apart. Nobody waits when there is no tab to
+  open, when the user opens a computer, after a return from the background or when the list
+  changes; nothing starts in the background. It is one scheduled wait.
+- **The session on screen is read first**, on every path (`ServerConnection.shownFirst`).
+- **On cellular a sync's reads go four at a time** (`CallGate`, `ServerConnection.syncCalls`,
+  `ReconnectPolicy.syncCalls`): one `session.attach` for each session, then `program_status`,
+  `title` and `process` for each pane, the creators' list, and each pane's `ports`. A pane's
+  three answers are applied when the third is in. Whether a batch of reads is gated is asked
+  once where it starts (`gatesSync`), so a change of path in the middle leaves it as it began,
+  and no read is left waiting. A read whose turn comes after its connection is gone is not sent
+  on the next one. What the user does never waits at the gate.
+- **On Wi-Fi nothing goes through the gate**: every attach in one turn, then every pane's reads
+  in one turn, and the ports' reads at their own width of four (`portReadWidth`).
+- **On cellular one fresh snapshot at a time for a host** (`SnapshotTurns`,
+  `TerminalStream.fullStart`): a pane's fresh start takes a turn, the pane on screen first, a
+  pane that streams unseen behind those (`TerminalStream.isOnScreen`), and starts when the one
+  before has its snapshot. A RESUME takes no turn. The turn is given back when the snapshot
+  ends or fails, when the start fails, on `stop()`, `park()` and `restart()`, when the socket
+  drops, when the host dies and in the background; leaving cellular ends every turn; and a
+  turn ends by itself after the cellular connect deadline (15 s), with the stream left to go
+  on beside the next (`StreamSnapshotTurnTests`). On Wi-Fi the panes of a split tab start
+  together.
+- **What cellular pays for the gate:** a sync of S sessions and P panes takes about
+  (S + 3 P) / 4 round trips for its reads where it took two, and the app shows its tabs when
+  every session is read (`synced`), so on cellular the tabs come about S / 4 round trips
+  later. Showing the tab on screen as soon as its own session is read would take a second
+  state beside `synced` ("this session is in") and every reader of `synced` checked against
+  it; a sync replaces the views whole and does not merge, so a tab shown early could be taken
+  away again by the same sync. Not built.
 
 ## First run
 
