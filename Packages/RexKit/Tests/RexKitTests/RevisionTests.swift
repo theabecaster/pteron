@@ -184,6 +184,9 @@ final class RevisionTests: XCTestCase {
             // test's subject (`ControlTimingTests.testTapsOnOneHostAreTenSecondsApart`).
             var policy = ReconnectPolicy()
             policy.userSpacing = 0.1
+            // No jitter: a retry that should not come would come at exactly 1 s, inside the wait below.
+            policy.fullJitterFirst = false
+            policy.jitter = 0
             let c = RexControl(address: address, client: ClientInfo(name: "Sample App", version: "0.1.0", label: "test"),
                                governor: ReconnectGovernor(policy: policy))
             do {

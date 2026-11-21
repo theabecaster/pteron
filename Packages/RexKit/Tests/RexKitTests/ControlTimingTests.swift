@@ -1065,7 +1065,7 @@ final class ControlTimingTests: XCTestCase {
         let others = FakeControlSockets()
         let other = RexControl(address: "https://other.example.ts.net",
                                client: ClientInfo(name: "test", version: "0", label: "test"),
-                               clock: clock, sockets: others.factory, governor: governor)
+                               clock: clock, sockets: others.factory, governor: governor, random: { 0.5 })
         Task { @MainActor in try? await other.connect() }
         await pump()
         others.last.welcome()

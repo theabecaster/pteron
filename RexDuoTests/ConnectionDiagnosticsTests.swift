@@ -40,8 +40,14 @@ final class ConnectionDiagnosticsTests: XCTestCase {
         let log = ConnectionLog(file: file)
         log.record(.launch(build: ConnectionDiagnostics.buildNumber("2611201913")))
         let config = ServerConfig(name: "Kitchen Mac", url: address)
+        // A schedule with no jitter. The app's first retry falls anywhere from 0 to 1 s: near 0
+        // the connection is back before this test sees it down, and the logged wait changes
+        // from run to run. Here it is exactly 1 s.
+        var policy = ReconnectPolicy()
+        policy.fullJitterFirst = false
+        policy.jitter = 0
         let server = ServerConnection(config: config, prefs: prefs, notifier: model.notifier,
-                                      deviceID: "a1b2c3d4", log: log)
+                                      deviceID: "a1b2c3d4", log: log, governor: ReconnectGovernor(policy: policy))
         server.start()
         let up = await wait { server.control.state == .connected }
         XCTAssertTrue(up)
@@ -56,8 +62,7 @@ final class ConnectionDiagnosticsTests: XCTestCase {
         XCTAssertTrue(text.contains("Server 1  connecting"), text)
         XCTAssertTrue(text.contains("Server 1  connected after="), text)
         XCTAssertTrue(text.contains("Server 1  closed "), text)
-        // The first retry is jittered (0-1 s, the reconnect spec), so only its presence is fixed.
-        XCTAssertTrue(text.contains("Server 1  retry in="), text)
+        XCTAssertTrue(text.contains("Server 1  retry in=1000ms"), text)
         XCTAssertTrue(text.contains("Server 1  stopped"), text)
 
         let port = String(address.split(separator: ":").last ?? "")

@@ -74,11 +74,22 @@ final class ControlReconnectTests: XCTestCase {
         func stop() { queue.sync { listener.cancel(); for c in connections { c.cancel() } } }
     }
 
+    /// A schedule with no jitter: the first retry comes after exactly 1 s, so a test that says
+    /// "at once, not after the backoff" tells the two apart every run. With the app's schedule
+    /// the first retry falls anywhere from 0 to 1 s.
+    static func steady() -> ReconnectGovernor {
+        var policy = ReconnectPolicy()
+        policy.fullJitterFirst = false
+        policy.jitter = 0
+        return ReconnectGovernor(policy: policy)
+    }
+
     func testObserversHearEveryConnectAndCallsFailByWhetherTheyLeft() async throws {
         let server = try Server()
         let port = await server.start()
         defer { server.stop() }
-        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"),
+                                 governor: Self.steady())
         defer { control.disconnect() }
 
         var connects = 0
@@ -132,7 +143,8 @@ final class ControlReconnectTests: XCTestCase {
         let server = try Server()
         let port = await server.start()
         defer { server.stop() }
-        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"),
+                                 governor: Self.steady())
         defer { control.disconnect() }
         var connects = 0
         control.observeConnected { connects += 1; return true }
@@ -148,7 +160,8 @@ final class ControlReconnectTests: XCTestCase {
         let server = try Server()
         let port = await server.start()
         defer { server.stop() }
-        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"),
+                                 governor: Self.steady())
         defer { control.disconnect() }
         var connects = 0
         control.observeConnected { connects += 1; return true }
@@ -167,7 +180,8 @@ final class ControlReconnectTests: XCTestCase {
         let server = try Server(answersPings: false)
         let port = await server.start()
         defer { server.stop() }
-        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"),
+                                 governor: Self.steady())
         defer { control.disconnect() }
         var connects = 0
         control.observeConnected { connects += 1; return true }
