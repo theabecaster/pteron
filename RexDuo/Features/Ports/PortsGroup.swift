@@ -186,13 +186,25 @@ struct PortRowFace: View {
                     .foregroundStyle(theme.fg.opacity(0.8))
                     .lineLimit(SidebarMetrics.lines(typeSize))
                 // The state follows the address on its line, so a narrow list cuts the state
-                // and never the address. At the accessibility sizes the line may wrap, as the
-                // title does: one line there cuts the address itself.
-                Text([row.entry.name, state].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(theme.chrome.tertiary)
-                    .lineLimit(SidebarMetrics.lines(typeSize))
+                // and never the address. At the accessibility sizes one line would cut the
+                // address itself: there the state has a line of its own, and each shrinks
+                // before it is cut.
+                if typeSize.isAccessibilitySize {
+                    ForEach([row.entry.name, state].compactMap { $0 }, id: \.self) { line in
+                        Text(line)
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(theme.chrome.tertiary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                    }
+                } else {
+                    Text([row.entry.name, state].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(theme.chrome.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -234,6 +246,27 @@ struct RestartQuestion: View {
     let confirm: () -> Void
     let cancel: () -> Void
 
+    @ViewBuilder private var buttons: some View {
+        Button(action: confirm) {
+            Text("Restart")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(theme.accent)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minHeight: 32)
+                .contentShape(Rectangle())
+        }
+        Button(action: cancel) {
+            Text("Cancel")
+                .font(.caption)
+                .foregroundStyle(theme.chrome.secondary)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minHeight: 32)
+                .contentShape(Rectangle())
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(PortRestartCopy.confirm(command))
@@ -244,21 +277,11 @@ struct RestartQuestion: View {
             Text(PortRestartCopy.detail)
                 .font(.caption2)
                 .foregroundStyle(theme.chrome.tertiary)
-            HStack(spacing: 20) {
-                Button(action: confirm) {
-                    Text("Restart")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(theme.accent)
-                        .frame(minHeight: 32)
-                        .contentShape(Rectangle())
-                }
-                Button(action: cancel) {
-                    Text("Cancel")
-                        .font(.caption)
-                        .foregroundStyle(theme.chrome.secondary)
-                        .frame(minHeight: 32)
-                        .contentShape(Rectangle())
-                }
+            // Side by side, or one over the other where the words don't fit on a line (the
+            // accessibility sizes): a button's word is never broken.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 20) { buttons }
+                VStack(alignment: .leading, spacing: 0) { buttons }
             }
             .buttonStyle(.plain)
         }
