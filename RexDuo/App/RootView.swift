@@ -33,6 +33,8 @@ struct RootView: View {
     @State private var bookFits: Bool?
     /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
     @State private var hostPool = TerminalHostPool()
+    /// Tab mode's rename alert and close confirmations, which the sidebar's list shows itself.
+    @State private var stripDialogs = SidebarActions()
     #if DEBUG
     @State private var simIndex = 0
     @State private var simKeyboard: CGFloat = 0
@@ -54,6 +56,7 @@ struct RootView: View {
                 if barColumn != column { barColumn = column }
             })
             .background(ParkWatcher(pool: hostPool))
+            .modifier(SidebarDialogs(actions: stripDialogs))
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)
@@ -190,7 +193,7 @@ struct RootView: View {
             let arr = Arrangement.decide(size: geo.size, division: division)
             NavigationStack {
                 SidebarSplit(arrangement: arr, theme: theme, navigation: prefs.navigation, open: $sidebar.open) {
-                    SidebarView(mode: $sidebar.mode, onSelect: { _ in sidebar.tabShown(inline: arr.inline) })
+                    SidebarView(mode: $sidebar.mode, onSelect: { _ in writeSidebar { $0.tabShown(inline: arr.inline) } })
                         // A hidden sidebar reads no port: its Ports group catches up when it shows.
                         .environment(\.sidebarShown, sidebar.open)
                 } tab: {
@@ -207,22 +210,26 @@ struct RootView: View {
                 .safeAreaPadding(.bottom, keyboardPad)
                 .ignoresSafeArea(.keyboard)
                 .background(theme.chrome.canvas.ignoresSafeArea())
-                .background(EdgeReveal(enabled: !sidebar.open) { revealSidebar() })
+                .background(EdgeReveal(enabled: !sidebar.open && prefs.navigation == .sidebar) { revealSidebar() })
                 // Only where the system has a vertical bar: the toggle and the tab's actions go there.
                 // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
                 .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
                     if barEdge != nil {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button { toggleSidebar() } label: {
-                                Label(sidebar.open ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                            if TabActions.barLeading(prefs.navigation) == .sessions {
+                                SessionsBarItem(theme: theme) { stripRoutes.run($0) }
+                            } else {
+                                Button { toggleSidebar() } label: {
+                                    Label(sidebar.open ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                                }
                             }
                         }
                     }
                 }
             }
             // Standing as a tent, the agent board covers all of it (`TentBoard`).
-            .modifier(TentBoard(division: division, size: geo.size, inline: arr.inline, fills: fills, sidebar: $sidebar,
+            .modifier(TentBoard(division: division, size: geo.size, inline: arr.inline, fills: fills, sidebar: boardSidebar,
                                 pool: hostPool, keyboardHeight: keyboardHeight, theme: theme))
             // The palette, over the tab and the sidebar, while it is open; nothing while closed.
             .modifier(GoToOverlay(theme: theme, narrow: !arr.inline, division: division, keyboardPad: keyboardHeight))
@@ -240,6 +247,8 @@ struct RootView: View {
             // The tab was measured after a launch in book mode, or the window is wide again.
             .onChange(of: bookFits) { _, _ in bookObserved(division) }
             .onChange(of: inline) { _, _ in bookObserved(division) }
+            // Back from tab mode: book mode may have come or gone meanwhile.
+            .onChange(of: prefs.navigation) { _, _ in bookObserved(division) }
         }
     }
 
@@ -271,6 +280,8 @@ struct RootView: View {
 
     @discardableResult
     private func bookChanged(_ book: Bool) -> BookSidebar.Action? {
+        // Tab mode has no sidebar for book mode to collapse, and leaves its state alone.
+        guard prefs.navigation == .sidebar else { return nil }
         let action = bookSidebar.update(book: book, fits: bookFits, open: sidebar.open, inline: inline)
         switch action {
         case .collapse: sidebar.open = false
@@ -326,11 +337,11 @@ struct RootView: View {
             if let cur = model.current {
                 WindowScreen(server: cur.server, sessionID: cur.view.sessionID, windowID: cur.window.id,
                              mode: mode, sidebarVisible: sidebarBinding, onOpen: open,
-                             onBookFits: { if bookFits != $0 { bookFits = $0 } })
+                             onBookFits: { if bookFits != $0 { bookFits = $0 } }, strip: stripRoutes)
                     .overlay { TabOfflineOverlay(server: cur.server, sidebarVisible: sidebarBinding) }
                     .transition(.opacity)
             } else {
-                EmptyState(sidebarVisible: sidebarBinding)
+                EmptyState(sidebarVisible: sidebarBinding, strip: stripRoutes)
                     .transition(.opacity)
             }
         }
@@ -341,6 +352,22 @@ struct RootView: View {
 
     private var sidebarBinding: Binding<Bool> {
         Binding(get: { sidebar.open }, set: { if $0 != sidebar.open { toggleSidebar() } })
+    }
+
+    /// Every change to the sidebar's state from here: in tab mode there is none
+    /// (`SidebarState.write`), so the sidebar comes back as it was left.
+    private func writeSidebar(_ change: (inout SidebarState) -> Void) {
+        sidebar.write(in: prefs.navigation, change)
+    }
+
+    /// The sidebar as the agent board sees it. In tab mode the board reads it and changes nothing.
+    private var boardSidebar: Binding<SidebarState> {
+        Binding(get: { sidebar }, set: { new in writeSidebar { $0 = new } })
+    }
+
+    /// What tab mode's strip and the vertical bar's Sessions item run.
+    private var stripRoutes: StripRoutes {
+        StripRoutes(model: model, dialogs: stripDialogs, open: show)
     }
 
     // MARK: Commands
@@ -370,6 +397,14 @@ struct RootView: View {
         switch r.command {
         case .newSession: newSession()
         case .toggleSidebar, .toggleAgents:
+            // Tab mode: the agents are a sheet, and there is no sidebar to toggle.
+            guard prefs.navigation == .sidebar else {
+                if r.command == .toggleAgents {
+                    Haptic.tap()
+                    model.showAgents()
+                }
+                return
+            }
             Haptic.tap()
             _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()
@@ -390,12 +425,14 @@ struct RootView: View {
 
     /// The toggle button, the shortcut and the menu command: show or hide the sidebar, in any posture.
     private func toggleSidebar() {
+        guard prefs.navigation == .sidebar else { return }
         Haptic.tap()
         sidebar.toggle()
     }
 
     /// The left-edge swipe brings the sidebar back.
     private func revealSidebar() {
+        guard prefs.navigation == .sidebar else { return }
         Haptic.threshold()
         sidebar.reveal()
     }
@@ -445,7 +482,7 @@ struct RootView: View {
     /// Selects a tab and puts it on screen: a drawer closes so the tab shows.
     private func show(_ sel: Selection) {
         open(sel)
-        sidebar.tabShown(inline: inline)
+        writeSidebar { $0.tabShown(inline: inline) }
     }
 
     /// Opens a tab (tab overview, title menu, tab swipes, waiting pill) in place.
@@ -459,9 +496,31 @@ struct EmptyState: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
+    @Environment(\.verticalSizeClass) private var vSize
+    @Environment(\.verticalBarEdge) private var barEdge
     @Binding var sidebarVisible: Bool
+    /// Tab mode: what the strip's session chip and waiting pill run.
+    var strip: StripRoutes?
 
     var body: some View {
+        if prefs.navigation == .tabs {
+            // The strip stays above whatever fills the tab's place, so every session and
+            // machine is a tap away with no tab on screen, also while this machine is down.
+            let theme = prefs.theme(for: scheme)
+            VStack(spacing: 0) {
+                TabStrip(target: nil, bar: barEdge != nil, height: vSize == .compact ? 34 : 44, theme: theme,
+                         actions: StripActions(jump: { strip?.jump($0) }, sessions: { strip?.run($0) })) {
+                    EmptyView()
+                }
+                content
+            }
+            .background(theme.chrome.canvas.ignoresSafeArea())
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         if let down = downServer {
             OfflineScreen(server: down, sidebarVisible: $sidebarVisible)
         } else {
@@ -498,6 +557,9 @@ struct EmptyState: View {
                     .font(.footnote)
                     .foregroundStyle(theme.chrome.secondary)
                     .frame(minWidth: 200, minHeight: 44)
+            } else if prefs.navigation == .tabs {
+                Button("Change Session") { strip?.changeSession() }
+                    .frame(minHeight: 44)
             } else if !sidebarVisible {
                 Button("Show Sidebar") { sidebarVisible = true }
                     .frame(minHeight: 44)
@@ -511,7 +573,9 @@ struct EmptyState: View {
         if model.servers.isEmpty {
             return "On your computer, run `rex server tailscale pair`, then scan the code it shows."
         }
-        if model.servers.contains(where: { $0.phase == .online }) { return "Pick a tab in the sidebar." }
+        if model.servers.contains(where: { $0.phase == .online }) {
+            return prefs.navigation == .tabs ? "Pick a tab above." : "Pick a tab in the sidebar."
+        }
         return "Connecting to Rex…"
     }
 }
@@ -520,6 +584,8 @@ struct EmptyState: View {
 /// read-only, until the server is back and its sessions have reloaded. Its own view, so only it
 /// re-renders when the server's phase changes.
 struct TabOfflineOverlay: View {
+    @Environment(Prefs.self) private var prefs
+    @Environment(\.verticalSizeClass) private var vSize
     let server: ServerConnection
     @Binding var sidebarVisible: Bool
 
@@ -530,6 +596,9 @@ struct TabOfflineOverlay: View {
                     .transition(.opacity)
             }
         }
+        // Tab mode: the offline screen starts below the strip, which stays in reach, so another
+        // machine's sessions are a tap away.
+        .padding(.top, prefs.navigation == .tabs ? (vSize == .compact ? 34 : 44) : 0)
         .animation(.easeInOut(duration: 0.35), value: server.showsOffline)
     }
 }

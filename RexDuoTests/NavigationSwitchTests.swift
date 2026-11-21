@@ -208,6 +208,122 @@ final class NavigationSwitchTests: XCTestCase {
         XCTAssertEqual(RenderCount.value(.tabStrips), after, "the strip is gone again")
     }
 
+    // MARK: The root
+
+    /// The root as the app draws it, wide enough for the sidebar to sit beside the tab.
+    private func showRoot(_ model: AppModel, width: CGFloat = 800) {
+        show(RootView().environment(model).environment(prefs), width: width)
+    }
+
+    /// Where the pane's terminal starts in the window: past the sidebar when it sits beside the tab.
+    private func paneMinX() throws -> CGFloat {
+        let host = try XCTUnwrap(terminal(in: window.rootViewController?.view))
+        return host.convert(host.bounds, to: window).minX
+    }
+
+    /// Sidebar, tabs, sidebar: nothing that happens in tab mode touches the sidebar. A tab
+    /// shown, Toggle Sidebar and cmd+. leave it open beside the tab and in Sessions mode, and
+    /// cmd+. opens the Agents sheet instead.
+    func testTabModeLeavesTheSidebarAsItWas() async throws {
+        let (model, s) = model()
+        model.selection = Selection(serverID: s.id, sessionID: "work", windowID: "w0")
+        showRoot(model)
+        await settle(12)
+        let beside = try paneMinX()
+        XCTAssertGreaterThanOrEqual(beside, SidebarWidth.standard, "the sidebar sits beside the tab")
+        XCTAssertEqual(prefs.sidebarMode, .sessions)
+
+        prefs.navigation = .tabs
+        await settle(12)
+        XCTAssertLessThan(try paneMinX(), 40, "the tab has the window")
+        model.perform(.toggleSidebar)
+        await settle()
+        model.perform(.toggleAgents)
+        await settle()
+        XCTAssertTrue(model.agentsShown, "cmd+. shows the agents in their sheet")
+        model.agentsShown = false
+        model.openRequest = OpenRequest(selection: Selection(serverID: s.id, sessionID: "work", windowID: "w2"))
+        await settle(12)
+        XCTAssertEqual(model.selection?.windowID, "w2")
+
+        prefs.navigation = .sidebar
+        await settle(12)
+        XCTAssertEqual(try paneMinX(), beside, "the sidebar is back where it was")
+        XCTAssertEqual(prefs.sidebarMode, .sessions, "and in the mode it had")
+    }
+
+    /// A sidebar that was hidden stays hidden through tab mode.
+    func testAHiddenSidebarComesBackHidden() async throws {
+        let (model, s) = model()
+        model.selection = Selection(serverID: s.id, sessionID: "work", windowID: "w0")
+        UserDefaults.standard.set("closed", forKey: "sidebar")
+        defer { UserDefaults.standard.removeObject(forKey: "sidebar") }
+        showRoot(model)
+        await settle(12)
+        let alone = try paneMinX()
+        XCTAssertLessThan(alone, 40)
+
+        prefs.navigation = .tabs
+        await settle(12)
+        model.perform(.toggleSidebar)
+        await settle()
+        prefs.navigation = .sidebar
+        await settle(12)
+        XCTAssertEqual(try paneMinX(), alone, "nothing opened it meanwhile")
+    }
+
+    /// In sidebar mode cmd+. is the sidebar's Agents mode, as it was: no sheet.
+    func testSidebarModeKeepsItsAgentsMode() async throws {
+        let (model, s) = model()
+        model.selection = Selection(serverID: s.id, sessionID: "work", windowID: "w0")
+        showRoot(model)
+        await settle(12)
+        model.perform(.toggleAgents)
+        await settle()
+        XCTAssertEqual(prefs.sidebarMode, .agents)
+        XCTAssertFalse(model.agentsShown)
+    }
+
+    /// With no tab on screen tab mode still draws the strip, for its session chip; sidebar mode
+    /// draws none.
+    func testTheStripStaysWithNoTabOnScreen() async throws {
+        let (model, _) = model()
+        showRoot(model, width: 402)
+        await settle(12)
+        let before = RenderCount.value(.tabStrips)
+        XCTAssertNil(terminal(in: window.rootViewController?.view), "no tab is on screen")
+        prefs.navigation = .tabs
+        await settle(12)
+        XCTAssertGreaterThan(RenderCount.value(.tabStrips), before)
+    }
+
+    /// In a short window the bar steps aside while the keyboard is up, in tab mode as in sidebar
+    /// mode, and the strip is back when the keyboard goes.
+    func testTypingInAShortWindowHidesTheStripAndHidingTheKeyboardBringsItBack() async throws {
+        let (model, s) = model()
+        prefs.navigation = .tabs
+        let screen = WindowScreen(server: s, sessionID: "work", windowID: "w0", mode: .narrow, sidebarVisible: .constant(false))
+            .environment(\.verticalSizeClass, .compact)
+        show(screen.environment(model).environment(prefs).environment(TerminalHostPool()), width: 600)
+        await settle(12)
+        func paneMinY() throws -> CGFloat {
+            let host = try XCTUnwrap(terminal(in: window.rootViewController?.view))
+            return host.convert(host.bounds, to: window).minY
+        }
+        let rest = try paneMinY()
+
+        let screenBounds = try XCTUnwrap(window.windowScene?.screen).bounds
+        let keyboard = CGRect(x: 0, y: screenBounds.maxY - 300, width: screenBounds.width, height: 300)
+        NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: window.windowScene?.screen,
+                                        userInfo: [UIResponder.keyboardFrameEndUserInfoKey: keyboard])
+        await settle(12)
+        XCTAssertEqual(try paneMinY(), rest - 34, "the 34 pt strip gave its rows to the pane")
+
+        NotificationCenter.default.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        await settle(12)
+        XCTAssertEqual(try paneMinY(), rest, "the strip is back")
+    }
+
     /// A title change in one tab draws that tab's chip again, and neither the strip nor the
     /// other chips.
     func testATitleChangeDrawsOnlyItsChip() async throws {

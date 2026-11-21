@@ -55,6 +55,8 @@ struct WindowScreen: View {
     var onOpen: (Selection) -> Void = { _ in }
     /// Whether this tab would be in book mode with the sidebar collapsed (`bookFits`).
     var onBookFits: (Bool?) -> Void = { _ in }
+    /// Tab mode: what the strip's chips and its session popover ask for (`StripRoutes`).
+    var strip: StripRoutes?
 
     @State private var renaming = false
     @State private var renameText = ""
@@ -761,11 +763,16 @@ struct WindowScreen: View {
                 Haptic.selection()
                 onOpen(Selection(serverID: server.id, sessionID: sessionID, windowID: id))
             },
-            chip: { action, id in if action == .close, id == windowID { requestCloseTab() } },
+            chip: { action, id in
+                // Closing the tab on screen shows its neighbor, as Close Tab does everywhere.
+                if action == .close, id == windowID { return requestCloseTab() }
+                strip?.run(action, tab: id, session: sessionID, server: server)
+            },
             newTab: { newTab() },
             unzoom: { toggleZoom() },
             stepPane: { dir in if let w = window { switchPane(w, by: dir) } },
-            jump: jump)
+            jump: jump,
+            sessions: { strip?.run($0) })
         return TabStrip(target: StripTarget(server: server, sessionID: sessionID, windowID: w?.id, block: block),
                         dots: dots, visible: visible, zoomed: zoomedHere, bar: barEdge != nil,
                         height: barHeight, theme: theme, actions: actions) {

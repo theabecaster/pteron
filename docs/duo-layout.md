@@ -45,8 +45,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
 - **Tab mode** (`NavigationStyle`, `Prefs.navigation`). The other way around the app, like the
   Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at its height,
   the tab strip (`TabStrip`). Settings doesn't offer the choice yet
-  (`NavigationStyle.isAvailable`): the strip's parts are drawn and laid out, and what its chips
-  and its session chip do comes with the change that sets it.
+  (`NavigationStyle.isAvailable`).
   - **A change applies at once.** `SidebarSplit` stops building the sidebar and gives the tab the
     window's width, and the tab's header draws the strip instead of the title bar. The tab stays
     the same view with the same panes and terminals (`NavigationSwitchTests`). On a wide window
@@ -69,6 +68,34 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     its sidebar row does, and cuts its title at 120 pt. A chip shows up to three pane icons.
   - **Crease.** In book mode the whole strip, New Tab included, ends 3 pt short of the crease,
     on the left page. Flat, it runs the bar's width as the title bar does.
+  - **Chips do** what the sidebar's tab rows do (`StripRoutes`). A tap shows the tab, and the
+    row of chips scrolls to keep the tab on screen in view. Touch and hold for Rename Tab…,
+    Move Left, Move Right, Close Tab and Close Other Tabs. A tab with an agent asks before it
+    closes, as everywhere; Close Other Tabs always asks. A move takes the sidebar drag's path:
+    the new order shows at once and is held for the server, and a server without
+    `session.move_window` offers no Move rows. Chips aren't dragged: a sideways drag scrolls
+    the row.
+  - **The session chip** opens the sessions in a popover (`SessionPopover`): each machine with
+    its status, "+" for a new session there and Reconnect while it is down; its sessions, a tap
+    away, with Rename Session… and Close Session… on the current one's menu; the computers
+    that aren't added; then Go to Anything…, Agents, Settings and Use Sidebar. A row that puts
+    up a sheet, an alert or the palette runs once the popover has closed.
+  - **Vertical bar.** Sessions takes the sidebar toggle's place and opens the same popover from
+    the item; nothing else in the bar moves, so it holds as many items as before
+    (`TabActions.verticalBar`). Back in sidebar mode the toggle is back.
+  - **Without the sidebar.** cmd+. and the board's "+K more" open the Agents sheet
+    (`AppModel.showAgents`). Toggle Sidebar does nothing and isn't in the palette; the swipe
+    from the left edge is off. With no tab on screen the strip stays, for its session chip,
+    and the screen says "Pick a tab above." with Change Session, which opens the palette's
+    sessions. A machine that is down shows its offline screen below the strip, so another
+    machine's sessions stay a tap away; its Show Sidebar is Change Session.
+  - **The sidebar is left as it was.** Nothing in tab mode writes whether it shows or which
+    mode it is in (`SidebarState.write`): not a tab that is shown, not book mode, not a key.
+    Back in sidebar mode it shows as before. Only two things differ: the list starts at its
+    top, and the tab on screen has its row, its session and machine opened if they were folded.
+  - **Typing in a short window** (a phone on its side) hides the strip with the keyboard, as
+    it hides the title bar, so the terminal keeps its rows. Hide Keyboard brings it back, and
+    the hardware keys work meanwhile.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Toggle Sidebar command and a swipe from

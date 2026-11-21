@@ -146,7 +146,7 @@ struct TabChipTests {
         let strip = StripLayout(.init(width: 402))
 
         // The tab on screen: the pane on screen decides its glyph, not the tab's top status.
-        let web = TabChip.of(view.windows[1], in: view, server: s, active: true, block: "desk-web-2", strip: strip)
+        let web = TabChip.of(view.windows[1], position: 2, count: 3, server: s, active: true, block: "desk-web-2", strip: strip)
         #expect(web.id == "web" && web.title == "web" && web.active)
         #expect(web.position == 2 && web.count == 3)
         #expect(web.icons == [.init(agent: nil), .init(agent: .claude), .init(agent: .claude)] && web.morePanes == 1)
@@ -154,11 +154,11 @@ struct TabChipTests {
         #expect(web.showsClose)
 
         // Any other tab: its top status, and no close button.
-        let hidden = TabChip.of(view.windows[1], in: view, server: s, active: false, block: nil, strip: strip)
+        let hidden = TabChip.of(view.windows[1], position: 2, count: 3, server: s, active: false, block: nil, strip: strip)
         #expect(hidden.badge == .status("blocked") && !hidden.showsClose)
-        let api = TabChip.of(view.windows[0], in: view, server: s, active: false, block: nil, strip: strip)
+        let api = TabChip.of(view.windows[0], position: 1, count: 3, server: s, active: false, block: nil, strip: strip)
         #expect(api.position == 1 && api.badge == .status("working") && api.icons == [.init(agent: .claude)])
-        let logs = TabChip.of(view.windows[2], in: view, server: s, active: false, block: nil, strip: strip)
+        let logs = TabChip.of(view.windows[2], position: 3, count: 3, server: s, active: false, block: nil, strip: strip)
         #expect(logs.badge == .status(nil) && logs.spoken == "logs, tab 3 of 3")
         // No revision is known for this server, so nothing says it can move a tab.
         #expect(!web.movable && web.menu == [.rename, .close, .closeOthers])

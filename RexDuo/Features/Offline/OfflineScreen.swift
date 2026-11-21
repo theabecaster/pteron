@@ -313,7 +313,13 @@ struct OfflineScreen: View {
     /// The tab's title bar, with the sidebar toggle, is under this screen.
     @ViewBuilder
     private func showSidebar(_ theme: TermTheme, height: CGFloat) -> some View {
-        if !sidebarVisible {
+        if prefs.navigation == .tabs {
+            // No sidebar to show: the Change Session palette lists every machine's sessions.
+            Button("Change Session") { model.perform(.goTo(.sessions)) }
+                .font(.footnote)
+                .foregroundStyle(theme.chrome.secondary)
+                .frame(minHeight: height)
+        } else if !sidebarVisible {
             Button("Show Sidebar") { sidebarVisible = true }
                 .font(.footnote)
                 .foregroundStyle(theme.chrome.secondary)

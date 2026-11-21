@@ -374,6 +374,17 @@ final class SidebarActions {
     var closing: Target?
     /// A tab with an agent in it: closing asks first.
     var closingTab: Target?
+    /// Close Other Tabs, from a tab chip's menu: exactly these tabs, as the session held them
+    /// at the tap.
+    var closingOthers: Others?
+
+    struct Others {
+        /// The tab that stays.
+        var target: Target
+        var tabs: [String]
+        /// An agent runs in one of them.
+        var agent: Bool
+    }
 
     func rename(_ t: Target, current: String) {
         renameText = current
@@ -387,8 +398,9 @@ final class SidebarActions {
     }
 }
 
-/// The rename alert and the close confirmations, driven by `SidebarActions`.
-private struct SidebarDialogs: ViewModifier {
+/// The rename alert and the close confirmations, driven by `SidebarActions`. The sidebar's list
+/// shows them, and in tab mode the root does, for the strip.
+struct SidebarDialogs: ViewModifier {
     @Bindable var actions: SidebarActions
 
     func body(content: Content) -> some View {
@@ -428,6 +440,18 @@ private struct SidebarDialogs: ViewModifier {
                 Button("Cancel", role: .cancel) { actions.closingTab = nil }
             } message: {
                 Text("The agent running there stops, on the Mac too.")
+            }
+            .confirmationDialog(actions.closingOthers.map { $0.tabs.count == 1 ? "Close 1 other tab?" : "Close \($0.tabs.count) other tabs?" } ?? "",
+                                isPresented: Binding(get: { actions.closingOthers != nil }, set: { if !$0 { actions.closingOthers = nil } }),
+                                titleVisibility: .visible, presenting: actions.closingOthers) { c in
+                Button(c.tabs.count == 1 ? "Close Other Tab" : "Close Other Tabs", role: .destructive) {
+                    let server = c.target.server, sid = c.target.sessionID
+                    Task { for tab in c.tabs { await server.closeWindow(sid, tab) } }
+                    actions.closingOthers = nil
+                }
+                Button("Cancel", role: .cancel) { actions.closingOthers = nil }
+            } message: { c in
+                if c.agent { Text("The agents running there stop, on the Mac too.") }
             }
     }
 }

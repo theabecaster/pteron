@@ -105,8 +105,13 @@ struct TentBoard: ViewModifier {
     private var live: some View {
         LiveBoard(theme: theme, onOpen: open, onMore: {
             Haptic.tap()
-            sidebar.mode = .agents
-            sidebar.open = true
+            if model.prefs.navigation == .tabs {
+                // No sidebar to list them in: the Agents sheet.
+                model.showAgents()
+            } else {
+                sidebar.mode = .agents
+                sidebar.open = true
+            }
             tent.dismiss()
         })
     }
@@ -242,6 +247,7 @@ private struct TentDriver: View {
             .onChange(of: model.lastCommand) { _, _ in tent.dismiss() }
             .onChange(of: sidebar.open) { _, open in if open { tent.dismiss() } }
             .onChange(of: model.showSettings) { _, on in if on { tent.dismiss() } }
+            .onChange(of: model.agentsShown) { _, on in if on { tent.dismiss() } }
             .onChange(of: model.showPairing) { _, on in if on { tent.dismiss() } }
             .onChange(of: phase) { _, _ in updateAwake() }
             .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in

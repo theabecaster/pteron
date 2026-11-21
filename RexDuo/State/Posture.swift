@@ -85,6 +85,14 @@ struct SidebarState: Equatable {
         }
     }
 
+    /// The root's way to change the sidebar: in tab mode nothing does. No sidebar is on screen
+    /// there, so a tab that is shown, a fold into book mode or a key leaves it as it was, and it
+    /// is back exactly so when the sidebar is.
+    mutating func write(in navigation: NavigationStyle, _ change: (inout SidebarState) -> Void) {
+        guard navigation == .sidebar else { return }
+        change(&self)
+    }
+
     /// Runs an app command that is the sidebar's. False for any other command.
     mutating func perform(_ command: RexCommand) -> Bool {
         switch command {

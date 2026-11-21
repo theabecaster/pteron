@@ -86,14 +86,7 @@ struct TabStrip<PaneMenu: View>: View {
             SessionChipSlot(target: target, form: layout.session, theme: theme, onAction: actions.sessions)
         case .chips:
             if let target, let session {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: StripLayout.gap) {
-                        ForEach(session.windows) { w in
-                            TabChipSlot(server: target.server, session: session, window: w, active: w.id == target.windowID,
-                                        block: target.block, layout: layout, theme: theme, actions: actions)
-                        }
-                    }
-                }
+                TabChips(target: target, session: session, layout: layout, theme: theme, actions: actions)
             }
         case .dots:
             if let block = target?.block {
@@ -144,8 +137,54 @@ private struct PaneCount: View {
     }
 }
 
-/// The session chip and its popover. Its own view, so the session's name, its waiting count
-/// and, while the popover is open, every server's sessions are read here and not by the strip.
+/// The session's tabs as chips, in a row that scrolls. The tab on screen is kept in view: the
+/// row scrolls to its chip when another tab shows, and when the tabs change order.
+private struct TabChips: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let target: StripTarget
+    let session: SessionView
+    let layout: StripLayout
+    let theme: TermTheme
+    let actions: StripActions
+
+    var body: some View {
+        // A move's new order shows at once, as in the sidebar (`PendingOrder`).
+        let ids = target.server.orderedWindowIDs(target.sessionID)
+        let windows = ids.compactMap { session.window($0) }
+        ScrollViewReader { scroll in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: StripLayout.gap) {
+                    ForEach(Array(windows.enumerated()), id: \.element.id) { n, w in
+                        TabChipSlot(server: target.server, window: w, position: n + 1, count: windows.count,
+                                    active: w.id == target.windowID, block: target.block, layout: layout, theme: theme,
+                                    actions: actions)
+                            .id(w.id)
+                    }
+                }
+            }
+            .onChange(of: InView(tab: target.windowID, order: ids, width: layout.chipsWidth), initial: true) { was, now in
+                guard let tab = now.tab else { return }
+                // The first layout, and a rotation or a fold, place the chip; only a change of
+                // tab or of order moves the row under the eye.
+                if was == now || was.width != now.width || reduceMotion {
+                    scroll.scrollTo(tab, anchor: .center)
+                } else {
+                    withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(tab, anchor: .center) }
+                }
+            }
+        }
+    }
+
+    /// What decides where the row rests.
+    private struct InView: Equatable {
+        var tab: String?
+        var order: [String]
+        var width: CGFloat
+    }
+}
+
+/// The session chip and its popover. Its own view, so the session's name and its waiting count
+/// are read here and not by the strip.
 private struct SessionChipSlot: View {
     @Environment(AppModel.self) private var model
     let target: StripTarget?
@@ -157,14 +196,63 @@ private struct SessionChipSlot: View {
     var body: some View {
         let chip = target.map { SessionChip.of($0.sessionID, server: $0.server, servers: model.servers.count, form: form) }
             ?? .none(form: form)
-        SessionChipView(chip: chip, theme: theme) { open = true }
-            .popover(isPresented: $open, arrowEdge: .top) {
-                SessionPopoverView(popover: SessionPopover(model), theme: theme) { action in
-                    open = false
-                    onAction(action)
-                }
-                .presentationCompactAdaptation(.popover)
+        SessionChipView(chip: chip, theme: theme) {
+            Haptic.tap()
+            open = true
+        }
+        .popover(isPresented: $open, arrowEdge: .top) {
+            SessionPopoverHost(theme: theme, close: { open = false }, onAction: onAction)
+                .environment(model)
+        }
+    }
+}
+
+/// The session popover's contents, for the session chip and for the vertical bar's Sessions
+/// item. It builds the rows in its own body, so the servers' sessions are read only while the
+/// popover is open, and the rows follow them meanwhile. A row's action closes the popover; one
+/// that puts something on screen runs once it has closed.
+struct SessionPopoverHost: View {
+    @Environment(AppModel.self) private var model
+    let theme: TermTheme
+    let close: () -> Void
+    let onAction: (SessionPopover.Action) -> Void
+
+    /// How long the popover takes to go, as the title menu waits.
+    static let closeTime: Duration = .milliseconds(350)
+
+    var body: some View {
+        SessionPopoverView(popover: SessionPopover(model), theme: theme) { action in
+            close()
+            guard action.presents else { return onAction(action) }
+            let run = onAction
+            Task { @MainActor in
+                try? await Task.sleep(for: Self.closeTime)
+                run(action)
             }
+        }
+        .presentationCompactAdaptation(.popover)
+    }
+}
+
+/// The vertical bar's first item in tab mode: Sessions, which opens the session chip's popover
+/// from the item. Drawn by the root, so it is there with no tab on screen.
+struct SessionsBarItem: View {
+    @Environment(AppModel.self) private var model
+    let theme: TermTheme
+    let onAction: (SessionPopover.Action) -> Void
+    @State private var open = false
+
+    var body: some View {
+        Button {
+            Haptic.tap()
+            open = true
+        } label: {
+            Label(TabAction.sessions.title, systemImage: TabAction.sessions.symbol)
+        }
+        .popover(isPresented: $open) {
+            SessionPopoverHost(theme: theme, close: { open = false }, onAction: onAction)
+                .environment(model)
+        }
     }
 }
 
@@ -172,8 +260,9 @@ private struct SessionChipSlot: View {
 /// tab draws only that chip again.
 private struct TabChipSlot: View {
     let server: ServerConnection
-    let session: SessionView
     let window: WindowInfo
+    let position: Int
+    let count: Int
     let active: Bool
     let block: String?
     let layout: StripLayout
@@ -184,7 +273,8 @@ private struct TabChipSlot: View {
         #if DEBUG
         let _ = RenderCount.bump(.tabChips)
         #endif
-        let chip = TabChip.of(window, in: session, server: server, active: active, block: block, strip: layout)
+        let chip = TabChip.of(window, position: position, count: count, server: server, active: active, block: block,
+                              strip: layout)
         let width = active ? layout.activeChip : layout.chip
         TabChipView(chip: chip, theme: theme, onTap: { actions.pick(chip.id) }, onAction: { actions.chip($0, chip.id) })
             .frame(minWidth: width.lowerBound, maxWidth: width.upperBound, maxHeight: .infinity)

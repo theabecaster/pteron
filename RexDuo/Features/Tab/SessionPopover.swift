@@ -20,6 +20,15 @@ struct SessionPopover: Equatable {
         case goTo, agents, settings
         /// Back to the sidebar: sets the one setting, `Prefs.navigation`.
         case useSidebar
+
+        /// The action puts up a sheet, an alert or the palette. Those wait until the popover
+        /// has closed: a sheet can't open over it, and the palette's field wants the keyboard.
+        var presents: Bool {
+            switch self {
+            case .add, .renameSession, .closeSession, .goTo, .agents, .settings: true
+            case .open, .newSession, .reconnect, .useSidebar: false
+            }
+        }
     }
 
     /// A machine's connection, as its heading says it.

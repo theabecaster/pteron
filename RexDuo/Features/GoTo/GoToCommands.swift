@@ -31,7 +31,8 @@ enum GoToCommands {
     static func portKey(_ server: UUID, _ row: String) -> String { "port:\(server.uuidString):\(row)" }
     static let portKeywords = "ports browser page web server preview"
 
-    static func add(_ servers: [ServerConnection], target: GoToTarget?, waitingCount: Int, into copy: inout GoToSource.Copy) {
+    static func add(_ servers: [ServerConnection], target: GoToTarget?, waitingCount: Int,
+                    navigation: NavigationStyle = .sidebar, into copy: inout GoToSource.Copy) {
         let targetServer = target.flatMap { t in servers.first { $0.id == t.serverID } }
         let server = targetServer ?? servers.first { $0.phase == .online } ?? servers.first
         let keymap = server?.keymap
@@ -50,6 +51,8 @@ enum GoToCommands {
         // The app's own.
         for info in KeyActions.all where !excluded.contains(info.name) {
             guard case .command(let c)? = AppAction.resolve(info.name, nil, panes: support), !commands.contains(c) else { continue }
+            // Tab mode has no sidebar to toggle.
+            if navigation == .tabs, c == .toggleSidebar { continue }
             guard applies(c, target: target, server: targetServer, window: window, block: block, tabs: view?.windows ?? [],
                           support: support, waitingCount: waitingCount) else { continue }
             commands.append(c)

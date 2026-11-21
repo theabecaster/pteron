@@ -101,7 +101,8 @@ final class GoToModel {
         var copy = GoToSource.Copy()
         let waitingItems = Waiting.all(model.servers)
         GoToSource.places(model.servers, target: target, waiting: Set(waitingItems.map(\.id)), into: &copy, scope: .anything)
-        GoToCommands.add(model.servers, target: target, waitingCount: waitingItems.count, into: &copy)
+        GoToCommands.add(model.servers, target: target, waitingCount: waitingItems.count,
+                         navigation: model.prefs.navigation, into: &copy)
         items = copy.items
         runs = copy.runs
         // A waiting agent's row: its pane's, where its tab lists panes, else its tab's.

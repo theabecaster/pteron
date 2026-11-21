@@ -124,13 +124,15 @@ extension TabChip {
     /// The chip of `window` as the server has it now. Call it in the chip's own view, so a
     /// status or title change in one tab draws only that chip again.
     ///
-    /// - Parameter block: the pane on screen, for the active chip's status.
+    /// - Parameters:
+    ///   - position: the tab's place among the session's tabs as the strip orders them, from 1.
+    ///   - block: the pane on screen, for the active chip's status.
     @MainActor
-    static func of(_ window: WindowInfo, in session: SessionView, server: ServerConnection, active: Bool,
+    static func of(_ window: WindowInfo, position: Int, count: Int, server: ServerConnection, active: Bool,
                    block: String?, strip: StripLayout?) -> TabChip {
         let status = active ? block.flatMap { server.meta[$0]?.topStatus?.state } : server.windowStatus(window)?.state
         return TabChip(id: window.id, title: WindowTitle.of(window, server: server), active: active,
-                       position: (session.windows.firstIndex { $0.id == window.id } ?? 0) + 1, count: session.windows.count,
+                       position: position, count: count,
                        panes: window.allBlocks.map { server.meta[$0.id]?.agentKind },
                        status: status, progress: active ? [] : bars(window, server, status),
                        waking: server.waking,
