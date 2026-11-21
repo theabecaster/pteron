@@ -130,6 +130,8 @@ final class GoToCenter {
     /// switches scope and keeps the text. Never while the tent board shows.
     func open(_ scope: GoToScope, target: GoToTarget?, prompt: PalettePrompt? = nil) {
         guard !model.boardShown else { return }
+        // The palette lists every computer: none waits its turn once it is asked for.
+        model.startAllWaiting()
         if let s = model.goTo {
             if let prompt { s.showPrompt(prompt) } else if s.prompt == nil { s.switchScope(scope) }
             return

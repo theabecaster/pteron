@@ -215,6 +215,9 @@ final class ServerConnection: Identifiable {
     /// Called when the control connection's state changed: what `TunnelSuspicion` reads may
     /// have changed with it. Set by `AppModel`.
     @ObservationIgnored var linkChanged: (@MainActor () -> Void)?
+    /// The user asked something of this computer (Try Again, Reconnect, a pull to refresh, a
+    /// new session, opening it): at a launch it starts now instead of waiting its turn.
+    @ObservationIgnored var wanted: (@MainActor () -> Void)?
     /// Called when a sync has the sessions and tabs in for the first time on a connection.
     @ObservationIgnored var firstSynced: (@MainActor () -> Void)?
     /// The connection dropped around a trip to the background and is being made again, while
@@ -689,6 +692,7 @@ final class ServerConnection: Identifiable {
 
     /// Try Again: retry now, with `retrying` set until the attempt ends.
     func retryNow() {
+        wanted?()
         guard phase != .online else { return }
         retrying = true
         retryStarted = Date()
@@ -709,6 +713,7 @@ final class ServerConnection: Identifiable {
     /// Reconnect from the sidebar: a fresh connection when online, else a retry that keeps the
     /// offline screen steady.
     func reconnect() {
+        wanted?()
         if control.state == .connected {
             stop()
             start()
@@ -740,6 +745,7 @@ final class ServerConnection: Identifiable {
     /// only when `retry` says so: a pull tries one server that is down, not all of them
     /// (`AppModel.refresh`).
     func refresh(retry: Bool = true) async {
+        if retry { wanted?() }
         if control.state == .connected {
             await bootstrap()
         } else {
@@ -1089,6 +1095,7 @@ final class ServerConnection: Identifiable {
 
     @discardableResult
     func createSession(label: String?) async -> String? {
+        wanted?()
         var p: JSONObject = ["initial_windows": [["layout": ["block": ["flavor": "com.superlogical.terminal.shell"]]]]]
         if let label, !label.isEmpty { p["label"] = label }
         guard let r = await act("create the session", session: nil, { try await self.control.call("session.create", p) }),

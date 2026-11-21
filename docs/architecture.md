@@ -376,8 +376,11 @@ badge, no prompt, nothing made or sent until the tap.
 - **What a tap does:** `ConnectionDiagnostics.report` builds one text: the connection log's
   export, then the crash and hang reports, newest first. `writeShareFile` writes it to a folder
   of its own in the temporary directory, and the system's share sheet opens with that file. The
-  user picks where it goes. The file is removed when the sheet closes, and before the next one
-  is written. A second tap while one is being written makes no second file.
+  user picks where it goes. The file is removed when the sheet closes (also when the share
+  sheet ends by itself), when About is left while it is being written, before the next one is
+  written, and at the next launch if the app was killed meanwhile. The reports are read and
+  the file written off the main actor. A second tap while one is being written makes no
+  second file.
 - **Crash and hang reports:** `DiagnosticReportsSubscriber` takes MetricKit's diagnostic
   payloads from launch, and `DiagnosticReports` keeps the newest 20 as files in
   `Application Support/Diagnostics/Reports`, left out of backups; a report over 512 KB is not
@@ -402,13 +405,20 @@ On Wi-Fi a launch and a sync are as they always were, except for which computer 
 The caps below apply only on an expensive path (cellular or a hotspot), read from the same word
 the cellular deadlines go by (`RexControl.onExpensivePath`).
 
-- **A launch starts one computer first** (`StartStagger`, `AppModel.startInTurns`): the one of
-  the tab the launch opens (the tab viewed last), in the same turn as before, with no wait
-  ahead of it. The others start when it has settled: its first sync has the sessions and tabs
-  in, or its connection failed, or it went dormant (`AppModel.leadReported`). A second is the
-  longest they wait. They then start 250 to 500 ms apart. Nobody waits when there is no tab to
-  open, when the user opens a computer, after a return from the background or when the list
-  changes; nothing starts in the background. It is one scheduled wait.
+- **A cellular launch starts one computer first** (`StartStagger`, `AppModel.startInTurns`): the
+  one of the tab the launch opens (the tab viewed last), in the same turn as before, with no
+  wait ahead of it. The others start when it has settled: its first sync has the sessions and
+  tabs in, or its connection failed, or it went dormant (`AppModel.leadReported`). A second is
+  the longest they wait. They then start 250 to 500 ms apart. The path is asked once, when the
+  scene shows (`launchPathExpensive`): on Wi-Fi, and when the path has not been reported by
+  then, every computer starts at once, as it always did. Nobody waits when there is no tab to
+  open, after a return from the background or when the list changes; nothing starts in the
+  background. It is one scheduled wait.
+- **Whatever the user asks of a computer, it does not wait its turn** (`AppModel.startNow`,
+  `startAllWaiting`): opening it, a tapped notification, widget row or `rexduo:` pane link, an
+  action from the watch or on a notification, opening one of its panes, Try Again, Reconnect
+  and a new session start that computer in the same turn; the link to whoever waits, the
+  palette and a pull to refresh start every computer.
 - **The session on screen is read first**, on every path (`ServerConnection.shownFirst`).
 - **On cellular a sync's reads go four at a time** (`CallGate`, `ServerConnection.syncCalls`,
   `ReconnectPolicy.syncCalls`): one `session.attach` for each session, then `program_status`,
@@ -419,15 +429,16 @@ the cellular deadlines go by (`RexControl.onExpensivePath`).
   on the next one. What the user does never waits at the gate.
 - **On Wi-Fi nothing goes through the gate**: every attach in one turn, then every pane's reads
   in one turn, and the ports' reads at their own width of four (`portReadWidth`).
-- **On cellular one fresh snapshot at a time for a host** (`SnapshotTurns`,
-  `TerminalStream.fullStart`): a pane's fresh start takes a turn, the pane on screen first, a
-  pane that streams unseen behind those (`TerminalStream.isOnScreen`), and starts when the one
-  before has its snapshot. A RESUME takes no turn. The turn is given back when the snapshot
-  ends or fails, when the start fails, on `stop()`, `park()` and `restart()`, when the socket
-  drops, when the host dies and in the background; leaving cellular ends every turn; and a
-  turn ends by itself after the cellular connect deadline (15 s), with the stream left to go
-  on beside the next (`StreamSnapshotTurnTests`). On Wi-Fi the panes of a split tab start
-  together.
+- **On cellular the unseen panes of a host get their fresh snapshots one at a time**
+  (`SnapshotTurns`, `TerminalStream.fullStart`): the fresh start of a pane that streams unseen
+  (`TerminalStream.isOnScreen` false) takes a turn and starts when the one before has its
+  snapshot. A pane on screen never takes a turn and never waits: it starts at once, whoever
+  holds the turn, and a pane that comes on screen while it waits starts then. A RESUME takes
+  no turn. The turn is given back when the snapshot ends or fails, when the start fails, on
+  `stop()`, `park()` and `restart()`, when the socket drops, when the host dies and in the
+  background; leaving cellular ends every turn; and a turn ends by itself after the cellular
+  connect deadline (15 s), with the stream left to go on beside the next
+  (`StreamSnapshotTurnTests`). On Wi-Fi nobody takes a turn.
 - **What cellular pays for the gate:** a sync of S sessions and P panes takes about
   (S + 3 P) / 4 round trips for its reads where it took two, and the app shows its tabs when
   every session is read (`synced`), so on cellular the tabs come about S / 4 round trips

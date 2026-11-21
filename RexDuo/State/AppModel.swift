@@ -458,6 +458,10 @@ final class AppModel {
             return server.sessions.first?.id
         }
         network?.onChange = { [weak self] _ in self?.networkChanged() }
+        launchPathExpensive = { [weak self] in
+            guard let network = self?.network, network.isKnown else { return nil }
+            return network.snapshot.expensive
+        }
         // The path the app started on: where route changes are counted from, and what gives
         // the connections their deadlines (Wi-Fi or cellular) before any change of path.
         network?.onStart = { [weak self] snap in
@@ -499,6 +503,7 @@ final class AppModel {
     /// tries, else the likeliest to answer); the others keep their schedules, and follow its
     /// welcome if the breaker held them.
     func refresh() async {
+        startAllWaiting()
         let target = reconnect.refreshTarget()
         await withTaskGroup(of: Void.self) { g in
             for s in servers {
@@ -532,6 +537,10 @@ final class AppModel {
             s.linkChanged = { [weak self, weak s] in
                 self?.checkTunnel()
                 if let s { self?.leadReported(s.id, synced: s.synced, failed: s.control.failedNow, dormant: s.control.dormant) }
+            }
+            // Whatever the user asks of a computer, it does not wait its turn for it.
+            s.wanted = { [weak self, weak s] in
+                if let s { self?.startNow(s.id) }
             }
             s.firstSynced = { [weak self, weak s] in
                 if let s { self?.leadReported(s.id, synced: true, failed: false, dormant: false) }
@@ -582,6 +591,19 @@ final class AppModel {
         try? await Task.sleep(for: .milliseconds(Int(($0 * 1000).rounded())))
     }
 
+    /// Whether the launch is on cellular or a hotspot, asked once when the scene shows; nil
+    /// while the path has not been reported. Tests answer for it.
+    @ObservationIgnored var launchPathExpensive: @MainActor () -> Bool? = { nil }
+
+    /// Starts every computer that still waits its turn, now: the user asked for something that
+    /// may be on any of them (the waiting agent, the palette, a pull to refresh).
+    func startAllWaiting() {
+        leadWait?.cancel()
+        lead = nil
+        laterTurns = []
+        for id in Array(waitingToStart) { startNow(id) }
+    }
+
     /// The computer the others wait for, until it has settled or a second has passed.
     @ObservationIgnored private var lead: UUID?
     /// The others, in the order they start, once the first has settled.
@@ -592,8 +614,10 @@ final class AppModel {
     /// The launch's starts: the computer of the tab it opens at once, the others when it has
     /// settled or after a second, whichever comes first, one at a time.
     private func startInTurns() {
-        let plan = StartStagger.plan(servers: servers.map(\.id), first: (selection ?? prefs.lastSelection)?.serverID,
-                                     unit: { Double.random(in: 0...1) })
+        // Turns are for a cellular launch only. On Wi-Fi, and when the path has not been
+        // reported yet, every computer starts at once, as it always did.
+        let first = launchPathExpensive() == true ? (selection ?? prefs.lastSelection)?.serverID : nil
+        let plan = StartStagger.plan(servers: servers.map(\.id), first: first, unit: { Double.random(in: 0...1) })
         waitingToStart = Set(plan.later.map(\.id))
         laterTurns = plan.later
         lead = plan.later.isEmpty ? nil : plan.now.first
@@ -903,12 +927,7 @@ final class AppModel {
         reconnect.select(selection.flatMap { sel in servers.first { $0.id == sel.serverID } }?.control)
         // Back from the background: whoever still waited a turn starts now. At a launch they
         // keep their turns: `resume` would start them all at once.
-        if fromBackground {
-            leadWait?.cancel()
-            lead = nil
-            laterTurns = []
-            for id in Array(waitingToStart) { startNow(id) }
-        }
+        if fromBackground { startAllWaiting() }
         for s in servers where !waitingToStart.contains(s.id) { s.resume(fromBackground: fromBackground) }
         forward.becameActive()
         push.becameActive()
@@ -953,6 +972,9 @@ final class AppModel {
     /// without the device id, as the one that reads who a computer is.
     func actionChannel(_ action: WatchAction) -> ActionChannel? {
         guard let server = servers.first(where: { $0.id.uuidString == action.target.server }) else { return nil }
+        // An action for a computer that waits its turn at a launch: it waits no longer. Not in
+        // the background, where nothing starts: the short connection below serves there.
+        if !inBackground { startNow(server.id) }
         if mayConnect, !inBackground, server.control.state == .connected { return LiveActionChannel(server) }
         // A computer that has stopped answering, or a tunnel that looks down: no socket is
         // opened for the action, and it is answered as one that couldn't reach the computer.
@@ -1008,6 +1030,7 @@ final class AppModel {
     /// the tab holding the block. False while the session or tab isn't loaded.
     @discardableResult
     func openPane(_ s: ServerConnection, session sid: String, window wid: String?, block bid: String?) -> Bool {
+        startNow(s.id)
         guard let v = s.views[sid] else { return false }
         let w = v.window(wid) ?? bid.flatMap { v.windowContaining(block: $0) } ?? (wid == nil && bid == nil ? v.activeWindow : nil)
         guard let w else { return false }
@@ -1038,6 +1061,12 @@ final class AppModel {
         // To check on a simulator that a link reached the app: `eventMessage CONTAINS "OPEN_LINK"`.
         NSLog("OPEN_LINK %@ %@", link.name, linksReleased ? "run" : "queued")
         #endif
+        // What the link asks for does not wait a turn at a launch: its computer starts now, or
+        // every one for a link to whoever waits.
+        switch link {
+        case .pane(let pane): if let id = UUID(uuidString: pane.server) { startNow(id) }
+        case .plain(let plain): if plain == .waiting { startAllWaiting() }
+        }
         guard linksReleased else {
             // `open` asks for nothing, so it never replaces a link that is waiting.
             if link != .plain(.open) { pendingLink = link }
@@ -1129,6 +1158,7 @@ final class AppModel {
     /// Returns the step that ended the wait.
     @discardableResult
     func openWaiting(clock: OpenWaiting.Clock = .system, poll: TimeInterval = 0.1) async -> OpenWaiting.Step {
+        startAllWaiting()
         var wait = OpenWaiting(began: clock.now(), arrived: Date(), before: selection)
         let landings = autoSelects
         while true {
@@ -1179,6 +1209,7 @@ final class AppModel {
     /// its session has loaded. Anything else does nothing. Returns the step that ended it.
     @discardableResult
     func openPane(link: PaneLink, clock: OpenWaiting.Clock = .system, poll: TimeInterval = 0.1) async -> OpenPaneLink.Step {
+        if let id = UUID(uuidString: link.server) { startNow(id) }
         let wait = OpenPaneLink(began: clock.now(), before: selection)
         let landings = autoSelects
         // Read once: what the widget showed when it was tapped.

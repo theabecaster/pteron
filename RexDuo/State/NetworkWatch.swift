@@ -16,6 +16,8 @@ final class NetworkWatch {
     @ObservationIgnored private let monitor = NWPathMonitor()
     @ObservationIgnored private let override: NetworkSnapshot?
     @ObservationIgnored private var primed = false
+    /// The path has been reported at least once: `snapshot` is the phone's, not the placeholder.
+    var isKnown: Bool { primed }
 
     /// `log`: the connection log, which gets a line when the path's facts change.
     init(log: ConnectionLog? = nil) {

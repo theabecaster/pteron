@@ -1,4 +1,5 @@
 import Foundation
+import GlanceModel
 import Testing
 @testable import RexDuo
 
@@ -51,7 +52,7 @@ import Testing
     }
 
     /// Three saved computers, the tab viewed last on the second, and every start recorded.
-    private func model() throws -> (AppModel, Waits, started: () -> [String]) {
+    private func model(cellular: Bool? = true) throws -> (AppModel, Waits, started: () -> [String]) {
         let suite = "stagger-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -65,6 +66,8 @@ import Testing
         m.startServer = { record.names.append($0.config.name) }
         let waits = Waits()
         m.staggerSleep = { await waits.wait($0) }
+        // A cellular launch: the only one that takes turns.
+        m.launchPathExpensive = { cellular }
         return (m, waits, { record.names })
     }
 
@@ -182,5 +185,103 @@ import Testing
         waits.pass()
         await turn()
         #expect(started().count == after, "the old turns start nobody")
+    }
+
+    // MARK: Only a cellular launch takes turns
+
+    /// On Wi-Fi, and when the path has not been reported yet, a launch is as it always was:
+    /// every computer starts in the same turn, in Settings' order, and no wait is asked for.
+    @Test(arguments: [false, nil] as [Bool?])
+    func onWiFiOrWithThePathUnknownEveryComputerStartsAtOnce(_ path: Bool?) async throws {
+        let (m, waits, started) = try model(cellular: path)
+        m.sceneVisible()
+        #expect(started() == ["desk", "laptop", "mini"])
+        #expect(m.waitingToStart.isEmpty)
+        await turn()
+        #expect(waits.asked.isEmpty)
+    }
+
+    // MARK: Whatever the user asks of a computer, it does not wait its turn
+
+    /// A cellular launch with the last tab on the second computer: the third waits its turn.
+    private func waiting() throws -> (AppModel, ServerConnection, started: () -> [String]) {
+        let (m, _, started) = try model()
+        m.sceneVisible()
+        #expect(started() == ["laptop"])
+        return (m, try #require(m.servers.last), started)
+    }
+
+    @Test func aPaneLinkStartsItsComputerInTheSameTurn() throws {
+        let (m, mini, started) = try waiting()
+        m.openLink(PaneLink(server: mini.id.uuidString, session: "s", window: "w", block: "b").url)
+        #expect(started() == ["laptop", "mini"], "a tapped notification or widget row")
+        #expect(m.waitingToStart.count == 1, "the other one keeps its turn")
+    }
+
+    @Test func openingAPaneLinkStartsItsComputerBeforeItWaitsForAnything() async throws {
+        let (m, mini, started) = try waiting()
+        let link = PaneLink(server: mini.id.uuidString, session: "s", window: "w", block: "b")
+        let opening = Task { @MainActor in await m.openPane(link: link) }
+        await turn()
+        #expect(started() == ["laptop", "mini"])
+        opening.cancel()
+        _ = await opening.value
+    }
+
+    @Test func theLinkToWhoeverWaitsStartsEveryComputer() throws {
+        let (m, _, started) = try waiting()
+        m.openLink(DeepLink.waiting.url)
+        #expect(Set(started()) == ["laptop", "desk", "mini"])
+        #expect(m.waitingToStart.isEmpty)
+    }
+
+    @Test func thePlainOpenLinkStartsNobodyEarly() throws {
+        let (m, _, started) = try waiting()
+        m.openLink(DeepLink.open.url)
+        #expect(started() == ["laptop"])
+    }
+
+    @Test func anActionFromTheWatchStartsItsComputerInTheSameTurn() throws {
+        let (m, mini, started) = try waiting()
+        let target = WatchAction.Target(server: mini.id.uuidString, session: "s", block: "b", record: "r", fp: "f")
+        _ = m.actionChannel(WatchAction(id: "tap-1", kind: .enter, target: target))
+        #expect(started() == ["laptop", "mini"], "Enter or Interrupt from the watch, or on a notification")
+    }
+
+    @Test func openingAPaneOfAComputerStartsItInTheSameTurn() throws {
+        let (m, mini, started) = try waiting()
+        _ = m.openPane(mini, session: "s", window: nil, block: nil)
+        #expect(started() == ["laptop", "mini"], "a toast, the board, the palette's pick, a port's pane")
+    }
+
+    @Test(arguments: ["retry", "reconnect", "refresh", "new session"])
+    func askingAComputerForSomethingStartsItInTheSameTurn(_ what: String) async throws {
+        let (m, mini, started) = try waiting()
+        switch what {
+        case "retry": mini.retryNow()
+        case "reconnect": mini.reconnect()
+        case "refresh": Task { @MainActor in await mini.refresh() }
+        default: Task { @MainActor in _ = await mini.createSession(label: nil) }
+        }
+        await turn()
+        #expect(started() == ["laptop", "mini"], "\(what)")
+        for s in m.servers { s.stop() }
+    }
+
+    @Test func thePaletteAPullToRefreshAndTheWaitingAgentStartEveryComputer() async throws {
+        for what in ["all", "refresh", "waiting"] {
+            let (m, _, started) = try waiting()
+            let task: Task<Void, Never>?
+            switch what {
+            case "all": m.startAllWaiting(); task = nil
+            case "refresh": task = Task { @MainActor in await m.refresh() }
+            default: task = Task { @MainActor in _ = await m.openWaiting() }
+            }
+            await turn()
+            #expect(Set(started()) == ["laptop", "desk", "mini"], "\(what)")
+            #expect(m.waitingToStart.isEmpty)
+            task?.cancel()
+            for s in m.servers { s.stop() }
+        }
     }
 }
