@@ -581,7 +581,11 @@ final class StreamFenceTests: XCTestCase {
 
     func testAWakeOrAReturnInTheMiddleOfASnapshotSendsNothingBeforeItsEnd() async {
         let link = FakeLink()
-        let (s, sink, _) = await current(link)
+        let (s, sink, log) = await current(link)
+        // The held key's life does not run out in this test, however slow the machine: what
+        // drops the key here is the snapshot.
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
         s.restart()
         let live = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
         XCTAssertTrue(live, "the fresh stream is open and its snapshot has not come")

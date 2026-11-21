@@ -48,16 +48,29 @@ final class LinkDelayTests: XCTestCase {
     }
 
     func testABurstIsNotSpreadOut() async throws {
-        // Real waits here: each message is due one way after it arrived, so ten that arrived
-        // together take about one trip, not ten.
+        // Each message is due one way after it arrived, so ten that arrived together take one
+        // trip, not ten. The test's own clock: a wait moves it on by exactly what was asked.
+        final class Time { var now = ContinuousClock.now }
+        let time = Time(), waits = Waits()
         let inner = FakeSocket(.silent)
-        let s = DelayedStreamSocket(inner, delay: LinkDelay(roundTrip: .milliseconds(60)))
+        let s = DelayedStreamSocket(inner, delay: LinkDelay(roundTrip: .milliseconds(60)), sleep: { d in
+            waits.asked.append(d)
+            time.now += d
+            await Task.yield()
+        }, now: { time.now })
         for i in 0..<10 { inner.push([UInt8(i)]) }
-        let start = ContinuousClock.now
-        for _ in 0..<10 { _ = try await s.receive() }
-        let took = ContinuousClock.now - start
-        XCTAssertGreaterThanOrEqual(took, .milliseconds(25))
-        XCTAssertLessThan(took, .milliseconds(150))
+        // All ten are in and stamped before the first is taken.
+        var got: [UInt8] = []
+        let first = try await s.receive()
+        got.append(first?.first ?? 255)
+        for _ in 0..<50 { await Task.yield() }
+        let start = time.now
+        for _ in 1..<10 { got.append(try await s.receive()?.first ?? 255) }
+        XCTAssertEqual(got, (0..<10).map { UInt8($0) })
+        XCTAssertEqual(waits.asked.first, .milliseconds(30), "the first waits its one way")
+        // The nine behind it arrived while it waited or just after: together under one more trip.
+        XCTAssertLessThanOrEqual(time.now - start, .milliseconds(30))
+        XCTAssertLessThanOrEqual(waits.asked.reduce(.zero, +), .milliseconds(60), "one trip, not ten")
     }
 
     func testAFailureComesAfterTheMessagesBeforeIt() async throws {

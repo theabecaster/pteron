@@ -307,13 +307,30 @@ final class SleepLog {
     /// would otherwise let typing overtake every action at once, and the fence's two limits (how
     /// long held keys live, and its cap), which would otherwise end every fence at once.
     var real: Set<Duration> = [.milliseconds(1500), .seconds(1), .milliseconds(300)]
+    /// Waits that do not pass until the test says so (`release`): a test whose outcome must not
+    /// depend on how fast the machine is holds the wait that would race it.
+    var held: Set<Duration> = []
+    private var parked: [(Duration, CheckedContinuation<Void, Never>)] = []
+
+    /// Every held wait of `d` passes now.
+    func release(_ d: Duration) {
+        let due = parked.filter { $0.0 == d }
+        parked.removeAll { $0.0 == d }
+        for (_, c) in due { c.resume() }
+    }
 
     func attach(to stream: TerminalStream) {
         // The stream keeps the log alive.
         stream.sleep = { d in
             self.asked.append(d)
             self.onSleep?(d)
-            if self.real.contains(d) { try? await Task.sleep(for: d) } else { await Task.yield() }
+            if self.held.contains(d) {
+                await withCheckedContinuation { self.parked.append((d, $0)) }
+            } else if self.real.contains(d) {
+                try? await Task.sleep(for: d)
+            } else {
+                await Task.yield()
+            }
         }
     }
 

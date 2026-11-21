@@ -38,7 +38,8 @@ final class DelayedStreamSocket: StreamSocket {
     private let inner: any StreamSocket
     private let delay: LinkDelay
     private let sleep: @MainActor (Duration) async -> Void
-    private let clock = ContinuousClock()
+    /// The time; a test moves its own.
+    private let now: @MainActor () -> ContinuousClock.Instant
     private var opened = false
     private var arrived: [(Result<Data?, Error>, due: ContinuousClock.Instant)] = []
     private var waiter: CheckedContinuation<Void, Never>?
@@ -48,9 +49,11 @@ final class DelayedStreamSocket: StreamSocket {
     private var room: CheckedContinuation<Void, Never>?
 
     init(_ inner: any StreamSocket, delay: LinkDelay,
-         sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
+         sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+         now: @escaping @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.inner = inner
         self.delay = delay
+        self.now = now
         self.sleep = sleep
     }
 
@@ -69,7 +72,7 @@ final class DelayedStreamSocket: StreamSocket {
         let (result, due) = arrived.removeFirst()
         room?.resume()
         room = nil
-        let left = due - clock.now
+        let left = due - now()
         if left > .zero { await sleep(left) }
         return try result.get()
     }
@@ -78,12 +81,12 @@ final class DelayedStreamSocket: StreamSocket {
     private func pump() {
         guard !pumping, !failed else { return }
         pumping = true
-        Task { [weak self, inner, delay, clock] in
+        Task { [weak self, inner, delay] in
             while true {
                 let result: Result<Data?, Error>
                 do { result = .success(try await inner.receive()) } catch { result = .failure(error) }
                 guard let self else { return }
-                self.arrived.append((result, clock.now + delay.oneWay))
+                self.arrived.append((result, self.now() + delay.oneWay))
                 self.waiter?.resume()
                 self.waiter = nil
                 if case .failure = result {
