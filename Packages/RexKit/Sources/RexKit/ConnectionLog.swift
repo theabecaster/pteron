@@ -87,7 +87,7 @@ public final class ConnectionLog: @unchecked Sendable {
     }
 
     /// The log as text (`ConnectionJournal.text`): `servers` are the app's keys in the order it
-    /// lists them, and come out as "Server 1", "Server 2", …
+    /// lists them, and come out as "Computer 1", "Computer 2", …
     public func export(servers: [String]) async -> String {
         let exported = now()
         return await withCheckedContinuation { done in

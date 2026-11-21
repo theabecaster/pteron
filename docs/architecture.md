@@ -352,7 +352,7 @@ user shares.
 - **The privacy rule:** an event is numbers only (`ConnectionEvent` has no text field). No host
   name, tailnet name, address, URL, computer label, session or pane name, terminal content or
   token can be in the file or in the exported text. A server is a hash of its id (a random UUID),
-  salted with a number made on the device, and the export calls it "Server 1", "Server 2" in
+  salted with a number made on the device, and the export calls it "Computer 1", "Computer 2" in
   Settings' order; a failure keeps its codes and never its message or the server's close reason.
   `ConnectionLogTests.testNoNameOrAddressReachesTheFileOrTheExport` holds the rule. A new kind of
   event keeps it: add a number, never a string.

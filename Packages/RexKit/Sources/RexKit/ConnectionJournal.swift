@@ -96,16 +96,16 @@ struct ConnectionJournal: Equatable {
     // MARK: Export
 
     /// The log as text, oldest first, one event a line. `servers` are the app's keys in the order
-    /// the app lists them: they are named "Server 1", "Server 2", … A ring whose server is not in
-    /// the list (it was removed) is named "Former server 1", … No key appears in the text.
+    /// the app lists them: they are named "Computer 1", "Computer 2", … A ring whose server is not in
+    /// the list (it was removed) is named "Former computer 1", … No key appears in the text.
     func text(servers keys: [String], exported: Date) -> String {
         var names: [UInt64: String] = [0: "App"]
-        for (i, key) in keys.enumerated() where names[tag(key)] == nil { names[tag(key)] = "Server \(i + 1)" }
+        for (i, key) in keys.enumerated() where names[tag(key)] == nil { names[tag(key)] = "Computer \(i + 1)" }
         var former = 0
         for t in servers.keys.sorted(by: { (servers[$0]?.first?.time ?? 0) < (servers[$1]?.first?.time ?? 0) })
         where names[t] == nil {
             former += 1
-            names[t] = "Former server \(former)"
+            names[t] = "Former computer \(former)"
         }
         let stamp = ISO8601DateFormatter()
         stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

@@ -157,7 +157,7 @@ final class ConnectionLogTests: XCTestCase {
         for i in 0...ConnectionJournal.maxServers {
             var e = ConnectionEvent.connecting
             e.server = j.tag("server-\(i)")
-            // Server 3 was heard from longest ago.
+            // Computer 3 was heard from longest ago.
             e.time = i == 3 ? 1 : 100 + Int64(i)
             j.add(e)
         }
@@ -256,8 +256,8 @@ final class ConnectionLogTests: XCTestCase {
         let text = await last.export(servers: ["A"])
         XCTAssertEqual(text.components(separatedBy: "launch build=").count - 1, 13, "every launch is in it")
         XCTAssertTrue(text.contains("launch build=2611201913"))
-        XCTAssertTrue(text.contains("Server 1  closed timeout code=-1001"))
-        XCTAssertTrue(text.contains("Server 1  retry in=1000ms"))
+        XCTAssertTrue(text.contains("Computer 1  closed timeout code=-1001"))
+        XCTAssertTrue(text.contains("Computer 1  retry in=1000ms"))
         XCTAssertTrue(text.contains("events 28"))
     }
 
@@ -384,7 +384,7 @@ final class ConnectionLogTests: XCTestCase {
         let counts = await log.written()
         XCTAssertEqual(counts.appends + counts.rewrites, 0)
         let text = await log.export(servers: ["A"])
-        XCTAssertTrue(text.contains("Server 1  connecting"))
+        XCTAssertTrue(text.contains("Computer 1  connecting"))
     }
 
     // MARK: Export
@@ -405,13 +405,13 @@ final class ConnectionLogTests: XCTestCase {
         XCTAssertEqual(lines[2], "events 7")
         let body = lines.dropFirst(3).map { $0.split(separator: " ", maxSplits: 1).last.map(String.init) ?? "" }
         XCTAssertEqual(body.map { $0.trimmingCharacters(in: .whitespaces) }, [
-            "App              launch build=7",
-            "App              network satisfied=yes expensive=yes constrained=no tailnet=yes",
-            "Former server 1  connecting",
-            "Server 2         connecting",
-            "Server 1         connecting",
-            "Server 1         connected after=840ms",
-            "App              scene background",
+            "App                launch build=7",
+            "App                network satisfied=yes expensive=yes constrained=no tailnet=yes",
+            "Former computer 1  connecting",
+            "Computer 2         connecting",
+            "Computer 1         connecting",
+            "Computer 1         connected after=840ms",
+            "App                scene background",
         ])
         XCTAssertTrue(lines[3].hasPrefix("2026-11-18T"), "times are UTC with milliseconds: \(lines[3])")
         XCTAssertTrue(lines[3].contains(".001Z"))
@@ -471,7 +471,7 @@ final class ConnectionLogTests: XCTestCase {
             "connecting by=user",
             "stopped",
         ])
-        XCTAssertTrue(text.contains("  Server 1  connecting"))
+        XCTAssertTrue(text.contains("  Computer 1  connecting"))
     }
 
     // MARK: Privacy
@@ -523,7 +523,7 @@ final class ConnectionLogTests: XCTestCase {
         let text = await second.export(servers: keys)
 
         XCTAssertGreaterThan(bytes.count, 40 * ConnectionEvent.size, "the events are in the file")
-        XCTAssertTrue(text.contains("Server 4"))
+        XCTAssertTrue(text.contains("Computer 4"))
         XCTAssertTrue(text.contains("closed dns code=-1003"))
         for stored in [bytes, try Data(contentsOf: file)] {
             for secret in secrets {

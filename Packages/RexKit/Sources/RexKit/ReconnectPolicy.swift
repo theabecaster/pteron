@@ -108,7 +108,6 @@ public struct ReconnectPolicy: Sendable, Equatable {
     public var syncCalls = 4
 
     /// The values in use.
-    /// The values in use.
     public static let standard = ReconnectPolicy()
 
     // MARK: Decisions

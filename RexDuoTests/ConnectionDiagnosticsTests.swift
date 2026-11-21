@@ -4,7 +4,7 @@ import RexKit
 @testable import RexDuo
 
 /// The connection log as the app feeds it: a server's connection, reported by `ServerConnection`,
-/// comes out as "Server 1" with no name and no address, in the text and in the file.
+/// comes out as "Computer 1" with no name and no address, in the text and in the file.
 @MainActor
 final class ConnectionDiagnosticsTests: XCTestCase {
     private var folder: URL!
@@ -58,12 +58,12 @@ final class ConnectionDiagnosticsTests: XCTestCase {
 
         log.flush()
         let text = await ConnectionDiagnostics.export(log, servers: [config])
-        XCTAssertTrue(text.contains("App       launch build=2611201913"), text)
-        XCTAssertTrue(text.contains("Server 1  connecting"), text)
-        XCTAssertTrue(text.contains("Server 1  connected after="), text)
-        XCTAssertTrue(text.contains("Server 1  closed "), text)
-        XCTAssertTrue(text.contains("Server 1  retry in=1000ms"), text)
-        XCTAssertTrue(text.contains("Server 1  stopped"), text)
+        XCTAssertTrue(text.contains("App         launch build=2611201913"), text)
+        XCTAssertTrue(text.contains("Computer 1  connecting"), text)
+        XCTAssertTrue(text.contains("Computer 1  connected after="), text)
+        XCTAssertTrue(text.contains("Computer 1  closed "), text)
+        XCTAssertTrue(text.contains("Computer 1  retry in=1000ms"), text)
+        XCTAssertTrue(text.contains("Computer 1  stopped"), text)
 
         let port = String(address.split(separator: ":").last ?? "")
         let bytes = try Data(contentsOf: file)
@@ -94,8 +94,8 @@ final class ConnectionDiagnosticsTests: XCTestCase {
 
         log.flush()
         let text = await ConnectionDiagnostics.export(log, servers: [config])
-        XCTAssertTrue(text.contains("App       probe tailscale reachable=no after=3000ms"), text)
-        XCTAssertTrue(text.contains("App       probe tailscale reachable=yes after=4ms"), text)
+        XCTAssertTrue(text.contains("App         probe tailscale reachable=no after=3000ms"), text)
+        XCTAssertTrue(text.contains("App         probe tailscale reachable=yes after=4ms"), text)
         XCTAssertFalse(text.contains("100.100"), "no address in the log")
         let after = (server.phase, server.retrying, server.recovering, server.waking, server.lastError)
         XCTAssertTrue(before == after)
