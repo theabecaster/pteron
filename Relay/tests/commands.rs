@@ -65,6 +65,8 @@ fn run_stops_cleanly_on_a_stop_signal() {
             .env_remove("REX_SERVER")
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_RUNTIME_DIR")
+            // Under systemd, as on a CI runner, the helper leaves the time off each line.
+            .env_remove("JOURNAL_STREAM")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
