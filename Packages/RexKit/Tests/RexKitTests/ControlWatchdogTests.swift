@@ -206,6 +206,89 @@ final class ControlWatchdogTests: XCTestCase {
         XCTAssertEqual(pings, 1, "5 s after the new request")
     }
 
+    // MARK: The ping an upload paces itself with
+
+    /// `ping()`, as `UploadPacer` calls it. Returns whether the pong came.
+    private func pacerPing() async -> Task<Bool, Never> {
+        let control = control!
+        let t = Task { @MainActor in (try? await control.ping()) != nil }
+        await pump()
+        return t
+    }
+
+    func testAPacersPingWithNoPongEndsAtThePongDeadlineAndTheHostIsDropped() async {
+        await connect()
+        let asked = await pacerPing()
+        XCTAssertEqual(pings, 1)
+        await clock.advance(by: 9.9)
+        XCTAssertEqual(control.state, .connected)
+        await clock.advance(by: 0.2)
+        XCTAssertNotEqual(control.state, .connected, "no pong in 10 s: dropped, as for any missed pong")
+        let answered = await asked.value
+        XCTAssertFalse(answered, "and the wait is over")
+    }
+
+    func testOnCellularAPacersPingHasTwentySeconds() async {
+        control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        await connect()
+        let asked = await pacerPing()
+        await clock.advance(by: 19.9)
+        XCTAssertEqual(control.state, .connected)
+        await clock.advance(by: 0.2)
+        XCTAssertNotEqual(control.state, .connected)
+        let answered = await asked.value
+        XCTAssertFalse(answered)
+    }
+
+    func testAPacersPingThatIsAnsweredReturnsAndDropsNothing() async {
+        await connect()
+        let first = await pacerPing()
+        // A second caller while the ping is out waits for the same pong.
+        let second = await pacerPing()
+        XCTAssertEqual(pings, 1)
+        sockets.last.answerPing()
+        await pump()
+        let a = await first.value, b = await second.value
+        XCTAssertTrue(a)
+        XCTAssertTrue(b)
+        await clock.advance(by: 25)
+        XCTAssertEqual(control.state, .connected)
+        XCTAssertEqual(sockets.count, 1)
+    }
+
+    func testInTheBackgroundAPacersPingEndsAndNothingIsDropped() async {
+        await connect()
+        let asked = await pacerPing()
+        control.enteredBackground()
+        let answered = await asked.value
+        XCTAssertFalse(answered, "the wait ends: nothing waits in the background")
+        await clock.advance(by: 600)
+        XCTAssertEqual(control.state, .connected, "and its deadline drops nothing there")
+        // Asked in the background: no ping goes out.
+        let before = pings
+        let again = await pacerPing()
+        let second = await again.value
+        XCTAssertFalse(second)
+        XCTAssertEqual(pings, before)
+    }
+
+    func testAPacersPingFromBeforeADropDoesNothingToTheNextConnection() async {
+        await connect()
+        let asked = await pacerPing()
+        await clock.advance(by: 1)
+        sockets.last.failReceive()
+        await pump()
+        let answered = await asked.value
+        XCTAssertFalse(answered, "the drop ends the wait")
+        await clock.advance(by: 0.5)
+        sockets.last.welcome()
+        await pump()
+        XCTAssertEqual(control.state, .connected)
+        await clock.advance(by: 12)
+        XCTAssertEqual(control.state, .connected, "the old ping's deadline passed and dropped nothing")
+        XCTAssertEqual(sockets.count, 2)
+    }
+
     // MARK: Asked from outside
 
     func testCheckLivenessPingsNowAndNoPongDropsTheHost() async {

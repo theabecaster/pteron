@@ -190,6 +190,8 @@ public final class RexControl {
     private var pingOut: Int?
     private var pingSerial = 0
     private var watchdogArmed = false
+    /// Who waits in `ping()` for the pong of the ping that is out.
+    private var pongWaiters: [CheckedContinuation<Void, Error>] = []
     /// Counts the watchdog's waits, so one that was set before a drop, a stop or the background
     /// does nothing when it ends.
     private var watchdogSerial = 0
@@ -482,6 +484,7 @@ public final class RexControl {
                 } else {
                     self.lastInbound = self.clock.now
                     onPong?()
+                    self.endPongWaits()
                 }
             }
         }
@@ -841,6 +844,7 @@ public final class RexControl {
         cancelRetry()
         pingTimer?.cancel()
         pingOut = nil
+        endPongWaits(RexError.unsent("in the background"))
         disarmWatchdog()
         // A data socket still in its handshake is given up, as the attempt below is.
         for s in streams.values { s.stream?.enteredBackground() }
@@ -1015,11 +1019,27 @@ public final class RexControl {
         }
     }
 
-    /// Pings the connection once and returns with the pong. Throws when not connected, or when
-    /// the socket fails first. Nothing is dropped here: a slow answer is only slow.
+    /// Returns when the connection answers a ping. Throws when it is not connected, when the
+    /// app is in the background, or when the connection is lost first. The ping is the
+    /// connection's own, with the pong deadline: no pong in time drops the host, as any missed
+    /// pong does, and that ends this wait. With a ping out already, this waits for its pong.
+    /// In the background the wait ends with nothing dropped, as every other wait does there.
     func ping() async throws {
-        guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
-        try await t.awaitPong()  // only the handler's first call counts (`ResumeOnce`)
+        guard task != nil, state == .connected else { throw RexError.unsent("not connected") }
+        guard !suspended || policy.worksInBackground else { throw RexError.unsent("in the background") }
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            pongWaiters.append(c)
+            ping(deadline: policy.pongDeadline(expensive: pathExpensive))
+        }
+    }
+
+    /// Ends the wait of everyone in `ping()`: with the pong (nil), or with why none will come.
+    private func endPongWaits(_ error: Error? = nil) {
+        let waiting = pongWaiters
+        pongWaiters = []
+        for c in waiting {
+            if let error { c.resume(throwing: error) } else { c.resume() }
+        }
     }
 
     #if DEBUG
@@ -1057,6 +1077,7 @@ public final class RexControl {
         pending.removeAll()
         sentAt.removeAll()
         disarmWatchdog()
+        endPongWaits(err)
         for (_, c) in p { c(.failure(err)) }
     }
 

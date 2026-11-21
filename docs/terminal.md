@@ -593,6 +593,9 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   gets a burst. On an iPhone a burst queues as packets inside the Tailscale extension, which iOS
   kills past about 50 MB, and the tunnel is gone for 30 to 60 s (tailscale/tailscale#17967). The
   upload's own socket can't confirm bytes: Rex answers a ping there only once the file has ended.
+  The control ping has the pong deadline (10 s, 20 s on cellular): with no pong the host is
+  dropped as for any missed pong, and the upload ends as it does on a lost connection. In the
+  background the wait ends with nothing dropped.
   No control connection, or no answer in 5 s, leaves the rate alone in charge: never a stall.
 - **Cancel** cuts off the file on its way, and the server deletes the batch's earlier files and
   types nothing. Between files, when the server may hold finished files and nothing is on its
