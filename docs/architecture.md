@@ -148,7 +148,8 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
 ## Offline
 
 - `RexControl` owns retries and reports each failure as a `ConnectionFailure` (error domain and
-  code, the POSIX or TLS code under it, the upgrade's HTTP status, the close code).
+  code, the POSIX or TLS code under it, the upgrade's HTTP status, the close code). Its observer
+  hears of a failure after `dormant`, `retryStopped` and `isHeld` are as that failure leaves them.
 - **Why reconnecting is careful.** The phone's VPN keeps a packet for a computer that is off
   until its handshake gives up, about 90 s, out of one small pool shared by every computer, and
   each new packet starts that time over. An app that keeps asking a computer that is off can
@@ -157,34 +158,70 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
 - **One policy.** Every number and rule is a value of `ReconnectPolicy` (RexKit, pure):
   `RexControl` keeps one host's state and `ReconnectGovernor` what the hosts share (one per app,
   made by `AppModel`), and both ask the policy. `ReconnectPolicyTests` holds the values in use.
-  - *Schedule per host:* waits of 0 to 1 s, 10 s, 2 min, then 5 min, each a fifth shorter or
-    longer, and from the third attempt on never under 2 min. Only a welcome starts it over.
+  - *Schedule per host:* the waits before an episode's attempts are 0 to 1 s, 10 s, 2 min, then
+    5 min, each a fifth shorter or longer. The first is the wait after a drop; an episode that
+    begins with an attempt (`connect()`, the return to the foreground) has none, and its second
+    attempt follows by the 10 s. Only a welcome starts it over.
+  - *The floor:* from the third attempt on, none starts sooner than 2 min after the one before
+    STARTED. `RexControl.scheduled` holds every attempt to it, whatever asked for it (the wait,
+    the network, the return, the breaker letting a host go). Only a tap goes past it.
   - *Kinds of failure:* silent (a timeout, no route, a lost connection), answered (a refused
     port, a 5xx, an ordinary close: the normal schedule), final (not allowed, a 4xx, no common
-    API revision, TLS: retries stop and only the user asks again).
-  - *Dormant:* after 5 silent failures in a row. One attempt per 10 min, in the foreground.
+    API revision: retries stop and only the user asks again). A TLS failure is tried again on
+    the normal schedule, and is final only at the third in a row while another host is
+    connected: a tunnel that is half up fails TLS too. For the breaker it is an answer (bytes
+    came back from the host), never a silence.
+  - *Dormant:* after 5 silent failures in a row. One attempt per 10 min, counted in the
+    foreground: the background stops the wait and the return goes on with what was left, so
+    short visits add up to a turn.
   - *The budget:* at most 2 attempts per 100 s across hosts that are down, and 2 under way. A
-    host's first attempt of an episode and a user's tap are outside it.
-  - *The tunnel breaker:* 2 hosts silent within 30 s are taken for the tunnel being down. One
-    test host (the selected one, else the last one good; not a dormant one if there is another)
-    is tried on its schedule and the others are held; when it stays silent the next host takes
-    the turn. A welcome from any host closes it, and the held hosts start 500 ms apart.
-  - *Triggers:* a tap (Try Again, pull to refresh, opening a server or session) is one attempt
-    now and nothing while one is under way. A path change pings a socket that is up and never
-    tears it down; a host that is down gets one attempt only if its last was 2 min ago. The
-    return to the foreground pings what is up, moves a backing-off host forward subject to the
-    floor, and leaves a dormant host alone unless it is selected. With no path nothing is tried
-    and a failure counts toward nothing.
+    host's first attempt of an episode and a user's tap are outside it, and a welcome gives the
+    budget that host's attempts back (they were not to a host that is down). A host that is
+    refused only because 2 attempts are under way keeps no timer and logs nothing: the
+    governor tells it when one of them ends.
+  - *The tunnel breaker:* its states and transitions are the table at the top of
+    `ReconnectGovernor`. It opens when 2 hosts go silent within 30 s, each one connected until
+    then or on its first two attempts, and no host is connected. One test host is tried and the
+    others are held; a test host that stays silent passes the turn to the next (the one that was
+    connected last first), so a computer that is off never keeps healthy ones held. Any welcome
+    or answer from any host closes it, and the held hosts go 500 ms apart, each when its floor
+    and the budget allow.
+  - *Triggers:* a tap is Try Again, a pull to refresh, or moving to another server (a tab or a
+    pane of the same server is not one). It is one attempt now, past the floor, the budget and
+    the breaker, at most once per 10 s per host and with fewer than 2 attempts under way; a pull
+    to refresh tries one host that is down (`refreshTarget`), not all of them. A change of route
+    (`RouteWatch`: another kind of interface, other tunnel addresses, or a path after none, once
+    the path has been quiet for 2 s) pings a socket that is up and never tears it down; a host
+    that is down gets one attempt if its last began 2 min ago, and a dormant host is brought
+    forward at most once per 10 min, its next turn staying where it would have been. Other path
+    reports ask for nothing. The return to the foreground pings what is up, moves a backing-off
+    host forward subject to the floor, and leaves a dormant host alone unless it is selected.
+    With no path nothing is tried and a failure counts toward nothing.
   - *Liveness:* a ping when nothing came in for 30 s, and at once when a request got nothing
     back for 5 s (10 s on cellular); no pong in 10 s (20 s) is a dead connection. The connect
     deadline is 10 s (15 s), the wake pong 2.5 s (5 s).
-  - *Background:* `enteredBackground()` cancels every wait and the pings; `wake()` ends it.
-- **The control connection is the only thing that asks a host that is down.** A terminal stream
-  opens no data socket, a RESUME included, while `isConnected` is false (`TerminalStream.resume`
-  and `openData`); it waits for `observeConnected`. Calls fail unsent before the socket, so a
-  port tunnel's dial, the Ports list's reads and a file transfer, which each begin with a call,
-  open nothing either. The watch's and a notification's one-shot channel makes one attempt for
-  one user action and never retries. `DownHostSocketCountTests` counts every path together.
+  - *Background:* `enteredBackground()` cancels every wait and the pings and gives up an attempt
+    that is under way; `wake()` ends it.
+- **One gate per host, for every socket.** The control connection is the only thing that asks a
+  host that is down. The gate is in the code that opens a socket, so no caller can go around
+  it: `RexControl.openDataSocket` (terminal streams and files) and `TunnelSession.open` (port
+  tunnels; the session comes from `RexControl.makeTunnelSession`). Both refuse without the
+  control connection's welcome. A terminal stream and a tunnel are also refused in the
+  background and, after it, until the control connection has its verdict (`holdsData`): the
+  pong to `wake()`'s ping, or a fresh welcome. A stream waits (`TerminalStream.mayOpen`) with
+  its RESUME token kept, and its own ping at the return has no deadline of its own: it follows
+  that verdict. A file's socket is not held in the background: it follows the answer to its
+  `…_begin` call, and a send the user started goes on when they leave the app. Calls fail unsent
+  before the socket, so the Ports list's reads and a folder listing open nothing either.
+- **A dead control socket takes the host's other sockets with it** (`RexControl.hostDied`): when
+  it gets no answer, every data socket and tunnel connection to that host is dropped at once,
+  with no close frame. A stream keeps its token and raises its fence as on any drop, and resumes
+  with the welcome. A close the server answered with leaves them alone.
+- The watch's and a notification's one-shot channel makes one attempt for one user action and
+  never retries; for a server that is dormant, or while the breaker is open, it opens nothing
+  and answers as a connection that failed (`UnreachableActionChannel`).
+  `DownHostSocketCountTests` counts every path, one by one, for a host that is down for an hour
+  in the foreground and an hour in the background.
 - A dormant or held server looks like any offline server: the same screen, the same sidebar
   line, Try Again. Nothing new is shown.
 - `ServerConnection` turns failures into `ConnectionProblem`s (`State/ConnectionProblem.swift`):

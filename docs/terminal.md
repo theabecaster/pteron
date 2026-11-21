@@ -78,14 +78,17 @@ history takes this path too.
 
 ## Reconnect
 
-`RexControl` is the only thing that retries a lost control connection (1 s doubling to 15 s, at
-once on `kick()`). A stream never retries on its behalf; it asks to be told
+`RexControl` is the only thing that retries a lost control connection, by `ReconnectPolicy`
+([architecture.md](architecture.md), Offline). A stream never retries on its behalf, and opens no
+socket to a host whose control connection has no welcome; it asks to be told
 (`RexControl.observeConnected`) and waits.
 
 - Close code 4000: the pane closed. The stream ends (`.ended`).
 - Any other drop of the data socket: one RESUME, 400 ms later, with
-  `0x02 + token + bytes received (UInt64 LE)`. A resume needs no ticket and no control connection,
-  and the stream goes on from the first byte not yet received: no new snapshot. It is not tried
+  `0x02 + token + bytes received (UInt64 LE)`. A resume needs no ticket, and the stream goes on
+  from the first byte not yet received: no new snapshot. Like every socket to the host it waits
+  for the control connection: with no welcome, in the background, or back from it before that
+  connection has answered, the stream keeps its token and resumes when it may. It is not tried
   after close code 1013 (the server dropped the stream) or once the server's keep time has passed.
 - If the RESUME fails or can't be tried: a fresh start (ticket, HELLO, snapshot). That needs the
   control connection. Without one the stream does nothing and shows "Reconnecting…"; when
@@ -100,8 +103,13 @@ once on `kick()`). A stream never retries on its behalf; it asks to be told
   hasn't attached the session again yet) is tried again after 250 ms, up to 8 times, before the
   backoff.
 - Back from the background, the host calls `wake()`: the stream pings its data socket. A socket
-  that fails, or doesn't answer within 2.5 s (half open after a suspension), is dropped without a
-  status 1000 close and the stream goes on with a RESUME, as after any drop. One that answers is
+  that fails is dropped without a status 1000 close and the stream goes on with a RESUME, as
+  after any drop. One that doesn't answer (half open after a suspension) has no deadline of its
+  own: the control connection judges the host. If that connection gets no pong, the stream's
+  socket is dropped with it; if it does, the stream's socket has 0.5 s more.
+- When the control socket gets no answer (a missed pong, a timeout), every data socket to the
+  host is dropped at once, without a status 1000 close: the token stays good, the fence goes up
+  as on any drop, and the welcome brings the stream back with only the bytes it missed. One that answers is
   live. iOS can call a ping's handler a second time when the socket is dropped while the ping
   waits, so `URLSessionStreamSocket.ping` acts on the first call only (a second resume of its
   continuation was a crash, seen on a wake during a slow upload). Transient chips ("Reconnecting…") wait out the wake's grace (`ForegroundWake.grace`).
