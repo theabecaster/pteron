@@ -827,7 +827,7 @@ final class GoToModelTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(rig.fake.calls("client.reply").first?.obj("result")?.str("text"), "main")
         XCTAssertNotNil(rig.model.goTo?.prompt, "Rex refused the answer: it stays")
-        XCTAssertEqual(Notice.shared.message, "Rex didn't accept that answer.")
+        XCTAssertEqual(Notice.shared.message, "Rex didn't accept that answer. Check it and answer again.")
         rig.fake.reply("client.reply", [:])
         s.submit()
         let closed = await eventually { rig.model.goTo == nil }

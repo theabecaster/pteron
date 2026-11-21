@@ -516,7 +516,7 @@ struct PushReconcilerTests {
         #expect(w.gateway.seen.count == requests + 1 && w.clock.sleeps.isEmpty)
         #expect(r.full == [laptop] && r.stopped == [laptop] && r.retrying.isEmpty && r.problem == .tooManySecrets)
         #expect(other.secret == nil && other.count("register_push") == 0)
-        #expect(ComputerStatus.make(ComputerFacts(name: "Laptop", full: true)).line?.text == "Too many computers for this phone")
+        #expect(ComputerStatus.make(ComputerFacts(name: "Laptop", full: true)).line?.text == "Too many computers for this iPhone")
         // Not by the app's own triggers, and not on its next stay in front.
         r.reconcileAll()
         r.cameToFront()

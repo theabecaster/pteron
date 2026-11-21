@@ -92,13 +92,16 @@ import Testing
     @Test func aPanesNoticeNeverShowsAnActionID() {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b")
-        stream.showsNotices(computer: "Desk", keymap: KeymapStore(control: control))
+        // The server owns its keymap; the stream holds it weakly.
+        let keymap = KeymapStore(control: control)
+        stream.showsNotices(computer: "Desk", keymap: keymap)
         Notice.shared.dismiss()
         stream.onActionFailed?(.actionRefused(action: "com.superlogical.terminal.clear", title: nil, code: "bad_request"))
         #expect(Notice.shared.message == "Couldn't run Clear Terminal. Desk refused it.")
         stream.onActionFailed?(.actionRefused(action: "zz.unknown.thing", title: nil, code: "bad_request"))
         #expect(Notice.shared.message == "Couldn't run the action. Desk refused it.")
         Notice.shared.dismiss()
+        withExtendedLifetime(keymap) {}
     }
 
     // MARK: New Session, Reconnect

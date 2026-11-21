@@ -141,7 +141,7 @@ struct AgentBoardModelTests {
         #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .never)]) == "1 of 2 computers connected")
         #expect(AgentBoard.subline([m("Studio", .live), m("Laptop", .stale)]) == "1 of 2 computers connected · Reconnecting…")
         #expect(AgentBoard.subline([m("Studio", .stale), m("Laptop", .stale)]) == "Studio · Laptop")
-        #expect(AgentBoard.subline([m("A", .stale), m("B", .stale), m("C", .never)]) == "3 machines")
+        #expect(AgentBoard.subline([m("A", .stale), m("B", .stale), m("C", .never)]) == "3 computers")
     }
 
     @Test func elapsedTimeInWords() {

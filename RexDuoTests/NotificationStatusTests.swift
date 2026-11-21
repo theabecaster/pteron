@@ -181,7 +181,7 @@ struct NotificationStatusTests {
         #expect(NotificationFix.trust.title == "Trust…")
         let confirm = NotificationCopy.trustConfirm(name: "Studio")
         #expect(confirm.confirm == "Trust" && confirm.cancel == "Cancel" && confirm.title == "Trust Beacon on Studio?"
-                && confirm.message == "Did you reinstall or remove Beacon on Studio? If you did, trust it. If you didn't, don't: something else is answering for it.")
+                && confirm.message == "Did you reinstall or remove Beacon on Studio? If you did, trust it. If you didn't, don't: something else is answering for it. Cancel, then choose Reinstall Beacon.")
     }
 
     @Test func noRoomForAnotherComputerAtTheNotificationService() {
@@ -391,8 +391,8 @@ struct NotificationStatusTests {
         let rows: [(SetupError, ComputerFacts.Setup?)] = [
             (.network, .failed(.download)), (.noDownloader, .failed(.download)), (.release, .failed(.download)),
             (.verify, .failed(.check)), (.write, .failed(.noRoom)),
-            (.appManagement, .failed(.notAllowed)), (.noGUI, .failed(.notAllowed)), (.busy, .failed(.notAllowed)),
-            (.unsupportedComputer, .failed(.notAllowed)), (.oldMacOS, .failed(.notAllowed)),
+            (.appManagement, .failed(.notAllowed)), (.noGUI, .failed(.notLoggedIn)), (.busy, .failed(.busy)),
+            (.unsupportedComputer, .failed(.cantRun)), (.oldMacOS, .failed(.cantRun)),
             (.notStarted, .failed(.notStarted)), (.noSystemd, .failed(.notStarted)), (.interrupted, .failed(.notStarted)),
             (.manual, .manual),
             // A helper that has to be trusted is the row's "changed" state, not an install's.
@@ -1527,7 +1527,7 @@ struct NotificationChoiceTests {
         #expect(s.prefs.pushEnabled && s.prefs.notificationsOff.isEmpty && s.prefs.helpersToTell.isEmpty)
         #expect(s.gateway.seen.isEmpty && s.helpers[server].calls.isEmpty)
         #expect(s.phone.addressRequests == 0 && s.phone.addressReleases == 0)
-        #expect(await push.details(for: first.id)?.rows().count == 4)
+        #expect(await push.details(for: first.id)?.rows().count == 3)
         // Every name of the launch argument makes a screen, and the new lines are among them.
         for name in NotificationSimulation.names { #expect(NotificationSimulation(name: name) != nil) }
         #expect(NotificationSimulation(name: "turns-off")?.rows[0].status.line == NotificationLine(text: "Turns off when it's back", tint: .secondary))

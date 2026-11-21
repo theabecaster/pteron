@@ -180,7 +180,7 @@ struct LatestReleaseTests {
                                              "last_error": "The release list could not be downloaded.", "failing_since": 1_700_000_000]
         }
         #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Update available", .secondary), fix: .update, menu: healthyMenu))
-        #expect(s.row(b) == ComputerStatus(switchOn: true, line: line("Version 0.3.2", .secondary), fix: nil, menu: healthyMenu))
+        #expect(s.row(b) == ComputerStatus(switchOn: true, line: line("Beacon 0.3.2", .secondary), fix: nil, menu: healthyMenu))
         #expect(s.push.computers.map(\.status) == [s.row(a), s.row(b)])
         // One read of the list for both.
         #expect(s.list.fetches == 1)
@@ -203,9 +203,9 @@ struct LatestReleaseTests {
 
     @Test func aNewerAddOnThanTheListIsHealthy() async {
         let s = await signedUp(["0.3.3", "0.4.0-dev"])
-        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Version 0.3.3", .secondary), fix: nil, menu: healthyMenu))
+        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Beacon 0.3.3", .secondary), fix: nil, menu: healthyMenu))
         // A version that is not three numbers can't be compared: no claim.
-        #expect(s.row(b)?.line == line("Version 0.4.0-dev", .secondary) && s.row(b)?.fix == nil)
+        #expect(s.row(b)?.line == line("Beacon 0.4.0-dev", .secondary) && s.row(b)?.fix == nil)
     }
 
     @Test func withNoReleaseListTheRowsShowTheVersionOnly() async {
@@ -216,8 +216,8 @@ struct LatestReleaseTests {
         await s.world.quiet()
         #expect(s.list.fetches == 1 && s.check.latest == nil)
         // No claim about an update and no error line.
-        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Version 0.3.0", .secondary), fix: nil, menu: healthyMenu))
-        #expect(s.row(b) == ComputerStatus(switchOn: true, line: line("Version 0.3.1", .secondary), fix: nil, menu: healthyMenu))
+        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Beacon 0.3.0", .secondary), fix: nil, menu: healthyMenu))
+        #expect(s.row(b) == ComputerStatus(switchOn: true, line: line("Beacon 0.3.1", .secondary), fix: nil, menu: healthyMenu))
         #expect(s.push.master.line == nil)
     }
 
@@ -342,7 +342,7 @@ struct LatestReleaseTests {
         await s.world.quiet()
         // The next status says the new version, and that is the row.
         #expect(s.helpers[a].count("helper_status") == statuses + 1)
-        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Version 0.3.2", .secondary), fix: nil, menu: healthyMenu))
+        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Beacon 0.3.2", .secondary), fix: nil, menu: healthyMenu))
         #expect(s.helpers[a].count("update_helper") == 1 && s.sheets.shown.isEmpty)
         // The other computer was not asked for anything.
         #expect(s.helpers[b].count("update_helper") == 0)
@@ -402,7 +402,7 @@ struct LatestReleaseTests {
         s.push.fix(.update, for: a)
         await s.world.eventually { s.push.updating.isEmpty && s.push.versions[self.a]?.version == "0.4.0" }
         #expect(s.helpers[a].count("update_helper") == 1 && s.sheets.shown.isEmpty)
-        #expect(s.row(a)?.line == line("Version 0.4.0", .secondary))
+        #expect(s.row(a)?.line == line("Beacon 0.4.0", .secondary))
     }
 
     // MARK: An add-on that restarted
@@ -418,7 +418,7 @@ struct LatestReleaseTests {
         await s.world.eventually { s.push.versions[self.a]?.version == "0.3.2" && s.push.reconciler.isSettled(self.a) }
         await s.world.quiet()
         #expect(s.helpers[a].count("helper_status") == statuses + 1)
-        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Version 0.3.2", .secondary), fix: nil, menu: healthyMenu))
+        #expect(s.row(a) == ComputerStatus(switchOn: true, line: line("Beacon 0.3.2", .secondary), fix: nil, menu: healthyMenu))
         // The release list was not read for it, and the other computer was left alone.
         #expect(s.list.fetches == fetches && s.sheets.shown.isEmpty)
         #expect(s.helpers[b].count("register_push") == 1)
@@ -435,7 +435,7 @@ struct LatestReleaseTests {
         s.push.becameActive()
         await s.world.eventually { s.push.versions[self.a]?.version == "0.3.2" && s.push.reconciler.isSettled(self.a) }
         await s.world.quiet()
-        #expect(s.helpers[a].count("helper_status") == statusesA + 1 && s.row(a)?.line?.text == "Version 0.3.2")
+        #expect(s.helpers[a].count("helper_status") == statusesA + 1 && s.row(a)?.line?.text == "Beacon 0.3.2")
         // The add-on that did not restart says its version again, and keeps its registration.
         #expect(s.helpers[b].count("helper_status") == statusesB + 1 && s.helpers[b].count("register_push") == 1)
     }
@@ -449,7 +449,7 @@ struct LatestReleaseTests {
         s.push.helperClientChanged(a)
         await s.world.eventually { s.push.registeredVersions[self.a] == "0.3.2" }
         await s.world.quiet()
-        #expect(s.push.versions[a] == nil && s.row(a)?.line?.text == "Version 0.3.2")
+        #expect(s.push.versions[a] == nil && s.row(a)?.line?.text == "Beacon 0.3.2")
     }
 
     // MARK: Show Details
@@ -460,7 +460,7 @@ struct LatestReleaseTests {
             $0.helpers[self.a].statusSays = ["last_error": "The release list could not be downloaded.", "failing_since": 1_700_000_000]
         }
         let good = try #require(await s.push.details(for: a))
-        #expect(good.rows() == [.init(label: "Beacon version", value: "0.3.1"), .init(label: "Update check", value: "OK")])
+        #expect(good.rows() == [.init(label: "Beacon version", value: "0.3.1")])
 
         // The app's own read fails: the row says so, and the list's last good result stands.
         s.push.start()
@@ -479,6 +479,6 @@ struct LatestReleaseTests {
         s.push.becameActive()
         await s.world.eventually { !s.check.lastFailed }
         let again = try #require(await s.push.details(for: a))
-        #expect(again.rows().last == .init(label: "Update check", value: "OK"))
+        #expect(again.rows().last == .init(label: "Beacon version", value: "0.3.1"))
     }
 }
