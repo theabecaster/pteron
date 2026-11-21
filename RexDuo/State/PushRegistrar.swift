@@ -537,6 +537,14 @@ final class PushRegistrar {
         return details
     }
 
+    /// One action of the computer's helper for something other than notifications (a port's
+    /// owner, a port for the phone's browsers). Nil when no helper on the computer's current
+    /// connection holds this phone: nothing is sent then.
+    func ask(_ id: UUID, action: String, args: JSONObject, timeout: Int) async -> Result<JSONObject, HelperFailure>? {
+        guard !simulated, let relay = reconciler.relay(id) else { return nil }
+        return await channel.perform(id, relay: relay, action: action, args: args, timeout: timeout)
+    }
+
     /// The words of the confirm before `removeHelper`, with the helper's count of other phones
     /// when it says.
     func removeConfirm(for id: UUID) async -> NotificationCopy.Confirm {

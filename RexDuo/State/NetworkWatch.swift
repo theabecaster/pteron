@@ -121,6 +121,34 @@ enum PrivateNetwork {
         return found
     }
 
+    /// The phone's own tailnet address, as text, or nil when it has none: what a computer's
+    /// Beacon holds a port it shares to (docs/terminal.md, Ports). Read when asked, on a tap.
+    nonisolated static func address() -> String? {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+        var found: [TailnetAddress.Candidate] = []
+        var cur: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = cur {
+            defer { cur = p.pointee.ifa_next }
+            let flags = Int32(p.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_RUNNING != 0, let sa = p.pointee.ifa_addr else { continue }
+            switch Int32(sa.pointee.sa_family) {
+            case AF_INET:
+                let a = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+                found.append(.v4(interface: String(cString: p.pointee.ifa_name), a))
+            case AF_INET6:
+                let bytes = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { s in
+                    withUnsafeBytes(of: s.pointee.sin6_addr) { Array($0) }
+                }
+                found.append(.v6(bytes))
+            default:
+                break
+            }
+        }
+        return TailnetAddress.pick(found)
+    }
+
     /// An IPv4 address of the interface `name`: Tailscale's only on a tunnel.
     nonisolated static func isTailnet(interface name: String, ipv4 a: UInt32) -> Bool {
         name.hasPrefix("utun") && isTailnet(ipv4: a)
