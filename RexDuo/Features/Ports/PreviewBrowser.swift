@@ -134,10 +134,11 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private var barsAsked = false
     /// What the web view loads once it exists: the page, or a path typed before it did.
     private var firstLoad: URL?
-    /// The bar under the page and its arrows (`buildBottomBar`).
+    /// The bar under the page and its buttons (`buildBottomBar`).
     private var bottomBar: UIView?
     private var backButton: UIButton?
     private var forwardButton: UIButton?
+    private var reloadButton: UIButton?
     #if DEBUG
     /// Called after the chrome, the error page or what is shown over the page changed, and
     /// `gone` when the browser is released: tests wait on these, not on the clock. Debug builds
@@ -328,9 +329,10 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     }
 
     /// Back, forward and reload, under the page, where a toolbar has them and looking as its
-    /// buttons do. They are the browser's own buttons in its own view, not a `UIToolbar`:
-    /// UIKit (iOS 27.2) keeps a toolbar's items, their buttons and its model after a toolbar
-    /// that held items is gone, about 90 KB of the app's memory for every page opened.
+    /// buttons do. This bar stands in for a `UIToolbar`: on iOS 27.2 a toolbar that has held
+    /// items keeps them, their buttons and its model alive after it is gone, about 90 KB of
+    /// the app's memory for every page opened (`-portsLoop` measures it). When the system no
+    /// longer does that, this can be the navigation controller's toolbar again.
     private func buildBottomBar() {
         let bar = UIView()
         bar.backgroundColor = .systemBackground
@@ -343,6 +345,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         bar.addInteraction(UILargeContentViewerInteraction())
         backButton = back
         forwardButton = forward
+        reloadButton = reload
         bottomBar = bar
         // The page ends where the bar begins, at a toolbar's height. Over a home indicator the
         // buttons sit low in it, close to the indicator, as a toolbar's do.
@@ -560,6 +563,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     var shownHost: String? { hostLabel.text }
     var shownError: String? { errorView.isHidden ? nil : errorTitle.text }
     var editedText: String? { addressField?.text }
+    /// Back, forward and reload, once the bars are up.
+    var barButtons: [UIButton] { [backButton, forwardButton, reloadButton].compactMap { $0 } }
 
     // MARK: Actions
 

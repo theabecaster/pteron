@@ -234,18 +234,34 @@ final class PreviewBrowserTests: XCTestCase {
 
     /// A leak test: after a close nothing of the page is alive. Not the browser, not what
     /// presented it, not the web view, nor what the web view was configured with (WebKit hands
-    /// out its configuration as a copy, which shares the one user content controller).
+    /// out its configuration as a copy, which shares the one user content controller). Nor
+    /// anything that was in the bars: a `UIToolbar` kept its items, their buttons and the menu
+    /// for every page opened, which is why the arrows are the browser's own buttons.
     func testNothingOfAPageOutlivesItsClose() async throws {
         weak var browser: PreviewBrowser?
         weak var shown: UIViewController?
         weak var web: WKWebView?
         weak var configuration: WKWebViewConfiguration?
         weak var content: WKUserContentController?
+        weak var done: UIBarButtonItem?
+        weak var more: UIBarButtonItem?
+        weak var menu: UIMenu?
+        weak var title: UIView?
+        let buttons = NSHashTable<UIButton>.weakObjects()
         let released = expectation(description: "the browser is released")
         do {
             let b = try await open()
-            _ = await until(b) { b.shownTitle == "Fixture page" }
+            _ = await until(b) { b.shownTitle == "Fixture page" && b.barButtons.count == 3 }
             browser = b
+            done = b.navigationItem.leftBarButtonItem
+            more = b.navigationItem.rightBarButtonItem
+            menu = b.navigationItem.rightBarButtonItem?.menu
+            title = b.navigationItem.titleView
+            for button in b.barButtons { buttons.add(button) }
+            XCTAssertNotNil(done)
+            XCTAssertNotNil(more)
+            XCTAssertNotNil(menu)
+            XCTAssertEqual(buttons.count, 3)
             shown = window.rootViewController?.presentedViewController
             web = b.webView
             configuration = b.webView?.configuration
@@ -257,7 +273,11 @@ final class PreviewBrowserTests: XCTestCase {
         }
         await fulfillment(of: [released], timeout: 120)
         // WebKit lets its own objects go over a few turns of the main queue after the view.
-        for _ in 0..<200 where web != nil || content != nil || configuration != nil || shown != nil {
+        func left() -> Bool {
+            web != nil || content != nil || configuration != nil || shown != nil || done != nil || more != nil || menu != nil
+                || title != nil || !buttons.allObjects.isEmpty
+        }
+        for _ in 0..<200 where left() {
             try? await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertNil(browser, "the browser")
@@ -265,7 +285,37 @@ final class PreviewBrowserTests: XCTestCase {
         XCTAssertNil(web, "the web view")
         XCTAssertNil(configuration, "its configuration")
         XCTAssertNil(content, "its user content controller")
+        XCTAssertNil(done, "Done")
+        XCTAssertNil(more, "the menu's button")
+        XCTAssertNil(menu, "the menu")
+        XCTAssertNil(title, "the title and the address")
+        XCTAssertEqual(buttons.allObjects.count, 0, "back, forward and reload")
         XCTAssertEqual(closes, 1)
+    }
+
+    /// What VoiceOver and the large content viewer get from the three buttons under the page.
+    func testTheButtonsUnderThePageSayWhatTheyAre() async throws {
+        let b = try await open()
+        let up = await until(b) { b.shownTitle == "Fixture page" && b.barButtons.count == 3 }
+        XCTAssertTrue(up)
+        let buttons = b.barButtons
+        XCTAssertEqual(buttons.map(\.accessibilityLabel), ["Back", "Forward", "Reload"])
+        for button in buttons {
+            XCTAssertTrue(button.accessibilityTraits.contains(.button), "\(button.accessibilityLabel ?? "") is a button")
+            XCTAssertTrue(button.isAccessibilityElement)
+            XCTAssertTrue(button.showsLargeContentViewer)
+            XCTAssertEqual(button.largeContentTitle, button.accessibilityLabel)
+        }
+        XCTAssertTrue(buttons[0].superview?.interactions.contains { $0 is UILargeContentViewerInteraction } ?? false,
+                      "a long press shows a button large at the accessibility text sizes")
+        // One page, so nowhere to go back or forward to: the arrows are off, and say so.
+        XCTAssertFalse(buttons[0].isEnabled)
+        XCTAssertFalse(buttons[1].isEnabled)
+        XCTAssertTrue(buttons[0].accessibilityTraits.contains(.notEnabled))
+        XCTAssertTrue(buttons[1].accessibilityTraits.contains(.notEnabled))
+        XCTAssertTrue(buttons[2].isEnabled)
+        XCTAssertFalse(buttons[2].accessibilityTraits.contains(.notEnabled))
+        b.close()
     }
 
     func testAFailedLoadShowsOurErrorPageWithTheComputersAddress() async throws {
