@@ -49,8 +49,15 @@ final class ServerEventsTests: XCTestCase {
             d.removePersistentDomain(forName: name)
             let prefs = Prefs(defaults: d)
             model = AppModel(prefs: prefs, connect: false)
+            // A schedule with no jitter. The app's first retry falls anywhere from 0 to 1 s: near
+            // 0 the connection is back before a test that dropped it sees it down. Here the
+            // first retry comes after exactly 1 s.
+            var policy = ReconnectPolicy()
+            policy.fullJitterFirst = false
+            policy.jitter = 0
             server = ServerConnection(config: ServerConfig(name: "Desk", url: address), prefs: prefs,
-                                      notifier: model.notifier, deviceID: "a1b2c3d4")
+                                      notifier: model.notifier, deviceID: "a1b2c3d4",
+                                      governor: ReconnectGovernor(policy: policy))
             script(creators: creators ?? .result(ServerEventsTests.creators()))
         }
 
