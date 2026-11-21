@@ -192,7 +192,7 @@ struct ConnectionProblemTests {
                 #expect(c.hint == "Check that Studio is awake and Rex is running. If no computer connects, turn Tailscale off and on.")
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == nil)
             } else if kind == .notAllowed {
-                #expect(c.message == "Rex only accepts devices signed in to the same Tailscale account as Studio.")
+                #expect(c.message == "Rex on Studio only lets in devices on its Tailscale account.")
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == nil)
             } else if kind == .hostNotFound {
                 #expect(c.message == "Tailscale on this iPhone is signed in to a different account than Studio.")

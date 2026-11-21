@@ -48,7 +48,7 @@ struct OfflineCopy: Equatable {
                                    + (tailnet ? " If no computer connects, turn Tailscale off and on." : ""))
         case .notAllowed:
             return OfflineCopy(symbol: "lock", title: "\(Server) didn't let this iPhone in",
-                               message: "Rex only accepts devices signed in to the same \(tailnet ? "Tailscale " : "")account as \(server).",
+                               message: "Rex on \(server) only lets in devices on its \(tailnet ? "Tailscale " : "")account.",
                                hint: "Sign this iPhone in to that account, then try again.")
         case .insecure:
             return OfflineCopy(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify \(server)",
