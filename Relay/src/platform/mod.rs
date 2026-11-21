@@ -24,12 +24,56 @@ pub enum Os {
 }
 
 /// A process as the kernel describes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Process {
+    /// The program's full path. Empty when the system does not say (Linux, for a process of
+    /// another user).
     pub path: String,
+    /// The program's name: the last part of `path`, or the kernel's short name without one.
+    pub name: String,
     pub uid: UserId,
     /// The process that started it: following it from process to process walks up the tree.
     pub ppid: u32,
+    /// Its process group: what a terminal's Ctrl-C reaches as one.
+    pub pgid: u32,
+    /// Its session: the shell a terminal started leads one. 0 when the system does not say.
+    pub sid: u32,
+    /// The process group in the foreground of its terminal. None without a terminal.
+    pub tty_pgid: Option<u32>,
+}
+
+/// The most bytes of one process's arguments that are read out, and the most arguments.
+pub const ARGV_MAX: usize = 8 * 1024;
+pub const ARGS_MAX: usize = 256;
+
+/// How a process was started: its arguments and the folder it works in. The arguments are
+/// bytes, as the system holds them; they can hold secrets, so nothing here is ever logged or
+/// stored. The environment is not part of this and is never read out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Invocation {
+    /// The arguments, the program's own name first, as they are in the process's memory now:
+    /// a program may have written over them since it started.
+    pub argv: Vec<Vec<u8>>,
+    /// True when they did not fit `ARGV_MAX` or `ARGS_MAX`, or could not be read to their
+    /// end: `argv` then holds only the whole arguments that came before the cut.
+    pub truncated: bool,
+    /// Its working directory now. None when it can't be read.
+    pub cwd: Option<String>,
+}
+
+/// Keeps the arguments that fit the two limits, and says whether any were left out. `cut`:
+/// the source already ended early.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn capped<'a>(args: impl Iterator<Item = &'a [u8]>, cut: bool) -> (Vec<Vec<u8>>, bool) {
+    let (mut kept, mut bytes) = (vec![], 0);
+    for arg in args {
+        bytes += arg.len() + 1;
+        if bytes > ARGV_MAX || kept.len() == ARGS_MAX {
+            return (kept, true);
+        }
+        kept.push(arg.to_vec());
+    }
+    (kept, cut)
 }
 
 /// What `check_socket` found at a path.

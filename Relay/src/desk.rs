@@ -260,7 +260,7 @@ mod tests {
     }
 
     fn procs(pid: u32) -> Option<Process> {
-        let p = |path: &str, uid, ppid| Some(Process { path: path.into(), uid, ppid });
+        let p = |path: &str, uid, ppid| Some(Process { path: path.into(), uid, ppid, ..Process::default() });
         match pid {
             100 => p("/Applications/Rex Beta.app/Contents/MacOS/Rex", 501, 1),
             // The bridge an SSH session starts for the Mac app of another computer.

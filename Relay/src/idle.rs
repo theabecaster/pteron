@@ -10,11 +10,16 @@
 //! and every 30 s while a Rex desktop app runs here and a phone holds a presence key.
 
 use crate::desk::{Process, Reading};
+use crate::platform::Invocation;
 
 /// The readings Beacon takes, so tests can stand in for the computer.
 pub trait Sense: Send + Sync {
     fn read(&self) -> Reading;
     fn process(&self, pid: u32) -> Option<Process>;
+    /// How a process was started (`port_owner`). None: it can't be read.
+    fn invocation(&self, _pid: u32) -> Option<Invocation> {
+        None
+    }
     /// The computer's sleep and wake (`watch_power`). None: not watched.
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
         None
@@ -38,6 +43,10 @@ impl Sense for System {
 
     fn process(&self, pid: u32) -> Option<Process> {
         crate::platform::process(pid)
+    }
+
+    fn invocation(&self, pid: u32) -> Option<Invocation> {
+        crate::platform::invocation(pid)
     }
 
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
@@ -70,6 +79,10 @@ impl Sense for DeskFile {
 
     fn process(&self, pid: u32) -> Option<Process> {
         self.inner.process(pid)
+    }
+
+    fn invocation(&self, pid: u32) -> Option<Invocation> {
+        self.inner.invocation(pid)
     }
 
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {

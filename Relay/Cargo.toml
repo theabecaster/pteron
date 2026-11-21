@@ -1,6 +1,6 @@
 [package]
 name = "rex-duo-helper"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 publish = false
@@ -21,6 +21,10 @@ webpki-roots = "1"
 ring = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+# The tests' clock: a share's 30 minutes pass in an instant.
+tokio = { version = "1", default-features = false, features = ["test-util"] }
 
 [profile.release]
 opt-level = "s"

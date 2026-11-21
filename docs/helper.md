@@ -139,6 +139,43 @@ a desk elsewhere through the push gateway, until they leave or for 10 minutes at
 (Relay/README.md, Desk presence). It has no switch; the release list's `desk` and `signed_at`
 fields belonged to one that never shipped, and every reader ignores them.
 
+## Opening a dev server in the phone's browser
+
+From 0.7.0. Pteron shows a dev server's page inside the app. For "Open in Browser", which
+opens the page in Safari or any other browser on the phone, the computer's Beacon shares the
+server's port with that phone for as long as it is used. This works only on a computer that
+runs the regular Tailscale app, signed in to the same tailnet as the phone; on any other
+computer the app does not offer it.
+
+What a share exposes, and to whom:
+
+- One port of the computer, as a web page, at the computer's Tailscale name or address
+  (`http://desk.example.ts.net:3000`). Beacon listens on the Tailscale address only: nothing
+  is opened on your Wi-Fi or to the internet.
+- Only the phone that asked can connect, by its own Tailscale address, and only a phone that
+  is registered with this Beacon can ask. A connection from any other device is closed
+  unread.
+- Only web traffic passes (HTTP and WebSockets), and only to that one port. The dev server
+  sees the request as a local one, so servers that only answer as `localhost` work.
+- Ports of debuggers, SSH, mail and databases are never shared.
+- At most eight shares exist at once.
+
+When it closes, by itself:
+
+- 30 minutes after the phone's last connection to it closed;
+- 10 minutes after the dev server stopped. Until then the address shows a small page that
+  says nothing is running there, and it loads the real page again as soon as the server is
+  back;
+- when the phone turns notifications from this computer off, and when Beacon stops or
+  restarts.
+
+Beacon also answers the app's question of which processes are behind a port (their ids,
+names, process groups, the arguments they were started with and their folders, for your own
+processes only), so that Stop and Restart in the app's Ports list work for a server started
+through `npm run dev` and the like. It only reports: Beacon never stops, signals or starts a
+process itself. Arguments go to your phone in that one answer and nowhere else: not to the
+log, a file or the push gateway. Environment variables are never read out. The details of both are in `Relay/README.md`, steps 8 and 9.
+
 ## What it sends, and where
 
 Beacon never holds an Apple key or your phone's notification token. Your phone registers with

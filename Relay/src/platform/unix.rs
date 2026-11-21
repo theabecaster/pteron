@@ -1,6 +1,6 @@
 //! macOS and Linux.
 
-use super::{Os, Process, SocketCheck};
+use super::{Invocation, Os, Process, SocketCheck};
 use std::fs::File;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -145,9 +145,9 @@ pub fn process_alive(pid: u64) -> bool {
     command.args(["-0", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
-/// The program behind a process id, the user it runs as and the process that started it. None
-/// when there is no such process or it can't be read. Linux does not read it yet: every
-/// process is unknown there.
+/// The program behind a process id, the user it runs as, the process that started it, its
+/// process group and the group in the foreground of its terminal. None when there is no such
+/// process or it can't be read. macOS asks the kernel; Linux reads `/proc/<pid>`.
 #[cfg(target_os = "macos")]
 pub fn process(pid: u32) -> Option<Process> {
     mac::process(pid)
@@ -155,8 +155,198 @@ pub fn process(pid: u32) -> Option<Process> {
 
 #[cfg(target_os = "linux")]
 pub fn process(pid: u32) -> Option<Process> {
-    let _ = pid;
-    None
+    let dir = PathBuf::from(format!("/proc/{pid}"));
+    let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
+    let status = std::fs::read_to_string(dir.join("status")).ok()?;
+    // Only the process's own user (and root) can read the link.
+    let exe = std::fs::read_link(dir.join("exe")).ok();
+    proc_fs::process(pid, &stat, &status, exe.as_deref().and_then(Path::to_str))
+}
+
+/// How the process `pid` was started: its arguments and its working directory. None when
+/// there is no such process or it is not this user's to read. macOS asks the kernel
+/// (`KERN_PROCARGS2`, of which only the arguments are kept, and the process's vnode paths);
+/// Linux reads `/proc/<pid>/cmdline` and the `cwd` link. The environment is never returned.
+#[cfg(target_os = "macos")]
+pub fn invocation(pid: u32) -> Option<Invocation> {
+    mac::invocation(pid)
+}
+
+#[cfg(target_os = "linux")]
+pub fn invocation(pid: u32) -> Option<Invocation> {
+    use std::io::Read;
+    let dir = PathBuf::from(format!("/proc/{pid}"));
+    let mut bytes = vec![];
+    // One byte past the limit says that there was more.
+    File::open(dir.join("cmdline")).ok()?.take(super::ARGV_MAX as u64 + 1).read_to_end(&mut bytes).ok()?;
+    let (argv, truncated) = proc_fs::cmdline(&bytes);
+    let cwd = std::fs::read_link(dir.join("cwd")).ok().and_then(|p| p.to_str().map(String::from));
+    Some(Invocation { argv, truncated, cwd })
+}
+
+/// The arguments in what `KERN_PROCARGS2` gives: the count, the program's path, padding,
+/// then each argument ending in a NUL, then the environment, which is not read. None when
+/// the bytes are not that.
+#[cfg(any(target_os = "macos", test))]
+fn procargs(buf: &[u8]) -> Option<(Vec<Vec<u8>>, bool)> {
+    let count = usize::try_from(i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?)).ok()?;
+    let mut rest = &buf[4..];
+    // The program's path, and the NULs that pad it.
+    rest = &rest[rest.iter().position(|b| *b == 0)?..];
+    rest = &rest[rest.iter().position(|b| *b != 0).unwrap_or(rest.len())..];
+    let mut args = vec![];
+    let mut cut = false;
+    for _ in 0..count {
+        let Some(end) = rest.iter().position(|b| *b == 0) else {
+            cut = true;
+            break;
+        };
+        args.push(&rest[..end]);
+        rest = &rest[end + 1..];
+    }
+    Some(super::capped(args.into_iter(), cut))
+}
+
+/// The last part of a program's path.
+fn program_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Linux's `/proc/<pid>` as text, read apart from the files so the same lines are tested on
+/// every system.
+#[cfg(any(target_os = "linux", test))]
+mod proc_fs {
+    use super::Process;
+
+    /// A process from its `stat` and `status` files and what its `exe` link names, if that
+    /// could be read. None when either file is not what the kernel writes, or is another
+    /// process's.
+    pub fn process(pid: u32, stat: &str, status: &str, exe: Option<&str>) -> Option<Process> {
+        // `<pid> (<comm>) <state> <ppid> <pgrp> <session> <tty_nr> <tpgid> …`. The name may
+        // hold spaces and brackets of its own, so it ends at the last one.
+        let (before, after) = (stat.find('(')?, stat.rfind(')')?);
+        if before >= after || stat[..before].trim().parse::<u32>().ok()? != pid {
+            return None;
+        }
+        let comm = &stat[before + 1..after];
+        let mut fields = stat[after + 1..].split_ascii_whitespace().skip(1);
+        let mut number = || fields.next()?.parse::<i64>().ok();
+        let (ppid, pgid, session, tty, tty_pgid) = (number()?, number()?, number()?, number()?, number()?);
+        // `Uid:` lists the real, effective, saved and filesystem user: the effective one is
+        // who the process acts as.
+        let uid = status.lines().find_map(|l| l.strip_prefix("Uid:"))?.split_ascii_whitespace().nth(1)?.parse().ok()?;
+        // The link of a program that was replaced on disk ends with " (deleted)".
+        let path = exe.map(|e| e.strip_suffix(" (deleted)").unwrap_or(e)).filter(|e| e.starts_with('/')).unwrap_or("");
+        Some(Process {
+            path: path.to_string(),
+            name: if path.is_empty() { comm.to_string() } else { super::program_name(path).to_string() },
+            uid,
+            ppid: u32::try_from(ppid).ok()?,
+            pgid: u32::try_from(pgid).ok()?,
+            sid: u32::try_from(session).unwrap_or(0),
+            tty_pgid: (tty != 0).then_some(tty_pgid).and_then(|g| u32::try_from(g).ok()).filter(|g| *g > 0),
+        })
+    }
+
+    /// The arguments in a `cmdline` file: each ends in a NUL. More bytes than `ARGV_MAX`
+    /// means the file went on: the argument the cut fell in is left out.
+    pub fn cmdline(bytes: &[u8]) -> (Vec<Vec<u8>>, bool) {
+        let cut = bytes.len() > crate::platform::ARGV_MAX;
+        let whole = match bytes.iter().rposition(|b| *b == 0) {
+            Some(last) => &bytes[..last],
+            // No NUL at all: nothing (a kernel thread, a process that has ended), or one
+            // argument that never ended.
+            None if bytes.is_empty() => return (vec![], false),
+            None => return (vec![], true),
+        };
+        // A file that ends without a NUL was cut in an argument, wherever that was.
+        let cut = cut || bytes.last() != Some(&0);
+        crate::platform::capped(whole.split(|b| *b == 0), cut)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn arguments_are_read_as_they_are_with_spaces_quotes_and_nothing() {
+            let args = |bytes: &[u8]| cmdline(bytes);
+            assert_eq!(args(b"npm\0run\0dev\0"), (vec![b"npm".to_vec(), b"run".to_vec(), b"dev".to_vec()], false));
+            // Spaces, quotes and an empty argument are arguments like any other; so are
+            // bytes that are no text.
+            let odd = args(b"sh\0-c\0echo \"a b\" 'c'\0\0it's\0\xff\xfe\0");
+            assert_eq!(odd, (vec![b"sh".to_vec(), b"-c".to_vec(), b"echo \"a b\" 'c'".to_vec(), vec![], b"it's".to_vec(), vec![0xff, 0xfe]], false));
+            // A program that wrote a title over its arguments (node's `process.title`): one
+            // argument with spaces in it, and whatever padding it left as empty ones. Nothing
+            // tells this from a program started that way.
+            assert_eq!(args(b"my server title\0\0\0"), (vec![b"my server title".to_vec(), vec![], vec![]], false));
+            // A kernel thread, or a process that ended between two reads.
+            assert_eq!(args(b""), (vec![], false));
+        }
+
+        #[test]
+        fn arguments_past_the_limits_are_cut_at_a_whole_one_and_flagged() {
+            use crate::platform::{ARGS_MAX, ARGV_MAX};
+            // Read one byte past the limit: the last argument is not whole, and is left out.
+            let mut long = b"node\0".to_vec();
+            long.extend(std::iter::repeat_n(b'x', ARGV_MAX + 1 - long.len()));
+            assert_eq!(cmdline(&long), (vec![b"node".to_vec()], true));
+            // Exactly at the limit, whole: kept.
+            let mut fits = b"node\0".to_vec();
+            fits.extend(std::iter::repeat_n(b'x', ARGV_MAX - fits.len() - 1));
+            fits.push(0);
+            let (argv, truncated) = cmdline(&fits);
+            assert_eq!((argv.len(), argv[1].len(), truncated), (2, ARGV_MAX - 6, false));
+            // More arguments than the limit.
+            let many = b"a\0".repeat(ARGS_MAX + 5);
+            let (argv, truncated) = cmdline(&many);
+            assert_eq!((argv.len(), truncated), (ARGS_MAX, true));
+            // No NUL at the end, or none at all.
+            assert_eq!(cmdline(b"node\0serv"), (vec![b"node".to_vec()], true));
+            assert_eq!(cmdline(b"node"), (vec![], true));
+        }
+
+        const STATUS: &str = "Name:\tnode\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t4242\nPid:\t4242\nPPid:\t4201\nUid:\t1000\t1001\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+
+        #[test]
+        fn a_process_is_read_from_its_stat_and_status_lines() {
+            // A dev server in a terminal: its group is the one in the foreground there.
+            let stat = "4242 (node) S 4201 4200 900 34817 4200 4194304 1 0 0 0 5 1 0 0 20 0 11 0 100 1 2\n";
+            let p = process(4242, stat, STATUS, Some("/usr/bin/node")).unwrap();
+            assert_eq!(p, Process { path: "/usr/bin/node".into(), name: "node".into(), uid: 1001, ppid: 4201, pgid: 4200, sid: 900, tty_pgid: Some(4200) });
+            // No terminal: `tty_nr` is 0 and `tpgid` -1.
+            let daemon = "4242 (node) S 1 4242 4242 0 -1 4194304 1 0\n";
+            let p = process(4242, daemon, STATUS, Some("/usr/bin/node")).unwrap();
+            assert_eq!((p.ppid, p.pgid, p.tty_pgid), (1, 4242, None));
+            // A program replaced on disk still has its path; without the link (another
+            // user's process) the kernel's short name is the name.
+            let p = process(4242, stat, STATUS, Some("/opt/app/bin/server (deleted)")).unwrap();
+            assert_eq!((p.path.as_str(), p.name.as_str()), ("/opt/app/bin/server", "server"));
+            let p = process(4242, stat, STATUS, None).unwrap();
+            assert_eq!((p.path.as_str(), p.name.as_str()), ("", "node"));
+        }
+
+        #[test]
+        fn a_name_with_spaces_and_brackets_does_not_move_the_fields() {
+            let stat = "77 (a) b (c) 9 9) R 12 34 56 34817 78 0 0\n";
+            let p = process(77, stat, STATUS, None).unwrap();
+            assert_eq!((p.name.as_str(), p.ppid, p.pgid, p.tty_pgid), ("a) b (c) 9 9", 12, 34, Some(78)));
+        }
+
+        #[test]
+        fn text_that_is_no_process_is_none() {
+            let stat = "4242 (node) S 4201 4200 900 34817 4200 0\n";
+            assert!(process(4242, stat, STATUS, None).is_some());
+            // Another process's file (the id was used again between two reads).
+            assert!(process(4243, stat, STATUS, None).is_none());
+            for bad in ["", "4242", "4242 node S 1 2 3 4 5", "4242 )node( S 1 2 3 4 5", "4242 (node) S 1 2", "4242 (node) S x 2 3 4 5", "4242 (node) S -1 2 3 4 5", "x (node) S 1 2 3 4 5"] {
+                assert!(process(4242, bad, STATUS, None).is_none(), "{bad:?}");
+            }
+            for bad in ["", "Name:\tnode\n", "Uid:\n", "Uid:\t1000\n", "Uid:\t1000\tx\n"] {
+                assert!(process(4242, stat, bad, None).is_none(), "{bad:?}");
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -165,11 +355,62 @@ mod mac {
     use std::ffi::c_void;
 
     const PROC_PIDTBSDINFO: i32 = 3;
+    const PROC_PIDVNODEPATHINFO: i32 = 9;
+    const CTL_KERN: i32 = 1;
+    const KERN_ARGMAX: i32 = 8;
+    const KERN_PROCARGS2: i32 = 49;
 
     // libSystem.
     extern "C" {
         fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
         fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, size: i32) -> i32;
+        fn getsid(pid: i32) -> i32;
+        fn sysctl(name: *mut i32, namelen: u32, oldp: *mut c_void, oldlenp: *mut usize, newp: *mut c_void, newlen: usize) -> i32;
+    }
+
+    /// `struct proc_vnodepathinfo` of <sys/proc_info.h>: the working directory and the root,
+    /// each a `vnode_info` (152 bytes) and then its path.
+    const VNODE_INFO: usize = 152;
+    const VNODE_PATH: usize = VNODE_INFO + 1024;
+
+    #[repr(C, align(8))]
+    struct VnodePaths([u8; 2 * VNODE_PATH]);
+
+    /// The process's working directory.
+    fn cwd(pid: i32) -> Option<String> {
+        let mut paths = VnodePaths([0; 2 * VNODE_PATH]);
+        let size = std::mem::size_of::<VnodePaths>() as i32;
+        // Safe: the buffer is as long as the size given, and the kernel writes at most that.
+        let got = unsafe { proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, (&mut paths as *mut VnodePaths).cast(), size) };
+        if got != size {
+            return None;
+        }
+        let path = &paths.0[VNODE_INFO..VNODE_PATH];
+        let path = &path[..path.iter().position(|b| *b == 0)?];
+        std::str::from_utf8(path).ok().filter(|p| p.starts_with('/')).map(String::from)
+    }
+
+    pub fn invocation(pid: u32) -> Option<super::Invocation> {
+        let pid = i32::try_from(pid).ok()?;
+        // The kernel hands the arguments over together with the environment, in a block of
+        // at most `kern.argmax` bytes. A smaller buffer would not get a part of it.
+        let mut argmax: i32 = 0;
+        let mut len = std::mem::size_of::<i32>();
+        // Safe: two names, an int to write to and its length; nothing is set.
+        let ok = unsafe { sysctl([CTL_KERN, KERN_ARGMAX].as_mut_ptr(), 2, (&mut argmax as *mut i32).cast(), &mut len, std::ptr::null_mut(), 0) };
+        let argmax = usize::try_from(argmax).ok().filter(|n| ok == 0 && (4..=16 << 20).contains(n))?;
+        let mut block = vec![0u8; argmax];
+        let mut len = block.len();
+        // Safe: the buffer is as long as the length given, and the kernel writes at most that.
+        let ok = unsafe { sysctl([CTL_KERN, KERN_PROCARGS2, pid].as_mut_ptr(), 3, block.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+        if ok != 0 || len > block.len() {
+            return None;
+        }
+        let parsed = super::procargs(&block[..len]);
+        // The block holds the environment too: it is wiped, not just let go.
+        block.fill(0);
+        let (argv, truncated) = parsed?;
+        Some(super::Invocation { argv, truncated, cwd: cwd(pid) })
     }
 
     /// `struct proc_bsdinfo` of <sys/proc_info.h>, as far as Beacon reads it.
@@ -212,7 +453,21 @@ mod mac {
         let mut info: BsdInfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<BsdInfo>() as i32;
         let got = unsafe { proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, (&mut info as *mut BsdInfo).cast(), size) };
-        (got == size && info.pid == pid as u32).then(|| Process { path: String::from_utf8_lossy(&path).into_owned(), uid: info.uid, ppid: info.ppid })
+        if got != size || info.pid != pid as u32 {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&path).into_owned();
+        Some(Process {
+            name: super::program_name(&path).to_string(),
+            path,
+            uid: info.uid,
+            ppid: info.ppid,
+            pgid: info.pgid,
+            // Safe: getsid takes a number and touches no memory of ours. -1: it can't say.
+            sid: u32::try_from(unsafe { getsid(pid) }).unwrap_or(0),
+            // Without a terminal the device is NODEV and the group 0.
+            tty_pgid: (info.e_tdev != u32::MAX && info.e_tpgid != 0).then_some(info.e_tpgid),
+        })
     }
 
     #[cfg(test)]
@@ -230,7 +485,45 @@ mod mac {
             let me = process(std::process::id()).expect("this process");
             assert_eq!(me.uid, crate::platform::user_id());
             assert!(me.path.starts_with('/'), "{}", me.path);
+            assert!(!me.name.is_empty() && me.path.ends_with(&format!("/{}", me.name)), "{me:?}");
+            assert!(me.ppid > 0 && me.pgid > 0, "{me:?}");
             assert!(process(0x7fff_fff0).is_none());
+        }
+
+        #[test]
+        fn a_child_is_read_with_the_arguments_it_was_started_with_and_its_folder() {
+            use std::process::Stdio;
+            let here = std::env::temp_dir().canonicalize().unwrap();
+            // A shell that waits for a line, started with arguments of every awkward kind.
+            let args = ["-c", "read line; :", "two words", "", "it's \"quoted\"", "TOKEN=in-an-argument"];
+            let mut child = crate::tools::command("sh").unwrap().args(args).current_dir(&here).env("BEACON_TEST_SECRET", "never-read-out").stdin(Stdio::piped()).spawn().unwrap();
+            let read = invocation(child.id());
+            let me = process(child.id()).unwrap();
+            drop(child.stdin.take());
+            child.wait().unwrap();
+            let read = read.expect("the child's arguments");
+            let argv: Vec<String> = read.argv.iter().map(|a| String::from_utf8(a.clone()).unwrap()).collect();
+            assert!(argv[0].ends_with("sh") && me.path.ends_with("sh"), "the program's own name first: {argv:?}");
+            assert_eq!(argv[1..], args);
+            assert!(!read.truncated);
+            assert_eq!(read.cwd.as_deref(), here.to_str());
+            // The environment stands right behind the arguments in what the kernel gives;
+            // none of it comes out.
+            assert!(!format!("{read:?}").contains("never-read-out") && !format!("{read:?}").contains("BEACON_TEST_SECRET"));
+            // A process that has ended, and one that never was.
+            assert!(invocation(child.id()).is_none() && invocation(0x7fff_fff0).is_none());
+        }
+
+        #[test]
+        fn a_child_is_read_with_its_parent_and_its_group() {
+            let mut child = crate::tools::command("sleep").unwrap().arg("30").spawn().unwrap();
+            let p = process(child.id()).expect("the child");
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert_eq!((p.name.as_str(), p.ppid), ("sleep", std::process::id()));
+            // It was started without a group of its own, so it is in this process's.
+            assert_eq!(p.pgid, process(std::process::id()).unwrap().pgid);
+            assert!(p.sid > 0 && p.sid == process(std::process::id()).unwrap().sid, "{p:?}");
         }
     }
 }
@@ -245,11 +538,86 @@ pub async fn connect_local(path: &Path) -> std::io::Result<LocalStream> {
     tokio::net::UnixStream::connect(path).await
 }
 
-/// A listener on `addr`. Nothing listens yet: this is where a listener is made when Beacon
-/// gets one, so what a system needs before it lets a program listen has one place.
-#[allow(dead_code)] // no command listens yet
+/// A listener on `addr`, for a port share (share.rs). The address is taken only when nothing
+/// else has it: no address reuse is asked for, so a port that a server holds on every address
+/// of this computer is refused here instead of taken from it. The system probes a connection
+/// that has gone quiet (keepalive), so one whose other end vanished ends by itself.
 pub async fn bind_tcp(addr: std::net::SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
-    tokio::net::TcpListener::bind(addr).await
+    let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
+    socket.set_keepalive(true)?;
+    socket.bind(addr)?;
+    socket.listen(128)
+}
+
+// MARK: Tailscale and listening ports
+
+/// Where the regular Tailscale client's command line is, in the order it is looked for: a
+/// full path, or the name of a system tool (tools.rs).
+#[cfg(target_os = "macos")]
+pub const TAILSCALE: [&str; 3] = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale"];
+#[cfg(target_os = "linux")]
+pub const TAILSCALE: [&str; 2] = ["tailscale", "/usr/local/bin/tailscale"];
+
+/// The system tool that names the process listening on TCP `port`, and its arguments: `lsof`
+/// on macOS, `ss` on Linux. Both answer for this user's own processes without more rights.
+#[cfg(target_os = "macos")]
+pub fn listener_query(port: u16) -> (&'static str, Vec<String>) {
+    ("lsof", vec!["-nP".into(), format!("-iTCP:{port}"), "-sTCP:LISTEN".into(), "-Fp".into()])
+}
+#[cfg(target_os = "linux")]
+pub fn listener_query(port: u16) -> (&'static str, Vec<String>) {
+    ("ss", vec!["-H".into(), "-ltnp".into(), "sport".into(), "=".into(), format!(":{port}")])
+}
+
+/// The first process id in what `listener_query`'s tool printed.
+#[cfg(target_os = "macos")]
+pub fn listener_pid(output: &str) -> Option<u32> {
+    listeners::lsof(output)
+}
+#[cfg(target_os = "linux")]
+pub fn listener_pid(output: &str) -> Option<u32> {
+    listeners::ss(output)
+}
+
+/// What the two tools print, read apart from running them so both are tested on every system.
+mod listeners {
+    /// `lsof -Fp`: one field per line, a process id as `p<pid>`.
+    #[cfg(any(target_os = "macos", test))]
+    pub fn lsof(output: &str) -> Option<u32> {
+        output.lines().find_map(|l| l.strip_prefix('p')?.parse().ok()).filter(|pid| *pid > 0)
+    }
+
+    /// `ss -ltnp`: one socket per line, ending in `users:(("node",pid=4242,fd=23))`.
+    #[cfg(any(target_os = "linux", test))]
+    pub fn ss(output: &str) -> Option<u32> {
+        output.lines().find_map(|l| {
+            let rest = &l[l.find("users:(")?..];
+            let digits = &rest[rest.find("pid=")? + 4..];
+            digits[..digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len())].parse().ok()
+        }).filter(|pid| *pid > 0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_listening_process_is_read_from_what_each_tool_prints() {
+            assert_eq!(lsof("p4242\nf23\n"), Some(4242));
+            // Two processes hold the socket (a server and its worker): the first one listed.
+            assert_eq!(lsof("p4242\nf23\np4250\nf23\n"), Some(4242));
+            for none in ["", "\n", "f23\n", "px\n", "p0\n", "4242\n"] {
+                assert_eq!(lsof(none), None, "{none:?}");
+            }
+            let line = "LISTEN 0      511        127.0.0.1:3000       0.0.0.0:*    users:((\"node\",pid=4242,fd=23))\n";
+            assert_eq!(ss(line), Some(4242));
+            assert_eq!(ss("LISTEN 0 511 *:3000 *:* users:((\"next-server (v1\",pid=77,fd=20),(\"node\",pid=78,fd=20))\n"), Some(77));
+            // A socket of another user is listed without its process.
+            for none in ["", "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n", "users:((\"x\",pid=,fd=1))", "users:((\"x\",pid=0,fd=1))", "pid=4242"] {
+                assert_eq!(ss(none), None, "{none:?}");
+            }
+        }
+    }
 }
 
 // MARK: Stopping
@@ -284,6 +652,42 @@ impl StopSignal {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// What the macOS kernel gives for a process: the count, the path, padding, the
+    /// arguments, then the environment.
+    fn block(count: i32, path: &str, args: &[&[u8]], env: &[&str]) -> Vec<u8> {
+        let mut b = count.to_ne_bytes().to_vec();
+        b.extend_from_slice(path.as_bytes());
+        b.extend_from_slice(&[0; 5]);
+        for part in args.iter().copied().chain(env.iter().map(|e| e.as_bytes())) {
+            b.extend_from_slice(part);
+            b.push(0);
+        }
+        b
+    }
+
+    #[test]
+    fn the_kernels_block_gives_the_arguments_and_never_the_environment() {
+        let env = ["API_TOKEN=secret-in-the-environment", "PATH=/usr/bin"];
+        let args: [&[u8]; 6] = [b"node", b"/app/node_modules/.bin/next", b"dev", b"--name=two words", b"", b"\xff\xfe"];
+        let (argv, truncated) = procargs(&block(6, "/usr/local/bin/node", &args, &env)).unwrap();
+        assert_eq!(argv, args.iter().map(|a| a.to_vec()).collect::<Vec<_>>());
+        assert!(!truncated);
+        // A count of none: the environment that follows is still not arguments.
+        assert_eq!(procargs(&block(0, "/bin/sh", &[], &env)), Some((vec![], false)));
+        // The block ends before the count is met (a process caught while it starts, or one
+        // that wrote over its arguments): what is whole is kept, and flagged.
+        let mut short = block(3, "/bin/sh", &[b"sh", b"-c"], &[]);
+        short.extend_from_slice(b"half an argu");
+        assert_eq!(procargs(&short), Some((vec![b"sh".to_vec(), b"-c".to_vec()], true)));
+        // More than fits the limit.
+        let big = vec![b'x'; crate::platform::ARGV_MAX];
+        let (argv, truncated) = procargs(&block(3, "/bin/sh", &[b"sh", &big, b"after"], &env)).unwrap();
+        assert_eq!((argv, truncated), (vec![b"sh".to_vec()], true));
+        for bad in [&b""[..], b"\x01\x00", b"\xff\xff\xff\xff/bin/sh\0sh\0", b"\x01\x00\x00\x00/bin/sh-without-an-end"] {
+            assert_eq!(procargs(bad), None, "{bad:?}");
+        }
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pf-{tag}-{}-{}", std::process::id(), crate::util::now() as u64 % 100_000));
@@ -440,5 +844,15 @@ mod tests {
         let _dialed = tokio::net::TcpStream::connect(addr).await.unwrap();
         listener.accept().await.unwrap();
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_listener_never_takes_a_port_that_something_else_holds() {
+        let held = bind_tcp("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = held.local_addr().unwrap();
+        assert_eq!(bind_tcp(addr).await.unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
+        // Nor one a server made the usual way, with address reuse, listens on.
+        let usual = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        assert_eq!(bind_tcp(usual.local_addr().unwrap()).await.unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
     }
 }

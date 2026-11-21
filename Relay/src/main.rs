@@ -17,9 +17,11 @@ mod label;
 mod legacy;
 mod net;
 mod notice;
+mod owner;
 mod platform;
 mod policy;
 mod presence;
+mod proxy;
 mod push;
 mod relay;
 #[cfg(any(target_os = "macos", test))]
@@ -27,9 +29,12 @@ mod rename;
 mod rex;
 mod service;
 mod setup;
+mod share;
+mod tailscale;
 mod tools;
 mod update;
 mod util;
+mod waiting;
 
 use brand::BEACON;
 use config::{default_log_file, default_state_dir, expand, Config};

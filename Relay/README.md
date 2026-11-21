@@ -11,8 +11,13 @@ which is what the iOS app looks for), watches every session, and sends a push wh
 | A terminal raises a desktop notification (OSC 9 / OSC 777) | `NOTICE` | `active`, sound |
 
 It skips a phone while Pteron is open on it, since the app shows its own toasts then.
-Phones register through Rex itself (client actions), so Beacon opens no ports. Every
+Phones register through Rex itself (client actions), so Beacon listens on nothing for that. Every
 machine that runs a Rex server needs its own helper.
+
+Since 0.7.0 Beacon also does two things for the app's Ports list, both only when a registered
+phone asks: it lets that phone's browsers open a dev server of this computer over Tailscale
+(`port_share`, the one case in which it listens on a port, step 8), and it says which processes
+are behind a listening port (`port_owner`, step 9).
 
 Beacon holds no Apple key and never sees a phone's APNs token. Each phone registers with
 the push gateway (`Gateway/`), mints one secret per Beacon there, and hands that secret to the
@@ -211,6 +216,16 @@ closes the socket. The only timers are the reconnect backoff (1 s to 60 s, while
 after a check that could not reach the release list). A push
 opens one HTTPS connection to the gateway, sends one request and closes it; nothing is kept
 open in between. Idle: about 3.5 MB of memory and no CPU.
+
+A port share (step 8) adds one listener and at most one timer, set to the earlier of its two
+ends (30 minutes after its last connection closed, 10 minutes after its port stopped
+listening). While a connection is open and the port listens it has no timer at all, and
+nothing about a share is polled: it learns that its port went from Rex's `ports_changed` and
+`block_closed` events and from a connection that finds nothing there. Each connection holds
+two buffers of at most 64 KB (one head of up to 32 KB plus one 16 KB read, per direction), so
+a share's 32 connections hold at most about 4 MB however much passes through them.
+`tailscale status` runs once per `port_share`, and `lsof` or `ss` once per `port_owner` that
+names no `pid`; neither runs otherwise.
 
 ## Updates
 
@@ -863,6 +878,223 @@ every push. It has no `session_id`, `window_id` or `block_id`, and no collapse i
   characters, or ones JSON escapes) is cut further, and no other field is.
 - The app registers the categories `AGENT_BLOCKED`, `AGENT_BLOCKED_ACT`, `AGENT_DONE` and
   `NOTICE`; only `AGENT_BLOCKED_ACT` has actions.
+
+### 8. Open a port in the phone's browsers (`port_share`, from 0.7.0)
+
+The app shows a dev server's page inside itself through a Rex tunnel, which ends when the app
+leaves the screen. For a page any browser on the phone can open, it asks Beacon for a share.
+
+`action: "port_share"`, args:
+
+```json
+{"block": "block:12", "port": 3000, "phone_ip": "100.64.0.2"}
+```
+
+- `port`: the port the dev server listens on, on this computer (1 to 65535).
+- `phone_ip`: the phone's own Tailscale address, IPv4 or IPv6, as the phone reads it from its
+  Tailscale interface. It is the only address that may connect.
+- `block`: the pane the server runs in (optional). Beacon uses it only to follow Rex's events
+  about that pane.
+
+Result:
+
+```json
+{"url": "http://desk.example.ts.net:3000", "ip_url": "http://100.64.0.1:3000",
+ "port": 3000, "same_port": true, "idle_seconds": 1800, "waiting_seconds": 600}
+```
+
+- `url` is what to open: the computer's MagicDNS name when its tailnet gives names, else its
+  Tailscale address (then `url` equals `ip_url`). `ip_url` always names the address, for a
+  phone that can't look the name up. An IPv6 address is in brackets.
+- `port` is the port the share listens on: the dev server's own number when nothing else
+  has it on the Tailscale address (`same_port: true`), else one the system picked. A server
+  that listens on every address of the computer holds its number there too, so its share gets
+  another one.
+- Asking again for a port that is shared returns the same addresses and starts its idle time
+  over. The same phone asking from another address gets a new share in the old one's place.
+
+Errors, each with a plain sentence as `message`:
+
+| `code` | When |
+|---|---|
+| `not_supported` | A Beacon before 0.7.0: it has no such action. Hide "Open in Browser". |
+| `refused` | The Rex server did not identify the caller, or the port is one that never opens in a browser (22, 25, 53, 2181, 3306, 5432, 5672, 6379, 9092, 9222, 9229, 9230, 11211, 27017). |
+| `not_registered` | The caller's phone has no registration here that the caller's identity made. |
+| `bad_request` | `port` is no port number, `phone_ip` is no Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), or `block` is longer than 200 characters. |
+| `not_available` | The computer doesn't run the regular Tailscale client, the client is not running, or it has no address of the kind `phone_ip` is. Hide "Open in Browser" for this computer. |
+| `not_listening` | Nothing listens on `localhost:<port>` now. |
+| `busy` | Eight shares are open. |
+| `failed` | The system gave no port to listen on. |
+
+How Beacon reads Tailscale: it runs the client's own command line, `tailscale status --json
+--peers=false`, as the user it runs as, with a 5 s limit, once per `port_share`. It looks for it
+at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, `/usr/local/bin/tailscale` and
+`/opt/homebrew/bin/tailscale` on a Mac, and among the system tools and at
+`/usr/local/bin/tailscale` on Linux. It reads `BackendState` (must be `Running`),
+`Self.TailscaleIPs` (only addresses in Tailscale's two ranges count), `Self.DNSName`,
+`Self.HostName` and `CurrentTailnet.MagicDNSEnabled`. Nothing is changed and no other device
+is listed. Without that answer there is no share: no address is taken from the network
+interfaces, because an address in `100.64.0.0/10` on another network is not a tailnet.
+
+What a share is:
+
+- **One listener, on the computer's Tailscale address only**, never on a LAN or public
+  address or on every address. It is made without address reuse, so it never takes a port
+  from a program that has it.
+- **For one phone.** A connection from any address but `phone_ip` is closed before a byte is
+  read, and reaches nothing.
+- **HTTP only, to one loopback port.** Each connection is piped to `127.0.0.1:<port>` or
+  `[::1]:<port>` (the one that answered last is tried first; the share never connects to
+  itself). What is not an HTTP/1.x request is answered `400` by the share and reaches
+  nothing; a head over 32 KB or 100 header lines gets `431`; `CONNECT` is refused.
+- **The dev server sees a local visitor.** Dev servers turn away a request for a name they
+  don't know (Vite's `server.allowedHosts`, Next.js's `allowedDevOrigins`,
+  webpack-dev-server), so the share rewrites the head of each request and answer, and only
+  the head:
+
+  | Direction | Header | Becomes |
+  |---|---|---|
+  | request | `Host` | `localhost:<port>` |
+  | request | `Origin`, `Referer` | `http://localhost:<port>…` when they name the shared address (by name or by address) |
+  | answer | `Location`, `Access-Control-Allow-Origin` | the shared address, as the browser asked for it, when they name `localhost`, `127.0.0.1` or `[::1]` with the port |
+  | answer | `Set-Cookie` | loses a `Domain` of `localhost`, `127.0.0.1` or `::1`, so the cookie belongs to the host the browser is on |
+  | answer | `X-Pteron-Waiting` | taken out (see the waiting page) |
+
+  A dev server's host check is also what keeps a page of another site from reading it
+  through a name that site points at the computer. The share keeps that check in the
+  server's place: a request whose `Host` is not the share's own (the computer's MagicDNS
+  name, that name's first part, or the Tailscale address, each with the share's port) is
+  answered `421` and passed nowhere. An `Origin` from elsewhere stays as it is, so a server
+  that checks origins still sees it.
+
+  Every other header and every body passes as it came. Bodies are streamed, never held
+  whole: by `Content-Length`, in chunks (sizes, extensions and trailers untouched), or until
+  the server closes (an event stream). A request whose body has two ends (`Content-Length`
+  with `Transfer-Encoding`, two different lengths) is answered `400`.
+- **WebSockets pass.** After a `101` answer both directions carry every byte untouched, so
+  live reload works.
+- **Limits.** Eight shares at once, whoever asked; 32 connections per share (one more is
+  closed at once); 64 requests waiting for their answer on one connection.
+
+When a share ends. Its listener and all its connections close:
+
+- 30 minutes after its last connection closed (`idle_seconds`). An open connection keeps
+  it; the system's TCP keepalive ends a connection whose phone vanished.
+- 10 minutes after its port stopped listening (`waiting_seconds`), unless it listens again.
+- When the phone unregisters, or the gateway no longer knows it (`410`, the second `401`).
+- When Beacon stops. A restarted Beacon has no shares.
+
+**The waiting page.** A share whose dev server stopped does not go at once. Beacon learns
+that the port went from Rex (`ports_changed` without the port on a whole list, `block_closed`
+of the pane) or from a connection that finds nothing there; it learns that it is back the
+same two ways. Meanwhile every request is answered by the share itself, and the connection
+closed:
+
+- status `503`, `Retry-After: 5`, `Cache-Control: no-store`, `X-Pteron-Waiting: 1`;
+- for a `GET` that is no WebSocket handshake, a page of about 4 KB with nothing loaded from
+  anywhere: the glyph (inline SVG), "Nothing is running on localhost:<port> on <machine>
+  right now." and a button "Open Pteron" (`rexduo://open`). It follows the browser's light or
+  dark appearance. `<machine>` is the computer's host name as Tailscale has it, shown as text
+  (HTML-escaped, cut at 64 characters);
+- for every other request the status alone, with no body.
+
+The page's script asks for its own address again every 5 s (`cache: "no-store"`) and reloads
+only when the answer no longer carries `X-Pteron-Waiting`. A dev server can't keep the page
+there or fake it: the share takes that header out of everything it passes on. The next
+request after the port listens again is piped as before.
+
+### 9. Who holds a port, and how it was started (`port_owner`, from 0.7.0)
+
+Rex's `terminal.ports` names the process that holds a port, but not its parent, its process
+group or its arguments. A server started through a wrapper (`npm run dev` starts a shell that
+starts `node`) is not the process the pane started, so the app can't tell that Ctrl-C in the
+pane would reach it, nor what to type to start it again. `port_owner` says what it needs for
+both. It only reports: Beacon signals no process and starts none. It asks Rex nothing, so it
+works with every Rex server.
+
+`action: "port_owner"`, args `{"pid": 4242}`, the `pid` of the port's entry in
+`terminal.ports`. Without a `pid`, `{"port": 3000}` makes Beacon ask the system which process
+listens there (`lsof -nP -iTCP:<port> -sTCP:LISTEN -Fp` on a Mac, `ss -H -ltnp sport = :<port>`
+on Linux, the first process listed). `pid` wins when both are there.
+
+Result:
+
+```json
+{"pid": 4242, "pgid": 4200, "tty_foreground_pgid": 4200, "foreground": true,
+ "ancestry": [
+   {"pid": 4242, "ppid": 4201, "pgid": 4200, "sid": 900, "group_leader": false, "session_leader": false,
+    "name": "node", "path": "/usr/local/bin/node",
+    "argv": ["node", "/app/node_modules/.bin/next", "dev"], "argv_lossy": false, "truncated": false, "cwd": "/app"},
+   {"pid": 4200, "ppid": 900, "pgid": 4200, "sid": 900, "group_leader": true, "session_leader": false,
+    "name": "npm", "path": "/usr/local/bin/node",
+    "argv": ["npm", "run", "dev"], "argv_lossy": false, "truncated": false, "cwd": "/app"},
+   {"pid": 900, "ppid": 850, "pgid": 900, "sid": 900, "group_leader": true, "session_leader": true,
+    "name": "zsh", "path": "/bin/zsh",
+    "argv": ["-zsh"], "argv_lossy": false, "truncated": false, "cwd": "/home/alex"}
+ ]}
+```
+
+- `pid`, `pgid`: the holder and its process group.
+- `tty_foreground_pgid`: the process group in the foreground of the holder's terminal, or
+  `null` when it has none. `foreground` is true when that is the holder's own group, which is
+  the group a Ctrl-C typed into that terminal reaches.
+- `ancestry`: the holder first, then the process that started it, and so on up. The list
+  ends before pid 1, before the first process of another user or one that can't be read, at a
+  process already listed, and after 32 entries. Per entry:
+  - `pid`, `ppid`, `pgid`, `sid` (the session; 0 when the system does not say);
+  - `group_leader` (`pid == pgid`): the job a shell started leads its group. `session_leader`
+    (`pid == sid`): the shell a terminal started leads its session;
+  - `name` (the last part of `path`) and `path` (the program's file; empty on Linux when it
+    can't be read);
+  - `argv`: the arguments as an array, the program's own name first, each exactly as it is
+    (spaces, quotes and empty arguments included), never joined. `null` when they could not
+    be read, or when the process ended or was replaced while it was read;
+  - `argv_lossy`: true when an argument was not UTF-8. JSON holds text, so such bytes come
+    as U+FFFD, and the array is not what was typed;
+  - `truncated`: true when the arguments did not fit 8192 bytes or 256 arguments, or ended
+    early. `argv` then holds only the whole arguments before the cut;
+  - `cwd`: the process's working directory now, or `null`.
+
+Errors: `not_supported` (a Beacon before 0.7.0), `refused` (the server did not identify the
+caller), `not_registered` (the caller has no phone registered here), `bad_request` (no `pid`
+and no `port`, or one that is no process id above 1 or no port number), `not_available` (no
+such process, it belongs to another user, or nothing of this user listens on the port; the
+answer is the same for all three).
+
+**Stop.** Offer it when the pane's foreground process (from Rex's `terminal.process`) is in
+`ancestry` and has the holder's `pgid`, or is the holder; look again right before sending the
+Ctrl-C.
+
+**Restart.** What to type again is the `argv` of the job the pane's shell started: the entry
+that is a `group_leader` with the holder's `pgid` and whose parent is the pane's shell. It is
+not the holder's own (`node …/next dev`). Refuse when that entry has `argv: null`,
+`argv_lossy` or `truncated`, and quote each argument for the shell yourself. What the
+arguments can't tell, so a restart may differ from what was typed:
+
+- Variables set in front of the command (`PORT=4000 npm run dev`) are in the environment,
+  not in the arguments, and the environment is never read out.
+- An alias or a shell function shows as what it ran, a pipeline, `&&` list or subshell as
+  its separate processes, and redirections not at all.
+- A program started through an interpreter shows the interpreter's arguments: `npm` is
+  `node` running a script, so `argv[0]` is what the script called itself and `path` is the
+  interpreter.
+- A program can write over its own arguments. Node's `process.title = "x"` leaves `["x"]`
+  on a Mac; nothing marks that. An `argv[0]` whose last part is not `name`, or a single
+  argument with spaces, is a hint and no proof.
+- `cwd` is where the process is now, which is not where it was started if it changed
+  directory. The shell's own entry has the shell's.
+- A process may end, and its id go to another, at any moment after the answer.
+
+**What is kept private.** Arguments can hold secrets (a token in a flag). They are returned
+only in this action's result, to the caller, over the Rex connection that carries every
+action. Beacon never logs them, writes them to a file, puts them in an error, or sends them
+to the push gateway. The environment is never returned: on a Mac the kernel hands it over
+in the same block as the arguments (`KERN_PROCARGS2`); Beacon reads only the counted
+arguments out of it and wipes the block.
+
+On a Mac the processes are read from the kernel (`proc_pidinfo`, `proc_pidpath`, `getsid`,
+`sysctl kern.procargs2`); on Linux from `/proc/<pid>/stat`, `status`, `cmdline` and the `exe`
+and `cwd` links.
 
 ## Desk presence
 

@@ -1,7 +1,7 @@
 //! The relay: watches the Rex server (found automatically, or the ones in the config), turns
 //! agent and notification events into pushes, and serves the client actions the iOS app calls:
 //! `helper_identity`, `register_push`, `unregister_push`, `push_presence`, `set_push_paused`,
-//! `helper_status`, `update_helper`, `send_test`.
+//! `helper_status`, `update_helper`, `send_test`, `port_share`, `port_owner`.
 //!
 //! Any client of the Rex server can call these actions, so each one first asks who the server
 //! says the caller is (`auth::Requester`) and what that identity may do.
@@ -20,6 +20,7 @@ use crate::policy::{BlockRef, Decision, PushCategory, PushIntent, PushPolicy, Ra
 use crate::presence::{hold_tags, shows_desk, LeaseAnswer, Leases, PresenceKey};
 use crate::push::{BlockContext, PushMessage};
 use crate::rex::{self, Conn, Identity};
+use crate::share::{self, Refusal, Shares};
 use crate::update::{Asset, Plan, Restart, Updater};
 use crate::util::{now, now_iso, Json};
 use crate::{debug, info};
@@ -52,7 +53,8 @@ fn cooldown_left(last: Option<Instant>, now: Instant) -> Option<u64> {
 }
 
 /// The actions the helper answers. Only one of these names is repeated in a log line.
-const KNOWN_ACTIONS: [&str; 8] = ["register_push", "unregister_push", "push_presence", "set_push_paused", "helper_identity", "helper_status", "update_helper", "send_test"];
+const KNOWN_ACTIONS: [&str; 10] =
+    ["register_push", "unregister_push", "push_presence", "set_push_paused", "helper_identity", "helper_status", "update_helper", "send_test", "port_share", "port_owner"];
 
 fn error(code: &str, message: &str) -> Value {
     json!({"code": code, "message": message})
@@ -135,6 +137,25 @@ pub fn actions() -> Value {
             "title": "Send a Test Notification",
             "description": "Send one notification to the calling iPhone, to show that notifications from this computer arrive.",
             "args": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "port_share", "kind": "client", "category": BEACON,
+            "title": "Open a Port in the Phone's Browser",
+            "description": "Let the calling iPhone's browsers reach a web server that listens on this computer, over Tailscale, for as long as it is used.",
+            "args": {"type": "object", "properties": {
+                "block": {"type": "string", "description": "The pane the server runs in."},
+                "port": {"type": "integer", "description": "The port the server listens on, on this computer."},
+                "phone_ip": {"type": "string", "description": "The calling iPhone's own Tailscale address: the only one that may connect."}
+            }}
+        },
+        {
+            "name": "port_owner", "kind": "client", "category": BEACON,
+            "title": "Who Holds a Port",
+            "description": "The process that listens on a port of this computer: its process group, the group in the foreground of its terminal, and the processes that started it.",
+            "args": {"type": "object", "properties": {
+                "pid": {"type": "integer", "description": "The process that listens, as Rex names it for the port."},
+                "port": {"type": "integer", "description": "The port, when the process is not known."}
+            }}
         }
     ])
 }
@@ -178,6 +199,11 @@ pub struct Server {
 }
 
 impl Server {
+    /// Names this connection among the relay's, for what belongs to one server (port shares).
+    fn key(&self) -> String {
+        format!("{:p}", self as *const Server)
+    }
+
     fn host(&self) -> String {
         let h = self.st.lock().unwrap().host.clone();
         if h.is_empty() { "rex".into() } else { h }
@@ -269,6 +295,8 @@ pub struct Relay {
     due_task: Mutex<Option<JoinHandle<()>>>,
     status_path: PathBuf,
     stopping: AtomicBool,
+    /// The ports a phone's browsers reach over the tailnet (share.rs).
+    shares: Arc<Shares>,
     /// Desk presence (desk.rs, hold.rs, presence.rs).
     desk: Mutex<Desk>,
     holds: Mutex<Holds>,
@@ -332,6 +360,11 @@ impl Relay {
             due_task: Mutex::new(None),
             status_path: o.status_path,
             stopping: AtomicBool::new(false),
+            #[cfg(not(test))]
+            shares: Shares::new(share::Net::tailnet()),
+            // No test asks the real Tailscale client: loopback stands in for the tailnet.
+            #[cfg(test)]
+            shares: Shares::new(share::Net::testing()),
             desk: Mutex::new(Desk::default()),
             // A dry run holds in memory only, so it never touches what the real helper holds.
             holds: Mutex::new({
@@ -399,6 +432,8 @@ impl Relay {
     /// instead of listing it as `lost` for a minute.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        // A Beacon that stops shares nothing.
+        self.shares.close_all();
         for s in &self.servers {
             s.conn.close(CloseCode::Normal);
         }
@@ -628,6 +663,7 @@ impl Relay {
             Some("block_closed") => {
                 if let Some(b) = p.str("block_id") {
                     s.st.lock().unwrap().status_removed_at.remove(&format!("{sid}|{b}"));
+                    self.shares.block_closed(&s.key(), b);
                     let r = self.block_ref(s, sid, b);
                     self.decide(RelayEvent::BlockClosed(r));
                 }
@@ -676,6 +712,9 @@ impl Relay {
                         info!("[{}] notification {}: {} {body}", s.host(), short(b), title.as_deref().unwrap_or(""));
                         self.decide(RelayEvent::Notification(r, title, body));
                     }
+                    // The pane's whole list of ports: a shared one that left it waits, and
+                    // one that is back is piped again.
+                    "ports_changed" => self.shares.ports_changed(&s.key(), b, &e),
                     _ => {}
                 }
             }
@@ -787,11 +826,13 @@ impl Relay {
                 info!("the gateway no longer has {who} ({why}); unregistering it until the phone registers again");
                 self.strikes.lock().unwrap().clear(&hash);
                 self.store().drop_secret(&d.device_id, &d.push_secret);
+                self.shares.device_gone(&d.device_id);
             }
             SendResult::Unauthorized => {
                 if self.strikes.lock().unwrap().refused(&hash, t) {
                     info!("the gateway refused {who}'s secret again; unregistering it until the phone registers again");
                     self.store().drop_secret(&d.device_id, &d.push_secret);
+                    self.shares.device_gone(&d.device_id);
                 } else {
                     info!("the gateway refused {who}'s secret; this push is dropped, the registration stays unless it happens again in a minute or more");
                 }
@@ -906,6 +947,8 @@ impl Relay {
                 Ok(status)
             }
             "send_test" => self.send_test(s, requester, identity).await,
+            "port_share" => self.share_port(s, args, requester, identity).await,
+            "port_owner" => self.port_owner(args, requester, identity).await,
             "update_helper" => self.begin_update(&who, identity).await.map(|(result, start)| {
                 after = start;
                 result
@@ -1147,6 +1190,7 @@ impl Relay {
             if removed.is_ok() {
                 self.strikes.lock().unwrap().clear(&secret_hash(&secret));
                 self.leases.lock().unwrap().forget(id);
+                self.shares.device_gone(id);
             }
             removed
         });
@@ -1156,6 +1200,73 @@ impl Relay {
         };
         info!("unregister from {}: {}", requester.who(), if removed { "removed" } else { "nothing of theirs to remove" });
         Ok(json!({"removed": removed}))
+    }
+
+    /// `port_share`: lets the requester's own registered phone reach one port of this
+    /// computer's loopback from its browsers, over the tailnet (share.rs). The answer is the
+    /// address to open. Asking again for a port that is shared gives the same address.
+    async fn share_port(&self, s: &Server, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
+        let who = requester.who();
+        let Some(device) = self.own_device(requester, identity) else {
+            info!("port_share from {who}: refused, no phone of theirs is registered here under that id");
+            return Err(error("not_registered", concat!("Only a phone registered with this ", crate::beacon_name!(), " can open a page this way.")));
+        };
+        let bad = |m: &str| Err(error("bad_request", m));
+        let Some(port) = args.int("port").and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0) else { return bad("port must be a port number") };
+        let Some(phone) = args.str("phone_ip").and_then(|a| a.parse::<std::net::IpAddr>().ok()) else { return bad("phone_ip must be the phone's Tailscale address") };
+        // A pane's name is only held to tell its events from another's.
+        let block = args.str("block").unwrap_or("");
+        if block.len() > 200 {
+            return bad("block must be a pane's id");
+        }
+        if share::is_refused_port(port) {
+            info!("port_share from {who}: refused, port {port} never opens in a browser");
+            return Err(error("refused", "That port doesn't open in a browser."));
+        }
+        let ask = share::Ask { server: s.key(), block: block.into(), port, device: device.device_id.clone(), phone };
+        match self.shares.open(ask).await {
+            Ok(opened) => Ok(json!({
+                "url": opened.url,
+                "ip_url": opened.ip_url,
+                "port": opened.port,
+                "same_port": opened.same_port,
+                "idle_seconds": share::IDLE.as_secs(),
+                "waiting_seconds": share::WAITING.as_secs(),
+            })),
+            Err(refusal) => {
+                let (code, message) = match refusal {
+                    Refusal::NotAvailable => ("not_available", "This computer doesn't run Tailscale, so its pages can't open in the phone's browser."),
+                    Refusal::BadPhone => ("bad_request", "phone_ip must be the phone's Tailscale address"),
+                    Refusal::NotListening => ("not_listening", "Nothing listens on that port right now."),
+                    Refusal::Full => ("busy", "Too many pages are open this way. Close one and try again."),
+                    Refusal::NoPort => ("failed", "This computer couldn't listen for the phone."),
+                };
+                info!("port_share from {who}: no share of port {port} ({code})");
+                Err(error(code, message))
+            }
+        }
+    }
+
+    /// `port_owner`: the process behind a listening port and what started it (owner.rs), for
+    /// someone with a phone registered here. With `pid` it is that process; with `port`
+    /// alone, the one the system says listens there. Nothing is ever signalled.
+    async fn port_owner(&self, args: &Value, requester: &Requester, identity: &str) -> Result<Value, Value> {
+        if self.own_device(requester, identity).is_none() {
+            info!("port_owner from {}: refused, no phone of theirs is registered here under that id", requester.who());
+            return Err(error("not_registered", concat!("Only a phone registered with this ", crate::beacon_name!(), " can ask that.")));
+        }
+        // The same answer for a process that is not there and one of another user. Nothing
+        // read about a process (its arguments least of all) goes into an error or the log.
+        let missing = || error("not_available", "That process can't be read: it has ended, or it is not this user's.");
+        let pid = match (args.int("pid"), args.int("port")) {
+            (Some(pid), _) => u32::try_from(pid).ok().filter(|p| *p > 1).ok_or_else(|| error("bad_request", "pid must be a process id"))?,
+            (None, Some(port)) => {
+                let port = u16::try_from(port).ok().filter(|p| *p > 0).ok_or_else(|| error("bad_request", "port must be a port number"))?;
+                crate::owner::listener(port).await.ok_or_else(missing)?
+            }
+            (None, None) => return Err(error("bad_request", "pid or port is needed")),
+        };
+        crate::owner::owner(pid, crate::platform::user_id(), &|pid| self.sense.process(pid), &|pid| self.sense.invocation(pid)).map(|o| o.json()).ok_or_else(missing)
     }
 
     /// Takes the one `update_helper` slot of this ten minutes, or says how long is left.
@@ -1789,7 +1900,10 @@ mod tests {
     fn actions_declare_the_contract() {
         let a = actions();
         let names: Vec<&str> = a.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["register_push", "helper_identity", "unregister_push", "push_presence", "set_push_paused", "helper_status", "update_helper", "send_test"]);
+        assert_eq!(names, ["register_push", "helper_identity", "unregister_push", "push_presence", "set_push_paused", "helper_status", "update_helper", "send_test", "port_share", "port_owner"]);
+        let args = |i: usize| a[i]["args"]["properties"].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!((args(8), args(9)), (vec!["block", "phone_ip", "port"], vec!["pid", "port"]));
+        assert!(a[8]["args"].get("required").is_none() && a[9]["args"].get("required").is_none());
         assert_eq!(a[4], json!({"name": "set_push_paused", "kind": "client", "category": BEACON, "title": "Pause or Resume Notifications",
             "description": "Pause or resume notifications from this computer to the calling iPhone. Its registration stays as it is.",
             "args": {"type": "object", "properties": {"paused": {"type": "boolean"}}, "required": ["paused"]}}));
@@ -1845,6 +1959,8 @@ mod tests {
     struct TestSense {
         reading: Mutex<crate::desk::Reading>,
         processes: Mutex<HashMap<u32, crate::desk::Process>>,
+        /// How those processes were started.
+        invocations: Mutex<HashMap<u32, crate::platform::Invocation>>,
         /// The sleep and wake events the test sends, taken by the first watcher.
         power: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Power>>>,
     }
@@ -1856,6 +1972,10 @@ mod tests {
 
         fn process(&self, pid: u32) -> Option<crate::desk::Process> {
             self.processes.lock().unwrap().get(&pid).cloned()
+        }
+
+        fn invocation(&self, pid: u32) -> Option<crate::platform::Invocation> {
+            self.invocations.lock().unwrap().get(&pid).cloned()
         }
 
         fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
@@ -4122,8 +4242,8 @@ mod tests {
         capture_log();
         let me = crate::platform::user_id();
         sense.processes.lock().unwrap().extend([
-            (100, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 1 }),
-            (200, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 4242 }),
+            (100, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 1, ..Default::default() }),
+            (200, crate::desk::Process { path: "/Applications/Rex.app/Contents/MacOS/Rex".into(), uid: me, ppid: 4242, ..Default::default() }),
         ]);
         let mac = |pid: u32| ClientSnapshot {
             client_id: format!("client:{pid}"),
@@ -4294,6 +4414,233 @@ mod tests {
         assert_eq!(held(&r), 1);
         desk_push(&r, &desk_event(PushCategory::Blocked, "other"), false, &[], moment(1.0)).await;
         assert!(!dir.join(crate::hold::PARKED_FILE).exists() && !dir.join(crate::hold::DELIVERED_FILE).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // MARK: Port shares and port owners (share.rs, owner.rs)
+    //
+    // Loopback stands in for the tailnet: the computer is desk.example.ts.net at 127.0.0.1,
+    // and a phone may have any loopback address.
+
+    use crate::share::testing::{exchange, get, soon, Dev};
+
+    async fn code(r: &Relay, s: &Server, action: &str, who: &Requester, args: &Value) -> String {
+        r.act(s, action, args, who).await.0.unwrap_err()["code"].as_str().unwrap().to_string()
+    }
+
+    /// Lets the tasks of shares that were closed end.
+    async fn closed(to: std::net::SocketAddr) -> bool {
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        soon(tokio::net::TcpStream::connect(to)).await.is_err()
+    }
+
+    #[tokio::test]
+    async fn port_share_is_only_for_a_registered_phone_and_a_port_that_listens() {
+        let dir = temp("share-owner");
+        let r = relay(&dir, false);
+        let s = named_server("https://rex.example.ts.net");
+        let dev = Dev::start().await;
+        let alex = app("a1b2c3d4", Some(ALEX));
+        let ask = json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"});
+        // Nobody is registered; a client the server did not identify is refused before that.
+        assert_eq!(code(&r, &s, "port_share", &alex, &ask).await, "not_registered");
+        assert_eq!(code(&r, &s, "port_share", &app("a1b2c3d4", None), &ask).await, "refused");
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        // Someone else's client with this phone's id, and another phone of the owner.
+        for other in [app("a1b2c3d4", Some(SAM)), app("ffff0000", Some(ALEX))] {
+            assert_eq!(code(&r, &s, "port_share", &other, &ask).await, "not_registered", "{other:?}");
+        }
+        // The owner: a request that names no port or no address of a phone is no request.
+        for bad in [
+            json!({"block": "block:1", "phone_ip": "127.0.0.1"}),
+            json!({"block": "block:1", "port": 0, "phone_ip": "127.0.0.1"}),
+            json!({"block": "block:1", "port": 70000, "phone_ip": "127.0.0.1"}),
+            json!({"block": "block:1", "port": "3000", "phone_ip": "127.0.0.1"}),
+            json!({"block": "block:1", "port": dev.port()}),
+            json!({"block": "block:1", "port": dev.port(), "phone_ip": "phone.example"}),
+            json!({"block": "block:1", "port": dev.port(), "phone_ip": "192.168.1.20"}),
+            json!({"block": "b".repeat(201), "port": dev.port(), "phone_ip": "127.0.0.1"}),
+        ] {
+            assert_eq!(code(&r, &s, "port_share", &alex, &bad).await, "bad_request", "{bad}");
+        }
+        // A debugger or a database is never shared, listening or not.
+        for port in [9229, 5432, 22] {
+            assert_eq!(code(&r, &s, "port_share", &alex, &json!({"port": port, "phone_ip": "127.0.0.1"})).await, "refused", "{port}");
+        }
+        assert_eq!(r.shares.count(), 0);
+        // The port listens: the answer is where to open it.
+        let opened = r.act(&s, "port_share", &ask, &alex).await.0.unwrap();
+        let port = opened["port"].as_u64().unwrap();
+        assert_eq!(
+            opened,
+            json!({"url": format!("http://desk.example.ts.net:{port}"), "ip_url": format!("http://127.0.0.1:{port}"), "port": port, "same_port": false, "idle_seconds": 1800, "waiting_seconds": 600})
+        );
+        let to: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let (head, _) = exchange(to, &get("/", &format!("desk.example.ts.net:{port}"))).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        // Asked again, it is the same share.
+        assert_eq!(r.act(&s, "port_share", &ask, &alex).await.0.unwrap(), opened);
+        assert_eq!(r.shares.count(), 1);
+        // A port nothing listens on is not shared.
+        let gone = Dev::start().await;
+        let silent = json!({"block": "block:1", "port": gone.port(), "phone_ip": "127.0.0.1"});
+        gone.stop().await;
+        assert_eq!(code(&r, &s, "port_share", &alex, &silent).await, "not_listening");
+        assert_eq!(r.shares.count(), 1);
+        r.stop();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_unregisters_loses_its_shares_and_a_stop_ends_them_all() {
+        let dir = temp("share-ends");
+        let r = relay(&dir, false);
+        let s = named_server("https://rex.example.ts.net");
+        let (one, two) = (Dev::start().await, Dev::start().await);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        r.store.lock().unwrap().register(phone("ffff0000", GATEWAY)).unwrap();
+        let (alex, other) = (app("a1b2c3d4", Some(ALEX)), app("ffff0000", Some(ALEX)));
+        let mut at = vec![];
+        for (who, dev) in [(&alex, &one), (&other, &one), (&other, &two)] {
+            let opened = r.act(&s, "port_share", &json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"}), who).await.0.unwrap();
+            at.push(format!("127.0.0.1:{}", opened["port"]).parse::<std::net::SocketAddr>().unwrap());
+        }
+        assert_eq!(r.shares.count(), 3);
+        // Someone else's unregister of that id removes nothing, and ends no share.
+        assert_eq!(r.act(&s, "unregister_push", &json!({"device_id": "a1b2c3d4"}), &app("a1b2c3d4", Some(SAM))).await.0.unwrap(), json!({"removed": false}));
+        assert_eq!(r.shares.count(), 3);
+        assert_eq!(r.act(&s, "unregister_push", &json!({"device_id": "a1b2c3d4"}), &alex).await.0.unwrap(), json!({"removed": true}));
+        assert_eq!(r.shares.count(), 2, "the phone's own share went with its registration");
+        assert!(closed(at[0]).await);
+        // A phone the gateway no longer knows is unregistered, and its shares go as well.
+        let dropped = r.store.lock().unwrap().get("ffff0000").cloned().unwrap();
+        r.settle(&dropped, &SendResult::Gone("unregistered".into()), 0.0);
+        assert_eq!(r.shares.count(), 0);
+        assert!(closed(at[1]).await && closed(at[2]).await);
+        // A Beacon that stops shares nothing.
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        let opened = r.act(&s, "port_share", &json!({"port": two.port(), "phone_ip": "127.0.0.1"}), &alex).await.0.unwrap();
+        assert_eq!(r.shares.count(), 1);
+        r.stop();
+        assert_eq!(r.shares.count(), 0);
+        assert!(closed(format!("127.0.0.1:{}", opened["port"]).parse().unwrap()).await);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rex_events_about_a_pane_reach_the_shares_of_its_ports() {
+        let dir = temp("share-events");
+        let r = relay(&dir, false);
+        let s = Arc::new(named_server("https://rex.example.ts.net"));
+        let dev = Dev::start().await;
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        r.act(&s, "port_share", &json!({"block": "block:1", "port": dev.port(), "phone_ip": "127.0.0.1"}), &alex).await.0.unwrap();
+        let ports = |block: &str, ports: Value| {
+            json!({"type": "session_event", "payload": {"session_id": "session:1", "event": {"type": "block_event",
+                "payload": {"block_id": block, "name": "ports_changed", "payload": {"status": "ok", "ports": ports}}}}})
+        };
+        let listed = json!([{"port": dev.port(), "protocol": "tcp", "address": "127.0.0.1"}]);
+        // The pane still lists the port, or it is another pane's list, or another server's.
+        r.handle(&s, ports("block:1", listed.clone()));
+        r.handle(&s, ports("block:2", json!([])));
+        r.handle(&Arc::new(named_server("https://other.example.ts.net")), ports("block:1", json!([])));
+        assert_eq!(r.shares.waiting(), 0);
+        // The pane's list without it: the share waits. With it again: it doesn't.
+        r.handle(&s, ports("block:1", json!([])));
+        assert_eq!((r.shares.waiting(), r.shares.count()), (1, 1));
+        r.handle(&s, ports("block:1", listed));
+        assert_eq!(r.shares.waiting(), 0);
+        // The pane closes.
+        r.handle(&s, json!({"type": "session_event", "payload": {"session_id": "session:1", "event": {"type": "block_closed", "payload": {"block_id": "block:1"}}}}));
+        assert_eq!((r.shares.waiting(), r.shares.count()), (1, 1));
+        r.stop();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// What a test's processes carry among their arguments, and no log line or error may.
+    const ARGV_SECRET: &str = "s3cr3t-from-a-flag";
+
+    /// A relay on a computer with these processes, all of this user unless said otherwise.
+    fn relay_with_processes(dir: &std::path::Path, processes: &[(u32, &str, u32, u32, Option<u32>)]) -> Arc<Relay> {
+        let sense = Arc::new(TestSense::default());
+        for (pid, name, ppid, pgid, tty_pgid) in processes {
+            let p = crate::desk::Process { path: format!("/usr/bin/{name}"), name: name.to_string(), uid: crate::platform::user_id(), ppid: *ppid, pgid: *pgid, sid: 900, tty_pgid: *tty_pgid };
+            sense.processes.lock().unwrap().insert(*pid, p);
+            // Every process was started with a token among its arguments.
+            let argv = vec![name.as_bytes().to_vec(), b"run".to_vec(), format!("--token={ARGV_SECRET}").into_bytes()];
+            sense.invocations.lock().unwrap().insert(*pid, crate::platform::Invocation { argv, truncated: false, cwd: Some("/app".into()) });
+        }
+        let r = relay_sensing(vec![], dir, false, Sender::Gateway, &[GATEWAY], sense);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        r
+    }
+
+    #[tokio::test]
+    async fn port_owner_names_the_group_and_the_ancestry_of_a_wrapped_server() {
+        let dir = temp("owner");
+        // `npm run dev` in a pane: zsh 900 started npm 4200, npm a shell 4201, that node 4242.
+        let r = relay_with_processes(&dir, &[(4242, "node", 4201, 4200, Some(4200)), (4201, "sh", 4200, 4200, Some(4200)), (4200, "npm", 900, 4200, Some(4200)), (900, "zsh", 1, 900, Some(4200))]);
+        let s = server();
+        let alex = app("a1b2c3d4", Some(ALEX));
+        capture_log();
+        let owner = r.act(&s, "port_owner", &json!({"pid": 4242}), &alex).await.0.unwrap();
+        let entry = |pid: u32, ppid: u32, pgid: u32, name: &str| {
+            json!({"pid": pid, "ppid": ppid, "pgid": pgid, "sid": 900, "group_leader": pid == pgid, "session_leader": pid == 900, "name": name, "path": format!("/usr/bin/{name}"),
+                "argv": [name, "run", format!("--token={ARGV_SECRET}")], "argv_lossy": false, "truncated": false, "cwd": "/app"})
+        };
+        assert_eq!(
+            owner,
+            json!({"pid": 4242, "pgid": 4200, "tty_foreground_pgid": 4200, "foreground": true, "ancestry": [
+                entry(4242, 4201, 4200, "node"), entry(4201, 4200, 4200, "sh"), entry(4200, 900, 4200, "npm"), entry(900, 1, 900, "zsh")
+            ]})
+        );
+        // `pid` wins over `port`: no tool is run to look the port up.
+        assert_eq!(r.act(&s, "port_owner", &json!({"pid": 4242, "port": 3000}), &alex).await.0.unwrap(), owner);
+        // A process that is not there, or another user's.
+        assert_eq!(code(&r, &s, "port_owner", &alex, &json!({"pid": 5555})).await, "not_available");
+        let elsewhere = temp("owner-none");
+        let other = relay_with_processes(&elsewhere, &[]);
+        assert_eq!(code(&other, &s, "port_owner", &alex, &json!({"pid": 4242})).await, "not_available");
+        for bad in [json!({}), json!({"pid": 0}), json!({"pid": 1}), json!({"pid": -5}), json!({"pid": "4242"}), json!({"port": 0}), json!({"port": 70000})] {
+            assert_eq!(code(&r, &s, "port_owner", &alex, &bad).await, "bad_request", "{bad}");
+        }
+        // Only for someone with a phone registered here, as the server names them.
+        for stranger in [app("a1b2c3d4", Some(SAM)), app("ffff0000", Some(ALEX))] {
+            assert_eq!(code(&r, &s, "port_owner", &stranger, &json!({"pid": 4242})).await, "not_registered");
+        }
+        // What nobody but the caller gets: an error says nothing of a process, and neither
+        // does the log, whoever asked and whatever came of it.
+        for (who, args) in [(&alex, json!({"pid": 5555})), (&alex, json!({"pid": "4242"})), (&app("a1b2c3d4", Some(SAM)), json!({"pid": 4242})), (&app("a1b2c3d4", None), json!({"pid": 4242}))] {
+            let refusal = r.act(&s, "port_owner", &args, who).await.0.unwrap_err().to_string();
+            assert!(!refusal.contains(ARGV_SECRET) && !refusal.contains("--token") && !refusal.contains("/app"), "{refusal}");
+        }
+        assert_eq!(code(&r, &s, "port_owner", &app("a1b2c3d4", None), &json!({"pid": 4242})).await, "refused");
+        let log = captured_log();
+        assert!(!log.contains(ARGV_SECRET) && !log.contains("--token") && !log.contains("npm"), "{log}");
+        // Nor is it in any file Beacon keeps.
+        r.write_status();
+        for file in std::fs::read_dir(&dir).unwrap() {
+            let path = file.unwrap().path();
+            if path.is_file() {
+                assert!(!String::from_utf8_lossy(&std::fs::read(&path).unwrap()).contains(ARGV_SECRET), "{}", path.display());
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(elsewhere).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_beacon_from_before_these_actions_says_it_has_none() {
+        // What an app gets from a Beacon that does not know an action, which is how it
+        // tells that "Open in Browser" is not there: `not_supported`, as for any other name.
+        let dir = temp("unknown-action");
+        let r = relay(&dir, false);
+        r.store.lock().unwrap().register(phone("a1b2c3d4", GATEWAY)).unwrap();
+        assert_eq!(code(&r, &server(), "port_share_v2", &app("a1b2c3d4", Some(ALEX)), &json!({})).await, "not_supported");
+        assert!(KNOWN_ACTIONS.contains(&"port_share") && KNOWN_ACTIONS.contains(&"port_owner"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
