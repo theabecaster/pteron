@@ -70,6 +70,42 @@ final class ConnectionDiagnosticsTests: XCTestCase {
         XCTAssertFalse(text.contains(":\(port)"), "the port is in the exported text")
     }
 
+    /// The probe of Tailscale's own service is for the log: one line there, and no server's
+    /// screen changes with it.
+    func testTheTunnelProbeWritesOneLineAndChangesNothingOnScreen() async throws {
+        let name = "ConnectionDiagnosticsTests-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: name)!
+        defer { d.removePersistentDomain(forName: name) }
+        let prefs = Prefs(defaults: d)
+        let model = AppModel(prefs: prefs, connect: false)
+        let log = ConnectionLog(file: folder.appendingPathComponent("Diagnostics/connections.clog"))
+        let config = ServerConfig(name: "Kitchen Mac", url: "https://kitchen-rex.tail1234.ts.net")
+        let server = ServerConnection(config: config, prefs: prefs, notifier: model.notifier,
+                                      deviceID: "a1b2c3d4", log: log)
+        let before = (server.phase, server.retrying, server.recovering, server.waking, server.asleep, server.lastError)
+
+        await TunnelProbe.record(into: log) { TunnelProbe.Result(reachable: false, milliseconds: 3000) }
+        await TunnelProbe.record(into: log) { TunnelProbe.Result(reachable: true, milliseconds: 4) }
+
+        log.flush()
+        let text = await ConnectionDiagnostics.export(log, servers: [config])
+        XCTAssertTrue(text.contains("App       probe tailscale reachable=no after=3000ms"), text)
+        XCTAssertTrue(text.contains("App       probe tailscale reachable=yes after=4ms"), text)
+        XCTAssertFalse(text.contains("100.100"), "no address in the log")
+        let after = (server.phase, server.retrying, server.recovering, server.waking, server.asleep, server.lastError)
+        XCTAssertTrue(before == after)
+        XCTAssertEqual(server.phase, .idle)
+        XCTAssertEqual(server.control.state, .idle)
+        XCTAssertTrue(model.servers.isEmpty)
+    }
+
+    /// A port nothing listens on: no answer, well inside the limit, and nothing is left open.
+    func testTheProbeOfAClosedPortSaysNotReachable() async {
+        let result = await TunnelProbe.connect(host: "127.0.0.1", port: 1, timeout: 2)
+        XCTAssertFalse(result.reachable)
+        XCTAssertLessThan(result.milliseconds, 2500)
+    }
+
     func testTheServersKeyIsItsIdAndTheBuildIsANumber() {
         let config = ServerConfig(name: "Kitchen Mac", url: "https://desk.example.ts.net")
         XCTAssertEqual(ConnectionDiagnostics.key(config), config.id.uuidString)

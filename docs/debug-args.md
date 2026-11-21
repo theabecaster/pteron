@@ -17,7 +17,8 @@ builds.
   `-simulateNetwork offPrivate` the Tailscale step shows unticked.
 - `-simulateOffline <kind>`: every server shows that offline screen and none connects. Kinds:
   `noInternet`, `offPrivateNetwork`, `hostNotFound`, `notAnswering`, `notAllowed`, `insecure`,
-  `updateServer`, `updateApp`, `badAddress`, `unknown`. `-simulateRetrying YES` holds Try Again in "Trying…".
+  `updateServer`, `updateApp`, `badAddress`, `unknown`, `tunnelDown` (every computer silent
+  together). `-simulateRetrying YES` holds Try Again in "Trying…".
 - `-simulateNetwork offline|offPrivate|onPrivate`: pretend the phone has no path, is off the
   tailnet, or on it, so real errors classify as they would there.
 - `-wakeTest drop|unreachable`: as the app goes to the background, drop the control connection, as

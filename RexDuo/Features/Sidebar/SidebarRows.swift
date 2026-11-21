@@ -162,7 +162,7 @@ struct MachineHeader: View {
                         .lineLimit(SidebarMetrics.lines(typeSize))
                         .accessibilityLabel(spokenName)
                     if let p = server.phase.problem {
-                        Text(OfflineCopy.short(p.kind))
+                        Text(OfflineCopy.short(p.kind, asleep: server.asleep))
                             .font(.caption2)
                             .foregroundStyle(theme.chrome.tertiary)
                             .lineLimit(1)

@@ -231,8 +231,30 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   and answers as a connection that failed (`UnreachableActionChannel`).
   `DownHostSocketCountTests` counts every path, one by one, for a host that is down for an hour
   in the foreground and an hour in the background.
-- A dormant or held server looks like any offline server: the same screen, the same sidebar
-  line, Try Again. Nothing new is shown.
+- A dormant or held server looks like any offline server: the same screen and Try Again. A
+  dormant one's sidebar line reads "Asleep" where it read "Not answering"
+  (`ServerConnection.asleep`, `OfflineCopy.short`).
+- **When every computer is silent together** the offline screen of a silent server says "Can't
+  reach your computers" and "If Tailscale shows a warning, turn it off and on."
+  (`ConnectionProblem.Kind.tunnelDown`), in place of that server's own problem. The rule is
+  `TunnelSuspicion` (RexKit, pure): the breaker is open, the phone has a path, at least two
+  servers are silent, and none is up or has answered; then ten seconds of that with the app in
+  front. `AppModel.checkTunnel` is the one place that reads the governor for it (`breakerOpen`,
+  `tunnelHosts`): it asks when the breaker, a connection or the path changes and tells the
+  servers (`tunnelNoticeChanged`); `ConnectionProblem.under` words one server. A server that
+  refused, answered over HTTP, failed TLS or turned the phone away keeps its own problem, as
+  does one whose address is no Tailscale address, a phone with no Tailscale address (that
+  screen already says to turn Tailscale on), and one server that is off. It ends in the turn
+  the breaker closes (a welcome, an answer) or the app leaves the front, and `ProblemGate` has
+  kept each server's own problem meanwhile. Once every server has gone dormant the breaker is
+  closed and each says its own problem again, "Asleep" in the sidebar: the tunnel's message
+  is only for the time the app is still finding out. It is the same screen: no alert, toast,
+  sound or button. The sidebar's line stays the server's own.
+- `TunnelProbe`: as the breaker opens, one TCP connection to Tailscale's own service on the
+  phone (100.100.100.100:53), with the app in front and a tailnet address on the phone. Its
+  result is one line in the connection log (`probe`). Nothing reads it: no screen and no retry
+  depends on it.
+- A drop from online shows nothing for 5 s (`ServerConnection.phaseGrace`); most end sooner.
 - `ServerConnection` turns failures into `ConnectionProblem`s (`State/ConnectionProblem.swift`):
   no internet, off the private network, host not on the tailnet, not answering (asleep, refused, or
   not Rex), not allowed, insecure, bad address, unknown. `NetworkWatch` (`NWPathMonitor` off the main
@@ -277,7 +299,7 @@ user shares.
   reset, refused, unreachable, dns, tls, http, auth, closed, policy, revision, plus the error
   code, the HTTP status or close code, and the POSIX or TLS code under it), `retry` (the wait
   before the next attempt), `dormant` and `stopped`. And 200 events of the app: each launch with its build
-  number, each scene phase, the tunnel breaker opening and closing, and each change of the network path as four yes-or-no facts
+  number, each scene phase, the tunnel breaker opening and closing, the probe of Tailscale's own service that follows an opening, and each change of the network path as four yes-or-no facts
   (satisfied, expensive, constrained, a Tailscale address on an interface). At most 12 server
   rings; one server more pushes out the ring that was quiet longest.
 - **The privacy rule:** an event is numbers only (`ConnectionEvent` has no text field). No host

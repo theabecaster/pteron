@@ -446,7 +446,11 @@ final class AppModel {
         route.onChange = { [weak self] in
             for s in self?.servers ?? [] { s.routeChanged() }
         }
-        reconnect.onBreaker = { open in log?.record(.breaker(open: open)) }
+        reconnect.onBreaker = { [weak self] open in
+            log?.record(.breaker(open: open))
+            self?.checkTunnel()
+            if open { self?.probeTunnel() }
+        }
         connectTidy()
         self.glance.source = { [weak self] in
             guard let self else { return [] }
@@ -503,6 +507,8 @@ final class AppModel {
                                      deviceID: push.deviceID, log: connectionLog, governor: reconnect)
             helperSetup.attach(s)
             s.agentsKnown = { [weak self] in self?.tidy.request() }
+            s.tunnelShows = { [weak self] in self?.tunnel.shows ?? false }
+            s.linkChanged = { [weak self] in self?.checkTunnel() }
             s.forward = forward
             palette.attach(s)
             return s
@@ -643,6 +649,47 @@ final class AppModel {
         if let snap = network?.snapshot { route.report(snap.facts) }
         for s in servers { s.networkChanged() }
         push.networkChanged()
+        checkTunnel()
+    }
+
+    // MARK: The tunnel's message
+
+    /// When the app says that the way to the computers, not a computer, is down: the rule and
+    /// its ten seconds in front are `TunnelSuspicion`'s; this only asks it and tells the servers.
+    @ObservationIgnored private var tunnel = TunnelSuspicion()
+    /// Ends the wait `TunnelSuspicion.update` asked for.
+    @ObservationIgnored private var tunnelTask: Task<Void, Never>?
+
+    /// Something `TunnelSuspicion` reads may have changed: the breaker, a server's connection,
+    /// the network, the app in front or not. The one place that reads the governor for it:
+    /// `breakerOpen` and `tunnelHosts`. A connection's facts are as they are after a change by
+    /// the time it is told (`RexControl.handleDrop`), so the answer is right in that turn.
+    private func checkTunnel() {
+        tunnelTask?.cancel()
+        tunnelTask = nil
+        let was = tunnel.shows
+        let suspected = TunnelSuspicion.suspected(breakerOpen: reconnect.breakerOpen,
+                                                  pathSatisfied: network?.snapshot.reachable ?? true,
+                                                  hosts: reconnect.tunnelHosts)
+        let left = tunnel.update(suspected: suspected, foreground: mayConnect && !inBackground,
+                                 now: ProcessInfo.processInfo.systemUptime)
+        // Each server words its own screen; one that is not offline does nothing.
+        if was != tunnel.shows { for s in servers { s.tunnelNoticeChanged() } }
+        guard let left else { return }
+        tunnelTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((left + 0.05) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.checkTunnel()
+        }
+    }
+
+    /// The breaker opened: ask Tailscale's own service on this phone whether it answers, and
+    /// write the answer in the connection log. For the log only (`TunnelProbe`): nothing on
+    /// screen and nothing about reconnecting depends on it. Only with the app in front and a
+    /// tailnet address on the phone, where that address is Tailscale's.
+    private func probeTunnel() {
+        guard let log = connectionLog, !inBackground, network?.snapshot.onPrivateNetwork == true else { return }
+        Task.detached(priority: .utility) { await TunnelProbe.record(into: log) }
     }
 
     #if DEBUG
@@ -753,6 +800,7 @@ final class AppModel {
         push.becameActive()
         glance.becameActive()
         tidy.becameActive()
+        checkTunnel()
     }
 
     /// What the tidier reads of the servers: where each is, and which of its agents wait, once
@@ -813,6 +861,8 @@ final class AppModel {
         inBackground = true
         tidy.enteredBackground()
         for s in servers { s.enteredBackground() }
+        // The seconds in front don't run on through the background.
+        checkTunnel()
         // The widgets get what is known now. iOS suspends the app right after, so the write
         // runs inside a background task, and through the same writer as every other write.
         // With the writer off there is nothing to write and no task is taken.

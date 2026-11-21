@@ -105,10 +105,12 @@ struct KnownHost: Identifiable, Equatable {
 ///   missed something. Every action ends by re-reading the server's view of the session.
 /// - The UI stays calm: per-block events are coalesced into one update per ~150 ms, a status is held
 ///   on screen for at least a second (a new "blocked" shows at once), and connection drops only show
-///   once they last more than a second.
+///   once they last more than five seconds (`phaseGrace`).
 /// - Offline holds still. `RexControl` retries in the background, but a retry never shows as
 ///   "connecting" once the server is offline; only a real connection leaves `.offline`. The problem
 ///   shown changes only through `ProblemGate`, so alternating errors don't swap the message.
+///   While every computer is silent together, a silent server says that instead of its own
+///   problem (`ConnectionProblem.under`, `tunnelNoticeChanged`).
 /// - Waking up isn't a problem. A drop around a trip to the background is held for a few seconds
 ///   after the return (`ForegroundWake`) while the connection is made again: `phase` stays
 ///   `.online`, `waking` is set, and the offline screen shows only if the hold runs out.
@@ -207,6 +209,15 @@ final class ServerConnection: Identifiable {
     var recovering = false
     /// The offline screen is up for this server.
     var showsOffline: Bool { phase.problem != nil || recovering }
+    /// The server gave no answer time after time and is tried rarely until it answers
+    /// (`RexControl.dormant`): the sidebar's line says "Asleep".
+    private(set) var asleep = false
+    /// Whether the app says that the way to the computers is down (`TunnelSuspicion`). Set by
+    /// `AppModel`; alone, a server never says it.
+    @ObservationIgnored var tunnelShows: @MainActor () -> Bool = { false }
+    /// Called when the control connection's state changed: what `TunnelSuspicion` reads may
+    /// have changed with it. Set by `AppModel`.
+    @ObservationIgnored var linkChanged: (@MainActor () -> Void)?
     /// The connection dropped around a trip to the background and is being made again, while
     /// `phase` stays `.online` (`ForegroundWake`). The title bar's Glide breathes meanwhile.
     var waking = false
@@ -317,7 +328,8 @@ final class ServerConnection: Identifiable {
     /// The app's forwards to dev servers; set by `AppModel`.
     @ObservationIgnored weak var forward: PortForward?
 
-    static let phaseGrace: Double = 1.0
+    /// A drop from online shows nothing for this long: most end sooner.
+    static let phaseGrace: Double = 5.0
     /// "Trying…" stays up at least this long, so a fast failure still reads as an attempt.
     static let minRetryShow: Double = 0.9
     static let coalesce: Double = 0.15
@@ -398,7 +410,10 @@ final class ServerConnection: Identifiable {
         }
         control.onRetryScheduled = { reporter?.retryScheduled(after: $0) }
         control.onAttempt = { reporter?.attempt($0) }
-        control.onDormant = { reporter?.wentDormant() }
+        control.onDormant = { [weak self] in
+            reporter?.wentDormant()
+            self?.asleep = true
+        }
         control.onReconnected = { [weak self] _ in
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)
@@ -432,6 +447,7 @@ final class ServerConnection: Identifiable {
             #endif
             show(.online)
             endRetry()
+            if asleep { asleep = false }
         case .connecting:
             // Only the first attempt shows. A retry while offline keeps the offline screen as it is.
             if phase == .idle { show(.connecting) }
@@ -449,14 +465,32 @@ final class ServerConnection: Identifiable {
                 pendingProblem = p
                 waitOutDrop()
             } else if graceTask == nil {
-                show(.offline(gate.observe(p)))
+                show(.offline(worded(gate.observe(p))))
             } else {
                 pendingProblem = p
             }
             endRetry()
         case .idle:
             show(.idle)
+            if asleep { asleep = false }
         }
+        linkChanged?()
+    }
+
+    /// The problem as shown: the server's own, or the tunnel's while that shows and this server
+    /// is silent.
+    private func worded(_ own: ConnectionProblem) -> ConnectionProblem {
+        own.under(tunnel: tunnelShows(), host: control.tunnelFact,
+                  tailnetAddress: TailscaleApp.isTailnetAddress(config.url))
+    }
+
+    /// The tunnel's message came or went: an offline
+    /// server says the tunnel's problem or its own again, at once. `ProblemGate` keeps the
+    /// server's own problem all along, so nothing has to fail again first.
+    func tunnelNoticeChanged() {
+        guard case .offline(let shown) = phase, let own = gate.shown else { return }
+        let p = worded(own)
+        if p != shown { show(.offline(p)) }
     }
 
     private func show(_ p: Phase) {
@@ -488,7 +522,7 @@ final class ServerConnection: Identifiable {
             guard !Task.isCancelled, let self else { return }
             self.graceTask = nil
             guard self.control.state != .connected, !self.wake.holds, let p = self.pendingProblem else { return }
-            self.show(.offline(self.gate.observe(p)))
+            self.show(.offline(self.worded(self.gate.observe(p))))
         }
     }
 
@@ -539,7 +573,7 @@ final class ServerConnection: Identifiable {
         wakeTask?.cancel()
         wakeTask = nil
         guard control.state != .connected, let p = pendingProblem else { return }
-        show(.offline(gate.observe(p)))
+        show(.offline(worded(gate.observe(p))))
     }
 
     func start() {

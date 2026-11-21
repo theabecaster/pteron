@@ -229,7 +229,7 @@ extension SessionPopover {
         switch s.phase {
         case .online: s.waking ? .waking : .connected
         case .idle, .connecting: .connecting
-        case .offline(let p): .down(OfflineCopy.short(p.kind), retrying: s.retrying)
+        case .offline(let p): .down(OfflineCopy.short(p.kind, asleep: s.asleep), retrying: s.retrying)
         }
     }
 }

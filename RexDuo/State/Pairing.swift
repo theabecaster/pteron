@@ -143,7 +143,8 @@ struct PairingProblem: Equatable {
             return PairingProblem(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify that computer",
                                   message: "The secure connection to that computer failed, so \(Brand.appName) stopped there.",
                                   detail: problem.detail, actions: [.tryAgain])
-        case .badAddress, .unknown:
+        // A check of one address never finds `tunnelDown`.
+        case .badAddress, .unknown, .tunnelDown:
             return PairingProblem(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't connect",
                                   message: "Something stopped this iPhone from reaching that computer.",
                                   detail: problem.detail, actions: [.tryAgain, .addAnyway])

@@ -59,11 +59,17 @@ struct OfflineCopy: Equatable {
         case .unknown:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't reach \(server)",
                                message: "Something interrupted the connection. \(Brand.appName) keeps trying.")
+        case .tunnelDown:
+            // Every computer at once: the words are about all of them, and name no server.
+            return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't reach your computers",
+                               message: "If Tailscale shows a warning, turn it off and on.")
         }
     }
 
-    /// A few words for the sidebar's host row and Settings.
-    static func short(_ kind: ConnectionProblem.Kind) -> String {
+    /// A few words for the sidebar's host row and Settings. `asleep`: the server gave no answer
+    /// time after time and is now tried rarely (`RexControl.dormant`).
+    static func short(_ kind: ConnectionProblem.Kind, asleep: Bool = false) -> String {
+        if asleep, kind == .notAnswering { return "Asleep" }
         switch kind {
         case .noInternet: return "No internet connection"
         case .offPrivateNetwork: return "Off the private network"
@@ -75,6 +81,8 @@ struct OfflineCopy: Equatable {
         case .updateApp: return "Needs an app update"
         case .badAddress: return "Address won't work"
         case .unknown: return "Can't connect"
+        // The row is one computer's: it says what that computer does.
+        case .tunnelDown: return "Not answering"
         }
     }
 
@@ -102,7 +110,7 @@ enum OfflineAction: Equatable {
         case .offPrivateNetwork where TailscaleApp.isTailnetAddress(address): return .getTailscale
         case .noInternet, .offPrivateNetwork: return .openSettings
         case .hostNotFound, .insecure: return .serverSettings
-        case .badAddress, .notAllowed, .notAnswering, .updateServer, .updateApp, .unknown: return nil
+        case .badAddress, .notAllowed, .notAnswering, .updateServer, .updateApp, .unknown, .tunnelDown: return nil
         }
     }
 }

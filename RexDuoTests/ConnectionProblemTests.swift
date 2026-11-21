@@ -140,9 +140,10 @@ struct ConnectionProblemTests {
     }
 
     /// Tailscale is named only where the server's address is a Tailscale one and the phone is off
-    /// Tailscale: there the fix is on this iPhone. Every other case words it as before.
+    /// Tailscale: there the fix is on this iPhone. Every other case words it as before. (The
+    /// tunnel's own message is the other place, and has its own tests below.)
     @Test func copyNamesTailscaleOnlyForATailscaleAddressOffTheTailnet() {
-        for kind in ConnectionProblem.Kind.allCases {
+        for kind in ConnectionProblem.Kind.allCases where kind != .tunnelDown {
             for address in ["x", "http://192.168.1.20:8765"] {
                 let c = OfflineCopy.of(kind, server: "Studio", address: address)
                 for text in [c.title, c.message, c.hint ?? ""] {
@@ -162,6 +163,78 @@ struct ConnectionProblemTests {
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == OfflineAction.secondary(for: kind))
             }
         }
+    }
+
+    // MARK: The tunnel's message
+
+    @Test func theTunnelsMessageIsTheAgreedWordsAndNamesNoServer() {
+        let c = OfflineCopy.of(.tunnelDown, server: "Studio", address: "https://studio-rex.tail1234.ts.net")
+        #expect(c.title == "Can't reach your computers")
+        #expect(c.message == "If Tailscale shows a warning, turn it off and on.")
+        #expect(c.hint == nil)
+        #expect(!c.title.contains("Studio") && !c.message.contains("Studio"))
+        #expect(c == OfflineCopy.of(.tunnelDown, server: "This Mac", address: "x"))
+        // No new button, and nothing shown at once on one failure.
+        #expect(OfflineAction.secondary(for: .tunnelDown, address: "https://studio-rex.tail1234.ts.net") == nil)
+        #expect(!ConnectionProblem.Kind.tunnelDown.isDecisive)
+    }
+
+    @Test func aSilentServerSaysTheTunnelsProblemOnlyWhileItShows() {
+        let own = problem(.notAnswering, "d")
+        #expect(own.under(tunnel: true, host: .unanswered, tailnetAddress: true)
+            == ConnectionProblem(kind: .tunnelDown, detail: "d"))
+        #expect(own.under(tunnel: false, host: .unanswered, tailnetAddress: true) == own)
+        for kind in [ConnectionProblem.Kind.hostNotFound, .unknown] {
+            #expect(problem(kind).under(tunnel: true, host: .unanswered, tailnetAddress: true).kind == .tunnelDown)
+        }
+        // Tailscale is off on this iPhone: its own screen says so, and says what to do.
+        let off = problem(.offPrivateNetwork)
+        #expect(off.under(tunnel: true, host: .unanswered, tailnetAddress: true) == off)
+    }
+
+    /// One server that is off, a refusal, an HTTP answer, TLS and a server that turned the phone
+    /// away keep what they say, whatever the others do.
+    @Test func aServerThatAnsweredOrWasTurnedAwayKeepsItsOwnProblem() {
+        let own = problem(.notAnswering, "d")
+        for host in [TunnelSuspicion.Host.answered, .unknown, .up] {
+            #expect(own.under(tunnel: true, host: host, tailnetAddress: true) == own)
+        }
+        for kind in ConnectionProblem.Kind.allCases where kind.isDecisive {
+            #expect(problem(kind).under(tunnel: true, host: .unanswered, tailnetAddress: true).kind == kind)
+        }
+        // A refusal classifies as not answering, and its host says it answered.
+        let refusal = ConnectionProblem.classify(url(NSURLErrorCannotConnectToHost, posix: Int(ECONNREFUSED)), network: onTailnet)
+        #expect(refusal.under(tunnel: true, host: .answered, tailnetAddress: true) == refusal)
+    }
+
+    @Test func aServerWithNoTailscaleAddressIsNeverToldToCheckTailscale() {
+        let own = problem(.notAnswering)
+        #expect(own.under(tunnel: true, host: .unanswered, tailnetAddress: false) == own)
+    }
+
+    @Test func classifyNeverGivesTheTunnelsProblem() {
+        for net in [offTailnet, onTailnet, offline, NetworkSnapshot.unknown] {
+            for f in [url(NSURLErrorTimedOut), url(NSURLErrorNetworkConnectionLost), url(NSURLErrorCannotFindHost),
+                      .timedOut(), url(NSURLErrorCannotConnectToHost, posix: Int(ECONNREFUSED))] {
+                #expect(kind(f, net) != .tunnelDown)
+            }
+        }
+    }
+
+    /// The sidebar's line: a server that stopped answering for good reads "Asleep"; the tunnel's
+    /// problem stays one computer's line there.
+    @Test func theSidebarsLine() {
+        #expect(OfflineCopy.short(.notAnswering) == "Not answering")
+        #expect(OfflineCopy.short(.notAnswering, asleep: true) == "Asleep")
+        #expect(OfflineCopy.short(.tunnelDown) == "Not answering")
+        #expect(OfflineCopy.short(.tunnelDown, asleep: true) == "Not answering")
+        for kind in ConnectionProblem.Kind.allCases where kind != .notAnswering {
+            #expect(OfflineCopy.short(kind, asleep: true) == OfflineCopy.short(kind))
+        }
+    }
+
+    @Test func aDropShowsNothingForFiveSeconds() {
+        #expect(ServerConnection.phaseGrace == 5)
     }
 
     // MARK: Actions

@@ -48,6 +48,10 @@ struct ConnectionProblem: Equatable, Sendable {
         /// The configured address isn't a server address; retrying can't help.
         case badAddress
         case unknown
+        /// Every computer stopped answering together while the phone has a network: the way to
+        /// them, not this server, looks down. `classify` never gives it: it stands in for a
+        /// server's own problem while `TunnelSuspicion` shows (`under(tunnel:host:tailnetAddress:)`).
+        case tunnelDown
 
         /// Shown at once, without waiting for a second failure of the same kind.
         var isDecisive: Bool {
@@ -61,6 +65,20 @@ struct ConnectionProblem: Equatable, Sendable {
     var kind: Kind
     /// A short technical line (error domain, code, HTTP status) for the collapsed details.
     var detail: String
+
+    // MARK: The tunnel
+
+    /// What is shown for a server whose own problem is this one. While the app says the tunnel
+    /// is down (`tunnel`), a server that is silent says that instead, with its own detail kept.
+    /// Not a server that answered, was turned away or failed TLS (`host`, as
+    /// `TunnelSuspicion.covers` rules), not one whose problem is decisive, and not one whose
+    /// address is no Tailscale address: the message names Tailscale. Nor while the phone has no
+    /// Tailscale address at all (`offPrivateNetwork`): that screen already says to turn it on.
+    func under(tunnel: Bool, host: TunnelSuspicion.Host, tailnetAddress: Bool) -> ConnectionProblem {
+        guard tunnel, tailnetAddress, !kind.isDecisive, kind != .offPrivateNetwork,
+              TunnelSuspicion.covers(host) else { return self }
+        return ConnectionProblem(kind: .tunnelDown, detail: detail)
+    }
 
     // MARK: Classification
 

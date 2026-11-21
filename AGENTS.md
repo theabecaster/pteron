@@ -57,6 +57,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 - `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
   `ConnectionDiagnostics` (the connection log's file; docs/architecture.md, The connection log),
+  `TunnelProbe` (asks Tailscale's own service on the phone, for that log only),
   `GlanceWriter` (the snapshot's one writer), `GlanceBridge` (sends each written snapshot to the
   watch), `GlanceActions` (answers the watch's Enter and Interrupt: status read, guard, one
   write), `NotificationActions` (the same two on a question's notification, through
