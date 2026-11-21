@@ -37,6 +37,10 @@ final class PanePorts {
     var shared: (@MainActor (LocalhostLink) async -> PortShare?)?
     /// The open browser's Open in Browser and Copy Link for a port (`PortActions.outside`).
     var outside: (@MainActor (Int) -> PreviewBrowser.Outside?)?
+    #if DEBUG
+    /// The app's model, for `-portsTest`'s steps that act as a ports row does.
+    weak var testModel: AppModel?
+    #endif
     private var watching = false
 
     init(server: ServerConnection, sessionID: String, blockID: String) {

@@ -224,7 +224,19 @@ builds.
   `yes:<url>`, `no:<url>`, `fetch:<path>`, `parallel:<n>`, `done`, `wait:<s>`. It logs
   `PORTS_LIST`, `PORTS_ROUTE`, `PORTS_FETCH`, and the forward logs `PORTS_LISTEN`,
   `PORTS_NEW_BLOCK`, `PORTS_CONN <end>`, `PORTS_CLOSE`, `PORTS_SWEEP`. It makes a tunnel block, so
-  use a `zz-` session with a test server started in it.
+  use a `zz-` session with a test server started in it. The steps of a ports row, for a port in
+  any tab of that session: `process` (one `terminal.process` read, `PORTS_PROCESS`), `watch`
+  (each change of the pane's ports and foreground from then on, `PORTS_EVENT`), `owner:<port>`
+  and `row:<port>` (what the app holds of the port's process and what the row offers,
+  `PORTS_ROW`), `ask:port_owner:<port>` and `ask:port_share:<port>` (the Beacon's own answer to
+  an app it doesn't hold, `PORTS_ASK_BEACON`), `browser:<port>`, `stop:<port>`,
+  `restart:<port>`, `confirm:<port>` and `cancel:<port>` (`PORTS_BROWSER`, `PORTS_STOP`,
+  `PORTS_RESTART`).
+- `-portsOwner <hex of a port_owner answer's JSON>` with `-portsTest`: answer `port_owner` with
+  that object in the Beacon's place and say the Beacon can hand pages out. A simulator is no
+  registered phone, so a real Beacon tells it nothing about a process; this gives a row its
+  Stop through a wrapper and its Restart there. Only with facts read from the processes of
+  your own `zz-` session.
 - `-portsLoop <n>`: no computer needed. Open the browser `n` times on a page the app serves to
   itself on 127.0.0.1, as fast as each page loads, closing it each time (`PortsLoop`). It logs
   `PORTS_LOOP opens=<k> footprint=<MB>` after 5 opens, after 30 and after the last, then

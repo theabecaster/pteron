@@ -341,6 +341,31 @@ final class PortActions {
         }
     }
 
+    #if DEBUG
+    /// `-portsTest` (testing): what the app holds of the row's Beacon and owner, and what it
+    /// makes of them, on one line.
+    func testSummary(_ server: ServerConnection, _ row: PortRow) -> String {
+        let b = beacon(server), meta = server.currentMeta(row.blockID)
+        var parts = ["names=\(b.names.map { "\($0)" } ?? "nil") browser=\(b.browser) phone=\(b.phone) sharePossible=\(sharePossible(server))",
+                     "fg=\(meta?.foregroundPID.map { "\($0)" } ?? "nil")/\(meta?.foreground ?? "-") agent=\(meta?.agentKind != nil) portPid=\(row.entry.pid.map { "\($0)" } ?? "nil")"]
+        if let o = owner(server, row) {
+            let leader = o.job?.leader
+            parts.append("owner pid=\(o.pid) pgid=\(o.pgid) ttyFg=\(o.ttyForegroundPGID.map { "\($0)" } ?? "nil") jobMembers=\(o.jobMembers.map { "\($0)" } ?? "nil") "
+                + "chain=\(o.ancestry.map { "\($0.name):\($0.pid)" }.joined(separator: ">")) "
+                + "leader=\(leader?.name ?? "-") argvCount=\(leader?.argv?.count ?? -1) argvEmpty=\(leader?.argv?.filter(\.isEmpty).count ?? -1) "
+                + "argv0Spaces=\(leader?.argv?.first?.contains(" ") ?? false) reaches=\(o.interruptReaches(foregroundPID: meta?.foregroundPID))")
+            switch RestartCommand.make(o, isShell: ProcessNames.isShell) {
+            case .success(let c): parts.append("command=[\(c.text)]")
+            case .failure(let why): parts.append("noCommand=\(why)")
+            }
+        } else {
+            parts.append("owner=none")
+        }
+        parts.append("offers stop=\(offersStop(server, row)) restart=\(restartCommand(server, row) != nil) browser=\(offersBrowser(server, row)) note=\(note(server, row).map { "\($0)" } ?? "nil")")
+        return parts.joined(separator: " | ")
+    }
+    #endif
+
     // MARK: Open in Browser
 
     func openInBrowser(_ server: ServerConnection, _ row: PortRow) {

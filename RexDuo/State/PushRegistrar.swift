@@ -547,6 +547,16 @@ final class PushRegistrar {
     /// status can be told from what the next says.
     func statusReads(_ id: UUID) -> Int { statusReadCounts[id] ?? 0 }
 
+    #if DEBUG
+    /// `-portsTest ask:…` (testing): one action sent to the helper that is on the computer's
+    /// connection, whether or not it holds this phone, to see what it answers. A simulator is
+    /// no registered phone, so `ask` sends nothing from one.
+    func testAsk(_ id: UUID, action: String, args: JSONObject) async -> Result<JSONObject, HelperFailure>? {
+        guard let relay = await relay(on: id) else { return nil }
+        return await channel.perform(id, relay: relay, action: action, args: args, timeout: 5000)
+    }
+    #endif
+
     /// One action of the computer's helper for something other than notifications (a port's
     /// owner, a port for the phone's browsers). Nil when no helper on the computer's current
     /// connection holds this phone: nothing is sent then.
