@@ -537,11 +537,15 @@ public final class RexControl {
     }
 
     /// Asks the connection whether it is alive, now: a ping with the pong deadline, unless one
-    /// waits already. No pong drops the host as any missed pong does.
+    /// waits already. For a data socket that got no answer to its handshake while this
+    /// connection looked up (`TerminalStream`): no pong drops the host as any missed pong does.
     func checkLiveness() {
         ping(deadline: policy.pongDeadline(expensive: pathExpensive))
     }
 
+    /// How long a data socket to this host may wait for the answer to its handshake: the
+    /// connect deadline of the path the phone is on.
+    var dataHandshakeDeadline: Double { policy.connectDeadline(expensive: pathExpensive) }
 
     private func receiveLoop(_ t: any ControlSocket, gen: Int) {
         t.receive { [weak self] result in
@@ -838,6 +842,8 @@ public final class RexControl {
         pingTimer?.cancel()
         pingOut = nil
         disarmWatchdog()
+        // A data socket still in its handshake is given up, as the attempt below is.
+        for s in streams.values { s.stream?.enteredBackground() }
         if state == .connecting { cancelAttempt() }
     }
 
@@ -868,10 +874,12 @@ public final class RexControl {
     /// when the control socket dies. Nil when the address is invalid.
     public func makeTunnelSession() -> TunnelSession? {
         guard let wsBase else { return nil }
-        let session = TunnelSession(base: wsBase) { [weak self] in
+        let session = TunnelSession(base: wsBase, handshakeDeadline: { [weak self] in
+            self?.dataHandshakeDeadline ?? ReconnectPolicy.standard.connectDeadline
+        }, gate: { [weak self] in
             guard let self else { return false }
             return self.state == .connected && !self.holdsData
-        }
+        })
         tunnelSessions.removeAll { $0.session == nil }
         tunnelSessions.append(WeakSession(session: session))
         return session

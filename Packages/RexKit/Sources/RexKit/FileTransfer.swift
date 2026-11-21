@@ -153,6 +153,9 @@ public final class FileUploader {
     private var lastFileOut = false
     /// Every wait goes through here, so tests can skip them.
     var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// The wait of a handshake's deadline, apart from the others: skipping it would end every
+    /// handshake at once.
+    var handshakeSleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     public convenience init(control: RexControl, sessionID: String, blockID: String) {
         self.init(link: control, sessionID: sessionID, blockID: blockID)
@@ -334,8 +337,13 @@ public final class FileUploader {
     }
 
     private func handshake(_ socket: any StreamSocket, hello: [UInt8]) async throws {
-        try await socket.send(Data(hello))
-        guard let answer = try await socket.receive() else { throw Failure.lost("bad handshake") }
+        let answer: Data?
+        do {
+            answer = try await socket.handshake(Data(hello), within: link.dataHandshakeDeadline, sleep: handshakeSleep)
+        } catch is HandshakeTimeout {
+            throw Failure.lost("the server didn't answer")
+        }
+        guard let answer else { throw Failure.lost("bad handshake") }
         do { _ = try DataFrame.welcome([UInt8](answer)) } catch { throw Failure.lost(error.localizedDescription) }
     }
 
@@ -435,6 +443,8 @@ public final class FileDownloader {
     public let blockID: String
     private var socket: (any StreamSocket)?
     private var cancelled = false
+    /// The wait of the handshake's deadline; a test ends it by hand.
+    var handshakeSleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     public convenience init(control: RexControl, sessionID: String, blockID: String) {
         self.init(link: control, sessionID: sessionID, blockID: blockID)
@@ -483,8 +493,13 @@ public final class FileDownloader {
         let writer = Writer(write)
         var shown = -1
         do {
-            try await socket.send(Data(hello))
-            guard let answer = try await socket.receive() else { throw Failure.lost("bad handshake") }
+            let answer: Data?
+            do {
+                answer = try await socket.handshake(Data(hello), within: link.dataHandshakeDeadline, sleep: handshakeSleep)
+            } catch is HandshakeTimeout {
+                throw Failure.lost("the server didn't answer")
+            }
+            guard let answer else { throw Failure.lost("bad handshake") }
             do { _ = try DataFrame.welcome([UInt8](answer)) } catch { throw Failure.lost(error.localizedDescription) }
             progress(0, info.size)
             while true {

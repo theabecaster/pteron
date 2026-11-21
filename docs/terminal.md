@@ -97,6 +97,25 @@ socket to a host whose control connection has no welcome; it asks to be told
 - A fresh start that fails while the control connection is up (a refused ticket or HELLO, a data
   socket that won't open) is tried again after 3 s, then 6, 12, 24 and 30 s, and every 30 s from
   there. The next WELCOME resets that. These later starts ask for one ticket each.
+- **A handshake does not wait for ever.** A data socket's HELLO or RESUME has one deadline: the
+  connect deadline of the path the phone is on, 10 s on Wi-Fi and 15 s on cellular
+  (`RexControl.dataHandshakeDeadline`, `HandshakeClock`). It is one scheduled wait, ended with
+  the first answer, and it does nothing for a stream that has moved on.
+  - A RESUME with no answer is dropped without a status 1000 close, so the server keeps the
+    stream and the token stays good. The fence is up since the drop that led there, so nothing
+    typed goes out. The stream does not ask again by itself: it asks the control connection
+    whether the host is there (`RexControl.checkLiveness`, a ping with the pong deadline). No
+    pong drops the host, and its next welcome resumes the stream. A pong lets the stream try
+    once more, after the pause that follows a failed start (3 s, then 6, 12, 24, 30), with a
+    RESUME while the server can still have the stream.
+  - A HELLO with no answer is closed with status 1000, which also ends a stream the server may
+    have opened for it. It is a failed start like any other, and the control connection is
+    asked the same way.
+  - In the background a handshake that is under way is given up at once, the same way: nothing
+    waits or fires there. The stream waits for the control connection's verdict after the
+    return, and the handshake it makes then has a deadline of its own.
+  - A file's socket (`FileUploader`, `FileDownloader`) and a tunnel's connection
+    (`TunnelSession.open`) have the same deadline: no answer is a lost connection.
 - `stop()`, `park()`, `restart()` and a newer start end whatever was waiting.
 - `resync()` (a fresh stream, for its snapshot) does nothing while a start is under way or owed.
 - A fresh start whose ticket is refused with `conflict` right after a reconnect (the app's resync

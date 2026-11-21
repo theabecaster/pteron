@@ -19,6 +19,68 @@ protocol StreamLink: AnyObject {
     /// Returns when the control connection answers a ping; throws when it isn't connected or
     /// fails first. An upload measures the queue it adds with it (`UploadPacer`).
     func ping() async throws
+    /// How long a data socket may wait for the answer to its handshake, in seconds.
+    var dataHandshakeDeadline: Double { get }
+}
+
+extension StreamLink {
+    var dataHandshakeDeadline: Double { ReconnectPolicy.standard.connectDeadline }
+}
+
+/// A data socket got no answer to its handshake in time.
+struct HandshakeTimeout: Error {}
+
+/// Whether a handshake's deadline has passed; set by the deadline and read by what waited.
+@MainActor
+final class HandshakeClock {
+    private(set) var expired = false
+    private var task: Task<Void, Never>?
+    private let expire: @MainActor () -> Void
+
+    /// Starts the one wait: after `seconds`, `expire` runs, unless `end()` came first. `expire`
+    /// must end the socket's wait (`abort()` or `close()`), which is how the waiting side wakes.
+    init(seconds: Double, sleep: @escaping @MainActor (Duration) async -> Void,
+         expire: @escaping @MainActor () -> Void) {
+        self.expire = expire
+        task = Task { @MainActor [weak self] in
+            await sleep(.milliseconds(Int64((seconds * 1000).rounded())))
+            guard !Task.isCancelled, let self, self.task != nil else { return }
+            self.task = nil
+            self.expired = true
+            expire()
+        }
+    }
+
+    /// The handshake is over, one way or another: the deadline does nothing from here on.
+    func end() {
+        task?.cancel()
+        task = nil
+    }
+
+    /// Ends the wait as the deadline would, now. Nothing if it is over already.
+    func expireNow() {
+        guard task != nil else { return }
+        end()
+        expired = true
+        expire()
+    }
+}
+
+extension StreamSocket {
+    /// Sends `hello` and returns the answer, both within `seconds`. No answer by then: the
+    /// socket is dropped with no close frame, and `HandshakeTimeout` is thrown. For a socket
+    /// that carries a file's bytes, which has no stream to keep.
+    func handshake(_ hello: Data, within seconds: Double,
+                   sleep: @escaping @MainActor (Duration) async -> Void) async throws -> Data? {
+        let deadline = HandshakeClock(seconds: seconds, sleep: sleep) { [weak self] in self?.abort() }
+        defer { deadline.end() }
+        do {
+            try await send(hello)
+            return try await receive()
+        } catch {
+            throw deadline.expired ? HandshakeTimeout() : error
+        }
+    }
 }
 
 /// One data WebSocket.

@@ -212,12 +212,16 @@ public final class TunnelSession: @unchecked Sendable {
     private let session: URLSession
     private let base: URL
     private let gate: @MainActor @Sendable () -> Bool
+    private let handshakeDeadline: @MainActor @Sendable () -> Double
 
     /// `base` is the server's `wss://` origin (`RexControl.wsBase`). `gate`: the host's gate,
     /// asked before every connection (`RexControl.makeTunnelSession` gives the host's own).
-    init(base: URL, gate: @escaping @MainActor @Sendable () -> Bool) {
+    /// `handshakeDeadline`: how long a connection may wait for its WELCOME, in seconds.
+    init(base: URL, handshakeDeadline: @escaping @MainActor @Sendable () -> Double = { ReconnectPolicy.standard.connectDeadline },
+         gate: @escaping @MainActor @Sendable () -> Bool) {
         self.base = base
         self.gate = gate
+        self.handshakeDeadline = handshakeDeadline
         let cfg = URLSessionConfiguration.ephemeral
         cfg.waitsForConnectivity = false
         cfg.timeoutIntervalForRequest = 20
@@ -238,6 +242,14 @@ public final class TunnelSession: @unchecked Sendable {
         task.maximumMessageSize = 1 << 20
         task.resume()
         let socket = URLSessionTunnelSocket(task)
+        // No WELCOME by the deadline: the connection is dropped, which ends the wait below. A
+        // browser's request that comes later dials again, through the gate.
+        let limit = await handshakeDeadline()
+        let deadline = Task {
+            try? await Task.sleep(for: .milliseconds(Int64((limit * 1000).rounded())))
+            if !Task.isCancelled { socket.abort() }
+        }
+        defer { deadline.cancel() }
         do {
             try await socket.send(Data(hello))
             guard let answer = try await socket.receive() else { throw RexError.local("bad welcome") }

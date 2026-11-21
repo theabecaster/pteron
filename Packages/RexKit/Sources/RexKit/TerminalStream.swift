@@ -692,6 +692,62 @@ public final class TerminalStream {
     /// The socket `wake()` pinged, until it answers.
     private var unansweredPing: ObjectIdentifier?
 
+    /// The wait of a handshake's deadline. Apart from `sleep`, which tests skip: skipping this
+    /// one would end every handshake at once. A test ends it by hand.
+    var handshakeSleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// The deadline of the handshake under way. One scheduled wait, ended with the handshake.
+    private var handshakeClock: HandshakeClock?
+
+    /// The app went to the background (`RexControl.enteredBackground`): a handshake that is
+    /// under way is given up now, as its deadline would give it up, so nothing waits or fires
+    /// there. A RESUME keeps its token, and the stream waits for the control connection's
+    /// verdict after the return; the handshake it makes then has a deadline of its own.
+    func enteredBackground() {
+        handshakeClock?.expireNow()
+    }
+
+    /// Sets the one deadline of `socket`'s handshake: the connect deadline of the path the
+    /// phone is on (`RexControl.dataHandshakeDeadline`). When it passes, the socket's wait is
+    /// ended: a RESUME is dropped with no close frame (`abort`), so the server keeps the stream
+    /// and the token stays good; a HELLO is closed with status 1000, which also ends a stream
+    /// the server may have opened for it. It does nothing for a stream that has moved on (`gen`).
+    private func beginHandshake(_ socket: any StreamSocket, fresh: Bool, gen myGen: Int) -> HandshakeClock {
+        handshakeClock?.end()
+        let clock = HandshakeClock(seconds: control.dataHandshakeDeadline, sleep: handshakeSleep) { [weak self, weak socket] in
+            guard let self, let socket, myGen == self.gen, !self.stopped else { return }
+            if fresh { socket.close() } else { socket.abort() }
+        }
+        handshakeClock = clock
+        return clock
+    }
+
+    /// A RESUME got no answer in time, with the control connection up, or was given up for the
+    /// background. The token is kept, and the fence is up since the drop that led here, so
+    /// nothing typed goes out. The stream does not ask the host again by itself: the control
+    /// connection is asked whether the host is there (`checkLiveness`). No pong drops the host,
+    /// and its next welcome resumes this stream (`controlConnected()`). A pong lets the stream
+    /// try once more, after the pause that follows any failed start, with a RESUME while the
+    /// server can still have the stream.
+    private func resumeTimedOut(gen myGen: Int) {
+        sink?.streamStatus(.reconnecting)
+        waitingForControl = true
+        // In the background, or with the control connection down: its verdict or its welcome
+        // goes on from here.
+        guard mayOpen else { return }
+        failedStarts += 1
+        control.checkLiveness()
+        let epoch = connectEpoch, delay = Self.retryDelay(afterFailures: failedStarts)
+        let sleep = self.sleep, link = self.link
+        Task { [weak self] in
+            guard (try? await link.ping()) != nil else { return }
+            await sleep(delay)
+            guard let self, myGen == self.gen, !self.stopped, self.waitingForControl,
+                  epoch == self.connectEpoch, self.mayOpen else { return }
+            self.waitingForControl = false
+            if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+        }
+    }
+
     /// Back in the foreground. A data socket that looks open may have died while the app was
     /// suspended, and the screen would stay frozen until it times out. So it is pinged, on the
     /// socket it has: a socket that fails is handled like any drop, and one that doesn't answer
@@ -993,6 +1049,11 @@ public final class TerminalStream {
                     guard myGen == gen, !stopped else { return }
                 }
             }
+        } catch is HandshakeTimeout {
+            // The control connection looked up and the data socket got no answer: it is asked
+            // whether the host is there, and this start is a failed one like any other.
+            if myGen == gen, !stopped, mayOpen { control.checkLiveness() }
+            startFailed(RexError.local("no answer"), gen: myGen, epoch: epoch)
         } catch {
             startFailed(error, gen: myGen, epoch: epoch)
         }
@@ -1097,18 +1158,28 @@ public final class TerminalStream {
         guard mayOpen else { throw RexError.unsent("not connected") }
         let socket = try link.openDataSocket(subprotocol: "rex.data.terminal.v1")
         ws = socket
+        // The handshake does not wait for ever: one deadline, ended with the first answer.
+        let clock = beginHandshake(socket, fresh: fresh, gen: myGen)
+        func over() {
+            clock.end()
+            if handshakeClock === clock { handshakeClock = nil }
+        }
         do {
             // `stop()` or `restart()` may run during either wait. A handshake that finishes
             // after that must change nothing.
             try await socket.send(Data(hello))
             guard myGen == gen, !stopped else { throw CancellationError() }
             guard let d = try await socket.receive() else { throw RexError.local("bad handshake") }
+            over()
             try acceptWelcome([UInt8](d), gen: myGen, fresh: fresh, collectSnapshot: collectSnapshot)
         } catch {
+            over()
+            if ws === socket { ws = nil }
+            // The deadline ended it, the way that fits a RESUME or a HELLO (`beginHandshake`).
+            if clock.expired { throw HandshakeTimeout() }
             // This socket is of no use, to this start or a newer one. Status 1000 also ends a
             // stream the server may have opened for it.
             socket.close()
-            if ws === socket { ws = nil }
             throw error
         }
         receive(socket, gen: myGen)
@@ -1265,6 +1336,8 @@ public final class TerminalStream {
         } catch {
             // Not after `stop()`, and not on top of a newer start.
             guard myGen == gen, !stopped else { return }
+            // No answer in time is not a refusal: the server may still have the stream.
+            if error is HandshakeTimeout { return resumeTimedOut(gen: myGen) }
             if error is Refused { token = nil }
             await fullStart()
         }

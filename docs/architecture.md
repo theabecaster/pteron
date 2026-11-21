@@ -213,7 +213,8 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     from the later of the last frame in and the oldest waiting call, and one wait is set for
     what is left of it. Frames that keep arriving keep it quiet however long a call takes. It
     neither waits nor fires in the background, and a wait set before a drop does nothing to the
-    next connection (`ControlWatchdogTests`).
+    next connection (`ControlWatchdogTests`). A data socket's handshake has the connect
+    deadline too (docs/terminal.md, Reconnect).
   - *Background:* `enteredBackground()` cancels every wait and the pings and gives up an attempt
     that is under way; `wake()` ends it.
 - **One gate per host, for every socket.** The control connection is the only thing that asks a
