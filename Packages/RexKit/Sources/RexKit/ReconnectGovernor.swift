@@ -35,11 +35,18 @@ import Foundation
 /// |        |                                                          | comes forward if its floor    |
 /// |        |                                                          | allows, the held stay held    |
 /// | open   | `connect()` of a host that is new                        | open; it is held              |
+/// | open   | the last host that is not dormant goes dormant, is       | closed: no host is left to    |
+/// |        | removed or stops                                         | take a turn                   |
+/// | any    | a dormant host's own ten minutes are over                | unchanged; it is tried, the   |
+/// |        |                                                          | breaker never holds it        |
 ///
-/// The order of the turns: the host that was connected last; if that one is dormant, the
-/// selected one; then the others by their last welcome. Dormant hosts take turns only when no
-/// other host is down, a whole dormant interval apart. A dead host therefore never keeps healthy
-/// ones held: its turn ends with its attempt.
+/// The order of the turns: the host that was connected last, then the others by their last
+/// welcome; the selected one first among hosts that never connected. Only hosts that are not
+/// dormant take turns and are held. A dormant host (off for a while already) keeps its own timer
+/// of one attempt per ten minutes, open breaker or not, so one that comes back is found within
+/// about ten minutes however many others are away; dormant hosts that come due together go half
+/// a second apart and within the budget. A dead host therefore never keeps healthy ones held:
+/// its turn ends with its attempt.
 @MainActor
 public final class ReconnectGovernor {
     public let policy: ReconnectPolicy
@@ -69,8 +76,12 @@ public final class ReconnectGovernor {
 
     func isSelected(_ id: Int) -> Bool { selected == id }
 
-    /// The breaker is open and this host is not the one that is tried.
-    func holds(_ id: Int) -> Bool { !breaker.allows(id) }
+    /// The breaker is open and holds this host: it is not the one that is tried, and it is not
+    /// dormant (a dormant host keeps its own timer).
+    func holds(_ id: Int) -> Bool { !breaker.allows(id) && hosts[id]?.control?.dormant != true }
+
+    /// When a dormant host's attempt was last let through, for the stagger between them.
+    private var lastDormantGo = -Double.infinity
 
     func register(_ control: RexControl) -> Int {
         nextID += 1
@@ -121,7 +132,12 @@ public final class ReconnectGovernor {
     func request(_ id: Int, exempt: Bool, now: Double) -> Grant {
         // A test host that went away without a word must not keep the others held.
         if let test = breaker.testHost, hosts[test]?.control == nil { passTurn(from: test) }
-        guard breaker.allows(id) else { return .held }
+        let dormant = hosts[id]?.control?.dormant == true
+        guard breaker.allows(id) || dormant else { return .held }
+        // Dormant hosts whose ten minutes end together go half a second apart.
+        if dormant, now - lastDormantGo < policy.breakerResumeSpacing {
+            return .wait(policy.breakerResumeSpacing - (now - lastDormantGo))
+        }
         if !exempt {
             // Room among the attempts under way first: a host that waits for that is told when
             // there is some, and takes nothing from the window meanwhile.
@@ -134,6 +150,7 @@ public final class ReconnectGovernor {
                 return .wait(wait + Double(rank(id)) * policy.budgetSpacing)
             }
         }
+        if dormant { lastDormantGo = now }
         return .go
     }
 
@@ -208,7 +225,10 @@ public final class ReconnectGovernor {
     public func refreshTarget() -> RexControl? {
         if let s = selected, let c = hosts[s]?.control, c.wantsAttempts { return c }
         if let t = breaker.testHost, let c = hosts[t]?.control { return c }
-        return order().first.flatMap { hosts[$0]?.control }
+        if let first = order().first { return hosts[first]?.control }
+        // Only dormant hosts are down: the one that was good last.
+        return hosts.compactMap { $0.value.control }.filter { $0.wantsAttempts }
+            .max { ($0.lastGood ?? .distantPast) < ($1.lastGood ?? .distantPast) }
     }
 
     /// The test host can't be the one any more: the next in order takes the turn. With no host
@@ -234,26 +254,18 @@ public final class ReconnectGovernor {
         }
     }
 
-    /// The hosts that are down, in the order they take the turn: the likeliest to answer first.
-    /// The one that was connected last; if that one is dormant, the selected one; then the rest
-    /// by their last welcome. Dormant hosts (off for a while already) take turns only when no
-    /// other host is down: one of them holding the turn for its ten minutes would keep the
-    /// others held.
+    /// The hosts that take turns, in order: those that are down and not dormant, the likeliest
+    /// to answer first. The one that was connected last, then the others by their last welcome;
+    /// among hosts that never connected, the selected one first.
     private func order() -> [Int] {
-        let down = hosts.compactMap { $0.value.control }.filter { $0.wantsAttempts }
-        let awake = down.filter { !$0.dormant }
-        func recent(_ a: RexControl, _ b: RexControl) -> Bool {
-            let x = a.lastGood ?? .distantPast, y = b.lastGood ?? .distantPast
-            if x != y { return x > y }
-            if (a.governorID == selected) != (b.governorID == selected) { return a.governorID == selected }
-            return a.governorID < b.governorID
-        }
-        var list = (awake.isEmpty ? down : awake).sorted(by: recent)
-        if let last = down.sorted(by: recent).first, last.dormant,
-           let i = list.firstIndex(where: { $0.governorID == selected }) {
-            list.insert(list.remove(at: i), at: 0)
-        }
-        return list.map(\.governorID)
+        hosts.compactMap { $0.value.control }.filter { $0.wantsAttempts && !$0.dormant }
+            .sorted { a, b in
+                let x = a.lastGood ?? .distantPast, y = b.lastGood ?? .distantPast
+                if x != y { return x > y }
+                if (a.governorID == selected) != (b.governorID == selected) { return a.governorID == selected }
+                return a.governorID < b.governorID
+            }
+            .map(\.governorID)
     }
 
     /// The host's place among those that are down: 0 for the selected one, then by last good.

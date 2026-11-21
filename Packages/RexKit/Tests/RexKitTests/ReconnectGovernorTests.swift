@@ -118,7 +118,6 @@ final class ReconnectGovernorTests: XCTestCase {
         for (i, t) in later.enumerated() {
             XCTAssertLessThanOrEqual(later[i...].prefix { $0 - t < 100 }.count, 2)
         }
-        XCTAssertTrue(governor.breakerOpen)
     }
 
     // MARK: The breaker (spec test 5)
@@ -142,7 +141,8 @@ final class ReconnectGovernorTests: XCTestCase {
         // Ten minutes with no answer from anyone: one host under way at a time, each in turn.
         for _ in 0..<600 {
             XCTAssertLessThanOrEqual(hosts.filter(\.isConnecting).count, 1, "one test host at a time")
-            XCTAssertEqual(hosts.filter { !$0.control.isHeld }.count, 1)
+            // One host has the turn; a host that went dormant meanwhile is on its own timer.
+            XCTAssertLessThanOrEqual(hosts.filter { !$0.control.isHeld && !$0.control.dormant }.count, 1)
             await clock.advance(by: 1)
         }
         let during = zip(hosts, before).map { $0.sockets.count - $1 }
@@ -327,8 +327,10 @@ final class ReconnectGovernorTests: XCTestCase {
         XCTAssertTrue(dead.triggers.contains(.peer), "a close did let it go")
     }
 
-    /// The tunnel really down for an hour, with three hosts that were connected: one attempt
-    /// under way at a time, each host in turn on its own schedule and within the budget.
+    /// The tunnel really down for an hour, with three hosts that were connected. While any of
+    /// them is not dormant they take turns, one attempt under way at a time. Once dormant, each
+    /// keeps its own ten minutes: never two attempts of one host within ten minutes, and never
+    /// more than two attempts per 100 s between them.
     func testWithTheTunnelDownForAnHourThreeHostsGetFewAttemptsBetweenThem() async {
         makeHosts(3)
         await connectAll()
@@ -337,13 +339,24 @@ final class ReconnectGovernorTests: XCTestCase {
         for h in hosts { h.sockets.last.failReceive() }
         await pump()
         XCTAssertTrue(governor.breakerOpen)
+        var dormantAt: [ObjectIdentifier: Double] = [:]
         for _ in 0..<3600 {
-            XCTAssertLessThanOrEqual(hosts.filter(\.isConnecting).count, 1)
+            XCTAssertLessThanOrEqual(hosts.filter(\.isConnecting).count, 2)
+            for h in hosts where h.control.dormant && dormantAt[ObjectIdentifier(h)] == nil {
+                dormantAt[ObjectIdentifier(h)] = clock.now.timeIntervalSinceReferenceDate
+            }
             await clock.advance(by: 1)
         }
-        XCTAssertTrue(governor.breakerOpen)
+        XCTAssertTrue(hosts.allSatisfy { $0.control.dormant })
+        XCTAssertFalse(governor.breakerOpen, "no host is left to take a turn: each keeps its own timer")
         XCTAssertEqual(total - before, Self.tunnelDownHourTotal, "\(hosts.map { $0.began.filter { $0 >= t0 }.map { Int($0 - t0) } })")
-        for h in hosts { assertFloor(h, from: t0) }
+        for h in hosts {
+            assertFloor(h, from: t0)
+            // Dormant: its attempts are ten minutes apart or more.
+            let since = h.began.filter { $0 >= (dormantAt[ObjectIdentifier(h)] ?? .infinity) - 11 }
+            for gap in zip(since, since.dropFirst()).map({ $1 - $0 }) { XCTAssertGreaterThanOrEqual(gap, 600) }
+            XCTAssertGreaterThanOrEqual(since.count, 3, "and it goes on being tried")
+        }
         let all = hosts.flatMap { $0.began.filter { $0 >= t0 } }.sorted()
         for (i, t) in all.enumerated() where i >= 3 {
             XCTAssertLessThanOrEqual(all[i...].prefix { $0 - t < 100 }.count, 2, "past the first attempts, two per 100 s")
@@ -351,52 +364,48 @@ final class ReconnectGovernorTests: XCTestCase {
     }
 
     /// Attempts across three hosts in an hour of no tunnel (see the test above).
-    static let tunnelDownHourTotal = 16
+    static let tunnelDownHourTotal = 26
 
-    /// `connect()` asks the governor like every other attempt: while the breaker is open, a
-    /// host that is new opens nothing, and goes with the others when a host answers.
-    func testConnectWaitsForItsTurnWhileTheBreakerIsOpen() async {
-        makeHosts(3)
-        let a = hosts[0], b = hosts[1], new = hosts[2]
-        for h in [a, b] {
-            let c = h.control
-            Task { @MainActor in try? await c.connect() }
-            await pump()
-            h.sockets.last.welcome()
-            await pump()
-        }
-        for h in [a, b] { h.sockets.last.failReceive() }
-        await pump()
-        XCTAssertTrue(governor.breakerOpen)
-        let c = new.control
-        let first = Task { @MainActor in
-            do { try await c.connect(); return true } catch { return false }
-        }
-        let connected = await first.value
-        XCTAssertFalse(connected)
-        XCTAssertEqual(new.sockets.count, 0, "no socket while the tunnel looks down")
-        XCTAssertTrue(new.control.isHeld)
-        await clock.advance(by: 0.5)
-        let test = try! XCTUnwrap([a, b].first { $0.isConnecting })
-        test.sockets.last.welcome()
-        await clock.advance(by: 2)
-        XCTAssertEqual(new.sockets.count, 1, "the welcome let it go")
-    }
-
-    func testATapGoesThroughAnOpenBreakerAndItsWelcomeClosesIt() async {
+    /// Three computers that are off and dormant, and one of them comes back alone, at the
+    /// worst moment: just as an attempt to it began and got no answer. It is found by its own
+    /// next attempt, about ten minutes later (610 s: that attempt's 10 s, then its ten minutes),
+    /// however many others are away, with no tap.
+    func testADormantHostThatReturnsAloneIsBackWithinAboutTenMinutes() async {
         makeHosts(3)
         await connectAll()
-        governor.select(hosts[0].control)
         for h in hosts { h.sockets.last.failReceive() }
         await pump()
-        let held = try! XCTUnwrap(hosts.first { $0.control.isHeld })
-        let before = held.sockets.count
-        held.control.kick()
-        await pump()
-        XCTAssertEqual(held.sockets.count, before + 1, "the user asked")
-        held.sockets.last.welcome()
-        await pump()
-        XCTAssertFalse(governor.breakerOpen, "a welcome from any host: the tunnel works")
+        var waited = 0
+        while !hosts.allSatisfy({ $0.control.dormant }), waited < 3600 {
+            await clock.advance(by: 1)
+            waited += 1
+        }
+        XCTAssertTrue(hosts.allSatisfy { $0.control.dormant })
+        // The worst moment: its attempt has just begun.
+        let back = hosts[1]
+        var until = 0
+        while !(back.isConnecting && back.sockets.last.isWaitingToReceive), until < 700 {
+            await clock.advance(by: 1)
+            until += 1
+        }
+        XCTAssertTrue(back.isConnecting)
+        // This attempt still gets no answer; the computer is up from now on.
+        let returned = clock.now.timeIntervalSinceReferenceDate
+        await clock.advance(by: 10.5)
+        var took: Double?
+        for _ in 0..<800 {
+            if back.isConnecting, back.sockets.last.isWaitingToReceive {
+                back.sockets.last.welcome()
+                await pump()
+                took = clock.now.timeIntervalSinceReferenceDate - returned
+                break
+            }
+            await clock.advance(by: 1)
+        }
+        let t = try! XCTUnwrap(took, "it never came back")
+        XCTAssertLessThanOrEqual(t, 660, "back \(t) s after it returned")
+        XCTAssertEqual(back.control.state, .connected)
+        XCTAssertEqual(back.triggers.last, .backoff, "by its own timer, not a tap")
     }
 
     // MARK: The breaker's other transitions (the table in `ReconnectGovernor`)

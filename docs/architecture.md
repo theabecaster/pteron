@@ -183,7 +183,10 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     `ReconnectGovernor`. It opens when 2 hosts go silent within 30 s, each one connected until
     then or on its first two attempts, and no host is connected. One test host is tried and the
     others are held; a test host that stays silent passes the turn to the next (the one that was
-    connected last first), so a computer that is off never keeps healthy ones held. Any welcome
+    connected last first), so a computer that is off never keeps healthy ones held. A dormant
+    host is never held and takes no turn: it keeps its own attempt per 10 min, open breaker or
+    not, so one that comes back is found within about 10 min however many others are away;
+    dormant hosts that come due together go 500 ms apart and within the budget. Any welcome
     or answer from any host closes it, and the held hosts go 500 ms apart, each when its floor
     and the budget allow.
   - *Triggers:* a tap is Try Again, a pull to refresh, or moving to another server (a tab or a

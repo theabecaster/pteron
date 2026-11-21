@@ -856,23 +856,19 @@ public final class RexControl {
 
     /// The breaker opened and this host is not the one that is tried.
     func heldByBreaker() {
-        guard wantConnected, state != .connected, !retryStopped else { return }
+        // Not a dormant host: it keeps its own timer, open breaker or not.
+        guard wantConnected, state != .connected, !retryStopped, !dormant else { return }
         isHeld = true
         queuedTrigger = nil
         cancelRetry()
     }
 
     /// This host is now the one the breaker tries: its schedule goes on, with what is left of
-    /// its wait. A dormant host waits a whole interval from its turn's beginning, so dormant
-    /// hosts that take turns are asked once per interval between them, not once each.
+    /// its wait.
     func becameTestHost() {
         guard isHeld else { return }
         isHeld = false
-        if dormant, mayRetry {
-            plan(after: policy.dormantInterval, .backoff)
-        } else {
-            rearm()
-        }
+        rearm()
     }
 
     /// A host answered, so the tunnel works: this host goes after `delay` seconds, if its floor
