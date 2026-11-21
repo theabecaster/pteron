@@ -163,6 +163,26 @@ pub fn process(pid: u32) -> Option<Process> {
     proc_fs::process(pid, &stat, &status, exe.as_deref().and_then(Path::to_str))
 }
 
+/// The most processes of one group that are listed, and (Linux) the most processes looked
+/// at to find them. Past either, the group is not listed at all.
+pub const GROUP_MAX: usize = 1024;
+#[cfg(any(target_os = "linux", test))]
+pub const SCAN_MAX: usize = 32768;
+
+/// The processes in the process group `pgid`, of any user. None when there is none, the
+/// system can't say, or a limit above was passed. macOS asks the kernel
+/// (`proc_listpgrppids`); Linux reads the group out of every `/proc/<pid>/stat`.
+#[cfg(target_os = "macos")]
+pub fn group_pids(pgid: u32) -> Option<Vec<u32>> {
+    mac::group_pids(pgid)
+}
+
+#[cfg(target_os = "linux")]
+pub fn group_pids(pgid: u32) -> Option<Vec<u32>> {
+    let pids = std::fs::read_dir("/proc").ok()?.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok());
+    proc_fs::group(pids.map(|pid| (pid, std::fs::read_to_string(format!("/proc/{pid}/stat")).ok())), pgid)
+}
+
 /// How the process `pid` was started: its arguments and its working directory. None when
 /// there is no such process or it is not this user's to read. macOS asks the kernel
 /// (`KERN_PROCARGS2`, of which only the arguments are kept, and the process's vnode paths);
@@ -281,6 +301,27 @@ mod proc_fs {
         })
     }
 
+    /// The process group in a `stat` file.
+    pub fn pgid(stat: &str) -> Option<u32> {
+        stat[stat.rfind(')')? + 1..].split_ascii_whitespace().nth(2)?.parse().ok()
+    }
+
+    /// The processes of the group `pgid` among `all` (each with its `stat` file, when it
+    /// could be read: a process may end while the list is gone through). None when the
+    /// group has none or more than `GROUP_MAX`, or `all` has more than `SCAN_MAX`.
+    pub fn group(all: impl Iterator<Item = (u32, Option<String>)>, pgid: u32) -> Option<Vec<u32>> {
+        let mut found = vec![];
+        for (seen, (pid, stat)) in all.enumerate() {
+            if seen >= super::SCAN_MAX {
+                return None;
+            }
+            if stat.as_deref().and_then(self::pgid) == Some(pgid) {
+                found.push(pid);
+            }
+        }
+        (!found.is_empty() && found.len() <= super::GROUP_MAX).then_some(found)
+    }
+
     /// The arguments in a `cmdline` file: each ends in a NUL. More bytes than `ARGV_MAX`
     /// means the file went on: the argument the cut fell in is left out.
     pub fn cmdline(bytes: &[u8]) -> (Vec<Vec<u8>>, bool) {
@@ -342,6 +383,23 @@ mod proc_fs {
         const STATUS: &str = "Name:\tnode\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t4242\nPid:\t4242\nPPid:\t4201\nUid:\t1000\t1001\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
 
         #[test]
+        fn a_group_is_found_in_the_stat_lines_of_all_processes() {
+            let stat = |pid: u32, name: &str, pgid: u32| Some(format!("{pid} ({name}) S 900 {pgid} 900 34816 {pgid} 4194304 0 0"));
+            let all = || vec![(900, stat(900, "zsh", 900)), (4200, stat(4200, "npm run dev", 4200)), (4300, stat(4300, "tee) R 1 1", 4200)), (4400, stat(4400, "sleep", 4400)), (4500, None), (4600, Some("not a stat line".into()))];
+            assert_eq!(pgid("4300 (tee) R 1 1) S 900 4200 900 34816 4200 0"), Some(4200), "a name with brackets and spaces of its own");
+            assert_eq!((pgid(""), pgid("1 (x) S 0"), pgid("1 (x) S 0 -1 0")), (None, None, None));
+            assert_eq!(group(all().into_iter(), 4200), Some(vec![4200, 4300]));
+            assert_eq!(group(all().into_iter(), 4400), Some(vec![4400]));
+            // No process in it; more in it than are listed; more processes than are looked at.
+            assert_eq!(group(all().into_iter(), 5000), None);
+            let many = |n: usize, pgid: u32| (0..n as u32).map(move |i| (10 + i, stat(10 + i, "x", pgid)));
+            assert_eq!(group(many(crate::platform::GROUP_MAX, 7), 7).map(|g| g.len()), Some(crate::platform::GROUP_MAX));
+            assert_eq!(group(many(crate::platform::GROUP_MAX + 1, 7), 7), None);
+            assert_eq!(group(many(crate::platform::SCAN_MAX, 8).chain(all()), 4200), None);
+            assert_eq!(group(many(crate::platform::SCAN_MAX - 6, 8).chain(all()), 4200), Some(vec![4200, 4300]));
+        }
+
+        #[test]
         fn a_process_is_read_from_its_stat_and_status_lines() {
             // A dev server in a terminal: its group is the one in the foreground there.
             let stat = "4242 (node) S 4201 4200 900 34817 4200 4194304 1 0 0 0 5 1 0 0 20 0 11 0 100 1 2\n";
@@ -397,6 +455,7 @@ mod mac {
     extern "C" {
         fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
         fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, size: i32) -> i32;
+        fn proc_listpgrppids(pgrpid: i32, buffer: *mut c_void, buffersize: i32) -> i32;
         fn getsid(pid: i32) -> i32;
         fn sysctl(name: *mut i32, namelen: u32, oldp: *mut c_void, oldlenp: *mut usize, newp: *mut c_void, newlen: usize) -> i32;
     }
@@ -421,6 +480,17 @@ mod mac {
         let path = &paths.0[VNODE_INFO..VNODE_PATH];
         let path = &path[..path.iter().position(|b| *b == 0)?];
         std::str::from_utf8(path).ok().filter(|p| p.starts_with('/')).map(String::from)
+    }
+
+    pub fn group_pids(pgid: u32) -> Option<Vec<u32>> {
+        let pgid = i32::try_from(pgid).ok().filter(|g| *g > 0)?;
+        // One more than is ever listed, so that a larger group shows as one.
+        let mut pids = vec![0i32; super::GROUP_MAX + 1];
+        let size = (pids.len() * std::mem::size_of::<i32>()) as i32;
+        // Safe: the buffer is as long as the size given, and the kernel writes at most that.
+        let n = unsafe { proc_listpgrppids(pgid, pids.as_mut_ptr().cast(), size) };
+        let n = usize::try_from(n).ok().filter(|n| (1..=super::GROUP_MAX).contains(n))?;
+        Some(pids[..n].iter().filter_map(|pid| u32::try_from(*pid).ok().filter(|p| *p > 0)).collect())
     }
 
     pub fn invocation(pid: u32) -> Option<super::Invocation> {

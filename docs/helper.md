@@ -176,7 +176,10 @@ When it closes, by itself:
 Beacon also answers the app's question of which processes are behind a port (their ids,
 names, process groups, the arguments they were started with and their folders, for your own
 processes only), so that Stop and Restart in the app's Ports list work for a server started
-through `npm run dev` and the like. It only reports: Beacon never stops, signals or starts a
+through `npm run dev` and the like. The answer also counts how many programs the shell
+started side by side for that job (`job_members`: 1 for a plain command, more for a pipeline
+such as `npm run dev | tee log`, and nothing when it can't tell), so that the app offers
+Restart only for a plain command. It only reports: Beacon never stops, signals or starts a
 process itself. Arguments go to your phone in that one answer and nowhere else: not to the
 log, a file or the push gateway. Environment variables are never read out. The details of both are in `Relay/README.md`, steps 8 and 9.
 

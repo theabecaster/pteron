@@ -1281,7 +1281,9 @@ impl Relay {
             }
             (None, None) => return Err(error("bad_request", "pid or port is needed")),
         };
-        crate::owner::owner(pid, crate::platform::user_id(), &|pid| self.sense.process(pid), &|pid| self.sense.invocation(pid)).map(|o| o.json()).ok_or_else(missing)
+        let me = crate::platform::user_id();
+        let read = |pid: u32| self.sense.process(pid);
+        crate::owner::owner(pid, me, &read, &|pid| self.sense.invocation(pid)).map(|o| o.counted(me, &read, &|pgid| self.sense.group(pgid)).json()).ok_or_else(missing)
     }
 
     /// Takes the one `update_helper` slot of this ten minutes, or says how long is left.
@@ -1991,6 +1993,12 @@ mod tests {
 
         fn invocation(&self, pid: u32) -> Option<crate::platform::Invocation> {
             self.invocations.lock().unwrap().get(&pid).cloned()
+        }
+
+        fn group(&self, pgid: u32) -> Option<Vec<u32>> {
+            let mut pids: Vec<u32> = self.processes.lock().unwrap().iter().filter(|(_, p)| p.pgid == pgid).map(|(pid, _)| *pid).collect();
+            pids.sort_unstable();
+            (!pids.is_empty()).then_some(pids)
         }
 
         fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
@@ -4659,7 +4667,7 @@ mod tests {
         };
         assert_eq!(
             owner,
-            json!({"pid": 4242, "pgid": 4200, "tty_foreground_pgid": 4200, "foreground": true, "ancestry": [
+            json!({"pid": 4242, "pgid": 4200, "tty_foreground_pgid": 4200, "foreground": true, "job_members": 1, "ancestry": [
                 entry(4242, 4201, 4200, "node"), entry(4201, 4200, 4200, "sh"), entry(4200, 900, 4200, "npm"), entry(900, 1, 900, "zsh")
             ]})
         );

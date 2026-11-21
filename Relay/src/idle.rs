@@ -20,6 +20,10 @@ pub trait Sense: Send + Sync {
     fn invocation(&self, _pid: u32) -> Option<Invocation> {
         None
     }
+    /// The processes of a process group (`port_owner`). None: it can't be listed.
+    fn group(&self, _pgid: u32) -> Option<Vec<u32>> {
+        None
+    }
     /// The computer's sleep and wake (`watch_power`). None: not watched.
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
         None
@@ -47,6 +51,10 @@ impl Sense for System {
 
     fn invocation(&self, pid: u32) -> Option<Invocation> {
         crate::platform::invocation(pid)
+    }
+
+    fn group(&self, pgid: u32) -> Option<Vec<u32>> {
+        crate::platform::group_pids(pgid)
     }
 
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {
@@ -83,6 +91,10 @@ impl Sense for DeskFile {
 
     fn invocation(&self, pid: u32) -> Option<Invocation> {
         self.inner.invocation(pid)
+    }
+
+    fn group(&self, pgid: u32) -> Option<Vec<u32>> {
+        self.inner.group(pgid)
     }
 
     fn watch_power(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Power>> {

@@ -87,6 +87,31 @@ pub struct Owner {
     pub tty_pgid: Option<u32>,
     /// The holder first, then what started it, and so on up.
     pub chain: Vec<Link>,
+    /// How many processes of the holder's group the job's shell started itself
+    /// (`job_members`). None until `counted`, and when it can't be said.
+    pub job_members: Option<u32>,
+}
+
+/// How many processes of the process group `pgid` were started by the job's shell, which
+/// is the process that started the group's leader: 1 for a plain command, 2 or more for a
+/// pipeline (`npm run dev | tee log`), whose stages the shell starts side by side in one
+/// group. What a stage started itself is not counted.
+///
+/// `group` lists the group. None when the leader is gone or not `me`'s, nothing started it
+/// that can be named (its parent is the system's first process), the group can't be listed,
+/// or any process in it can't be read as `me`'s (it ended meanwhile, or is another user's):
+/// then nothing is said, since a count that left one out would call a pipeline a plain command.
+pub fn job_members(pgid: u32, me: UserId, read: &dyn Fn(u32) -> Option<Process>, group: &dyn Fn(u32) -> Option<Vec<u32>>) -> Option<u32> {
+    let own = |pid: u32| read(pid).filter(|p| p.uid == me && p.pgid == pgid);
+    let shell = own(pgid)?.ppid;
+    if shell <= 1 {
+        return None;
+    }
+    let mut count = 0;
+    for pid in group(pgid)? {
+        count += u32::from(own(pid)?.ppid == shell);
+    }
+    (count > 0).then_some(count)
 }
 
 /// The holder `pid` and its ancestry, as `read` describes each process. None when there is
@@ -113,10 +138,16 @@ pub fn owner(pid: u32, me: UserId, read: &dyn Fn(u32) -> Option<Process>, starte
             next = own(parent).map(|p| (parent, p));
         }
     }
-    Some(Owner { tty_pgid, chain })
+    Some(Owner { tty_pgid, chain, job_members: None })
 }
 
 impl Owner {
+    /// The same, with the holder's job counted (`job_members`).
+    pub fn counted(self, me: UserId, read: &dyn Fn(u32) -> Option<Process>, group: &dyn Fn(u32) -> Option<Vec<u32>>) -> Owner {
+        let job_members = job_members(self.chain[0].pgid, me, read, group);
+        Owner { job_members, ..self }
+    }
+
     /// The action's result.
     pub fn json(&self) -> Value {
         let holder = &self.chain[0];
@@ -125,6 +156,7 @@ impl Owner {
             "pgid": holder.pgid,
             "tty_foreground_pgid": self.tty_pgid,
             "foreground": self.tty_pgid == Some(holder.pgid),
+            "job_members": self.job_members,
             "ancestry": self.chain.iter().map(Link::json).collect::<Vec<_>>(),
         })
     }
@@ -260,6 +292,75 @@ mod tests {
             (850, p("rex", ME, 1, 850, None)),
             (1, p("launchd", 0, 0, 1, None)),
         ])
+    }
+
+    /// The group of a table, as the system would list it.
+    fn listed(table: &HashMap<u32, Process>, pgid: u32) -> Option<Vec<u32>> {
+        let mut pids: Vec<u32> = table.iter().filter(|(_, p)| p.pgid == pgid).map(|(pid, _)| *pid).collect();
+        pids.sort_unstable();
+        (!pids.is_empty()).then_some(pids)
+    }
+
+    #[test]
+    fn a_job_is_counted_by_the_processes_its_shell_started() {
+        let mut table = wrapper();
+        let count = |table: &HashMap<u32, Process>| job_members(4200, ME, &|pid| table.get(&pid).cloned(), &|pgid| listed(table, pgid));
+        // `npm run dev`: the shell started npm; the shell and node below it are npm's.
+        assert_eq!(count(&table), Some(1));
+        let answer = |table: &HashMap<u32, Process>| ask(table, 4242).unwrap().counted(ME, &|pid| table.get(&pid).cloned(), &|pgid| listed(table, pgid)).json();
+        assert_eq!(answer(&table)["job_members"], 1);
+        assert_eq!(ask(&table, 4242).unwrap().json()["job_members"], Value::Null, "not counted, not said");
+        // `npm run dev | tee log`: the shell started tee beside it, in the same group.
+        table.insert(4300, p("tee", ME, 900, 4200, Some(4200)));
+        assert_eq!((count(&table), answer(&table)["job_members"].as_u64()), (Some(2), Some(2)));
+        table.insert(4301, p("grep", ME, 900, 4200, Some(4200)));
+        assert_eq!(count(&table), Some(3));
+        // Another job of the same shell is another group.
+        table.insert(4400, p("sleep", ME, 900, 4400, None));
+        assert_eq!(count(&table), Some(3));
+        table.remove(&4301);
+        // A stage that is another user's (`sudo … | tee`): nothing is said.
+        table.insert(4302, p("sudo", 0, 900, 4200, Some(4200)));
+        assert_eq!((count(&table), answer(&table)["job_members"].clone()), (None, Value::Null));
+        table.remove(&4302);
+        // A process the system listed that has ended since: nothing is said.
+        assert_eq!(job_members(4200, ME, &|pid| table.get(&pid).cloned(), &|_| Some(vec![4200, 4300, 4999])), None);
+        // The group can't be listed.
+        assert_eq!(job_members(4200, ME, &|pid| table.get(&pid).cloned(), &|_| None), None);
+        // Nothing that can be named started the leader, or the leader is gone.
+        table.insert(4200, p("npm", ME, 1, 4200, Some(4200)));
+        assert_eq!(count(&table), None);
+        table.remove(&4200);
+        assert_eq!(count(&table), None);
+    }
+
+    /// Real processes. A shell with job control can't be had in a test (it needs a
+    /// terminal), so the group is made as such a shell makes it: two children of this
+    /// process, the second put into the group the first leads.
+    #[cfg(unix)]
+    #[test]
+    fn real_children_in_one_group_are_counted_as_one_job() {
+        use std::os::unix::process::CommandExt;
+        let me = crate::platform::user_id();
+        let sleep = |group: i32| crate::tools::command("sleep").unwrap().arg("30").process_group(group).spawn().unwrap();
+        let mut first = sleep(0);
+        let mut second = sleep(first.id() as i32);
+        let mut alone = sleep(0);
+        let count = |pid: u32| job_members(pid, me, &crate::platform::process, &crate::platform::group_pids);
+        let mut group = crate::platform::group_pids(first.id()).unwrap_or_default();
+        group.sort_unstable();
+        let mut both = vec![first.id(), second.id()];
+        both.sort_unstable();
+        let counted = (count(first.id()), count(alone.id()));
+        // A group nothing is in.
+        let nothing = crate::platform::group_pids(u32::MAX / 4);
+        for child in [&mut first, &mut second, &mut alone] {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        assert_eq!(group, both);
+        assert_eq!(counted, (Some(2), Some(1)));
+        assert_eq!(nothing, None);
     }
 
     #[test]

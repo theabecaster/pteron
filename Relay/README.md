@@ -1092,7 +1092,7 @@ on Linux, the first process listed). `pid` wins when both are there.
 Result:
 
 ```json
-{"pid": 4242, "pgid": 4200, "tty_foreground_pgid": 4200, "foreground": true,
+{"pid": 4242, "pgid": 4200, "tty_foreground_pgid": 4200, "foreground": true, "job_members": 1,
  "ancestry": [
    {"pid": 4242, "ppid": 4201, "pgid": 4200, "sid": 900, "group_leader": false, "session_leader": false,
     "name": "node", "path": "/usr/local/bin/node",
@@ -1110,6 +1110,17 @@ Result:
 - `tty_foreground_pgid`: the process group in the foreground of the holder's terminal, or
   `null` when it has none. `foreground` is true when that is the holder's own group, which is
   the group a Ctrl-C typed into that terminal reaches.
+- `job_members`: how many processes of the holder's process group were started by the
+  job's shell, which is the process that started the group's leader. A shell with job
+  control starts the stages of a pipeline side by side in one group, so this is 1 for a
+  plain command (`npm run dev`: what npm started itself is not counted) and 2 or more for a
+  pipeline (`npm run dev | tee log`), which typing the leader's arguments again would not
+  bring back. `null` when it can't be said: the leader has ended or is not this user's, its
+  parent is pid 1, the group can't be listed, it has more than 1024 processes, or any
+  process in it is another user's or ended while it was counted. On Linux the group is found
+  by reading `/proc/<pid>/stat` of every process, and with more than 32768 processes it is
+  `null`. Only the count is given: nothing else about the other stages. A Beacon that
+  does not send the field is to be read as `null`.
 - `ancestry`: the holder first, then the process that started it, and so on up. The list
   ends before pid 1, before the first process of another user or one that can't be read, at a
   process already listed, and after 32 entries. Per entry:
