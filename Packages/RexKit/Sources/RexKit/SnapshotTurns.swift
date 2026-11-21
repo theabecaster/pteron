@@ -1,13 +1,13 @@
 import Foundation
 
-/// One fresh snapshot at a time for a host, on cellular. A pane's fresh start brings its whole
-/// screen and scrollback over the data socket. On a cellular path several of those at once
-/// (the panes of a split tab, a pane that streams unseen) share a thin link and the phone's
-/// tunnel with the pane the user is looking at, so there each fresh start takes a turn: the
-/// pane on screen first, then the others in the order they asked.
+/// One fresh snapshot at a time for a host's unseen panes, on cellular. A pane's fresh start
+/// brings its whole screen and scrollback over the data socket. On a cellular path several of
+/// those at once share a thin link and the phone's tunnel with the pane the user is looking
+/// at, so there the fresh start of a pane that streams unseen takes a turn, in the order asked.
 ///
-/// On Wi-Fi nobody takes a turn: panes start together, as they always did
-/// (`TerminalStream.fullStart` asks only on an expensive path).
+/// A pane on screen never takes a turn and never waits: it starts at once, whoever holds the
+/// turn, and a pane that comes on screen while it waits starts then. On Wi-Fi nobody takes a
+/// turn (`TerminalStream.fullStart` asks only on an expensive path, for an unseen pane).
 ///
 /// A turn is always given back: by the stream when its snapshot ends or fails, when it stops,
 /// parks or restarts, when its socket drops, when the host dies and when the app goes to the
@@ -26,26 +26,22 @@ final class SnapshotTurns {
 
     private var held: Turn?
     private var deadline: Task<Void, Never>?
-    private var waiting: [(turn: Turn, visible: Bool, go: CheckedContinuation<Void, Never>)] = []
+    private var waiting: [(turn: Turn, go: CheckedContinuation<Void, Never>)] = []
 
     var isHeld: Bool { held != nil }
     var waitingCount: Int { waiting.count }
     func holds(_ turn: Turn?) -> Bool { turn != nil && held === turn }
 
     /// Returns when `turn` may start: at once with nobody holding, otherwise after those ahead
-    /// of it. `visible`: the pane is on screen, and goes ahead of those that are not. It also
-    /// returns when the turn is given back while it waits (`give`): the caller looks at its
-    /// own state then, as after any wait.
-    func take(_ turn: Turn, visible: Bool) async {
+    /// of it. It also returns when the turn is given back while it waits (`give`: the stream
+    /// stopped, or its pane came on screen): the caller looks at its own state then, as after
+    /// any wait.
+    func take(_ turn: Turn) async {
         if held == nil {
             grant(turn)
             return
         }
-        await withCheckedContinuation { go in
-            // Behind the last visible one for a visible pane, at the end for a hidden one.
-            let at = visible ? (waiting.lastIndex { $0.visible }.map { $0 + 1 } ?? 0) : waiting.count
-            waiting.insert((turn, visible, go), at: at)
-        }
+        await withCheckedContinuation { waiting.append((turn, $0)) }
     }
 
     /// Gives a turn back: the holder's, so the next one starts, or a waiter's, which stops

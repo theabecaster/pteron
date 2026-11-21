@@ -464,8 +464,14 @@ public final class TerminalStream {
     private var snapshotState = SnapshotState.none
 
     /// The pane is on screen. A pane that streams unseen sets it false: on cellular its fresh
-    /// start takes its turn behind those that are seen (`SnapshotTurns`).
-    public var isOnScreen = true
+    /// start takes a turn (`SnapshotTurns`). A pane on screen never waits, so one that comes on
+    /// screen while it waits its turn gives the place up and starts now.
+    public var isOnScreen = true {
+        didSet {
+            guard isOnScreen, !oldValue, let turn = snapshotTurn, !control.snapshotTurns.holds(turn) else { return }
+            endSnapshotTurn()
+        }
+    }
     /// This stream's place among its host's fresh starts on cellular: waiting, or holding the
     /// turn until its snapshot ends. Nil on Wi-Fi, and whenever no fresh start is under way.
     private var snapshotTurn: SnapshotTurns.Turn?
@@ -1062,13 +1068,14 @@ public final class TerminalStream {
                 hasScreen = true
             }
 
-            // On cellular, one fresh snapshot at a time for a host, the pane on screen first
-            // (`SnapshotTurns`). On Wi-Fi nothing waits here.
-            if fromSnapshot, control.onExpensivePath {
+            // On cellular, the unseen panes of a host get their fresh snapshots one at a time
+            // (`SnapshotTurns`). A pane on screen never waits here, and on Wi-Fi nothing does.
+            if fromSnapshot, control.onExpensivePath, !isOnScreen {
                 let turn = SnapshotTurns.Turn()
                 snapshotTurn = turn
-                await control.snapshotTurns.take(turn, visible: isOnScreen)
-                // Whatever moved the stream on while it waited gave the turn back.
+                await control.snapshotTurns.take(turn)
+                // Whatever moved the stream on while it waited gave the turn back. A pane that
+                // came on screen gave its place up and goes on from here.
                 guard myGen == gen, !stopped else { return }
                 guard mayOpen else {
                     endSnapshotTurn()

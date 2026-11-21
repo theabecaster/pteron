@@ -1,8 +1,8 @@
 import XCTest
 @testable import RexKit
 
-/// One fresh snapshot at a time for a host on cellular (`SnapshotTurns`): the pane on screen
-/// first, nothing changed on Wi-Fi, and a turn that is always given back, whatever becomes of
+/// One fresh snapshot at a time for a host's unseen panes on cellular (`SnapshotTurns`): a pane on
+/// screen never waits, nothing changed on Wi-Fi, and a turn that is always given back, whatever becomes of
 /// the stream that holds it.
 @MainActor
 final class StreamSnapshotTurnTests: XCTestCase {
@@ -68,27 +68,69 @@ final class StreamSnapshotTurnTests: XCTestCase {
 
     private var turns: SnapshotTurns { control.snapshotTurns }
 
-    // MARK: Cellular: one at a time, the pane on screen first
+    // MARK: Cellular: unseen panes one at a time, the pane on screen never waits
 
-    func testOnCellularFreshStartsGoOneAtATimeAndThePaneOnScreenFirst() async {
+    func testOnCellularUnseenPanesGoOneAtATimeAndAPaneOnScreenStartsAtOnce() async {
         cellular()
-        start("a")
-        // A pane that streams unseen asks before a second pane on screen does.
-        start("hidden", onScreen: false)
-        start("b")
-        await wait(["a"], "only the first has asked for a ticket")
-        XCTAssertEqual(link.sockets.count, 1)
-        XCTAssertEqual(turns.waitingCount, 2)
-        finishSnapshot(0)
-        await wait(["a", "b"], "the pane on screen goes ahead of the one unseen")
-        XCTAssertEqual(link.sockets.count, 2)
-        finishSnapshot(1)
-        await wait(["a", "b", "hidden"])
-        finishSnapshot(2)
+        start("h1", onScreen: false)
+        start("h2", onScreen: false)
+        // An unseen pane holds the turn and another waits: the pane on screen does not.
+        start("seen")
+        let both = await eventually { Set(self.started) == ["h1", "seen"] }
+        XCTAssertTrue(both, "the pane on screen started at once, beside the holder: \(started)")
+        await settle()
+        XCTAssertEqual(Set(started), ["h1", "seen"])
+        XCTAssertEqual(turns.waitingCount, 1, "only the second unseen pane waits")
+        // A second pane on screen starts at once too.
+        start("seen2")
+        let three = await eventually { self.started.contains("seen2") }
+        XCTAssertTrue(three)
+        XCTAssertFalse(started.contains("h2"))
+        // The holder's snapshot ends: the unseen pane that waited starts.
+        finishSnapshot(started.firstIndex(of: "h1")!)
+        let next = await eventually { self.started.contains("h2") }
+        XCTAssertTrue(next)
+        finishSnapshot(started.firstIndex(of: "h2")!)
         let free = await eventually { !self.turns.isHeld }
         XCTAssertTrue(free, "the last one gave its turn back")
         XCTAssertEqual(turns.waitingCount, 0)
-        for s in streams.values { XCTAssertFalse(s.isFenced) }
+    }
+
+    func testAPaneThatComesOnScreenWhileItWaitsStartsThen() async {
+        cellular()
+        start("h1", onScreen: false)
+        let h2 = start("h2", onScreen: false)
+        start("h3", onScreen: false)
+        await wait(["h1"])
+        XCTAssertEqual(turns.waitingCount, 2)
+        h2.isOnScreen = true
+        await wait(["h1", "h2"], "it gave its place up and started")
+        XCTAssertTrue(turns.isHeld, "the holder still holds")
+        XCTAssertEqual(turns.waitingCount, 1, "and the other unseen pane still waits")
+        finishSnapshot(0)
+        await wait(["h1", "h2", "h3"])
+    }
+
+    func testAHolderThatComesOnScreenKeepsItsTurnUntilItsSnapshotEnds() async {
+        cellular()
+        let h1 = start("h1", onScreen: false)
+        start("h2", onScreen: false)
+        await wait(["h1"])
+        h1.isOnScreen = true
+        await settle()
+        XCTAssertEqual(started, ["h1"], "one fresh snapshot of the two is still under way")
+        finishSnapshot(0)
+        await wait(["h1", "h2"])
+    }
+
+    func testOnCellularPanesOnScreenTakeNoTurn() async {
+        cellular()
+        start("a")
+        start("b")
+        let both = await eventually { self.link.sockets.count == 2 }
+        XCTAssertTrue(both)
+        XCTAssertFalse(turns.isHeld)
+        XCTAssertTrue(limit.asked.isEmpty)
     }
 
     // MARK: Wi-Fi: nothing changes
@@ -107,9 +149,9 @@ final class StreamSnapshotTurnTests: XCTestCase {
 
     func testLeavingCellularStartsEveryoneWhoWaited() async {
         cellular()
-        start("a")
-        start("b")
-        start("c")
+        start("a", onScreen: false)
+        start("b", onScreen: false)
+        start("c", onScreen: false)
         await wait(["a"])
         cellular(false)
         let all = await eventually { Set(self.started) == ["a", "b", "c"] }
@@ -123,8 +165,8 @@ final class StreamSnapshotTurnTests: XCTestCase {
     /// With `a` holding the turn and `b` waiting, `body` happens to `a`. Then `b` must start.
     private func holderThen(_ name: String, _ body: (TerminalStream) -> Void, line: UInt = #line) async {
         cellular()
-        let a = start("a")
-        start("b")
+        let a = start("a", onScreen: false)
+        start("b", onScreen: false)
         await wait(["a"], name, line: line)
         XCTAssertEqual(turns.waitingCount, 1, name, line: line)
         body(a)
@@ -172,16 +214,16 @@ final class StreamSnapshotTurnTests: XCTestCase {
     func testAHolderWhoseStartIsRefusedGivesTheTurnBack() async {
         cellular()
         link.plans = [.reject(0x01)]
-        start("a")
-        start("b")
+        start("a", onScreen: false)
+        start("b", onScreen: false)
         let next = await eventually { self.started.contains("b") }
         XCTAssertTrue(next, "a refused HELLO is a failed start: the turn goes on")
     }
 
     func testInTheBackgroundNobodyHoldsOrWaits() async {
         cellular()
-        start("a")
-        start("b")
+        start("a", onScreen: false)
+        start("b", onScreen: false)
         await wait(["a"])
         control.enteredBackground()
         let free = await eventually { !self.turns.isHeld && self.turns.waitingCount == 0 }
@@ -192,9 +234,9 @@ final class StreamSnapshotTurnTests: XCTestCase {
 
     func testAWaiterThatStopsLeavesTheQueue() async {
         cellular()
-        start("a")
-        let b = start("b")
-        start("c")
+        start("a", onScreen: false)
+        let b = start("b", onScreen: false)
+        start("c", onScreen: false)
         await wait(["a"])
         b.stop()
         await settle()
@@ -207,8 +249,8 @@ final class StreamSnapshotTurnTests: XCTestCase {
     /// limit, and the next pane starts beside it. The holder's own snapshot is not cut off.
     func testATurnEndsByItselfAfterItsLimit() async {
         cellular()
-        start("a")
-        start("b")
+        start("a", onScreen: false)
+        start("b", onScreen: false)
         await wait(["a"])
         XCTAssertEqual(limit.asked, [.seconds(15)], "one wait, the cellular connect deadline")
         limit.pass()
@@ -231,14 +273,14 @@ final class StreamSnapshotTurnTests: XCTestCase {
         let t = SnapshotTurns()
         let a = SnapshotTurns.Turn(), b = SnapshotTurns.Turn()
         t.give(a)
-        await t.take(a, visible: true)
+        await t.take(a)
         XCTAssertTrue(t.holds(a))
         t.give(b)
         XCTAssertTrue(t.holds(a), "another's turn is not this one's to give")
         t.give(a)
         t.give(a)
         XCTAssertFalse(t.isHeld)
-        await t.take(b, visible: false)
+        await t.take(b)
         XCTAssertTrue(t.holds(b))
     }
 }
