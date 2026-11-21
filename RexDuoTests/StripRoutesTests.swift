@@ -228,7 +228,7 @@ import Testing
             }
         }
         // With the keyboard up the bar has room for three.
-        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true) == [.sessions, .hideKeyboard, .paneActions])
+        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true) == [.sessions, .paneActions, .hideKeyboard])
         #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: false) == [.sessions, .allTabs, .paneActions])
         #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: false) == [.sidebar, .allTabs, .paneActions])
         #expect(TabAction.sessions.title == "Sessions" && TabAction.sidebar.symbol == "sidebar.left")

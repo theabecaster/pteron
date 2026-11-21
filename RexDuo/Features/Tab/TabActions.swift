@@ -65,6 +65,39 @@ enum TabActions {
         [barLeading(navigation)] + verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard)
     }
 
+    /// The items, the first (`barLeading`) among them, that the vertical bar fits above the keyboard and
+    /// key bar. Three, except on the outer screen on its side with the bar on the left, where the
+    /// bar's items start lower, past the camera, and two fit. The system reports neither the items'
+    /// frames nor that offset, so this reads the facts the key bar already uses: the bar's column
+    /// on the screen's left (`KeyBarPlacement.column`, in screen coordinates) and a compact height.
+    /// - Parameters:
+    ///   - column: the bar's column in screen coordinates, nil without a vertical bar.
+    ///   - compactHeight: the window's vertical size class is compact.
+    static func keyBarRoom(column: CGRect?, compactHeight: Bool) -> Int {
+        guard let column else { return 3 }
+        return column.minX < 1 && compactHeight ? 2 : 3
+    }
+
+    /// Whether the bar's first item (`barLeading`: the sidebar toggle, or Sessions in tab mode)
+    /// keeps its place at the top of the vertical bar. While the key bar is up it gives its place
+    /// up first where the bar has no room for it beside Pane Actions and Hide Keyboard, and comes
+    /// back when the key bar goes, so Hide Keyboard never falls into the system's "…" menu.
+    static func showsBarLeading(hidesKeyboard: Bool, room: Int) -> Bool {
+        !hidesKeyboard || room > verticalBar(zoomed: false, hidesKeyboard: true).count
+    }
+
+    /// The tab's items that fit in `room` (`keyBarRoom`) with the bar's first item as
+    /// `showsBarLeading` leaves it: while the key bar is up, items leave from the top (Unzoom, which
+    /// stays in the Pane Actions menu and the two-finger tap) until the rest fit, and Hide
+    /// Keyboard, last, always stays.
+    static func verticalBar(zoomed: Bool, hidesKeyboard: Bool, room: Int) -> [TabAction] {
+        var items = verticalBar(zoomed: zoomed, hidesKeyboard: hidesKeyboard)
+        guard hidesKeyboard else { return items }
+        let toggle = showsBarLeading(hidesKeyboard: true, room: room) ? 1 : 0
+        while toggle + items.count > room, items.count > 1 { items.removeFirst() }
+        return items
+    }
+
     /// The Pane Actions menu's first section.
     static let paneMenuFirstSection: [TabAction] = [.splitRight, .splitDown, .newTab, .allTabs]
 

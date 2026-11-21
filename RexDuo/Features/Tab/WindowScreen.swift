@@ -41,6 +41,8 @@ struct WindowScreen: View {
     @Environment(\.verticalSizeClass) private var vSize
     /// Where the system's vertical bar is, if any: the tab's actions go there as toolbar items.
     @Environment(\.verticalBarEdge) private var barEdge
+    /// That bar's column in screen coordinates, for the room it has above the keyboard.
+    @Environment(\.verticalBarColumn) private var barColumn
     @Environment(\.division) private var division
     @Environment(\.rootOrigin) private var rootOrigin
     @Environment(\.bookCrease) private var bookCrease
@@ -705,12 +707,15 @@ struct WindowScreen: View {
     /// While the active pane's key bar is up, Hide Keyboard (the key bar's hide key, which the bar
     /// beside the keyboard takes in; `HideKeyboardItem`) replaces All Tabs, which has no room then,
     /// and goes last, below Pane Actions, nearest the keyboard; All Tabs comes back when the key
-    /// bar goes (`TabActions.verticalBar`). The swap rides the keyboard's animation.
+    /// bar goes (`TabActions.verticalBar`). The swap rides the keyboard's animation. Where the bar
+    /// fits fewer items above the keyboard (`TabActions.keyBarRoom`), Unzoom and then the sidebar
+    /// toggle leave it first, so Hide Keyboard never goes into the system's "…" menu.
     @ToolbarContentBuilder
     private func barItems(_ theme: TermTheme, _ p: TabPresentation?) -> some ToolbarContent {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
             let key = TerminalHostPool.Key(server: server.id, session: sessionID, block: b)
-            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane == key)
+            let room = TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact)
+            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane == key, room: room)
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if items.contains(.unzoom) {
                     Button { toggleZoom() } label: { Label(TabAction.unzoom.title, systemImage: TabAction.unzoom.symbol) }

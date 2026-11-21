@@ -237,9 +237,13 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   comes back when the key bar goes, with the order as before, and while typing it stays in the
   Pane Actions menu's first section and in the title menu. VoiceOver finds one of the two in the
   bar, and one Hide Keyboard in every state: the item, or without a vertical bar the key bar's
-  own. Not yet handled: on its side with the bar on the left, the bar's items start lower, past
-  the camera, and with the keyboard up only the sidebar toggle and one more fit, so Pane Actions
-  and Hide Keyboard share the system's "…" menu (iOS 27.2 simulator, November 2026).
+  own. On its side with the bar on the left, the bar's items start lower, past the camera, and
+  with the keyboard up only two fit (iOS 27.2 simulator, November 2026). There, while the key bar
+  is up, the first item (the sidebar toggle, or Sessions in tab mode) leaves the bar and it
+  shows Pane Actions, then Hide Keyboard; the first item comes back with the keyboard. Unzoom,
+  where it shows, leaves first in any posture, and stays in the Pane Actions menu. Hide Keyboard never goes into the "…" menu
+  (`TabActions.keyBarRoom`). The system reports neither the items' frames nor the camera's
+  offset, so the room comes from the bar's column on the screen's left and a compact height.
 - **Key bar.** The keyboard keeps its full width and runs under the vertical bar; only the key
   bar's own views keep out of the bar's column. That column is the app window's safe-area inset
   on the bar's edge (`KeyBarPlacement.column`), read with the edge on every change of the traits

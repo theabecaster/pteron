@@ -14,6 +14,7 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
+    @Environment(\.verticalSizeClass) private var vSize
     /// The sidebar is showing: inline beside the tab, or the drawer over it.
     @State private var sidebar = SidebarState()
     /// The sidebar is inline (wide window). Mirrors the arrangement for commands.
@@ -215,7 +216,10 @@ struct RootView: View {
                 // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
                 .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
-                    if barEdge != nil {
+                    // While the key bar is up, the first item gives its place to Hide Keyboard where
+                    // the bar is short (`TabActions.showsBarLeading`), and comes back with the keyboard.
+                    if barEdge != nil, TabActions.showsBarLeading(hidesKeyboard: hostPool.hideKeyboard.pane != nil,
+                                                                  room: TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact)) {
                         ToolbarItem(placement: .topBarLeading) {
                             if TabActions.barLeading(prefs.navigation) == .sessions {
                                 SessionsBarItem(theme: theme) { stripRoutes.run($0) }
