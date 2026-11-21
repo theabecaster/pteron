@@ -169,6 +169,10 @@ public struct RestartCommand: Equatable, Sendable {
         case tooLong
         /// The job runs somewhere else than its shell is: the app never types `cd`.
         case elsewhere
+        /// The arguments are not the ones the program was started with: it wrote a title over
+        /// them (`npm` shows as one string, "npm run dev --port 5190", and empty strings after
+        /// it), or what they name as the program is not the program that runs.
+        case retitled
         /// The job is a pipeline, or the computer doesn't say that it is one command: the
         /// leader's arguments are then only a part of what was run.
         case notOneCommand
@@ -188,6 +192,7 @@ public struct RestartCommand: Equatable, Sendable {
         guard let here = leader.cwd, let there = shell.cwd, !here.isEmpty, folder(here) == folder(there) else { return .failure(.elsewhere) }
         // `NAME=value` as the first word sets a variable and runs nothing.
         guard !argv[0].contains("=") else { return .failure(.unquotable) }
+        guard !isRetitled(leader, argv) else { return .failure(.retitled) }
         var words: [String] = []
         for a in argv {
             guard let w = word(a) else { return .failure(.unquotable) }
@@ -196,6 +201,42 @@ public struct RestartCommand: Equatable, Sendable {
         let text = words.joined(separator: " ")
         guard text.count <= limit else { return .failure(.tooLong) }
         return .success(RestartCommand(text: text, shellPID: shell.pid, leaderPID: leader.pid))
+    }
+
+    /// Whether a process's arguments read as a title it gave itself, not as what started it.
+    /// A program may write over its own arguments (`process.title` in Node, `setproctitle`),
+    /// and the system then reports the title: for `npm run dev`, one string holding the whole
+    /// line, and an empty string for every argument it had. Typing that back would run
+    /// something else, or nothing. Three signs, any of which is enough:
+    ///
+    /// - an empty argument anywhere. A real one (`grep ""`) is rare for a dev server and can't
+    ///   be told from the padding a title leaves, so it is given up;
+    /// - a single argument with whitespace in it: a whole line in the program's place;
+    /// - the program the arguments name is not the one that runs: the last part of the first
+    ///   argument matches neither the process's name nor the last part of its executable's
+    ///   path (`programMatches`). The path counts as well as the name, because the name is
+    ///   what the system keeps and may be cut short or set by the program, while a symlinked
+    ///   interpreter (`python3` for `python3.12`) and a framework build (`Python`) are named
+    ///   by the path.
+    static func isRetitled(_ leader: PortOwner.Link, _ argv: [String]) -> Bool {
+        guard let first = argv.first, !argv.contains(where: \.isEmpty) else { return true }
+        if argv.count == 1, first.contains(where: \.isWhitespace) { return true }
+        let named = (first as NSString).lastPathComponent
+        let runs = [leader.name, (leader.path as NSString).lastPathComponent].filter { !$0.isEmpty }
+        return !runs.contains { programMatches(named, $0) }
+    }
+
+    /// Two names of one program, whatever their case: the same; or one is the other with only
+    /// a version after it (`python3` and `python3.12`, `Python` and `python3`); or one is the
+    /// other cut short where the system cuts a process's name (15 characters or more). A
+    /// title that merely starts like the program (`node-server` for `node`) is not a match.
+    static func programMatches(_ a: String, _ b: String) -> Bool {
+        let x = a.lowercased(), y = b.lowercased()
+        if x == y { return true }
+        let (short, long) = x.count <= y.count ? (x, y) : (y, x)
+        guard !short.isEmpty, long.hasPrefix(short) else { return false }
+        if short.count >= 15 { return true }
+        return long.dropFirst(short.count).allSatisfy { $0.isNumber || $0 == "." }
     }
 
     /// One argument as a shell word. `ShellEscape` keeps a leading `~/` as the home folder,

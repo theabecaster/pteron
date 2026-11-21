@@ -128,12 +128,12 @@ final class PortOwnerTests: XCTestCase {
     func testEveryArgumentIsSpelledForAShell() {
         XCTAssertEqual(command(wrapped(npm: ["npm", "run", "dev", "--", "--name", "two words", "it's", "$HOME", "a;b", "#x", "*.js"])),
                        "npm run dev -- --name two\\ words it\\'s \\$HOME a\\;b \\#x \\*.js")
-        XCTAssertEqual(command(wrapped(npm: ["tool", "~", "~/x y", "~user", "=ls"])), "tool \\~ \\~/x\\ y \\~user \\=ls",
+        XCTAssertEqual(command(wrapped(npm: ["npm", "~", "~/x y", "~user", "=ls"])), "npm \\~ \\~/x\\ y \\~user \\=ls",
                        "a literal tilde stays literal")
     }
 
     func testArgumentsThatCantBeTypedOnOneLineGiveNoCommand() {
-        XCTAssertEqual(refusal(wrapped(npm: ["npm", "run", ""])), .unquotable, "an empty argument has no spelling here")
+        XCTAssertEqual(refusal(wrapped(npm: ["npm", "run", ""])), .retitled, "an empty argument can't be told from a title's padding")
         XCTAssertEqual(refusal(wrapped(npm: ["npm", "a\nrm -rf x"])), .unquotable, "a line end")
         XCTAssertEqual(refusal(wrapped(npm: ["npm", "a\u{1b}[2J"])), .unquotable, "an escape sequence")
         XCTAssertEqual(refusal(wrapped(npm: ["PORT=4000", "npm"])), .unquotable, "a first word that would set a variable")
@@ -180,6 +180,57 @@ final class PortOwnerTests: XCTestCase {
             Link(pid: 90, ppid: 1, pgid: 90, name: "-bash", argv: ["-bash"], cwd: "/srv/site"),
         ], jobMembers: 1)
         XCTAssertEqual(command(o), "python3 -m http.server 8765")
+    }
+
+    /// One job under zsh, as a Beacon reports it.
+    private func job(name: String, path: String = "", argv: [String]) -> PortOwner {
+        PortOwner(pid: 500, pgid: 500, ttyForegroundPGID: 500, ancestry: [
+            Link(pid: 500, ppid: 90, pgid: 500, name: name, path: path, argv: argv, cwd: "/srv/site"),
+            Link(pid: 90, ppid: 1, pgid: 90, name: "zsh", argv: ["-zsh"], cwd: "/srv/site"),
+        ], jobMembers: 1)
+    }
+
+    func testATitleAProgramGaveItselfIsNeverTypedBack() {
+        // `npm run dev`, as a real Beacon 0.7 reports its leader: npm wrote its title over
+        // its arguments.
+        let npm = job(name: "node", path: "/usr/local/bin/node",
+                      argv: ["npm run dev --port 5190 --strictPort", "", "", "", "", "", "", ""])
+        XCTAssertEqual(refusal(npm), .retitled)
+        XCTAssertNil(command(npm))
+        XCTAssertEqual(refusal(job(name: "node", path: "/usr/local/bin/node", argv: ["npm run dev"])), .retitled, "one string that is a whole line")
+        XCTAssertEqual(refusal(job(name: "node", path: "/usr/local/bin/node", argv: ["node", "server.js", ""])), .retitled, "an empty string at the end")
+        XCTAssertEqual(refusal(job(name: "node", path: "/usr/local/bin/node", argv: ["node", "", "server.js"])), .retitled, "or anywhere")
+        XCTAssertEqual(refusal(job(name: "node", path: "/usr/local/bin/node", argv: ["myserver"])), .retitled, "a title of one word")
+        XCTAssertEqual(refusal(job(name: "node", path: "/usr/local/bin/node", argv: ["node-server", "--port", "3000"])), .retitled,
+                       "a title that only starts like the program")
+        XCTAssertEqual(refusal(job(name: "MainThread", argv: ["next-server"])), .retitled, "nothing says which program runs")
+    }
+
+    func testOrdinaryCommandsStillGiveTheirCommand() {
+        XCTAssertEqual(command(job(name: "node", path: "/usr/local/bin/node", argv: ["node", "server.js"])), "node server.js")
+        XCTAssertEqual(command(job(name: "python3", path: "/usr/bin/python3", argv: ["python3", "-m", "http.server", "8765"])), "python3 -m http.server 8765")
+        XCTAssertEqual(command(job(name: "run.sh", path: "/srv/site/run.sh", argv: ["./run.sh"])), "./run.sh")
+        XCTAssertEqual(command(job(name: "bash", path: "/bin/bash", argv: ["/bin/bash", "./run.sh"])), "/bin/bash ./run.sh", "a script through its shebang")
+        // An interpreter behind a symlink, and a framework build, are named by their path.
+        XCTAssertEqual(command(job(name: "python3.12", path: "/usr/bin/python3.12", argv: ["python3", "app.py"])), "python3 app.py")
+        XCTAssertEqual(command(job(name: "Python", path: "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+                                   argv: ["python3", "app.py"])), "python3 app.py")
+        // A name the program set for itself, with the path still naming what runs.
+        XCTAssertEqual(command(job(name: "MainThread", path: "/usr/local/bin/node", argv: ["node", "server.js"])), "node server.js")
+        // A name the system cut short.
+        XCTAssertEqual(command(job(name: "a-very-long-pro", argv: ["./a-very-long-program-name", "serve"])), "./a-very-long-program-name serve")
+        // npm when it has not written its title: a script that node runs.
+        XCTAssertEqual(command(job(name: "node", path: "/usr/local/bin/node", argv: ["node", "/usr/local/bin/npm", "run", "dev"])),
+                       "node /usr/local/bin/npm run dev")
+    }
+
+    func testTwoNamesOfOneProgram() {
+        for (a, b) in [("node", "node"), ("python3", "python3.12"), ("python3.12", "python3"), ("python3", "Python"), ("ruby", "ruby3.3")] {
+            XCTAssertTrue(RestartCommand.programMatches(a, b), "\(a) \(b)")
+        }
+        for (a, b) in [("node-server", "node"), ("npm", "node"), ("nodejs", "node"), ("", "node"), ("next-server", "MainThread")] {
+            XCTAssertFalse(RestartCommand.programMatches(a, b), "\(a) \(b)")
+        }
     }
 
     func testAPipelineOrAJobOfUnknownSizeGivesNoCommand() {

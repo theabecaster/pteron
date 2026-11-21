@@ -1040,7 +1040,11 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
   group is in the Beacon's answer with the process that started it; that parent is a shell
   (`ProcessNames.isShell`); the leader's arguments are there, whole and text (`argv` not null,
   not `truncated`, not `argv_lossy`); they are not the shell's own (a subshell or a function
-  runs as a copy of the shell); the leader's folder is the shell's folder, so no `cd` is ever
+  runs as a copy of the shell); they are not a title the program wrote over them (`npm run
+  dev` reports one string with the whole line and empty strings after it: no argument is
+  empty, a single argument has no whitespace, and the first argument's last part names the
+  process or its executable, a version suffix or a cut-short name aside:
+  `RestartCommand.isRetitled`); the leader's folder is the shell's folder, so no `cd` is ever
   typed; the job is one command and no pipeline (the Beacon's `job_members` is 1: the
   shell started one process of the group; a pipeline's leader holds only its first part, and
   an answer without the field gives no Restart); every argument has a spelling on one line (`ShellEscape`, with a literal `~` kept
