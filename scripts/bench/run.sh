@@ -43,11 +43,14 @@
 # The app is terminated after every run and when the script ends or is interrupted, which also
 # drops its connection to the server.
 #
+# A full run (no --only) ends with scripts/bench/filter.sh: the stream's filter against the one
+# it replaced, measured on the Mac by a RexKit test, about 20 s.
+#
 # Environment: BENCH_DD (derived data, default build/dd-bench).
 set -euo pipefail
 
 self=$0   # inside a function, $0 is the function's name
-usage() { sed -n '2,43p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,47p' "$self" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ $# -ge 1 ]] || usage
 sim=$1; shift
 live=""; switch=""; warm=""; runs=3; only=""; out=""; build=1; fresh=0
@@ -246,5 +249,9 @@ node "$here/report.mjs" "$out/results" ${only:+--partial} || failed=1
 if (( missing )); then
   echo "$missing run(s) wrote no result" >&2
   failed=1
+fi
+# The stream's filter against the one it replaced: on the Mac, no simulator (filter.sh).
+if [[ -z $only ]]; then
+  "$here/filter.sh" || failed=1
 fi
 exit $failed

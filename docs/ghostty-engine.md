@@ -408,6 +408,7 @@ pass:
 | Number | Budget | Measured (iPhone 17 simulator, `983d27f`) |
 | --- | --- | --- |
 | main-thread hitches over 25 ms | 1, every scenario | 0 |
+| the stream's filter, as a ratio to the filter it replaced (`scripts/bench/filter.sh`, on the Mac, a full run's last step) | 1.15, snapshot collection off and on | 1.02, 1.01 (M-series Mac, debug build) |
 | worst main slice | 8 ms, every scenario | 0.3 to 1.2 ms |
 | main busy | `seq`, `yes` 10 ms; `unicode` 15; `yes-wire` 35; `seq-wire` 90; `top` 160; `claude` 250 | 2.2, 1.7; 4.4; 13.3; 40; 78; 122 |
 | frame gaps over 25 ms | 1, every scenario but `top` (it draws twice a second by itself) | 0 |

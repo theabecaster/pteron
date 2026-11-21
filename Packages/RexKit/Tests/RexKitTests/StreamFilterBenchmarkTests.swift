@@ -70,8 +70,8 @@ final class StreamFilterBenchmarkTests: XCTestCase {
         measure { _ = Self.runLegacy() }
     }
 
-    /// The path with collection off must not be slower than the filter it replaced.
-    func testCollectionOffIsAsFastAsBefore() throws {
+    /// The filter gives what the one it replaced gave, with collection off and on.
+    func testTheFilterGivesWhatTheOldOneGave() throws {
         let legacy = Self.runLegacy()
         let off = Self.runNew(collect: false)
         let on = Self.runNew(collect: true)
@@ -80,6 +80,17 @@ final class StreamFilterBenchmarkTests: XCTestCase {
         XCTAssertEqual(on.messages, legacy.messages)
         XCTAssertEqual(on.snapshot, try StreamFixture.load("scroll").framedSnapshotLength)
         XCTAssertGreaterThan(legacy.messages, 10)
+    }
+
+    /// The path with collection off must not be slower than the filter it replaced.
+    ///
+    /// A measurement, so it belongs to the benchmark and not to the unit suite, where a busy
+    /// machine failed it: `scripts/bench/filter.sh` runs it, with the budget from
+    /// `scripts/bench/budgets.mjs` (`filter`). Without the benchmark's variable it is skipped.
+    func testCollectionOffIsAsFastAsBefore() throws {
+        guard let ratio = ProcessInfo.processInfo.environment["REXDUO_BENCH_FILTER_RATIO"].flatMap(Double.init) else {
+            throw XCTSkip("measured by scripts/bench/filter.sh")
+        }
 
         func best(_ body: () -> Void) -> Double {
             var b = Double.infinity
@@ -100,7 +111,9 @@ final class StreamFilterBenchmarkTests: XCTestCase {
         let mb = Double(Self.total) / 1_048_576
         print(String(format: "APCFilter throughput on %.1f MB: before %.0f MB/s, collection off %.0f MB/s, collection on %.0f MB/s",
                      mb, mb / tLegacy, mb / tOff, mb / tOn))
-        XCTAssertLessThan(tOff, tLegacy * 1.15, "collection off is slower than the old filter")
-        XCTAssertLessThan(tOn, tLegacy * 1.15, "collection on is slower than the old filter")
+        print(String(format: "APCFilter ratio to before: collection off %.2f, collection on %.2f, budget %.2f",
+                     tOff / tLegacy, tOn / tLegacy, ratio))
+        XCTAssertLessThan(tOff, tLegacy * ratio, "collection off is slower than the old filter")
+        XCTAssertLessThan(tOn, tLegacy * ratio, "collection on is slower than the old filter")
     }
 }

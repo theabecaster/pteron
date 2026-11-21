@@ -34,6 +34,11 @@ export const scenarios = {
   'cap-find':     { 'mainBusy.totalMs': 10,  'presents.gapsOver25': 1, 'flow.drawnMs': 60 },
 };
 
+// The stream's filter (`APCFilter`), on the Mac with no simulator (scripts/bench/filter.sh): how
+// long it may take on 10 MB of output, as a ratio to the filter it replaced, with snapshot
+// collection off and on. Best of 30 runs each; measured 1.02 and 1.01.
+export const filter = { ratioToBefore: 1.15 };
+
 // Pane switches on real panes (run.sh --switch), by simulated round trip in ms. Checked only
 // when the switch runs were made. A pane that comes back from the park draws its last screen
 // in its first frame: two frames at 60 Hz at most.
