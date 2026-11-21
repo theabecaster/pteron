@@ -56,7 +56,13 @@ pub fn write_private_with(path: &Path, fill: impl FnOnce(&mut File) -> std::io::
     f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     fill(&mut f)?;
     f.sync_all()?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    // The new name is in the folder's own record, which is made to last as well. A folder
+    // that can't be synced (some file systems refuse) leaves the file as written.
+    if let Some(dir) = path.parent() {
+        let _ = File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
 /// `write_private_with` for bytes the caller already has.
