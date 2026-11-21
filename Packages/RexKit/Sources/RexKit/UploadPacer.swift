@@ -116,7 +116,8 @@ struct UploadRate: Equatable {
 /// the rate overshoots, the network is never handed more than the window.
 ///
 /// No connection, a failed ping, or no answer within `windowWait` tells nothing: the bytes count
-/// as confirmed and the rate alone paces, so the upload never stalls on the control connection.
+/// as confirmed and the rate alone paces, so the upload never stalls on the control connection. A
+/// ping that went unanswered that long is waited for once, not once per window.
 @MainActor
 final class UploadPacer {
     static let probeEvery: Duration = .milliseconds(50)
@@ -138,13 +139,20 @@ final class UploadPacer {
     private(set) var confirmed: Int64 = 0
     /// The most ever handed out beyond what was confirmed.
     private(set) var peakUnconfirmed: Int64 = 0
+    /// The ping out that went unanswered for `windowWait`: no window waits for it again.
+    private var gaveUpOn: ContinuousClock.Instant?
     private var waiter: CheckedContinuation<Void, Never>?
     private var waits = 0
 
-    init(link: any StreamLink, rate: UploadRate, sleep: @escaping @MainActor (Duration) async -> Void) {
+    /// Testing: hears each time a message starts to wait for a ping's answer (the window is full).
+    private let onWait: (@MainActor () -> Void)?
+
+    init(link: any StreamLink, rate: UploadRate, sleep: @escaping @MainActor (Duration) async -> Void,
+         onWait: (@MainActor () -> Void)? = nil) {
         self.link = link
         self.rate = rate
         self.sleep = sleep
+        self.onWait = onWait
     }
 
     /// Waits for the next message's turn and says how large it may be, at most `max`. The caller
@@ -169,8 +177,9 @@ final class UploadPacer {
         let window = Int64(rate.maxQueuedBytes)
         while handedOut > confirmed, handedOut - confirmed + Int64(bytes) > window {
             probe(force: true)
-            guard probeStart != nil else {
-                // No connection to measure by.
+            guard let out = probeStart, out != gaveUpOn else {
+                // No connection to measure by, or its ping already went unanswered for
+                // `windowWait`: the rate alone paces until an answer comes.
                 confirmed = handedOut
                 return
             }
@@ -183,9 +192,13 @@ final class UploadPacer {
                 timedOut = true
                 self.resume()
             }
-            await withCheckedContinuation { waiter = $0 }
+            await withCheckedContinuation { c in
+                waiter = c
+                onWait?()
+            }
             timer.cancel()
             if timedOut {
+                gaveUpOn = out
                 confirmed = handedOut
                 return
             }

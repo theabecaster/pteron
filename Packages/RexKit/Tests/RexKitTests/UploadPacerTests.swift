@@ -1,130 +1,143 @@
 import XCTest
 @testable import RexKit
 
-/// A phone's uplink: one queue, drained at `bytesPerSecond`, that an upload's messages and the
-/// control connection's pings share. A send returns at once, as a socket's does once the system
-/// has its bytes; the bytes leave later, in order.
+/// The control connection's pings, held until the test answers them: the test decides when the
+/// network has carried what went before each one. No clock decides anything.
 @MainActor
-private final class SlowUplink {
-    private let bytesPerSecond: Double
-    private var queue: [(bytes: Int, left: () -> Void)] = []
-    private var pumping = false
-    /// The upload's bytes in the queue now, and the most there ever were.
-    private var inFlight = 0
-    private(set) var peakInFlight = 0
+private final class HeldPings {
+    /// Each ping that is waiting, with the file's bytes the socket had taken when it went out.
+    private var waiting: [(sentBefore: Int, answer: CheckedContinuation<Void, Error>)] = []
+    private var arrival: CheckedContinuation<Void, Never>?
+    var sent: () -> Int = { 0 }
 
-    init(bytesPerSecond: Double) { self.bytesPerSecond = bytesPerSecond }
-
-    func enqueue(_ bytes: Int, left: @escaping () -> Void = {}) {
-        queue.append((bytes, left))
-        pump()
-    }
-
-    /// An upload's message: counted in flight until it has left.
-    func send(_ bytes: Int, left: @escaping () -> Void = {}) {
-        inFlight += bytes
-        peakInFlight = max(peakInFlight, inFlight)
-        enqueue(bytes) { [unowned self] in
-            self.inFlight -= bytes
-            left()
+    func ping() async throws {
+        try await withCheckedThrowingContinuation { c in
+            waiting.append((sent(), c))
+            arrival?.resume()
+            arrival = nil
         }
     }
 
-    /// A ping and its answer: returns once everything queued before it has left.
-    func ping() async {
-        await withCheckedContinuation { c in enqueue(64) { c.resume() } }
+    /// Answers the oldest ping, once there is one; returns the bytes it vouches for.
+    func answerOldest() async -> Int {
+        if waiting.isEmpty { await withCheckedContinuation { arrival = $0 } }
+        let p = waiting.removeFirst()
+        p.answer.resume()
+        return p.sentBefore
     }
 
-    private func pump() {
-        guard !pumping else { return }
-        pumping = true
-        Task { @MainActor in
-            while let first = queue.first {
-                try? await Task.sleep(for: .seconds(Double(first.bytes) / bytesPerSecond))
-                queue.removeFirst()
-                first.left()
-            }
-            pumping = false
-        }
+    func failAll() {
+        let w = waiting
+        waiting = []
+        for p in w { p.answer.resume(throwing: URLError(.networkConnectionLost)) }
     }
 }
 
 @MainActor
 final class UploadPacerTests: XCTestCase {
     private static let ticket: JSONObject = ["ticket": "AAECAwQFBgcICQoLDA0ODw", "expires_in_ms": 60000]
+    private static let window = 256 * 1024
 
-    private struct Run {
-        var worstPing: Duration
-        var pings: Int
-        var peakInFlight: Int
-        var took: Duration
-    }
-
-    /// Sends `size` bytes as one file over an uplink of `bytesPerSecond` that the control
-    /// connection's pings share, while a control ping goes every 40 ms.
-    private func upload(_ size: Int, over bytesPerSecond: Double) async throws -> Run {
-        let uplink = SlowUplink(bytesPerSecond: bytesPerSecond)
+    /// A link whose server takes the file and closes with 1000 at its end message.
+    private func serving() -> FakeLink {
         let link = FakeLink()
         link.replies["com.superlogical.terminal.upload_begin"] = Self.ticket
-        link.onOpen = { s in
-            s.onSend = { [weak s] d in
-                // The server closes with 1000 once the file's end message has reached it.
-                uplink.send(max(d.count, 1)) { if d.isEmpty { s?.drop(code: 1000) } }
-            }
-        }
-        link.onPing = { await uplink.ping() }
+        link.onOpen = { s in s.onSend = { [weak s] d in if d.isEmpty { s?.drop(code: 1000) } } }
+        return link
+    }
 
-        let clock = ContinuousClock()
-        var waits: [Duration] = []
-        var sending = true
-        let prober = Task { @MainActor in
-            while sending {
-                let start = clock.now
-                await uplink.ping()
-                waits.append(clock.now - start)
-                try? await Task.sleep(for: .milliseconds(40))
-            }
-        }
-        let data = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+    /// An uploader whose waits take no wall time: a message's turn comes at once, and the waits
+    /// for a ping's answer (`UploadPacer.windowWait`) or the server's close last until cancelled,
+    /// unless `windowWaitEnds`.
+    private func uploader(_ link: FakeLink, windowWaitEnds: Bool = false) -> FileUploader {
         let up = FileUploader(link: link, sessionID: "session:s", blockID: "block:b")
-        var last: Int64 = 0
-        let start = clock.now
-        try await up.send([FileUploader.Item(name: "big.png", size: Int64(size)) { DataSource(data) }]) { sent, _ in
-            last = sent
+        up.sleep = { d in
+            if d >= UploadPacer.windowWait, !(windowWaitEnds && d == UploadPacer.windowWait) {
+                try? await Task.sleep(for: .seconds(3600))
+            } else {
+                await Task.yield()
+            }
         }
-        let took = clock.now - start
-        sending = false
-        await prober.value
-
-        XCTAssertEqual(last, Int64(size))
-        let messages = link.sockets[0].sent.dropFirst()
-        XCTAssertEqual(Data(messages.joined()), data, "the file arrives whole and in order")
-        XCTAssertTrue(messages.allSatisfy { $0.count <= BytesStream.maxMessage })
-        return Run(worstPing: waits.max() ?? .zero, pings: waits.count, peakInFlight: uplink.peakInFlight, took: took)
+        return up
     }
 
-    /// A large file over a slow uplink must leave room for the control connection: its pings (and
-    /// the calls and keys behind them) must not wait for the file, and the network is never handed
-    /// more than about 256 KiB of it at once. Scaled down to run in about a second: 4 MB over
-    /// 4 MB/s. Unpaced, the whole file is in flight at once and a ping waits about a second behind
-    /// it, as a 7.5 MB photo over a 2 Mbit/s uplink held one for 10 s and more, past every liveness
-    /// check (`RexControl.wakeTimeout`, a stream's wake ping).
-    func testASlowLargeUploadLeavesRoomForTheControlConnection() async throws {
-        let run = try await upload(4_000_000, over: 4_000_000)
-        print("UPLOAD_PACING slow link: peak in flight \(run.peakInFlight) bytes, worst control ping \(run.worstPing), took \(run.took)")
-        XCTAssertGreaterThan(run.pings, 5)
-        XCTAssertLessThan(run.worstPing, .milliseconds(400), "a control ping waited \(run.worstPing) behind the file")
-        XCTAssertLessThanOrEqual(run.peakInFlight, 256 * 1024, "\(run.peakInFlight) bytes of the file were in flight at once")
+    private func fileBytes(_ link: FakeLink) -> Int {
+        link.sockets.first.map { $0.sent.dropFirst().reduce(0) { $0 + $1.count } } ?? 0
     }
 
-    /// On a fast link a time target alone would let megabytes queue (100 ms of 40 MB/s is 4 MB),
-    /// and on an iPhone those queue inside the Tailscale extension, which iOS kills past about
-    /// 50 MB. The byte ceiling holds there too, and the file still goes near the link's speed.
-    func testAFastUploadNeverPutsMoreThanTheCeilingInFlight() async throws {
-        let run = try await upload(8_000_000, over: 40_000_000)
-        print("UPLOAD_PACING fast link: peak in flight \(run.peakInFlight) bytes, worst control ping \(run.worstPing), took \(run.took)")
-        XCTAssertLessThanOrEqual(run.peakInFlight, 256 * 1024, "\(run.peakInFlight) bytes of the file were in flight at once")
-        XCTAssertLessThan(run.took, .seconds(2), "8 MB over 40 MB/s took \(run.took)")
+    private func data(_ size: Int) -> Data { Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 7) }) }
+
+    /// Rex never confirms an upload's bytes before its end, so a control ping stands in. The phone
+    /// never hands the network more than 256 KiB beyond what an answered ping vouches for: a
+    /// burst queues as packets in the Tailscale extension, which iOS kills past about 50 MB of
+    /// memory (the tunnel is then gone for 30 to 60 s), and on a slow uplink the control
+    /// connection's pings, calls and keys wait behind it. Unpaced, the whole file went at once.
+    ///
+    /// Driven by events only: each time the file waits for a ping, the bytes handed out are
+    /// checked and the oldest ping is answered. No timer and no wall clock.
+    func testTheNetworkIsNeverHandedMoreThan256KiBBeyondWhatAPingConfirmed() async throws {
+        let link = serving()
+        let pings = HeldPings()
+        pings.sent = { [unowned self] in self.fileBytes(link) }
+        link.onPing = { try await pings.ping() }
+        let size = 2_000_000
+        let file = data(size)
+        let up = uploader(link)
+        let (stalls, stalled) = AsyncStream<Int>.makeStream()
+        up.onWindowFull = { [unowned self] in stalled.yield(self.fileBytes(link)) }
+        let send = Task { @MainActor in
+            defer { stalled.finish() }
+            try await up.send([FileUploader.Item(name: "big.png", size: Int64(size)) { DataSource(file) }]) { _, _ in }
+        }
+
+        var first: Int?
+        var vouched = 0
+        var peak = 0
+        var answers = 0
+        for await now in stalls {
+            if first == nil {
+                // Nothing answered yet: the file stops at the window.
+                first = now
+                print("UPLOAD_PACING no ping answered: \(now) bytes handed out of \(size)")
+            }
+            // At most a window past what the last answer vouched for, and one message more, which
+            // may have gone between the ping and the moment it was counted.
+            peak = max(peak, now - vouched)
+            XCTAssertLessThanOrEqual(now - vouched, Self.window + BytesStream.maxMessage,
+                                     "\(now - vouched) bytes beyond what a ping vouched for")
+            vouched = max(vouched, await pings.answerOldest())
+            answers += 1
+        }
+        try await send.value
+        pings.failAll()
+        print("UPLOAD_PACING peak beyond the last answered ping: \(peak) bytes, \(answers) answers")
+        XCTAssertEqual(first, Self.window, "the file stops at 256 KiB until a ping is answered")
+        XCTAssertEqual(Data(link.sockets[0].sent.dropFirst().joined()), file, "the file arrives whole and in order")
+        XCTAssertTrue(link.sockets[0].sent.dropFirst().allSatisfy { $0.count <= BytesStream.maxMessage })
+    }
+
+    /// A failed ping vouches for nothing, but must not hold the file back: the rate alone paces.
+    func testAFailedControlPingNeverHoldsTheFileBack() async throws {
+        let link = serving()
+        link.onPing = { throw URLError(.networkConnectionLost) }
+        let size = 1_000_000
+        let file = data(size)
+        try await uploader(link).send([FileUploader.Item(name: "a", size: Int64(size)) { DataSource(file) }]) { _, _ in }
+        XCTAssertEqual(Data(link.sockets[0].sent.dropFirst().joined()), file)
+    }
+
+    /// A control connection that never answers holds the file at most `windowWait` per window,
+    /// then the rate alone paces: an upload never stalls on the control connection.
+    func testAControlPingThatNeverAnswersOnlyDelaysTheFile() async throws {
+        let link = serving()
+        let pings = HeldPings()
+        link.onPing = { try await pings.ping() }
+        let size = 1_000_000
+        let file = data(size)
+        try await uploader(link, windowWaitEnds: true)
+            .send([FileUploader.Item(name: "a", size: Int64(size)) { DataSource(file) }]) { _, _ in }
+        XCTAssertEqual(Data(link.sockets[0].sent.dropFirst().joined()), file)
+        pings.failAll()
     }
 
     func testTheRateDoublesWhileNothingQueuesThenHalvesPastTheTarget() {
