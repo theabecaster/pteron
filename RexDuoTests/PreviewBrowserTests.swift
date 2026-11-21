@@ -192,8 +192,8 @@ final class PreviewBrowserTests: XCTestCase {
         let load = try XCTUnwrap(URL(string: "http://127.0.0.1:\(p ?? port)\(path)"))
         let page = PreviewPage(load: load, shown: "localhost:3000")
         XCTAssertTrue(PreviewBrowser.present(page, over: window.rootViewController?.view) { [weak self] in self?.closes += 1 })
-        let nav = try XCTUnwrap(window.rootViewController?.presentedViewController as? UINavigationController)
-        return try XCTUnwrap(nav.viewControllers.first as? PreviewBrowser)
+        let shown = try XCTUnwrap(window.rootViewController?.presentedViewController)
+        return try XCTUnwrap((shown as? UINavigationController)?.viewControllers.first as? PreviewBrowser ?? shown as? PreviewBrowser)
     }
 
     func testThePageShowsItsTitleOverTheComputersAddress() async throws {
@@ -229,6 +229,42 @@ final class PreviewBrowserTests: XCTestCase {
         await turn()
         XCTAssertNil(browser, "nothing keeps the browser after it closed")
         XCTAssertNil(web, "nor its web view")
+        XCTAssertEqual(closes, 1)
+    }
+
+    /// A leak test: after a close nothing of the page is alive. Not the browser, not what
+    /// presented it, not the web view, nor what the web view was configured with (WebKit hands
+    /// out its configuration as a copy, which shares the one user content controller).
+    func testNothingOfAPageOutlivesItsClose() async throws {
+        weak var browser: PreviewBrowser?
+        weak var shown: UIViewController?
+        weak var web: WKWebView?
+        weak var configuration: WKWebViewConfiguration?
+        weak var content: WKUserContentController?
+        let released = expectation(description: "the browser is released")
+        do {
+            let b = try await open()
+            _ = await until(b) { b.shownTitle == "Fixture page" }
+            browser = b
+            shown = window.rootViewController?.presentedViewController
+            web = b.webView
+            configuration = b.webView?.configuration
+            content = b.webView?.configuration.userContentController
+            XCTAssertNotNil(web)
+            XCTAssertNotNil(content)
+            b.gone = { released.fulfill() }
+            b.close()
+        }
+        await fulfillment(of: [released], timeout: 120)
+        // WebKit lets its own objects go over a few turns of the main queue after the view.
+        for _ in 0..<200 where web != nil || content != nil || configuration != nil || shown != nil {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(browser, "the browser")
+        XCTAssertNil(shown, "the controller that was presented")
+        XCTAssertNil(web, "the web view")
+        XCTAssertNil(configuration, "its configuration")
+        XCTAssertNil(content, "its user content controller")
         XCTAssertEqual(closes, 1)
     }
 
