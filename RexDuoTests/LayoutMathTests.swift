@@ -88,6 +88,35 @@ struct KeyboardCoverLayoutTests {
         #expect(TerminalLayout.fitSize(bounds: bounds, rest: nil, alternateScreen: false) == bounds)
     }
 
+    @Test func theRestCanvasTakesANewWidthAlsoWithTheKeyboardUp() {
+        // The unfolded canvas with the keyboard down, then the phone folds with the keyboard up.
+        let unfolded = CGSize(width: 606, height: 605)
+        let foldedNow = CGSize(width: 382, height: 177)
+        let rest = PaneLayout.restCanvas(kept: unfolded, now: foldedNow, keyboardUp: true)
+        #expect(rest == CGSize(width: 382, height: 605), "the new width, the height from the keyboard down")
+        // So the pane's grid has the folded columns and the rest rows, not the rows that show.
+        let cell = CGSize(width: 6.6, height: 14.3)
+        let grid = TerminalLayout.fitGrid(in: TerminalLayout.fitSize(bounds: foldedNow, rest: rest, alternateScreen: false), cell: cell)
+        #expect(grid == TerminalLayout.fitGrid(in: CGSize(width: 382, height: 605), cell: cell))
+        #expect(grid.cols < TerminalLayout.fitGrid(in: unfolded, cell: cell).cols)
+    }
+
+    @Test func theKeyboardAloneLeavesTheRestCanvasAsItWas() {
+        let kept = CGSize(width: 382, height: 600)
+        for h: CGFloat in [177, 250, 320] {
+            #expect(PaneLayout.restCanvas(kept: kept, now: CGSize(width: 382, height: h), keyboardUp: true) == kept)
+        }
+        // Half a point of layout noise is no new width.
+        #expect(PaneLayout.restCanvas(kept: kept, now: CGSize(width: 382.5, height: 177), keyboardUp: true) == kept)
+        #expect(PaneLayout.restCanvas(kept: kept, now: CGSize(width: 382, height: 600), keyboardUp: false) == kept)
+    }
+
+    @Test func theRestCanvasFollowsTheCanvasWithTheKeyboardDownAndStaysUnmeasuredUntilThen() {
+        #expect(PaneLayout.restCanvas(kept: CGSize(width: 606, height: 605), now: CGSize(width: 382, height: 600), keyboardUp: false)
+                == CGSize(width: 382, height: 600))
+        #expect(PaneLayout.restCanvas(kept: .zero, now: CGSize(width: 382, height: 177), keyboardUp: true) == .zero)
+    }
+
     @Test func aPaneTallerThanItsRestSizeFitsItself() {
         // The title bar stepped aside: the pane has more room than with the keyboard down.
         let bounds = CGSize(width: 400, height: 640)

@@ -637,4 +637,145 @@ final class PaneParkTests: XCTestCase {
         XCTAssertNil(pool.host(for: key(1)))
         XCTAssertNil(pool.host(for: key(2)))
     }
+
+    // MARK: A new width: a fold, a rotation, Split View
+
+    /// The resizes sent, as grids.
+    private func resizes(_ transport: FakeFitTransport) -> [(cols: Int, rows: Int)] {
+        transport.calls.compactMap { call in
+            guard call.hasPrefix("resize ") else { return nil }
+            let n = call.dropFirst(7).split(separator: "x").compactMap { Int($0) }
+            return n.count == 2 ? (n[0], n[1]) : nil
+        }
+    }
+
+    /// The terminal as drawn fits inside the pane: no column runs past its right edge.
+    private func drawnFits(_ host: TerminalHost) -> Bool {
+        host.term.frame.width <= host.bounds.width + 1
+    }
+
+    /// A claimed host whose resize the stream has echoed, at the window's size.
+    private func echoedHost(_ pool: TerminalHostPool, _ transport: FakeFitTransport) throws -> TerminalHost {
+        let host = claimedHost(pool, transport)
+        let size = try XCTUnwrap(host.claimWanted)
+        host.streamResized(cols: size.cols, rows: size.rows, owner: nil)
+        XCTAssertTrue(eventually { !host.stream.isClaimPending })
+        return host
+    }
+
+    func testAnotherClientsSizeBetweenOurEchoAndTheClaimsAnswerIsNotTakenForOurs() throws {
+        // Our resize's echo comes before the claim's answer. A wider size another client set
+        // right after it was taken in silently, then the answer marked the claim as ours: the
+        // pane stayed at the wider grid, its lines and its input line cut at the right edge, and
+        // every later layout found the claim "in place" and sent nothing.
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        transport.held = ["resize"]
+        let host = pooledHost(pool, key(1), transport: transport, sizing: .fit)
+        host.frame = window.bounds
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { transport.waitingKinds == ["resize"] })
+        let mine = try XCTUnwrap(host.claimWanted)
+        host.streamResized(cols: mine.cols, rows: mine.rows, owner: nil)
+        host.streamResized(cols: mine.cols + 40, rows: mine.rows, owner: "client:mac")
+        transport.held = []
+        transport.finishAll()
+        pause(0.1)
+        XCTAssertEqual(host.statusChipText, "Resized elsewhere · tap to fit here")
+        XCTAssertTrue(drawnFits(host), "drawn as the server's grid scaled to the pane, as when resized elsewhere")
+        host.removeFromSuperview()
+    }
+
+    func testANewWidthWithTheKeyboardUpClaimsTheNewColumnsAndTheRestRows() throws {
+        // Unfolded, then folded with the keyboard up: the pane is narrower and shorter. The rest
+        // size follows the width (`PaneLayout.restCanvas`), so the grid has the new columns and
+        // the rows of the pane with the keyboard down, in one resize.
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let wide = CGSize(width: 320, height: 480)
+        let host = try echoedHost(pool, transport)
+        host.setRestSize(wide)
+        host.layoutIfNeeded()
+        let before = try XCTUnwrap(resizes(transport).last)
+        let folded = PaneLayout.restCanvas(kept: wide, now: CGSize(width: 200, height: 180), keyboardUp: true)
+        host.setRestSize(folded)
+        host.frame = CGRect(x: 0, y: 0, width: 200, height: 180)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { resizes(transport).count == 2 })
+        let after = try XCTUnwrap(resizes(transport).last)
+        XCTAssertEqual(after.cols, TerminalLayout.fitGrid(in: CGSize(width: 200, height: 480), cell: host.term.cellSize).cols)
+        XCTAssertLessThan(after.cols, before.cols)
+        XCTAssertEqual(after.rows, before.rows, "the keyboard covers the pane: the rows are the rest size's")
+        host.streamResized(cols: after.cols, rows: after.rows, owner: nil)
+        XCTAssertTrue(drawnFits(host))
+        // The keyboard goes down in the folded pane: nothing more to send.
+        host.setRestSize(PaneLayout.restCanvas(kept: folded, now: CGSize(width: 200, height: 480), keyboardUp: false))
+        host.frame = CGRect(x: 0, y: 0, width: 200, height: 480)
+        host.layoutIfNeeded()
+        pause(0.2)
+        XCTAssertEqual(resizes(transport).count, 2)
+        host.removeFromSuperview()
+    }
+
+    func testTheKeyboardAloneResizesNothing() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let rest = CGSize(width: 320, height: 480)
+        let host = try echoedHost(pool, transport)
+        host.setRestSize(rest)
+        host.layoutIfNeeded()
+        let calls = transport.calls
+        for height: CGFloat in [180, 240, 480, 200, 480] {
+            // The keyboard comes and goes, and changes height (emoji, the key bar alone).
+            host.setRestSize(PaneLayout.restCanvas(kept: rest, now: CGSize(width: 320, height: height), keyboardUp: height < 480))
+            host.frame = CGRect(x: 0, y: 0, width: 320, height: height)
+            host.layoutIfNeeded()
+        }
+        pause(0.2)
+        XCTAssertEqual(transport.calls, calls, "no resize: the keyboard covers the pane")
+        host.removeFromSuperview()
+    }
+
+    func testAParkedPaneBackAtANewWidthInsideItsGraceClaimsTheNewWidth() throws {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        host.leaveTiming.claimGrace = 30
+        let before = try XCTUnwrap(resizes(transport).last)
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isParked })
+        // Folded while it was parked: it comes back narrower, its claim still held.
+        host.frame = CGRect(x: 0, y: 0, width: 200, height: 480)
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(eventually { resizes(transport).count == 2 }, "the claim grace keeps the pane, not its width")
+        let after = try XCTUnwrap(resizes(transport).last)
+        XCTAssertLessThan(after.cols, before.cols)
+        host.streamResized(cols: after.cols, rows: after.rows, owner: nil)
+        XCTAssertTrue(drawnFits(host))
+        XCTAssertFalse(transport.calls.contains("disown"))
+        host.removeFromSuperview()
+    }
+
+    func testAWarmPaneBackAtANewWidthInsideItsGraceIsFencedAndClaimsTheNewWidth() throws {
+        let pool = warmPool()
+        let transport = FakeFitTransport()
+        let host = try echoedHost(pool, transport)
+        host.leaveTiming.claimGrace = 30
+        let before = try XCTUnwrap(resizes(transport).last)
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isWarm })
+        host.frame = CGRect(x: 0, y: 0, width: 200, height: 480)
+        XCTAssertTrue(host.warmReturnFences, "another grid fits now")
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        XCTAssertTrue(host.stream.isClaimPending, "fenced until the new size has landed")
+        XCTAssertTrue(eventually { resizes(transport).count == 2 })
+        let after = try XCTUnwrap(resizes(transport).last)
+        XCTAssertLessThan(after.cols, before.cols)
+        host.streamResized(cols: after.cols, rows: after.rows, owner: nil)
+        XCTAssertTrue(drawnFits(host))
+        host.removeFromSuperview()
+    }
 }

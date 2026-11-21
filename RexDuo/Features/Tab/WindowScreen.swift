@@ -71,7 +71,8 @@ struct WindowScreen: View {
     @State private var moveChoices: [MoveChoice]?
     /// The panes' area with the keyboard down. For the folded legibility check: typing must not
     /// flip splits to one pane. And for each pane's grid, which stays the one that fits it with
-    /// the keyboard down while the keyboard covers it (`PaneLayout`).
+    /// the keyboard down while the keyboard covers it (`PaneLayout`). A new width (a fold, a
+    /// rotation, Split View) counts at once, also with the keyboard up (`PaneLayout.restCanvas`).
     @State private var canvasSize: CGSize = .zero
     /// Where the panes' area ends, in global coordinates. The sidebar doesn't move it.
     @State private var canvasMaxX: CGFloat?
@@ -212,7 +213,8 @@ struct WindowScreen: View {
             .overlay(alignment: .topLeading) { floatWindows(w, theme, p) }
             .clipped()
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
-                if !keyboardUp, s != canvasSize { canvasSize = s }
+                let rest = PaneLayout.restCanvas(kept: canvasSize, now: s, keyboardUp: keyboardUp)
+                if rest != canvasSize { canvasSize = rest }
             }
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { canvasMaxX = $0 }
             // The rows stay above the home indicator, but the terminal's color runs on to the
@@ -1063,6 +1065,18 @@ enum PaneLayout {
         let frame = CGRect(x: r.minX * size.width, y: r.minY * size.height, width: r.width * size.width, height: r.height * size.height)
             .insetBy(dx: splitPadding, dy: splitPadding)
         return CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, 10), height: max(frame.height, 10))
+    }
+
+    /// The canvas the panes' rest sizes come from, after the tab's canvas measured `now`. With the
+    /// keyboard down that is `now`. With it up, the keyboard's cover leaves the grid alone, so the
+    /// height stays the one measured with it down (`kept`), but a new width is taken at once: a
+    /// fold, a rotation or Split View changes the panes' width, and a rest size of the old width
+    /// would leave every pane without one until the keyboard went down. Nothing measured yet
+    /// stays unmeasured.
+    static func restCanvas(kept: CGSize, now: CGSize, keyboardUp: Bool) -> CGSize {
+        guard keyboardUp else { return now }
+        guard kept.width > 0, kept.height > 0, abs(kept.width - now.width) >= 1 else { return kept }
+        return CGSize(width: now.width, height: kept.height)
     }
 
     /// A single pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.

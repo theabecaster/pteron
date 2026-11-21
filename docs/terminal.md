@@ -242,8 +242,19 @@ is not a cold start.
     can't be scrolled: one resize when the program enters or leaves that screen with the
     keyboard up, and one when the keyboard shows or hides while it is there.
   - The key bar alone (hardware keyboard) takes room from the layout and the grid fits above it.
-  - With no measured size for the pane's width (a rotation or a fold while the keyboard is up)
-    the grid fits what shows, until the keyboard has been down once.
+  - A new width (a fold, a rotation, Split View) counts at once, also with the keyboard up: the
+    canvas takes the new width and keeps the height it had with the keyboard down
+    (`PaneLayout.restCanvas`). So the fold is one resize, to the new columns and the rows of the
+    keyboard-down pane, and the keyboard going down afterwards sends none when the height
+    matches. Before, the canvas kept the old width while the keyboard was up, every pane was
+    left without a rest size, and the grid fitted what showed (a dozen rows on the folded Duo):
+    the program redrew for a sliver, then again when the keyboard went down. Only a canvas never
+    measured with the keyboard down leaves the grid fitting what shows.
+  - Another client's size that comes after our resize's echo but before the claim's answer
+    (the echo comes first in the stream) counts as "Resized elsewhere", as one after the
+    answer does. Taken in silently, the claim would answer "ours" over a server grid wider than
+    the pane, and every later layout found the claim in place and sent nothing: lines and the
+    input line cut at the right edge until the width changed.
 - Mirror: never claims or resizes. Shows the server's grid scaled to the view's width; drag pans.
   Users always get fit; mirror is only for the `-sizing mirror` launch argument.
 - Fit really resizes panes on the Mac. Test it only in `zz-` sessions you created.

@@ -1850,7 +1850,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // snapshot's, or one the pane had while it was parked): that is not another client
         // taking the pane. After our own resize has come by, or on a current stream, it is.
         let later = ownResizeSeen || !stream.isFenced
-        if sizing == .fit, let c = claimedSize, c != (cols, rows), owner != stream.control.clientID, later {
+        let mine = owner == stream.control.clientID
+        // Our resize's echo comes in the stream before the claim's answer: in between, nothing
+        // is claimed yet, but a size another client sets after that echo is just as much news. Let
+        // through, it would be the server's size under a claim that answers "ours" a moment later,
+        // and the pane would be drawn at that grid, wider than the pane, until its width changed.
+        let pending = claimedSize == nil && stream.isClaimPending && ownResizeSeen
+            && (claim.wanted.map { $0 != (cols, rows) } ?? false)
+        if sizing == .fit, !mine, (claimedSize.map { $0 != (cols, rows) && later } ?? false) || pending {
             // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
             claimedSize = nil
             lostOwnership = true
