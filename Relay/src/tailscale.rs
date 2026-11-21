@@ -100,9 +100,22 @@ pub fn find(places: &[&str], real: impl Fn(&Path) -> Option<PathBuf>) -> Option<
     places.iter().map(|place| Path::new(*place)).filter(|p| p.is_absolute()).find_map(real)
 }
 
-/// The Tailscale client's command line: the first of `places` that `real` gives a program for.
+/// What a Mac's Tailscale app is told so that its program answers as the command line. That
+/// program is the app and the command line in one, and takes itself for the app unless it
+/// finds a terminal's variables (`TERM` and the like) or this one. A background service has
+/// no terminal, so every command is given this one. The command line that Homebrew installs
+/// and the one on Linux are the command line only and don't read it: it is set on a Mac alone.
+const BE_COMMAND_LINE: Option<(&str, &str)> = if cfg!(target_os = "macos") { Some(("TAILSCALE_BE_CLI", "1")) } else { None };
+
+/// The Tailscale client's command line: the first of `places` that `real` gives a program
+/// for. Every command Beacon gives the client is made here. It runs in Beacon's own
+/// environment, with `BE_COMMAND_LINE` added on a Mac and nothing else changed.
 fn client_at(places: &[&str], real: impl Fn(&Path) -> Option<PathBuf>) -> Option<tokio::process::Command> {
-    crate::tools::async_command(find(places, real)?)
+    let mut command = crate::tools::async_command(find(places, real)?)?;
+    if let Some((name, value)) = BE_COMMAND_LINE {
+        command.env(name, value);
+    }
+    Some(command)
 }
 
 /// The Tailscale client's command line on this computer: the file a place leads to, by
@@ -340,6 +353,55 @@ mod tests {
         // One that does not answer in the time given: nothing.
         std::fs::write(&program, "#!/bin/sh\nsleep 30\n").unwrap();
         assert_eq!(super::status(client_at(&places, is_file), Duration::from_millis(200)).await, None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn on_a_mac_the_client_is_told_to_be_the_command_line() {
+        let dir = std::env::temp_dir().join(format!("pf-be-cli-{}", std::process::id()));
+        // A stand-in for the app's program: without a terminal's variables it is the app
+        // (it prints nothing and fails), unless it is told to be the command line.
+        // (The real one looks at more of them, `TERM` among them; the shell this stand-in
+        // is sets those itself when they are missing, so it goes by one that no shell sets.)
+        stand_in(&dir, &status());
+        let program = dir.join("tailscale");
+        let script = format!(
+            "#!/bin/sh\nif [ \"${{TAILSCALE_BE_CLI:-}}\" != 1 ] && [ -z \"${{TERM_PROGRAM:-}}\" ]; then exit 1; fi\ncat '{}/answer'\n",
+            dir.display()
+        );
+        std::fs::write(&program, script).unwrap();
+        let places = [program.to_str().unwrap()];
+        // What the command is given besides Beacon's own environment: that one variable
+        // on a Mac, nothing elsewhere; and nothing is taken out.
+        let command = client_at(&places, is_file).unwrap();
+        let given: Vec<(String, Option<String>)> = command.as_std().get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
+        if cfg!(target_os = "macos") {
+            assert_eq!(given, [("TAILSCALE_BE_CLI".to_string(), Some("1".to_string()))]);
+        } else {
+            assert_eq!(given, []);
+        }
+        // As a background service runs it, with no terminal's variables: on a Mac it
+        // answers. (Elsewhere the client is the command line only and needs no telling;
+        // this stand-in, which is the Mac app's, is not told and does not answer.)
+        let service = |mut command: tokio::process::Command| {
+            for terminal in ["TERM", "TERM_PROGRAM", "TAILSCALE_BE_CLI"] {
+                // Only what the test's own shell set is taken out: what `client_at` gave stays.
+                if !command.as_std().get_envs().any(|(k, _)| k == terminal) {
+                    command.env_remove(terminal);
+                }
+            }
+            command
+        };
+        let answered = super::status(Some(service(client_at(&places, is_file).unwrap())), WAIT).await;
+        assert_eq!(answered.map(|t| t.machine), cfg!(target_os = "macos").then(|| "Desk".to_string()));
+        // The same program without what `client_at` gives it does not answer anywhere,
+        // and with a terminal's variable it does: the stand-in is the app's program.
+        let bare = || service(crate::tools::async_command(&program).unwrap());
+        assert_eq!(super::status(Some(bare()), WAIT).await, None);
+        let mut in_a_terminal = bare();
+        in_a_terminal.env("TERM_PROGRAM", "Terminal");
+        assert!(super::status(Some(in_a_terminal), WAIT).await.is_some());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

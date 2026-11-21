@@ -1001,7 +1001,10 @@ The path is followed name by name, links too (at most 32), and every folder a na
 looked up in on the way is held to this: the folder a link is in, the folders its target
 leads through, the folders the file is really in. What Beacon then runs is the file itself
 by the path it checked, with no link left in it, not the name it started from. A path that
-does not pass is skipped for the next.
+does not pass is skipped for the next. On a Mac every command is run with
+`TAILSCALE_BE_CLI=1` added to Beacon's own environment: the Tailscale app's program is the
+app and the command line in one, and without a terminal, which a background service does not
+have, that variable is what makes it answer as the command line.
 
 | System | Paths, in order |
 |---|---|
