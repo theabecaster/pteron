@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Opens and closes the app's browser many times in a simulator and checks that the app's memory
 # does not grow with every page: what 100 opens leave must be within 1 MB of what 30 leave
-# (the memory rises once over the first 25 or so opens and is level after; `PortsLoop` says more).
+# (in some runs the memory rises once over the first 25 or so opens; `PortsLoop` says more).
 #
 #   scripts/bench/ports-loop.sh <simulator id> [--opens N] [--skip-build]
 #

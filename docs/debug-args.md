@@ -227,8 +227,8 @@ builds.
   itself on 127.0.0.1, as fast as each page loads, closing it each time (`PortsLoop`). It logs
   `PORTS_LOOP opens=<k> footprint=<MB>` after 5 opens, after 30 and after the last, then
   `PORTS_LOOP done growth=<MB>` (the last less the one after 30), and writes
-  `Documents/perf/portsLoop.json`. The app's memory rises by about 5 MB over the first 25 or so
-  opens and is level after, so every open from the 30th on must cost nothing:
+  `Documents/perf/portsLoop.json`. In some runs the app's memory rises by about 5 MB over the
+  first 25 or so opens and is level after, so every open from the 30th on must cost nothing:
   `scripts/bench/ports-loop.sh <sim-id>` runs 100 and fails when they end more than 1 MB over
   30. `-portsLoopHold <seconds>` keeps each page up that long, for a
   screenshot (`-portsLoop 1 -portsLoopHold 10`), and `-portsLoopLandscape YES` turns the iPhone

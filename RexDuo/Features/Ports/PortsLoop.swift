@@ -9,11 +9,11 @@ import UIKit
 /// `PORTS_LOOP done growth=<MB>`, and writes `Documents/perf/portsLoop.json`.
 ///
 /// The growth is the last reading less the one after 30 opens (after 5 in a shorter run). In
-/// a build without memory tools the app's memory rises by about 5 MB over the first 25 or so
-/// opens, in two steps, and then stays level (iOS 27.2 simulator), so a reading after 5 opens
-/// is not yet the level. A page that leaves something behind shows after that: every open
-/// from the 30th on must cost nothing, and `scripts/bench/ports-loop.sh` fails when 100 opens
-/// end more than 1 MB over 30.
+/// some runs of a build without memory tools the app's memory rises by about 5 MB over the
+/// first 25 or so opens, in two steps, and then stays level (iOS 27.2 simulator); in others it
+/// is level from the start. So a reading after 5 opens is not always the level. A page that
+/// leaves something behind shows after that: every open from the 30th on must cost nothing,
+/// and `scripts/bench/ports-loop.sh` fails when 100 opens end more than 1 MB over 30.
 ///
 /// `-portsLoopHold <seconds>` keeps each page up that long, for a screenshot, and
 /// `-portsLoopLandscape YES` turns the iPhone on its side first.
