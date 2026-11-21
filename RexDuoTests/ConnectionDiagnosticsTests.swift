@@ -56,7 +56,8 @@ final class ConnectionDiagnosticsTests: XCTestCase {
         XCTAssertTrue(text.contains("Server 1  connecting"), text)
         XCTAssertTrue(text.contains("Server 1  connected after="), text)
         XCTAssertTrue(text.contains("Server 1  closed "), text)
-        XCTAssertTrue(text.contains("Server 1  retry in=1000ms"), text)
+        // The first retry is jittered (0-1 s, the reconnect spec), so only its presence is fixed.
+        XCTAssertTrue(text.contains("Server 1  retry in="), text)
         XCTAssertTrue(text.contains("Server 1  stopped"), text)
 
         let port = String(address.split(separator: ":").last ?? "")
