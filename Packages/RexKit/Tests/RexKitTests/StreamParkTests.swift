@@ -247,7 +247,10 @@ final class StreamParkTests: XCTestCase {
 
     func testAReturnWithAClaimOnItsWayWaitsForItAndDropsKeysWhenTheSizeChanges() async {
         let link = FakeLink()
-        let (s, _, _) = await current(link)
+        let (s, _, log) = await current(link)
+        // The held keys' life does not run out here, however slow the machine.
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
         s.setClaimPending(true)
         s.returned()
         s.send(text: "k")

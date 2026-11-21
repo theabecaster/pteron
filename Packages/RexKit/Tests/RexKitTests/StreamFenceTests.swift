@@ -122,7 +122,10 @@ final class StreamFenceTests: XCTestCase {
 
     func testAWakeOnADeadSocketStaysFencedThroughTheResume() async {
         let link = FakeLink()
-        let (s, _, _) = await current(link)
+        let (s, _, log) = await current(link)
+        // The held keys' life does not run out here, however slow the machine.
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
         link.sockets[0].pingPlan = .fail
         link.plans = [.silent]
         s.wake()
@@ -176,7 +179,10 @@ final class StreamFenceTests: XCTestCase {
 
     func testAZeroByteCatchUpSendsHeldKeysInOrderOnce() async {
         let link = FakeLink()
-        let (s, _, _) = await current(link)
+        let (s, _, log) = await current(link)
+        // The held keys' life does not run out here, however slow the machine.
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
         let socket = await dropAndWaitForResume(link, s)
         XCTAssertTrue(s.send(text: "g"))
         XCTAssertTrue(s.send(text: "it st"))
@@ -397,7 +403,10 @@ final class StreamFenceTests: XCTestCase {
 
     func testARefusedResumeStartsFreshAndKeepsTheFenceUp() async {
         let link = FakeLink()
-        let (s, sink, _) = await current(link)
+        let (s, sink, log) = await current(link)
+        // The held keys' life does not run out here, however slow the machine.
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
         link.plans = [.reject(0x01)]
         link.sockets[0].drop()
         _ = await eventually { s.isFenced }
