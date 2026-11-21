@@ -101,7 +101,7 @@ enum PreviewAddress {
 ///
 /// It has no button that leaves for an address only this app can reach. Downloads go to the
 /// share sheet, a link for a new window opens here, a sign-in a server asks for gets a small
-/// form, and a load that fails shows "Couldn't load localhost:3000" with Retry. Done or a swipe
+/// form, and a load that fails shows "Couldn't load localhost:3000" with Try Again. Done or a swipe
 /// down closes it, and the pane that had the keyboard gets it back.
 @MainActor
 final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate,
@@ -117,7 +117,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private var observers: [NSKeyValueObservation] = []
     /// The pane's view that held the keyboard when the page came up.
     private weak var keyboardHolder: UIResponder?
-    /// The load that failed, for Retry.
+    /// The load that failed, for Try Again.
     private var failed: URL?
     private var downloads: [ObjectIdentifier: URL] = [:]
 
@@ -405,7 +405,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         errorDetail.textAlignment = .center
         errorDetail.numberOfLines = 0
         var style = UIButton.Configuration.tinted()
-        style.title = "Retry"
+        style.title = "Try Again"
         style.cornerStyle = .capsule
         let retry = UIButton(configuration: style, primaryAction: UIAction { [weak self] _ in self?.retry() })
         let stack = UIStackView(arrangedSubviews: [errorTitle, errorDetail, retry])
@@ -662,9 +662,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     static func reason(_ e: NSError) -> String {
         guard e.domain == NSURLErrorDomain else { return "The page didn't load." }
         switch e.code {
-        case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost: return "Nothing answered there. Is the server still running?"
+        case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost: return "Nothing answered there. Is it still running?"
         case NSURLErrorTimedOut: return "It took too long to answer."
-        case NSURLErrorNotConnectedToInternet: return "The phone is offline."
+        case NSURLErrorNotConnectedToInternet: return "This iPhone is offline."
         case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasBadDate,
              NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid:
             return "Its secure connection couldn't be trusted."

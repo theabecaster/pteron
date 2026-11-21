@@ -132,7 +132,7 @@ final class PanePorts {
     /// the address as typed.
     func open(_ entry: PortEntry, as address: PortAddress) {
         guard server.phase == .online else {
-            notify("\(server.config.name) is offline, so \(address.shown) can't open.")
+            notify("Couldn't open \(address.shown). \(Messages.offline(server.config.name))")
             return
         }
         var link = LocalhostLink(port: entry.port, dialHost: entry.dialHost)

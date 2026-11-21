@@ -1038,7 +1038,7 @@ of a machine in its Ports group, so nobody scrolls a pane's history for a link
   - A response the page can't show, or one sent as an attachment, downloads to the phone's
     temporary folder and goes to the share sheet. A link for a new window opens in the same
     view. A server that asks for a name and password (Basic or Digest) gets a small form, kept
-    for the session only. A load that fails shows "Couldn't load localhost:3000" with Retry.
+    for the session only. A load that fails shows "Couldn't load localhost:3000" with Try Again.
     Light and dark come from the page's own CSS.
   - A tap on the address edits it, as in Safari: the field holds the address as shown and the
     path on screen, and Go resolves it with `PortAddress`, which reads only the port lists the
