@@ -31,6 +31,10 @@ public struct ConnectionEvent: Equatable, Sendable {
         case dormant
         /// The tunnel breaker opened or closed (an event of the app). `flags`: 1 open, 0 closed.
         case breaker
+        /// A TCP connection to Tailscale's own service on this phone was tried, as the breaker
+        /// opened (an event of the app). `flags`: 1 it connected, 0 it did not. `value`:
+        /// milliseconds it took. For the log only: nothing on screen depends on it.
+        case probe
     }
 
     /// Why a connection ended, as far as the error's codes say.
@@ -142,6 +146,13 @@ public struct ConnectionEvent: Equatable, Sendable {
     public static func breaker(open: Bool) -> ConnectionEvent {
         var e = ConnectionEvent(kind: .breaker)
         e.flags = open ? 1 : 0
+        return e
+    }
+
+    public static func tunnelProbe(reachable: Bool, milliseconds: Int64) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .probe)
+        e.flags = reachable ? 1 : 0
+        e.value = max(0, milliseconds)
         return e
     }
 
@@ -261,6 +272,7 @@ public struct ConnectionEvent: Equatable, Sendable {
         case .stopped: return "stopped"
         case .dormant: return "dormant"
         case .breaker: return flags == 1 ? "breaker open" : "breaker closed"
+        case .probe: return "probe tailscale reachable=\(flags == 1 ? "yes" : "no") after=\(value)ms"
         }
     }
 }

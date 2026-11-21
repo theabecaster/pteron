@@ -71,6 +71,11 @@ public final class ReconnectGovernor {
     /// The tunnel looks down: only the test host is tried.
     public var breakerOpen: Bool { breaker.isOpen }
 
+    /// How each host that the app wants connected looks, for `TunnelSuspicion`.
+    public var tunnelHosts: [TunnelSuspicion.Host] {
+        hosts.sorted { $0.key < $1.key }.compactMap { $0.value.control }.filter(\.isWanted).map(\.tunnelFact)
+    }
+
     /// The user selected this host's server, or none.
     public func select(_ control: RexControl?) { selected = control?.governorID }
 

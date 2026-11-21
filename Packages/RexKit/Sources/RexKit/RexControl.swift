@@ -133,6 +133,8 @@ public final class RexControl {
     private var wantConnected = false
     /// Failures in a row with no answer from the server's side.
     private var silentRun = 0
+    /// The last failure was an answer from the server's side, and the next try may work.
+    private var answeredLast = false
     /// TLS failures in a row.
     private var tlsRun = 0
     /// What was left of a dormant host's wait when the app went to the background.
@@ -559,7 +561,10 @@ public final class RexControl {
         // No answer at all: whatever else is open to this host is as dead as this socket.
         if kind == .silent { hostDied() }
         let silent = pathSatisfied && kind == .silent
-        if pathSatisfied { silentRun = silent ? silentRun + 1 : 0 }
+        if pathSatisfied {
+            silentRun = silent ? silentRun + 1 : 0
+            answeredLast = kind == .answered
+        }
         var wentDormant = false
         if wantConnected, kind != .final, !dormant, silentRun >= policy.dormantAfter {
             dormant = true
@@ -732,6 +737,7 @@ public final class RexControl {
     /// The episode is over: the welcome arrived, or the connection is not wanted.
     private func endEpisode() {
         silentRun = 0
+        answeredLast = false
         tlsRun = 0
         dormantLeft = nil
         attempts = 0
@@ -911,6 +917,19 @@ public final class RexControl {
         isHeld = false
         guard mayRetry else { return }
         plan(after: delay, .peer)
+    }
+
+    /// The app wants this host connected: `connect()` until `disconnect()`.
+    var isWanted: Bool { wantConnected }
+
+    /// How this host looks to `TunnelSuspicion`: up, silent, answering, or saying nothing either
+    /// way. It is silent from its first failure with no answer until a welcome or an answer,
+    /// through the attempts in between and while it is dormant. A TLS failure is an answer.
+    public var tunnelFact: TunnelSuspicion.Host {
+        if state == .connected { return .up }
+        if retryStopped { return .unknown }
+        if silentRun > 0 { return .unanswered }
+        return answeredLast ? .answered : .unknown
     }
 
     /// Whether this host is down and would be tried: what the governor orders and counts.
