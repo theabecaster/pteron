@@ -439,6 +439,9 @@ final class AppModel {
         self.glance.anyLive = { [weak self] in self?.servers.contains { GlanceSource.link($0) == .live } ?? false }
         connectActions(mode)
         if connect { rebuildServers() }
+        if connect, prefs.navigation == .sidebar {
+            launchHold = Self.launchHasTab(last: prefs.lastSelection, servers: servers.map(\.id), autoOpen: Self.isTestLaunch)
+        }
         // Read once, here: an existing user pays one saved flag at launch.
         if connect { guide = FirstRun.start(done: prefs.onboardingDone, servers: servers.count) }
         #if DEBUG
@@ -1017,21 +1020,50 @@ final class AppModel {
         }
         guard UserDefaults.standard.string(forKey: "autoOpen") == nil else { return }
         guard selection == nil else { return }
-        // The tab open when the app last ran, while it still exists.
-        if let last = prefs.lastSelection, server(last.serverID)?.views[last.sessionID]?.window(last.windowID) != nil {
-            autoSelected = last
-            selection = last
-            return
+        // The tab viewed last, else the top tab nearest it (`LaunchTab`).
+        guard case .show(let sel) = launchTab.pick() else { return }
+        autoSelected = sel
+        selection = sel
+    }
+
+    /// What `autoSelect()` decides from: the tab viewed last and what each server has synced.
+    var launchTab: LaunchTab {
+        LaunchTab(last: prefs.lastSelection, machines: servers.map { s in
+            LaunchTab.Machine(id: s.id, state: s.synced ? .synced : s.showsOffline ? .down : .waiting,
+                              sessions: s.sessions.compactMap { e in
+                                  s.views[e.id].map { CloseNext.Session(id: e.id, windows: $0.windows.map(\.id), active: $0.activeWindowID) }
+                              })
+        })
+    }
+
+    /// What the root watches to run `autoSelect()` again: each server's tabs and, until a tab is
+    /// on screen, whether it has synced or is down. With a tab on screen it reads no phase.
+    var autoSelectInputs: [AutoSelectInput] {
+        let launching = selection == nil
+        return servers.map { s in
+            AutoSelectInput(views: s.views.count, synced: launching && s.synced, down: launching && s.showsOffline)
         }
-        for s in servers {
-            for e in s.sessions {
-                if let v = s.views[e.id], let w = v.activeWindow {
-                    let first = Selection(serverID: s.id, sessionID: e.id, windowID: w.id)
-                    autoSelected = first
-                    selection = first
-                    return
-                }
-            }
-        }
+    }
+
+    struct AutoSelectInput: Equatable {
+        var views: Int
+        var synced: Bool
+        var down: Bool
+    }
+
+    /// A cold launch with a tab to show, in sidebar mode: the first root starts with a narrow
+    /// window's drawer closed (`SidebarState.launchHold`). Decided once, from saved state, when
+    /// the model is made, before anything is drawn; the first root takes it (`launchHoldTaken`),
+    /// so a window made later, a scene the system rebuilt, starts as before.
+    @ObservationIgnored var launchHold = false
+
+    func launchHoldTaken() { launchHold = false }
+
+    /// Whether a launch has a tab to show: the `-autoOpen` session's with a server, else the tab
+    /// viewed last, on a computer still added. With nothing (no computers, the first run), no.
+    static func launchHasTab(last: Selection?, servers: [UUID], autoOpen: Bool) -> Bool {
+        if autoOpen { return !servers.isEmpty }
+        guard let last else { return false }
+        return servers.contains(last.serverID)
     }
 }

@@ -9,6 +9,8 @@ enum RenderCount {
     enum Counter: String, CaseIterable {
         case sessionLists, tabRows, tabRowLabels, statusLeaves, progressWrites, windowScreens, paneMenuItems, portRows
         case tabStrips, tabChips, emptyStates
+        /// Layouts of the sidebar with an open drawer: a launch that starts it closed draws none.
+        case openDrawers
     }
 
     private static var counts: [Counter: Int] = [:]

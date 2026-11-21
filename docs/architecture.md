@@ -55,6 +55,24 @@ of the app builds the extension, and `RexDuoWatch`, which embeds `RexDuoWatchWid
 to draw them), and `RexDuoWatchTests` (the watch app's tests, in the scheme `RexDuoWatch`, on a
 watchOS simulator).
 
+## Which tab a launch opens
+
+Every posture and both navigation styles open the same tab (`LaunchTab`, `State/LaunchTab.swift`,
+run by `AppModel.autoSelect()`):
+
+1. The tab viewed last (`Prefs.lastSelection`, the newest of the viewing history), while it is
+   still there.
+2. Else the top tab of its session, in the sidebar's order.
+3. Else the top tab of the first session with tabs on that machine.
+4. Else, or with nothing saved, as before: the first session with tabs on any machine, at the tab
+   it shows. With nothing at all, the empty state.
+
+- **From what is saved and synced.** No call of its own: the tab is picked from the machine's
+  first sync, and selected without `session.focus_window`.
+- **No tab swapped for another.** Until the machine viewed last has synced, the launch waits for
+  it, so a machine that answers sooner doesn't put its own tab up first. A machine that is down
+  or no longer added goes to rule 4.
+
 ## When the tab on screen closes
 
 Rex keeps a session whose last pane closed: it stays listed with no tabs (`session.view` has no

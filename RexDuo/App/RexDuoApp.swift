@@ -63,7 +63,7 @@ struct RexDuoApp: App {
                 // Show nothing, so no real pane is ever opened.
                 Color.clear
             } else {
-                RootView()
+                RootView(launchHold: model.launchHold)
                     .launchTransition()
                     .agentToasts()
                     .environment(model)

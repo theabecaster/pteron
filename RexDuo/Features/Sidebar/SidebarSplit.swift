@@ -40,6 +40,9 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
             let stored = width(container: cw)
             let w = live ?? stored
             let shown = navigation == .sidebar
+            #if DEBUG
+            let _ = shown && open && !inline ? RenderCount.bump(.openDrawers) : false
+            #endif
             ZStack(alignment: .topLeading) {
                 tab
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

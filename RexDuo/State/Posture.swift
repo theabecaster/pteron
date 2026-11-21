@@ -54,15 +54,31 @@ struct Arrangement: Equatable {
 /// Whether the sidebar shows, and what commands and gestures do to it. One state for every
 /// arrangement: inline it sits beside the tab, narrow it is a drawer over the tab.
 struct SidebarState: Equatable {
-    /// Starts open, so a launch shows the last tab with the sidebar beside or over it.
-    var open = true
+    /// Starts open, so a launch shows the last tab with the sidebar beside or over it. Any change
+    /// to it ends `launchHold`.
+    var open = true { didSet { launchHold = false } }
     /// What the sidebar lists: machines, sessions and tabs, or every agent (the Mac's activity mode).
     var mode = SidebarMode.sessions
+    /// A cold launch with a tab to show (`AppModel.launchHold`): a drawer starts closed, so the
+    /// folded Duo opens on its tab. Only the drawer: beside the tab the sidebar shows as `open`
+    /// says, as at any launch. Never saved. It ends at the first change to the sidebar, and when
+    /// the window turns wide (`resolve`), so an unfold shows what a launch there would.
+    var launchHold = false
 
     enum Presentation: Equatable { case hidden, inline, drawer }
 
     func presentation(_ arrangement: Arrangement) -> Presentation {
-        open ? (arrangement.inline ? .inline : .drawer) : .hidden
+        shows(inline: arrangement.inline) ? (arrangement.inline ? .inline : .drawer) : .hidden
+    }
+
+    /// Whether the sidebar is on screen in this arrangement: what every view reads.
+    func shows(inline: Bool) -> Bool { open && (inline || !launchHold) }
+
+    /// Makes `open` say what is on screen, before a change that reads it (a toggle). Narrow, a held
+    /// drawer is closed, and nothing on screen moves; wide, the hold ends and the sidebar stays.
+    mutating func resolve(inline: Bool) {
+        guard launchHold else { return }
+        if inline { launchHold = false } else { open = false }
     }
 
     /// The toggle button, the Toggle Sidebar shortcut (`client.sidebar.toggle`) and the menu command.

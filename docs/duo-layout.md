@@ -96,6 +96,14 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   - **Typing in a short window** (a phone on its side) hides the strip with the keyboard, as
     it hides the title bar, so the terminal keeps its rows. Hide Keyboard brings it back, and
     the hardware keys work meanwhile.
+- **A cold launch opens on its tab.** In a narrow window (the folded Duo) the drawer starts
+  closed, so the tab viewed last shows (`SidebarState.launchHold`). Only at a process start in
+  sidebar mode, and only with a tab to show: the tab viewed last on a computer still added, or
+  the `-autoOpen` session's. It is decided from saved state when the model is made
+  (`AppModel.launchHold`), so the first frame already has it, and the first window takes it: a
+  scene the system rebuilds, a return from the background and tab mode are as before. Only the
+  drawer: beside the tab the sidebar shows as at any launch. Never saved. The first change to the
+  sidebar ends it, and so does the window turning wide, where the sidebar shows beside the tab.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Toggle Sidebar command and a swipe from

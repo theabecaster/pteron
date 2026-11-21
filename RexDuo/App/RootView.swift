@@ -15,8 +15,9 @@ struct RootView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Environment(\.verticalSizeClass) private var vSize
-    /// The sidebar is showing: inline beside the tab, or the drawer over it.
-    @State private var sidebar = SidebarState()
+    /// The sidebar is showing: inline beside the tab, or the drawer over it. Read what is on screen
+    /// with `shows(inline:)`.
+    @State private var sidebar: SidebarState
     /// The sidebar is inline (wide window). Mirrors the arrangement for commands.
     @State private var inline = false
     /// The room the docked keyboard takes at the bottom (`KeyboardInset`). The root pads itself by
@@ -41,6 +42,12 @@ struct RootView: View {
     @State private var simKeyboard: CGFloat = 0
     private let simulations = DuoSimulation.sequence
     #endif
+
+    /// `launchHold`: a cold launch's first window, with a tab to show (`AppModel.launchHold`). A
+    /// narrow window's drawer starts closed, decided here so the first frame already has it.
+    init(launchHold: Bool = false) {
+        _sidebar = State(initialValue: SidebarState(launchHold: launchHold))
+    }
 
     var body: some View {
         let theme = prefs.theme(for: scheme)
@@ -73,12 +80,13 @@ struct RootView: View {
             .pairingCover(isPresented: Binding(get: { model.showPairing }, set: { model.showPairing = $0 }), model: model) {
                 model.openSettings(at: .addServer)
             }
-            .onChange(of: model.servers.map { $0.views.count }) { _, _ in
+            .onChange(of: model.autoSelectInputs) { _, _ in
                 model.autoSelect()
             }
             .onChange(of: model.openRequest) { _, r in if let r { show(r.selection) } }
             // The mode the sidebar had last time, and saved when it changes.
             .onChange(of: sidebar.mode) { _, m in if prefs.sidebarMode != m { prefs.sidebarMode = m } }
+            // `open`, not what shows: book mode concerns only the inline sidebar, which shows `open`.
             .onChange(of: sidebar.open) { _, open in bookSidebar.sidebarChanged(open: open) }
             // The tab on screen always has a row: its folded session and machine open (a tap, Jump to
             // Waiting, a push, a toast, a new session).
@@ -91,6 +99,8 @@ struct RootView: View {
             }
             .onAppear {
                 connectPalette()
+                // A window made after this one starts as before.
+                model.launchHoldTaken()
                 // Nothing to list yet: the tab area, which says how to add a server, shows.
                 if model.servers.isEmpty { sidebar.open = false }
                 sidebar.mode = prefs.sidebarMode
@@ -193,10 +203,12 @@ struct RootView: View {
             // The root ignores the keyboard, so the arrangement doesn't change when it shows.
             let arr = Arrangement.decide(size: geo.size, division: division)
             NavigationStack {
-                SidebarSplit(arrangement: arr, theme: theme, navigation: prefs.navigation, open: $sidebar.open) {
+                let shown = sidebar.shows(inline: arr.inline)
+                SidebarSplit(arrangement: arr, theme: theme, navigation: prefs.navigation,
+                             open: Binding(get: { sidebar.shows(inline: arr.inline) }, set: { sidebar.open = $0 })) {
                     SidebarView(mode: $sidebar.mode, onSelect: { _ in writeSidebar { $0.tabShown(inline: arr.inline) } })
                         // A hidden sidebar reads no port: its Ports group catches up when it shows.
-                        .environment(\.sidebarShown, sidebar.open)
+                        .environment(\.sidebarShown, shown)
                 } tab: {
                     tab(arr)
                 }
@@ -211,7 +223,7 @@ struct RootView: View {
                 .safeAreaPadding(.bottom, keyboardPad)
                 .ignoresSafeArea(.keyboard)
                 .background(theme.chrome.canvas.ignoresSafeArea())
-                .background(EdgeReveal(enabled: !sidebar.open && prefs.navigation == .sidebar) { revealSidebar() })
+                .background(EdgeReveal(enabled: !shown && prefs.navigation == .sidebar) { revealSidebar() })
                 // Only where the system has a vertical bar: the toggle and the tab's actions go there.
                 // Elsewhere the tab's title bar holds them, Mac-like, with no second bar above it.
                 .toolbar(barEdge == nil ? .hidden : .visible, for: .navigationBar)
@@ -235,7 +247,7 @@ struct RootView: View {
                                 SessionsBarItem(theme: theme) { stripRoutes.run($0) }
                             } else {
                                 Button { toggleSidebar() } label: {
-                                    Label(sidebar.open ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                                    Label(shown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
                                 }
                             }
                         }
@@ -256,7 +268,11 @@ struct RootView: View {
             .environment(\.bookCrease, creaseSettle.crease(division))
             .environment(\.verticalBarEdge, barEdge)
             .environment(\.verticalBarColumn, barColumn)
-            .onChange(of: arr.inline, initial: true) { _, new in inline = new }
+            .onChange(of: arr.inline, initial: true) { _, new in
+                // Wide: the launch's hold on the drawer ends, and the sidebar shows as it is.
+                if new { sidebar.resolve(inline: true) }
+                inline = new
+            }
             .task(id: CreaseSettle.live(division)) { await settleCrease(division) }
             // The tab was measured after a launch in book mode, or the window is wide again.
             .onChange(of: bookFits) { _, _ in bookObserved(division) }
@@ -365,18 +381,26 @@ struct RootView: View {
     }
 
     private var sidebarBinding: Binding<Bool> {
-        Binding(get: { sidebar.open }, set: { if $0 != sidebar.open { toggleSidebar() } })
+        Binding(get: { sidebar.shows(inline: inline) }, set: { if $0 != sidebar.shows(inline: inline) { toggleSidebar() } })
     }
 
     /// Every change to the sidebar's state from here: in tab mode there is none
     /// (`SidebarState.write`), so the sidebar comes back as it was left.
     private func writeSidebar(_ change: (inout SidebarState) -> Void) {
-        sidebar.write(in: prefs.navigation, change)
+        sidebar.write(in: prefs.navigation) {
+            $0.resolve(inline: inline)
+            change(&$0)
+        }
     }
 
-    /// The sidebar as the agent board sees it. In tab mode the board reads it and changes nothing.
+    /// The sidebar as the agent board sees it, as it is on screen. In tab mode the board reads it
+    /// and changes nothing.
     private var boardSidebar: Binding<SidebarState> {
-        Binding(get: { sidebar }, set: { new in writeSidebar { $0 = new } })
+        Binding(get: {
+            var s = sidebar
+            s.resolve(inline: inline)
+            return s
+        }, set: { new in writeSidebar { $0 = new } })
     }
 
     /// What tab mode's strip and the vertical bar's Sessions item run.
@@ -420,6 +444,7 @@ struct RootView: View {
                 return
             }
             Haptic.tap()
+            sidebar.resolve(inline: inline)
             _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()
         case .settings: model.showSettings = true
@@ -441,6 +466,7 @@ struct RootView: View {
     private func toggleSidebar() {
         guard prefs.navigation == .sidebar else { return }
         Haptic.tap()
+        sidebar.resolve(inline: inline)
         sidebar.toggle()
     }
 
