@@ -119,6 +119,9 @@ struct HelperVersion: Equatable, Sendable {
     var linger: Bool?
     /// When the release list the helper last accepted expires.
     var manifestExpiresAt: Date?
+    /// The computer can hand a port's page to this iPhone's browser (`share_possible`, from
+    /// 0.7): Open in Browser in the Ports group goes by it. A helper that doesn't say can't.
+    var sharePossible = false
 
     init?(_ result: JSONObject) {
         guard let version = result.str("version"), !version.isEmpty else { return nil }
@@ -130,6 +133,7 @@ struct HelperVersion: Equatable, Sendable {
         notices = result.str("notices")
         linger = result.bool("linger")
         manifestExpiresAt = result.str("manifest_expires_at").flatMap(HelperRelease.timestamp)
+        sharePossible = result.bool("share_possible") ?? false
     }
 
     /// A helper from before the gateway refuses a registration that has no APNs token with this.

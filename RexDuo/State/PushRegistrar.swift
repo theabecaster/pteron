@@ -97,6 +97,8 @@ final class PushRegistrar {
     private(set) var addressFailed = false
     /// What each helper last said of itself: its version, and how it can be updated.
     private(set) var versions: [UUID: HelperVersion] = [:]
+    /// How many statuses each helper has given (`statusReads`).
+    private var statusReadCounts: [UUID: Int] = [:]
     /// The version each helper gave when it took this phone (`register_push`'s
     /// `helper_version`). It usually arrives before the helper's status does, and the row shows
     /// whichever is there, the status first.
@@ -537,6 +539,14 @@ final class PushRegistrar {
         return details
     }
 
+    /// The computer's helper said, in the status the app last read from it, that it can hand a
+    /// port's page to this iPhone's browser. Nothing is asked to answer this.
+    func sharePossible(_ id: UUID) -> Bool { versions[id]?.sharePossible == true }
+
+    /// How many times a status was read from the computer's helper: what was decided from one
+    /// status can be told from what the next says.
+    func statusReads(_ id: UUID) -> Int { statusReadCounts[id] ?? 0 }
+
     /// One action of the computer's helper for something other than notifications (a port's
     /// owner, a port for the phone's browsers). Nil when no helper on the computer's current
     /// connection holds this phone: nothing is sent then.
@@ -849,6 +859,7 @@ final class PushRegistrar {
               case .success(let result) = await channel.perform(id, relay: relay, action: "helper_status", args: [:], timeout: 5000),
               let v = HelperVersion(result), reconciler.relay(id) == relay else { return false }
         if versions[id] != v { versions[id] = v }
+        statusReadCounts[id, default: 0] += 1
         if v.registered == false {
             reconciler.helperLost(id)
         } else if v.paused == true {
