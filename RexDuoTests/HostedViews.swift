@@ -6,15 +6,27 @@ import UIKit
 /// navigation stack, a list's size, the elements VoiceOver reads.
 @MainActor
 enum Hosted {
+    /// - Parameter safeArea: the safe area the view gets, in place of the one the simulator's screen
+    ///   gives the window (a vertical bar's column, a Dynamic Island), with the navigation bar
+    ///   horizontal as on any iPhone, so a measurement is the same on every simulator (the Duo's
+    ///   would otherwise move it into its vertical bar). Nil keeps the screen's.
     static func window<V: View>(_ view: V, size: CGSize = CGSize(width: 402, height: 874),
-                                category: UIContentSizeCategory = .large) -> UIWindow {
+                                category: UIContentSizeCategory = .large, safeArea: EdgeInsets? = nil) -> UIWindow {
         let window = UIWindow(frame: CGRect(origin: .zero, size: size))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
             window.windowScene = scene
         }
         window.frame = CGRect(origin: .zero, size: size)
         window.traitOverrides.preferredContentSizeCategory = category
-        window.rootViewController = UIHostingController(rootView: view)
+        if let safeArea {
+            var root = AnyView(view)
+            if #available(iOS 27.1, *) { root = AnyView(view.toolbarVerticalBehavior(.disabled)) }
+            let host = UIHostingController(rootView: AnyView(root.safeAreaPadding(safeArea)))
+            host.safeAreaRegions = []
+            window.rootViewController = host
+        } else {
+            window.rootViewController = UIHostingController(rootView: view)
+        }
         window.makeKeyAndVisible()
         return window
     }

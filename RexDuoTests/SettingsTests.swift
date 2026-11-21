@@ -126,20 +126,31 @@ import UIKit
         }
     }
 
-    /// At AX3 the top level still fits on an iPhone 17 Pro's screen, in the sheet, with nothing
-    /// to scroll.
+    /// The top level fits one screen, with nothing to scroll, on phone-sized windows at the
+    /// default text size, and at AX3 on an iPhone 17 Pro's. The folded Duo at AX3 may scroll. Each
+    /// case is a fixed window with a fixed safe area, so the simulator the tests run on doesn't
+    /// change the numbers.
     @Test func theTopLevelFitsOneScreen() async throws {
+        struct Screen { let name: String; let size: CGSize; let safeArea: EdgeInsets }
+        // The sheet starts under the status bar and the card above it.
+        let iPhone17Pro = Screen(name: "iPhone 17 Pro", size: CGSize(width: 402, height: 874 - 64),
+                                 safeArea: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0))
+        // The Duo's outer screen: the vertical bar's column on the right, nothing above.
+        let folded = Screen(name: "folded Duo", size: CGSize(width: 466, height: 678),
+                            safeArea: EdgeInsets(top: 0, leading: 0, bottom: 34, trailing: 84))
+        let cases: [(Screen, UIContentSizeCategory)] = [
+            (iPhone17Pro, .large), (iPhone17Pro, .accessibilityExtraLarge), (folded, .large),
+        ]
         var needed: [CGFloat] = []
-        for size in [UIContentSizeCategory.large, .accessibilityExtraLarge] {
+        for (screen, size) in cases {
             let m = try model(servers: 3)
-            // The sheet starts under the status bar and the card above it.
-            let window = Hosted.window(SettingsView().environment(m).environment(m.prefs), size: CGSize(width: 402, height: 874 - 64),
-                              category: size)
+            let window = Hosted.window(SettingsView().environment(m).environment(m.prefs), size: screen.size,
+                                       category: size, safeArea: screen.safeArea)
             defer { window.isHidden = true }
             let list = try await Hosted.eventually { Hosted.views(UICollectionView.self, in: window).first { $0.contentSize.height > 0 } }
             _ = await Hosted.settle { false }
             let height = list.contentSize.height + list.adjustedContentInset.top + list.adjustedContentInset.bottom
-            #expect(height <= list.bounds.height, "\(size.rawValue): \(height) pt in \(list.bounds.height) pt")
+            #expect(height <= list.bounds.height, "\(screen.name), \(size.rawValue): \(height) pt in \(list.bounds.height) pt")
             needed.append(height)
         }
         #expect(needed[1] > needed[0] + 100, "AX3 took effect: \(needed)")
