@@ -202,6 +202,8 @@ struct AboutPage: View {
     @State private var shared: DiagnosticsShare?
     /// The file is being written: a second tap makes no second one.
     @State private var preparing = false
+    /// The task that writes the file, so leaving About ends it.
+    @State private var writing: Task<Void, Never>?
 
     static let diagnosticsFooter = "Shares a text file of connection events and crash reports. "
         + "It has no computer names or addresses, and it stays on this iPhone unless you share it."
@@ -229,8 +231,16 @@ struct AboutPage: View {
         .navigationBarTitleDisplayMode(.inline)
         .settingsBar(theme)
         .sheet(item: $shared, onDismiss: { ConnectionDiagnostics.clearShareFile() }) { file in
-            DiagnosticsShareSheet(file: file.url)
+            // The share sheet can end by itself (sent, or cancelled inside it): the row is
+            // ready again either way, and the file goes with the sheet.
+            DiagnosticsShareSheet(file: file.url) { shared = nil }
                 .presentationDetents([.medium, .large])
+        }
+        // Leaving About while the file is being written: nothing is shown later, and nothing stays.
+        .onDisappear {
+            writing?.cancel()
+            writing = nil
+            if shared == nil { ConnectionDiagnostics.clearShareFile() }
         }
     }
 
@@ -238,11 +248,19 @@ struct AboutPage: View {
         guard !preparing, shared == nil else { return }
         preparing = true
         let log = model.connectionLog, servers = model.prefs.servers
-        Task {
+        writing = Task {
             defer { preparing = false }
-            let text = await ConnectionDiagnostics.report(log: log, servers: servers, reports: DiagnosticReports.standard.all(),
+            // The reports are files: read, and the shared file written, off the main actor.
+            let reports = await Task.detached(priority: .userInitiated) { DiagnosticReports.standard.all() }.value
+            let text = await ConnectionDiagnostics.report(log: log, servers: servers, reports: reports,
                                                           version: SettingsView.version)
-            guard let url = try? ConnectionDiagnostics.writeShareFile(text) else {
+            let written = await Task.detached(priority: .userInitiated) { try? ConnectionDiagnostics.writeShareFile(text) }.value
+            // About was left meanwhile: no sheet shows later, and no file stays.
+            if Task.isCancelled {
+                ConnectionDiagnostics.clearShareFile()
+                return
+            }
+            guard let url = written else {
                 Notice.shared.show("Couldn't write the diagnostics file.")
                 return
             }
@@ -260,9 +278,15 @@ struct DiagnosticsShare: Identifiable {
 /// The system's share sheet with the diagnostics file.
 private struct DiagnosticsShareSheet: UIViewControllerRepresentable {
     let file: URL
+    /// The share sheet is over, sent or not.
+    let done: @MainActor () -> Void
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [file], applicationActivities: nil)
+        let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+        sheet.completionWithItemsHandler = { _, _, _, _ in
+            Task { @MainActor in done() }
+        }
+        return sheet
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}

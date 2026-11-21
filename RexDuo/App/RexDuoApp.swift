@@ -30,6 +30,8 @@ struct RexDuoApp: App {
         // ones of earlier launches then.
         diagnosticReports = connect ? DiagnosticReportsSubscriber(reports: .standard) : nil
         diagnosticReports?.start()
+        // A shared diagnostics file a kill left behind, off the launch path.
+        Task.detached(priority: .utility) { ConnectionDiagnostics.clearShareFile() }
         let model = AppModel(prefs: prefs, connect: connect, log: log)
         _model = State(initialValue: model)
         // For an action on a notification in a launch that never shows a view.
