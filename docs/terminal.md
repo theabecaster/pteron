@@ -1137,6 +1137,15 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
     iPhone's browser (see **Open in Browser**), looked up each time the menu opens, and never
     for a page of another site; otherwise there is no button that leaves for another app,
     since the address shown only works inside this one. It is a menu item, never a bar item.
+  - The loop's reading sits at one of two levels in the simulator, about 32.4 MB or about
+    37.9 MB, and some runs climb from the first to the second in their first 25 or so opens.
+    In the one run measured at the high level, `vmmap` showed 6.4 MB of the app's pages
+    compressed by the Mac and a footprint equal to dirty plus compressed (31.7 + 6.4 MB); in
+    eleven runs at the low level nothing was compressed and the footprint was about 5 MB under
+    the dirty pages (37.1 to 37.8 MB), so the app had written the same amount in both. A sheet
+    with only a `WKWebView` (`-portsLoopBare`) read 30.4 to 30.7 MB in seven runs and was never
+    seen at a high level, so whether it has one too is not known; a busy processor alone did
+    not bring the high level on.
   - The address shown is the one the user knows from the computer (`PreviewAddress`,
     `LocalhostLink.shown`): a tapped link's own host and port as written (`localhost:3000`,
     `127.0.0.1:5173`, `0.0.0.0:8000`, `[::1]:4000`, a LAN address), and `localhost:<port>` from

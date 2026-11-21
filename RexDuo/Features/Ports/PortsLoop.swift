@@ -12,7 +12,8 @@ import WebKit
 /// The growth is the last reading less the one after 30 opens (after 5 in a shorter run). In
 /// some runs of a build without memory tools the app's memory rises by about 5 MB over the
 /// first 25 or so opens, in two steps, and then stays level (iOS 27.2 simulator); in others it
-/// is level from the start. So a reading after 5 opens is not always the level. A page that
+/// is level from the start (docs/terminal.md, Ports, has what was measured of the two
+/// levels). So a reading after 5 opens is not always the level. A page that
 /// leaves something behind shows after that: every open from the 30th on must cost nothing,
 /// and `scripts/bench/ports-loop.sh` fails when 100 opens end more than 1 MB over 30.
 ///
