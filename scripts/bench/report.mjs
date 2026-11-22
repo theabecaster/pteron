@@ -91,7 +91,7 @@ if (scenarios.length) {
 }
 if (runs.predict) {
   table('### Predicted echo: a recorded typing session on a link with a 150 ms round trip (`predict-off`: the same with no gate)',
-    ['predict', 'predict-off'].filter((s) => runs[s]).map((s) => [s, runs[s]]), [
+    ['predict', 'predict-off', 'predict-fast', 'predict-fast-off'].filter((s) => runs[s]).map((s) => [s, runs[s]]), [
     ['guessed keys', 'echo.predictedKeys'],
     ['guess shown ms', 'echo.predictedMedianMs', 'echo.predictedP95Ms', 'p95'],
     ['guessed keys first seen ms', 'echo.firstVisibleGuessedMedianMs', 'echo.firstVisibleGuessedP95Ms', 'p95'],
@@ -105,6 +105,10 @@ if (runs.predict) {
     ['vanished', 'echo.vanished'],
     ['main µs per key', 'echo.mainKeyUs.median', 'echo.mainGateUs.median', 'gate'],
     ['feed µs per key', 'echo.feedKeyUs.median', 'echo.feedKeyUs.max', 'max'],
+    ['feed: grid µs', 'echo.feedGridUs.median', 'echo.feedCallUs.median', 'predictor'],
+    ['feed: publish µs', 'echo.feedPublishUs.median'],
+    ['cells read per key', 'echo.feedCellReads.median', 'echo.feedCellReads.max', 'max'],
+    ['predictors made', 'echo.predictors'],
     ['feed µs per slice', 'echo.feedSliceUs.median', 'echo.feedSliceUs.max', 'max'],
   ]);
 }
@@ -167,6 +171,17 @@ for (const s of Object.keys(budgets.scenarios)) {
     if (!got) { verdicts.push([title[p] ?? p, s, 'no data', 'not in the results']); continue; }
     verdicts.push([title[p] ?? p, s, got.median <= limit ? 'pass' : 'FAIL', `${num(got.median)}, budget ${num(limit)}`]);
   }
+}
+// What one scenario may cost more than another (budgets.differences): the medians' difference.
+for (const [name, d] of Object.entries(budgets.differences)) {
+  if (!runs[d.of] || !runs[d.against]) {
+    if (!partial) verdicts.push([name, d.of, 'no data', 'no result']);
+    continue;
+  }
+  const a = stat(runs[d.of], d.path), b = stat(runs[d.against], d.path);
+  if (!a || !b) { verdicts.push([name, d.of, 'no data', 'not in the results']); continue; }
+  const diff = a.median - b.median;
+  verdicts.push([name, d.of, diff <= d.limit ? 'pass' : 'FAIL', `${num(a.median)} against ${num(b.median)} (${d.against}), ${num(diff)} more, budget ${num(d.limit)}`]);
 }
 // Pane switches (run.sh --switch): checked only when they were run, since they need a server.
 for (const s of switches) {

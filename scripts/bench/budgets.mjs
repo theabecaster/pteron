@@ -32,13 +32,39 @@ export const scenarios = {
   'unicode-find': { 'mainBusy.totalMs': 15,  'presents.gapsOver25': 1, 'flow.drawnMs': 150 },
   'claude-find':  { 'mainBusy.totalMs': 250, 'presents.gapsOver25': 1 },
   'cap-find':     { 'mainBusy.totalMs': 10,  'presents.gapsOver25': 1, 'flow.drawnMs': 60 },
-  // Predicted echo on a link with a 150 ms round trip (docs/terminal.md, Predicted echo). The
-  // plan's numbers: a guessed key is on screen within a frame (17 ms), no guess the user saw is
-  // taken back and none vanishes, a key costs 2 µs on the main thread and 20 µs on the feed
-  // queue, and the main thread's whole work stays at `seq`'s 10 ms.
-  // No frame-gap budget: frames come when keys do. `predict-off` (no gate) has no budget.
-  predict: { 'mainBusy.totalMs': 10, 'echo.firstVisibleGuessedMedianMs': 17, 'echo.mismatchedDrawn': 0, 'echo.vanished': 0,
-             'echo.mainKeyUs.median': 2, 'echo.feedKeyUs.median': 20 },
+  // Predicted echo on a link with a 150 ms round trip (docs/terminal.md, Predicted echo): a
+  // recorded typing session played three times into a pane that opens with a recorded stream.
+  // - A guessed key is on screen within a frame (17 ms; measured 0.45).
+  // - No guess the user saw is taken back, and none vanishes.
+  // - A key costs the main thread at most 50 µs more than without predictions (measured 30):
+  //   the host's gate, then one wake of the feed queue, where the predictor lives beside the
+  //   grid it judges. Only while the gate is on; `predict-fast` holds the off state.
+  // - A key costs the feed queue 51 µs (measured 41, plus a quarter): the predictor
+  //   places the guess and publishes the overlay under the terminal lock.
+  // No frame-gap budget: frames come when keys do. Main busy is budgeted as a difference below.
+  predict: { 'echo.firstVisibleGuessedMedianMs': 17, 'echo.mismatchedDrawn': 0, 'echo.vanished': 0,
+             'echo.mainKeyUs.median': 50, 'echo.feedKeyUs.median': 51 },
+  // The same pane, script and link with no gate: the baseline for what predictions add.
+  'predict-off': {},
+  // A fast link (5 ms round trips): the gate is there and stays off, which is every session on
+  // Wi-Fi beside its computer. No predictor is ever made, and the host never listens to its
+  // stream: the prediction path runs for no key, on either thread. What is left per key is the
+  // stream's one check that it has no observer, and per write two clock readings and the
+  // gate's running average.
+  'predict-fast': { 'echo.predictors': 0, 'echo.mainKeyUs.count': 0, 'echo.feedKeyUs.count': 0 },
+  // The fast link with no gate: `predict-fast`'s baseline.
+  'predict-fast-off': {},
+};
+
+// What one scenario may cost more than another: the difference of the two medians.
+// - A session's whole main-thread work with predictions on, over the same session without a
+//   gate: 15 ms over the scenario's 25 s (measured 9). The scenario itself costs about 100 ms
+//   either way, most of it the frames its 69 keys draw.
+// - A key's send on a fast link with the gate present and off, over the same with no gate: the
+//   two must be the same. 1.5 µs is the spread of the baseline's own runs (measured 0).
+export const differences = {
+  'predictions add, main busy ms': { of: 'predict', against: 'predict-off', path: 'mainBusy.totalMs', limit: 15 },
+  'a gate that is off adds, µs per key': { of: 'predict-fast', against: 'predict-fast-off', path: 'echo.mainSendUs.median', limit: 1.5 },
 };
 
 // The stream's filter (`APCFilter`), on the Mac with no simulator (scripts/bench/filter.sh): how

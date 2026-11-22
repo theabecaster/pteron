@@ -165,6 +165,10 @@ scenarios=(
   "predict|predict.bin|-echoScript predict.json -echoLoops 3 -replayFontSize 8"
   # The same pane, script and link with no gate: what the scenario costs without predicted echo.
   "predict-off|predict.bin|-echoScript predict.json -echoLoops 3 -replayFontSize 8 -predict never"
+  # A fast link (5 ms): the gate is there and stays off. Beside it the same with no gate: a
+  # key must cost the main thread the same in both.
+  "predict-fast|predict.bin|-echoScript predict.json -echoLoops 3 -echoDelay 5 -replayFontSize 8"
+  "predict-fast-off|predict.bin|-echoScript predict.json -echoLoops 3 -echoDelay 5 -replayFontSize 8 -predict never"
 )
 
 # A warm-up for `unicode`. Its time to the final frame is likely mostly CoreText loading its fallback
