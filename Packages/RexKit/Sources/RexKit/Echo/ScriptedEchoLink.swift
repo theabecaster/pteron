@@ -32,6 +32,8 @@ public final class ScriptedEchoLink {
 
     /// The texts of the writes the stream sent, in order.
     public var written: [String] { link.written }
+    /// The stream has opened its data socket: what `deliver` is given now arrives.
+    public var isOpen: Bool { link.socket != nil }
 
     /// A stream on this link. `control` is never connected: the stream only keeps its books on
     /// it (pending input, the path's cost).
