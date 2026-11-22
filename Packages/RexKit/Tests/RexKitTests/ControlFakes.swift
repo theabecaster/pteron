@@ -167,6 +167,11 @@ final class FakeControlSocket: ControlSocket, @unchecked Sendable {
         pongs.removeFirst()(error)
     }
 
+    /// The socket did not take the last message it was given: its send ends with an error.
+    func refuseLastSend(_ error: any Error = URLError(.networkConnectionLost)) {
+        sendHandlers.last?(error)
+    }
+
     /// Calls every handler this socket was ever given once more, with a failure: what a socket
     /// that is long gone may still do.
     func callEverythingAgain(_ error: any Error = URLError(.networkConnectionLost)) {
