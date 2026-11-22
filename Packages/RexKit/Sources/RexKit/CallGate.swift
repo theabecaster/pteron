@@ -7,6 +7,9 @@ import Foundation
 /// four at a time, the tab on screen first. On Wi-Fi the app does not use it.
 ///
 /// Only the reads of a sync wait here. What the user does (typing, a tap, an action) never does.
+/// A read made for what the user is typing (`Priority.user`) starts at once, however many sync
+/// reads are under way or waiting; it takes one of the `limit` places while it is out, so the
+/// sync yields to it instead of adding to it.
 ///
 /// A call that waits its turn starts when one ahead of it ends, and a control call always ends:
 /// with its answer, or with the connection (`RexControl` fails every waiting call on a drop). So
@@ -14,20 +17,44 @@ import Foundation
 @MainActor
 public final class CallGate {
     public let limit: Int
-    /// Calls under way now, and the most there have been at once.
+    /// Sync calls under way now, and the most there have been at once.
     public private(set) var inFlight = 0
     public private(set) var peak = 0
-    /// How many calls have gone through, ever.
+    /// How many sync calls have gone through, ever.
     public private(set) var total = 0
+    /// Calls for the user under way now. They never wait.
+    public private(set) var userInFlight = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public enum Priority: Sendable {
+        /// A sync's read: at most `limit` at once, in the order asked.
+        case sync
+        /// A read for what the user is doing: at once, ahead of every sync read.
+        case user
+    }
 
     public init(limit: Int = ReconnectPolicy.standard.syncCalls) {
         self.limit = max(1, limit)
     }
 
+    /// A sync read is under way or waits its turn.
+    public var syncBusy: Bool { inFlight > 0 || !waiters.isEmpty }
+
+    /// A point to ask `quiet(since:)` about; nil while a sync read is under way or waiting.
+    public var mark: Int? { syncBusy ? nil : total }
+
+    /// No sync read was under way at `mark` and none has started since. What was timed between
+    /// the two then shared the connection with no sync.
+    public func quiet(since mark: Int?) -> Bool { mark != nil && mark == total }
+
     /// Runs `body` when its turn comes: at once with fewer than `limit` under way, otherwise
-    /// after those asked before it.
-    public func run<R>(_ body: @MainActor () async throws -> R) async rethrows -> R {
+    /// after those asked before it. With `.user` it runs at once.
+    public func run<R>(priority: Priority = .sync, _ body: @MainActor () async throws -> R) async rethrows -> R {
+        if priority == .user {
+            userInFlight += 1
+            defer { leaveUser() }
+            return try await body()
+        }
         await enter()
         defer { leave() }
         return try await body()
@@ -50,19 +77,31 @@ public final class CallGate {
 
     private func enter() async {
         total += 1
-        if inFlight < limit, waiters.isEmpty {
+        if inFlight + userInFlight < limit, waiters.isEmpty {
             inFlight += 1
             peak = max(peak, inFlight)
             return
         }
-        // The one that leaves hands its place over: `inFlight` stays as it is.
+        // The one that leaves hands its place over.
         await withCheckedContinuation { waiters.append($0) }
     }
 
     private func leave() {
-        if waiters.isEmpty {
-            inFlight -= 1
-        } else {
+        inFlight -= 1
+        admit()
+    }
+
+    private func leaveUser() {
+        userInFlight -= 1
+        admit()
+    }
+
+    /// Starts the sync reads that waited, while there is a place for them. A call for the user
+    /// may have taken a place a sync read had, so one that leaves does not always free one.
+    private func admit() {
+        while !waiters.isEmpty, inFlight + userInFlight < limit {
+            inFlight += 1
+            peak = max(peak, inFlight)
             waiters.removeFirst().resume()
         }
     }

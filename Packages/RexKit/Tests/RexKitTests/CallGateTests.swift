@@ -95,4 +95,76 @@ final class CallGateTests: XCTestCase {
         XCTAssertEqual(ran.sorted(), [1, 2])
         XCTAssertEqual(gate.inFlight, 0)
     }
+
+    func testACallForTheUserNeverWaitsAndTakesAPlaceFromTheSync() async {
+        let gate = CallGate(limit: 2), calls = Calls()
+        let sync = Task { @MainActor in await gate.each(Array(0..<4)) { await calls.call($0) } }
+        await turn()
+        XCTAssertEqual(calls.started, [0, 1])
+        // Both places are taken and two reads wait: the user's call starts all the same.
+        let mine = Task { @MainActor in await gate.run(priority: .user) { await calls.call(100) } }
+        await turn()
+        XCTAssertEqual(calls.started, [0, 1, 100])
+        XCTAssertEqual(gate.userInFlight, 1)
+        XCTAssertEqual(gate.inFlight, 2)
+        // A sync read ends: its place is the user's now, so no other read starts.
+        calls.answer(0)
+        await turn()
+        XCTAssertEqual(calls.started, [0, 1, 100])
+        XCTAssertEqual(gate.inFlight, 1)
+        // The user's call ends: the sync has its two places again.
+        calls.answer(100)
+        await turn()
+        XCTAssertEqual(calls.started, [0, 1, 100, 2])
+        XCTAssertEqual(gate.userInFlight, 0)
+        while !calls.open.isEmpty {
+            calls.answer(calls.open[0])
+            await turn()
+        }
+        _ = await (sync.value, mine.value)
+        XCTAssertEqual(calls.started, [0, 1, 100, 2, 3])
+        XCTAssertEqual(gate.peak, 2, "the sync never had more than its limit")
+        XCTAssertEqual(gate.inFlight, 0)
+    }
+
+    func testACallForTheUserOnAnIdleGateHoldsBackOneSyncRead() async {
+        let gate = CallGate(limit: 1), calls = Calls()
+        let mine = Task { @MainActor in await gate.run(priority: .user) { await calls.call(100) } }
+        await turn()
+        let sync = Task { @MainActor in await gate.run { await calls.call(0) } }
+        await turn()
+        XCTAssertEqual(calls.started, [100], "the sync yields to it")
+        calls.answer(100)
+        await turn()
+        XCTAssertEqual(calls.started, [100, 0])
+        calls.answer(0)
+        _ = await (mine.value, sync.value)
+        XCTAssertEqual(gate.inFlight, 0)
+    }
+
+    func testQuietSinceAMarkMeansNoSyncReadSharedTheTime() async {
+        let gate = CallGate(), calls = Calls()
+        let idle = gate.mark
+        XCTAssertNotNil(idle)
+        XCTAssertTrue(gate.quiet(since: idle))
+        // A call for the user is no sync.
+        let mine = Task { @MainActor in await gate.run(priority: .user) { await calls.call(100) } }
+        await turn()
+        XCTAssertFalse(gate.syncBusy)
+        XCTAssertTrue(gate.quiet(since: idle))
+        calls.answer(100)
+        await mine.value
+        // A sync read under way: no mark, and the earlier mark is no longer quiet.
+        let read = Task { @MainActor in await gate.run { await calls.call(0) } }
+        await turn()
+        XCTAssertTrue(gate.syncBusy)
+        XCTAssertNil(gate.mark)
+        XCTAssertFalse(gate.quiet(since: idle))
+        XCTAssertFalse(gate.quiet(since: nil))
+        calls.answer(0)
+        await read.value
+        // It has ended, but it ran since the mark.
+        XCTAssertFalse(gate.quiet(since: idle))
+        XCTAssertTrue(gate.quiet(since: gate.mark))
+    }
 }
