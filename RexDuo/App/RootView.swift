@@ -35,6 +35,8 @@ struct RootView: View {
     @State private var bookFits: Bool?
     /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
     @State private var hostPool = TerminalHostPool()
+    /// Where the resize handles reach over the panes (`HandleStrips`).
+    @State private var handleStrips = HandleStrips()
     /// Tab mode's rename alert and close confirmations, which the sidebar's list shows itself.
     /// The root shows the alert; the strip shows each confirmation by the control that was
     /// tapped (`StripDialogs`).
@@ -59,6 +61,7 @@ struct RootView: View {
             .ignoresSafeArea(.keyboard)
             .background(KeyboardInsetReader(padHold: model.palette.padHold) { setKeyboardPad($0) }.ignoresSafeArea())
             .environment(hostPool)
+            .environment(\.handleStrips, handleStrips)
             .overlay(alignment: .top) { NoticeBanner(theme: theme) }
             .background(CommandListener { handle($0) })
             .background(WaitingWatcher())

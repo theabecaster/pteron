@@ -1632,7 +1632,8 @@ enum Haptic {
     }
 }
 
-/// The draggable border between two sides of a split.
+/// The draggable border between two sides of a split. Its touch area reaches over the panes on
+/// either side, and `HandleStrip` tells them that a drag across it is the handle's.
 struct SplitHandle: View {
     let split: (id: String, direction: String, ratio: Double, rect: CGRect, beforeFirst: String, afterFirst: String)
     let canvas: CGSize
@@ -1641,30 +1642,40 @@ struct SplitHandle: View {
     @State private var drag: CGFloat = 0
     @State private var inDetent = false
 
+    /// How far the touch area reaches past the capsule on each side.
+    static let reach: CGFloat = 20
+
     var body: some View {
         let g = SplitGeometry(rect: split.rect, ratio: split.ratio, direction: split.direction, canvas: canvas)
         let horizontal = g.sideBySide
         let len = g.length
-        Capsule()
-            .fill(drag != 0 ? theme.accent : Color.clear)
-            .frame(width: horizontal ? 4 : len * 0.9, height: horizontal ? len * 0.9 : 4)
-            .contentShape(Rectangle().inset(by: -20))
-            .position(x: g.origin.x + (horizontal ? drag : len / 2), y: g.origin.y + (horizontal ? len / 2 : drag))
-            .gesture(DragGesture(minimumDistance: 4)
-                .onChanged { v in
-                    // A detent at 50%: the split snaps there with a tick, so an even split is easy to hit.
-                    let d = g.detent(horizontal ? v.translation.width : v.translation.height)
-                    if d.snapped != inDetent {
-                        inDetent = d.snapped
-                        if d.snapped { Haptic.selection() }
+        let size = CGSize(width: horizontal ? 4 : len * 0.9, height: horizontal ? len * 0.9 : 4)
+        ZStack {
+            HandleStrip(sideways: horizontal)
+                .frame(width: size.width + Self.reach * 2, height: size.height + Self.reach * 2)
+                .position(x: g.origin.x + (horizontal ? 0 : len / 2), y: g.origin.y + (horizontal ? len / 2 : 0))
+                .allowsHitTesting(false)
+            Capsule()
+                .fill(drag != 0 ? theme.accent : Color.clear)
+                .frame(width: size.width, height: size.height)
+                .contentShape(Rectangle().inset(by: -Self.reach))
+                .position(x: g.origin.x + (horizontal ? drag : len / 2), y: g.origin.y + (horizontal ? len / 2 : drag))
+                .gesture(DragGesture(minimumDistance: 4)
+                    .onChanged { v in
+                        // A detent at 50%: the split snaps there with a tick, so an even split is easy to hit.
+                        let d = g.detent(horizontal ? v.translation.width : v.translation.height)
+                        if d.snapped != inDetent {
+                            inDetent = d.snapped
+                            if d.snapped { Haptic.selection() }
+                        }
+                        drag = d.offset
                     }
-                    drag = d.offset
-                }
-                .onEnded { _ in
-                    let ratio = g.ratio(after: drag)
-                    drag = 0
-                    inDetent = false
-                    onCommit(ratio)
-                })
+                    .onEnded { _ in
+                        let ratio = g.ratio(after: drag)
+                        drag = 0
+                        inDetent = false
+                        onCommit(ratio)
+                    })
+        }
     }
 }

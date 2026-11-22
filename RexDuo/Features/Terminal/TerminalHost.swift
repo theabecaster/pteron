@@ -215,8 +215,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The view let go of its stream for good (see `TerminalHostPool`).
     var onStopped: (() -> Void)?
 
-    private var tapGR: UITapGestureRecognizer!
+    private(set) var tapGR: UITapGestureRecognizer!
     private var swipeGR: UIPanGestureRecognizer!
+    /// A drag across a resize handle's strip where it reaches over this pane (`HandleStrips`):
+    /// it does nothing itself, and the pane's taps and drags wait for it to fail on a touch that
+    /// starts in a strip, so the handle's drag is the handle's alone.
+    let gripPan = UIPanGestureRecognizer()
+    /// The handles' strips of the window (`HandleStrip`); nil outside the app's layout.
+    var handleStrips: HandleStrips?
+    /// The strip the latest touch started in, if any.
+    private weak var gripStrip: HandleStripView?
     private var pinchGR: UIPinchGestureRecognizer!
     private var pinchBase: CGFloat = 0
     /// What the pane knew when the latest touch went down: a tap is decided on this, not on
@@ -420,6 +428,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         tapGR.require(toFail: lp)  // releasing a long press is not a tap
         addGestureRecognizer(tapGR)
 
+        gripPan.maximumNumberOfTouches = 1
+        gripPan.delegate = self
+        addGestureRecognizer(gripPan)
+
         // Fingers only: a mouse or trackpad drag selects text instead.
         let direct = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         swipeGR = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
@@ -542,15 +554,50 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if g === swipeGR { return swipeShouldBegin(swipeGR) }
         if g === pinchGR { return TerminalPinch.starts(selecting: selecting) }
         if g === twoTapGR { return onCommand != nil && !selecting }
+        if g === gripPan { return gripShouldBegin() }
         return true
     }
 
+    // MARK: Handle strips
+
+    /// Notes the handle strip a touch at `point` (window coordinates) starts in, for the grip's
+    /// rules until the next touch, and returns it. Nil outside every strip over this pane.
+    @discardableResult
+    func noteGripTouch(at point: CGPoint) -> HandleStripView? {
+        gripStrip = handleStrips?.strip(at: point, over: self)
+        return gripStrip
+    }
+
+    /// The grip starts on a drag across its strip only: a drag along it is the pane's scroll.
+    private func gripShouldBegin() -> Bool {
+        guard let strip = gripStrip, !selecting else { return false }
+        var d = gripPan.translation(in: self)
+        if abs(d.x) + abs(d.y) < 1 { d = gripPan.velocity(in: self) }
+        return HandleStrips.claims(dx: d.x, dy: d.y, sideways: strip.sideways)
+    }
+
+    /// Whether the pane's recognizer `other` waits for the grip to fail on the latest touch: its
+    /// one-finger taps and its drags, while the touch started in a strip. A long press, a pinch
+    /// and a two-finger tap never wait: a held finger never starts the grip.
+    func waitsForGrip(_ other: UIGestureRecognizer) -> Bool {
+        guard gripStrip != nil, other !== gripPan, other.view?.isDescendant(of: self) == true else { return false }
+        if other is UIPanGestureRecognizer { return true }
+        if let tap = other as? UITapGestureRecognizer { return tap.numberOfTouchesRequired == 1 }
+        return false
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        g === gripPan && waitsForGrip(other)
+    }
+
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if g === gripPan { gripStrip = nil }
         // A touch on the jump-to-bottom button is the button's alone: it is no tap, swipe or
         // pinch on the pane, and it doesn't count as the pane's latest touch.
         if touch.view?.isDescendant(of: jumpButton) == true { return false }
         // The find bar's touches are its own too.
         if let f = finder, touch.view?.isDescendant(of: f.overlay) == true { return false }
+        if g === gripPan { return noteGripTouch(at: touch.location(in: nil)) != nil }
         // Every touch on the pane passes the focus tap first: remember whether it is a pointer.
         if g === tapGR {
             self.touch = (keyboardUp, term.hasActiveSelection, term.touchStopsScroll(now: CACurrentMediaTime()))
@@ -562,8 +609,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // The grip runs beside the handle's own drag (outside the pane), never beside the pane's.
+        if g === gripPan || other === gripPan {
+            let peer = g === gripPan ? other : g
+            return peer.view?.isDescendant(of: self) != true
+        }
         // The focus tap observes; it must never cancel the engine's taps, selection or our swipe.
-        g === tapGR || other === tapGR
+        return g === tapGR || other === tapGR
     }
 
     /// A single-finger tap. What it does is decided once, in order, by `TerminalTapDecision`,

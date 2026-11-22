@@ -144,6 +144,8 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
 
     /// How far the handle's grip reaches either side of the edge.
     private static var handleReach: CGFloat { 22 }
+    /// The grip's length along the edge.
+    private static var gripLength: CGFloat { 88 }
 
     /// The sidebar's edge: a hairline the full height, with a grip in the middle. Its hit area is a
     /// thin strip along the edge plus the 44 pt wide grip, so it doesn't cover the sidebar's row
@@ -161,7 +163,10 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
                 .opacity(dragging ? 1 : 0.8)
         }
         .frame(width: r * 2, height: height)
-        .contentShape(HandleShape(reach: r, grip: 88))
+        // Where it reaches over the tab's panes, a drag across it is the handle's alone.
+        .background(HandleStrip(sideways: true, shape: AnyShape(HandleShape(reach: r, grip: Self.gripLength)))
+            .allowsHitTesting(false))
+        .contentShape(HandleShape(reach: r, grip: Self.gripLength))
         .animation(.snappy(duration: 0.15), value: dragging)
     }
 
@@ -202,8 +207,8 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
     }
 }
 
-/// The handle's hit area: a strip along the edge, wider at the grip in the middle.
-private struct HandleShape: Shape {
+/// The sidebar handle's hit area: a strip along the edge, wider at the grip in the middle.
+struct HandleShape: Shape {
     let reach: CGFloat
     let grip: CGFloat
 

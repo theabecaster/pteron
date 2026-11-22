@@ -47,6 +47,7 @@ struct PaneHostView: UIViewRepresentable {
     @Environment(\.verticalBarColumn) private var barColumn
     @Environment(\.division) private var division
     @Environment(\.rootOrigin) private var rootOrigin
+    @Environment(\.handleStrips) private var handleStrips
 
     private var commandHandler: ((RexCommand) -> Void)? {
         if let onCommand { return onCommand }
@@ -128,6 +129,7 @@ struct PaneHostView: UIViewRepresentable {
         host.isActive = active
         host.onFocus = onFocus
         host.onSwipe = onSwipe
+        host.handleStrips = handleStrips
         // After a reconnect the server is asked again whether it takes files.
         if server.phase == .online { host.refreshFiles() }
         let crease = division.flatMap { $0.isVertical ? $0.frame.offsetBy(dx: rootOrigin.x, dy: rootOrigin.y) : nil }

@@ -387,6 +387,11 @@ is not a cold start.
   doesn't start. The canvas never zooms by pinch.
 - Split borders on the unfolded Duo are draggable (`SplitGeometry`), with a detent at 50%. In
   book mode the border on the crease has no handle ([duo-layout.md](duo-layout.md), Book mode).
+  A drag across a border only resizes, once on release: no pane becomes active and the keyboard
+  stays as it was. The border's touch area (44 pt across) reaches over the panes beside it, and
+  so does the sidebar's edge; there a pane's taps and drags wait for its grip, which starts only
+  on a drag across the strip (`HandleStrips`). A tap, a double tap, a long press or a drag along
+  the strip is the pane's, as anywhere else.
 - A tab shows its splits as the Mac lays them out while every pane keeps 40×8 cells
   (`SplitGeometry.legible`); otherwise one pane shows at a time, with dots in the title bar and a
   sideways swipe on the terminal to move between panes.
