@@ -547,8 +547,21 @@ removes guesses: then the whole epoch's overlay goes in the frame that first dra
 wrong, with no notice. After wrong guesses (30% or fewer of the last 24 judged keys right) lines
 are tracked without being drawn until 60% are right again. A late echo removes nothing. A guess still unconfirmed 1.5 s after its
 write's answer is cleared without a sign (counted as `vanished` when it was drawn). A resize, a
-reset, a restored snapshot, a theme, dropped output, a lost write, the fence and a reconnect
-clear every guess.
+reset, a restored snapshot, a theme, dropped output, a lost write, the fence, a park, a stop and
+a reconnect clear every guess.
+
+**Not watched, not trusted.** A pane that parked or stopped, a new control connection, a
+restored snapshot, a terminal reset and dropped output all mean the screen was not watched
+being written: the program in front may be another one. The proof goes with the guesses
+(`EchoPredictor.unprove`): an earlier `input_mode` reading counts no more, and neither does any
+`133;B` up to that moment. A pane that comes back from the park draws no guess until the shell
+announces a new prompt or, without OSC 133, a new line's first key was echoed and the tty read
+again. A resize keeps the proof.
+
+**Nothing is kept of a pane that is gone.** The stream holds its observers weakly, the core's
+event handler and the gate's closures hold the host weakly, and the host's watch on the gate
+(`EchoGateWatch`) leaves the gate when the host goes, however it leaves: closed, evicted from
+the park, or its computer removed.
 
 **How a guess looks.** The glyph the program will draw: same font and atlas, the colour and
 bold of the typed cell to its left, else the theme's foreground. No background is drawn over a

@@ -314,6 +314,10 @@ final class TerminalHostPool {
 
     func host(for key: Key) -> TerminalHost? { hosts[key] }
 
+    /// The pane is on screen again, as when its container joins a window. For tests of what a
+    /// pane keeps across a park, which have no view hierarchy to put it back into.
+    func bringBack(_ key: Key) { hosts[key]?.cameBackOnScreen() }
+
     /// Changes when a host comes or goes. Only views that look a host up while they draw read it
     /// (`AttachMenuItem`), so a new pane redraws them and nothing else.
     private(set) var hostsChanged = 0

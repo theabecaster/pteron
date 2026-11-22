@@ -63,7 +63,8 @@ final class ScriptedEchoLinkTests: XCTestCase {
         let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
         let gate = EchoGate(forced: .on)
         let s = scripted.stream(control: control, sessionID: "session:test", blockID: "block:test", echoGate: gate)
-        s.sink = Sink()
+        let sink = Sink()
+        s.sink = sink
         s.start()
         _ = await eventually { !s.isFenced }
         let none = await s.inputMode(marked: false)

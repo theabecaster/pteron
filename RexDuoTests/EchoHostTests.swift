@@ -379,6 +379,8 @@ final class EchoHostTests: XCTestCase {
         case computerRemoved
         /// The link changes under the gate, then the pane is closed.
         case gateResetThenStopped
+        /// The pane parks, comes back on screen, and is closed.
+        case parkedUnparkedThenStopped
     }
 
     /// Makes a pane, types at it (on a slow link until a guess is drawn and its buffers are
@@ -426,6 +428,14 @@ final class EchoHostTests: XCTestCase {
         case .gateResetThenStopped:
             p.gate.reset()
             p.host.stop()
+        case .parkedUnparkedThenStopped:
+            let key = TerminalHostPool.Key(server: server, session: "s", block: "b")
+            pool.add(p.host, for: key)
+            p.host.park()
+            XCTAssertTrue(p.host.isParked)
+            pool.bringBack(key)
+            XCTAssertFalse(p.host.isParked, "the pane is back")
+            p.host.stop()
         }
         return held
     }
@@ -467,5 +477,70 @@ final class EchoHostTests: XCTestCase {
             XCTAssertFalse(held.hadEchoBuffers, "\(how): no echo buffers on a fast link")
             await assertReleased(held, gate: gate, "\(how)")
         }
+    }
+
+    // MARK: Across a park
+
+    private func screen(_ p: Pane) -> [String] {
+        p.core.sync()
+        return (0..<6).map { p.core.rowText($0) }
+    }
+
+    /// Guesses do not outlive a park. What was drawn goes when the pane parks, nothing of it
+    /// comes back with the pane, and once it is back the predictor draws nothing until the
+    /// shell announces a new prompt: the marks from before the park say nothing about a pane
+    /// that was not watched meanwhile.
+    func testNothingDrawnBeforeAParkIsDrawnAfterItAndThePromptIsProvenAgain() async {
+        let p = await pane(level: .slow)
+        let pool = TerminalHostPool()
+        let key = TerminalHostPool.Key(server: UUID(), session: "s", block: "b")
+        pool.add(p.host, for: key)
+        await type(p, "l")
+        await echo(p, "l", row: "$ l")
+        p.host.term.insertText("s")
+        XCTAssertEqual(guesses(p), "s")
+        XCTAssertTrue(p.core.echoUnsettled)
+
+        p.host.park()
+        XCTAssertEqual(guesses(p), "", "parked: the guess is gone")
+        XCTAssertNil(p.core.publishedEcho)
+        XCTAssertFalse(p.core.echoUnsettled)
+
+        pool.bringBack(key)
+        XCTAssertEqual(guesses(p), "", "back: nothing from before the park")
+        await wait("the stream to be back with its fence down") { p.link.isOpen && !p.stream.isFenced }
+        XCTAssertEqual(guesses(p), "")
+        XCTAssertNotNil(p.core.echoCounters, "the gate is still on: the pane still has its predictor")
+
+        // Typing where the pane came back: tracked by nobody, drawn by nobody, even after the
+        // program echoes it.
+        let before = screen(p)
+        let placed = p.core.echoCounters?.placed
+        let written = p.link.written.joined()
+        p.host.term.insertText("x")
+        XCTAssertEqual(guesses(p), "")
+        await wait("the write of x") { p.link.written.joined() == written + "x" && !p.stream.hasPendingInput }
+        p.link.deliver(Array("x".utf8))
+        await wait("the echo of x") { self.screen(p) != before }
+        await settle(p)
+        p.host.term.insertText("y")
+        XCTAssertEqual(guesses(p), "", "the marks from before the park do not open the input")
+        XCTAssertEqual(p.core.echoCounters?.placed, placed, "no key was tracked")
+        await wait("the write of y") { p.link.written.joined() == written + "xy" && !p.stream.hasPendingInput }
+        p.link.deliver(Array("y".utf8))
+
+        // The shell draws a new prompt and says so: guesses start again, tentatively.
+        p.link.deliver(Array(("\r\n" + EchoPane.prompt).utf8))
+        await wait("the new prompt") { self.screen(p).contains("$") }
+        await settle(p)
+        p.host.term.insertText("a")
+        XCTAssertEqual(guesses(p), "", "a line's first key is only tracked")
+        XCTAssertEqual(p.core.echoCounters?.placed, (placed ?? 0) + 1)
+        await wait("the write of a") { p.link.written.joined() == written + "xya" && !p.stream.hasPendingInput }
+        p.link.deliver(Array("a".utf8))
+        await wait("the echo of a") { self.screen(p).contains("$ a") }
+        p.host.term.insertText("b")
+        XCTAssertEqual(guesses(p), "b")
+        XCTAssertEqual(p.core.echoCounters?.mismatchedDrawn, 0)
     }
 }

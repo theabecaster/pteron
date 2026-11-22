@@ -80,6 +80,87 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertEqual(q.counters.placed, 1, "the settle of the moment it began to listen opens the first epoch")
     }
 
+    /// A stream that stopped, parked or came back over a new connection was not watched all
+    /// along: the proof of the prompt is gone with the guesses. Without OSC 133 the next line
+    /// is tracked and read again before anything is drawn.
+    func testAfterAParkThePromptIsProvenAgainBeforeAnythingIsDrawn() {
+        for reason in [EchoClearReason.stopped, .reconnected] {
+            let s = ready()
+            s.type("b")
+            XCTAssertEqual(s.guesses, "b", "\(reason)")
+            s.p.cleared(reason, through: s.seq, lastB: s.grid.marks.lastB)
+            XCTAssertNil(s.p.overlay, "\(reason): nothing from before is drawn")
+            s.echo("b")
+            s.answerAll()
+            let c = s.key(char("c"))
+            XCTAssertNil(s.overlay, "\(reason): the first key is only tracked")
+            s.answer(c)
+            s.echo("c")
+            s.settle()
+            s.key(char("d"))
+            XCTAssertNil(s.overlay, "\(reason): confirmed, but no reading since the park says a line editor reads")
+            XCTAssertTrue(s.replyInputMode(zle), "\(reason): a new reading was asked for")
+            XCTAssertEqual(s.guesses, "d", "\(reason)")
+        }
+    }
+
+    /// With OSC 133 the marks from before a park prove nothing after it: guesses start at the
+    /// next prompt the shell announces.
+    func testAfterAParkOnlyANewPromptMarkOpensTheInput() {
+        let s = ready(markers: true)
+        s.type("b")
+        XCTAssertEqual(s.guesses, "b")
+        s.p.cleared(.stopped, through: s.seq, lastB: s.grid.marks.lastB)
+        s.echo("b")
+        s.answerAll()
+        let placed = s.p.counters.placed
+        s.key(char("c"))
+        XCTAssertEqual(s.p.counters.placed, placed, "the old mark does not open the input")
+        s.echo("c")
+        s.answerAll()
+        // The shell draws a new prompt.
+        s.output { g in
+            g.write("\r\n")
+            g.marker("A")
+            g.write("$ ")
+            g.marker("B")
+        }
+        s.watchRow = 1
+        let d = s.key(char("d"))
+        XCTAssertEqual(s.p.counters.placed, placed + 1)
+        s.answer(d)
+        s.echo("d")
+        s.settle()
+        s.key(char("e"))
+        XCTAssertEqual(s.guesses, "e")
+    }
+
+    /// A replaced screen (a restored snapshot) asks for a new proof as well; a resize does not.
+    func testAReplacedScreenAsksForANewProofAndAResizeDoesNot() {
+        let s = ready()
+        s.type("b")
+        s.p.reset()
+        s.echo("b")
+        s.answerAll()
+        let c = s.key(char("c"))
+        s.answer(c)
+        s.echo("c")
+        s.settle()
+        s.key(char("d"))
+        XCTAssertEqual(s.guesses, "d", "after a resize the proof still holds: the next line draws once confirmed")
+        s.echo("d")
+        s.answerAll()
+        s.p.reset(unproven: true, lastB: s.grid.marks.lastB)
+        let e = s.key(char("e"))
+        s.answer(e)
+        s.echo("e")
+        s.settle()
+        s.key(char("f"))
+        XCTAssertNil(s.overlay, "a replaced screen: nothing until a new reading")
+        XCTAssertTrue(s.replyInputMode(zle))
+        XCTAssertEqual(s.guesses, "f")
+    }
+
     func testEchoBeforeItsAnswerConfirmsAtTheAnswer() {
         let s = ready()
         let k = s.key(char("b"))

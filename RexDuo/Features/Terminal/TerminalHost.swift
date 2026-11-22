@@ -1414,7 +1414,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             graceWork?.cancel()
             graceWork = nil
             if !started { PerfProbe.active?.mounted(self, kind: .cold) }  // PERF
-            if isParked { unpark() } else if isWarm { unwarm() }
+            cameBackOnScreen()
             // Claim again what was paused, if the size still isn't the one that fits, and take
             // the pane first: another client may have it now.
             reassertNext = true
@@ -1518,6 +1518,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Whether this pane, coming back from warm now, would be fenced (`WarmReturn`).
     var warmReturnFences: Bool {
         WarmReturn.fences(fit: sizing == .fit, claimed: claimedSize, server: serverSize, fits: fitGrid())
+    }
+
+    /// The pane has a window again: a parked one resumes, a warm one shows what it has.
+    func cameBackOnScreen() {
+        if isParked { unpark() } else if isWarm { unwarm() }
     }
 
     /// The parked pane is on screen again: its last screen is drawn in its first frame, and its

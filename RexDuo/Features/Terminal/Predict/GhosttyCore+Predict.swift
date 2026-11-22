@@ -94,7 +94,7 @@ extension GhosttyCore {
     }
 
     func echoCleared(_ reason: EchoClearReason, through seq: Int) {
-        echoOp { p, _, _ in p.cleared(reason, through: seq) }
+        echoOp { p, grid, _ in p.cleared(reason, through: seq, lastB: grid.marks.lastB) }
     }
 
     func echoInputMode(_ mode: EchoInputMode?, foreground: String?, generation: Int) {
@@ -161,8 +161,10 @@ extension GhosttyCore {
     /// The grid changed under the guesses (a resize, a reset, a restore, a theme, dropped
     /// output): every guess goes, in the same lock section as the change. True when a drawn
     /// guess was unsettled (deliver `.settled`).
-    func echoInvalidate() -> Bool {
-        echo.predictor?.reset()
+    func echoInvalidate(replaced: Bool = false) -> Bool {
+        // A screen that was replaced was not watched being written: the prompt marks parsed
+        // so far say nothing about it.
+        echo.predictor?.reset(unproven: replaced, lastB: promptWatch.marks.lastB)
         echoPublished = nil
         return echo.unsettled.exchange(false, ordering: .relaxed)
     }

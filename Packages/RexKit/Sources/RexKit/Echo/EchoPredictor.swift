@@ -236,6 +236,9 @@ public final class EchoPredictor {
     /// Without OSC 133: an `input_mode` reading proved a line editor or an echoing reader since
     /// the last new line.
     private var proven = false
+    /// The marks up to the newest one are of a stream that was not watched all along
+    /// (`unprove` without a serial): taken as the floor at the next look.
+    private var marksStale = false
     /// Counts new lines, so a reading asked for before one proves nothing after it.
     private var proofGeneration = 0
     private var proofInFlight = false
@@ -461,22 +464,43 @@ public final class EchoPredictor {
         if answer == last { settledAt = answer }
     }
 
-    /// Input through `seq` was dropped, or will arrive unpredicted: every guess goes.
-    public func cleared(_ reason: EchoClearReason, through seq: Int) {
+    /// Input through `seq` was dropped, or will arrive unpredicted: every guess goes. When the
+    /// stream itself stopped, parked or came back over a new connection, the pane was not
+    /// watched all along: the program in front may be another, so the prompt has to be proven
+    /// again (`unprove`). `lastB` is the newest `133;B` at that moment.
+    public func cleared(_ reason: EchoClearReason, through seq: Int, lastB: Int? = nil) {
         if reason.dropsInput {
             answeredThrough = max(answeredThrough, seq)
             lastSeq = max(lastSeq, seq)
         }
         epoch = nil
         overlay = nil
+        if reason == .stopped || reason == .reconnected { unprove(lastB: lastB) }
     }
 
     /// The grid changed under the guesses (a resize, a reset, a restore, a theme, dropped
-    /// output): a boundary with every guess cleared.
-    public func reset() {
+    /// output): a boundary with every guess cleared. `unproven` when the screen was replaced
+    /// (a restored snapshot, a terminal reset, dropped output): what it shows now was not
+    /// watched being written.
+    public func reset(unproven: Bool = false, lastB: Int? = nil) {
         if epoch != nil { counters.resets += 1 }
         epoch = nil
         overlay = nil
+        if unproven { unprove(lastB: lastB) }
+    }
+
+    /// Nothing seen so far proves that the program echoes: no earlier `input_mode` reading,
+    /// and no `133;B` up to `lastB` (or, when that is not known, up to the newest one at the
+    /// next look at the marks). The next line is drawn only after a new proof.
+    private func unprove(lastB: Int?) {
+        proven = false
+        proofGeneration += 1
+        proofWanted = nil
+        if let lastB {
+            bAtAnswer = max(bAtAnswer ?? 0, lastB)
+        } else {
+            marksStale = true
+        }
     }
 
     /// The reply to an `input_mode` reading asked for with `generation`. `foreground` is the
@@ -518,8 +542,12 @@ public final class EchoPredictor {
 
     /// With OSC 133: the shell's input is open now.
     private func markersOpen(_ grid: some EchoGrid) -> Bool {
-        guard newLineSeq == nil else { return false }
         let m = grid.marks
+        if marksStale {
+            bAtAnswer = max(bAtAnswer ?? 0, m.lastB)
+            marksStale = false
+        }
+        guard newLineSeq == nil else { return false }
         return m.lastB > max(m.lastEnd, bAtAnswer ?? 0) && grid.cursorAtPrompt
     }
 

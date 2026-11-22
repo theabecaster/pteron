@@ -398,7 +398,7 @@ final class GhosttyCore: @unchecked Sendable {
                     noteDropped(buf.count - off)
                     // The skipped output may hold echoes: the guesses go with it.
                     termLock.lock()
-                    let settled = echoInvalidate()
+                    let settled = echoInvalidate(replaced: true)
                     termLock.unlock()
                     if settled { deliverEcho([.settled]) }
                     break
@@ -597,7 +597,7 @@ final class GhosttyCore: @unchecked Sendable {
                 scroll.gridChanged()
                 input.sync(from: t)
             }
-            let settled = echoInvalidate()
+            let settled = echoInvalidate(replaced: true)
             termLock.unlock()
             if settled { deliverEcho([.settled]) }
             onDirty?()
@@ -712,7 +712,7 @@ final class GhosttyCore: @unchecked Sendable {
                 ghostty_terminal_free(old)
                 Self.liveTerminals.subtract(1, ordering: .relaxed)
             }
-            let settled = echoInvalidate()
+            let settled = echoInvalidate(replaced: true)
             termLock.unlock()
             if settled { deliverEcho([.settled]) }
             onDirty?()
