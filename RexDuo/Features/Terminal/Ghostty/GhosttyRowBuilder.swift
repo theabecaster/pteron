@@ -732,6 +732,8 @@ final class GhosttyFrameBuilder {
     private(set) var echoLines: [GhosttyRectInstance] = []
     /// Bumped whenever the echo instances changed.
     private(set) var echoVersion = 0
+    /// How often the echo instances were built (tests: never without a guess).
+    private(set) var echoBuilds = 0
     /// The overlay the echo instances were built from.
     private var echoBuiltFrom: EchoOverlay?
     /// The underline's alpha: 128, 255 with Increase Contrast.
@@ -929,9 +931,15 @@ final class GhosttyFrameBuilder {
     /// Builds the echo instances again when the overlay or what draws it changed. True when they
     /// changed (an overlay-only publish is a change, though no row was built).
     private func updateEcho(_ overlay: EchoOverlay?) -> Bool {
+        // No guesses now and none before: nothing to build, whatever else changed.
+        if overlay == nil, echoBuiltFrom == nil {
+            echoStale = false
+            return false
+        }
         guard echoStale || overlay != echoBuiltFrom else { return false }
         echoStale = false
         echoBuiltFrom = overlay
+        echoBuilds += 1
         let had = !echoMasks.isEmpty || !echoGlyphs.isEmpty || !echoLines.isEmpty
         echoMasks.removeAll(keepingCapacity: true)
         echoGlyphs.removeAll(keepingCapacity: true)

@@ -179,11 +179,28 @@ final class GhosttyRenderer: @unchecked Sendable {
         /// Predicted echo: masks then underlines, and the guessed glyphs. Made on the first guess.
         var echoRects: MTLBuffer?
         var echoGlyphs: MTLBuffer?
+        /// What the echo buffers hold. Nil: nothing yet, or a buffer was made again.
+        var echoFill: EchoFill?
     }
 
     /// Any buffer set holds a highlight buffer (tests: none before the first match, none after
     /// find closed). Render thread, or a test's thread for a renderer no thread draws.
     var hasHighlightBuffers: Bool { buffers.contains { $0.highlights != nil } }
+
+    /// What a buffer set's echo buffers were filled from: the frame's `echoVersion`, and the
+    /// block cursor's cell and colour when a mask may sit under it (-1 and 0 otherwise).
+    struct EchoFill: Equatable {
+        var version: Int
+        var cursorX: Int
+        var cursorY: Int
+        var cursorColor: UInt32
+    }
+    /// Any buffer set holds an echo buffer (tests: none without a guess, ever). Same threads as
+    /// `hasHighlightBuffers`.
+    var hasEchoBuffers: Bool { buffers.contains { $0.echoRects != nil || $0.echoGlyphs != nil } }
+    /// How often a set's echo buffers were filled (tests: not on frames whose guesses did not
+    /// change). Same threads.
+    private(set) var echoFills = 0
 
     init(core: GhosttyCore, atlas: GhosttyGlyphAtlas) {
         self.core = core
@@ -609,38 +626,47 @@ final class GhosttyRenderer: @unchecked Sendable {
         textures.sync(atlas, device: metal.device)
         atlas.unlock()
 
-        // Predicted echo: its own buffers, so the rows' buffers keep their version. Small (at most
-        // three instances per guess), so they are filled every frame that has any; a mask on the
-        // block cursor's cell keeps the cursor's colour.
+        // Predicted echo: its own buffers, so the rows' buffers keep their version. A set is
+        // filled only when it does not hold these instances already: `frame.echoVersion` counts
+        // their changes, and a mask on the block cursor's cell takes the cursor's colour, so the
+        // cursor's cell and colour are part of what a set holds. A frame whose guesses did not
+        // change since this set's last fill copies nothing, and a frame without guesses does
+        // nothing here but compare two counts with zero.
         let echoMasks = frame.echoMasks, echoLines = frame.echoLines, echoGlyphs = frame.echoGlyphs
         var echoRectBuffer: MTLBuffer?, echoGlyphBuffer: MTLBuffer?
         let echoRectCount = echoMasks.count + echoLines.count
-        if echoRectCount > 0 {
-            let bytes = echoRectCount * stride
-            if (set.echoRects?.length ?? 0) < bytes {
-                set.echoRects = metal.device.makeBuffer(length: max(1024, bytes * 2), options: .storageModeShared)
+        if echoRectCount > 0 || !echoGlyphs.isEmpty {
+            let held = EchoFill(version: frame.echoVersion, cursorX: isBlock && !echoMasks.isEmpty ? cursor.x : -1,
+                                cursorY: isBlock && !echoMasks.isEmpty ? cursor.y : -1,
+                                cursorColor: isBlock && !echoMasks.isEmpty ? cursor.color : 0)
+            let rectBytes = echoRectCount * stride, glyphBytes = echoGlyphs.count * glyphStride
+            if echoRectCount > 0, (set.echoRects?.length ?? 0) < rectBytes {
+                set.echoRects = metal.device.makeBuffer(length: max(1024, rectBytes * 2), options: .storageModeShared)
+                set.echoFill = nil
             }
-            if let b = set.echoRects {
-                let p = b.contents().bindMemory(to: GhosttyRectInstance.self, capacity: echoRectCount)
-                let cursorRow = UInt16(clamping: cursor.y), cursorX = cursor.x * m.cellWidth
-                for (i, r) in echoMasks.enumerated() {
-                    var r = r
-                    if isBlock, r.row == cursorRow, Int(r.x) == cursorX { r.color = cursor.color }
-                    p[i] = r
+            if !echoGlyphs.isEmpty, (set.echoGlyphs?.length ?? 0) < glyphBytes {
+                set.echoGlyphs = metal.device.makeBuffer(length: max(1024, glyphBytes * 2), options: .storageModeShared)
+                set.echoFill = nil
+            }
+            if set.echoFill != held {
+                if echoRectCount > 0, let b = set.echoRects {
+                    let p = b.contents().bindMemory(to: GhosttyRectInstance.self, capacity: echoRectCount)
+                    let cursorRow = UInt16(clamping: cursor.y), cursorX = cursor.x * m.cellWidth
+                    for (i, r) in echoMasks.enumerated() {
+                        var r = r
+                        if isBlock, r.row == cursorRow, Int(r.x) == cursorX { r.color = cursor.color }
+                        p[i] = r
+                    }
+                    for (i, r) in echoLines.enumerated() { p[echoMasks.count + i] = r }
                 }
-                for (i, r) in echoLines.enumerated() { p[echoMasks.count + i] = r }
-                echoRectBuffer = b
+                if !echoGlyphs.isEmpty, let b = set.echoGlyphs {
+                    echoGlyphs.withUnsafeBufferPointer { b.contents().copyMemory(from: UnsafeRawPointer($0.baseAddress!), byteCount: glyphBytes) }
+                }
+                set.echoFill = held
+                echoFills += 1
             }
-        }
-        if !echoGlyphs.isEmpty {
-            let bytes = echoGlyphs.count * glyphStride
-            if (set.echoGlyphs?.length ?? 0) < bytes {
-                set.echoGlyphs = metal.device.makeBuffer(length: max(1024, bytes * 2), options: .storageModeShared)
-            }
-            if let b = set.echoGlyphs {
-                echoGlyphs.withUnsafeBufferPointer { b.contents().copyMemory(from: UnsafeRawPointer($0.baseAddress!), byteCount: bytes) }
-                echoGlyphBuffer = b
-            }
+            if echoRectCount > 0 { echoRectBuffer = set.echoRects }
+            if !echoGlyphs.isEmpty { echoGlyphBuffer = set.echoGlyphs }
         }
 
         // Smooth scrolling: the grid is shifted up by the part of a row scrolled past (the overscan
