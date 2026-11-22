@@ -176,9 +176,15 @@ final class GhosttyTerminalView: UIView {
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appWillForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
+        // Predicted echo's underline at full alpha with Increase Contrast.
+        renderer.setIncreaseContrast(UIAccessibility.isDarkerSystemColorsEnabled)
+        NotificationCenter.default.addObserver(self, selector: #selector(contrastChanged),
+                                               name: UIAccessibility.darkerSystemColorsStatusDidChangeNotification, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func contrastChanged() { renderer.setIncreaseContrast(UIAccessibility.isDarkerSystemColorsEnabled) }
 
     /// The one teardown: the host keeps a pane's view while the pane may come back on screen
     /// (`TerminalHostPool`) and lets go of it when the pane is closed.
