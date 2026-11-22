@@ -1863,18 +1863,44 @@ public final class TerminalStream {
     /// Types `text` for someone who is not at this keyboard (an answer from the watch): now or
     /// not at all, and once. It waits its turn in the queue behind what was typed before it,
     /// but for `limit` at most: after that, and without a connection, it is dropped and never
-    /// sent later, when what it answered may be gone. `ended` is told once how it went.
+    /// sent later, when what it answered may be gone. `ended` is told once how it went. Returns
+    /// whether it was queued.
+    ///
+    /// `hold` is asked when its turn comes: it then waits that long before it writes, as the
+    /// one request in flight, so what is typed meanwhile stays behind it. `still` is asked
+    /// right before the write: false drops it, unsent. Like every server call bound to a key,
+    /// it holds typing back for `actionHold` at most.
+    @discardableResult
     public func sendOnce(text: String, within limit: Duration = .seconds(4),
-                         ended: @escaping @MainActor (Delivery) -> Void) {
+                         hold: (@MainActor () -> Duration)? = nil, still: (@MainActor () -> Bool)? = nil,
+                         ended: @escaping @MainActor (Delivery) -> Void) -> Bool {
         // Behind the fence it is not sent later either: what it answered may be gone.
-        guard !stopped, link.isConnected, !text.isEmpty, !fence.isUp else { ended(.unsent); return }
+        guard !stopped, link.isConnected, !text.isEmpty, !fence.isUp else { ended(.unsent); return false }
         let latest = ContinuousClock.now + limit
-        var work = Work(action: nil) { [sessionID, blockID, link] in
+        var work = Work(action: nil) { [sessionID, blockID, link, sleep] in
             guard ContinuousClock.now <= latest else { throw RexError.unsent("too late") }
+            if let wait = hold?(), wait > .zero { await sleep(wait) }
+            if let still, !still() { throw RexError.unsent("no longer wanted") }
             _ = try await link.call("com.superlogical.terminal.write", ["session_id": sessionID, "block_id": blockID, "args": ["data": text]])
         }
         work.once = ended
         enqueue(work, kind: EchoInputClassifier.boundary(text.utf8))
+        return true
+    }
+
+    /// A report as a write of its own, never joined with what was typed before or after it,
+    /// with `left` told as its write leaves. Like any report it is dropped behind the fence
+    /// (false), waits for a connection, and is never sent again.
+    @discardableResult
+    public func send(report bytes: [UInt8], left: @escaping @MainActor () -> Void) -> Bool {
+        guard !stopped, !fence.isUp, !bytes.isEmpty, let text = String(bytes: bytes, encoding: .utf8) else { return false }
+        var work = Work(action: nil) { [sessionID, blockID, link] in
+            left()
+            _ = try await link.call("com.superlogical.terminal.write", ["session_id": sessionID, "block_id": blockID, "args": ["data": text]])
+        }
+        work.once = { _ in }
+        enqueue(work, kind: EchoInputClassifier.boundary(bytes))
+        return true
     }
 
     /// Queues `work` behind every key typed before it; keys typed after it wait for it. It is

@@ -508,6 +508,87 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(ended, [.delivered])
     }
 
+    /// Input that waits before it writes does so as the request in flight: what is typed
+    /// meanwhile stays behind it, and it is asked how long only when its turn has come.
+    func testSendOnceThatHoldsKeepsLaterKeysBehindIt() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        var asked = 0
+        var ended: [TerminalStream.Delivery] = []
+        XCTAssertTrue(s.sendOnce(text: "C", hold: { asked += 1; return .milliseconds(30) }) { ended.append($0) })
+        s.send(text: "b")
+        await settle()
+        XCTAssertEqual(asked, 0, "not before its turn")
+        for _ in 0..<3 {
+            _ = await eventually { link.waitingCount == 1 }
+            link.release()
+        }
+        _ = await eventually { link.inputTrace.count == 3 }
+        XCTAssertEqual(link.inputTrace, ["w:a", "w:C", "w:b"])
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(ended, [.delivered])
+    }
+
+    func testSendOnceThatIsNoLongerWantedAtItsTurnIsDropped() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        var wanted = true
+        var ended: [TerminalStream.Delivery] = []
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        s.sendOnce(text: "C", still: { wanted }) { ended.append($0) }
+        s.send(text: "b")
+        wanted = false
+        for _ in 0..<2 {
+            _ = await eventually { link.waitingCount == 1 }
+            link.release()
+        }
+        _ = await eventually { link.inputTrace.count == 2 }
+        XCTAssertEqual(link.inputTrace, ["w:a", "w:b"])
+        XCTAssertEqual(ended, [.unsent])
+        XCTAssertEqual(notices, [])
+    }
+
+    /// A report sent as a write of its own is joined with nothing typed around it, and says
+    /// when it leaves.
+    func testAReportOfItsOwnIsNeverJoinedWithWhatIsTypedAroundIt() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        var left = 0
+        s.send(text: "b")
+        XCTAssertTrue(s.send(report: Array("\u{1b}[I".utf8)) { left += 1 })
+        XCTAssertTrue(s.send(report: Array("\u{1b}[<0;1;1M".utf8)))
+        s.send(text: "c")
+        await settle()
+        XCTAssertEqual(left, 0, "still queued")
+        for _ in 0..<4 {
+            _ = await eventually { link.waitingCount == 1 }
+            link.release()
+        }
+        _ = await eventually { link.inputTrace.count == 4 }
+        XCTAssertEqual(link.inputTrace, ["w:a", "w:b", "w:\u{1b}[I", "w:\u{1b}[<0;1;1Mc"])
+        XCTAssertEqual(left, 1)
+        XCTAssertEqual(notices, [])
+    }
+
+    func testAReportOfItsOwnIsDroppedBehindTheFence() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        s.restart()
+        XCTAssertTrue(s.isFenced)
+        var left = 0
+        XCTAssertFalse(s.send(report: Array("\u{1b}[I".utf8)) { left += 1 })
+        await settle()
+        XCTAssertEqual(left, 0)
+    }
+
     func testSendOnceWithoutAConnectionIsDroppedAndNeverSentLater() async {
         let link = FakeLink(connected: false)
         let (s, _) = stream(link)
