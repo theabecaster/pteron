@@ -1298,12 +1298,15 @@ struct PaneDots: View {
     let ids: [String]
     let current: String
     let theme: TermTheme
+    /// The count at any number of panes: the tab strip's, where dots would be crowded
+    /// (`StripLayout.dotsForm`). The title bar leaves it off.
+    var counts = false
     let onStep: (Int) -> Void
 
     var body: some View {
         let idx = ids.firstIndex(of: current) ?? 0
         Group {
-            if ids.count <= 6 {
+            if !counts, ids.count <= StripLayout.maxDots {
                 HStack(spacing: 3) {
                     ForEach(ids, id: \.self) { bid in
                         let on = bid == current

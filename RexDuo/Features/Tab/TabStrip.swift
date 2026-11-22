@@ -98,12 +98,9 @@ struct TabStrip<PaneMenu: View>: View {
                 TabChips(target: target, session: session, layout: layout, theme: theme, actions: actions)
             }
         case .dots:
+            // The title bar's own dots, or their count where dots would be crowded.
             if let block = dotsCurrent ?? target?.block {
-                if layout.dots == .count {
-                    PaneCount(ids: dots, current: block, theme: theme, onStep: actions.stepPane)
-                } else {
-                    PaneDots(ids: dots, current: block, theme: theme, onStep: actions.stepPane)
-                }
+                PaneDots(ids: dots, current: block, theme: theme, counts: layout.dots == .count, onStep: actions.stepPane)
             }
         case .waiting:
             WaitingPill(visible: visible, theme: theme, onJump: actions.jump)
@@ -120,28 +117,6 @@ struct TabStrip<PaneMenu: View>: View {
                 .frame(width: StripLayout.hit, height: height)
                 .contentShape(Rectangle())
         }
-    }
-}
-
-/// The pane dots as a count ("2/5"), for a strip too narrow for dots. It says and does what
-/// `PaneDots` does: a place among the panes, stepped by VoiceOver.
-private struct PaneCount: View {
-    let ids: [String]
-    let current: String
-    let theme: TermTheme
-    let onStep: (Int) -> Void
-
-    var body: some View {
-        let idx = ids.firstIndex(of: current) ?? 0
-        Text("\(idx + 1)/\(ids.count)").font(.caption2.weight(.semibold)).monospacedDigit()
-            .lineLimit(1).fixedSize()
-            .foregroundStyle(theme.chrome.tertiary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")
-            .accessibilityHint("Swipe the terminal sideways to change pane.")
-            .accessibilityAdjustableAction { d in onStep(d == .increment ? 1 : -1) }
     }
 }
 

@@ -5,8 +5,8 @@ import CoreGraphics
 ///
 /// Left to right: the session chip, the session's tab chips (they scroll), the pane dots, the
 /// waiting pill, Unzoom, New Tab, a slot for a floating windows control, the pane menu. In a narrow bar the strip is compact: New Tab
-/// and Unzoom are left to the Pane Actions menu, the dots are a count ("2/5"), and the session
-/// chip is a glyph. Pure, so the frames are tested.
+/// and Unzoom are left to the Pane Actions menu and the session chip is a glyph. The dots are the
+/// title bar's while they read clearly, else a count ("2/5"). Pure, so the frames are tested.
 struct StripLayout: Equatable {
     struct Input: Equatable {
         /// The bar's width, its own paddings included.
@@ -56,11 +56,11 @@ struct StripLayout: Equatable {
         case glyph
     }
 
-    /// How the pane dots show which pane is on screen.
+    /// How the pane dots show which pane is on screen (`dotsForm`).
     enum DotsForm: Equatable {
-        /// One dot per pane, the shown one a short bar.
+        /// One dot per pane, the shown one a short bar, as in the title bar.
         case dots(Int)
-        /// "2/5".
+        /// "2/5", where the dots would be crowded.
         case count
     }
 
@@ -85,7 +85,7 @@ struct StripLayout: Equatable {
     /// button and one more chip beside it. With less, the strip is compact; with less in a
     /// compact strip, the active chip has no close button (Close Tab stays in the pane menu).
     static let chipsRoom: CGFloat = closeChipMin + gap + chipMin
-    /// More panes than this show as a count, as in the title bar.
+    /// More panes than this show as a count: the title bar's own cap (`PaneDots`).
     static let maxDots = 6
     /// How far the strip's end keeps from the crease, as the panes do.
     static let creaseClearance: CGFloat = 3
@@ -95,11 +95,10 @@ struct StripLayout: Equatable {
 
     // MARK: Result
 
-    /// New Tab and Unzoom are left to the pane menu, the dots are a count and the session chip
-    /// is a glyph.
+    /// New Tab and Unzoom are left to the pane menu and the session chip is a glyph.
     var compact: Bool
     var session: SessionForm
-    /// Nil with fewer than two panes to page through.
+    /// Nil with fewer than two panes to page through, or no room for even the count.
     var dots: DotsForm?
     /// The active chip carries its close button.
     var showsClose: Bool
@@ -148,13 +147,6 @@ struct StripLayout: Equatable {
 
         var widths: [Part: CGFloat] = [:]
         widths[.session] = compact ? Self.hit : min(max(i.sessionIdeal ?? Self.sessionMax, Self.hit), Self.sessionMax)
-        var dots: DotsForm?
-        if i.hasPane, i.panes > 1 {
-            let form: DotsForm = compact || i.panes > Self.maxDots ? .count : .dots(i.panes)
-            dots = form
-            widths[.dots] = Self.dotsWidth(form, panes: i.panes)
-        }
-        self.dots = dots
         if i.waiting > 0 { widths[.waiting] = Self.waitingWidth(i.waiting) }
         // Unzoom and the pane menu are in the vertical bar where there is one.
         if i.hasPane, i.zoomed, !i.bar, !compact { widths[.unzoom] = Self.hit }
@@ -168,6 +160,7 @@ struct StripLayout: Equatable {
         }
         // A crease can leave the strip next to nothing: then it has no parts at all.
         guard end - lead >= Self.runMin else {
+            self.dots = nil
             showsClose = false
             return
         }
@@ -177,15 +170,41 @@ struct StripLayout: Equatable {
         // The trailing parts sit against the end, right to left, while each has room and a gap
         // left beside the session chip. The first that doesn't ends them: a bar that narrow is
         // cut by a crease, and the pane menu comes first.
+        let trailingParts = [Part.paneMenu, .floats, .newTab, .unzoom, .waiting]
+        /// Where the trailing parts end beside a session chip `chip` wide; nil when one has no
+        /// room.
+        func trailingEnd(beside chip: CGFloat) -> CGFloat? {
+            var x = end
+            for part in trailingParts {
+                guard let w = widths[part] else { continue }
+                guard x - w >= lead + chip + Self.gap else { return nil }
+                x -= w
+            }
+            return x
+        }
+        // The dots come last, in the form the room left reads clearly in. Decided with the
+        // session chip as wide as its form allows, as the strip's views are built, so the
+        // session's name never changes the form; a narrower chip only leaves them more room.
+        var form: DotsForm?
+        let widest = min(compact ? Self.hit : Self.sessionMax, end - lead)
+        if i.hasPane, i.panes > 1, let x = trailingEnd(beside: widest) {
+            form = Self.dotsForm(panes: i.panes, room: x - (lead + widest + Self.gap), chips: i.hasSession)
+        }
+        let chipsMinX = lead + sessionWidth + Self.gap
         var x = end
-        for part in [Part.paneMenu, .floats, .newTab, .unzoom, .waiting, .dots] {
+        for part in trailingParts {
             guard let w = widths[part] else { continue }
-            guard x - w >= lead + sessionWidth + Self.gap else { break }
+            guard x - w >= chipsMinX else { break }
             x -= w
             place(part, x, w)
         }
+        if let form {
+            let w = Self.dotsWidth(form, panes: i.panes)
+            x -= w
+            place(.dots, x, w)
+        }
+        self.dots = form
         let trailing = x < end
-        let chipsMinX = lead + sessionWidth + Self.gap
         let chipsMaxX = trailing ? x - Self.gap : end
         if i.hasSession, chipsMaxX - chipsMinX >= Self.chipMin {
             place(.chips, chipsMinX, chipsMaxX - chipsMinX)
@@ -231,6 +250,22 @@ struct StripLayout: Equatable {
         let always = sessionMax + gap * 2 + dotsWidth(.dots(maxDots), panes: maxDots) + waitingWidth(1) + hit
         // Unzoom and the pane menu.
         return always + (bar ? 0 : hit * 2) + (floats ? hit : 0)
+    }
+
+    /// How the dots show in `room`, the run between the session chip's gap and the next part,
+    /// which they share with the chips and the gap after them. Dots while they read clearly: no
+    /// more than `maxDots`, and the chips keep `chipsRoom`, the active chip with its close button
+    /// and one more. Else the count, while the chips keep one chip's width. Where the chips have
+    /// no room even without the dots, or there are none, whichever form fits. Nil when nothing
+    /// fits.
+    static func dotsForm(panes: Int, room: CGFloat, chips: Bool) -> DotsForm? {
+        let dots = DotsForm.dots(panes), count = DotsForm.count
+        // What the chips need left beside the dots, and what the dots must leave them.
+        let chipsShow = chips && room - gap >= chipMin
+        func leaves(_ form: DotsForm) -> CGFloat { room - dotsWidth(form, panes: panes) - (chipsShow ? gap : 0) }
+        if panes <= maxDots, leaves(dots) >= (chipsShow ? chipsRoom : 0) { return dots }
+        if leaves(count) >= (chipsShow ? chipMin : 0) { return count }
+        return nil
     }
 
     /// The dots' width: 8 pt each side, a 9 pt bar for the shown pane and 4 pt dots 3 pt apart;

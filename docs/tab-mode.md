@@ -32,10 +32,16 @@ width alone. Left to right:
 - Where the system has a vertical bar (the iPhone Duo), Unzoom and the pane menu are in that
   bar and not in the strip.
 - **Compact.** Where the full strip would leave the chips less than 144 pt, New Tab and Unzoom
-  are left to the Pane Actions menu, the dots are a count ("2/5") and the session chip is a
-  glyph. That is under 440 pt beside a vertical bar and under 520 pt without one: every iPhone
-  in portrait, the folded Duo, half the inner screen. The form is decided for the bar with
-  every part in it, so a pill or dots that come and go never move the rest.
+  are left to the Pane Actions menu and the session chip is a glyph. That is under 440 pt
+  beside a vertical bar and under 520 pt without one: every iPhone in portrait, the folded
+  Duo, half the inner screen. The form is decided for the bar with every part in it, so a pill
+  or dots that come and go never move the rest.
+- **Pane dots.** The title bar's dots (`PaneDots`) while they read clearly, else a count
+  ("2/5") where it fits, else nothing (`StripLayout.dotsForm`). Dots read clearly up to six
+  panes, the title bar's own cap, and while they leave the chips 144 pt (the active chip with
+  its close button and one more). The count needs the chips to keep one chip's width; with no
+  room for chips at all, whichever fits. The form is decided with the session chip at its
+  widest, so a session's name never changes it. The title bar's own dots are unchanged.
 - **Text size.** The strip keeps its height at every text size. The chips' text grows up to
   the largest standard size (`StripStyle.chipTypeLimit`) and no further: at the accessibility
   sizes the strip is the same strip, and a long title truncates.

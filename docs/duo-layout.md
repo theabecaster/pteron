@@ -59,10 +59,13 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     the chips, between chips, and after them.
   - **Compact.** Where the full strip would leave the chips less than 144 pt (the active chip
     with its close button and one more chip), it is compact: New Tab and Unzoom are left to the
-    Pane Actions menu, the dots are a count ("2/5"), and the session chip is a glyph with its
-    waiting dot. That is under 440 pt beside a vertical bar and under 520 pt without one: every
-    iPhone in portrait, the folded Duo, half the inner screen. It is decided for the bar with
-    every part in it, so a pill or dots that come and go never move the rest.
+    Pane Actions menu and the session chip is a glyph with its waiting dot. That is under
+    440 pt beside a vertical bar and under 520 pt without one: every iPhone in portrait, the
+    folded Duo, half the inner screen. It is decided for the bar with every part in it, so a
+    pill or dots that come and go never move the rest. The pane dots are the title bar's
+    while they read clearly (up to six panes, and the chips keep 144 pt), else a count ("2/5")
+    where it fits, else nothing ([tab-mode.md](tab-mode.md)). The title bar's own dots are
+    unchanged.
   - **Chips.** The active chip shows the tab's title, the status of the pane on screen, the
     waking mark and a close button (`TabChip`); the close button goes where the chips have less
     than 144 pt, and Close Tab stays in the pane menu. Any other chip shows its tab's status as

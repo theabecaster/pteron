@@ -51,8 +51,8 @@ struct StripLayoutTests {
         #expect(l.compact, "\(note)")
         // "+" and Unzoom are left to the Pane Actions menu.
         #expect(!l.shows(.newTab) && !l.shows(.unzoom), "\(note)")
-        // The dots are "n/m", the session chip a glyph.
-        #expect(l.dots == .count, "\(note)")
+        // The dots are the title bar's (they leave the chips their room), the session chip a glyph.
+        #expect(l.dots == .dots(6), "\(note)")
         #expect(l.session == .glyph, "\(note)")
         #expect(l.frame(.session)?.width == StripLayout.hit, "\(note)")
         #expect(l.shows(.waiting), "\(note)")
@@ -71,15 +71,15 @@ struct StripLayoutTests {
     @Test func thePhoneFramesAreExact() {
         let phone = StripLayout(busy(375, bar: false))
         #expect(phone.frame(.session) == CGRect(x: 4, y: 0, width: 44, height: 44))
-        #expect(phone.frame(.chips) == CGRect(x: 54, y: 0, width: 186, height: 44))
-        #expect(phone.frame(.dots) == CGRect(x: 246, y: 0, width: 37, height: 44))
+        #expect(phone.frame(.chips) == CGRect(x: 54, y: 0, width: 163, height: 44))
+        #expect(phone.frame(.dots) == CGRect(x: 223, y: 0, width: 60, height: 44))
         #expect(phone.frame(.waiting) == CGRect(x: 283, y: 0, width: 44, height: 44))
         #expect(phone.frame(.paneMenu) == CGRect(x: 327, y: 0, width: 44, height: 44))
 
         let duo = StripLayout(busy(382, bar: true))
         #expect(duo.frame(.session) == CGRect(x: 12, y: 0, width: 44, height: 44))
-        #expect(duo.frame(.chips) == CGRect(x: 62, y: 0, width: 229, height: 44))
-        #expect(duo.frame(.dots) == CGRect(x: 297, y: 0, width: 37, height: 44))
+        #expect(duo.frame(.chips) == CGRect(x: 62, y: 0, width: 206, height: 44))
+        #expect(duo.frame(.dots) == CGRect(x: 274, y: 0, width: 60, height: 44))
         #expect(duo.frame(.waiting) == CGRect(x: 334, y: 0, width: 44, height: 44))
         #expect(duo.frame(.paneMenu) == nil)
     }
@@ -249,7 +249,10 @@ struct StripLayoutTests {
         #expect(strip(136, waiting: 12).parts == [.session, .paneMenu])
         #expect(strip(136).parts == [.session, .paneMenu])
         #expect(strip(138).parts == [.session, .waiting, .paneMenu])
-        #expect(strip(175).parts == [.session, .dots, .waiting, .paneMenu])
+        // With no room for chips, the count where six panes' 60 pt of dots don't fit, and
+        // nothing where the count doesn't either.
+        #expect(strip(174).parts == [.session, .waiting, .paneMenu] && strip(174).dots == nil)
+        #expect(strip(175).parts == [.session, .dots, .waiting, .paneMenu] && strip(175).dots == .count)
     }
 
     /// A crease that leaves the left page less than it needs (a cap under 56 pt beside a
@@ -377,7 +380,12 @@ struct StripLayoutTests {
         let slot = try #require(l.frame(.floats))
         #expect(slot.width == StripLayout.hit, "\(note)")
         #expect(slot.maxX == (l.frame(.paneMenu)?.minX ?? l.end), "\(note)")
-        #expect(l.chipsWidth == without.chipsWidth - StripLayout.hit, "\(note)")
+        // Its room comes out of the chips and the dots: six panes' dots would leave the chips
+        // less than their room without a vertical bar at 375 and 382 pt, so they are a count.
+        #expect(without.dots == .dots(6), "\(note)")
+        #expect(l.dots == (width <= 382 && !bar ? .count : .dots(6)), "\(note)")
+        let dots = { (l: StripLayout) in l.frame(.dots)?.width ?? 0 }
+        #expect(l.chipsWidth + dots(l) == without.chipsWidth + dots(without) - StripLayout.hit, "\(note)")
         // The chips still hold the active chip with its close button; the button itself needs
         // one more chip's room, which only 375 pt without a vertical bar lacks (142 pt).
         #expect(l.chipsWidth >= StripLayout.closeChipMin, "\(note): the chips have \(l.chipsWidth) pt")
@@ -438,19 +446,25 @@ struct StripLayoutTests {
     }
 
     /// Chips never get less than one chip's width: with less, they aren't drawn, and the parts
-    /// that are keep their places.
+    /// that are keep their places. The dots give way to them: a count while it leaves the chips
+    /// a chip's width, then nothing.
     @Test func chipsNeedAChipsWidth() {
         let one = StripLayout(busy(233, bar: false))
-        #expect(one.chipsWidth == 44)
-        let none = StripLayout(busy(232, bar: false))
+        #expect(one.chipsWidth == 44 && one.dots == .count)
+        let noDots = StripLayout(busy(232, bar: false))
+        #expect(noDots.parts == [.session, .chips, .waiting, .paneMenu] && noDots.dots == nil)
+        #expect(StripLayout(busy(196, bar: false)).chipsWidth == 44)
+        // No room for chips even without the dots: the count, while it fits.
+        let none = StripLayout(busy(195, bar: false))
         #expect(!none.shows(.chips))
-        #expect(none.parts == [.session, .dots, .waiting, .paneMenu])
+        #expect(none.parts == [.session, .dots, .waiting, .paneMenu] && none.dots == .count)
         #expect(none.chip.lowerBound == StripLayout.chipMin && none.activeChip.lowerBound == StripLayout.chipMin)
+        #expect(StripLayout(busy(182, bar: false)).parts == [.session, .waiting, .paneMenu])
     }
 
     // MARK: Parts
 
-    @Test func theDotsAreDotsUpToSixPanesInAWideBar() {
+    @Test func theDotsAreDotsUpToSixPanes() {
         func dots(_ panes: Int, width: CGFloat = 750) -> StripLayout {
             StripLayout(.init(width: width, panes: panes))
         }
@@ -460,9 +474,52 @@ struct StripLayoutTests {
         // As the title bar: more than six is a count.
         #expect(dots(7).dots == .count && dots(7).frame(.dots)?.width == 37)
         #expect(dots(12).frame(.dots)?.width == 51)
-        // Compact: always a count.
-        #expect(dots(2, width: 402).dots == .count)
+        // Compact: the same dots while they read clearly.
+        #expect(dots(2, width: 402).dots == .dots(2) && dots(2, width: 402).frame(.dots)?.width == 32)
+        #expect(dots(7, width: 402).dots == .count)
         #expect(dots(1, width: 402).dots == nil)
+    }
+
+    /// The folded Duo (375 and 382 pt beside its vertical bar) with two or three panes, an agent
+    /// waiting and a tab with floating windows: the dots, and the chips keep their room.
+    @Test(arguments: [375, 382] as [CGFloat], [2, 3])
+    func foldedShowsTheDots(width: CGFloat, panes: Int) {
+        var i = busy(width, bar: true)
+        i.panes = panes
+        i.hasFloatsControl = true
+        let l = StripLayout(i)
+        let note = "\(width) pt, \(panes) panes"
+        #expect(l.compact && l.dots == .dots(panes), "\(note)")
+        #expect(l.parts == [.session, .chips, .dots, .waiting, .floats], "\(note)")
+        #expect(l.chipsWidth >= StripLayout.chipsRoom && l.showsClose, "\(note)")
+        checkFrames(l, i, note)
+    }
+
+    /// Dots that would leave the chips less than their room (the active chip with its close
+    /// button and one more) are a count; so are more than the title bar's six.
+    @Test func crowdedDotsAreACount() {
+        // 375 pt without a vertical bar, three panes, a pill and floats: three dots would
+        // leave the chips 140 pt, the count 142.
+        var tight = busy(375, bar: false)
+        tight.panes = 3
+        tight.hasFloatsControl = true
+        #expect(StripLayout(tight).dots == .count && StripLayout(tight).chipsWidth == 142)
+        tight.panes = 2
+        #expect(StripLayout(tight).dots == .dots(2) && StripLayout(tight).chipsWidth == 147)
+        // Past six panes, as in the title bar, however wide.
+        for width in [382, 750] as [CGFloat] {
+            var many = busy(width, bar: true)
+            many.panes = 7
+            #expect(StripLayout(many).dots == .count, "\(width) pt")
+        }
+        // The rule alone: dots, the count, nothing.
+        #expect(StripLayout.dotsForm(panes: 3, room: 39 + 6 + 144, chips: true) == .dots(3))
+        #expect(StripLayout.dotsForm(panes: 3, room: 39 + 6 + 143, chips: true) == .count)
+        #expect(StripLayout.dotsForm(panes: 3, room: 37 + 6 + 44, chips: true) == .count)
+        #expect(StripLayout.dotsForm(panes: 3, room: 37 + 6 + 43, chips: true) == nil)
+        #expect(StripLayout.dotsForm(panes: 3, room: 39, chips: false) == .dots(3))
+        #expect(StripLayout.dotsForm(panes: 3, room: 38, chips: false) == .count)
+        #expect(StripLayout.dotsForm(panes: 3, room: 36, chips: false) == nil)
     }
 
     @Test func theWaitingPillGrowsWithItsCount() {
