@@ -114,10 +114,9 @@ final class GhosttyTerminalView: UIView {
     private var registered = false
     /// Counts `setGrid` calls; a restore remembers the count it was queued at.
     private var gridEpoch = 0
-    /// Whether the pane has the keyboard, and what the program was last told about it
-    /// (`sayFocus`).
-    var focusNow = false
-    var focusSaid = false
+    /// Whether the pane is the front pane, as the host last said, and what the program was last
+    /// told about it (`setProgramFocus`, `sayFocus`).
+    var programFocus = ProgramFocus()
     private var restoreEpoch = -1
     private var inForeground = true
     /// Something opaque lies over the pane (the agent board): nothing is drawn and no key is
@@ -170,6 +169,11 @@ final class GhosttyTerminalView: UIView {
             if renderer.isVisible.load(ordering: .relaxed) { GhosttyRenderThread.shared.wake() }
         }
         renderer.setLayer(layer)
+        // A program that turns focus reports on while its pane is in front is told so
+        // (`ProgramFocus.Moment.asked`).
+        core.input.setFocusAskedHandler { [weak self] in
+            DispatchQueue.main.async { self?.sayFocus(.asked) }
+        }
         core.resize(cols: cols, rows: rows, cellWidthPx: atlas.metrics.cellWidth, cellHeightPx: atlas.metrics.cellHeight)
 
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBackground),

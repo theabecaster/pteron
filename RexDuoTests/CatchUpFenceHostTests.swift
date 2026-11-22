@@ -14,6 +14,29 @@ final class CatchUpFenceHostTests: XCTestCase {
         return (TerminalHost(stream: stream, sizing: sizing, fontSize: 12, theme: ThemeStore.fallback), stream)
     }
 
+    private var window: UIWindow?
+
+    override func tearDown() async throws {
+        window?.isHidden = true
+        window = nil
+    }
+
+    /// Makes `host` the front pane (`PaneFront`): in a window, the tab's active pane, the app
+    /// in front. Too small to lay out, so the host starts nothing by itself.
+    private func bringToFront(_ host: TerminalHost) {
+        let w = window ?? UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        if window == nil {
+            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { w.windowScene = scene }
+            w.isHidden = false
+            window = w
+        }
+        host.hardwareKeyboard = { false }
+        host.frame = CGRect(x: 0, y: 0, width: 10, height: 10)
+        w.addSubview(host)
+        host.appActiveChanged(true)
+        host.isActive = true
+    }
+
     private func build(_ text: String) -> (GhosttyCore, GhosttyFrameBuilder) {
         let core = GhosttyCore(cols: 20, rows: 4)
         core.feed(Array(text.utf8))
@@ -228,35 +251,80 @@ final class CatchUpFenceHostTests: XCTestCase {
         host.term.core.sync()
         stream.start()
         XCTAssertTrue(stream.isFenced)
-        // The pane takes the keyboard while its stream catches up.
-        host.term.focusNow = true
-        host.term.sayFocus()
+        // The pane comes to the front while its stream catches up.
+        bringToFront(host)
+        XCTAssertTrue(host.term.programFocus.front)
         XCTAssertFalse(stream.hasPendingInput, "a report never leaves behind the fence")
-        XCTAssertFalse(host.term.focusSaid)
+        XCTAssertFalse(host.term.programFocus.said)
         // The fence comes down (no connection in this test: what is sent waits in the queue).
         stream.fence.reset()
-        XCTAssertTrue(stream.hasPendingInput, "the program learns that the pane has the keyboard")
-        XCTAssertTrue(host.term.focusSaid)
+        XCTAssertTrue(stream.hasPendingInput, "the program learns that its pane is in front")
+        XCTAssertTrue(host.term.programFocus.said)
         stream.stop()
+        host.removeFromSuperview()
+    }
+
+    func testAFocusLostDroppedBehindTheFenceGoesWhenItComesDown() {
+        let (host, stream) = makeHost()
+        host.term.feed(text: "\u{1b}[?1004h")
+        host.term.core.sync()
+        bringToFront(host)
+        XCTAssertTrue(host.term.programFocus.said, "told while the stream was current")
+        // Whatever waited goes with the stop; the stream starts again behind its fence.
+        stream.stop()
+        stream.start()
+        XCTAssertTrue(stream.isFenced)
+        // Another pane becomes the active one meanwhile.
+        host.isActive = false
+        XCTAssertFalse(stream.hasPendingInput)
+        XCTAssertTrue(host.term.programFocus.said, "still owed")
+        stream.fence.reset()
+        XCTAssertTrue(stream.hasPendingInput, "the program learns that its pane left the front")
+        XCTAssertFalse(host.term.programFocus.said)
+        stream.stop()
+        host.removeFromSuperview()
+    }
+
+    /// A report is counted as said when it is handed to the stream, not when it arrives, and
+    /// one that never arrived is not known of. So a pane in front says so again each time its
+    /// stream is current again.
+    func testAPaneInFrontSaysSoAgainEachTimeTheFenceComesDown() {
+        let (host, stream) = makeHost()
+        host.term.feed(text: "\u{1b}[?1004h")
+        host.term.core.sync()
+        bringToFront(host)
+        XCTAssertTrue(stream.hasPendingInput)
+        XCTAssertTrue(host.term.programFocus.said)
+        for round in 1...2 {
+            // The report is lost with the queue.
+            stream.stop()
+            XCTAssertFalse(stream.hasPendingInput)
+            stream.start()
+            XCTAssertTrue(stream.isFenced)
+            stream.fence.reset()
+            XCTAssertTrue(stream.hasPendingInput, "said again, round \(round)")
+        }
+        stream.stop()
+        host.removeFromSuperview()
     }
 
     func testNoFocusReportWhenTheProgramAlreadyKnows() {
         let (host, stream) = makeHost()
         host.term.feed(text: "\u{1b}[?1004h")
         host.term.core.sync()
-        // Unfocused, as the program was last told: a fence that comes and goes says nothing.
+        // Not in front, as the program was last told: a fence that comes and goes says nothing.
         stream.start()
         stream.fence.reset()
         XCTAssertFalse(stream.hasPendingInput)
-        // A program that never asked is told nothing either.
+        // A program that never asked is told nothing either, in front or not.
         let (other, plain) = makeHost()
         plain.start()
-        other.term.focusNow = true
-        other.term.sayFocus()
+        bringToFront(other)
         plain.fence.reset()
         XCTAssertFalse(plain.hasPendingInput)
         stream.stop()
         plain.stop()
+        other.removeFromSuperview()
     }
 
     func testWhatTheFenceDroppedIsSaidInTheNeutralStyle() {

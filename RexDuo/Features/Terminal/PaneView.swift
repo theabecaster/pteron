@@ -126,7 +126,11 @@ struct PaneHostView: UIViewRepresentable {
         host.setRestSize(restSize)
         host.setSheetCover(sheetCover)
         host.onCommand = commandHandler
+        // Under the palette no pane is the front pane (`PaneFront`). Set before `isActive`
+        // and told after it, so a palette that closes onto another pane is one change.
+        host.underPalette = model?.goTo != nil
         host.isActive = active
+        host.refreshProgramFocus()
         host.onFocus = onFocus
         host.onSwipe = onSwipe
         host.handleStrips = handleStrips

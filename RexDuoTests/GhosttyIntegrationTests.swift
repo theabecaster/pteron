@@ -87,7 +87,7 @@ final class GhosttyIntegrationTests: XCTestCase {
     }
 
     /// Mouse and focus reports are not typing: the view stays.
-    func testMouseAndFocusReportsLeaveAScrolledUpViewWhereItIs() throws {
+    func testMouseAndFocusReportsLeaveAScrolledUpViewWhereItIs() {
         let (view, sink) = make(100, setup: "\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1004h")
         let cell = view.cellSize
         view.scroller.jump(.lines(-4))
@@ -104,17 +104,13 @@ final class GhosttyIntegrationTests: XCTestCase {
         frame(view)
         XCTAssertFalse(view.core.scroll.snapshot.active, "mouse reports are not typing")
 
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
-        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
-        window.isHidden = false
-        defer { window.isHidden = true }
-        window.addSubview(view)
-        try XCTSkipUnless(view.becomeFirstResponder(), "the test host gave no first responder")
+        // The pane comes to the front and leaves it (`TerminalHost.refreshProgramFocus`).
+        view.setProgramFocus(true)
         XCTAssertEqual(sink.sent.last, bytes("\u{1b}[I"))
-        XCTAssertTrue(view.resignFirstResponder())
+        view.setProgramFocus(false)
         XCTAssertEqual(sink.sent.last, bytes("\u{1b}[O"))
+        XCTAssertEqual(sink.sent.count, 5)
         XCTAssertFalse(view.core.scroll.hasPending, "focus reports are not typing either")
-        view.removeFromSuperview()
     }
 
     // MARK: Key-driven scrolling

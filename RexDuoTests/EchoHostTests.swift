@@ -299,6 +299,44 @@ final class EchoHostTests: XCTestCase {
         XCTAssertFalse(p.core.echoUnsettled)
     }
 
+    /// The focus report of a pane that comes to the front is input the user did not type
+    /// (`TerminalHost.refreshProgramFocus`). To predicted echo it is a boundary like any
+    /// report: the key after it is not a guess. Nothing else changes: what was typed is sent
+    /// as typed, in order, and the screen and the stream are as they were.
+    func testAFocusReportEndsTheGuessesAndChangesNothingElse() async {
+        let p = await pane(level: .slow)
+        p.host.hardwareKeyboard = { false }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
+        window.isHidden = false
+        window.addSubview(p.host)
+        p.host.appActiveChanged(true)
+        defer {
+            p.host.removeFromSuperview()
+            window.isHidden = true
+        }
+        // The program asks for focus reports. Its pane is not the active one: it is told nothing.
+        p.link.deliver(Array("\u{1b}[?1004h".utf8))
+        await wait("the mode") { p.core.sync(); return p.core.input.modes.focusEvents }
+        await type(p, "l")
+        await echo(p, "l", row: "$ l")
+        p.host.term.insertText("s")
+        XCTAssertEqual(guesses(p), "s")
+        let placed = p.core.echoCounters?.placed
+
+        // The pane becomes the active one: the front pane.
+        p.host.isActive = true
+        await wait("the keys and then the report") { p.link.written.joined() == "ls\u{1b}[I" }
+        p.host.term.insertText("x")
+        XCTAssertFalse(guesses(p).contains("x"), "a key after the report is not drawn ahead of its echo")
+        XCTAssertEqual(p.core.echoCounters?.placed, placed, "and not tracked")
+        await wait("the write of x") { p.link.written.joined() == "ls\u{1b}[Ix" && !p.stream.hasPendingInput }
+        XCTAssertEqual(p.link.written.joined(), "ls\u{1b}[Ix", "what was typed is what was sent, with the report between")
+        XCTAssertEqual(rowText(p), "$ l", "the screen is the program's")
+        XCTAssertFalse(p.stream.isFenced)
+        XCTAssertTrue(p.stream.inputObserver === p.host, "the host still listens")
+    }
+
     /// A prompt whose shell says a click moves the cursor with arrow keys.
     private static let clickPrompt = "\u{1b}]133;A;cl=line\u{07}$ \u{1b}]133;B\u{07}"
 

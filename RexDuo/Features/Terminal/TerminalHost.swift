@@ -54,6 +54,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var isActive = false {
         didSet {
             guard isActive != oldValue else { return }
+            // In a split only the active pane's program has the focus.
+            refreshProgramFocus()
             if isActive {
                 reclaimKeyboard()
             } else {
@@ -198,6 +200,14 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var graceWork: DispatchWorkItem?
     /// The agent board lies over the pane (`setCovered`).
     private(set) var covered = false
+    /// A sheet, an alert or a menu lies over the pane, as UIKit's dimmed tint last said
+    /// (`coverChanged`).
+    private var dimmed = false
+    /// The palette lies over the pane. `PaneHostView` sets it together with `isActive` and
+    /// then calls `refreshProgramFocus`, so the two changing at once are one change.
+    var underPalette = false
+    /// The app is the one in front, as its notifications last said (`appActiveChanged`).
+    private var appActive = false
     /// The cover took the keyboard from a pane that showed only its key bar; it gets it back.
     private var coverTookKeyBar = false
     /// How long an uncovered pane waits for its keyboard before it fits itself again.
@@ -330,6 +340,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyBar = KeyBar()
         self.claim = claim ?? FitClaim(transport: StreamFitTransport(stream: stream))
         super.init(frame: .zero)
+        appActive = UIApplication.shared.applicationState == .active
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
         self.claim.onRefused = { [weak self] in self?.resizedElsewhere("refused") }
         term.engineDelegate = self
@@ -372,6 +383,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fitHoldDeferralCleared(_:)),
                                                name: FitHoldDeferral.cleared, object: nil)
+        // The program's focus follows the app coming to the front and leaving it (`PaneFront`).
+        NotificationCenter.default.addObserver(self, selector: #selector(appBecameActive),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appLeftFront),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
         // Moments when the keyboard may be free for the active pane to take (`reclaimKeyboard`).
         let free: [Notification.Name] = [.GCKeyboardDidConnect, UIApplication.didBecomeActiveNotification,
                                          UIWindow.didBecomeKeyNotification, UITextField.textDidEndEditingNotification,
@@ -1085,9 +1101,34 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The terminal has the keyboard and shows it (the system keyboard or the key bar).
     private var keyboardUp: Bool { term.isFirstResponder && !keyboardQuiet }
 
-    /// The pane the user is working in: active, on screen, in the foreground app.
-    private var isFrontPane: Bool {
-        isActive && window != nil && UIApplication.shared.applicationState == .active
+    /// The pane the user is working in: active, on screen, in the app in front, with nothing
+    /// lying over it (`PaneFront`). The program's focus and its right to write the pasteboard
+    /// both follow it.
+    var isFrontPane: Bool {
+        PaneFront(active: isActive, onScreen: window != nil && !isParked, appActive: appActive,
+                  underBoard: covered, underSheet: dimmed, underPalette: underPalette).isFront
+    }
+
+    /// Tells the engine whether this is the front pane now; a program that asked for focus
+    /// reports hears of a change (`GhosttyTerminalView.setProgramFocus`). Called at every
+    /// moment the answer can change: the pane becomes active or stops being it, comes back on
+    /// screen or has left it for good, the app comes to the front or leaves it, and a cover
+    /// (the board, a sheet, the palette) comes or goes. The keyboard is not one of them.
+    ///
+    /// A pane that leaves its window says so only once it has stayed away (`scheduleStop`): a
+    /// fold moves the pane through no window for a moment, and the program is not told of that.
+    func refreshProgramFocus() {
+        term.setProgramFocus(isFrontPane)
+    }
+
+    @objc private func appBecameActive() { appActiveChanged(true) }
+    @objc private func appLeftFront() { appActiveChanged(false) }
+
+    /// The app came to the front, or is leaving it.
+    func appActiveChanged(_ active: Bool) {
+        guard active != appActive else { return }
+        appActive = active
+        refreshProgramFocus()
     }
 
     /// Takes the keyboard when the policy says this pane should have it: with a hardware keyboard
@@ -1185,6 +1226,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func coverChanged(covered: Bool) {
+        // Only a change counts: this is also called for a tint change that is no cover.
+        if covered != dimmed {
+            dimmed = covered
+            refreshProgramFocus()
+        }
         if covered {
             stopKeyRepeats()
             // The find field's keyboard is treated like the terminal's.
@@ -1217,6 +1263,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func setCovered(_ c: Bool, softwareKeyboard: Bool = false) {
         guard c != covered else { return }
         covered = c
+        refreshProgramFocus()
         uncoverRelayout?.cancel()
         uncoverRelayout = nil
         if c {
@@ -1312,6 +1359,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     @objc private func didBackground() {
         backgroundedAt = CACurrentMediaTime()
         quietUntil = .infinity
+        // Said when the app left the front; again here for a background that came without it.
+        appActiveChanged(false)
         stopKeyRepeats()
         // Also when nothing is claimed yet: a claim on its way must not resize the pane now.
         claimedSize = nil
@@ -1491,6 +1540,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         let work = DispatchWorkItem { [self] in
             stopWork = nil
             guard window == nil else { return }
+            // Gone for good, not moved by a fold: the program loses the focus, said while the
+            // stream can still carry it.
+            refreshProgramFocus()
             if canPark, started {
                 if let onLeft { onLeft() } else { park() }
             } else {
@@ -1527,6 +1579,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         fenceStatusWork?.cancel()
         fenceStatusWork = nil
         if transientStatus != nil { hideStatus() }
+        // Before the stream goes: a parked pane's program is told it lost the focus, if that
+        // was not said yet. The stream may still drop it with the rest of its queue.
+        refreshProgramFocus()
         stoppingStream = true
         stream.park()
         stoppingStream = false
@@ -1577,6 +1632,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane has a window again: a parked one resumes, a warm one shows what it has.
     func cameBackOnScreen() {
         if isParked { unpark() } else if isWarm { unwarm() }
+        // After the stream's fence went up for the return: behind it the report waits, and
+        // goes once when the fence comes down (`streamFence`).
+        refreshProgramFocus()
     }
 
     /// The parked pane is on screen again: its last screen is drawn in its first frame, and its
@@ -2095,8 +2153,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // A size that came while the stream caught up counts from here (`checkFit`).
             if !stoppingStream, sizing == .fit, serverSize != (claimedSize ?? fitGrid()) { scheduleFitCheck() }
             if !stoppingStream {
-                // A focus report dropped behind the fence goes now, ahead of any held keys.
-                term.sayFocus()
+                // A focus report dropped behind the fence goes now, ahead of any held keys, and
+                // a pane in front says so again: one made before may never have arrived.
+                term.sayFocus(.current)
                 PerfProbe.active?.caughtUp(self)  // PERF
             }
         }

@@ -1,0 +1,72 @@
+import Foundation
+
+// The focus a program is told about (mode 1004, `CSI I` and `CSI O`).
+//
+// A program in a pane has the focus while its pane is the front pane: the tab's active pane, on
+// screen, in the app in front, with nothing lying over it. The software keyboard has no part in
+// it: hiding the keyboard, a drag into the scrollback that puts it away, and a hardware
+// keyboard's quiet hold all leave the program focused. Only the cursor's look (solid or hollow)
+// follows the keyboard.
+
+/// What decides whether a pane is the front pane.
+struct PaneFront: Equatable {
+    /// The tab's active pane.
+    var active = false
+    /// In a window, and not set aside (parked).
+    var onScreen = false
+    /// The app is the one in front.
+    var appActive = false
+    /// The agent board lies over the pane.
+    var underBoard = false
+    /// A sheet, an alert or a menu lies over the pane.
+    var underSheet = false
+    /// The palette lies over the pane.
+    var underPalette = false
+
+    var isFront: Bool {
+        active && onScreen && appActive && !underBoard && !underSheet && !underPalette
+    }
+}
+
+/// Which focus report is due, from whether the pane is in front and what the program was last
+/// told. It makes no bytes and sends nothing: `GhosttyTerminalView.sayFocus` does.
+struct ProgramFocus: Equatable {
+    /// When a report is asked for.
+    enum Moment {
+        /// The pane came to the front or left it.
+        case changed
+        /// The stream is current again (its fence came down). A report made before may never
+        /// have arrived, so a pane in front says so again.
+        case current
+        /// The program turned focus reports on. It has been told nothing yet, so a pane in
+        /// front says so.
+        case asked
+    }
+
+    /// The pane is the front pane.
+    private(set) var front = false
+    /// What the program was last told, or would have been had it asked.
+    private(set) var said = false
+
+    /// Returns whether it changed.
+    mutating func set(front now: Bool) -> Bool {
+        guard now != front else { return false }
+        front = now
+        return true
+    }
+
+    /// The report due at `moment`: true for focus gained, false for lost, nil for none.
+    func due(at moment: Moment) -> Bool? {
+        switch moment {
+        case .changed:
+            return front != said ? front : nil
+        case .current, .asked:
+            // In front: said, also when it was said before. Not in front: only what is owed.
+            if front { return true }
+            return said ? false : nil
+        }
+    }
+
+    /// The report was handed on for sending, or the program asks for none.
+    mutating func told(_ gained: Bool) { said = gained }
+}

@@ -406,36 +406,47 @@ final class GhosttyInputViewTests: XCTestCase {
 
     // MARK: Focus
 
-    func testFocusReportsOnlyWhenTheProgramAsked() throws {
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
-        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
-        window.isHidden = false
-        defer { window.isHidden = true }
-
+    /// The program's focus is the front pane's (`ProgramFocus`), which the host says; the
+    /// keyboard coming and going says nothing.
+    func testFocusReportsFollowTheFrontPaneAndOnlyWhenTheProgramAsked() {
         let (quiet, quietSpy) = makeGhostty()
-        window.addSubview(quiet)
-        XCTAssertTrue(quiet.canBecomeFirstResponder)
-        try XCTSkipUnless(quiet.becomeFirstResponder(), "the test host gave no first responder")
-        XCTAssertTrue(quiet.isFirstResponder)
-        XCTAssertTrue(quiet.resignFirstResponder())
+        quiet.setProgramFocus(true)
+        quiet.setProgramFocus(false)
         XCTAssertEqual(quietSpy.sent, [], "no focus reports without mode 1004")
 
         let (view, spy) = makeGhostty(P.focusEvents)
-        window.addSubview(view)
-        XCTAssertTrue(view.becomeFirstResponder())
+        view.setProgramFocus(true)
         XCTAssertEqual(spy.sent, [P.bytes("\u{1b}[I")])
-        // Already focused: no second report.
-        XCTAssertTrue(view.becomeFirstResponder())
+        // Already in front: no second report.
+        view.setProgramFocus(true)
         XCTAssertEqual(spy.sent.count, 1)
-        XCTAssertTrue(view.resignFirstResponder())
+        view.setProgramFocus(false)
         XCTAssertEqual(spy.sent, [P.bytes("\u{1b}[I"), P.bytes("\u{1b}[O")])
 
         // The program turns reports off again.
         view.feed(text: "\u{1b}[?1004l")
         view.core.sync()
+        view.setProgramFocus(true)
+        view.setProgramFocus(false)
+        XCTAssertEqual(spy.sent.count, 2)
+    }
+
+    func testTheKeyboardComingAndGoingSendsNoFocusReport() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
+        window.isHidden = false
+        defer { window.isHidden = true }
+
+        let (view, spy) = makeGhostty(P.focusEvents)
+        window.addSubview(view)
+        defer { view.removeFromSuperview() }
+        view.setProgramFocus(true)
+        XCTAssertEqual(spy.sent, [P.bytes("\u{1b}[I")])
+        try XCTSkipUnless(view.becomeFirstResponder(), "the test host gave no first responder")
+        XCTAssertTrue(view.resignFirstResponder())
         XCTAssertTrue(view.becomeFirstResponder())
         XCTAssertTrue(view.resignFirstResponder())
-        XCTAssertEqual(spy.sent.count, 2)
+        XCTAssertEqual(spy.sent, [P.bytes("\u{1b}[I")], "the keyboard is not the program's focus")
     }
 
     func testFocusReportBytes() {

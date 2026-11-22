@@ -69,6 +69,15 @@ final class GhosttyInputMirror: @unchecked Sendable {
     private var encoder: GhosttyKeyEncoder?
     private var event: GhosttyKeyEvent?
     private var current = Modes()
+    private var focusAsked: (@Sendable () -> Void)?
+
+    /// Runs when the program turns focus reports (mode 1004) on: on the thread that parsed it,
+    /// with the terminal lock held, so keep it short and hop.
+    func setFocusAskedHandler(_ handler: (@Sendable () -> Void)?) {
+        lock.lock()
+        focusAsked = handler
+        lock.unlock()
+    }
 
     init() {
         ghostty_key_encoder_new(nil, &encoder)
@@ -108,8 +117,10 @@ final class GhosttyInputMirror: @unchecked Sendable {
         // resets option-as-alt, which is ours to set again (guides/input.md).
         ghostty_key_encoder_set_from_terminal(encoder, t)
         applyOptionAsAlt()
+        let asked = next.focusEvents && !current.focusEvents ? focusAsked : nil
         current = next
         lock.unlock()
+        asked?()
     }
 
     var modes: Modes {

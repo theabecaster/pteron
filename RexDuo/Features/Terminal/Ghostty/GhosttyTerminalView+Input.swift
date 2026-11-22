@@ -140,28 +140,31 @@ extension GhosttyTerminalView {
         return ok
     }
 
-    /// The solid or hollow cursor, and the program's focus report if it asked for one. A focus
-    /// report isn't typing: it doesn't scroll the view.
+    /// The keyboard came or went: the solid or hollow cursor. The program is told nothing: its
+    /// focus follows the front pane, not the keyboard (`setProgramFocus`).
     private func focusChanged(_ focused: Bool) {
         renderer.setFocused(focused)
-        focusNow = focused
-        sayFocus()
         keyboardFocusHook?(focused)
     }
 
-    /// Tells the program whether the pane has the keyboard, if it asked for focus reports and
-    /// was last told otherwise. A report that could not leave (the stream was catching up) is
-    /// made up for by the next call: the host calls this when the stream is current again.
-    func sayFocus() {
-        let focused = focusNow
-        guard focused != focusSaid else { return }
-        let report = core.input.focusReport(gained: focused)
+    /// The host says whether this is the front pane (`PaneFront`): the program's focus.
+    func setProgramFocus(_ front: Bool) {
+        if programFocus.set(front: front) { sayFocus(.changed) }
+    }
+
+    /// Tells the program whether its pane is in front, if it asked for focus reports and one is
+    /// due at this moment (`ProgramFocus.due`). A report that could not leave (the stream was
+    /// catching up) is made up for by the next call: the host calls this when the stream is
+    /// current again. A focus report isn't typing: it doesn't scroll the view.
+    func sayFocus(_ moment: ProgramFocus.Moment) {
+        guard let gained = programFocus.due(at: moment) else { return }
+        let report = core.input.focusReport(gained: gained)
         guard !report.isEmpty else {
             // A program that doesn't ask is told nothing, now or later for this change.
-            focusSaid = focused
+            programFocus.told(gained)
             return
         }
-        if engineDelegate?.engineSendReport(report) ?? false { focusSaid = focused }
+        if engineDelegate?.engineSendReport(report) ?? false { programFocus.told(gained) }
     }
 
     override func willMove(toWindow newWindow: UIWindow?) {
