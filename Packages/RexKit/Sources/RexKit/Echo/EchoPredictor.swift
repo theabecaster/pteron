@@ -125,9 +125,9 @@ public struct EchoOverlay: Equatable, Sendable {
 ///
 /// Epochs are runs of guesses that are all right or all wrong. Each starts tentative (tracked,
 /// not drawn) until the server confirms its first key. A key is judged in typing order against
-/// prefix states L₀…Lₙ (L₀ the start, Lᵢ with key i applied), confirming the smallest state the
-/// grid matches, never past a Backspace whose own state was not seen, and only once its own
-/// write was answered. Only contrary screen content removes a guess; a late echo never does,
+/// prefix states L₀…Lₙ (L₀ the start, Lᵢ with key i applied), confirming the smallest later
+/// state the grid shows, never one that looks like the confirmed state (the grid shows that
+/// before any echo), and only once its own write was answered. Only contrary screen content removes a guess; a late echo never does,
 /// and a guess unconfirmed 1.5 s after its write's answer is cleared silently.
 public final class EchoPredictor {
     /// A key is cleared this long after its write's answer without a confirmation (s).
@@ -208,9 +208,6 @@ public final class EchoPredictor {
         var endedByNewLine = false
         /// Drain batches in a row that ended with the cursor away from the epoch's row.
         var awayBatches = 0
-        /// Backspace states the grid was seen to show at some check, acknowledged or not.
-        var seen: Set<Int> = []
-
         var tentative: Bool { confirmed == 0 }
         var extent: Int { states.map(\.cells.count).max() ?? 0 }
     }
@@ -527,7 +524,9 @@ public final class EchoPredictor {
         let pending = e.keys[e.confirmed...]
         if pending.contains(where: { $0.answeredAt.map { now - $0 >= Self.cap } ?? false }) {
             counters.capped += 1
-            if pending.contains(where: { $0.drawnAt != nil }) { counters.vanished += 1 }
+            // A vanish is something taken off the screen: keys that cancel out (`a⌫`) show
+            // nothing by now.
+            if overlay != nil, pending.contains(where: { $0.drawnAt != nil }) { counters.vanished += 1 }
             epoch = nil
             return
         }
@@ -551,22 +550,16 @@ public final class EchoPredictor {
         if batch { e.awayBatches = 0 }
         guard anchorHolds(e, grid) else { return wrong(e) }
 
-        // A Backspace's own state, seen at any check, lets confirmation pass it later.
-        for i in (e.confirmed + 1)..<(e.keys.count + 1) where e.keys[i - 1].op == .backspace && matches(e, i, grid) {
-            e.seen.insert(i)
-        }
-        // Confirm: the smallest matching state, in typing order, and only for keys whose write
-        // was answered.
+        // Confirm: the smallest later state the grid shows, in typing order, only for keys whose
+        // write was answered, and only a state the grid could not be showing already. A state
+        // that looks like the confirmed one (`a⌫` after nothing, the second `a` of `a⌫a`) is no
+        // evidence: the grid looks that way before the echo too. It is confirmed with the next
+        // state that differs, or goes with the safety cap.
         let before = e.confirmed
         var j = e.confirmed + 1
         while j <= e.keys.count, e.keys[j - 1].seq <= answeredThrough {
-            if matches(e, j, grid) {
-                // Never past a Backspace whose own state was not seen, when the grid could be
-                // showing an earlier state (`a⌫a`: the first `a` looks like the last).
-                let unseen = (e.confirmed + 1..<j).contains { e.keys[$0 - 1].op == .backspace && !e.seen.contains($0) }
-                if !unseen || !(e.confirmed..<j).contains(where: { Self.sameView(e.states[$0], e.states[j], start: e.start) }) {
-                    e.confirmed = j
-                }
+            if matches(e, j, grid), !Self.sameView(e.states[e.confirmed], e.states[j], start: e.start) {
+                e.confirmed = j
                 break
             }
             j += 1

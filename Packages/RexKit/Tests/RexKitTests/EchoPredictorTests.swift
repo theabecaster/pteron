@@ -162,6 +162,74 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertEqual(s.p.counters.confirmed, 3)
     }
 
+    /// A character typed and taken back leaves the line as it was: the grid looks like that
+    /// before either echo, so the answers alone confirm nothing, and the echoes, when they come
+    /// late and one by one, are no mismatch.
+    func testAStateThatLooksLikeTheConfirmedOneIsNotConfirmedByTheUnchangedGrid() {
+        let s = ready()
+        let confirmed = s.p.counters.confirmed
+        s.type("b\u{7f}")
+        s.answerAll()
+        s.tick()
+        XCTAssertEqual(s.p.counters.confirmed, confirmed, "both writes are answered and the grid has shown neither key")
+        XCTAssertNil(s.overlay, "the line looks as the server has it")
+        s.echo("b")
+        XCTAssertEqual(s.p.counters.confirmed, confirmed + 1)
+        XCTAssertEqual(s.visible(0), "$ a", "the late b is masked")
+        XCTAssertEqual(s.overlay?.cells.first?.mask, .default)
+        s.echo("\u{8} \u{8}")
+        XCTAssertEqual(s.p.counters.confirmed, confirmed + 2)
+        XCTAssertNil(s.overlay)
+        XCTAssertEqual(s.p.counters.mismatched, 0)
+        // A shell that reads both keys at once writes nothing for them: they are confirmed with
+        // the next key that shows.
+        s.type("c\u{7f}")
+        s.answerAll()
+        let k = s.key(char("d"))
+        XCTAssertEqual(s.guesses, "d")
+        s.echo("d")
+        s.answer(k)
+        XCTAssertEqual(s.p.counters.confirmed, confirmed + 5)
+        XCTAssertEqual(s.p.counters.mismatched, 0)
+        // With nothing typed after them, they go with the safety cap, silently.
+        s.settle()
+        s.type("e\u{7f}")
+        s.answerAll()
+        s.advance(EchoPredictor.cap)
+        s.tick()
+        XCTAssertEqual(s.p.counters.capped, 1)
+        XCTAssertEqual(s.p.counters.vanished, 0, "nothing was on screen to take back")
+        XCTAssertEqual(s.p.counters.mismatched, 0)
+    }
+
+    /// The tty at rest echoes: a reading of (echo, canonical) says only that no program has
+    /// turned echo off yet. A script that waits and then reads a secret does so with no output
+    /// and no key of the user's, so keys typed ahead across that moment must never be drawn.
+    func testACookedTtyThatEchoesProvesNothing() {
+        let s = EchoScript()
+        s.prompt()
+        let enter = s.key(.boundary(newLine: true))
+        s.echo("\r\n")
+        s.answer(enter)
+        s.settle()
+        // Typed ahead while the script still runs: the tty echoes it.
+        let a = s.key(char("a"))
+        s.echo("a")
+        s.answer(a)
+        XCTAssertTrue(s.replyInputMode(EchoInputMode(echo: true, canonical: true)), "the predictor asked")
+        s.settle()
+        // Echo is off from here on, and nothing says so.
+        for k in s.type("secret") {
+            XCTAssertNil(s.overlay)
+            s.answer(k)
+            s.settle()
+        }
+        s.advance(EchoPredictor.cap)
+        s.tick()
+        XCTAssertFalse(s.history.contains { $0 != nil }, "no key after Enter was ever drawn")
+        XCTAssertEqual(s.p.counters.drawn, 0)
+    }
+
     func testSmallestStateDoesNotConfirmTheBackspace() {
         let s = ready()
         s.type("b\u{7f}")
@@ -338,7 +406,8 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertTrue(EchoInputMode.proves(.init(echo: false, canonical: false), foreground: "-zsh"))
         XCTAssertTrue(EchoInputMode.proves(.init(echo: true, canonical: false), foreground: "/bin/bash"))
         XCTAssertFalse(EchoInputMode.proves(.init(echo: false, canonical: true), foreground: "zsh"), "a password reader")
-        XCTAssertTrue(EchoInputMode.proves(.init(echo: true, canonical: true), foreground: "zsh"), "a cooked echoing reader")
+        XCTAssertFalse(EchoInputMode.proves(.init(echo: true, canonical: true), foreground: "zsh"),
+                       "an echoing tty proves nothing: its program can turn echo off without a word")
         for mode in [EchoInputMode(echo: false, canonical: false), .init(echo: true, canonical: true), .init(echo: false, canonical: true)] {
             XCTAssertFalse(EchoInputMode.proves(mode, foreground: "ssh"), "ssh never gives proof")
             XCTAssertFalse(EchoInputMode.proves(mode, foreground: "vim"))

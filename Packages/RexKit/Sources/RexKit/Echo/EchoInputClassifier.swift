@@ -56,18 +56,22 @@ public struct EchoInputMode: Equatable, Sendable {
         self.init(echo: echo, canonical: canonical)
     }
 
-    /// Whether a reading proves the program reads a line that the screen will echo:
-    /// - canonical off with a local shell in front: a line editor (zsh ZLE, readline, fish) turns
-    ///   echo and canonical mode off while it reads a line, and draws what is typed itself;
-    /// - echo and canonical on: a cooked reader that the terminal driver echoes for.
-    /// Echo off with canonical on is a password reader (`sudo`, `passwd`, `read -s`) and never
-    /// proves anything. Over `ssh` the reading describes the local ssh client's tty, not the
-    /// remote program, so it never proves anything either.
+    /// Whether a reading proves the program reads a line that the screen will echo: canonical
+    /// mode off with a local shell in front. A line editor (zsh ZLE, readline, fish) turns echo
+    /// and canonical mode off while it reads a line and draws what is typed itself, and it stays
+    /// that way until the user ends the line, which is a boundary the predictor sees.
+    ///
+    /// Nothing else proves anything:
+    /// - echo off with canonical on is a password reader (`sudo`, `passwd`, `read -s`);
+    /// - echo on with canonical on is the tty's resting state, which any program is in before it
+    ///   turns echo off, and it can turn echo off at any moment with no output and no key of
+    ///   the user's (a script that waits and then reads a secret). Keys typed across that
+    ///   moment would be drawn though the tty no longer echoes them;
+    /// - over `ssh` the reading describes the local ssh client's tty, not the remote program.
     public static func proves(_ mode: EchoInputMode?, foreground: String?) -> Bool {
         guard let mode, let front = EchoForeground.normalize(foreground), front != "ssh",
               EchoForeground.shells.contains(front) else { return false }
-        if !mode.canonical { return true }
-        return mode.echo
+        return !mode.canonical
     }
 }
 
