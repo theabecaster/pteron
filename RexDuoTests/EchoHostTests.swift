@@ -312,7 +312,10 @@ final class EchoHostTests: XCTestCase {
         window.addSubview(p.host)
         p.host.appActiveChanged(true)
         defer {
+            // Let go at once: out of its window alone, the host would hold on to itself until
+            // it has stayed away.
             p.host.removeFromSuperview()
+            p.host.evict()
             window.isHidden = true
         }
         // The program asks for focus reports. Its pane is not the active one: it is told nothing.

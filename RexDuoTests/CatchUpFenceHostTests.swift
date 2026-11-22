@@ -15,10 +15,23 @@ final class CatchUpFenceHostTests: XCTestCase {
     }
 
     private var window: UIWindow?
+    private var panesBefore = 0
 
+    override func setUp() async throws {
+        panesBefore = GhosttyRenderThread.shared.paneCount
+    }
+
+    /// A host that was in a window goes a few turns of the main queue after its test: the
+    /// next test class starts with none of this one's panes left.
     override func tearDown() async throws {
+        guard window != nil else { return }
         window?.isHidden = true
         window = nil
+        var turns = 0
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+            turns += 1
+            try? await Task.sleep(for: .milliseconds(2))
+        }
     }
 
     /// Makes `host` the front pane (`PaneFront`): in a window, the tab's active pane, the app
@@ -35,6 +48,13 @@ final class CatchUpFenceHostTests: XCTestCase {
         w.addSubview(host)
         host.appActiveChanged(true)
         host.isActive = true
+    }
+
+    /// Takes `host` out of the window and lets it go at once: a host that only leaves its
+    /// window holds on to itself until it has stayed away (`TerminalHost.scheduleStop`).
+    private func leave(_ host: TerminalHost) {
+        host.removeFromSuperview()
+        host.evict()
     }
 
     private func build(_ text: String) -> (GhosttyCore, GhosttyFrameBuilder) {
@@ -261,7 +281,7 @@ final class CatchUpFenceHostTests: XCTestCase {
         XCTAssertTrue(stream.hasPendingInput, "the program learns that its pane is in front")
         XCTAssertTrue(host.term.programFocus.said)
         stream.stop()
-        host.removeFromSuperview()
+        leave(host)
     }
 
     func testAFocusLostDroppedBehindTheFenceGoesWhenItComesDown() {
@@ -282,7 +302,7 @@ final class CatchUpFenceHostTests: XCTestCase {
         XCTAssertTrue(stream.hasPendingInput, "the program learns that its pane left the front")
         XCTAssertFalse(host.term.programFocus.said)
         stream.stop()
-        host.removeFromSuperview()
+        leave(host)
     }
 
     /// A report is counted as said when it is handed to the stream, not when it arrives, and
@@ -305,7 +325,7 @@ final class CatchUpFenceHostTests: XCTestCase {
             XCTAssertTrue(stream.hasPendingInput, "said again, round \(round)")
         }
         stream.stop()
-        host.removeFromSuperview()
+        leave(host)
     }
 
     func testAPaneThatIsNotInFrontSaysSoWhenTheFenceComesDown() {
@@ -324,6 +344,7 @@ final class CatchUpFenceHostTests: XCTestCase {
     func testNoFocusReportForAProgramThatNeverAsked() {
         // In front or not, a fence that comes and goes says nothing.
         let (host, stream) = makeHost()
+        XCTAssertFalse(host.isFrontPane)
         stream.start()
         stream.fence.reset()
         XCTAssertFalse(stream.hasPendingInput)
@@ -334,7 +355,7 @@ final class CatchUpFenceHostTests: XCTestCase {
         XCTAssertFalse(plain.hasPendingInput)
         stream.stop()
         plain.stop()
-        other.removeFromSuperview()
+        leave(other)
     }
 
     func testWhatTheFenceDroppedIsSaidInTheNeutralStyle() {

@@ -39,8 +39,10 @@ final class ProgramFocusHostTests: XCTestCase {
     private var window: UIWindow!
     private var hardware = false
     private var hosts: [TerminalHost] = []
+    private var panesBefore = 0
 
     override func setUp() async throws {
+        panesBefore = GhosttyRenderThread.shared.paneCount
         hardware = false
         window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
@@ -49,13 +51,21 @@ final class ProgramFocusHostTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        // Let go at once: a host that only leaves its window holds on to itself until it has
+        // stayed away (`TerminalHost.scheduleStop`).
         for host in hosts {
-            host.stream.stop()
             host.removeFromSuperview()
+            host.evict()
         }
         hosts = []
         window.isHidden = true
         window = nil
+        // The next test class starts with none of this one's panes left.
+        var turns = 0
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+            turns += 1
+            try? await Task.sleep(for: .milliseconds(2))
+        }
     }
 
     /// Lets the hops to the main queue run: the hosts' own, and the engine's word that the
