@@ -39,4 +39,39 @@ final class ScriptedEchoLinkTests: XCTestCase {
         XCTAssertTrue(sink.calls.contains(.feed(Array("ls".utf8))), "the data socket carries what the script delivers")
         s.stop()
     }
+
+    /// The benchmark opens its pane with a recorded stream: the snapshot and the size reach the
+    /// sink as they do from a server, under the recording's own nonce.
+    func testARecordedOpeningRestoresItsSnapshot() async throws {
+        let capture = try StreamFixture.load("scroll")
+        let scripted = ScriptedEchoLink(writeDelay: .zero, opening: capture.bytes, nonce: capture.nonce) { _ in await Task.yield() }
+        let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let s = scripted.stream(control: control, sessionID: "session:test", blockID: "block:test", echoGate: EchoGate())
+        let sink = Sink()
+        s.sink = sink
+        s.start()
+        _ = await eventually { !s.isFenced && sink.calls.contains { if case .resized = $0 { return true } else { return false } } }
+        XCTAssertFalse(s.isFenced)
+        XCTAssertTrue(sink.ghostty.contains(.snapshotEnd(true)), "the recorded snapshot was handed over whole")
+        XCTAssertTrue(sink.calls.contains(.resized(80, 24, "client:01a1e5be-5feb-76e5-a8c1-193c7c071ffb")))
+        s.stop()
+    }
+
+    func testTheInputModeIsTheScriptsAndCostsARoundTrip() async {
+        var waits: [Duration] = []
+        let scripted = ScriptedEchoLink(writeDelay: .milliseconds(150)) { waits.append($0) }
+        let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let gate = EchoGate(forced: .on)
+        let s = scripted.stream(control: control, sessionID: "session:test", blockID: "block:test", echoGate: gate)
+        s.sink = Sink()
+        s.start()
+        _ = await eventually { !s.isFenced }
+        let none = await s.inputMode(marked: false)
+        XCTAssertNil(none, "a script that says nothing answers as a server without the method")
+        scripted.inputMode = (echo: false, canonical: false)
+        let mode = await s.inputMode(marked: false)
+        XCTAssertEqual(mode, EchoInputMode(echo: false, canonical: false))
+        XCTAssertEqual(waits, [.milliseconds(150), .milliseconds(150)])
+        s.stop()
+    }
 }

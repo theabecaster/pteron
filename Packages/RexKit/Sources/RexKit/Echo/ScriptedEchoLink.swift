@@ -4,7 +4,8 @@ import Foundation
 /// stream's own queue, funnel and round-trip samples run as they do against a server, while a
 /// script plays the server. `terminal.write` is answered after `writeDelay`, and the data
 /// socket carries `opening` after its handshake and then whatever `deliver` is given, when it
-/// is given.
+/// is given. `terminal.input_mode` is answered with `inputMode`, the tty's state at that moment
+/// of the script.
 ///
 /// `StreamLink` stays internal: this is the one way from outside the package to a stream on a
 /// link that is not a `RexControl`, and it is not part of the package's ordinary API
@@ -14,7 +15,8 @@ import Foundation
 public final class ScriptedEchoLink {
     private let link: Link
 
-    /// The nonce of the scripted stream's own messages (`APCFilter`).
+    /// The nonce of the scripted stream's own messages (`APCFilter`), unless `init` is given
+    /// the one of a recorded opening.
     public nonisolated static let nonce: UInt64 = 1
 
     /// The server's message for a pane of this size, as the data socket carries it.
@@ -24,10 +26,19 @@ public final class ScriptedEchoLink {
 
     /// `opening` is what the data socket carries first, where a server sends the pane's
     /// snapshot and its size: a recorded one, or by default the size alone, which starts the
-    /// pane empty. `sleep` is how `writeDelay` passes; a test passes its own.
+    /// pane empty. `nonce` is the one the opening's messages carry. `sleep` is how `writeDelay`
+    /// passes; a test passes its own.
     public init(writeDelay: Duration, opening: [UInt8] = ScriptedEchoLink.resize(cols: 80, rows: 24),
+                nonce: UInt64 = ScriptedEchoLink.nonce,
                 sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
-        link = Link(writeDelay: writeDelay, opening: opening, sleep: sleep)
+        link = Link(writeDelay: writeDelay, opening: opening, nonce: nonce, sleep: sleep)
+    }
+
+    /// What `terminal.input_mode` answers from now on: the tty's echo and canonical flags. Nil
+    /// (the default) answers without them, as a server that has no such method.
+    public var inputMode: (echo: Bool, canonical: Bool)? {
+        get { link.inputMode }
+        set { link.inputMode = newValue }
     }
 
     /// The texts of the writes the stream sent, in order.
@@ -49,13 +60,16 @@ public final class ScriptedEchoLink {
     private final class Link: StreamLink {
         let writeDelay: Duration
         let opening: [UInt8]
+        let nonce: UInt64
         let sleep: @MainActor (Duration) async -> Void
         var written: [String] = []
+        var inputMode: (echo: Bool, canonical: Bool)?
         var socket: Socket?
 
-        init(writeDelay: Duration, opening: [UInt8], sleep: @escaping @MainActor (Duration) async -> Void) {
+        init(writeDelay: Duration, opening: [UInt8], nonce: UInt64, sleep: @escaping @MainActor (Duration) async -> Void) {
             self.writeDelay = writeDelay
             self.opening = opening
+            self.nonce = nonce
             self.sleep = sleep
         }
 
@@ -73,6 +87,11 @@ public final class ScriptedEchoLink {
                 written.append(payload?.obj("args")?.str("data") ?? "")
                 await sleep(writeDelay)
                 return [:]
+            case "com.superlogical.terminal.input_mode":
+                // One round trip, as any call.
+                let mode = inputMode
+                await sleep(writeDelay)
+                return mode.map { ["echo": $0.echo, "canonical": $0.canonical] } ?? [:]
             default:
                 return [:]
             }
@@ -80,7 +99,7 @@ public final class ScriptedEchoLink {
 
         func openDataSocket(subprotocol: String) throws -> any StreamSocket {
             socket?.close()
-            let s = Socket(opening: opening)
+            let s = Socket(opening: opening, nonce: nonce)
             socket = s
             return s
         }
@@ -91,9 +110,13 @@ public final class ScriptedEchoLink {
     @MainActor
     private final class Socket: StreamSocket {
         private let opening: [UInt8]
+        private let nonce: UInt64
         private var handshaken = false
 
-        init(opening: [UInt8]) { self.opening = opening }
+        init(opening: [UInt8], nonce: UInt64) {
+            self.opening = opening
+            self.nonce = nonce
+        }
         private var inbox: [Result<Data?, Error>] = []
         private var waiter: CheckedContinuation<Data?, Error>?
         private(set) var closeCode = 0
@@ -104,7 +127,7 @@ public final class ScriptedEchoLink {
             guard !handshaken else { return }
             handshaken = true
             var b: [UInt8] = [0x81] + [UInt8](repeating: 0xAB, count: 16) + [0, 0, 0]
-            let keepMs: UInt32 = 60_000, nonce = ScriptedEchoLink.nonce
+            let keepMs: UInt32 = 60_000
             for k in 0..<4 { b.append(UInt8((keepMs >> (8 * UInt32(k))) & 0xff)) }
             for k in 0..<8 { b.append(UInt8((nonce >> (8 * UInt64(k))) & 0xff)) }
             deliver(.success(Data(b)))

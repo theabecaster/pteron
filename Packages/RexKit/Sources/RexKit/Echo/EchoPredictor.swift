@@ -254,8 +254,9 @@ public final class EchoPredictor {
         settledAtStart = settled
     }
 
-    /// Guesses are tracked (drawn or not).
-    public var hasPending: Bool { epoch != nil }
+    /// A key is tracked and not confirmed yet (drawn or not). A line whose keys are all
+    /// confirmed has nothing pending: a lower level may apply, and the predictor may go.
+    public var hasPending: Bool { epoch.map { $0.confirmed < $0.keys.count } ?? false }
 
     /// The generation of an `input_mode` reading the predictor wants, once. Answer it with
     /// `inputMode(_:foreground:generation:)`.
@@ -447,9 +448,15 @@ public final class EchoPredictor {
         publish(grid: grid, now: now)
     }
 
-    /// 50 ms passed since the answer at `answer`.
+    /// 50 ms passed since the answer at `answer`. Before the predictor has heard an answer of
+    /// its own, that is the stream's settle from when it began to listen: the start it was made
+    /// with (`settled: false`) is over.
     public func settled(after answer: Double) {
-        if answer == lastAnswerAt { settledAt = answer }
+        guard let last = lastAnswerAt else {
+            settledAtStart = true
+            return
+        }
+        if answer == last { settledAt = answer }
     }
 
     /// Input through `seq` was dropped, or will arrive unpredicted: every guess goes.

@@ -104,7 +104,8 @@ public final class EchoGate {
 
     public private(set) var level = EchoLevel.off
     public private(set) var roundTrip = WriteRoundTrip()
-    /// `-predict never|always` (tests and the benchmark): the level, whatever the samples say.
+    /// The level, whatever the samples say: set by tests, and by `-predict never|always` in a
+    /// Debug build. Nothing sets it in a shipped app.
     public var forced: EchoLevel? {
         didSet { publish() }
     }

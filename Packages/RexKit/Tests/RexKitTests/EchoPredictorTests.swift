@@ -61,6 +61,25 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertNil(s.overlay)
     }
 
+    /// A predictor made while the stream had not settled (it just began to listen) takes no
+    /// key until the stream's settle arrives, and takes keys from then on.
+    func testAPredictorMadeUnsettledStartsWithTheStreamsSettle() {
+        var grid = FakeEchoGrid(cols: 80, rows: 24)
+        grid.write("$ ")
+        let p = EchoPredictor(level: .slow, lastSeq: 0, answeredThrough: 0, settled: false)
+        p.typed(char("a"), seq: 1, at: 100, grid: grid)
+        XCTAssertEqual(p.counters.placed, 0, "inside the 50 ms after it began to listen: a boundary")
+        p.answered(through: 1, at: 100.15, now: 100.15, grid: grid)
+        p.settled(after: 100.15)
+        p.typed(char("b"), seq: 2, at: 100.3, grid: grid)
+        XCTAssertEqual(p.counters.placed, 1)
+
+        let q = EchoPredictor(level: .slow, lastSeq: 0, answeredThrough: 0, settled: false)
+        q.settled(after: 99.9)
+        q.typed(char("a"), seq: 1, at: 100, grid: grid)
+        XCTAssertEqual(q.counters.placed, 1, "the settle of the moment it began to listen opens the first epoch")
+    }
+
     func testEchoBeforeItsAnswerConfirmsAtTheAnswer() {
         let s = ready()
         let k = s.key(char("b"))
