@@ -36,7 +36,8 @@ import Synchronization
 /// `mismatched`, `vanished` and the rest, summed over the run's predictors) and what a key cost
 /// in microseconds: `mainKeyUs` on the main thread (the host's gate and the hand-off to the feed
 /// queue; `mainGateUs` is the gate alone, the rest is waking the feed queue; `mainSendUs` is
-/// the whole of the host's send of one typed key, with or without predicted echo), `feedKeyUs` on the feed queue (placing the guess and publishing the overlay) and
+/// the whole of the host's send of one typed key, with or without predicted echo), `feedKeyUs`
+/// (split into `feedGridUs`, `feedCallUs` and `feedPublishUs`, with `feedCellReads`) on the feed queue (placing the guess and publishing the overlay) and
 /// `feedSliceUs` (the overlay's check after a slice of output while a predictor exists).
 ///
 /// `-echoScript <file>` (`EchoScriptPlayer`, the benchmark's `predict` scenario) turns the probe
@@ -66,7 +67,7 @@ final class EchoProbe: Sendable {
 
     /// A step of a key's path whose cost is sampled.
     enum Cost: Int, CaseIterable {
-        case mainSend, mainKey, mainGate, feedKey, feedSlice
+        case mainSend, mainKey, mainGate, feedKey, feedGrid, feedCall, feedPublish, feedSlice
 
         var title: String {
             switch self {
@@ -74,6 +75,9 @@ final class EchoProbe: Sendable {
             case .mainKey: "mainKeyUs"
             case .mainGate: "mainGateUs"
             case .feedKey: "feedKeyUs"
+            case .feedGrid: "feedGridUs"
+            case .feedCall: "feedCallUs"
+            case .feedPublish: "feedPublishUs"
             case .feedSlice: "feedSliceUs"
             }
         }
@@ -88,6 +92,7 @@ final class EchoProbe: Sendable {
         /// The counters of predictors that retired during the run.
         var retired: [EchoPredictor.Counters] = []
         weak var watched: GhosttyCore?
+        var cellReads: [Double] = []
         /// What the screen showed each time a predictor counted a wrong guess, a cap or a reset.
         var trace: [String] = []
         var traced = [0, 0, 0]
@@ -103,9 +108,15 @@ final class EchoProbe: Sendable {
     @inline(__always) static func clock() -> Double { CACurrentMediaTime() }
 
     /// A step that began at `began` (`clock()`) ends now.
-    func cost(_ what: Cost, since began: Double) {
-        let took = Self.clock() - began
+    func cost(_ what: Cost, since began: Double) { cost(what, seconds: Self.clock() - began) }
+
+    func cost(_ what: Cost, seconds took: Double) {
         state.withLock { s in if s.costs[what.rawValue].count < Self.costCap { s.costs[what.rawValue].append(took) } }
+    }
+
+    /// A key's op on the feed queue read this many cells from the terminal.
+    func cellsRead(_ n: Int) {
+        state.withLock { s in if s.cellReads.count < Self.costCap { s.cellReads.append(Double(n)) } }
     }
 
     /// The feed queue published the overlay of the pane of `core`: a typed key whose letter it
@@ -246,7 +257,7 @@ final class EchoProbe: Sendable {
     /// The result, as written to the file. `live` is the counters of the pane's predictor, if
     /// it has one now.
     func result(live: EchoPredictor.Counters? = nil) -> [String: Any] {
-        let (keys, costs, retired, trace) = state.withLock { ($0.keys, $0.costs, $0.retired, $0.trace) }
+        let (keys, costs, retired, trace, cellReads, watched) = state.withLock { ($0.keys, $0.costs, $0.retired, $0.trace, $0.cellReads, $0.watched) }
         func ms(_ a: Double, _ b: Double?) -> Double? { b.map { (($0 - a) * 1e5).rounded() / 100 } }
         func visible(_ k: Key) -> Double? { [k.predicted, k.shown].compactMap { $0 }.min() }
         let fed = keys.compactMap { ms($0.typed, $0.fed) }, shown = keys.compactMap { ms($0.typed, $0.shown) }
@@ -287,6 +298,10 @@ final class EchoProbe: Sendable {
         ]
         for (name, n) in counters { out[name] = n }
         out["trace"] = trace
+        // Predictors the pane ever made: none on a link that stayed fast.
+        out["predictors"] = watched?.echo.created.load(ordering: .relaxed) ?? 0
+        let reads: [String: Any] = ["count": cellReads.count, "median": pct(cellReads, 0.5) ?? NSNull(), "max": cellReads.max() ?? NSNull()]
+        out["feedCellReads"] = reads
         for c in Cost.allCases {
             let us = costs[c.rawValue].map { ($0 * 1e8).rounded() / 100 }
             let numbers: [String: Any] = ["count": us.count, "median": pct(us, 0.5) ?? NSNull(), "p95": pct(us, 0.95) ?? NSNull(),

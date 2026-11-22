@@ -172,6 +172,9 @@ public final class EchoGate {
 
     public func unwatch(_ id: UUID) { watchers[id] = nil }
 
+    /// How many panes follow the gate now (tests).
+    var watcherCount: Int { watchers.count }
+
     private func publish() {
         let l = effective
         for w in watchers.values { w.changed(l) }

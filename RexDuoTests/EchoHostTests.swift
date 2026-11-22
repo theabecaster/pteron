@@ -1,3 +1,4 @@
+import Metal
 import Synchronization
 import XCTest
 @testable import RexDuo
@@ -14,6 +15,9 @@ final class EchoHostTests: XCTestCase {
     @MainActor private final class Settles {
         private var waiting: [CheckedContinuation<Void, Never>] = []
         var count: Int { waiting.count }
+        /// Settles that passed and whose task has run on: it tells its observer in the same
+        /// turn of the main queue.
+        private(set) var passed = 0
 
         func sleep(_ d: Duration) async {
             guard d == .milliseconds(50) else {
@@ -21,6 +25,7 @@ final class EchoHostTests: XCTestCase {
                 return
             }
             await withCheckedContinuation { waiting.append($0) }
+            passed += 1
         }
 
         func pass() {
@@ -64,6 +69,7 @@ final class EchoHostTests: XCTestCase {
         link.deliver(Array(prompt.utf8))
         await wait("the prompt") { host.term.core.sync(); return host.term.core.rowText(0) == "$" }
         let p = Pane(settles: settles, host: host, stream: stream, link: link, gate: gate)
+        panes.append(p)
         if settled, stream.writeObserver != nil { await settle(p) }
         return p
     }
@@ -78,9 +84,41 @@ final class EchoHostTests: XCTestCase {
             await Task.yield()
         }
         XCTAssertGreaterThan(p.settles.count, 0, "no settle was waiting", file: file, line: line)
+        let want = p.settles.passed + p.settles.count
         p.settles.pass()
-        await Task.yield()
+        turns = 0
+        while p.settles.passed < want, turns < 20 {
+            turns += 1
+            await Task.yield()
+        }
+        XCTAssertEqual(p.settles.passed, want, "the settle's task did not run on within 20 turns", file: file, line: line)
         p.core.sync()
+    }
+
+    private var panesBefore = 0
+    private var panes: [Pane] = []
+
+    override func setUp() async throws {
+        panesBefore = GhosttyRenderThread.shared.paneCount
+    }
+
+    /// Every pane a test made is gone when it ends: predicted echo holds on to no host, stream
+    /// or core (the host's watch on the gate, the core's event handler and the stream's
+    /// observers are all weak).
+    override func tearDown() async throws {
+        weak let host = panes.first?.host
+        weak let stream = panes.first?.stream
+        for p in panes {
+            p.settles.pass()
+            }
+        panes = []
+        var turns = 0
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+            turns += 1
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore,
+                       "LEAKCHECK \(name): panes left; the first host is \(host == nil ? "gone" : "alive"), its stream \(stream == nil ? "gone" : "alive")")
     }
 
     /// Types one key and waits until its write was answered. `settled` lets the answer's 50 ms
@@ -128,7 +166,6 @@ final class EchoHostTests: XCTestCase {
         XCTAssertEqual(guesses(p), "", "the server shows it")
         XCTAssertEqual(p.link.written.joined(), "ls", "what was typed is what was sent")
         XCTAssertEqual(p.core.echoCounters?.mismatched, 0)
-        p.host.stop()
     }
 
     /// The acknowledgement rule (`EchoPredictor.acknowledged(before:)`): a line's first key is
@@ -158,7 +195,6 @@ final class EchoHostTests: XCTestCase {
         p.host.term.insertText("y")
         XCTAssertEqual(guesses(p), "y")
         XCTAssertEqual(p.core.echoCounters?.mismatched, 0)
-        p.host.stop()
     }
 
     func testAnAgentPaneNeverPredicts() async {
@@ -169,7 +205,6 @@ final class EchoHostTests: XCTestCase {
         XCTAssertEqual(p.core.echoCounters?.placed, 0, "no key was even tracked")
         XCTAssertEqual(p.core.echo.publishes.load(ordering: .relaxed), 0)
         XCTAssertNil(p.core.publishedEcho)
-        p.host.stop()
     }
 
     func testOtherProgramsAndAnUnknownForegroundNeverPredict() async {
@@ -180,8 +215,7 @@ final class EchoHostTests: XCTestCase {
             p.host.term.insertText("s")
             XCTAssertEqual(guesses(p), "", "\(foreground ?? "nil") context=\(context)")
             XCTAssertEqual(p.core.echoCounters?.placed, 0, "\(foreground ?? "nil") context=\(context)")
-            p.host.stop()
-        }
+            }
     }
 
     func testASelectionOrFindOrAScrolledViewMakesKeysBoundaries() async {
@@ -195,7 +229,6 @@ final class EchoHostTests: XCTestCase {
         p.host.sendKey([0x73])
         XCTAssertEqual(guesses(p), "")
         XCTAssertEqual(p.core.echoCounters?.placed, placed, "a key typed under a selection is not tracked")
-        p.host.stop()
     }
 
     func testSeveralBytesInOneCallAreNeverAGuess() async {
@@ -209,7 +242,6 @@ final class EchoHostTests: XCTestCase {
         p.host.sendKey(Array("\u{1b}[A".utf8))
         XCTAssertEqual(guesses(p), "")
         XCTAssertEqual(p.core.echoCounters?.placed, placed)
-        p.host.stop()
     }
 
     func testTheHostStopsListeningWhenTheGateTurnsPredictionsOff() async {
@@ -230,7 +262,6 @@ final class EchoHostTests: XCTestCase {
         XCTAssertNotNil(p.stream.inputObserver)
         p.core.sync()
         XCTAssertEqual(p.core.echo.created.load(ordering: .relaxed), 2)
-        p.host.stop()
     }
 
     func testAGateResetClearsEveryGuess() async {
@@ -243,7 +274,6 @@ final class EchoHostTests: XCTestCase {
         p.gate.reset()
         XCTAssertEqual(guesses(p), "")
         XCTAssertFalse(p.core.echoUnsettled)
-        p.host.stop()
     }
 
     /// A prompt whose shell says a click moves the cursor with arrow keys.
@@ -282,7 +312,6 @@ final class EchoHostTests: XCTestCase {
         XCTAssertNil(view.taps.heldPrompt)
         // The cursor is on column 14: ten steps left to column 4.
         XCTAssertEqual(p.link.written.last, String(repeating: "\u{1b}[D", count: 10))
-        p.host.stop()
     }
 
     func testAHeldPromptClickIsDroppedByAKeyAndByTime() async {
@@ -318,6 +347,125 @@ final class EchoHostTests: XCTestCase {
         for _ in 0..<5 { await Task.yield() }
         XCTAssertNil(view.taps.heldPrompt)
         XCTAssertEqual(p.link.written.count, sent, "nothing was sent")
-        p.host.stop()
+    }
+
+    // MARK: Release
+
+    /// What predicted echo makes or touches for a pane, held weakly.
+    private struct Held {
+        weak var host: TerminalHost?
+        weak var stream: TerminalStream?
+        weak var core: GhosttyCore?
+        weak var predictor: EchoPredictor?
+        weak var renderer: GhosttyRenderer?
+        weak var frame: GhosttyFrameBuilder?
+        weak var watch: EchoGateWatch?
+        var hadPredictor: Bool
+        var hadEchoBuffers: Bool
+
+        var alive: [String] {
+            let all: [(String, AnyObject?)] = [("host", host), ("stream", stream), ("core", core), ("predictor", predictor),
+                                               ("renderer", renderer), ("frame builder", frame), ("gate watch", watch)]
+            return all.filter { $0.1 != nil }.map(\.0)
+        }
+    }
+
+    private enum Leaving: CaseIterable {
+        /// The pane is closed.
+        case stopped
+        /// The pane leaves the screen, parks, and the park lets it go.
+        case parkedThenEvicted
+        /// The pane parks and its computer is removed from the app.
+        case computerRemoved
+        /// The link changes under the gate, then the pane is closed.
+        case gateResetThenStopped
+    }
+
+    /// Makes a pane, types at it (on a slow link until a guess is drawn and its buffers are
+    /// filled), lets it leave by `how`, and returns what it held. Nothing of the pane is in
+    /// scope when it returns.
+    private func used(gate level: EchoLevel?, leaving how: Leaving, gate out: inout EchoGate?) async throws -> Held {
+        let p = await pane(level: level)
+        out = p.gate
+        await type(p, "l")
+        await echo(p, "l", row: "$ l")
+        p.host.term.insertText("s")
+        if level != nil {
+            XCTAssertEqual(guesses(p), "s", "\(how)")
+            // A frame with the guess: the row builder's echo lists and the renderer's buffers.
+            let metal = try XCTUnwrap(GhosttyMetal.shared)
+            let m = p.host.term.atlas.metrics
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 80 * m.cellWidth, height: 24 * m.cellHeight, mipmapped: false)
+            d.usage = [.renderTarget, .shaderRead]
+            let texture = try XCTUnwrap(metal.device.makeTexture(descriptor: d))
+            XCTAssertTrue(p.host.term.renderer.renderOffscreen(into: texture, now: 100))
+        } else {
+            XCTAssertEqual(guesses(p), "")
+        }
+        p.core.sync()
+        let predictor = p.core.echo.predictor
+        let held = Held(host: p.host, stream: p.stream, core: p.core, predictor: predictor, renderer: p.host.term.renderer,
+                        frame: p.host.term.renderer.frame, watch: p.host.echoWatch, hadPredictor: predictor != nil,
+                        hadEchoBuffers: p.host.term.renderer.hasEchoBuffers)
+        panes.removeAll { $0.host === p.host }
+        p.settles.pass()
+        let pool = TerminalHostPool()
+        let server = UUID()
+        switch how {
+        case .stopped:
+            p.host.stop()
+        case .parkedThenEvicted:
+            pool.add(p.host, for: TerminalHostPool.Key(server: server, session: "s", block: "b"))
+            p.host.park()
+            pool.evictParked()
+        case .computerRemoved:
+            pool.add(p.host, for: TerminalHostPool.Key(server: server, session: "s", block: "b"))
+            p.host.park()
+            pool.keep(selected: nil, servers: [], sessions: [:])
+            XCTAssertNil(pool.host(for: TerminalHostPool.Key(server: server, session: "s", block: "b")), "the pool let the pane go")
+        case .gateResetThenStopped:
+            p.gate.reset()
+            p.host.stop()
+        }
+        return held
+    }
+
+    private func assertReleased(_ held: Held, gate: EchoGate?, _ what: String, file: StaticString = #filePath, line: UInt = #line) async {
+        var turns = 0
+        while !held.alive.isEmpty || (gate?.watcherCount ?? 0) > 0, turns < 1500 {
+            turns += 1
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertEqual(held.alive, [], "\(what): still alive", file: file, line: line)
+        XCTAssertEqual(gate?.watcherCount ?? 0, 0, "\(what): the gate still holds the pane's watch", file: file, line: line)
+    }
+
+    /// A pane that drew guesses leaves nothing behind, however it leaves: its host and stream,
+    /// its core with the predictor, its renderer with the echo buffers, the row builder with
+    /// the echo lists, and its watch on the gate all go, and the gate forgets the watch.
+    func testAPaneThatPredictedIsReleasedHoweverItLeaves() async throws {
+        for how in Leaving.allCases {
+            var gate: EchoGate?
+            let held = try await used(gate: .slow, leaving: how, gate: &gate)
+            XCTAssertTrue(held.hadPredictor, "\(how): the pane had a predictor")
+            XCTAssertTrue(held.hadEchoBuffers, "\(how): the pane had echo buffers")
+            await assertReleased(held, gate: gate, "\(how)")
+            // And the gate itself goes once nothing uses it.
+            weak let gone = gate
+            gate = nil
+            XCTAssertNil(gone, "\(how): the gate")
+        }
+    }
+
+    /// The same for a pane whose gate stayed off (a fast link): it never had a predictor or an
+    /// echo buffer, and it is released the same way.
+    func testAPaneOnAFastLinkIsReleasedHoweverItLeaves() async throws {
+        for how in Leaving.allCases {
+            var gate: EchoGate?
+            let held = try await used(gate: nil, leaving: how, gate: &gate)
+            XCTAssertFalse(held.hadPredictor, "\(how): no predictor on a fast link")
+            XCTAssertFalse(held.hadEchoBuffers, "\(how): no echo buffers on a fast link")
+            await assertReleased(held, gate: gate, "\(how)")
+        }
     }
 }

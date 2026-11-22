@@ -13,26 +13,32 @@ import UIKit
 // While the gate says the link is fast the host is not an observer of its stream at all: the
 // key path is the one without predicted echo.
 
-/// A host's watch on its server's gate.
-@MainActor
+/// A host's watch on its server's gate. It ends with the host: the gate keeps nothing of a pane
+/// that is gone, however the pane left (closed, evicted from the park, its computer removed).
 final class EchoGateWatch {
-    fileprivate var id: UUID?
+    private let id: UUID
+    private weak var gate: EchoGate?
+
+    fileprivate init(id: UUID, gate: EchoGate) {
+        self.id = id
+        self.gate = gate
+    }
+
+    deinit {
+        // The gate is main-actor state; a host can be let go from anywhere.
+        guard let gate else { return }
+        let id = id
+        Task { @MainActor in gate.unwatch(id) }
+    }
 }
 
 extension TerminalHost: EchoInputObserver, EchoWriteObserver {
     /// Starts following the server's gate. Called once, when the host is made.
     func followEchoGate() {
         guard let gate = stream.echoGate, echoWatch == nil else { return }
-        let watch = EchoGateWatch()
-        watch.id = gate.watch(changed: { [weak self, weak gate, weak watch] level in
-            guard let self else {
-                // The host is gone: so is its watch.
-                if let id = watch?.id { gate?.unwatch(id) }
-                return
-            }
-            self.echoWants(level)
-        }, reset: { [weak self] in self?.echoGateReset() })
-        echoWatch = watch
+        let id = gate.watch(changed: { [weak self] level in self?.echoWants(level) },
+                            reset: { [weak self] in self?.echoGateReset() })
+        echoWatch = EchoGateWatch(id: id, gate: gate)
         term.core.onEcho = { [weak self] event in
             Task { @MainActor in self?.echoEvent(event) }
         }

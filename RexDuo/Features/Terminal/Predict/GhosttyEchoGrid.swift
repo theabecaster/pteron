@@ -14,8 +14,11 @@ struct GhosttyEchoGrid: EchoGrid {
     private final class Row {
         var y = -1
         var cells: [EchoCell?] = []
+        var reads = 0
     }
     private let kept = Row()
+    /// Cells read from the terminal so far (the probe's count).
+    var cellReads: Int { kept.reads }
     let cols: Int
     let rows: Int
     let cursorX: Int
@@ -80,6 +83,7 @@ struct GhosttyEchoGrid: EchoGrid {
         }
         if let have = kept.cells[x] { return have }
         let read = readCell(x, y)
+        kept.reads += 1
         kept.cells[x] = read
         return read
     }

@@ -118,11 +118,24 @@ extension GhosttyCore {
                 termLock.unlock()
                 return
             }
-            let began = cost != nil && EchoProbe.active != nil ? EchoProbe.clock() : 0  // PERF
-            body(p, GhosttyEchoGrid(t, marks: promptWatch.marks), echo.now)
+            // PERF: a timed op is split in three (the grid's facts, the predictor's call, the
+            // publish), with the cells it read from the terminal.
+            let probe = cost != nil ? EchoProbe.active : nil
+            let began = probe != nil ? EchoProbe.clock() : 0
+            let grid = GhosttyEchoGrid(t, marks: promptWatch.marks)
+            let made = probe != nil ? EchoProbe.clock() : 0
+            body(p, grid, echo.now)
+            let called = probe != nil ? EchoProbe.clock() : 0
             var events: [GhosttyEchoEvent] = []
             let changed = echoPublish(&events)
-            if let cost { EchoProbe.active?.cost(cost, since: began) }  // PERF
+            if let probe, let cost {
+                let done = EchoProbe.clock()
+                probe.cost(cost, seconds: done - began)
+                probe.cost(.feedGrid, seconds: made - began)
+                probe.cost(.feedCall, seconds: called - made)
+                probe.cost(.feedPublish, seconds: done - called)
+                probe.cellsRead(grid.cellReads)
+            }
             echoTrace(changed: changed)  // PERF
             termLock.unlock()
             if changed { onDirty?() }
