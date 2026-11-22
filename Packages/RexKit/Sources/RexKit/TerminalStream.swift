@@ -530,18 +530,24 @@ public final class TerminalStream {
     private var hasScreen = false
 
     /// `echoGate` is the server's predicted-echo gate: the stream gives it a sample per answered
-    /// write of typed text (two clock reads, no traffic).
-    public convenience init(control: RexControl, sessionID: String, blockID: String, echoGate: EchoGate? = nil) {
-        self.init(control: control, link: control, sessionID: sessionID, blockID: blockID, echoGate: echoGate)
+    /// write of typed text (two clock reads, no traffic). `syncCalls` is the server's gate for
+    /// the reads of a sync on a costly path: a write timed while one is out is no sample, and
+    /// the stream's own `inputMode` read goes through it ahead of them.
+    public convenience init(control: RexControl, sessionID: String, blockID: String,
+                            echoGate: EchoGate? = nil, syncCalls: CallGate? = nil) {
+        self.init(control: control, link: control, sessionID: sessionID, blockID: blockID,
+                  echoGate: echoGate, syncCalls: syncCalls)
     }
 
     /// `link` stands in for `control` in tests.
-    init(control: RexControl, link: any StreamLink, sessionID: String, blockID: String, echoGate: EchoGate? = nil) {
+    init(control: RexControl, link: any StreamLink, sessionID: String, blockID: String,
+         echoGate: EchoGate? = nil, syncCalls: CallGate? = nil) {
         self.control = control
         self.link = link
         self.sessionID = sessionID
         self.blockID = blockID
         self.echoGate = echoGate
+        self.syncCalls = syncCalls
         link.observeConnected { [weak self] in
             guard let self else { return false }
             self.controlConnected()
@@ -559,42 +565,75 @@ public final class TerminalStream {
 
     /// The server's write round trip and when predictions are on. Nil: no samples.
     public let echoGate: EchoGate?
+    /// The server's gate for sync reads on a costly path (cellular, a hotspot). Nil: none.
+    private let syncCalls: CallGate?
+    /// The clock of every echo time the stream takes; a test passes its own.
+    var echoNow: @MainActor () -> Double = { EchoClock.now }
     /// Hears every input call, classified from its bytes, before it is queued. Nil while the
-    /// pane's level is `.off`: the key path is then exactly what it is without predictions.
-    public weak var inputObserver: EchoInputObserver?
+    /// pane's level is `.off`: the key path is then exactly what it is without predictions, one
+    /// nil check for each input call, with no number given and no clock read.
+    public weak var inputObserver: EchoInputObserver? {
+        didSet { if oldValue == nil, inputObserver != nil { echoAttached() } }
+    }
     /// Hears what happens to queued input. Nil while the pane's level is `.off`.
     public weak var writeObserver: EchoWriteObserver?
-    /// The sequence number of the last input call. Every call that queues or holds input gets one.
+    /// The sequence number of the last input call an observer heard of. Input is numbered only
+    /// while `inputObserver` is set.
     public private(set) var inputSeq = 0
-    /// The newest input the server answered.
+    /// The newest input the server answered, as far as an observer heard.
     public private(set) var answeredSeq = 0
-    /// When the last answer arrived (`EchoClock`).
+    /// When the last answer an observer heard of arrived, or when the observer was set.
     public private(set) var lastAnswerAt: Double?
+    /// The number that stands for all input queued or out when the observer was set: it had no
+    /// number of its own.
+    private var unseenThrough = 0
     private var settleSerial = 0
 
     /// The acknowledgement state a predictor starts from.
     public var echoAck: (lastSeq: Int, answeredThrough: Int, settled: Bool) {
-        let settled = lastAnswerAt.map { EchoClock.now - $0 >= EchoPredictor.settle } ?? true
+        let settled = lastAnswerAt.map { echoNow() - $0 >= EchoPredictor.settle } ?? true
         return (inputSeq, hasPendingInput ? answeredSeq : inputSeq, settled)
     }
 
-    /// Numbers an input call and tells the observer what it is. `kind` is only computed when
-    /// someone listens.
+    /// An observer was set. Input still queued or out was never numbered: one number stands for
+    /// all of it, so nothing new counts as acknowledged before it is answered. Answers that
+    /// came unobserved left no time, so the stream counts as settled only 50 ms from now.
+    private func echoAttached() {
+        if hasPendingInput {
+            inputSeq += 1
+            unseenThrough = inputSeq
+        } else {
+            answeredSeq = inputSeq
+        }
+        let at = echoNow()
+        lastAnswerAt = at
+        settleAfter(at)
+    }
+
+    /// The number of the last input call `item` holds, as the observer knows it.
+    private func seq(_ item: InputItem) -> Int { max(item.through, unseenThrough) }
+
+    /// Numbers an input call and tells the observer what it is. Without an observer it does
+    /// nothing: the item carries the last number given, and `echoAttached` covers it.
     @inline(__always)
     private func noteInput(_ kind: @autoclosure () -> EchoInputKind) -> Int {
+        guard let observer = inputObserver else { return inputSeq }
         inputSeq += 1
-        inputObserver?.input(kind(), seq: inputSeq)
+        observer.input(kind(), seq: inputSeq)
         return inputSeq
     }
 
-    /// The server answered the item holding input through `seq`. With an observer, its settle
-    /// op follows 50 ms later unless a newer answer replaces it.
-    private func echoAnswered(through seq: Int) {
-        let at = EchoClock.now
+    /// The server answered the item holding input through `seq`. Its settle op follows 50 ms
+    /// later unless a newer answer replaces it.
+    private func echoAnswered(through seq: Int, at: Double) {
+        guard let observer = writeObserver else { return }
         answeredSeq = max(answeredSeq, seq)
         lastAnswerAt = at
-        guard let observer = writeObserver else { return }
         observer.answered(through: seq, at: at)
+        settleAfter(at)
+    }
+
+    private func settleAfter(_ at: Double) {
         settleSerial += 1
         let serial = settleSerial, sleep = self.sleep
         Task { [weak self] in
@@ -608,11 +647,24 @@ public final class TerminalStream {
         writeObserver?.cleared(reason, through: seq ?? inputSeq)
     }
 
-    /// The terminal's (echo, canonical) state: a `terminal.input_mode` read, outside the input
-    /// queue (a read; its order against writes does not matter). Nil when it fails or a field
-    /// is missing.
-    public func inputMode() async -> EchoInputMode? {
-        EchoInputMode(reply: try? await blockCall("com.superlogical.terminal.input_mode"))
+    /// The terminal's (echo, canonical) state, for a pane that must prove its program echoes
+    /// what is typed. Nil when nothing was read or the read failed or lacks a field.
+    ///
+    /// It reads `terminal.input_mode` only when nothing nearer answers:
+    /// - never while the server's gate is off, or without one: nothing predicts then;
+    /// - never when `marked`: the shell sends OSC 133, and its marks say where input is read;
+    /// - otherwise one read, outside the input queue (its order against writes does not
+    ///   matter). On a costly path it goes through the sync's gate as a call for the user: at
+    ///   once, ahead of every sync read, which yield a place to it.
+    public func inputMode(marked: Bool) async -> EchoInputMode? {
+        guard let gate = echoGate, gate.effective != .off, !marked else { return nil }
+        let reply: JSONObject?
+        if control.onExpensivePath, let syncCalls {
+            reply = await syncCalls.run(priority: .user) { try? await self.blockCall("com.superlogical.terminal.input_mode") }
+        } else {
+            reply = try? await blockCall("com.superlogical.terminal.input_mode")
+        }
+        return EchoInputMode(reply: reply)
     }
 
     /// The fence's four ties to the stream.
@@ -1607,20 +1659,19 @@ public final class TerminalStream {
         let item = inputQueue.removeFirst()
         flightID += 1
         let id = flightID, epoch = inputEpoch
-        writeObserver?.left(through: item.through)
+        if let observer = writeObserver { observer.left(through: seq(item)) }
         switch item {
         case .text(let text, _):
             // The round trip runs from here, so time spent waiting in the queue never counts.
-            let gate = echoGate
-            let started = gate == nil ? 0 : EchoClock.now
+            // Without a gate nothing is timed.
+            let timed = echoGate.map { _ in Flight(started: echoNow(), syncMark: syncCalls?.mark) }
             Task {
                 var failure: Error?
                 do {
                     _ = try await self.blockCall("com.superlogical.terminal.write", args: ["data": text])
-                    gate?.sample(ms: (EchoClock.now - started) * 1000)
                     self.onWritten?()
                 } catch { failure = error }
-                self.finished(item, failure: failure, id: id, epoch: epoch)
+                self.finished(item, failure: failure, id: id, epoch: epoch, timed: timed)
             }
         case .work(let work, _):
             Task {
@@ -1639,13 +1690,31 @@ public final class TerminalStream {
         }
     }
 
-    /// The request for `item` ended.
-    private func finished(_ item: InputItem, failure: Error?, id: Int, epoch: Int) {
+    /// What a write of typed text needs for its round-trip sample.
+    private struct Flight {
+        /// When it left (`echoNow`).
+        let started: Double
+        /// `CallGate.mark` when it left: nil while a sync read was out, or without a gate.
+        let syncMark: Int?
+    }
+
+    /// The request for `item` ended. `timed` is set for a write of typed text when the server
+    /// has an echo gate.
+    private func finished(_ item: InputItem, failure: Error?, id: Int, epoch: Int, timed: Flight? = nil) {
         // False for an action that `actionHold` gave up waiting for: later items have gone out.
         let current = inFlight && flightID == id
         if current { inFlight = false }
-        // An answer after `stop()` or `park()` says nothing about this pane's screen now.
-        if failure == nil, current, epoch == inputEpoch { echoAnswered(through: item.through) }
+        // An answer after `stop()` or `park()` says nothing about this pane's screen now, and
+        // nothing about the link as it is now either: no sample, no word to the observer.
+        if failure == nil, current, epoch == inputEpoch, timed != nil || writeObserver != nil {
+            let now = echoNow()
+            // A write that shared the connection with a sync's reads on a costly path timed our
+            // own queue, not the network: it is no sample.
+            if let timed, syncCalls.map({ $0.quiet(since: timed.syncMark) }) ?? true {
+                echoGate?.sample(ms: (now - timed.started) * 1000, at: now)
+            }
+            echoAnswered(through: seq(item), at: now)
+        }
         if case .work(let work, _) = item, let once = work.once {
             // Told whatever happened since, a `stop()` too: its request did leave, or didn't.
             let delivery = Delivery(failure: failure)
@@ -1653,7 +1722,7 @@ public final class TerminalStream {
             if delivery == .unknown, current, epoch == inputEpoch {
                 dropQueue(echo: .unknown)
             } else if failure != nil, epoch == inputEpoch {
-                echoCleared(delivery == .unknown ? .unknown : .refused, through: item.through)
+                echoCleared(delivery == .unknown ? .unknown : .refused, through: seq(item))
             }
             once(delivery)
             if current { pump() }
@@ -1666,7 +1735,7 @@ public final class TerminalStream {
             return
         }
         if case .work(let work, _) = item, work.fromPalette {
-            paletteWorkFailed(work, failure: failure, current: current, through: item.through)
+            paletteWorkFailed(work, failure: failure, current: current, through: seq(item))
             return
         }
         switch Self.fate(of: failure) {
@@ -1684,14 +1753,14 @@ public final class TerminalStream {
             if link.isConnected { retryInputSoon() }
         case .unsent, .refused:
             // Dropped: text writes go silently, so the guesses for them go too.
-            echoCleared(.refused, through: item.through)
+            echoCleared(.refused, through: seq(item))
             if case .work(let work, _) = item, let action = work.action {
                 onActionFailed?(Self.unsent(failure) ? .actionNotSent(action: action, title: work.title)
                                                      : .actionRefused(action: action, title: work.title, code: Self.code(failure)))
             }
             if current { pump() }
         case .unknown:
-            if current { dropQueue(echo: .unknown) } else { echoCleared(.unknown, through: item.through) }
+            if current { dropQueue(echo: .unknown) } else { echoCleared(.unknown, through: seq(item)) }
             if case .work(let work, _) = item, let action = work.action {
                 onActionFailed?(.actionLost(action: action, title: work.title))
             } else {
