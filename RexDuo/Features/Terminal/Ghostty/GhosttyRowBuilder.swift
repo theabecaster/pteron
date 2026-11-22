@@ -1,6 +1,7 @@
 import Foundation
 import GhosttyVt
 import QuartzCore
+import RexKit
 
 /// A filled rectangle. Layout matches `RectInstance` in GhosttyShaders.metal (16 bytes).
 struct GhosttyRectInstance {
@@ -273,6 +274,9 @@ final class GhosttyRowBuilder {
         }
         return changed
     }
+
+    /// Palette entry `i` of this frame, packed.
+    @inline(__always) func paletteColor(_ i: Int) -> UInt32 { palette[i & 0xff] }
 
     @inline(__always)
     private func resolve(_ c: GhosttyStyleColor) -> UInt32? {
@@ -619,6 +623,50 @@ final class GhosttyRowBuilder {
     }
 }
 
+extension GhosttyRowBuilder {
+    /// A predicted-echo colour against this frame's palette; nil for the default.
+    func resolveEcho(_ c: EchoColor) -> UInt32? {
+        switch c {
+        case .default: return nil
+        case .palette(let i): return paletteColor(Int(i))
+        case .rgb(let v): return Self.pack(UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff))
+        }
+    }
+
+    /// The instances of predicted echo (docs/terminal.md, Predicted echo), clipped to the
+    /// frame's `cols` and `rows`: a mask rect in the real cell's background over content a guess
+    /// replaces, the guessed glyph from the same atlas and face the server's would use, and in
+    /// the slow look a solid underline at the font's underline position, in the glyph's colour at
+    /// `underlineAlpha`. No rect under a guess over a blank cell: its background shows.
+    func buildEcho(_ overlay: EchoOverlay, cols: Int, rows: Int, underlineAlpha: UInt32,
+                   masks: inout [GhosttyRectInstance], glyphs: inout [GhosttyGlyphInstance], lines: inout [GhosttyRectInstance]) {
+        let m = atlas.metrics
+        let cellW = m.cellWidth, cellH = m.cellHeight
+        let thickness = max(1, m.underlineThickness)
+        for cell in overlay.cells where cell.col >= 0 && cell.col < cols && cell.row >= 0 && cell.row < rows {
+            let row = UInt16(clamping: cell.row)
+            let x = cell.col * cellW
+            let fg = resolveEcho(cell.fg) ?? foreground
+            if let mask = cell.mask {
+                masks.append(GhosttyRectInstance(x: Int16(clamping: x), y: 0, w: UInt16(clamping: cellW), h: UInt16(clamping: cellH),
+                                                 color: resolveEcho(mask) ?? background, row: row))
+            }
+            if cell.hasGlyph, cell.scalar < 0x80 {
+                let glyph = atlas.asciiGlyph(cell.scalar, style: cell.bold ? 1 : 0)
+                if glyph.kind != GhosttyGlyph.empty, glyph.kind != GhosttyGlyph.pending {
+                    glyphs.append(GhosttyGlyphInstance(
+                        x: Int16(clamping: x + Int(glyph.ox)), y: glyph.oy, w: glyph.w, h: glyph.h, u: glyph.u, v: glyph.v,
+                        color: fg, col: UInt16(clamping: cell.col), row: row, kind: UInt16(glyph.kind)))
+                }
+            }
+            if cell.underlined {
+                lines.append(GhosttyRectInstance(x: Int16(clamping: x), y: Int16(clamping: m.underlineTop), w: UInt16(clamping: cellW),
+                                                 h: UInt16(clamping: thickness), color: (fg & 0x00ff_ffff) | underlineAlpha << 24, row: row))
+            }
+        }
+    }
+}
+
 /// The cursor as the renderer draws it.
 struct GhosttyCursorState: Equatable {
     var visible = false
@@ -674,6 +722,23 @@ final class GhosttyFrameBuilder {
     /// much until the next refresh. Tints pause until a result newer than this serial arrives.
     private var pausedAtSerial: Int?
     private var lastTotal = 0
+
+    // Predicted echo (GhosttyCore.frameEcho). Empty without guesses.
+    /// Masks over stale content, drawn over the rows' glyphs.
+    private(set) var echoMasks: [GhosttyRectInstance] = []
+    /// The guessed glyphs.
+    private(set) var echoGlyphs: [GhosttyGlyphInstance] = []
+    /// The slow look's underlines.
+    private(set) var echoLines: [GhosttyRectInstance] = []
+    /// Bumped whenever the echo instances changed.
+    private(set) var echoVersion = 0
+    /// The overlay the echo instances were built from.
+    private var echoBuiltFrom: EchoOverlay?
+    /// The underline's alpha: 128, 255 with Increase Contrast.
+    var echoUnderlineAlpha: UInt32 = 128 {
+        didSet { if echoUnderlineAlpha != oldValue { echoStale = true } }
+    }
+    private var echoStale = false
 
     private var spare: [GhosttyRow] = []
     /// The previous frame's rows while a full frame is rebuilt. Kept to avoid allocating.
@@ -756,6 +821,8 @@ final class GhosttyFrameBuilder {
         if Int(c) != cols || Int(r) != rowCount { full = true }
         cols = Int(c)
         rowCount = Int(r)
+        // Colours, the atlas or the grid changed: the guesses are built again too.
+        if full { echoStale = true }
 
         // Glyphs that rows were built without are in the atlas now.
         let arrived = rowsAwaitingGlyphs > 0 && atlas.arrivals != seenArrivals
@@ -830,6 +897,15 @@ final class GhosttyFrameBuilder {
             next.color = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR, &color) == GHOSTTY_SUCCESS
                 ? GhosttyRowBuilder.pack(color) : builder.foreground
         }
+        // Predicted echo: its own instances, clipped to this frame, and the cursor it predicts,
+        // in the terminal's cursor style. Without guesses this costs one comparison.
+        let overlay = core.frameEcho
+        if updateEcho(overlay) { changed = true }
+        if let at = overlay?.cursor, next.visible, at.row < rowCount, at.col < cols {
+            next.x = at.col
+            next.y = at.row
+            next.wide = false
+        }
         // Upstream: don't shift the grid toward a side where nothing was captured.
         var captured = GhosttyRenderStateOverscan()
         ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_OVERSCAN, &captured)
@@ -848,6 +924,26 @@ final class GhosttyFrameBuilder {
         }
         if updateHighlights(core) { changed = true }
         return changed
+    }
+
+    /// Builds the echo instances again when the overlay or what draws it changed. True when they
+    /// changed (an overlay-only publish is a change, though no row was built).
+    private func updateEcho(_ overlay: EchoOverlay?) -> Bool {
+        guard echoStale || overlay != echoBuiltFrom else { return false }
+        echoStale = false
+        echoBuiltFrom = overlay
+        let had = !echoMasks.isEmpty || !echoGlyphs.isEmpty || !echoLines.isEmpty
+        echoMasks.removeAll(keepingCapacity: true)
+        echoGlyphs.removeAll(keepingCapacity: true)
+        echoLines.removeAll(keepingCapacity: true)
+        if let overlay {
+            builder.buildEcho(overlay, cols: cols, rows: rowCount, underlineAlpha: echoUnderlineAlpha,
+                              masks: &echoMasks, glyphs: &echoGlyphs, lines: &echoLines)
+        }
+        let has = !echoMasks.isEmpty || !echoGlyphs.isEmpty || !echoLines.isEmpty
+        guard had || has || overlay?.cursor != nil else { return false }
+        echoVersion &+= 1
+        return true
     }
 
     /// The find tints for this frame, from the result latched with its rows (`GhosttyCore.frameFind`).
