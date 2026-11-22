@@ -199,7 +199,131 @@ final class TapClickHostTests: XCTestCase {
         XCTAssertFalse(p.host.userHidKeyboard)
     }
 
+    /// The answer came, but the pane is no longer where a keyboard belongs: the palette or a
+    /// sheet lies over it by now.
+    func testTheKeyboardIsNotRaisedUnderAPaletteOrASheetThatOpenedMeanwhile() async throws {
+        for cover in ["palette", "sheet"] {
+            let p = await pane(Self.mouse + "menu")
+            try XCTSkipUnless(keyboardWorks(p), "the test host gave no first responder")
+            p.answers.held = true
+            _ = p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: false, hadSelection: false)
+            await wait("the click's write to be out") { p.answers.count == 1 }
+            if cover == "palette" {
+                p.host.underPalette = true
+                p.host.refreshProgramFocus()
+            } else {
+                p.host.coverChanged(covered: true)
+            }
+            p.answers.pass()
+            await wait("the write's answer") { !p.stream.hasPendingInput }
+            await pause(0.1)
+            XCTAssertFalse(p.host.term.isFirstResponder, cover)
+        }
+    }
+
+    /// The user did something else to the pane while the click was out (the hide key, another
+    /// touch): the keyboard that waited for the click is not theirs to get any more.
+    func testTheKeyboardIsNotRaisedWhenTheUserDidSomethingElseMeanwhile() async throws {
+        let p = await pane(Self.mouse + "menu")
+        try XCTSkipUnless(keyboardWorks(p), "the test host gave no first responder")
+        p.answers.held = true
+        _ = p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: false, hadSelection: false)
+        await wait("the click's write to be out") { p.answers.count == 1 }
+        p.host.hideKeyboard()
+        p.answers.pass()
+        await wait("the write's answer") { !p.stream.hasPendingInput }
+        await pause(0.1)
+        XCTAssertFalse(p.host.term.isFirstResponder)
+    }
+
+    /// An answer that comes long after the tap (a connection that hung and came back) raises
+    /// nothing: the user is no longer waiting for that tap's keyboard.
+    func testTheKeyboardIsNotRaisedForAnAnswerThatCameTooLate() async throws {
+        let p = await pane(Self.mouse + "menu")
+        try XCTSkipUnless(keyboardWorks(p), "the test host gave no first responder")
+        p.host.clickKeyboardLimit = 0.2
+        p.answers.held = true
+        _ = p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: false, hadSelection: false)
+        await wait("the click's write to be out") { p.answers.count == 1 }
+        await pause(0.4)
+        p.answers.pass()
+        await wait("the write's answer") { !p.stream.hasPendingInput }
+        await pause(0.1)
+        XCTAssertFalse(p.host.term.isFirstResponder)
+        XCTAssertEqual(clicks(p), 1, "the click itself went")
+    }
+
     // MARK: Never right after the report that the focus was gained
+
+    /// A click that waits does so in the queue, from the moment of the tap: keys typed while
+    /// it waits go out behind it, never ahead.
+    func testKeysTypedWhileAClickWaitsStayBehindIt() async {
+        let p = await pane(Self.mouse + Self.asks)
+        await wait("the report that the pane is in front") { p.written.last == Self.gained }
+        let before = p.written.count
+        XCTAssertEqual(p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: true, hadSelection: false), .programClick)
+        p.host.term.insertText("x")
+        p.host.term.insertText("y")
+        await pause(0.2)
+        XCTAssertEqual(p.written.count, before, "nothing overtakes the click that waits")
+        await wait("the click and then the keys") { p.written.joined().hasSuffix("xy") }
+        let after = Array(p.written[before...])
+        XCTAssertEqual(after.count, 2, "the click, then the keys in one write")
+        XCTAssertTrue(isClick(after[0]))
+        XCTAssertEqual(after[1], "xy")
+    }
+
+    /// On a slow link the report waits in the queue behind a write that is out. The program's
+    /// window runs from the moment the report leaves, not from when it was queued, and the
+    /// click is never in the report's write.
+    func testOnASlowLinkTheClickWaitsFromTheMomentTheReportLeft() async {
+        let p = await pane(Self.mouse + Self.asks)
+        await wait("the report that the pane is in front") { p.written.last == Self.gained }
+        await pause(ProgramFocus.activationWindow + 0.1)
+        // A key's write is out, and its answer is slow.
+        p.answers.held = true
+        p.host.term.insertText("a")
+        await wait("the key's write to be out") { p.written.last == "a" && p.answers.count == 1 }
+        // The stream catches up: the report is queued behind the key. Then a tap, at once.
+        p.host.streamFence(false, screen: true)
+        XCTAssertEqual(p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: true, hadSelection: false), .programClick)
+        // Longer than the window: were it timed from the queueing, the click would go at once.
+        await pause(ProgramFocus.activationWindow + 0.2)
+        XCTAssertEqual(p.written.last, "a", "the report has not left yet")
+        p.answers.pass()
+        await wait("the report to leave") { p.written.last == Self.gained }
+        let left = CACurrentMediaTime()
+        await pause(0.2)
+        XCTAssertEqual(p.written.last, Self.gained, "the click waits out the window from here")
+        await wait("the click") { self.isClick(p.written.last ?? "") }
+        XCTAssertGreaterThanOrEqual(CACurrentMediaTime() - left, 0.4)
+        XCTAssertEqual(Array(p.written.suffix(3)).map { self.isClick($0) ? "click" : $0 }, ["a", Self.gained, "click"],
+                       "each a write of its own")
+    }
+
+    /// The program stopped tracking the mouse while a click waited (it exited to a shell): the
+    /// click's bytes are not typed into whatever reads the terminal now.
+    func testAClickThatWaitedIsDroppedWhenTheProgramNoLongerTracksTheMouse() async {
+        let p = await pane(Self.mouse + Self.asks)
+        await wait("the report that the pane is in front") { p.written.last == Self.gained }
+        XCTAssertEqual(p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: true, hadSelection: false), .programClick)
+        p.link.deliver(Array("\u{1b}[?1000l\u{1b}[?1006l$ ".utf8))
+        await wait("the program to be gone") { p.host.term.core.sync(); return !p.host.term.sendsTapsToProgram }
+        await pause(ProgramFocus.activationWindow + 0.3)
+        XCTAssertEqual(clicks(p), 0)
+        XCTAssertEqual(p.written.last, Self.gained)
+    }
+
+    /// The pane left the front while a click waited: the click is dropped.
+    func testAClickThatWaitedIsDroppedWhenThePaneLeftTheFront() async {
+        let p = await pane(Self.mouse + Self.asks)
+        await wait("the report that the pane is in front") { p.written.last == Self.gained }
+        XCTAssertEqual(p.host.tap(at: CGPoint(x: 20, y: 20), shift: false, keyboardUp: true, hadSelection: false), .programClick)
+        p.host.isActive = false
+        await wait("the report that the pane left the front") { p.written.last == "\u{1b}[O" }
+        await pause(0.2)
+        XCTAssertEqual(clicks(p), 0)
+    }
 
     /// A program told that it gained the focus may take a press in the next 0.4 s for the
     /// click that brought the focus, and drop it. A stream that is current again says where

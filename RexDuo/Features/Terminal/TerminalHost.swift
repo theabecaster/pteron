@@ -162,6 +162,23 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var hardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
     /// Whether VoiceOver runs. Tests put their own here.
     var voiceOver: () -> Bool = { UIAccessibility.isVoiceOverRunning }
+    /// How often the stream's fence went up: a click queued before the last time is stale.
+    private var fencesRaised = 0
+    /// Counts what the user did to the pane (a tap, a long press, the hide key): a keyboard
+    /// that waits for a click comes only if nothing else was done since.
+    private var userActs = 0
+    /// The keyboard that waits for a click's answer comes only if the answer took at most
+    /// this long. Tests shorten it.
+    var clickKeyboardLimit: TimeInterval = 2
+    /// The pane left the screen for good, or was never on it: set once it has stayed out of
+    /// its window (`scheduleStop`) or another pane came to the front meanwhile
+    /// (`leftForAnother`), cleared when it is back (`cameBackOnScreen`). A fold, which moves
+    /// the pane through no window for a moment, never sets it.
+    private var leftScreen = true
+    /// This pane became the front pane. The pool tells the panes that are on their way out.
+    var onCameToFront: (() -> Void)?
+    /// Whether another pane of the pool is the front pane now.
+    var anotherIsFront: (() -> Bool)?
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
     /// How long a pane off screen waits before it lets go, and how long it keeps its fit claim.
@@ -647,6 +664,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     @discardableResult
     func tap(at point: CGPoint, shift: Bool, keyboardUp: Bool, hadSelection: Bool,
              stopsScroll: Bool = false) -> TerminalTapOutcome {
+        userActs += 1
         // SELECTION UI: handles, and which tap of a double or triple tap this is.
         let counted = selectionUI.countTap(at: point)
         // `isActive` is still what it was at touch time: `onFocus` comes after the decision.
@@ -684,7 +702,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // screen, and the server does not order that resize with the click's write. A
             // click that could not go (the fence, no connection, a row of the scrollback)
             // still brings the keyboard: no tap is a dead one.
-            term.sendClickToProgram(at: point) { [weak self] _ in self?.showKeyboardAfterClick() }
+            let serial = userActs, began = CACurrentMediaTime()
+            term.sendClickToProgram(at: point) { [weak self] _ in self?.showKeyboardAfterClick(serial: serial, since: began) }
         case .pasteMenu:
             // SELECTION UI: a tap by the cursor offers Paste.
             presentEditMenu(at: CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4))
@@ -711,6 +730,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // SELECTION UI: the controller selects, shows the loupe, plays the haptics, and on release
         // copies, shows the handles and the menu. `selecting` follows it (`trackingChanged`).
         case .began:
+            userActs += 1
             onFocus?()
             selectionUI.pressBegan(at: p)
         case .changed:
@@ -1114,8 +1134,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane the user is working in: active, on screen, in the app in front, with nothing
     /// lying over it (`PaneFront`). The program's focus and its right to write the pasteboard
     /// both follow it.
-    var isFrontPane: Bool {
-        PaneFront(active: isActive, onScreen: window != nil && !isParked, appActive: appActive,
+    var isFrontPane: Bool { window != nil && hasProgramFocus }
+
+    /// The same for the program's focus, with one difference: a pane out of its window for a
+    /// moment (a fold) is still on screen to its program (`leftScreen`).
+    var hasProgramFocus: Bool {
+        PaneFront(active: isActive, onScreen: !leftScreen && !isParked, appActive: appActive,
                   underBoard: covered, underSheet: dimmed, underPalette: underPalette).isFront
     }
 
@@ -1125,10 +1149,23 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// screen or has left it for good, the app comes to the front or leaves it, and a cover
     /// (the board, a sheet, the palette) comes or goes. The keyboard is not one of them.
     ///
-    /// A pane that leaves its window says so only once it has stayed away (`scheduleStop`): a
-    /// fold moves the pane through no window for a moment, and the program is not told of that.
+    /// A pane that leaves its window says so only once it has stayed away (`scheduleStop`) or
+    /// another pane came to the front (`leftForAnother`): a fold moves the pane through no
+    /// window for a moment, and the program is not told of that.
     func refreshProgramFocus() {
-        term.setProgramFocus(isFrontPane)
+        let front = hasProgramFocus
+        let came = front && !term.programFocus.front
+        term.setProgramFocus(front)
+        if came { onCameToFront?() }
+    }
+
+    /// Another pane came to the front (`TerminalHostPool`). A pane that is out of its window
+    /// then has left for good, a tab switch and not a fold: its program loses the focus now,
+    /// not when the pane has stayed away.
+    func leftForAnother() {
+        guard window == nil, !leftScreen else { return }
+        leftScreen = true
+        refreshProgramFocus()
     }
 
     @objc private func appBecameActive() { appActiveChanged(true) }
@@ -1226,10 +1263,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if !term.isFirstResponder { _ = term.becomeFirstResponder() }
     }
 
-    /// The click of a tap with the keyboard down has left, or never will: the keyboard comes up
-    /// as for any tap, unless the pane stopped being the one to type into meanwhile.
-    private func showKeyboardAfterClick() {
-        guard isActive, window != nil, !covered, !isParked else { return }
+    /// The click of a tap with the keyboard down is with the program, or never will be: the
+    /// keyboard comes up as for any tap. Not when the answer took too long to still be that
+    /// tap's, when the user did something else to the pane since, or when the pane is no
+    /// longer the front pane or lies under a sheet.
+    private func showKeyboardAfterClick(serial: Int, since began: CFTimeInterval) {
+        guard serial == userActs, CACurrentMediaTime() - began <= clickKeyboardLimit,
+              isFrontPane, !KeyboardFocusPolicy.sheetUp(in: window) else { return }
         showKeyboard()
     }
 
@@ -1354,6 +1394,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// With a hardware keyboard the terminal stays first responder, quietly, so its keys still
     /// type into this pane; without one there is nothing left to type with and it resigns.
     func hideKeyboard() {
+        userActs += 1
         userHidKeyboard = true
         if hardwareKeyboard() {
             setKeyboardQuiet(true)
@@ -1525,6 +1566,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // in a moment; otherwise `stop()` gives the pane back.
             claim.pause()
             stream.setClaimPending(false)
+            // Its tab was left for one whose pane is in front already: gone for good.
+            if anotherIsFront?() == true { leftForAnother() }
             scheduleStop()
         } else {
             stopWork?.cancel()
@@ -1559,6 +1602,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             guard window == nil else { return }
             // Gone for good, not moved by a fold: the program loses the focus, said while the
             // stream can still carry it.
+            leftScreen = true
             refreshProgramFocus()
             if canPark, started {
                 if let onLeft { onLeft() } else { park() }
@@ -1649,6 +1693,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane has a window again: a parked one resumes, a warm one shows what it has.
     func cameBackOnScreen() {
         if isParked { unpark() } else if isWarm { unwarm() }
+        leftScreen = false
         // After the stream's fence went up for the return: behind it the report waits, and
         // goes once when the fence comes down (`streamFence`).
         refreshProgramFocus()
@@ -2150,6 +2195,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// cursor is hollow, and the screen holds still until the catch-up can be shown as one
     /// frame. Keys typed meanwhile are held by the stream.
     func streamFence(_ up: Bool, screen: Bool) {
+        if up { fencesRaised += 1 }
         fenceStatusWork?.cancel()
         fenceStatusWork = nil
         holdsForCatchUp = up
@@ -2310,13 +2356,23 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         stream.send(report: bytes)
     }
 
-    /// A click that something waits for (the keyboard, raised only once the click is with the
-    /// program): through the same queue, sent now or not at all, once. Behind the fence, without
-    /// a connection, or as bytes the server can't take, it never leaves and `delivered` hears
-    /// false at once.
-    func engineSendReport(_ bytes: [UInt8], delivered: @escaping @MainActor (Bool) -> Void) {
+    func engineSendFocusGained(_ bytes: [UInt8], left: @escaping @MainActor () -> Void) -> Bool {
+        stream.send(report: bytes, left: left)
+    }
+
+    /// A click as an item of its own in the stream's queue: sent now or not at all, once.
+    /// Behind the fence, without a connection, or as bytes the server can't take, it never
+    /// leaves and `delivered` hears false at once. A fence that went up since the tap drops it
+    /// too: the screen it was made on is gone. Like every such item it holds typing back for
+    /// `TerminalStream.actionHold` at most, which is longer than any `hold`.
+    func engineSendClick(_ bytes: [UInt8], hold: @escaping @MainActor () -> Double, still: @escaping @MainActor () -> Bool,
+                         delivered: @escaping @MainActor (Bool) -> Void) {
         guard let text = String(bytes: bytes, encoding: .utf8) else { return delivered(false) }
-        stream.sendOnce(text: text) { delivered($0 == .delivered) }
+        let fences = fencesRaised
+        stream.sendOnce(text: text, hold: { .seconds(hold()) }, still: { [weak self] in
+            guard let self else { return false }
+            return self.fencesRaised == fences && !self.stream.isFenced && still()
+        }, ended: { delivered($0 == .delivered) })
     }
 
     /// Insert Path: a path picked for the program on screen. Behind the fence it is dropped,

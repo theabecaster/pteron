@@ -199,7 +199,12 @@ from a program state the user has not seen.
     back when the app is active again.
   - A pane that leaves its window says so only after it has stayed away 0.5 s, so a fold, which
     moves the pane through no window for a moment, says nothing. A pane that parks says so
-    before its stream parks.
+    before its stream parks. A tab switch does not wait: the old tab's pane loses the focus as
+    the new tab's pane gains it (`TerminalHost.leftForAnother`).
+  - Two programs can be told they have the focus in two cases, both left as they are. While
+    the panes of a split slide from one to the next on a narrow window, the pane that slides
+    away keeps the focus until the other is the active one. And with the app in two windows,
+    each window's active pane counts as in front: the rule knows the app, not the window.
   - A program that turns focus reports on while its pane is the front pane is told `CSI I`.
   - A program that never asked is told nothing.
   - The program's right to write the pasteboard (OSC 52) asks the same question, so a covered
@@ -373,7 +378,12 @@ is not a cold start.
   at once. A tap on a pane that is not the active one only makes it active and focuses it, and
   so does every tap while VoiceOver runs. A click made less than 0.45 s after the program was
   told that it gained the focus waits out the rest of that time: programs take a press that
-  soon for the click that brought the focus, and drop it. A tap on a link
+  soon for the click that brought the focus, and drop it. The time runs from when that report
+  left, and the report is a write of its own. The click waits in the input queue from the tap
+  on, so keys typed meanwhile go out behind it; it is dropped if the stream caught up again,
+  the pane left the front or the program stopped tracking the mouse by then. The keyboard that
+  follows a click comes only while the pane is still the front pane with no sheet over it,
+  nothing else was done to it since, and the answer came within 2 s. A tap on a link
   (an OSC 8 hyperlink or a web address in the text) opens it every time, also on the first tap
   and with the keyboard down; the keyboard stays as it was. On a focused pane a tap elsewhere
   moves the shell's cursor on its prompt (`TerminalTap.swift` has the order,

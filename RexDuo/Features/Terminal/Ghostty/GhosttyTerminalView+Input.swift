@@ -164,10 +164,18 @@ extension GhosttyTerminalView {
             programFocus.told(gained)
             return
         }
-        guard engineDelegate?.engineSendReport(report) ?? false else { return }
-        programFocus.told(gained)
-        // A click waits out the program's activation window after this (`sendClickToProgram`).
-        if gained { programFocus.gainedSent(at: CACurrentMediaTime()) }
+        guard let engineDelegate else { return }
+        guard gained else {
+            if engineDelegate.engineSendReport(report) { programFocus.told(false) }
+            return
+        }
+        // A write of its own, never joined with a click, and timed from the moment it leaves:
+        // a click waits out the program's activation window after that (`sendClickToProgram`).
+        programFocus.gainedHanded(at: CACurrentMediaTime())
+        let taken = engineDelegate.engineSendFocusGained(report) { [weak self] in
+            self?.programFocus.gainedLeft(at: CACurrentMediaTime())
+        }
+        if taken { programFocus.told(true) } else { programFocus.gainedDropped() }
     }
 
     override func willMove(toWindow newWindow: UIWindow?) {

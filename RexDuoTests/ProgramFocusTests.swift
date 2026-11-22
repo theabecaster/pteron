@@ -79,7 +79,7 @@ struct ProgramFocusTests {
     @Test func aClickWaitsOutTheWindowAfterAReportThatTheFocusWasGained() {
         var focus = ProgramFocus()
         #expect(focus.clickWait(at: 100) == 0, "no such report yet")
-        focus.gainedSent(at: 100)
+        focus.gainedLeft(at: 100)
         #expect(focus.clickWait(at: 100) == ProgramFocus.activationWindow)
         #expect(abs(focus.clickWait(at: 100.25) - (ProgramFocus.activationWindow - 0.25)) < 0.0001)
         #expect(focus.clickWait(at: 100 + ProgramFocus.activationWindow) == 0)
@@ -89,6 +89,29 @@ struct ProgramFocusTests {
         #expect(focus.clickWait(at: 300) == 0)
         // Longer than programs wait before they take a press for a click.
         #expect(ProgramFocus.activationWindow > 0.4)
+    }
+
+    /// The window runs from the moment the report's write leaves, not from when it was handed
+    /// on: until then a click takes its turn behind it.
+    @Test func aClickTakesItsTurnBehindAReportThatIsStillOnItsWay() {
+        var focus = ProgramFocus()
+        #expect(!focus.holdsClick(at: 10))
+        focus.gainedHanded(at: 10)
+        #expect(focus.gainedCount == 1)
+        #expect(focus.holdsClick(at: 10))
+        #expect(focus.holdsClick(at: 12), "still on its way, however long that takes")
+        #expect(focus.clickWait(at: 12) == 0, "its window has not begun")
+        focus.gainedLeft(at: 12)
+        #expect(focus.holdsClick(at: 12.2))
+        #expect(abs(focus.clickWait(at: 12.2) - (ProgramFocus.activationWindow - 0.2)) < 0.0001)
+        #expect(!focus.holdsClick(at: 12.001 + ProgramFocus.activationWindow))
+        // A report that was not taken, or that never left, holds nothing for long.
+        focus.gainedHanded(at: 20)
+        focus.gainedDropped()
+        #expect(!focus.holdsClick(at: 20))
+        focus.gainedHanded(at: 30)
+        #expect(!focus.holdsClick(at: 30 + ProgramFocus.handedLife))
+        #expect(focus.gainedCount == 3)
     }
 
     @Test func aProgramThatStartsToAskIsToldOnlyWhileItsPaneIsInFront() {

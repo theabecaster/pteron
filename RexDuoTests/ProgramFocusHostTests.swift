@@ -27,6 +27,12 @@ private final class ReportSpy: TerminalEngineDelegate {
         reports.append((String(decoding: bytes, as: UTF8.self), taken))
         return taken
     }
+
+    func engineSendFocusGained(_ bytes: [UInt8], left: @escaping @MainActor () -> Void) -> Bool {
+        let taken = host.engineSendFocusGained(bytes, left: left)
+        reports.append((String(decoding: bytes, as: UTF8.self), taken))
+        return taken
+    }
 }
 
 /// The focus a program is told about (mode 1004), with real hosts in a window: it follows the
@@ -83,7 +89,7 @@ final class ProgramFocusHostTests: XCTestCase {
     /// A host in the window, in the app in front, not the active pane yet. Its program has
     /// written `setup`. Too small to lay out, so the host never starts its stream: what the
     /// stream takes waits in its queue.
-    private func makeHost(_ setup: String = ProgramFocusHostTests.asks) async -> (TerminalHost, TerminalStream, ReportSpy) {
+    private func makeHost(_ setup: String = ProgramFocusHostTests.asks, shown: Bool = true) async -> (TerminalHost, TerminalStream, ReportSpy) {
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b")
         let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: 12, theme: ThemeStore.fallback)
@@ -91,7 +97,7 @@ final class ProgramFocusHostTests: XCTestCase {
         host.frame = CGRect(x: 0, y: 0, width: 10, height: 10)
         let spy = ReportSpy(host)
         feed(host, setup)
-        window.rootViewController?.view.addSubview(host)
+        if shown { window.rootViewController?.view.addSubview(host) }
         host.appActiveChanged(true)
         hosts.append(host)
         await settle()
@@ -258,6 +264,14 @@ final class ProgramFocusHostTests: XCTestCase {
 
         host.removeFromSuperview()
         XCTAssertEqual(spy.reports.count, 1, "not yet")
+        // Out of its window for the moment of a fold, the pane is still on screen to its
+        // program, whatever else asks meanwhile; the pasteboard is closed to it at once.
+        XCTAssertTrue(host.hasProgramFocus)
+        XCTAssertFalse(host.isFrontPane)
+        host.refreshProgramFocus()
+        host.coverChanged(covered: false)
+        host.appActiveChanged(true)
+        XCTAssertEqual(spy.reports.count, 1, "a fold says nothing")
         window.rootViewController?.view.addSubview(host)
         await pause(0.3)
         XCTAssertEqual(spy.reports.count, 1, "back in time: nothing was said, and nothing is said again")
@@ -301,6 +315,54 @@ final class ProgramFocusHostTests: XCTestCase {
         XCTAssertEqual(spy.sent, [Self.gained, Self.lost, Self.gained], "once, when the stream is current")
         await settle()
         XCTAssertEqual(spy.sent, [Self.gained, Self.lost, Self.gained])
+    }
+
+    // MARK: A tab switch
+
+    /// The tab on screen changes: the old tab's pane leaves its window and the new tab's pane
+    /// comes to the front. The old one's program loses the focus then, not half a second later,
+    /// so no two programs are told they have it.
+    func testATabSwitchTakesTheFocusFromTheOldTabsPaneAtOnce() async {
+        let pool = TerminalHostPool()
+        let (a, _, aSpy) = await makeHost()
+        let (b, _, bSpy) = await makeHost(shown: false)
+        pool.add(a, for: TerminalHostPool.Key(server: UUID(), session: "s", block: "a"))
+        pool.add(b, for: TerminalHostPool.Key(server: UUID(), session: "s", block: "b"))
+        // Each is the active pane of its own tab.
+        a.isActive = true
+        b.isActive = true
+        XCTAssertEqual(aSpy.sent, [Self.gained])
+        XCTAssertEqual(bSpy.sent, [])
+
+        // The old tab goes first, then the new one shows.
+        a.removeFromSuperview()
+        XCTAssertEqual(aSpy.sent, [Self.gained], "it may be a fold")
+        window.rootViewController?.view.addSubview(b)
+        XCTAssertEqual(bSpy.sent, [Self.gained])
+        XCTAssertEqual(aSpy.sent, [Self.gained, Self.lost], "at once, as the other pane came to the front")
+
+        // Back the other way, the new tab showing before the old one goes.
+        window.rootViewController?.view.addSubview(a)
+        XCTAssertEqual(aSpy.sent, [Self.gained, Self.lost, Self.gained])
+        b.removeFromSuperview()
+        XCTAssertEqual(bSpy.sent, [Self.gained, Self.lost], "another pane is in front already")
+    }
+
+    /// A fold moves both panes of a split through no window. The one that is back first is
+    /// not the front pane, so the active one keeps the focus.
+    func testAFoldOfASplitSaysNothing() async {
+        let pool = TerminalHostPool()
+        let (a, _, aSpy) = await makeHost()
+        let (b, _, bSpy) = await makeHost()
+        pool.add(a, for: TerminalHostPool.Key(server: UUID(), session: "s", block: "a"))
+        pool.add(b, for: TerminalHostPool.Key(server: UUID(), session: "s", block: "b"))
+        a.isActive = true
+        a.removeFromSuperview()
+        b.removeFromSuperview()
+        window.rootViewController?.view.addSubview(b)
+        window.rootViewController?.view.addSubview(a)
+        XCTAssertEqual(aSpy.sent, [Self.gained])
+        XCTAssertEqual(bSpy.reports.count, 0)
     }
 
     // MARK: The fence

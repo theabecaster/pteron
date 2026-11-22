@@ -12,10 +12,16 @@ protocol TerminalEngineDelegate: AnyObject {
     /// reports, a focus report, the keys of a tap or a drag. They are right only for the screen
     /// they were made on (`TerminalStream.send(report:)`).
     @discardableResult func engineSendReport(_ bytes: [UInt8]) -> Bool
-    /// A report whose sender waits for it: sent now or not at all, once, behind what was typed
-    /// before it. `delivered` hears once how it went: true when the server took it, false when
-    /// it never left, was refused, or nobody knows (`TerminalStream.sendOnce`).
-    func engineSendReport(_ bytes: [UInt8], delivered: @escaping @MainActor (Bool) -> Void)
+    /// The report that the pane gained the focus, as a write of its own: `left` is told as it
+    /// leaves. Returns false when it was dropped (`TerminalStream.send(report:left:)`).
+    func engineSendFocusGained(_ bytes: [UInt8], left: @escaping @MainActor () -> Void) -> Bool
+    /// A click that takes its turn in the queue as an item of its own, now or not at all, once
+    /// (`TerminalStream.sendOnce`). When its turn comes it waits `hold()` seconds, with what is
+    /// typed meanwhile behind it, and is sent only if `still()`. `delivered` hears once how it
+    /// went: true when the server took it, false when it never left, was refused, or nobody
+    /// knows.
+    func engineSendClick(_ bytes: [UInt8], hold: @escaping @MainActor () -> Double, still: @escaping @MainActor () -> Bool,
+                         delivered: @escaping @MainActor (Bool) -> Void)
 }
 
 extension TerminalEngineDelegate {
@@ -24,7 +30,15 @@ extension TerminalEngineDelegate {
         return true
     }
 
-    func engineSendReport(_ bytes: [UInt8], delivered: @escaping @MainActor (Bool) -> Void) {
+    func engineSendFocusGained(_ bytes: [UInt8], left: @escaping @MainActor () -> Void) -> Bool {
+        guard engineSendReport(bytes) else { return false }
+        left()
+        return true
+    }
+
+    func engineSendClick(_ bytes: [UInt8], hold: @escaping @MainActor () -> Double, still: @escaping @MainActor () -> Bool,
+                         delivered: @escaping @MainActor (Bool) -> Void) {
+        guard still() else { return delivered(false) }
         delivered(engineSendReport(bytes))
     }
 }

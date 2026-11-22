@@ -26,7 +26,8 @@ import UIKit
 /// - `reconnect`: start the pane's stream over, as after a lost connection, and wait until it
 ///   is current again (at most 20 s).
 /// - `<step>+<step>`: the steps one after the other with no pause between them, for a tap
-///   right after a return or a reconnect: `away+tap:3,1`.
+///   right after a return or a reconnect: `away+tap:3,1`. A `type:` step takes everything
+///   after it as its text, so it comes last: `tap:3,1+type:a+b` taps and types "a+b".
 ///
 /// Use only with a throwaway `zz-` session.
 @MainActor
@@ -58,8 +59,10 @@ enum KeyboardTest {
     }
 
     private static func perform(_ step: String, on host: TerminalHost) async {
-        if step.contains("+") {
-            for part in step.split(separator: "+") { await perform(String(part), on: host) }
+        // `type:` takes the rest of the step as its text, a "+" in it too.
+        if !step.hasPrefix("type:"), let plus = step.firstIndex(of: "+") {
+            await perform(String(step[..<plus]), on: host)
+            await perform(String(step[step.index(after: plus)...]), on: host)
             return
         }
         let (verb, arg) = step.firstIndex(of: ":").map { (String(step[..<$0]), String(step[step.index(after: $0)...])) } ?? (step, "")

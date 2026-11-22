@@ -259,41 +259,37 @@ extension GhosttyTerminalView {
     /// typing on the line the keyboard mirrors, so that mirror starts over.
     ///
     /// A program told less than `ProgramFocus.activationWindow` ago that it gained the focus
-    /// may take the press for the click that brought the focus and drop it. So the click
-    /// waits out the rest of that window, and is dropped if another such report went out
-    /// meanwhile (the stream caught up again: the screen may be another).
+    /// may take the press for the click that brought the focus and drop it. So while such a
+    /// report is on its way or its window runs, the click takes its turn in the queue as an
+    /// item of its own: it is queued now, so keys typed after the tap stay behind it, and
+    /// when its turn comes it waits out the rest of the window before it is written. It is
+    /// dropped if by then another such report went out (the stream caught up again: the
+    /// screen may be another), the pane is no longer in front, or the program no longer
+    /// tracks the mouse (it exited: the bytes would be typed into a shell).
     ///
     /// With `delivered`, the click goes now or not at all, and `delivered` hears once whether
     /// the server took it; false also for a place that makes no click (a row of the scrollback).
     func sendClickToProgram(at point: CGPoint, delivered: (@MainActor (Bool) -> Void)? = nil) {
         resetInputDocument()
         let bytes = scroller.tapBytes(at: point)
-        guard !bytes.isEmpty else {
+        guard !bytes.isEmpty, let engineDelegate else {
             delivered?(false)
             return
         }
-        let wait = programFocus.clickWait(at: CACurrentMediaTime())
-        guard wait > 0 else { return send(click: bytes, delivered: delivered) }
-        let told = programFocus.gainedAt
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-            guard let self, self.programFocus.gainedAt == told else {
-                delivered?(false)
-                return
-            }
-            self.send(click: bytes, delivered: delivered)
-        }
-    }
-
-    private func send(click bytes: [UInt8], delivered: (@MainActor (Bool) -> Void)?) {
-        guard let engineDelegate else {
-            delivered?(false)
-            return
-        }
-        if let delivered {
-            engineDelegate.engineSendReport(bytes, delivered: delivered)
-        } else {
+        // Nothing waits for it and no report is in its way: as any report.
+        if delivered == nil, !programFocus.holdsClick(at: CACurrentMediaTime()) {
             engineDelegate.engineSendReport(bytes)
+            return
         }
+        let told = programFocus.gainedCount
+        engineDelegate.engineSendClick(
+            bytes,
+            hold: { [weak self] in self?.programFocus.clickWait(at: CACurrentMediaTime()) ?? 0 },
+            still: { [weak self] in
+                guard let self else { return false }
+                return self.programFocus.gainedCount == told && self.programFocus.front && self.sendsTapsToProgram
+            },
+            delivered: delivered ?? { _ in })
     }
 
     /// Sends a prompt click as one write.

@@ -48,9 +48,12 @@ struct ProgramFocus: Equatable {
     private(set) var front = false
     /// What the program was last told, or would have been had it asked.
     private(set) var said = false
-    /// When a report that the focus was gained was last handed on for sending; nil before the
-    /// first one.
+    /// When the write of a report that the focus was gained last left; nil before the first.
     private(set) var gainedAt: Double?
+    /// When such a report was handed on for sending and has not left yet; nil otherwise.
+    private(set) var gainedHandedAt: Double?
+    /// How many such reports were handed on.
+    private(set) var gainedCount = 0
 
     /// How long after it is told that it gained the focus a program may take a press for the
     /// click that brought the focus, and drop it. Programs that do so use about 0.4 s.
@@ -81,11 +84,35 @@ struct ProgramFocus: Equatable {
     /// The report was handed on for sending, or the program asks for none.
     mutating func told(_ gained: Bool) { said = gained }
 
-    /// A report that the focus was gained was handed on for sending at `time`.
-    mutating func gainedSent(at time: Double) { gainedAt = time }
+    /// A report that the focus was gained is handed on for sending at `time`.
+    mutating func gainedHanded(at time: Double) {
+        gainedHandedAt = time
+        gainedCount += 1
+    }
 
-    /// How long a click made at `now` waits before it is sent, so that it is not the first
-    /// thing after a report that the focus was gained: the rest of `activationWindow`, or 0.
+    /// It was not taken after all.
+    mutating func gainedDropped() { gainedHandedAt = nil }
+
+    /// Its write left at `time`: the program's window runs from here.
+    mutating func gainedLeft(at time: Double) {
+        gainedAt = time
+        gainedHandedAt = nil
+    }
+
+    /// How long a report handed on counts as still on its way. One that never leaves (its
+    /// stream stopped) is forgotten after this.
+    static let handedLife = 4.0
+
+    /// A click made at `now` must take its turn behind a report that the focus was gained:
+    /// one is still on its way, or its window has not passed.
+    func holdsClick(at now: Double) -> Bool {
+        if let handed = gainedHandedAt, now - handed >= 0, now - handed < Self.handedLife { return true }
+        return clickWait(at: now) > 0
+    }
+
+    /// How long a click whose turn comes at `now` waits before it is written, so that it is
+    /// not the first thing after a report that the focus was gained: the rest of
+    /// `activationWindow`, or 0.
     func clickWait(at now: Double) -> Double {
         guard let gainedAt else { return 0 }
         let left = Self.activationWindow - (now - gainedAt)

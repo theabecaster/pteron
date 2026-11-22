@@ -137,6 +137,13 @@ final class TerminalTapTests: XCTestCase {
 
     private func show(_ bytes: [UInt8]) -> String { String(decoding: bytes, as: UTF8.self) }
 
+    /// Makes `host` the front pane to its program: on screen, the active pane, the app in front.
+    private func front(_ host: TerminalHost) {
+        host.cameBackOnScreen()
+        host.appActiveChanged(true)
+        host.isActive = true
+    }
+
     /// The cell under `point`, 1-based, as a mouse report names it.
     private func cell(_ host: TerminalHost, _ point: CGPoint) -> (col: Int, row: Int) {
         let size = host.term.cellSize
@@ -145,22 +152,23 @@ final class TerminalTapTests: XCTestCase {
 
     func testWithTheKeyboardDownATapOnTheActivePaneClicksOnce() {
         let (host, spy) = makeHost(mouseProgram + "\u{1b}[?1004h" + "menu")
-        host.isActive = true
+        front(host)
+        XCTAssertEqual(spy.sent.map(show), ["\u{1b}[I"], "said as the pane came to the front, before any tap")
         let point = CGPoint(x: 20, y: 20)
         let at = cell(host, point)
         XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .programClickThenKeyboard)
         // Press and release in one write, and nothing else: no focus report goes with a tap.
-        XCTAssertEqual(spy.sent.map(show), ["\u{1b}[<0;\(at.col);\(at.row)M\u{1b}[<0;\(at.col);\(at.row)m"])
+        XCTAssertEqual(spy.sent.dropFirst().map(show), ["\u{1b}[<0;\(at.col);\(at.row)M\u{1b}[<0;\(at.col);\(at.row)m"])
         // A second tap far away, with the keyboard up by now, clicks as before.
         let next = CGPoint(x: 200, y: 100)
         XCTAssertEqual(host.tap(at: next, shift: false, keyboardUp: true, hadSelection: false), .programClick)
-        XCTAssertEqual(spy.sent.count, 2)
+        XCTAssertEqual(spy.sent.count, 3)
     }
 
     func testTheClickOfAProgramWithoutSGRReportsIsTheLegacyOne() {
         // Mode 1000 alone: `ESC [ M`, then the button, the column and the row, each plus 32.
         let (host, spy) = makeHost("\u{1b}[?1000h")
-        host.isActive = true
+        front(host)
         let point = CGPoint(x: 20, y: 20)
         let at = cell(host, point)
         XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .programClickThenKeyboard)
@@ -208,7 +216,7 @@ final class TerminalTapTests: XCTestCase {
     /// A double tap with the keyboard down: the first tap clicks, the second selects the word.
     func testWithTheKeyboardDownADoubleTapClicksOnceAndSelects() {
         let (host, spy) = makeHost(mouseProgram + "some words here")
-        host.isActive = true
+        front(host)
         let size = host.term.cellSize
         let point = CGPoint(x: size.width * 6.5, y: size.height * 0.5)
         XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .programClickThenKeyboard)
@@ -222,6 +230,7 @@ final class TerminalTapTests: XCTestCase {
     func testATapOnARowOfTheScrollbackSendsNothing() {
         let lines = (1...40).map { "\($0) line\r\n" }.joined()
         let (host, spy) = makeHost(lines + mouseProgram)
+        front(host)
         let view = host.term
         view.scroller.jump(.lines(-4))
         view.core.sync()

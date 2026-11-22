@@ -385,6 +385,15 @@ final class TerminalHostPool {
         if covered { host.setCovered(true) }
         host.onKeyPress = onKeyPress
         host.takeOwedKeyboard = { [weak self] in self?.takeOwed(key) }
+        // A pane on its way out (its tab was left) loses the focus as the next one gains it.
+        host.onCameToFront = { [weak self, weak host] in
+            guard let self, let host else { return }
+            for other in self.hosts.values where other !== host { other.leftForAnother() }
+        }
+        host.anotherIsFront = { [weak self, weak host] in
+            guard let self, let host else { return false }
+            return self.hosts.values.contains { $0 !== host && $0.isFrontPane }
+        }
         host.onBarHidesKeyboard = { [weak self] shown in self?.hideKeyboard.set(key, shown: shown) }
         if host.barHidesKeyboard { hideKeyboard.set(key, shown: true) }
         host.canPark = true
