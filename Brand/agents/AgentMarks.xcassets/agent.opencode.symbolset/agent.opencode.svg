@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3300 2200">
+ <g id="Notes">
+  <text id="template-version">Template v.3.0</text>
+ </g>
+ <g id="Guides">
+  <line id="Baseline-S" x1="263" x2="3036" y1="696" y2="696"/>
+  <line id="Capline-S" x1="263" x2="3036" y1="625.541" y2="625.541"/>
+  <line id="Baseline-M" x1="263" x2="3036" y1="1126" y2="1126"/>
+  <line id="Capline-M" x1="263" x2="3036" y1="1055.54" y2="1055.54"/>
+  <line id="Baseline-L" x1="263" x2="3036" y1="1556" y2="1556"/>
+  <line id="Capline-L" x1="263" x2="3036" y1="1485.54" y2="1485.54"/>
+  <line id="left-margin-Ultralight-S" x1="523.111" x2="523.111" y1="600.785" y2="720.121"/>
+  <line id="right-margin-Ultralight-S" x1="596.311" x2="596.311" y1="600.785" y2="720.121"/>
+  <line id="left-margin-Regular-S" x1="1413.24" x2="1413.24" y1="600.785" y2="720.121"/>
+  <line id="right-margin-Regular-S" x1="1486.44" x2="1486.44" y1="600.785" y2="720.121"/>
+  <line id="left-margin-Black-S" x1="2896.8" x2="2896.8" y1="600.785" y2="720.121"/>
+  <line id="right-margin-Black-S" x1="2970" x2="2970" y1="600.785" y2="720.121"/>
+ </g>
+ <g id="Symbols">
+  <g id="Ultralight-S" transform="matrix(1 0 0 1 523.111 696)">
+   <path d="M51.4 -57.43L21.8 -57.43L21.8 -13.029L51.4 -13.029L51.4 -57.43ZM66.2 1.77L7 1.77L7 -72.23L66.2 -72.23L66.2 1.77Z"/>
+  </g>
+  <g id="Regular-S" transform="matrix(1 0 0 1 1413.24 696)">
+   <path d="M51.4 -57.43L21.8 -57.43L21.8 -13.029L51.4 -13.029L51.4 -57.43ZM66.2 1.77L7 1.77L7 -72.23L66.2 -72.23L66.2 1.77Z"/>
+  </g>
+  <g id="Black-S" transform="matrix(1 0 0 1 2896.8 696)">
+   <path d="M51.4 -57.43L21.8 -57.43L21.8 -13.029L51.4 -13.029L51.4 -57.43ZM66.2 1.77L7 1.77L7 -72.23L66.2 -72.23L66.2 1.77Z"/>
+  </g>
+ </g>
+</svg>

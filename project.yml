@@ -36,12 +36,15 @@ targets:
       - path: Brand/AppIcon.icon
       # The intent the controls run. The system runs it in the app, so the app compiles it too.
       - path: RexDuoWidgets/OpenLinkIntent.swift
+      # The agents' marks (custom symbols), which identify each agent wherever it is drawn
+      # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
+      - path: Brand/agents/AgentMarks.xcassets
     dependencies:
       - package: RexKit
         product: RexKit
       - package: RexGlance
         product: GlanceModel
-      # Not drawn with in the app: linked so the app's tests can hold the widgets' colors to the app's.
+      # The agents' glyphs (AgentGlyph), and the widgets' colors the app's tests hold to the app's.
       - package: RexGlance
         product: GlanceUI
       # The widgets and the controls. Embedded in the app (PlugIns), so every build and test of
@@ -131,6 +134,9 @@ targets:
     platform: iOS
     sources:
       - path: RexDuoWidgets
+      # The agents' marks (custom symbols), which identify each agent wherever it is drawn
+      # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
+      - path: Brand/agents/AgentMarks.xcassets
     dependencies:
       - package: RexGlance
         product: GlanceModel
@@ -173,6 +179,9 @@ targets:
       - path: Brand/AppIcon.icon
       # The mark, for the screen that has nothing to list.
       - path: RexDuoWidgets/Assets.xcassets
+      # The agents' marks (custom symbols), which identify each agent wherever it is drawn
+      # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
+      - path: Brand/agents/AgentMarks.xcassets
     dependencies:
       - package: RexGlance
         product: GlanceModel
@@ -208,6 +217,9 @@ targets:
       - path: RexDuoWidgets/Provider.swift
       - path: RexDuoWidgets/Demo.swift
       - path: RexDuoWidgets/Assets.xcassets
+      # The agents' marks (custom symbols), which identify each agent wherever it is drawn
+      # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
+      - path: Brand/agents/AgentMarks.xcassets
     dependencies:
       - package: RexGlance
         product: GlanceModel
