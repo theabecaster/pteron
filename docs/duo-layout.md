@@ -84,10 +84,9 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     its status, "+" for a new session there, Reconnect while it is down, and the globe of its
     web ports while it has one, which opens them in a sheet (`PortsSheet`); its sessions, a tap
     away, each with Rename Session… and Close Session on its menu, as in the sidebar (none on a
-    computer that is down); the computers that aren't added; then Go to Anything…, Agents,
-    Settings and Switch to Sidebar. A row that puts
-    up a sheet, an alert or the palette runs once the popover has gone, and after 1 s at the
-    latest (`DismissalWait`). The chip is as wide as its session's name needs, up to 120 pt.
+    computer that is down); the computers that aren't added; then Go to Anything…, Agents and
+    Settings. A row that puts up a sheet, an alert or the palette runs once the popover has
+    gone, and after 1 s at the latest (`DismissalWait`). The chip is as wide as its session's name needs, up to 120 pt.
   - **Vertical bar.** No sidebar toggle and no sessions item: the session chip beside the tabs
     opens the sessions, and the strip places it in every posture with the bar. The bar is Hide
     Keyboard while the key bar is up, then Show All Tabs, then Pane Actions (Unzoom above All

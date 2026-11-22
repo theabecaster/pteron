@@ -7,13 +7,13 @@ import SwiftUI
 /// finger does: through the popover's own handler, so the row closes the popover and what it
 /// presents waits for the dismissal.
 ///
-/// Rows: `settings`, `agents`, `goTo`, `useSidebar` (the footer), `renameSession` and
+/// Rows: `settings`, `agents`, `goTo` (the footer), `renameSession` and
 /// `closeSession` (the menu of the session on screen), `add` (the first computer that isn't
 /// added), `ports` (the first heading with a ports globe). A row the popover doesn't have does
 /// nothing.
 enum StripPopoverTest {
     enum Row: String, CaseIterable {
-        case settings, agents, goTo, useSidebar, renameSession, closeSession, add, ports
+        case settings, agents, goTo, renameSession, closeSession, add, ports
     }
 
     @MainActor private static var opened = false
@@ -61,7 +61,6 @@ enum StripPopoverTest {
         case .settings: return footer(.settings)
         case .agents: return footer(.agents)
         case .goTo: return footer(.goTo)
-        case .useSidebar: return footer(.useSidebar)
         case .renameSession: return menu.first { if case .renameSession = $0 { true } else { false } }
         case .closeSession: return menu.first { if case .closeSession = $0 { true } else { false } }
         case .add: return popover.rows.lazy.compactMap { if case .host(let h) = $0 { SessionPopover.Action.add(h) } else { nil } }.first

@@ -78,10 +78,6 @@ import Testing
         #expect(r.model.lastCommand?.command == .goTo(.anything))
         r.routes.changeSession()
         #expect(r.model.lastCommand?.command == .goTo(.sessions))
-
-        r.model.prefs.navigation = .tabs
-        r.routes.run(.useSidebar)
-        #expect(r.model.prefs.navigation == .sidebar)
     }
 
     /// Rename Session… and Close Session… put up the sidebar's own alert and confirmation, and
@@ -116,7 +112,7 @@ import Testing
         let waits: [SessionPopover.Action] = [.add(host), .renameSession(id, session: "s", name: "s"),
                                               .closeSession(id, session: "s", name: "s"), .goTo, .agents, .settings,
                                               .ports(id)]
-        let atOnce: [SessionPopover.Action] = [.open(sel), .newSession(id), .reconnect(id), .useSidebar]
+        let atOnce: [SessionPopover.Action] = [.open(sel), .newSession(id), .reconnect(id)]
         #expect(waits.allSatisfy { $0.presents })
         #expect(!atOnce.contains { $0.presents })
     }

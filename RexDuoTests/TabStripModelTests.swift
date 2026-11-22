@@ -187,7 +187,7 @@ struct TabChipTests {
             "m:\(desk.id.uuidString)", "s:\(desk.id.uuidString):work", "s:\(desk.id.uuidString):play",
             "m:\(cloud.id.uuidString)", "e:\(cloud.id.uuidString)",
             "m:\(attic.id.uuidString)", "s:\(attic.id.uuidString):old",
-            "f:Go to Anything…", "f:Agents", "f:Settings", "f:Switch to Sidebar",
+            "f:Go to Anything…", "f:Agents", "f:Settings",
         ])
         guard case .session(let work) = p.rows[1], case .session(let play) = p.rows[2],
               case .machine(let down) = p.rows[5], case .session(let old) = p.rows[6],
@@ -247,7 +247,7 @@ struct SessionPopoverTests {
             "m:\(desk.uuidString)", "s:\(desk.uuidString):work", "s:\(desk.uuidString):play",
             "m:\(cloud.uuidString)", "s:\(cloud.uuidString):deploy",
             "not-added", "h:h1",
-            "f:Go to Anything…", "f:Agents", "f:Settings", "f:Switch to Sidebar",
+            "f:Go to Anything…", "f:Agents", "f:Settings",
         ])
         #expect(Set(p.rows.map(\.id)).count == p.rows.count)
         #expect(p.rows[6].action == .add(host))
@@ -266,14 +266,13 @@ struct SessionPopoverTests {
                                hosts: [host], current: Selection(serverID: desk, sessionID: "play", windowID: "w1"))
         func action(_ row: StripPopoverTest.Row) -> SessionPopover.Action? { StripPopoverTest.action(row, in: p) }
         #expect(action(.settings) == .settings && action(.agents) == .agents && action(.goTo) == .goTo)
-        #expect(action(.useSidebar) == .useSidebar)
         #expect(action(.renameSession) == .renameSession(desk, session: "play", name: "play"))
         #expect(action(.closeSession) == .closeSession(desk, session: "play", name: "play"))
         #expect(action(.add) == .add(host))
         #expect(action(.ports) == .ports(cloud))
-        // Every row that puts something on screen waits for the popover; Switch to Sidebar doesn't.
+        // Every row puts something on screen, so each waits for the popover.
         for row in StripPopoverTest.Row.allCases {
-            #expect(action(row)?.presents == (row != .useSidebar), "\(row)")
+            #expect(action(row)?.presents == true, "\(row)")
         }
 
         let bare = SessionPopover(machines: [machine(desk, "desk", [])], current: nil)
@@ -283,13 +282,13 @@ struct SessionPopoverTests {
     }
     #endif
 
-    /// The footer: Go to Anything, Agents, Settings and the way back to the sidebar. Change
+    /// The footer: Go to Anything, Agents and Settings. Change
     /// Session isn't a row: the popover is that list already.
-    @Test func theFooterIsTheSidebarsOtherPlacesAndTheWayBack() {
+    @Test func theFooterIsTheSidebarsOtherPlaces() {
         let footer = SessionPopover.footer(waiting: 2)
-        #expect(footer.map(\.action) == [.goTo, .agents, .settings, .useSidebar])
-        #expect(footer.map(\.title) == ["Go to Anything…", "Agents", "Settings", "Switch to Sidebar"])
-        #expect(footer.map(\.count) == [0, 2, 0, 0])
+        #expect(footer.map(\.action) == [.goTo, .agents, .settings])
+        #expect(footer.map(\.title) == ["Go to Anything…", "Agents", "Settings"])
+        #expect(footer.map(\.count) == [0, 2, 0])
         #expect(footer.allSatisfy { !$0.symbol.isEmpty })
         #expect(SessionPopover(machines: [], current: nil).firstFooterID == "f:Go to Anything…")
         let p = SessionPopover(machines: [], current: nil, waiting: 2)

@@ -3,8 +3,7 @@
 Tab mode is the app's second navigation style, like the Rex Mac app's horizontal tabs: a tab
 strip takes the title bar's place, at its height, and there is no sidebar. Sidebar mode is the
 default and is unchanged. The choice is Settings → Appearance → Navigation: Sidebar or Tabs
-(`NavigationStyle`, stored as `Prefs.navigation`), and the session popover's last row switches
-back.
+(`NavigationStyle`, stored as `Prefs.navigation`).
 
 A change applies at once. `SidebarSplit` stops building the sidebar and gives the tab the
 window's width, and the tab's header draws the strip instead of the title bar. The tab stays the
@@ -78,7 +77,7 @@ tall enough.
   - its sessions: a tap shows the session's front tab; touch and hold for Rename Session… and
     Close Session (none on a computer that is down);
   - the computers that aren't added, each with Add;
-  - a footer: Go to Anything…, Agents, Settings, Switch to Sidebar.
+  - a footer: Go to Anything…, Agents, Settings.
 - With no session on screen the chip says "Sessions", and the strip holds little else.
 
 ## Where the sidebar's things are
@@ -147,7 +146,7 @@ keyboard. So the row's action is held until the popover has gone (`DismissalWait
   does nothing. The cap's timer keeps the wait alive, so that holds when the view that made
   the wait is torn down with the popover.
 - The action is held before the popover is told to close, and it runs once.
-- Rows that present nothing (a session, New Session, Reconnect, Switch to Sidebar) run at once.
+- Rows that present nothing (a session, New Session, Reconnect) run at once.
 - Tab mode's surfaces use it: the session chip's popover, and the ports sheet, where the
   sheet's own dismissal is the signal.
   Sidebar mode's title menu and its ports popover wait a fixed 350 ms, as before.

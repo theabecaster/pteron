@@ -11,7 +11,7 @@ import UIKit
 @MainActor
 @Suite(.serialized) struct PopoverRowsTests {
     enum Row: String, CaseIterable, Sendable {
-        case settings, agents, goTo, renameSession, closeSession, add, useSidebar
+        case settings, agents, goTo, renameSession, closeSession, add
     }
 
     /// One computer with sessions "work" and "play", and a computer that isn't added. No tab is
@@ -95,8 +95,7 @@ import UIKit
             }
             #expect(run(action), "\(note)")
         default:
-            let label = [Row.settings: "Settings", .agents: "Agents", .goTo: TabAction.goTo.title, .add: "Add attic",
-                         .useSidebar: "Switch to Sidebar"][row] ?? ""
+            let label = [Row.settings: "Settings", .agents: "Agents", .goTo: TabAction.goTo.title, .add: "Add attic"][row] ?? ""
             let button = try await Hosted.eventually {
                 elements(window).first { $0.isAccessibilityElement && $0.accessibilityLabel == label }
             }
@@ -112,7 +111,6 @@ import UIKit
             case .goTo: return model.goTo != nil && up == nil
             case .renameSession, .closeSession: return up != nil
             case .add: return model.showPairing && up != nil
-            case .useSidebar: return model.prefs.navigation == .sidebar && up == nil
             }
         }
         let up = top(window)

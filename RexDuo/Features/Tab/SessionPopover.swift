@@ -20,15 +20,13 @@ struct SessionPopover: Equatable {
         case closeSession(UUID, session: String, name: String)
         /// Go to Anything, the Agents sheet (`AppModel.showAgents()`) and Settings.
         case goTo, agents, settings
-        /// Back to the sidebar: sets the one setting, `Prefs.navigation`.
-        case useSidebar
 
         /// The action puts up a sheet, an alert or the palette. Those wait until the popover
         /// has closed: a sheet can't open over it, and the palette's field wants the keyboard.
         var presents: Bool {
             switch self {
             case .add, .renameSession, .closeSession, .goTo, .agents, .settings, .ports: true
-            case .open, .newSession, .reconnect, .useSidebar: false
+            case .open, .newSession, .reconnect: false
             }
         }
     }
@@ -201,13 +199,11 @@ struct SessionPopover: Equatable {
         self.rows = rows
     }
 
-    /// The footer, top to bottom: what the sidebar's top, its Agents mode and its gear lead to,
-    /// then the way back to the sidebar.
+    /// The footer, top to bottom: what the sidebar's top, its Agents mode and its gear lead to.
     static func footer(waiting: Int) -> [Footer] {
         [Footer(action: .goTo, title: TabAction.goTo.title, symbol: TabAction.goTo.symbol),
          Footer(action: .agents, title: "Agents", symbol: SidebarMode.agents.symbol, count: waiting),
-         Footer(action: .settings, title: "Settings", symbol: "gearshape"),
-         Footer(action: .useSidebar, title: "Switch to Sidebar", symbol: "sidebar.left")]
+         Footer(action: .settings, title: "Settings", symbol: "gearshape")]
     }
 
     /// A menu row's title.

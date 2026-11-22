@@ -48,8 +48,6 @@ struct StripRoutes {
             model.showPorts(id)
         case .settings:
             model.showSettings = true
-        case .useSidebar:
-            model.prefs.navigation = .sidebar
         }
     }
 

@@ -161,7 +161,7 @@ builds.
   `-stripPopoverAfter` seconds (default 3) after the chip shows. `-stripRow <name>` then taps a row,
   `-stripRowAfter` seconds (default 2) after the popover shows, as a finger does: the popover
   closes and what the row presents waits for it ([tab-mode.md](tab-mode.md), The dismissal
-  wait). Rows: `settings`, `agents`, `goTo`, `useSidebar`, `renameSession` and `closeSession`
+  wait). Rows: `settings`, `agents`, `goTo`, `renameSession` and `closeSession`
   (the session on screen), `add` (the first computer that isn't added), `ports` (the first
   heading with a ports globe). `StripPopoverTest`.
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
