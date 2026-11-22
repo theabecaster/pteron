@@ -31,8 +31,12 @@ FAILED=()
 
 xcodegen generate -q || FAILED+=(xcodegen)
 
+# The Mac's load when the tests begin, for reading a failure afterwards.
+echo "load before tests: $(sysctl -n vm.loadavg)"
+# One test process, never parallel workers: with two the 1-minute load passes 400 on a 10-core
+# Mac and about 20 tests fail on their time limits, with one it stays near 140 and none does.
 xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=$SIM -derivedDataPath build/dd-gate \
-  test > build/gate-test.log 2>&1
+  -parallel-testing-enabled NO test > build/gate-test.log 2>&1
 rc=$?; echo "tests: exit $rc"; (( rc == 0 )) || FAILED+=(tests)
 grep -E "Executed [0-9]+ tests|Test run with|\*\* TEST|error:" build/gate-test.log | tail -4
 grep -E "✘|failed|recorded an issue|Expectation failed|error:" build/gate-test.log | grep -v "0 failures" | head -20

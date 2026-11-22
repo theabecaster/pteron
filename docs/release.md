@@ -53,7 +53,9 @@ when the phone is paired there.
 `scripts/gate.sh` is the check before a release, run on the developer's Mac. It creates a fresh
 simulator (`GATE_DEVICE`, default iPhone 17 Pro, on the newest plain iOS runtime or
 `GATE_RUNTIME`), runs the app's tests and a Release build on it, fails on any warning from our
-code, and runs `scripts/check-brand.sh`. It prints the test summary and the failure lines, then
+code, and runs `scripts/check-brand.sh`. The tests run in one process
+(`-parallel-testing-enabled NO`): with parallel workers the Mac's load makes about 20 of them
+miss their time limits. It prints the load before the tests, the test summary and the failure lines, then
 deletes the simulator and `build/` (only its own folders there when `build/` was there before).
 When a step fails it copies the two logs to a temporary folder first and prints the path, and it
 exits 1.
