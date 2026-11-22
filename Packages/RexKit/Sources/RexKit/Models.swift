@@ -264,7 +264,7 @@ public struct BlockMeta: Equatable, Sendable {
     }
 }
 
-public enum AgentKind: String, Sendable {
+public enum AgentKind: String, Sendable, CaseIterable {
     case claude, codex, gemini, opencode, amp, aider, cursor
 
     /// Programs by their whole name, as the foreground process or an OSC 7501 app gives it.

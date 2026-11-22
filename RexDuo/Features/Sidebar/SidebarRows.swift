@@ -1,3 +1,4 @@
+import GlanceUI
 import SwiftUI
 import RexKit
 
@@ -501,7 +502,7 @@ struct TabRowLabel: View {
         HStack(spacing: 9) {
             ZStack {
                 Self.tile(agent).fill(Self.tint(agent, theme).opacity(0.9))
-                Image(systemName: agent?.symbol ?? "terminal")
+                AgentGlyph.image(agent: agent)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(theme.bg)
             }

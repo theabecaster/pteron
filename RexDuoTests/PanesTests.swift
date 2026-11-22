@@ -134,7 +134,7 @@ struct PanesTests {
         #expect(PaneName.menu(plain, position: 2, parts: claude) == "Claude")
         #expect(PaneName.menu(plain, position: 2, parts: PaneNameParts(agent: nil, process: "vim")) == "vim")
         #expect(PaneName.menu(plain, position: 2, parts: nil) == "Pane 2")
-        #expect(PaneName.symbol(claude) == "asterisk")
+        #expect(PaneName.symbol(claude) == "agent.claude")
         #expect(PaneName.symbol(nil) == "terminal")
     }
 

@@ -4,12 +4,15 @@ import SwiftUI
 /// the agent board's ring (`BoardRing`), with the same proportions and no motion. Waiting, done
 /// and error are a full ring with a raised hand, a check or an x; working is an arc.
 ///
-/// `strokes` is applied to the ring's lines only and `glyph` builds the agent's symbol, so a
+/// The glyph is the agent's mark by `kind`, else `symbol` (`AgentGlyph`), from `bundle`.
+/// `strokes` is applied to the ring's lines only and `glyph` builds the agent's glyph, so a
 /// widget can mark the lines as the part that takes the system's accent and say how the symbol
 /// is drawn when tinted (WidgetKit modifiers, which this package doesn't import).
 public struct GlanceRing<Strokes: ViewModifier, Glyph: View>: View {
     let state: String?
+    let kind: String?
     let symbol: String
+    let bundle: Bundle
     let tint: Color
     let color: Color
     /// The color behind the ring, for the badge's rim.
@@ -18,10 +21,12 @@ public struct GlanceRing<Strokes: ViewModifier, Glyph: View>: View {
     let strokes: Strokes
     let glyph: (Image) -> Glyph
 
-    public init(state: String?, symbol: String, tint: Color, color: Color, ground: Color, diameter: CGFloat, strokes: Strokes,
-                @ViewBuilder glyph: @escaping (Image) -> Glyph) {
+    public init(state: String?, kind: String?, symbol: String, bundle: Bundle = .main, tint: Color, color: Color, ground: Color,
+                diameter: CGFloat, strokes: Strokes, @ViewBuilder glyph: @escaping (Image) -> Glyph) {
         self.state = state
+        self.kind = kind
         self.symbol = symbol
+        self.bundle = bundle
         self.tint = tint
         self.color = color
         self.ground = ground
@@ -39,7 +44,7 @@ public struct GlanceRing<Strokes: ViewModifier, Glyph: View>: View {
                 arc
             }
             .modifier(strokes)
-            glyph(Image(systemName: symbol))
+            glyph(AgentGlyph.image(kind: kind, symbol: symbol, bundle: bundle))
                 .font(.system(size: diameter * 0.38, weight: .bold))
                 .foregroundStyle(tint)
         }
@@ -79,9 +84,10 @@ public struct GlanceRing<Strokes: ViewModifier, Glyph: View>: View {
 }
 
 public extension GlanceRing where Strokes == EmptyModifier, Glyph == Image {
-    init(state: String?, symbol: String, tint: Color, color: Color, ground: Color, diameter: CGFloat) {
-        self.init(state: state, symbol: symbol, tint: tint, color: color, ground: ground, diameter: diameter,
-                  strokes: EmptyModifier()) { $0 }
+    init(state: String?, kind: String?, symbol: String, bundle: Bundle = .main, tint: Color, color: Color, ground: Color,
+         diameter: CGFloat) {
+        self.init(state: state, kind: kind, symbol: symbol, bundle: bundle, tint: tint, color: color, ground: ground,
+                  diameter: diameter, strokes: EmptyModifier()) { $0 }
     }
 }
 

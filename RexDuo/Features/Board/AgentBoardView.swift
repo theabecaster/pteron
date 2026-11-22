@@ -1,3 +1,4 @@
+import GlanceUI
 import SwiftUI
 import RexKit
 
@@ -280,7 +281,7 @@ private struct BoardTile: View {
     }
 
     private func ring(_ d: CGFloat) -> some View {
-        BoardRing(state: agent.state, progress: agent.progress, symbol: agent.kind?.symbol ?? "cpu",
+        BoardRing(state: agent.state, progress: agent.progress, glyph: AgentGlyph.name(agent: agent.kind, fallback: "cpu"),
                   tint: TabRowLabel.tint(agent.kind, theme), color: stateColor, ground: theme.chrome.sidebar,
                   diameter: d, still: still || tile.stale)
     }
@@ -480,7 +481,8 @@ private struct MoreTile: View {
 struct BoardRing: View {
     let state: String?
     let progress: Int?
-    let symbol: String
+    /// The agent's glyph name (`AgentGlyph`): its mark or an SF Symbol.
+    let glyph: String
     let tint: Color
     let color: Color
     /// The color behind the ring, for the badge's rim.
@@ -497,7 +499,7 @@ struct BoardRing: View {
         ZStack {
             Circle().stroke(color.opacity(0.22), lineWidth: line)
             arc
-            Image(systemName: symbol)
+            AgentGlyph.image(glyph)
                 .font(.system(size: diameter * 0.38, weight: .bold))
                 .foregroundStyle(tint)
         }
@@ -536,15 +538,15 @@ struct BoardRing: View {
     }
 
     @ViewBuilder private var badge: some View {
-        let glyph: String? = switch state {
+        let badge: String? = switch state {
         case "blocked": "hand.raised.fill"
         case "done": "checkmark"
         case "error": "xmark"
         default: nil
         }
-        if let glyph {
+        if let badge {
             let d = max(15, diameter * 0.36)
-            Image(systemName: glyph)
+            Image(systemName: badge)
                 .font(.system(size: d * 0.52, weight: .heavy))
                 .foregroundStyle(ground)
                 .frame(width: d, height: d)

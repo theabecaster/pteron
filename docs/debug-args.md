@@ -111,7 +111,7 @@ builds.
   "+5 more"), `machines` (two machines and one not connected yet), `offline` (last known tiles,
   dimmed), `stale` (a quiet machine and one that is down with a waiting agent: the headline says
   "Reconnecting…", not "All quiet"), `states` (every state), `long` (long names, messages and places), `churn` (states
-  that change every 0.3 s, for the once-a-second reorder). Use it with `-simulateDuo folded` or
+  that change every 0.3 s, for the once-a-second reorder), `kinds` (one agent of each kind, for their marks). Use it with `-simulateDuo folded` or
   `foldedLandscape`, in Light and Dark Mode.
 - Links: `xcrun simctl openurl <id> rexduo://waiting` (or `rexduo://open`, `rexduo://pair`,
   `rexduo://pane?…`) fires a control's or a widget's link.
@@ -125,7 +125,7 @@ builds.
   `machines`, `stale` (one of three machines down), `offline`, `aging` (ten minutes old), `old`
   (three hours old), `long` (more agents than the snapshot lists), `empty` (connected, no
   agent running), `unpaired`,
-  `light-in-dark` (the light theme in both slots), `newer` (a file from a later, incompatible
+  `light-in-dark` (the light theme in both slots), `kinds` (one agent of each kind, for their marks), `newer` (a file from a later, incompatible
   app), `none` (no file). Use it with `-autoOpen zz-none`, so the app opens nothing; it logs
   `GLANCE_DEMO <scenario>`. Without it, a test launch (`-servers`, `-boardDemo`, `-autoOpen`,
   `-simulateOffline`) writes no snapshot at all. The scenario also goes to a paired watch

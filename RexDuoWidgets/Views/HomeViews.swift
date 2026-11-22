@@ -85,8 +85,8 @@ struct GlanceHomeView: View {
     }
 
     private func ring(_ agent: GlanceSnapshot.Agent, _ d: CGFloat) -> some View {
-        GlanceRing(state: "blocked", symbol: agent.symbol, tint: style.tint(kind: agent.kind), color: style.state(.waiting),
-                   ground: style.ground, diameter: d, strokes: Accented()) {
+        GlanceRing(state: "blocked", kind: agent.kind, symbol: agent.symbol, bundle: style.symbols, tint: style.tint(kind: agent.kind),
+                   color: style.state(.waiting), ground: style.ground, diameter: d, strokes: Accented()) {
             $0.widgetAccentedRenderingMode(.accentedDesaturated)
         }
     }
@@ -555,7 +555,7 @@ struct GlanceTileView: View {
         let shape = RoundedRectangle(cornerRadius: tile.kind == nil ? diameter * 5 / 18 : diameter / 2, style: .continuous)
         ZStack {
             shape.fill(style.fullColor ? style.tint(kind: tile.kind).opacity(0.9) : Color.primary.opacity(0.22))
-            Image(systemName: tile.symbol)
+            AgentGlyph.image(kind: tile.kind, symbol: tile.symbol, bundle: style.symbols)
                 .font(.system(size: diameter * 0.42, weight: .bold))
                 .foregroundStyle(style.fullColor ? style.colors.bg : .primary)
         }

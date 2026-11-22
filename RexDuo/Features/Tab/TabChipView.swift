@@ -1,3 +1,4 @@
+import GlanceUI
 import SwiftUI
 import RexKit
 
@@ -50,7 +51,7 @@ struct TabChipView: View {
                     ForEach(Array(chip.icons.enumerated()), id: \.offset) { _, icon in
                         ZStack {
                             TabRowLabel.tile(icon.agent).fill(TabRowLabel.tint(icon.agent, theme).opacity(0.9))
-                            Image(systemName: icon.agent?.symbol ?? "terminal")
+                            AgentGlyph.image(agent: icon.agent)
                                 .font(.system(size: StripStyle.iconGlyph, weight: .bold))
                                 .foregroundStyle(theme.bg)
                         }

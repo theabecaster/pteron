@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import GlanceUI
 import RexKit
 
 // The pane and order commands of the pane menu's Arrange, the keymap and the sidebar's drag:
@@ -261,7 +262,8 @@ enum PaneName {
         return "Pane \(position)"
     }
 
-    static func symbol(_ parts: PaneNameParts?) -> String { parts?.agent?.symbol ?? "terminal" }
+    /// Its agent's glyph name (`AgentGlyph`): a mark or an SF Symbol.
+    static func symbol(_ parts: PaneNameParts?) -> String { AgentGlyph.name(agent: parts?.agent) }
 }
 
 /// A new place in an order: the row's id list, the row that moves, and the gap it is dropped in

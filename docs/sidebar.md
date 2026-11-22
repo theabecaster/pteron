@@ -36,6 +36,12 @@ Sessions are what people look for, so their names are full contrast and semibold
   rows, so a session's machine is plain too.
 - **OS glyph.** From `server.version`'s `platform`: Apple logo for darwin, `server.rack` for Linux,
   `pc` for Windows, `desktopcomputer` otherwise.
+- **Agent tile.** A circle in the agent's tint for an agent, a rounded square for a shell, with
+  the agent's glyph in the background color: its maker's mark (Claude, Codex, Gemini, opencode,
+  Aider, Cursor), else an SF Symbol (`cpu` for Amp, which publishes only a wordmark; `terminal`
+  for a shell). One table for the whole app, `AgentGlyph` (GlanceUI); the marks and their sources
+  are in `Brand/agents/README.md`. The tab strip's chips, Go to Anything and the pane menus draw
+  the same glyphs.
 - **Rhythm.** Tighter within a group, looser between groups: 18 pt above each machine, 6 pt above
   each session after the first, none between tabs. Machine rows are 44 pt, session and tab rows
   36 pt. The gaps scale with Dynamic Type up to 30 and 10 pt.

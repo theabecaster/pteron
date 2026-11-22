@@ -101,6 +101,11 @@ sources and fails on a line that breaks one of these:
   without them, is a test fixture that must keep decoding. A reader ignores fields it doesn't
   know, takes a `link` word it doesn't know as `stale`, and shows its placeholder for a higher
   `v`, a missing file or one that isn't a snapshot.
+- **`kind` and `symbol`.** An agent's glyph is drawn by its `kind`: its maker's mark, a custom
+  symbol (`AgentGlyph` in GlanceUI; the marks and their sources are in `Brand/agents/README.md`).
+  `symbol` is the SF Symbol the app had for that kind (`AgentKind.symbol`), still written for
+  readers older than the marks, and drawn when `kind` is missing or has no mark in the reader:
+  another program, Amp (which publishes only a wordmark), or a kind from a newer app.
 - **`seq`** counts the app's writes across launches (the count is kept in a file of its own
   beside the snapshot). It orders two snapshots when the clock doesn't
   (`GlanceSnapshot.isNewer`, which falls back to `asOf` when one has no `seq`).
@@ -204,9 +209,9 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
   icon's gradient over a soft indigo halo, shared with the watch) stands where nothing needs a
   look; working or failing with nobody waiting, it sits in the state's still ring.
 - **Tiles** (`GlanceTileView`): the sidebar's rule, a circle for an agent and a rounded square
-  for another program, in the agent's tint with its glyph, and the state's badge: the raised
-  hand, the x, the check, or the sidebar's dot for working. Idle and last-known tiles are
-  dimmed. A waiting agent's tile opens its pane; the others open what the widget opens.
+  for another program, in the agent's tint with its glyph (`kind`, else `symbol`), and the
+  state's badge: the raised hand, the x, the check, or the sidebar's dot for working. Idle and
+  last-known tiles are dimmed. A waiting agent's tile opens its pane; the others open what the widget opens.
 - **`GlanceRing`** is the board's ring with no motion.
 - **Type**: the system font. Headline 22 pt bold in small, 20 pt elsewhere; names 13 pt
   semibold; state words 12 pt semibold; places 11 pt. Dynamic Type stops at xxLarge.

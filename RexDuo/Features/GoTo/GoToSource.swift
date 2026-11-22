@@ -1,4 +1,5 @@
 import Foundation
+import GlanceUI
 import RexKit
 
 /// What the palette searches.
@@ -223,7 +224,7 @@ enum GoToSource {
                         id: tid, kind: .tab, title: title, subtitle: sub.joined(separator: " · "), fields: fields,
                         shortIDs: [shortID(w.id)], order: order, offline: !online,
                         waiting: !waiting.isEmpty && w.allBlocks.contains { waiting.contains($0.id) }, current: isCurrent,
-                        symbol: w.allBlocks.lazy.compactMap { s.currentMeta($0.id)?.agentKind }.first?.symbol ?? "terminal",
+                        symbol: AgentGlyph.name(agent: w.allBlocks.lazy.compactMap { s.currentMeta($0.id)?.agentKind }.first),
                         tabPosition: target?.serverID == s.id && target?.sessionID == e.id ? i + 1 : nil))
                     let panes = PaneScope.arrangeable(window: w)
                     guard panes.count > 1 else { continue }

@@ -1,3 +1,4 @@
+import GlanceUI
 import RexKit
 import SwiftUI
 import UIKit
@@ -329,7 +330,7 @@ struct GoToRowView: View, Equatable {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: row.symbol)
+            AgentGlyph.image(row.symbol)
                 .font(.system(size: 15))
                 .foregroundStyle(row.dimmed ? theme.chrome.tertiary : theme.chrome.secondary)
                 .frame(width: 22)

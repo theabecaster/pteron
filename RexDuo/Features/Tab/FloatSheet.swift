@@ -1,3 +1,4 @@
+import GlanceUI
 import SwiftUI
 import RexKit
 
@@ -365,7 +366,7 @@ struct FloatsMenuRows: View {
         Section {
             ForEach(menu.drawn) { r in
                 Button { onShow(r.id) } label: {
-                    Label(r.name, systemImage: r.shown ? "checkmark" : r.symbol)
+                    Label(r.name, glyph: r.shown ? "checkmark" : r.symbol)
                     if let s = r.subtitle { Text(s) }
                 }
                 .accessibilityLabel(r.shown ? "\(r.name), shown" : r.name)
@@ -375,7 +376,7 @@ struct FloatsMenuRows: View {
             Section("Minimized") {
                 ForEach(menu.minimized) { r in
                     Button { onRestore(r.id) } label: {
-                        Label(r.name, systemImage: r.symbol)
+                        Label(r.name, glyph: r.symbol)
                         if let s = r.subtitle { Text(s) }
                     }
                     .accessibilityLabel("\(r.name), minimized")
@@ -429,7 +430,7 @@ struct FloatMenuSection: View {
                 }
                 ForEach(m?.minimized ?? []) { r in
                     Button { onRestore(r.id) } label: {
-                        Label("Show \(r.name)", systemImage: r.symbol)
+                        Label("Show \(r.name)", glyph: r.symbol)
                         Text(r.subtitle.map { "Minimized · \($0)" } ?? "Minimized")
                     }
                 }

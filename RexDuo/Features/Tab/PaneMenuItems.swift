@@ -1,3 +1,4 @@
+import GlanceUI
 import SwiftUI
 import RexKit
 
@@ -56,7 +57,7 @@ struct PaneMenuItems: View {
 
     private func row(_ r: PaneMenuModel.Row) -> some View {
         Group {
-            Label(r.name, systemImage: r.symbol)
+            Label(r.name, glyph: r.symbol)
             if let s = r.subtitle { Text(s) }
         }
     }

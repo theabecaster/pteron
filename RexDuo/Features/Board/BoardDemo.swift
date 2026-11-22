@@ -5,7 +5,7 @@ import RexKit
 /// `-boardDemo <scenario>` (testing): the agent board at launch, filled with made-up agents, for
 /// screenshots of every state without a server. The app uses no server in such a run, so nothing
 /// real is opened; a tile's tap does nothing. Scenarios: `none`, `0`, `idle`, `1`, `3`, `6`,
-/// `12`, `machines`, `offline`, `stale`, `states`, `long`, `churn`.
+/// `12`, `machines`, `offline`, `stale`, `states`, `long`, `churn`, `kinds`.
 enum BoardDemo {
     static var scenario: String? {
         UserDefaults.standard.string(forKey: "boardDemo").flatMap { $0.isEmpty ? nil : $0 }
@@ -88,6 +88,14 @@ enum BoardDemo {
             let c = agent(3, .cursor, "error", "error: could not compile `rexduo-beacon` (bin \"beacon\") due to 14 previous errors; 3 warnings emitted",
                           "beacon › cargo build --release --target aarch64", now: now)
             return one([a, b, c])
+        case "kinds":
+            // One agent of each kind, for their marks.
+            let kinds: [AgentKind] = [.claude, .codex, .gemini, .opencode, .amp, .aider, .cursor]
+            let states = ["blocked", "working", "done", "working", "blocked", "error", "working"]
+            return one(kinds.enumerated().map { i, k in
+                agent(40 + i, k, states[i], "\(k.displayName) at work", "marks › tab \(i + 1)",
+                      waiting: states[i] == "blocked" ? "question" : nil, since: Double(i + 1) * 60, now: now)
+            } + [agent(47, nil, "working", "A shell", "marks › tab 8", now: now)])
         case "churn":
             // Six agents whose states rotate, faster than the board may reorder.
             let states = ["working", "blocked", "done", "error", "working", "done"]

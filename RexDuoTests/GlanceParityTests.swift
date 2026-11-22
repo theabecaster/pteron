@@ -75,7 +75,7 @@ import Testing
     /// board's wherever every machine is connected.
     @Test func theBoardsScenariosReadTheSameOnTheWidget() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        for name in ["0", "idle", "1", "3", "6", "12", "machines", "states", "long", "churn"] {
+        for name in ["0", "idle", "1", "3", "6", "12", "machines", "states", "long", "churn", "kinds"] {
             let machines = try #require(BoardDemo.machines(name, now: now))
             let input = machines.map { m in
                 GlanceInput.Machine(id: m.id.uuidString, name: m.name, link: m.link == .live ? .live : m.link == .stale ? .stale : .never,

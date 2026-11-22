@@ -71,7 +71,7 @@ struct WatchRing: View {
     var breathes = false
 
     var body: some View {
-        GlanceRing(state: "blocked", symbol: row.symbol, tint: style.tint(kind: row.kind), color: style.waiting,
+        GlanceRing(state: "blocked", kind: row.kind, symbol: row.symbol, tint: style.tint(kind: row.kind), color: style.waiting,
                    ground: .black, diameter: diameter)
             .modifier(WatchBreath(on: breathes && !row.lastKnown, color: style.waiting, diameter: diameter))
     }

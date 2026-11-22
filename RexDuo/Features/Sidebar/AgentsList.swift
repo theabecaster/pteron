@@ -1,4 +1,5 @@
 import GlanceModel
+import GlanceUI
 import SwiftUI
 import RexKit
 
@@ -133,7 +134,7 @@ struct AgentRowLabel: View {
         HStack(alignment: .top, spacing: 9) {
             ZStack {
                 TabRowLabel.tile(kind).fill(TabRowLabel.tint(kind, theme).opacity(0.9))
-                Image(systemName: kind?.symbol ?? "cpu")
+                AgentGlyph.image(agent: kind, fallback: "cpu")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(theme.bg)
             }

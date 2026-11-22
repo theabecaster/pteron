@@ -5,7 +5,7 @@ import Foundation
 /// follow the agent board's (`-boardDemo`).
 public enum GlanceDemo {
     public static let scenarios = ["quiet", "working", "error", "one", "several", "many", "machines", "stale", "offline", "aging",
-                                   "old", "long", "empty", "unpaired", "light-in-dark", "newer", "none"]
+                                   "old", "long", "empty", "unpaired", "light-in-dark", "kinds", "newer", "none"]
 
     /// What the gallery shows.
     public static func gallery(now: Date) -> GlanceSnapshot {
@@ -104,6 +104,13 @@ public enum GlanceDemo {
             return GlanceSnapshot(seq: 1, asOf: now, palette: .standard, machines: [
                 M(id: studio, name: "Studio", link: .live, counts: C(), waiting: [], seen: now, busy: []),
                 M(id: laptop, name: "Laptop", link: .live, counts: C(), waiting: [], seen: now, busy: [])])
+        case "kinds":
+            // One agent of each kind, for their marks: three wait, the others work or are done.
+            let open = wait(41, "opencode", "opencode", "cpu", "Apply the patch to 4 files?", "web › refactor", why: "permission", minutes: 2, now: now)
+            let amp = wait(42, "amp", "Amp", "cpu", "Which test runner?", "api › tests", why: "question", minutes: 6, now: now)
+            let cursor = wait(43, "cursor", "Cursor", "cpu", "Run the migration?", "data › schema", why: "permission", minutes: 9, now: now)
+            return one(C(waiting: 3, error: 1, working: 2, done: 1, idle: 1), [cursor, amp, open],
+                       "aider:error claude:working codex:working gemini:done :idle")
         case "light-in-dark":
             // The light theme chosen for Dark Mode too: both slots draw it as the light theme it is.
             return one(C(waiting: 1, working: 1, done: 1), [ask], "codex:working :done",
