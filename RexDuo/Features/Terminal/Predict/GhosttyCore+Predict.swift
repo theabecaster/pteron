@@ -26,11 +26,16 @@ enum GhosttyEchoEvent: Equatable, Sendable {
 }
 
 /// The feed queue's echo state. `@unchecked Sendable`: `predictor`, `level` and `tickAt` are only
-/// touched on the feed queue with `termLock` held; the rest are atomics or a mutex.
+/// touched on the feed queue with `termLock` held; `clock` is set once, before the pane's first
+/// level; the rest are atomics or a mutex.
 final class GhosttyEchoState: @unchecked Sendable {
     var predictor: EchoPredictor?
     var level = EchoPaneLevel()
     var tickAt: Double?
+    /// A test's clock for every predictor call, set before the first level. With one, no timer
+    /// is armed: the test moves time and calls `echoTick()` itself.
+    var clock: (@Sendable () -> Double)?
+    var now: Double { clock?() ?? EchoClock.now }
     /// A drawn guess is unconfirmed (`EchoOverlay.unsettled`). Any thread.
     let unsettled = Atomic<Bool>(false)
     let handler = Mutex<(@Sendable (GhosttyEchoEvent) -> Void)?>(nil)
@@ -66,7 +71,7 @@ extension GhosttyCore {
             var changed = false
             if let t = terminal, let p = echo.predictor {
                 if current != .off { p.level = current }
-                p.tick(grid: GhosttyEchoGrid(t, marks: promptWatch.marks), now: EchoClock.now)
+                p.tick(grid: GhosttyEchoGrid(t, marks: promptWatch.marks), now: echo.now)
                 changed = echoPublish(&events)
             }
             termLock.unlock()
@@ -112,7 +117,7 @@ extension GhosttyCore {
                 termLock.unlock()
                 return
             }
-            body(p, GhosttyEchoGrid(t, marks: promptWatch.marks), EchoClock.now)
+            body(p, GhosttyEchoGrid(t, marks: promptWatch.marks), echo.now)
             var events: [GhosttyEchoEvent] = []
             let changed = echoPublish(&events)
             termLock.unlock()
@@ -128,7 +133,7 @@ extension GhosttyCore {
     func echoAfterSlice(_ t: GhosttyTerminal, batchEnd: Bool, events: inout [GhosttyEchoEvent]) -> Bool {
         guard let p = echo.predictor else { return false }
         let grid = GhosttyEchoGrid(t, marks: promptWatch.marks)
-        if batchEnd { p.batchEnd(grid: grid, now: EchoClock.now) } else { p.slice(grid: grid, now: EchoClock.now) }
+        if batchEnd { p.batchEnd(grid: grid, now: echo.now) } else { p.slice(grid: grid, now: echo.now) }
         return echoPublish(&events)
     }
 
@@ -168,7 +173,7 @@ extension GhosttyCore {
         }
         let unsettled = overlay?.unsettled ?? false
         if echo.unsettled.exchange(unsettled, ordering: .relaxed), !unsettled { events.append(.settled) }
-        if let due = p.nextDeadline(), due < (echo.tickAt ?? .infinity) {
+        if echo.clock == nil, let due = p.nextDeadline(), due < (echo.tickAt ?? .infinity) {
             echo.tickAt = due
             queue.asyncAfter(deadline: .now() + max(0, due - EchoClock.now) + 0.001) { [weak self] in self?.echoTick(due) }
         }
@@ -181,12 +186,18 @@ extension GhosttyCore {
         var events: [GhosttyEchoEvent] = []
         var changed = false
         if let t = terminal, let p = echo.predictor {
-            p.tick(grid: GhosttyEchoGrid(t, marks: promptWatch.marks), now: EchoClock.now)
+            p.tick(grid: GhosttyEchoGrid(t, marks: promptWatch.marks), now: echo.now)
             changed = echoPublish(&events)
         }
         termLock.unlock()
         if changed { onDirty?() }
         deliverEcho(events)
+    }
+
+    /// The predictor's deadlines (the safety cap, the slow-link signal) as of the clock now, in
+    /// order with the bytes. For a test that moves its own clock.
+    func echoTick() {
+        enqueue { [self] in echoTick(.nan) }
     }
 
     /// Hands events to the pane. Call without `termLock`.
