@@ -74,24 +74,27 @@ final class EchoHostTests: XCTestCase {
         return p
     }
 
+    /// How long `settle` waits for the settle's task, each way. The task is ready within a few
+    /// turns of the main queue; on a loaded machine those turns can be slow to come, so the
+    /// wait is bounded by time, not by a count of turns.
+    private static let settleLimit = Duration.seconds(5)
+
     /// Lets the settle of the last answer (or of the moment the host began to listen) pass: its
-    /// task is waiting within a few turns of the main queue, and tells the core in the turn
-    /// that resumes it.
+    /// task is waiting soon after, and tells the core in the turn that resumes it.
     private func settle(_ p: Pane, file: StaticString = #filePath, line: UInt = #line) async {
-        var turns = 0
-        while p.settles.count == 0, turns < 20 {
-            turns += 1
-            await Task.yield()
+        let clock = ContinuousClock()
+        var deadline = clock.now + Self.settleLimit
+        while p.settles.count == 0, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
         }
-        XCTAssertGreaterThan(p.settles.count, 0, "no settle was waiting", file: file, line: line)
+        XCTAssertGreaterThan(p.settles.count, 0, "no settle was waiting within \(Self.settleLimit)", file: file, line: line)
         let want = p.settles.passed + p.settles.count
         p.settles.pass()
-        turns = 0
-        while p.settles.passed < want, turns < 20 {
-            turns += 1
-            await Task.yield()
+        deadline = clock.now + Self.settleLimit
+        while p.settles.passed < want, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
         }
-        XCTAssertEqual(p.settles.passed, want, "the settle's task did not run on within 20 turns", file: file, line: line)
+        XCTAssertEqual(p.settles.passed, want, "the settle's task did not run on within \(Self.settleLimit)", file: file, line: line)
         p.core.sync()
     }
 
