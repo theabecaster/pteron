@@ -919,6 +919,90 @@ struct PushReconcilerTests {
         #expect(w.gateway.devices.count == 1 && !w.gateway.lines.contains("DELETE /v1/devices/\(device)"))
     }
 
+    /// The computer is removed from the app while its first secret is on its way to the gateway.
+    /// The removal's delete gets there first and finds nothing; the secret that arrives after
+    /// it is deleted once its request has answered, so nothing is left at the gateway.
+    @Test func aComputerRemovedWhileItsFirstSecretIsOnItsWayLeavesNoSecretBehind() async throws {
+        let w = world()
+        let r = w.reconciler()
+        w.gateway.hold = { $0.httpMethod == "PUT" && $0.url?.path.contains("/secrets/") == true }
+        let run = Task { await r.run(studio) }
+        await w.eventually { w.gateway.holding == 1 }
+        try #require(w.gateway.holding == 1)
+        let device = try #require(w.store.value?.device)
+        let secretID = try #require(secret(w, studio)?.secretID)
+        let path = "/v1/devices/\(device)/secrets/\(secretID)"
+        #expect(w.gateway.lines == ["PUT /v1/devices/\(device)"])
+
+        w.helpers.remove(studio)
+        r.forget(studio)
+        await w.eventually { w.gateway.lines.last == "DELETE \(path)" && w.store.value?.retired == nil }
+        #expect(w.gateway.lines == ["PUT /v1/devices/\(device)", "DELETE \(path)"])
+        #expect(secret(w, studio) == nil && w.store.value?.retired == nil)
+
+        w.gateway.release()
+        await run.value
+        await w.eventually { w.gateway.devices[device]?.secrets.isEmpty == true && w.store.value?.retired == nil }
+        #expect(w.gateway.lines == ["PUT /v1/devices/\(device)", "DELETE \(path)", "PUT \(path)", "DELETE \(path)"])
+        #expect(w.gateway.devices[device]?.secrets.isEmpty == true)
+        #expect(secret(w, studio) == nil && w.store.value?.retired == nil && !r.hasRetired)
+    }
+
+    /// The same, and the answer to the secret's request is lost: the gateway may hold the
+    /// secret, so it is kept to be deleted, and the next pass deletes it.
+    @Test func aComputerRemovedWhileItsFirstSecretIsOnItsWayIsCleanedUpAfterALostAnswerToo() async throws {
+        let w = world()
+        let r = w.reconciler()
+        w.gateway.hold = { $0.httpMethod == "PUT" && $0.url?.path.contains("/secrets/") == true }
+        let run = Task { await r.run(studio) }
+        await w.eventually { w.gateway.holding == 1 }
+        try #require(w.gateway.holding == 1)
+        let device = try #require(w.store.value?.device)
+        let secretID = try #require(secret(w, studio)?.secretID)
+        let path = "/v1/devices/\(device)/secrets/\(secretID)"
+
+        w.helpers.remove(studio)
+        r.forget(studio)
+        await w.eventually { w.gateway.lines.last == "DELETE \(path)" && w.store.value?.retired == nil }
+        try #require(w.gateway.lines.last == "DELETE \(path)" && w.store.value?.retired == nil)
+
+        // The secret gets there, and its answer does not come back.
+        w.gateway.turns = [.loseAnswer]
+        w.gateway.release()
+        await run.value
+        #expect(w.gateway.devices[device]?.secrets[secretID] != nil)
+        #expect(w.store.value?.retired == [secretID] && secret(w, studio) == nil)
+
+        r.reconcileAll()
+        await w.eventually { !r.hasRetired }
+        #expect(w.gateway.lines.last == "DELETE \(path)" && w.gateway.devices[device]?.secrets.isEmpty == true)
+        #expect(w.store.value?.retired == nil)
+    }
+
+    /// A request the gateway refused stored nothing there: nothing more is sent for a computer
+    /// that was removed meanwhile.
+    @Test func aComputerRemovedWhileItsFirstSecretIsRefusedHasNothingMoreToDelete() async throws {
+        let w = world()
+        let r = w.reconciler()
+        w.gateway.hold = { $0.httpMethod == "PUT" && $0.url?.path.contains("/secrets/") == true }
+        let run = Task { await r.run(studio) }
+        await w.eventually { w.gateway.holding == 1 }
+        try #require(w.gateway.holding == 1)
+        let device = try #require(w.store.value?.device)
+        let secretID = try #require(secret(w, studio)?.secretID)
+        let path = "/v1/devices/\(device)/secrets/\(secretID)"
+
+        w.helpers.remove(studio)
+        r.forget(studio)
+        await w.eventually { w.gateway.lines.last == "DELETE \(path)" && w.store.value?.retired == nil }
+
+        w.gateway.turns = [.refuse(429, retryAfter: 60)]
+        w.gateway.release()
+        await run.value
+        #expect(w.gateway.lines == ["PUT /v1/devices/\(device)", "DELETE \(path)", "PUT \(path)"])
+        #expect(w.gateway.devices[device]?.secrets.isEmpty == true && w.store.value?.retired == nil)
+    }
+
     // MARK: The values the phone chooses
 
     @Test func theDeviceIDBelongsToItsOwnerKey() {

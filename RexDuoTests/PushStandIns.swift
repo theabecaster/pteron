@@ -59,11 +59,32 @@ final class GatewayStandIn {
     /// ignores the field.
     var knowsPresence = true
     var now: () -> Date = { Date() }
+    /// A request this says yes to is on its way until `release`: the gateway has not seen it,
+    /// and requests sent after it get there first.
+    var hold: ((URLRequest) -> Bool)?
+    private var held: [CheckedContinuation<Void, Never>] = []
 
     var lines: [String] { seen.map(\.line) }
 
+    /// Requests that are on their way.
+    var holding: Int { held.count }
+
+    /// Every held request reaches the gateway now, and nothing more is held.
+    func release() {
+        hold = nil
+        let all = held
+        held = []
+        for request in all { request.resume() }
+    }
+
+    private func travel(_ request: URLRequest) async {
+        guard hold?(request) == true else { return }
+        await withCheckedContinuation { held.append($0) }
+    }
+
     func gateway() -> PushGateway {
         PushGateway(address: Self.address) { [self] request in
+            await self.travel(request)
             let (status, body, headers, lost) = await MainActor.run { self.take(request) }
             if lost { throw URLError(.networkConnectionLost) }
             let http = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!

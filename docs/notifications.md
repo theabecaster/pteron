@@ -598,7 +598,10 @@ same stored secret for on.
 Beacon…", by "Trust…" of a changed Beacon, when the server is removed from the app, and for a
 stored entry of a computer the app does not list (above). A
 delete the gateway did not confirm is kept (`retired`) and sent again on a later launch or
-return to the front. The device itself is never deleted by the app.
+return to the front. A secret that is taken back while its `PUT` is on its way is deleted once
+more when that request has answered, since the first delete may have reached the gateway before
+the secret did; when the answer was lost it is kept in `retired` for the next pass. The device
+itself is never deleted by the app.
 
 **A phone that registered with an earlier version** keeps the device and the secrets it has:
 its stored registration is used as it is, and the `PUT` routes serve only a computer that has

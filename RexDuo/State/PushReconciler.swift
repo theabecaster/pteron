@@ -1165,7 +1165,14 @@ final class PushReconciler {
         } catch GatewayError.tooManySecrets {
             return .failure(.full(id))
         } catch {
-            return .failure(.gateway(error as? GatewayError ?? .unavailable(retryAfter: nil)))
+            let failure = error as? GatewayError ?? .unavailable(retryAfter: nil)
+            // No answer, or none that can be read: the gateway may have stored the secret all
+            // the same. A refusal stored nothing.
+            switch failure {
+            case .unavailable, .malformedReply: _ = takenBack(secretID, of: key, device: saved.device)
+            default: break
+            }
+            return .failure(.gateway(failure))
         }
         answered()
         if let presence { flags[id] = SentFlag(secretID: secretID, presence: presence, taken: true) }
@@ -1174,12 +1181,29 @@ final class PushReconciler {
             let confirmed = try edit(saved.device) {
                 if $0.servers[key]?.secretID == secretID, $0.servers[key]?.pushSecret == confirmedValue { $0.servers[key]?.unconfirmed = nil }
             }
-            // The entry went away meanwhile (the computer was removed): nothing holds the secret.
-            guard confirmed.servers[key]?.pushSecret == confirmedValue else { return .failure(.helper) }
+            guard confirmed.servers[key]?.pushSecret == confirmedValue else {
+                // The entry went away meanwhile (the computer was removed): nothing holds the
+                // secret, and the gateway stored it after it was taken back, so it is deleted
+                // there once more.
+                if takenBack(secretID, of: key, device: saved.device) { await deleteRetired() }
+                return .failure(.helper)
+            }
             return .success(confirmedValue)
         } catch {
             return .failure(.gateway(.storeFailed))
         }
+    }
+
+    /// A secret's request to the gateway is over. When the computer's entry no longer carries
+    /// that secret (the computer left the app, or its Beacon was removed or replaced, while the
+    /// request was on its way), the delete that took it back may have reached the gateway
+    /// before the secret did: it is listed in `retired` once more. True when it is listed, for
+    /// `deleteRetired` now or later.
+    private func takenBack(_ secretID: String, of key: String, device: String) -> Bool {
+        guard let stored = record, stored.device == device, stored.servers[key]?.secretID != secretID else { return false }
+        return (try? edit(device) {
+            if $0.retired?.contains(secretID) != true { $0.retired = ($0.retired ?? []) + [secretID] }
+        }) != nil
     }
 
     /// A secret the gateway confirmed before the app knew whose computer it is for, or before
