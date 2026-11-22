@@ -209,6 +209,22 @@ final class Prefs {
     // The agent board has no switch: it always shows while the phone stands as a tent, after the
     // hinge has held for a second (`TentDetector`), comes back 60 s after the last touch
     // (`BoardPresence`), and keeps the screen awake except in Low Power Mode (`BoardAwake`).
+    // Predicted echo has no setting. It runs only while a computer's smoothed write round trip
+    // (α 1/8, from the writes typing already makes) is over 60 ms after 5 samples, or after two
+    // writes of 250 ms within 10 s; it stops at 40 ms or less once nothing is pending
+    // (`EchoGate`). It guesses single printable ASCII bytes and Backspace, classified from the
+    // bytes sent, at a shell's prompt on the primary screen, never in an agent's pane, behind
+    // the fence, while composing, selecting, finding or scrolled back (`EchoHostGate`). A line
+    // is drawn only after proof that the program echoes: an OSC 133 B, or, without OSC 133, the
+    // first key's own echo and then an input_mode read that shows a line editor (canonical off,
+    // a local shell in front; never over ssh). It uses mosh's epochs and acknowledgement rule:
+    // an epoch starts only once all earlier input is answered and 50 ms have passed, and a key
+    // confirms only from the screen after its own write's answer, in typing order
+    // (`EchoPredictor`). Only contrary screen content removes a guess; a late echo never does,
+    // and a guess unconfirmed 1.5 s after its write's answer is cleared silently. Over 80 ms
+    // (back at 50 ms with nothing pending, mosh's values), or once a drawn guess waits 300 ms,
+    // unconfirmed characters carry a solid underline in their own colour at 50% (100% with
+    // Increase Contrast), removed per cell on confirmation, no animation.
     // Find has no settings: tints from the theme's yellows, the current match's text black or
     // white by contrast, refreshes at most every 24 ms, needles under 3 characters searched after
     // 300 ms, at most 1 KB of needle, 2,048 pages converted per refresh (`GhosttyFind`,

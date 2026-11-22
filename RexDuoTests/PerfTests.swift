@@ -276,6 +276,74 @@ final class EchoProbeTests: XCTestCase {
         XCTAssertEqual(printable("\u{1b}7f\u{1b}8\r\n"), "f")
         XCTAssertEqual(printable("\u{1b}["), "", "a sequence cut at the chunk's end")
     }
+
+    private func key(_ result: [String: Any], _ i: Int) -> [String: Any] {
+        (result["keys"] as? [[String: Any]])?[i] ?? [:]
+    }
+
+    /// A key's guess counts from the frame that shows the overlay holding its letter, and the
+    /// key was visible from the earlier of that frame and the frame of the program's echo.
+    func testAGuessedKeyIsVisibleFromTheFrameThatShowsItsGuess() {
+        let probe = EchoProbe(name: "t"), core = GhosttyCore(cols: 20, rows: 4)
+        probe.typed(UInt8(ascii: "a"), core: core, fenced: false)
+        probe.pass(core: core, built: EchoProbe.clock(), presented: true)
+        XCTAssertTrue(key(probe.result(), 0)["predictedMs"] is NSNull, "no overlay yet: no guess was shown")
+        probe.published(EchoOverlay(cells: [.init(col: 2, row: 0, scalar: 0x61)], cursor: nil, unsettled: true), core: core)
+        probe.pass(core: core, built: EchoProbe.clock(), presented: true)
+        let r = probe.result()
+        let predicted = key(r, 0)["predictedMs"] as? Double
+        XCTAssertNotNil(predicted)
+        XCTAssertEqual(key(r, 0)["firstVisibleMs"] as? Double, predicted, "the guess came before any echo")
+        XCTAssertEqual(r["predictedKeys"] as? Int, 1)
+        XCTAssertTrue(key(r, 0)["shownMs"] is NSNull)
+    }
+
+    /// A letter typed twice: the guess of the second is not taken for the first, which the
+    /// program had echoed before any guess was drawn.
+    func testALetterTypedAgainIsNotTheGuessOfTheFirst() {
+        let probe = EchoProbe(name: "t"), core = GhosttyCore(cols: 20, rows: 4)
+        probe.typed(UInt8(ascii: "l"), core: core, fenced: false)
+        Array("l".utf8).withUnsafeBufferPointer { probe.fed($0, core: core) }
+        probe.typed(UInt8(ascii: "l"), core: core, fenced: false)
+        probe.published(EchoOverlay(cells: [.init(col: 3, row: 0, scalar: 0x6C)], cursor: nil, unsettled: true), core: core)
+        probe.pass(core: core, built: EchoProbe.clock(), presented: true)
+        let r = probe.result()
+        XCTAssertTrue(key(r, 0)["predictedMs"] is NSNull)
+        XCTAssertNotNil(key(r, 1)["predictedMs"] as? Double)
+    }
+
+    /// The counters of every predictor of the run are summed, and a step's cost is reported in
+    /// microseconds.
+    func testCountersOfRetiredPredictorsAndCostsAreInTheResult() {
+        let probe = EchoProbe(name: "t")
+        var a = EchoPredictor.Counters(), b = EchoPredictor.Counters()
+        a.drawn = 3
+        a.confirmed = 3
+        b.drawn = 2
+        b.mismatched = 1
+        probe.retired(a)
+        let r = probe.result(live: b)
+        XCTAssertEqual(r["drawn"] as? Int, 5)
+        XCTAssertEqual(r["confirmed"] as? Int, 3)
+        XCTAssertEqual(r["mismatched"] as? Int, 1)
+        XCTAssertEqual(r["vanished"] as? Int, 0)
+        probe.cost(.mainKey, since: EchoProbe.clock())
+        let cost = probe.result()["mainKeyUs"] as? [String: Any]
+        XCTAssertEqual(cost?["count"] as? Int, 1)
+        XCTAssertNotNil(cost?["median"] as? Double)
+    }
+
+    /// The benchmark's script is a recording kept with the tests: it decodes, and holds keys,
+    /// output and the tty's state.
+    func testTheBenchmarksScriptDecodes() throws {
+        let url = try XCTUnwrap(Bundle(for: EchoProbeTests.self).url(forResource: "echo-zsh-typing", withExtension: "json"))
+        let script = try JSONDecoder().decode(EchoScript.self, from: Data(contentsOf: url))
+        XCTAssertEqual(script.cols, 80)
+        XCTAssertEqual(script.rows, 24)
+        XCTAssertGreaterThan(script.steps.filter { $0.key != nil }.count, 20)
+        XCTAssertTrue(script.steps.contains { $0.mode == [false, false] && $0.fg == "zsh" })
+        XCTAssertEqual(EchoScript.bytes(hex: "1b5b4b"), [0x1B, 0x5B, 0x4B])
+    }
 }
 
 final class GoToPerfTests: XCTestCase {

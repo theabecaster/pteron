@@ -441,6 +441,15 @@ final class ServerConnection: Identifiable {
             governor: governor)
         keymap = KeymapStore(control: control)
         echoGate.follow(control)
+        #if DEBUG
+        // `-predict never|always` (testing): predicted echo off at any speed, or on and marked
+        // as on a slow link whatever the round trip (docs/debug-args.md).
+        switch UserDefaults.standard.string(forKey: "predict") {
+        case "never": echoGate.forced = .off
+        case "always": echoGate.forced = .slow
+        default: break
+        }
+        #endif
         #if DEBUG || BENCH
         // `-netDelay <ms>` (testing): a simulated round-trip time on this server's calls and
         // terminal streams (docs/debug-args.md).

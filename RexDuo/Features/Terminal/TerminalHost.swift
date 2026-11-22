@@ -279,6 +279,21 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane's owner as the session's view last said; nil when unknown or when the server has
     /// no owners. Read only by `checkFit`.
     var blockOwner: (() -> String?)?
+
+    // Predicted echo (Predict/TerminalHost+Predict.swift).
+    /// Whether an agent runs in the pane, and the program in front, as the server's metadata
+    /// says now. Read for each input call while predictions are on, never otherwise. Without it
+    /// no key is ever a guess.
+    var echoContext: (@MainActor () -> (agent: Bool, foreground: String?))?
+    /// The level the server's gate wants for this pane.
+    var echoWanted = EchoLevel.off
+    /// The watch on the server's gate; it ends itself once the host is gone.
+    var echoWatch: EchoGateWatch?
+    /// The foreground program at the last input call, to tell the core when it changes. Nil
+    /// until the first input call heard: that one is where the watch starts, not a change.
+    var echoForeground: String??
+    /// The view is scrolled into the history (`scrollPlace`).
+    var isScrolledBack: Bool { scrollPlace.rowsAbove > 0 }
     /// This client's id, for `blockOwner` and the `owner` of a size; nil: the control
     /// connection's. Tests put their own here.
     var ownClientID: (() -> String?)?
@@ -336,6 +351,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         clipsToBounds = true
         applyTheme(theme)
         stream.sink = self
+        followEchoGate()
         // The data socket isn't read while megabytes wait to be parsed (`applyBackpressure`).
         // The core calls from the thread that crossed a mark, so the state is read on arrival.
         term.core.onBackpressureChange = { [weak self] in
@@ -1609,6 +1625,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// The engine says where the view is in the scrollback: on its news, and on every scroll step.
     private func scrollPlaceChanged(_ place: GhosttyScrollPlace) {
+        // A prompt click held for predicted echo named a row of the view as it was.
+        if place.rowsAbove != scrollPlace.rowsAbove { term.dropHeldPromptClick() }
         scrollPlace = place
         updateJumpButton()
     }

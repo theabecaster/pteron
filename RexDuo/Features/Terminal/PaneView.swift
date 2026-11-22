@@ -73,6 +73,11 @@ struct PaneHostView: UIViewRepresentable {
         host.blockOwner = { [weak server, sessionID, blockID] in
             server?.views[sessionID]?.windowContaining(block: blockID)?.block(blockID)?.owner
         }
+        // Read for each key while predicted echo is on (a slow link), never otherwise.
+        host.echoContext = { [weak server, blockID] in
+            let meta = server?.meta[blockID]
+            return (agent: meta?.agentKind != nil, foreground: meta?.foreground)
+        }
         host.files = PaneFiles(server: server, sessionID: sessionID, blockID: blockID)
         host.share = PaneShare(server: server, sessionID: sessionID, blockID: blockID)
         host.ports = PanePorts(server: server, sessionID: sessionID, blockID: blockID)

@@ -906,6 +906,8 @@ final class PerfProbe: Sendable {
             json["find"] = ["passes": find.passes.load(ordering: .relaxed), "feeds": find.feeds.load(ordering: .relaxed),
                             "total": find.published.withLock { $0.total }]
         }
+        // Predicted echo (`-echoTest`, `-echoScript`): the keys' times, counters and costs.
+        if let echo = EchoProbe.active { json["echo"] = echo.resultNow() }
         json.merge(phases) { a, _ in a }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Atomic: whoever waits for the file never reads half of it.

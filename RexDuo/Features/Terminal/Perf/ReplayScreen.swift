@@ -1,4 +1,4 @@
-import RexKit
+@_spi(Bench) import RexKit
 import SwiftUI
 import UIKit
 
@@ -11,7 +11,7 @@ import UIKit
 /// Launch arguments:
 /// `-replay <file> [-replayCols N -replayRows N]
 ///  [-replayChunk <bytes>] [-replayRate max|<bytes/s>] [-replayDelay <seconds>]
-///  [-replayFontSize <points>]`.
+///  [-replayFontSize <points>] [-echoScript <file> [-echoDelay <ms>]]`.
 ///
 /// - `<file>`: an absolute path (the simulator reads the Mac's files), or a path inside the
 ///   app's Documents (a device: copy the file there first). `ReplayCapture` lists the formats.
@@ -22,6 +22,9 @@ import UIKit
 ///   the others.
 /// - `-replayDelay`: seconds between the pane being live and the first output of a file that
 ///   holds no snapshot (default 1), so launch work stays out of the measured window.
+/// - `-echoScript`: with a `rex` capture, the pane is a real stream on a scripted link that opens
+///   with the capture, and a recorded typing session is typed into it (`EchoScript`); the other
+///   replay arguments but the font size do not apply.
 /// - If the snapshot in a `rex` capture can't be restored, the screen is seeded from `<file>.vt`
 ///   if it exists (what `terminal.format` returned when the capture was made), else from nothing.
 struct ReplayConfig {
@@ -64,6 +67,7 @@ final class ReplayView: UIView {
     private let theme: TermTheme
     private(set) var host: TerminalHost?
     private var source: ReplaySource?
+    private var player: EchoScriptPlayer?
     private var opened = false
 
     init(config: ReplayConfig) {
@@ -96,6 +100,16 @@ final class ReplayView: UIView {
         let capture = ReplayCapture(file: file, nonce: nonce, chunk: config.chunk, rate: config.rate)
         guard !capture.chunks.isEmpty else {
             fail("replay: \(config.path) is empty")
+            return
+        }
+        // `-echoScript <file>`: the capture opens a pane on a scripted link, and the script types.
+        do {
+            if let script = try EchoScript.current(beside: config.path) {
+                openScripted(script, capture: capture, in: area)
+                return
+            }
+        } catch {
+            fail("replay: can't read the echo script: \(error.localizedDescription)")
             return
         }
         let seed = (try? String(contentsOfFile: config.path + ".vt", encoding: .utf8)) ?? ""
@@ -135,6 +149,35 @@ final class ReplayView: UIView {
             zoom: Double(zoom), fontSize: config.fontSize, delay: config.delay))
         // After this layout pass, as a stream's start is.
         Task { @MainActor in source.start() }
+    }
+
+    /// The benchmark's `predict` scenario: a real stream on a link that plays the server, so the
+    /// stream's queue, its round-trip samples, the server's gate and the host's own gates all
+    /// run as they do on a slow link. Nothing forces predictions on.
+    private func openScripted(_ script: EchoScript, capture: ReplayCapture, in area: CGRect) {
+        let link = ScriptedEchoLink(writeDelay: EchoScript.delay(), opening: [UInt8](capture.data), nonce: capture.nonce)
+        let control = RexControl(address: "", client: ClientInfo(name: "replay", version: "0", label: "replay"))
+        let stream = link.stream(control: control, sessionID: "replay", blockID: "replay", echoGate: EchoGate())
+        let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: config.fontSize, theme: theme)
+        let player = EchoScriptPlayer(script: script, link: link, host: host)
+        host.echoContext = { [weak player] in (agent: false, foreground: player?.foreground) }
+        host.frame = area
+        addSubview(host)
+        self.host = host
+        self.player = player
+
+        let cell = host.term.cellSize
+        let shown = capture.grid ?? (cols: script.cols, rows: script.rows)
+        let zoom = min(area.width / (ceil(CGFloat(shown.cols) * cell.width) + 0.5), 1)
+        PerfProbe.active?.replayStarted(PerfReplayInfo(
+            file: (config.path as NSString).lastPathComponent, format: capture.format.rawValue, bytes: capture.data.count,
+            chunks: script.steps.count, rate: "script", cols: shown.cols, rows: shown.rows,
+            zoom: Double(zoom), fontSize: config.fontSize, delay: 0))
+        // After this layout pass, as a stream's start is.
+        Task { @MainActor in
+            stream.start()
+            await player.run()
+        }
     }
 
     private func fail(_ message: String) {

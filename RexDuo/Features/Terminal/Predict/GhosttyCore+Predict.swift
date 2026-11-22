@@ -81,7 +81,7 @@ extension GhosttyCore {
     }
 
     func echoTyped(_ kind: EchoInputKind, seq: Int, at time: Double) {
-        echoOp { p, grid, _ in p.typed(kind, seq: seq, at: time, grid: grid) }
+        echoOp(cost: .feedKey) { p, grid, _ in p.typed(kind, seq: seq, at: time, grid: grid) }
     }
 
     func echoAnswered(through seq: Int, at time: Double) {
@@ -110,16 +110,18 @@ extension GhosttyCore {
     }
 
     /// Runs `body` on the feed queue with the predictor and the grid, then publishes.
-    private func echoOp(_ body: @escaping @Sendable (EchoPredictor, GhosttyEchoGrid, Double) -> Void) {
+    private func echoOp(cost: EchoProbe.Cost? = nil, _ body: @escaping @Sendable (EchoPredictor, GhosttyEchoGrid, Double) -> Void) {
         enqueue { [self] in
             termLock.lock()
             guard let t = terminal, let p = echo.predictor else {
                 termLock.unlock()
                 return
             }
+            let began = cost != nil && EchoProbe.active != nil ? EchoProbe.clock() : 0  // PERF
             body(p, GhosttyEchoGrid(t, marks: promptWatch.marks), echo.now)
             var events: [GhosttyEchoEvent] = []
             let changed = echoPublish(&events)
+            if let cost { EchoProbe.active?.cost(cost, since: began) }  // PERF
             termLock.unlock()
             if changed { onDirty?() }
             deliverEcho(events)
@@ -132,9 +134,12 @@ extension GhosttyCore {
     /// while a predictor exists. Returns true when the overlay changed.
     func echoAfterSlice(_ t: GhosttyTerminal, batchEnd: Bool, events: inout [GhosttyEchoEvent]) -> Bool {
         guard let p = echo.predictor else { return false }
+        let began = EchoProbe.active != nil ? EchoProbe.clock() : 0  // PERF
         let grid = GhosttyEchoGrid(t, marks: promptWatch.marks)
         if batchEnd { p.batchEnd(grid: grid, now: echo.now) } else { p.slice(grid: grid, now: echo.now) }
-        return echoPublish(&events)
+        let changed = echoPublish(&events)
+        EchoProbe.active?.cost(.feedSlice, since: began)  // PERF
+        return changed
     }
 
     /// The grid changed under the guesses (a resize, a reset, a restore, a theme, dropped
@@ -152,6 +157,7 @@ extension GhosttyCore {
         guard let p = echo.predictor else { return false }
         let level = echo.level.settle(pending: p.hasPending)
         if level == .off {
+            EchoProbe.active?.retired(p.counters)  // PERF
             echo.predictor = nil
             echo.tickAt = nil
             let had = echoPublished != nil
@@ -170,6 +176,7 @@ extension GhosttyCore {
         if changed {
             echoPublished = overlay
             echo.publishes.add(1, ordering: .relaxed)
+            EchoProbe.active?.published(overlay, core: self)  // PERF
         }
         let unsettled = overlay?.unsettled ?? false
         if echo.unsettled.exchange(unsettled, ordering: .relaxed), !unsettled { events.append(.settled) }

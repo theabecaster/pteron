@@ -88,6 +88,16 @@ final class GhosttyTapState {
     /// Both are wider than the host's own window for a multi-tap (`SelectionTapCounter`).
     static let repeatInterval: CFTimeInterval = 0.5
     static let repeatDistance: CGFloat = 40
+    /// How long a prompt click waits for predicted echo's guesses to settle.
+    static let heldPromptLife: CFTimeInterval = 2
+
+    /// A tap on the prompt that waits for drawn guesses to settle: its viewport cell.
+    struct HeldPrompt: Equatable {
+        var col: Int
+        var row: Int
+        var until: CFTimeInterval
+    }
+    var heldPrompt: HeldPrompt?
 
     /// Opens a link. `asked`: the user just confirmed it (`LinkOpenPolicy`), so whatever opens
     /// it doesn't ask again. `UIApplication.open` by default; a pane's link router
@@ -128,6 +138,8 @@ extension GhosttyTerminalView {
     /// the tap opened a link or moved the shell's cursor, and so is used up.
     func tapOpensLinkOrMovesCursor(at point: CGPoint, focused: Bool, shift: Bool) -> Bool {
         // The cheap conditions first: the rest costs a terminal lock.
+        // A tap ends the wait of the one before it (a prompt click held for predicted echo).
+        taps.heldPrompt = nil
         guard focused, !shift, !taps.repeats(at: point) else { return false }
         let cell = viewportCell(at: point)
         let probe = core.tapProbe(viewportCol: cell.col, row: cell.row)
@@ -138,13 +150,36 @@ extension GhosttyTerminalView {
             if let link = probe.link { open(tapped: link, cell: cell) }
             used = true
         case .prompt(let click):
-            used = send(promptClick: click)
+            if case .keys = click, core.echoUnsettled {
+                // Arrow keys are counted from the real cursor, which lags the one on screen
+                // while drawn guesses are unconfirmed: they would land too far right. The tap
+                // waits for the guesses to settle and is decided again then (`echoSettled`).
+                taps.heldPrompt = GhosttyTapState.HeldPrompt(col: cell.col, row: cell.row, until: taps.clock() + GhosttyTapState.heldPromptLife)
+                used = true
+            } else {
+                used = send(promptClick: click)
+            }
         case .focusOnly, .dismissSelection, .mouseClick, .nothing:
             break
         }
         if used { taps.used(at: point) }
         return used
     }
+
+    /// No drawn guess is unconfirmed any more (`GhosttyEchoEvent.settled`): a prompt click that
+    /// waited for that is decided against the grid as it is now, and sent. One that waited too
+    /// long is dropped.
+    func echoSettled() {
+        guard let held = taps.heldPrompt else { return }
+        taps.heldPrompt = nil
+        guard taps.clock() <= held.until, !core.echoUnsettled else { return }
+        let probe = core.tapProbe(viewportCol: held.col, row: held.row)
+        let action = GhosttyTapRouting.action(focusedAtTouch: true, shift: false, hasSelection: hasActiveSelection, probe: probe)
+        if case .prompt(let click) = action { _ = send(promptClick: click) }
+    }
+
+    /// New input, a scroll or a cleared queue: a held prompt click is of another moment.
+    func dropHeldPromptClick() { taps.heldPrompt = nil }
 
     /// Opens a tapped link. A program wrote it: web and mail addresses open, anything else, and a
     /// label that names another site, is asked about first (`LinkOpenPolicy`). An address found
