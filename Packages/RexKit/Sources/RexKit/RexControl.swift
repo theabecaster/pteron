@@ -211,6 +211,7 @@ public final class RexControl {
     private let random: () -> Double
     private var retryTask: Task<Void, Never>?
     private var connectedObservers: [@MainActor () -> Bool] = []
+    private var routeObservers: [@MainActor () -> Bool] = []
     private var verdictObservers: [@MainActor () -> Bool] = []
     /// The terminal streams that run on this connection, by block. Weak: a stream that went
     /// without `stop()` is simply not found.
@@ -938,8 +939,13 @@ public final class RexControl {
     /// that no path had stopped goes on where it was.
     public func pathChanged(satisfied: Bool, expensive: Bool, interfaceChanged: Bool) {
         let was = pathSatisfied
+        // What was measured over the old route says nothing about the new one: another
+        // interface, other tunnel addresses, a path after none, or a move between Wi-Fi and
+        // cellular.
+        let moved = interfaceChanged || expensive != pathExpensive
         pathSatisfied = satisfied
         pathExpensive = expensive
+        if moved { notifyRoute() }
         // Off cellular: panes start together again, and none is left waiting a turn.
         if !expensive { snapshotTurns.openUp() }
         guard wantConnected else { return }
@@ -1115,6 +1121,21 @@ public final class RexControl {
     /// `body` runs as soon as `state` is `.connected`, before `onReconnected`.
     public func observeConnected(_ body: @escaping @MainActor () -> Bool) {
         connectedObservers.append(body)
+    }
+
+    /// Calls `body` each time the route to the server changed under the connection, whether or
+    /// not the connection survived it (`pathChanged`: a real change of route, or a move between
+    /// a costly path and Wi-Fi), until it returns false. For what was measured over the route
+    /// (`EchoGate`); nothing is asked of the connection here.
+    public func observeRoute(_ body: @escaping @MainActor () -> Bool) {
+        routeObservers.append(body)
+    }
+
+    private func notifyRoute() {
+        let current = routeObservers
+        routeObservers = []
+        let kept = current.filter { $0() }
+        routeObservers = kept + routeObservers
     }
 
     private func notifyConnected() {

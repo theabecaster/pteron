@@ -281,6 +281,10 @@ final class ServerConnection: Identifiable {
     /// ports don't go out in one turn there. On Wi-Fi nothing goes through it: a sync is as it
     /// always was. What the user does never waits here.
     @ObservationIgnored let syncCalls = CallGate()
+    /// When predicted echo is on for this computer's panes: the round trip of the writes typing
+    /// makes, shared by its panes because they share the control connection (`EchoGate`). It
+    /// starts again on every connect and every change of route (`EchoGate.follow`).
+    @ObservationIgnored let echoGate = EchoGate()
     /// Whether reads that start now go through `syncCalls`: the path is cellular or a hotspot,
     /// by the same word the cellular deadlines go by. Asked once where a batch of reads starts,
     /// so a change of path in the middle leaves the batch as it began.
@@ -436,6 +440,7 @@ final class ServerConnection: Identifiable {
             label: PushIdentity.clientLabel(deviceName: UIDevice.current.name, deviceID: deviceID)),
             governor: governor)
         keymap = KeymapStore(control: control)
+        echoGate.follow(control)
         #if DEBUG || BENCH
         // `-netDelay <ms>` (testing): a simulated round-trip time on this server's calls and
         // terminal streams (docs/debug-args.md).

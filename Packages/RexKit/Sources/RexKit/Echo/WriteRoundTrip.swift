@@ -145,6 +145,22 @@ public final class EchoGate {
         if effective != was { publish() }
     }
 
+    /// Starts again whenever the samples no longer describe the link to `control`'s server:
+    /// each time the control connection connects (the first time and after every reconnect,
+    /// which is also how a tunnel that died and came back shows), and each time the phone's
+    /// route changed under it (`RexControl.observeRoute`). After either the link counts as fast
+    /// until it proves otherwise. The gate's owner calls this once.
+    public func follow(_ control: RexControl) {
+        control.observeConnected { [weak self] in
+            self?.reset()
+            return self != nil
+        }
+        control.observeRoute { [weak self] in
+            self?.reset()
+            return self != nil
+        }
+    }
+
     /// Calls `changed` with each new level and `reset` on each reset, until the token is passed
     /// to `unwatch`.
     public func watch(changed: @escaping @MainActor (EchoLevel) -> Void, reset: @escaping @MainActor () -> Void) -> UUID {

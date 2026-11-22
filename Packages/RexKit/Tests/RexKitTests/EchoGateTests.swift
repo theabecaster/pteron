@@ -137,4 +137,52 @@ final class EchoGateTests: XCTestCase {
         feed(gate, [Double](repeating: 200, count: 20))
         XCTAssertEqual(gate.effective, .off, "-predict never too")
     }
+
+    func testARouteChangeStartsTheGateAgain() {
+        let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let gate = EchoGate()
+        gate.follow(control)
+        var resets = 0
+        _ = gate.watch(changed: { _ in }, reset: { resets += 1 })
+        func slow() {
+            feed(gate, [Double](repeating: 150, count: 8))
+            XCTAssertEqual(gate.level, .slow)
+        }
+        // The first report of the path the app started on, on Wi-Fi: no change.
+        slow()
+        control.pathChanged(satisfied: true, expensive: false, interfaceChanged: false)
+        XCTAssertEqual(gate.level, .slow, "a report that changes nothing keeps the samples")
+        XCTAssertEqual(resets, 0)
+        // The route really changed and has settled (`RouteWatch`).
+        control.pathChanged(satisfied: true, expensive: false, interfaceChanged: true)
+        XCTAssertEqual(gate.level, .off)
+        XCTAssertEqual(gate.roundTrip.samples, 0)
+        XCTAssertEqual(resets, 1, "every pane clears its guesses")
+        // From Wi-Fi to cellular, told before the route has settled.
+        slow()
+        control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        XCTAssertEqual(gate.level, .off)
+        XCTAssertEqual(resets, 2)
+        // The same path told again: nothing.
+        slow()
+        control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        XCTAssertEqual(gate.level, .slow)
+        // No path: the samples are of a route that is gone only once another is there.
+        control.pathChanged(satisfied: false, expensive: true, interfaceChanged: false)
+        XCTAssertEqual(resets, 2)
+        // And back to Wi-Fi.
+        control.pathChanged(satisfied: true, expensive: false, interfaceChanged: false)
+        XCTAssertEqual(gate.level, .off)
+        XCTAssertEqual(resets, 3)
+    }
+
+    func testAGateThatIsGoneIsNoLongerTold() {
+        let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
+        var heard = 0
+        control.observeRoute { heard += 1; return heard < 2 }
+        control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        control.pathChanged(satisfied: true, expensive: false, interfaceChanged: false)
+        control.pathChanged(satisfied: true, expensive: true, interfaceChanged: false)
+        XCTAssertEqual(heard, 2, "an observer that answers false is dropped")
+    }
 }

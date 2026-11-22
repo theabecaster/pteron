@@ -64,7 +64,8 @@ struct PaneHostView: UIViewRepresentable {
             return c
         }
         let p = prefs
-        let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID)
+        let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID,
+                                    echoGate: server.echoGate, syncCalls: server.syncCalls)
         stream.showsNotices(computer: server.config.name, keymap: server.keymap)
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap

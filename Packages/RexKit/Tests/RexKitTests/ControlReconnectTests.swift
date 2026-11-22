@@ -139,6 +139,30 @@ final class ControlReconnectTests: XCTestCase {
         return condition()
     }
 
+    func testEveryConnectStartsTheEchoGateAgain() async throws {
+        let server = try Server()
+        let port = await server.start()
+        defer { server.stop() }
+        let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"),
+                                 governor: Self.steady())
+        defer { control.disconnect() }
+        let gate = EchoGate()
+        gate.follow(control)
+        var resets = 0
+        _ = gate.watch(changed: { _ in }, reset: { resets += 1 })
+        try await control.connect()
+        XCTAssertEqual(resets, 1)
+        // Samples of this connection turn predictions on.
+        for i in 0..<8 { gate.sample(ms: 150, at: Double(i) * 0.2) }
+        XCTAssertEqual(gate.level, .slow)
+        // The connection drops and comes back: what was measured is of the old one.
+        server.dropAll()
+        let back = await waitFor({ resets == 2 }, seconds: 5)
+        XCTAssertTrue(back)
+        XCTAssertEqual(gate.level, .off)
+        XCTAssertEqual(gate.roundTrip.samples, 0)
+    }
+
     func testWakeKeepsALiveConnection() async throws {
         let server = try Server()
         let port = await server.start()
