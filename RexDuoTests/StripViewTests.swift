@@ -96,7 +96,7 @@ import UIKit
         }
         // An inactive chip's title is cut at 120 pt at every size.
         let long = size(chips[1], type: type)
-        let fixed = StripStyle.chipPadding * 2 + StripStyle.iconSize * 3 + StripStyle.iconSpacing * 2 + StripStyle.chipSpacing * 2
+        let fixed = StripStyle.chipPadding * 2 + StripStyle.stackWidth(3) + StripStyle.chipSpacing * 2
         #expect(long.width <= fixed + StripLayout.inactiveTitleMax + 40, "\(long.width) pt")
 
         for height in [34, 44] as [CGFloat] {
@@ -121,6 +121,77 @@ import UIKit
             }
         }
     }
+
+    // MARK: The pane icons' stack
+
+    /// What the icons took before they stacked: 15 pt each, side by side, 3 pt apart.
+    private static func rowWidth(_ n: Int) -> CGFloat { n > 0 ? 15 * CGFloat(n) + 3 * CGFloat(n - 1) : 0 }
+
+    /// A chip's icons take the stack's width, never more than the row of icons took: 15, 21 and
+    /// 27 pt for one, two and three panes, where the row took 15, 33 and 51. The chip keeps its
+    /// least width, so the strip's rules (`StripLayout`) are what they were.
+    @Test func theStackIsNarrowerThanTheRowWas() {
+        #expect([1, 2, 3].map(StripStyle.stackWidth) == [15, 21, 27])
+        let strip = StripLayout(.init(width: 402))
+        for active in [true, false] {
+            func width(_ panes: Int) -> CGFloat {
+                size(TabChip(id: "1", title: "a-longer-title", active: active, position: 1, count: 2,
+                             panes: Array(repeating: AgentKind?.none, count: panes), status: nil, strip: strip),
+                     type: .large).width
+            }
+            let one = width(1)
+            #expect(one >= StripLayout.chipMin)
+            for n in 1...5 {
+                let shown = min(n, TabChip.iconLimit), added = width(n) - one
+                #expect(abs(added - (StripStyle.stackWidth(shown) - StripStyle.iconSize)) < 0.5, "\(n) panes: \(added) pt")
+                #expect(added <= Self.rowWidth(shown) - Self.rowWidth(1), "\(n) panes")
+            }
+        }
+    }
+
+    #if DEBUG
+    /// A new front pane on the same chip moves the stack; the first draw, a tab switch and a
+    /// relayout don't. Read from the transaction the stack's own change carries.
+    @Test func theStackMovesOnlyForANewFrontPaneOnTheSameChip() async throws {
+        let panes: [AgentKind?] = [.claude, nil, .codex]
+        func chip(front: String, active: Bool = true) -> TabChip {
+            TabChip(id: "w1", title: "build", active: active, position: 1, count: 2, panes: panes,
+                    paneIDs: ["b0", "b1", "b2"], front: front, status: nil)
+        }
+        let box = ChipBox(chip(front: "b0")), seen = PaneStackProbe()
+        let view = BoxedChip(box: box, theme: theme)
+            .environment(\.paneStackProbe, seen)
+        let window = Hosted.window(view, size: CGSize(width: 300, height: 100))
+        defer { window.isHidden = true }
+        func settle() async {
+            for _ in 0..<10 {
+                window.layoutIfNeeded()
+                await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            }
+        }
+        await settle()
+        #expect(seen.moves.isEmpty, "the first draw has nothing to move from")
+
+        box.chip = chip(front: "b1")
+        await settle()
+        #expect(seen.moves == [true], "the active pane changed")
+
+        // A tab switch: the chip stops being the tab on screen and shows its tab's own pane.
+        box.chip = chip(front: "b2", active: false)
+        await settle()
+        #expect(seen.moves == [true, false])
+        box.chip = chip(front: "b0", active: true)
+        await settle()
+        #expect(seen.moves == [true, false, false])
+
+        // A relayout changes no front pane, so the stack has nothing to do.
+        window.frame.size.width = 200
+        await settle()
+        box.chip = chip(front: "b0", active: true)
+        await settle()
+        #expect(seen.moves == [true, false, false])
+    }
+    #endif
 
     // MARK: Fifty tabs
 
@@ -384,3 +455,22 @@ import UIKit
     }
     #endif
 }
+
+#if DEBUG
+/// A chip a test changes while it is on screen.
+@MainActor @Observable
+private final class ChipBox {
+    var chip: TabChip
+    init(_ chip: TabChip) { self.chip = chip }
+}
+
+private struct BoxedChip: View {
+    let box: ChipBox
+    let theme: TermTheme
+
+    var body: some View {
+        TabChipView(chip: box.chip, theme: theme, onTap: {}, onAction: { _ in })
+            .frame(height: 44)
+    }
+}
+#endif

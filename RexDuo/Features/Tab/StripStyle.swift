@@ -3,7 +3,8 @@ import SwiftUI
 /// How the tab strip's chips and the session popover look: sizes, type and the colors they take
 /// from the theme's chrome. The strip says where each part sits (`StripLayout`); this says how a
 /// part fills its frame. The Mac app's horizontal tabs in small: the active tab a quiet filled
-/// capsule, the others plain text, no shadows and no motion of their own.
+/// capsule, the others plain text, no shadows, and no motion of their own but the pane icons'
+/// stack when the active pane changes.
 enum StripStyle {
     // MARK: Chips
 
@@ -19,8 +20,26 @@ enum StripStyle {
     /// A pane icon: the sidebar's tile (`TabRowLabel.tile`) in small.
     static let iconSize: CGFloat = 15
     static let iconGlyph: CGFloat = 8
-    /// Between two pane icons.
-    static let iconSpacing: CGFloat = 3
+    /// A chip's pane icons stack as a deck (`PaneStack`). Each icon behind reaches this much
+    /// further right than the one before it, its top this much higher: a stack of three is
+    /// 27 pt wide, where a row of three was 51 pt.
+    static let stackStep: CGFloat = 6
+    static let stackRise: CGFloat = 2
+    /// The icons' scale and opacity, front first: the ones behind are smaller and dimmer.
+    static let stackScales: [CGFloat] = [1, 0.82, 0.68]
+    static let stackOpacities: [Double] = [1, 0.8, 0.6]
+    /// The cutout around an icon that lies over another, so the two read apart on any fill.
+    static let stackRing: CGFloat = 1.5
+
+    /// The width of a stack of `count` icons.
+    static func stackWidth(_ count: Int) -> CGFloat {
+        count > 0 ? iconSize + stackStep * CGFloat(count - 1) : 0
+    }
+
+    /// A new front icon comes forward and the old one goes back in a short spring; with Reduce
+    /// Motion the stack crossfades instead.
+    static var stackMotion: Animation { .snappy(duration: 0.25) }
+    static var stackFade: Animation { .easeInOut(duration: 0.2) }
     /// The close button's glyph. Its hit target is `StripLayout.hit` wide.
     static let closeGlyph: CGFloat = 10
     /// The session chip's and the popover rows' waiting dot.

@@ -47,19 +47,9 @@ struct TabChipView: View {
     private var label: some View {
         HStack(spacing: StripStyle.chipSpacing) {
             if !chip.icons.isEmpty {
-                HStack(spacing: StripStyle.iconSpacing) {
-                    ForEach(Array(chip.icons.enumerated()), id: \.offset) { _, icon in
-                        ZStack {
-                            TabRowLabel.tile(icon.agent).fill(TabRowLabel.tint(icon.agent, theme).opacity(0.9))
-                            AgentGlyph.image(agent: icon.agent)
-                                .font(.system(size: StripStyle.iconGlyph, weight: .bold))
-                                .foregroundStyle(theme.bg)
-                        }
-                        .frame(width: StripStyle.iconSize, height: StripStyle.iconSize)
-                    }
-                }
-                .opacity(chip.active ? 1 : StripStyle.inactiveIconOpacity)
-                .fixedSize()
+                PaneStack(icons: chip.icons, scope: chip.stackScope, theme: theme)
+                    .opacity(chip.active ? 1 : StripStyle.inactiveIconOpacity)
+                    .fixedSize()
             }
             title
                 .layoutPriority(1)
@@ -106,6 +96,98 @@ struct TabChipView: View {
         .accessibilityLabel(TabChip.Action.close.title)
     }
 }
+
+/// A chip's pane icons as a deck: the active pane's in front at full size, each other one
+/// behind it smaller and dimmer, a step further right and up (`StripStyle.stackStep`), with a
+/// thin cutout around the icon over it so the chip's own fill shows between the two.
+///
+/// A new front pane on the same chip moves the icons: the new front comes forward and the old
+/// one goes back in a short spring. Anything else shows the new order at once: a tab switch,
+/// the first draw, a relayout (`TabChip.stackMoves`). Reduce Motion crossfades instead. The
+/// motion is a transaction on the front pane's id changing, so nothing runs while it rests.
+struct PaneStack: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if DEBUG
+    @Environment(\.paneStackProbe) private var probe
+    #endif
+    let icons: [TabChip.Icon]
+    /// The chip's tab and role: when either changes, the stack doesn't move.
+    let scope: TabChip.StackScope
+    let theme: TermTheme
+
+    var body: some View {
+        let front = icons.first?.id
+        ZStack(alignment: .topLeading) {
+            if reduceMotion {
+                // A new deck for each front pane, so the change is a fade and nothing moves.
+                deck.id(front).transition(.opacity)
+            } else {
+                deck
+            }
+        }
+        .frame(width: StripStyle.stackWidth(icons.count), height: StripStyle.iconSize, alignment: .topLeading)
+        #if DEBUG
+        // Innermost, so it sees the transaction the two below leave.
+        .transaction(value: front) { [probe] in probe?.record($0.animation) }
+        #endif
+        // Applied after the motion below: a new scope takes it away again.
+        .transaction(value: scope) { $0.animation = nil }
+        .animation(reduceMotion ? StripStyle.stackFade : StripStyle.stackMotion, value: front)
+    }
+
+    /// The icons, the front one drawn last. Each one's cutout clears what the icons behind it
+    /// drew there; the group keeps the clearing to the stack.
+    private var deck: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(icons.enumerated()), id: \.element.id) { slot, icon in
+                PaneIcon(agent: icon.agent, theme: theme, opacity: StripStyle.stackOpacities[slot])
+                    .scaleEffect(StripStyle.stackScales[slot], anchor: .topTrailing)
+                    .offset(x: StripStyle.stackStep * CGFloat(slot), y: -StripStyle.stackRise * CGFloat(slot))
+                    .zIndex(Double(icons.count - slot))
+            }
+        }
+        .compositingGroup()
+    }
+}
+
+/// One pane's icon in the stack: the sidebar's tile in small, with its cutout.
+private struct PaneIcon: View {
+    let agent: AgentKind?
+    let theme: TermTheme
+    let opacity: Double
+
+    var body: some View {
+        ZStack {
+            TabRowLabel.tile(agent)
+                .fill(.black)
+                .padding(-StripStyle.stackRing)
+                .blendMode(.destinationOut)
+            ZStack {
+                TabRowLabel.tile(agent).fill(TabRowLabel.tint(agent, theme).opacity(0.9))
+                AgentGlyph.image(agent: agent)
+                    .font(.system(size: StripStyle.iconGlyph, weight: .bold))
+                    .foregroundStyle(theme.bg)
+            }
+            .compositingGroup()
+            .opacity(opacity)
+        }
+        .frame(width: StripStyle.iconSize, height: StripStyle.iconSize)
+    }
+}
+
+#if DEBUG
+/// Tests: whether each change of a `PaneStack`'s front pane carried an animation.
+@MainActor
+final class PaneStackProbe {
+    private(set) var moves: [Bool] = []
+
+    func record(_ animation: Animation?) { moves.append(animation != nil) }
+}
+
+extension EnvironmentValues {
+    @Entry var paneStackProbe: PaneStackProbe? = nil
+}
+#endif
 
 /// Lays its content out at most `max` wide, so a title truncates there and its chip is only as
 /// wide as the text. A frame's `maxWidth` alone lets a title laid out with no width proposed (in

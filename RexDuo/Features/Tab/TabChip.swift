@@ -8,12 +8,15 @@ import RexKit
 /// and the waking mark, and its close button where the strip has room. Every other chip shows
 /// its tab's status as its sidebar row does, a progress ring included.
 struct TabChip: Identifiable, Equatable {
-    /// At most this many pane icons, as the Mac's tabs show.
+    /// At most this many pane icons, stacked as the Mac's tabs stack them.
     static let iconLimit = 3
 
     /// One pane of the tab: the agent it runs, or a shell. Drawn as the sidebar's tile is
     /// (`TabRowLabel.tile`): a circle for an agent, a rounded square for a shell.
-    struct Icon: Equatable {
+    struct Icon: Equatable, Identifiable {
+        /// The pane's id. An icon keeps it from place to place in the stack, so a change of
+        /// active pane moves the icons rather than drawing new ones.
+        var id: String
         var agent: AgentKind?
     }
 
@@ -53,7 +56,8 @@ struct TabChip: Identifiable, Equatable {
     /// Its place among the session's tabs, from 1, and how many there are.
     var position: Int
     var count: Int
-    /// The first panes' icons, in the tab's order. Decoration: they take no tap.
+    /// The panes' icons as a stack, front first (`stack`): the active pane's, then the panes
+    /// after it in the tab's order. Decoration: they take no tap.
     var icons: [Icon]
     /// Panes beyond the icons.
     var morePanes: Int
@@ -70,25 +74,59 @@ struct TabChip: Identifiable, Equatable {
 
     /// - Parameters:
     ///   - panes: every pane's agent, in the tab's order; nil for a shell.
+    ///   - paneIDs: the panes' ids, in the same order. A pane without one is known by its place.
+    ///   - front: the pane whose icon is in front: the pane on screen for the active chip, the
+    ///     tab's own active pane for any other. Nil, or a pane the tab doesn't have: the first.
     ///   - status: the state the chip's glyph stands for: the shown pane's for the active chip,
     ///     the tab's top state for any other.
     ///   - progress: the progress bars of the tab's panes that report no agent status. The
     ///     active chip ignores them, as the title bar does.
     ///   - strip: the strip's layout, for the close button.
     init(id: String, title: String, active: Bool, position: Int, count: Int, panes: [AgentKind?],
-         status: String?, progress: [TermProgress] = [], waking: Bool = false, movable: Bool = false,
+         paneIDs: [String] = [], front: String? = nil, status: String?, progress: [TermProgress] = [], waking: Bool = false, movable: Bool = false,
          strip: StripLayout? = nil) {
         self.id = id
         self.title = title
         self.active = active
         self.position = position
         self.count = count
-        icons = panes.prefix(Self.iconLimit).map { Icon(agent: $0) }
+        let all = panes.enumerated().map { n, agent in
+            Icon(id: n < paneIDs.count ? paneIDs[n] : "\(n)", agent: agent)
+        }
+        icons = Self.stack(all, front: front)
         morePanes = max(panes.count - Self.iconLimit, 0)
         badge = active ? .status(status) : TabBadge.of(status: status, progress: progress)
         self.waking = active && waking
         showsClose = active && (strip?.showsClose ?? false)
         self.movable = movable && count > 1
+    }
+
+    /// The icons a chip stacks, front first: the `front` pane's, then the panes after it in the
+    /// tab's order, round to the first, `iconLimit` at most. Round, so a step to the next pane
+    /// brings the next icon forward and sends the front one to the back, as a deck turns.
+    static func stack(_ panes: [Icon], front: String?) -> [Icon] {
+        guard !panes.isEmpty else { return [] }
+        let first = panes.firstIndex { $0.id == front } ?? 0
+        return (0..<min(panes.count, iconLimit)).map { panes[(first + $0) % panes.count] }
+    }
+
+    /// The pane in front of the stack.
+    var front: String? { icons.first?.id }
+
+    /// What the stack's motion is scoped to: a new front pane moves the icons only while this
+    /// stays the same. A tab switch makes one chip active and another not, and each shows its
+    /// new front at once; a chip drawn for the first time has nothing to move from.
+    struct StackScope: Equatable {
+        var tab: String
+        var active: Bool
+    }
+
+    var stackScope: StackScope { StackScope(tab: id, active: active) }
+
+    /// The stack moves from `old` to `new`: the front pane changed on the same chip, in the same
+    /// role. `PaneStack` draws by this rule.
+    static func stackMoves(from old: TabChip, to new: TabChip) -> Bool {
+        old.stackScope == new.stackScope && old.front != new.front
     }
 
     /// The chip's menu, top to bottom. Close Other Tabs needs another tab, and a tab moves only
@@ -131,9 +169,11 @@ extension TabChip {
     static func of(_ window: WindowInfo, position: Int, count: Int, server: ServerConnection, active: Bool,
                    block: String?, strip: StripLayout?) -> TabChip {
         let status = active ? block.flatMap { server.meta[$0]?.topStatus?.state } : server.windowStatus(window)?.state
+        let blocks = window.allBlocks
         return TabChip(id: window.id, title: WindowTitle.of(window, server: server), active: active,
                        position: position, count: count,
-                       panes: window.allBlocks.map { server.meta[$0.id]?.agentKind },
+                       panes: blocks.map { server.meta[$0.id]?.agentKind }, paneIDs: blocks.map(\.id),
+                       front: active ? block : ActivePane.of(window, phone: nil),
                        status: status, progress: active ? [] : bars(window, server, status),
                        waking: server.waking,
                        movable: PaneArrange.isAvailable(.moveTab, target: nil, support: server.capabilities.paneSupport),

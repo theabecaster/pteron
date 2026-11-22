@@ -52,6 +52,19 @@ width alone. Left to right:
 A chip shows up to three pane icons, the tab's title and its status (`TabChip`, drawn by
 `TabChipView`).
 
+- The pane icons stack like a deck, as the Mac's tabs stack them (`PaneStack`). The active
+  pane's icon is in front at full size: the pane on screen on the active chip, the tab's own
+  active pane on any other. Behind it come the panes after it in the tab's order, round to the
+  first, each 6 pt further right and 2 pt higher, smaller (82 %, then 68 %) and dimmer, with a
+  1.5 pt cutout around the icon over it. A stack of two is 21 pt wide and of three 27 pt,
+  where a row of icons took 33 and 51 pt. A one-pane tab shows its one icon, as before.
+- A new active pane on the same chip (a tap on another pane, a swipe between panes, a split's
+  focus moving) brings its icon forward and sends the old one back in a 0.25 s spring. A tab
+  switch, a chip's first draw and a relayout show the new order at once
+  (`TabChip.stackMoves`). With Reduce Motion the stack crossfades. The motion is a transaction
+  on the front pane's id changing: nothing runs while it rests.
+- The icons are decoration: VoiceOver reads the chip as before.
+
 - The active chip is a filled capsule. It shows the status of the pane on screen, the waking
   mark and a close button. The close button goes where the chips have less than 144 pt; Close
   Tab stays in the pane menu.

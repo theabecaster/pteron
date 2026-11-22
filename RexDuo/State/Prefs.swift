@@ -259,8 +259,9 @@ final class Prefs {
     // The tab strip has no settings beyond `navigation`: what it shows follows its width
     // (`StripLayout`). Parts a finger taps are 44 pt wide or more and chips sit 6 pt apart; the
     // strip is compact where its full form would leave the chips under 144 pt; a chip that
-    // isn't the active one cuts its title at 120 pt and shows at most 3 pane icons
-    // (`TabChip.iconLimit`); the strip ends 3 pt short of book mode's crease.
+    // isn't the active one cuts its title at 120 pt; a chip stacks at most 3 pane icons, the
+    // active pane's in front, and moves them in a 0.25 s spring when that pane changes
+    // (`TabChip.iconLimit`, `PaneStack`); the strip ends 3 pt short of book mode's crease.
     static let defaultDarkTheme = "github-dark-dimmed"
     static let defaultLightTheme = "github-light-default"
     static let defaultFontSize = 11.0

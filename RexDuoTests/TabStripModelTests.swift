@@ -33,15 +33,74 @@ struct TabChipTests {
         #expect(chip().badge == .status(nil))
     }
 
-    /// Up to three pane icons, in the tab's order, agents and shells told apart; the rest is a count.
+    /// Up to three pane icons, agents and shells told apart; the rest is a count. With no
+    /// active pane named, the first pane is in front and the next ones behind it.
     @Test func atMostThreePaneIcons() {
         #expect(chip(panes: []).icons.isEmpty)
-        #expect(chip(panes: [.claude]).icons == [.init(agent: .claude)])
+        #expect(chip(panes: [.claude]).icons == [.init(id: "0", agent: .claude)])
         let many = chip(panes: [nil, .claude, .codex, .gemini, nil])
-        #expect(many.icons == [.init(agent: nil), .init(agent: .claude), .init(agent: .codex)])
+        #expect(many.icons.map(\.agent) == [nil, .claude, .codex] && many.icons.map(\.id) == ["0", "1", "2"])
         #expect(many.morePanes == 2)
         #expect(chip(panes: [nil, nil, nil]).morePanes == 0)
         #expect(TabChip.iconLimit == 3)
+    }
+
+    private func stacked(_ panes: [AgentKind?], front: String?, active: Bool = true, id: Int = 2) -> TabChip {
+        TabChip(id: "w\(id)", title: "build", active: active, position: id, count: 5, panes: panes,
+                paneIDs: panes.indices.map { "b\($0)" }, front: front, status: nil)
+    }
+
+    /// The active pane's icon is in front, then the panes after it in the tab's order, round to
+    /// the first: stepping through the panes turns the deck one place at a time.
+    @Test func theActivePaneIsInFront() {
+        let panes: [AgentKind?] = [.claude, nil, .codex]
+        #expect(stacked(panes, front: "b0").icons.map(\.id) == ["b0", "b1", "b2"])
+        #expect(stacked(panes, front: "b1").icons.map(\.id) == ["b1", "b2", "b0"])
+        #expect(stacked(panes, front: "b2").icons.map(\.id) == ["b2", "b0", "b1"])
+        #expect(stacked(panes, front: "b2").icons.map(\.agent) == [.codex, .claude, nil])
+        // A pane the tab doesn't have, or none: the first.
+        #expect(stacked(panes, front: "gone").front == "b0" && stacked(panes, front: nil).front == "b0")
+        // Two panes: both, the active one in front.
+        #expect(stacked([.claude, nil], front: "b1").icons == [.init(id: "b1", agent: nil), .init(id: "b0", agent: .claude)])
+    }
+
+    /// However many panes, three icons at most, and the active pane's always among them, in
+    /// front, even when it is past the first three.
+    @Test func theStackHoldsThreeAtMost() {
+        let five: [AgentKind?] = [nil, .claude, .codex, .gemini, nil]
+        for n in 0..<5 {
+            let c = stacked(five, front: "b\(n)")
+            #expect(c.icons.count == 3 && c.morePanes == 2 && c.front == "b\(n)")
+            #expect(c.icons.map(\.id) == (0..<3).map { "b\((n + $0) % 5)" })
+        }
+        #expect(stacked([nil, nil, nil], front: "b2").icons.count == 3)
+        #expect(stacked([nil, nil, nil], front: "b2").morePanes == 0)
+    }
+
+    /// A one-pane tab has one icon, its own, whatever is named active.
+    @Test func aOnePaneTabShowsOneIcon() {
+        for front in ["b0", "other", nil] as [String?] {
+            let c = stacked([.claude], front: front)
+            #expect(c.icons == [.init(id: "b0", agent: .claude)] && c.morePanes == 0)
+        }
+    }
+
+    /// The stack moves only for a new front pane on the same chip in the same role: not when
+    /// the chip becomes or stops being the tab on screen, and not for anything else.
+    @Test func theStackMovesOnlyForANewFrontPane() {
+        let panes: [AgentKind?] = [.claude, nil, .codex]
+        let a = stacked(panes, front: "b0")
+        #expect(TabChip.stackMoves(from: a, to: stacked(panes, front: "b1")))
+        #expect(TabChip.stackMoves(from: stacked(panes, front: "b1", active: false),
+                                   to: stacked(panes, front: "b2", active: false)))
+        #expect(!TabChip.stackMoves(from: a, to: a))
+        // A tab switch: this chip stops being active (or becomes it) and its front changes too.
+        #expect(!TabChip.stackMoves(from: a, to: stacked(panes, front: "b1", active: false)))
+        #expect(!TabChip.stackMoves(from: stacked(panes, front: "b1", active: false), to: a))
+        // Another tab in the same place.
+        #expect(!TabChip.stackMoves(from: a, to: stacked(panes, front: "b1", id: 3)))
+        // A new pane behind the front one: no motion.
+        #expect(!TabChip.stackMoves(from: a, to: stacked(panes + [nil], front: "b0")))
     }
 
     /// The close button is on the active chip only, and only where the strip has room for it.
@@ -149,15 +208,19 @@ struct TabChipTests {
         let web = TabChip.of(view.windows[1], position: 2, count: 3, server: s, active: true, block: "desk-web-2", strip: strip)
         #expect(web.id == "web" && web.title == "web" && web.active)
         #expect(web.position == 2 && web.count == 3)
-        #expect(web.icons == [.init(agent: nil), .init(agent: .claude), .init(agent: .claude)] && web.morePanes == 1)
+        // The pane on screen in front, then the panes after it.
+        #expect(web.icons.map(\.id) == ["desk-web-2", "desk-web-3", "desk-web-0"] && web.morePanes == 1)
+        #expect(web.icons.map(\.agent) == [.claude, nil, nil])
         #expect(web.badge == .status("working"))
         #expect(web.showsClose)
 
         // Any other tab: its top status, and no close button.
         let hidden = TabChip.of(view.windows[1], position: 2, count: 3, server: s, active: false, block: nil, strip: strip)
         #expect(hidden.badge == .status("blocked") && !hidden.showsClose)
+        // The tab names no focus, so its first pane is its active one.
+        #expect(hidden.front == "desk-web-0")
         let api = TabChip.of(view.windows[0], position: 1, count: 3, server: s, active: false, block: nil, strip: strip)
-        #expect(api.position == 1 && api.badge == .status("working") && api.icons == [.init(agent: .claude)])
+        #expect(api.position == 1 && api.badge == .status("working") && api.icons == [.init(id: "desk-api-0", agent: .claude)])
         let logs = TabChip.of(view.windows[2], position: 3, count: 3, server: s, active: false, block: nil, strip: strip)
         #expect(logs.badge == .status(nil) && logs.spoken == "logs, tab 3 of 3")
         // No revision is known for this server, so nothing says it can move a tab.

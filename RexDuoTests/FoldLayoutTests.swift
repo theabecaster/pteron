@@ -190,7 +190,7 @@ final class FoldLayoutTests: XCTestCase {
         // The tab's chip, whatever the posture: one pane, one icon, its agent's.
         let w = try XCTUnwrap(s.views["work"]?.window("w0"))
         let chip = TabChip.of(w, position: 1, count: 1, server: s, active: true, block: "b0", strip: nil)
-        XCTAssertEqual(chip.icons, [TabChip.Icon(agent: .claude)])
+        XCTAssertEqual(chip.icons, [TabChip.Icon(id: "b0", agent: .claude)])
 
         // The terminal goes, so no pane is left on the render thread for the next test.
         window.rootViewController = nil
