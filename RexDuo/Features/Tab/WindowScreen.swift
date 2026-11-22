@@ -842,16 +842,18 @@ struct WindowScreen: View {
     /// While a pane's key bar is up, the root puts Hide Keyboard (the key bar's hide key, which the
     /// bar beside the keyboard takes in; `HideKeyboardItem`) at the top of the bar, above the
     /// sidebar toggle, and All Tabs, which has no room then, leaves these items; it comes back when
-    /// the key bar goes (`TabActions.verticalBar`). The swap rides the keyboard's animation. Where
+    /// the key bar goes (`TabActions.tabItems`). The swap rides the keyboard's animation. Where
     /// the bar fits fewer items above the keyboard (`TabActions.keyBarRoom`), Unzoom and then the
-    /// sidebar toggle leave it first, so nothing goes into the system's "…" menu.
+    /// sidebar toggle leave it first, so nothing goes into the system's "…" menu. Tab mode has no
+    /// toggle (the strip's session chip opens the sessions), so All Tabs stays below Hide
+    /// Keyboard where the bar fits three.
     @ToolbarContentBuilder
     private func barItems(_ theme: TermTheme, _ p: TabPresentation?) -> some ToolbarContent {
         if barEdge != nil, let w = window, let b = activeBlock(w) {
             let room = TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact)
             // The same test the root's Hide Keyboard uses, so the bar counts what it shows.
-            let items = TabActions.verticalBar(zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane != nil, room: room,
-                                               floats: prefs.navigation == .sidebar && floatsControl(w, p, style: .bar) != nil)
+            let items = TabActions.tabItems(prefs.navigation, zoomed: zoomedHere, hidesKeyboard: pool?.hideKeyboard.pane != nil,
+                                            room: room, floats: prefs.navigation == .sidebar && floatsControl(w, p, style: .bar) != nil)
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if items.contains(.unzoom) {
                     Button { toggleZoom() } label: { Label(TabAction.unzoom.title, systemImage: TabAction.unzoom.symbol) }

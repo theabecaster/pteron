@@ -600,9 +600,10 @@ struct StripLayoutTests {
     }
 
     /// The vertical bar's items in every posture that has the bar, on either edge, typing or
-    /// not, zoomed or not: tab mode's list is sidebar mode's with Sessions where the sidebar
-    /// toggle is, so the bar holds as many items either way and they fit above the keyboard.
-    /// What the strip leaves to the bar there (the pane menu, Unzoom) is in the bar's list.
+    /// not, zoomed or not: tab mode's list is sidebar mode's without the sidebar toggle, with All
+    /// Tabs in the toggle's room while typing where three fit, and both fit above the keyboard.
+    /// What the strip leaves to the bar there (the pane menu, Unzoom) is in the bar's list, and
+    /// the session chip, which the bar no longer repeats, is in the strip.
     @Test func bothModesBarListsFitEveryPostureWithABar() {
         var edges = Set<String>()
         for p in DuoSimulation.postures where p.safeArea.leading == 84 || p.safeArea.trailing == 84 {
@@ -615,13 +616,15 @@ struct StripLayoutTests {
                     let note = "\(p.name), typing \(typing), zoomed \(zoomed)"
                     let sidebar = TabActions.verticalBar(.sidebar, zoomed: zoomed, hidesKeyboard: typing, room: room)
                     let tabs = TabActions.verticalBar(.tabs, zoomed: zoomed, hidesKeyboard: typing, room: room)
-                    #expect(tabs == sidebar.map { $0 == .sidebar ? .sessions : $0 }, "\(note)")
-                    #expect(!tabs.contains(.sidebar) && !sidebar.contains(.sessions), "\(note)")
+                    #expect(!tabs.contains(.sidebar), "\(note)")
                     if typing {
-                        #expect(tabs.count <= room, "\(note): \(tabs)")
-                        #expect(tabs.first == .hideKeyboard, "\(note)")
+                        #expect(tabs.count <= room && sidebar.count <= room, "\(note): \(tabs)")
+                        #expect(tabs.first == .hideKeyboard && sidebar.first == .hideKeyboard, "\(note)")
+                        let expected: [TabAction] = room > 2 ? [.hideKeyboard, .allTabs, .paneActions] : [.hideKeyboard, .paneActions]
+                        #expect(tabs == expected, "\(note): \(tabs)")
                     } else {
-                        #expect(tabs.first == .sessions && sidebar.first == .sidebar, "\(note)")
+                        #expect(sidebar.first == .sidebar && tabs == Array(sidebar.dropFirst()), "\(note)")
+                        #expect(tabs.first == (zoomed ? .unzoom : .allTabs), "\(note)")
                     }
                     // The strip beside the bar has no pane menu and no Unzoom of its own.
                     var i = busy(p.rootSize.width, bar: true, height: p.vertical == .compact ? 34 : 44)
@@ -630,7 +633,7 @@ struct StripLayoutTests {
                     #expect(!l.shows(.paneMenu) && !l.shows(.unzoom), "\(note)")
                     #expect(tabs.contains(.paneActions) && sidebar.contains(.paneActions), "\(note)")
                     if zoomed, !typing { #expect(tabs.contains(.unzoom), "\(note)") }
-                    // The session chip is in the strip whether or not Sessions is in the bar.
+                    // The session chip is in the strip: tab mode's one way to the sessions here.
                     #expect(l.shows(.session), "\(note)")
                 }
             }

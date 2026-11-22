@@ -88,9 +88,12 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     Settings and Switch to Sidebar. A row that puts
     up a sheet, an alert or the palette runs once the popover has gone, and after 1 s at the
     latest (`DismissalWait`). The chip is as wide as its session's name needs, up to 120 pt.
-  - **Vertical bar.** Sessions takes the sidebar toggle's place and opens the same popover from
-    the item; nothing else in the bar moves, so it holds as many items as before
-    (`TabActions.verticalBar`). Back in sidebar mode the toggle is back.
+  - **Vertical bar.** No sidebar toggle and no sessions item: the session chip beside the tabs
+    opens the sessions, and the strip places it in every posture with the bar. The bar is Hide
+    Keyboard while the key bar is up, then Show All Tabs, then Pane Actions (Unzoom above All
+    Tabs while zoomed, with the keyboard down). With no toggle, All Tabs stays below Hide
+    Keyboard while typing where the bar fits three (`TabActions.tabItems`). Back in sidebar mode
+    the toggle is back and the bar is as before.
   - **Without the sidebar.** cmd+. and the board's "+K more" open the Agents sheet
     (`AppModel.showAgents`). Show/Hide Sidebar does nothing and isn't in the palette; the swipe
     from the left edge is off. With no tab on screen the strip stays, for its session chip,
@@ -238,7 +241,9 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
 - **Vertical bar.** Where `verticalBarEdge` reports a bar, the navigation bar shows and its items
   go there: the sidebar toggle (leading, top), then Show All Tabs and Pane Actions, then Floating
   Windows while a narrow tab has a float and the keyboard is down. While a pane's key bar is up,
-  they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). The tab's title,
+  they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). Tab mode has no
+  toggle: there they are Hide Keyboard, All Tabs, Pane Actions, and with the keyboard down All
+  Tabs and Pane Actions. The tab's title,
   status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
 - **The browser's buttons.** A page's sheet (docs/terminal.md, Ports) has Done and its menu in
@@ -257,12 +262,13 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   while typing it is the item used most (owner's call, November 2026). With the keyboard down it
   is not in the bar at all, and the bar is the sidebar toggle, All Tabs, Pane Actions, as before;
   while typing All Tabs stays in the Pane Actions menu's first section and in the title menu.
-  VoiceOver finds one of the two in the
+  In tab mode the toggle's place is free, so All Tabs keeps its own below Hide Keyboard. In
+  sidebar mode VoiceOver finds one of the two in the
   bar, and one Hide Keyboard in every state: the item, or without a vertical bar the key bar's
   own. On its side with the bar on the left, the bar's items start lower, past the camera, and
   with the keyboard up only two fit (iOS 27.2 simulator, November 2026). There, while the key bar
-  is up, the leading item (the sidebar toggle, or Sessions in tab mode) leaves the bar and it
-  shows Hide Keyboard, then Pane Actions; the leading item comes back with the keyboard. Unzoom,
+  is up, the sidebar toggle (in tab mode All Tabs) leaves the bar and it shows Hide Keyboard,
+  then Pane Actions; what left comes back with the keyboard. Unzoom,
   where it shows, leaves first in any posture, and stays in the Pane Actions menu. Nothing goes into the "…" menu
   (`TabActions.keyBarRoom`). The system reports neither the items' frames nor the camera's
   offset, so the room comes from the bar's column on the screen's left and a compact height.

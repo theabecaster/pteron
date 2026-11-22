@@ -261,15 +261,15 @@ private struct SessionChipSlot: View {
                 .environment(model)
         }
         #if DEBUG
-        .modifier(StripPopoverOpens(opener: .chip, open: $open))
+        .modifier(StripPopoverOpens(open: $open))
         #endif
     }
 }
 
-/// The session popover's contents, for the session chip and for the vertical bar's Sessions
-/// item. It builds the rows in its own body, so the servers' sessions are read only while the
-/// popover is open, and the rows follow them meanwhile. A row's action closes the popover; one
-/// that puts something on screen runs once the popover has gone (`DismissalWait`).
+/// The session popover's contents, for the session chip. It builds the rows in its own body, so
+/// the servers' sessions are read only while the popover is open, and the rows follow them
+/// meanwhile. A row's action closes the popover; one that puts something on screen runs once
+/// the popover has gone (`DismissalWait`).
 struct SessionPopoverHost: View {
     @Environment(AppModel.self) private var model
     let theme: TermTheme
@@ -299,31 +299,6 @@ struct SessionPopoverHost: View {
         if action.presents { wait.hold { run(action) } }
         close()
         if !action.presents { run(action) }
-    }
-}
-
-/// The vertical bar's first item in tab mode: Sessions, which opens the session chip's popover
-/// from the item. Drawn by the root, so it is there with no tab on screen.
-struct SessionsBarItem: View {
-    @Environment(AppModel.self) private var model
-    let theme: TermTheme
-    let onAction: (SessionPopover.Action) -> Void
-    @State private var open = false
-
-    var body: some View {
-        Button {
-            Haptic.tap()
-            open = true
-        } label: {
-            Label(TabAction.sessions.title, systemImage: TabAction.sessions.symbol)
-        }
-        .popover(isPresented: $open) {
-            SessionPopoverHost(theme: theme, close: { open = false }, onAction: onAction)
-                .environment(model)
-        }
-        #if DEBUG
-        .modifier(StripPopoverOpens(opener: .bar, open: $open))
-        #endif
     }
 }
 

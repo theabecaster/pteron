@@ -249,16 +249,16 @@ struct FloatSheetTests {
 
     @Test func theBarsFloatsItemIsLastAndGoesWhileTypingWithoutMovingAnother() {
         for zoomed in [false, true] {
-            let resting = TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: false, floats: true)
-            let typing = TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: true, floats: true)
+            let resting = TabActions.tabItems(.sidebar, zoomed: zoomed, hidesKeyboard: false, floats: true)
+            let typing = TabActions.tabItems(.sidebar, zoomed: zoomed, hidesKeyboard: true, floats: true)
             #expect(resting.last == .floats)
             #expect(!typing.contains(.floats), "the bar has room for three while typing")
             #expect(Array(resting.dropLast()).filter { typing.contains($0) } == typing, "the rest keep their order")
             #expect(typing.last == .paneActions)
-            #expect(TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: false, room: 3, floats: true) == resting,
+            #expect(TabActions.tabItems(.sidebar, zoomed: zoomed, hidesKeyboard: false, room: 3, floats: true) == resting,
                     "with the keyboard down nothing is trimmed")
-            #expect(!TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: true, room: 2, floats: true).contains(.floats))
-            #expect(TabActions.verticalBar(zoomed: zoomed, hidesKeyboard: false) == Array(resting.dropLast()), "no float: as before")
+            #expect(!TabActions.tabItems(.sidebar, zoomed: zoomed, hidesKeyboard: true, room: 2, floats: true).contains(.floats))
+            #expect(TabActions.tabItems(.sidebar, zoomed: zoomed, hidesKeyboard: false) == Array(resting.dropLast()), "no float: as before")
         }
         #expect(TabAction.floats.symbol != TabAction.allTabs.symbol)
         #expect(TabAction.floats.title == "Floating Windows")

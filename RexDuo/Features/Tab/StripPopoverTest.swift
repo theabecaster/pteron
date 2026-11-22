@@ -1,21 +1,17 @@
 #if DEBUG
 import SwiftUI
 
-/// `-stripPopover chip|bar` (testing, tab mode): open the session popover from the session chip
-/// or from the vertical bar's Sessions item, once, `-stripPopoverAfter` seconds (default 3)
-/// after that control shows. `-stripRow <name>` then taps a row of it, `-stripRowAfter` seconds
-/// (default 2) after the popover shows, exactly as a finger does: through the popover's own
-/// handler, so the row closes the popover and what it presents waits for the dismissal.
+/// `-stripPopover chip` (testing, tab mode): open the session popover from the session chip,
+/// once, `-stripPopoverAfter` seconds (default 3) after the chip shows. `-stripRow <name>` then
+/// taps a row of it, `-stripRowAfter` seconds (default 2) after the popover shows, exactly as a
+/// finger does: through the popover's own handler, so the row closes the popover and what it
+/// presents waits for the dismissal.
 ///
 /// Rows: `settings`, `agents`, `goTo`, `useSidebar` (the footer), `renameSession` and
 /// `closeSession` (the menu of the session on screen), `add` (the first computer that isn't
 /// added), `ports` (the first heading with a ports globe). A row the popover doesn't have does
 /// nothing.
 enum StripPopoverTest {
-    enum Opener: String {
-        case chip, bar
-    }
-
     enum Row: String, CaseIterable {
         case settings, agents, goTo, useSidebar, renameSession, closeSession, add, ports
     }
@@ -31,15 +27,15 @@ enum StripPopoverTest {
     static var openDelay: Duration { seconds("stripPopoverAfter", default: 3) }
     static var rowDelay: Duration { seconds("stripRowAfter", default: 2) }
 
-    /// Whether `opener` was asked for, before the wait.
-    static func asks(_ opener: Opener) -> Bool {
-        UserDefaults.standard.string(forKey: "stripPopover") == opener.rawValue
+    /// Whether the chip's popover was asked for, before the wait.
+    static var asks: Bool {
+        UserDefaults.standard.string(forKey: "stripPopover") == "chip"
     }
 
-    /// Whether `opener` opens its popover now: true once per launch, for the opener asked for.
+    /// Whether the chip opens its popover now: true once per launch, when asked for.
     @MainActor
-    static func takeOpen(_ opener: Opener) -> Bool {
-        guard !opened, asks(opener) else { return false }
+    static func takeOpen() -> Bool {
+        guard !opened, asks else { return false }
         opened = true
         return true
     }
@@ -74,17 +70,16 @@ enum StripPopoverTest {
     }
 }
 
-/// Opens a popover's binding for `-stripPopover`, on the control that holds it.
+/// Opens the session chip's popover binding for `-stripPopover`.
 struct StripPopoverOpens: ViewModifier {
-    let opener: StripPopoverTest.Opener
     @Binding var open: Bool
 
     func body(content: Content) -> some View {
         content.task {
-            guard StripPopoverTest.asks(opener) else { return }
+            guard StripPopoverTest.asks else { return }
             try? await Task.sleep(for: StripPopoverTest.openDelay)
             // Taken after the wait: a control replaced meanwhile leaves the turn to its successor.
-            if !Task.isCancelled, StripPopoverTest.takeOpen(opener) { open = true }
+            if !Task.isCancelled, StripPopoverTest.takeOpen() { open = true }
         }
     }
 }

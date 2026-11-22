@@ -111,9 +111,14 @@ tall enough.
 The strip is laid out from its bar's width and the fold's reserved region, never from the
 device or the orientation ([duo-layout.md](duo-layout.md)).
 
-- **Vertical bar.** Sessions takes the sidebar toggle's place in the bar and opens the same
-  popover from the item. Nothing else in the bar moves, so it holds as many items in both modes
-  (`TabActions.verticalBar`).
+- **Vertical bar.** The bar has no sidebar toggle and no item for the sessions: the session
+  chip, which the strip places in every posture with the bar, opens them, so an item would
+  repeat it. The bar is Hide Keyboard while the key bar is up, then Show All Tabs, then Pane
+  Actions, with Unzoom above All Tabs while zoomed. With the keyboard down that is Unzoom, All
+  Tabs, Pane Actions. While typing, the room the toggle leaves keeps All Tabs below Hide
+  Keyboard where the bar fits three; where it fits two (the outer screen on its side, the bar on
+  the left) the bar is Hide Keyboard and Pane Actions. Unzoom leaves first, as in sidebar mode,
+  and nothing goes into the system's "…" menu (`TabActions.tabItems`).
 - **Book mode.** The whole strip, New Tab included, is on the left page and ends 3 pt short of
   the crease. Flat, it runs the bar's width as the title bar does.
 - **A crease near the bar's start.** The strip stays before the crease while that side holds
@@ -143,8 +148,8 @@ keyboard. So the row's action is held until the popover has gone (`DismissalWait
   the wait is torn down with the popover.
 - The action is held before the popover is told to close, and it runs once.
 - Rows that present nothing (a session, New Session, Reconnect, Switch to Sidebar) run at once.
-- Tab mode's surfaces use it: the session chip's popover, the vertical bar's Sessions popover
-  (the same content), and the ports sheet, where the sheet's own dismissal is the signal.
+- Tab mode's surfaces use it: the session chip's popover, and the ports sheet, where the
+  sheet's own dismissal is the signal.
   Sidebar mode's title menu and its ports popover wait a fixed 350 ms, as before.
 
 The sleep behind the cap is given to the type, so `DismissalWaitTests` drive the cap

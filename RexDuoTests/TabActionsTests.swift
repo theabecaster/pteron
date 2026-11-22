@@ -4,7 +4,8 @@ import Testing
 
 /// The tab's actions in the vertical bar and its menus (`TabActions`): Hide Keyboard is the bar's
 /// top item while the key bar is up and absent while it is down, All Tabs leaves the bar while it
-/// shows, and every action stays within reach.
+/// shows where the bar has no room for it, tab mode has no leading item, and every action stays
+/// within reach.
 struct TabActionsTests {
     @Test func hideKeyboardIsFirstWhileTheKeyboardIsUpAndAbsentWhenDown() {
         for navigation in [NavigationStyle.sidebar, .tabs] {
@@ -16,26 +17,48 @@ struct TabActionsTests {
                     #expect(up.filter { $0 == .hideKeyboard }.count == 1)
                     #expect(!down.contains(.hideKeyboard))
                     // Keyboard down, the bar is as it was before Hide Keyboard came to it.
-                    #expect(down == [TabActions.barLeading(navigation)] + (zoomed ? [.unzoom] : []) + [.allTabs, .paneActions])
+                    let lead: [TabAction] = navigation == .sidebar ? [.sidebar] : []
+                    #expect(down == lead + (zoomed ? [.unzoom] : []) + [.allTabs, .paneActions])
                 }
             }
         }
     }
 
     @Test func theBarsOrderTopToBottom() {
-        // Keyboard up: Hide Keyboard, the leading item, Pane Actions.
+        // Keyboard up: Hide Keyboard, the sidebar toggle, Pane Actions.
         #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sidebar, .paneActions])
-        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sessions, .paneActions])
         // Zoomed, Unzoom leaves first where room is short.
         #expect(TabActions.verticalBar(.sidebar, zoomed: true, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sidebar, .paneActions])
         // Keyboard down: the bar as before.
         #expect(TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: false, room: 3) == [.sidebar, .allTabs, .paneActions])
         #expect(TabActions.verticalBar(.sidebar, zoomed: true, hidesKeyboard: false, room: 3) == [.sidebar, .unzoom, .allTabs, .paneActions])
         // The tab's own items, after the root's.
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: false) == [.allTabs, .paneActions])
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true) == [.paneActions])
-        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: false) == [.unzoom, .allTabs, .paneActions])
-        #expect(TabActions.verticalBar(zoomed: true, hidesKeyboard: true) == [.unzoom, .paneActions])
+        #expect(TabActions.tabItems(.sidebar, zoomed: false, hidesKeyboard: false) == [.allTabs, .paneActions])
+        #expect(TabActions.tabItems(.sidebar, zoomed: false, hidesKeyboard: true) == [.paneActions])
+        #expect(TabActions.tabItems(.sidebar, zoomed: true, hidesKeyboard: false) == [.unzoom, .allTabs, .paneActions])
+        #expect(TabActions.tabItems(.sidebar, zoomed: true, hidesKeyboard: true) == [.paneActions])
+    }
+
+    @Test func tabModesBarHasNoLeadingItem() {
+        #expect(TabActions.barLeading(.tabs) == nil && TabActions.barLeading(.sidebar) == .sidebar)
+        // Keyboard down: the tab's items alone.
+        for room in [2, 3] {
+            #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: false, room: room) == [.allTabs, .paneActions])
+            #expect(TabActions.verticalBar(.tabs, zoomed: true, hidesKeyboard: false, room: room) == [.unzoom, .allTabs, .paneActions])
+            #expect(TabActions.leadingItems(.tabs, hidesKeyboard: false, room: room).isEmpty)
+        }
+        // Keyboard up where three fit: the toggle's room keeps All Tabs below Hide Keyboard.
+        // Zoomed, Unzoom leaves first, as in sidebar mode.
+        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true, room: 3) == [.hideKeyboard, .allTabs, .paneActions])
+        #expect(TabActions.verticalBar(.tabs, zoomed: true, hidesKeyboard: true, room: 3) == [.hideKeyboard, .allTabs, .paneActions])
+        // Where two fit: Hide Keyboard and Pane Actions, as in sidebar mode.
+        #expect(TabActions.verticalBar(.tabs, zoomed: false, hidesKeyboard: true, room: 2) == [.hideKeyboard, .paneActions])
+        #expect(TabActions.verticalBar(.tabs, zoomed: true, hidesKeyboard: true, room: 2) == [.hideKeyboard, .paneActions])
+        #expect(TabActions.leadingItems(.tabs, hidesKeyboard: true, room: 3) == [.hideKeyboard])
+        // Sidebar mode's floats never reach tab mode's bar (the tab passes none there); the rule
+        // itself is the same.
+        #expect(TabActions.tabItems(.tabs, zoomed: false, hidesKeyboard: false, floats: true) == [.allTabs, .paneActions, .floats])
+        #expect(!TabActions.tabItems(.tabs, zoomed: false, hidesKeyboard: true, floats: true).contains(.floats))
     }
 
     @Test func theBarsRoomAboveTheKeyboard() {
@@ -60,10 +83,10 @@ struct TabActionsTests {
         // The keyboard goes: the toggle and the items as before come back.
         #expect(TabActions.showsBarLeading(hidesKeyboard: false, room: 2))
         #expect(TabActions.leadingItems(.sidebar, hidesKeyboard: false, room: 2) == [.sidebar])
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: false, room: 2) == [.allTabs, .paneActions])
+        #expect(TabActions.tabItems(.sidebar, zoomed: false, hidesKeyboard: false, room: 2) == [.allTabs, .paneActions])
         // Where three fit, the toggle stays, below Hide Keyboard.
         #expect(TabActions.showsBarLeading(hidesKeyboard: true, room: 3))
-        #expect(TabActions.leadingItems(.tabs, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sessions])
+        #expect(TabActions.leadingItems(.sidebar, hidesKeyboard: true, room: 3) == [.hideKeyboard, .sidebar])
     }
 
     @Test func nothingFallsIntoTheOverflowMenuWhileTyping() {
@@ -94,7 +117,7 @@ struct TabActionsTests {
         // Out of the bar while the key bar is up, so in both menus: the Pane Actions menu, which
         // stays in the bar, and the title menu.
         #expect(!TabActions.verticalBar(.sidebar, zoomed: false, hidesKeyboard: true).contains(.allTabs))
-        #expect(TabActions.verticalBar(zoomed: false, hidesKeyboard: true).contains(.paneActions))
+        #expect(TabActions.tabItems(.sidebar, zoomed: false, hidesKeyboard: true).contains(.paneActions))
         #expect(TabActions.paneMenuFirstSection.contains(.allTabs))
         #expect(TabActions.titleMenu.contains(.allTabs))
     }

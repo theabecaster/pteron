@@ -246,8 +246,9 @@ struct RootView: View {
                 .toolbar(barEdge == nil || model.guide != nil ? .hidden : .visible, for: .navigationBar)
                 .toolbar {
                     // While a pane's key bar is up, and only then, Hide Keyboard is the bar's top
-                    // item, above the leading one, which gives its place up where the bar is short
-                    // (`TabActions.leadingItems`) and comes back with the keyboard.
+                    // item, above the sidebar toggle, which gives its place up where the bar is short
+                    // (`TabActions.leadingItems`) and comes back with the keyboard. Tab mode has no
+                    // toggle: the strip's session chip opens the sessions.
                     let leading = barEdge == nil ? [] : TabActions.leadingItems(
                         prefs.navigation, hidesKeyboard: hostPool.hideKeyboard.pane != nil,
                         room: TabActions.keyBarRoom(column: barColumn, compactHeight: vSize == .compact))
@@ -258,14 +259,10 @@ struct RootView: View {
                             }
                         }
                     }
-                    if leading.contains(TabActions.barLeading(prefs.navigation)) {
+                    if leading.contains(.sidebar) {
                         ToolbarItem(placement: .topBarLeading) {
-                            if TabActions.barLeading(prefs.navigation) == .sessions {
-                                SessionsBarItem(theme: theme) { stripRoutes.run($0) }
-                            } else {
-                                Button { toggleSidebar() } label: {
-                                    Label(shown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
-                                }
+                            Button { toggleSidebar() } label: {
+                                Label(shown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
                             }
                         }
                     }
@@ -420,7 +417,7 @@ struct RootView: View {
         }, set: { new in writeSidebar { $0 = new } })
     }
 
-    /// What tab mode's strip and the vertical bar's Sessions item run.
+    /// What tab mode's strip runs.
     private var stripRoutes: StripRoutes {
         StripRoutes(model: model, dialogs: stripDialogs, open: show)
     }

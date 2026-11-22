@@ -157,9 +157,8 @@ builds.
 - `-showPorts YES`: the first machine's ports button in the sidebar opens its popover as soon as
   it shows, once (`PortsList`). In tab mode, which has no such button, the first computer that
   connects has its ports sheet opened instead (`PortsSheet`).
-- `-stripPopover chip|bar` (tab mode): open the session popover from the session chip, or from
-  the vertical bar's Sessions item where the system has that bar, once, `-stripPopoverAfter`
-  seconds (default 3) after the control shows. `-stripRow <name>` then taps a row,
+- `-stripPopover chip` (tab mode): open the session popover from the session chip, once,
+  `-stripPopoverAfter` seconds (default 3) after the chip shows. `-stripRow <name>` then taps a row,
   `-stripRowAfter` seconds (default 2) after the popover shows, as a finger does: the popover
   closes and what the row presents waits for it ([tab-mode.md](tab-mode.md), The dismissal
   wait). Rows: `settings`, `agents`, `goTo`, `useSidebar`, `renameSession` and `closeSession`

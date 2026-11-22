@@ -8,10 +8,6 @@ import UIKit
 /// chip: what the row presents comes up once the popover has gone. This is what proves the
 /// wait's signal (the popover's content leaving the screen) comes at the end of the dismissal:
 /// a sheet asked for any earlier doesn't present.
-///
-/// The vertical bar's Sessions item shows the same content (`SessionPopoverHost`). A hosted
-/// test can't press an item of the system's bar, so that way in is checked on the Duo simulator
-/// with `-stripPopover bar -stripRow <name>` (docs/debug-args.md).
 @MainActor
 @Suite(.serialized) struct PopoverRowsTests {
     enum Row: String, CaseIterable, Sendable {
