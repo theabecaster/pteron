@@ -38,4 +38,13 @@ enum TerminalLayout {
         let over = terminal - pane
         return over < 2 ? 0 : over
     }
+
+    /// What the keyboard covers of a terminal `terminal` points tall in a pane `pane` points
+    /// tall that fits a grid `fits` points tall: only rows the pane is meant to have count. A grid
+    /// taller than that is one a resize is on its way to replace (a fold, a rotation, a split):
+    /// its bottom rows are past the pane's edge for that moment, and nothing is shifted to keep
+    /// them in view, so nothing jumps and nothing has to be put back.
+    static func cover(terminal: CGFloat, fits: CGFloat, pane: CGFloat) -> CGFloat {
+        cover(terminal: min(terminal, fits), pane: pane)
+    }
 }

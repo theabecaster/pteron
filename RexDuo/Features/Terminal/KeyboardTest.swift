@@ -17,6 +17,8 @@ import UIKit
 /// - `type:<text>`: type it (`\n` is Return).
 /// - `jump`: tap the jump-to-bottom button, as a finger does. Nothing happens while it is hidden.
 /// - `wait:<seconds>`: pause.
+/// - `rotate:<portrait|landscapeLeft|landscapeRight>`: turn the app's window, as the phone does:
+///   a real change of its size, traits and safe area, the nearest the simulator comes to a fold.
 ///
 /// Use only with a throwaway `zz-` session.
 @MainActor
@@ -73,6 +75,17 @@ enum KeyboardTest {
             if host.jumpButton.shown { host.jumpButton.sendActions(for: .touchUpInside) }
         case "wait":
             try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+        case "rotate":
+            // A real change of the window's size, traits and safe area, as a fold makes: the
+            // simulator can't fold the Duo, but it can turn it.
+            let mask: UIInterfaceOrientationMask = switch arg {
+            case "landscapeLeft": .landscapeLeft
+            case "landscapeRight": .landscapeRight
+            default: .portrait
+            }
+            host.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { e in
+                NSLog("KEYBOARD_TEST rotate failed %@", "\(e)")
+            }
         default:
             break
         }

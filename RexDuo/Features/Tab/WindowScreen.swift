@@ -48,6 +48,8 @@ struct WindowScreen: View {
     @Environment(\.division) private var division
     @Environment(\.rootOrigin) private var rootOrigin
     @Environment(\.bookCrease) private var bookCrease
+    /// The room the keyboard takes from the root's bottom, for the panes' size with it down.
+    @Environment(\.keyboardRoom) private var keyboardRoom
     @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
 
     let server: ServerConnection
@@ -80,8 +82,10 @@ struct WindowScreen: View {
     @State private var moveChoices: [MoveChoice]?
     /// The panes' area with the keyboard down. For the folded legibility check: typing must not
     /// flip splits to one pane. And for each pane's grid, which stays the one that fits it with
-    /// the keyboard down while the keyboard covers it (`PaneLayout`). A new width (a fold, a
-    /// rotation, Split View) counts at once, also with the keyboard up (`PaneLayout.restCanvas`).
+    /// the keyboard down while the keyboard covers it (`PaneLayout`). Worked out each time the
+    /// area is measured, from the area and the keyboard's room of that same layout, never kept
+    /// from an earlier one: a fold or a rotation with the keyboard up gives the new posture's
+    /// panes at once (`PaneLayout.restCanvas`).
     @State private var canvasSize: CGSize = .zero
     /// Where the panes' area ends, in global coordinates. The sidebar doesn't move it.
     @State private var canvasMaxX: CGFloat?
@@ -210,7 +214,9 @@ struct WindowScreen: View {
             // Narrow: the float sheet, unclipped so its backing runs on under the home indicator.
             .overlay(alignment: .topLeading) { sheet(w, theme, p) }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
-                let rest = PaneLayout.restCanvas(kept: canvasSize, now: s, keyboardUp: keyboardUp)
+                // The room and the header as this layout had them: read with the size they made.
+                let rest = PaneLayout.restCanvas(now: s, room: keyboardRoom, header: showsHeader ? 0 : headerHeight,
+                                                 limit: restLimit)
                 if rest != canvasSize { canvasSize = rest }
             }
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { canvasMaxX = $0 }
@@ -258,6 +264,16 @@ struct WindowScreen: View {
         default: Text("The agent running there stops on \(server.config.name) too.")
         }
     }
+
+    /// Tabletop: the panes stay above the crease, so with the keyboard down they are no taller
+    /// than the region there leaves them.
+    private var restLimit: CGFloat {
+        guard case .wide(let t?) = mode else { return .infinity }
+        return t.top - (showsHeader ? headerHeight : 0)
+    }
+
+    /// The header's height: the title bar's, or the strip's in tab mode.
+    private var headerHeight: CGFloat { prefs.navigation == .tabs ? barHeight : titleBarHeight }
 
     private var confirmTitle: String {
         switch confirm {
@@ -1263,16 +1279,20 @@ enum PaneLayout {
         return CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, 10), height: max(frame.height, 10))
     }
 
-    /// The canvas the panes' rest sizes come from, after the tab's canvas measured `now`. With the
-    /// keyboard down that is `now`. With it up, the keyboard's cover leaves the grid alone, so the
-    /// height stays the one measured with it down (`kept`), but a new width is taken at once: a
-    /// fold, a rotation or Split View changes the panes' width, and a rest size of the old width
-    /// would leave every pane without one until the keyboard went down. Nothing measured yet
-    /// stays unmeasured.
-    static func restCanvas(kept: CGSize, now: CGSize, keyboardUp: Bool) -> CGSize {
-        guard keyboardUp else { return now }
-        guard kept.width > 0, kept.height > 0, abs(kept.width - now.width) >= 1 else { return kept }
-        return CGSize(width: now.width, height: kept.height)
+    /// The canvas the panes' rest sizes come from: the tab's canvas `now` as it would be with the
+    /// software keyboard down. The keyboard's cover leaves the grid alone, so with it up that is
+    /// `now` with the keyboard's `room` given back, less a `header` that stepped aside for it (a
+    /// short window), and no taller than `limit` (tabletop: the region above the crease). Worked
+    /// out from one layout's facts alone: a height kept from before the keyboard showed would be
+    /// another posture's after a fold or a rotation, and the panes would get its rows, then
+    /// another resize when the keyboard went down. The room and the header are each counted
+    /// whichever comes first as the keyboard shows or hides, so no layout in between gives
+    /// another size. The key bar alone takes its room: the grid fits above it. Nothing measured
+    /// yet stays unmeasured.
+    static func restCanvas(now: CGSize, room: CGFloat, header: CGFloat = 0, limit: CGFloat = .infinity) -> CGSize {
+        guard now.width > 0, now.height > 0 else { return now }
+        let keyboard = room > TentBoard.tallestKeyBar ? room : 0
+        return CGSize(width: now.width, height: max(min(now.height + keyboard - header, limit), 1))
     }
 
     /// A single pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.

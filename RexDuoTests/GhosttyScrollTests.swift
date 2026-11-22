@@ -941,6 +941,38 @@ final class GhosttyScrollViewTests: XCTestCase {
         XCTAssertFalse(GhosttyScroller.sticks(target: 120, pinned: 100, cell: 17), "past it, into the blank rows")
     }
 
+    /// The cover goes (the keyboard goes down, or a fold's resize lands) and a frame takes it before
+    /// the main thread has heard of that frame: the render side puts the shift inside the new cover
+    /// and moves the terminal by itself. The main thread, still holding a snapshot drawn with the
+    /// old cover, must not put the shift right as well, or the view lands that far up in the
+    /// scrollback with a part of a row showing: a fold left the last row cut in half, the rows above
+    /// it ones from before, until the keyboard came up again.
+    func testAShiftDecidedAgainstAnOldCoverIsPutRightOnce() {
+        let view = make(100, rows: 20)
+        let scroller = view.scroller
+        let cell = view.cellSize.height
+        let scale = view.displayScale
+        view.setCover(8 * cell)
+        frame(view)
+        let covered = view.core.scroll.snapshot
+        XCTAssertGreaterThan(covered.bounce, 0, "shifted up by the cover")
+        XCTAssertEqual(covered.covered, Int((8 * cell * scale).rounded()), "and says which cover it was decided against")
+
+        view.setCover(0)
+        view.core.sync()
+        _ = view.renderer.frame.update(core: view.core)
+        XCTAssertEqual(view.core.scroll.snapshot.covered, 0)
+        XCTAssertEqual(view.core.scroll.snapshot.bounce, 0, "the render side put the shift inside the new cover")
+        // The snapshot from before reaches the main thread only now.
+        scroller.apply(covered)
+        frame(view)
+        let s = view.core.scroll.snapshot
+        XCTAssertTrue(s.active, "still at the newest rows")
+        XCTAssertEqual(s.bounce, 0)
+        XCTAssertEqual(s.fraction, 0, "no part of a row")
+        XCTAssertEqual(scroller.surface.contentOffset.y, scroller.pinnedBottom, accuracy: 0.5)
+    }
+
     func testTheJumpButtonCountsRowsFromThePinAndOnlyTheScrollbackPutsTheKeyboardAway() {
         let view = make(100, rows: 20)
         let scroller = view.scroller

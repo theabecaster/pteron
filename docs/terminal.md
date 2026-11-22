@@ -309,14 +309,32 @@ is not a cold start.
     can't be scrolled: one resize when the program enters or leaves that screen with the
     keyboard up, and one when the keyboard shows or hides while it is there.
   - The key bar alone (hardware keyboard) takes room from the layout and the grid fits above it.
-  - A new width (a fold, a rotation, Split View) counts at once, also with the keyboard up: the
-    canvas takes the new width and keeps the height it had with the keyboard down
-    (`PaneLayout.restCanvas`). So the fold is one resize, to the new columns and the rows of the
-    keyboard-down pane, and the keyboard going down afterwards sends none when the height
-    matches. Before, the canvas kept the old width while the keyboard was up, every pane was
-    left without a rest size, and the grid fitted what showed (a dozen rows on the folded Duo):
-    the program redrew for a sliver, then again when the keyboard went down. Only a canvas never
-    measured with the keyboard down leaves the grid fitting what shows.
+  - The canvas with the keyboard down is worked out from each layout, never kept from an earlier
+    one (`PaneLayout.restCanvas`): the canvas as it is, plus the room the keyboard takes from the
+    root's bottom (`KeyboardInset`, handed down as `keyboardRoom`), less a title bar or strip that
+    stepped aside for it, and in tabletop no taller than the region above the crease. Both are
+    read with the size they made, and each counts whichever comes first as the keyboard moves,
+    so no layout in between gives another size. So a fold, a rotation or Split View with the
+    keyboard up is one resize, to the new posture's columns and keyboard-down rows, and the
+    keyboard going down afterwards sends none. Before, the height measured with the keyboard
+    down was kept while it was up: after a turn to portrait with the keyboard up the panes got
+    landscape's rows (26 of 41 on the folded Duo), then a second resize when the keyboard went.
+  - Only rows the pane is meant to have count as covered (`TerminalLayout.cover(terminal:fits:pane:)`).
+    Right after a fold or a rotation the old grid can be taller than the new pane until the
+    resize lands; its bottom is past the pane's edge for that moment, and nothing is shifted.
+    Before, it counted as a keyboard's cover: the rows jumped up, then back, and removing that
+    shift could leave the view in the scrollback (below).
+  - The shift under a cover is put right once. When a cover shrinks, the render side puts the
+    shift inside it and moves the terminal by itself; each snapshot says which cover its shift
+    was decided against (`GhosttyScrollState.Snapshot.covered`), and the main thread corrects a
+    shift only from a snapshot of the cover it set. Before, a snapshot from just before reached
+    the main thread late and the shift was taken off twice: after a fold the view sat rows up in
+    the scrollback with a part of a row showing, the bottom row cut in half and older rows at the
+    top, until the keyboard came up again.
+  - A pane laid out out of a window (the view a fold leaves, once more on its way out) claims
+    nothing; back in a window it lays out again. A layout that finds the claimed size while
+    another request settles asks for the claimed size again, which supersedes it, so a size a
+    layout on the way had is never sent.
   - Another client's size that comes after our resize's echo but before the claim's answer
     (the echo comes first in the stream) counts as "Resized on another screen", as one after the
     answer does. Taken in silently, the claim would answer "ours" over a server grid wider than
@@ -649,7 +667,7 @@ current one stands out, and Next and Previous step through the pane's screen and
   keyboard moves and released at once when the field stops editing, find closes, the font, width
   or sizing changes, or the pane is lost. `FitHoldDeferral` can make the release wait while
   another surface holds the layout; it is built for goto's palette and unused until goto lands. A layout that finds the claimed size while another request settles asks for the
-  claimed size again, which supersedes it.
+  claimed size again, which supersedes it (as any layout does: Fit and mirror).
 - **Tints.** Every match: the theme's yellow at 30%. The current one: opaque bright yellow, its
   text black or white by contrast (at least 4.5:1 on every theme), on its first four rows. Drawn
   between the backgrounds and the cursor, so a block cursor and underlines stay on top

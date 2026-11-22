@@ -197,13 +197,21 @@ builds.
   scroll two pages back first and type that much later.
 - `-keyboardTest '<step>;<step>…'`: show and hide the software keyboard over the active pane once
   it is live (`Features/Terminal/KeyboardTest.swift`): `up`, `down`, `scroll:<points>`,
-  `drag:<points>` (a drag let go there, which ends at the pin within a row of it), `type:<text>`, `jump` (a tap on the jump-to-bottom button), `wait:<s>`. Each step logs the
+  `drag:<points>` (a drag let go there, which ends at the pin within a row of it), `type:<text>`, `jump` (a tap on the jump-to-bottom button), `wait:<s>`,
+  `rotate:<portrait|landscapeLeft|landscapeRight>` (turns the window: a real change of its size,
+  traits and safe area). Each step logs the
   grid, the cover, the scroll position (`y=<offset>/<offset at the pin>` in points), the button's state, `jump=` and `unseen=`, and whether
   the terminal is first responder, `first=` (`KEYBOARD_TEST`). A second line per step gives, on
   screen, the keyboard's last reported end frame `kb=x,y,wxh` (`null` before any report), the key
   bar's frame `bar=` (`none` out of a window), the pane's bottom `paneBottom=` (at or above the
   bar's top while the keyboard is up) and the input mode's language `mode=`. The simulator shows the software keyboard only with Connect Hardware
   Keyboard off.
+  The Duo simulator can't fold (its inner screen stays dark), so a fold's change of window is
+  driven by a turn: `-keyboardTest 'rotate:landscapeLeft;wait:3;rotate:portrait'` on the iPhone
+  Duo simulator, with `up` before it for a fold with the keyboard up, and `-simulateDuo
+  folded,unfolded` on an iPad for the folded and unfolded sizes. After each change the step's
+  line should say `active=1 following=1 shift=0` with the keyboard down, and the log one
+  `FIT_RESIZE` per pane on screen. Screenshots on the Duo need `--display=1`.
 - `-filesTest '<step>;<step>…'`: drive sending files and Open in the active pane once it is live
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
   `send:<Mac path>|<Mac path>`, `sendAsIs:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.

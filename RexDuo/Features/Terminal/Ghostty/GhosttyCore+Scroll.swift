@@ -144,6 +144,11 @@ final class GhosttyScrollState: @unchecked Sendable {
         /// The shift that keeps the last row with content above the cover, as of the last frame at
         /// the bottom.
         var pin = 0
+        /// The pixels covered at the view's bottom (keyboard and find bar) that `bounce` was
+        /// decided against. A frame that takes a new cover decides its shift in `finishFrame`; until
+        /// then its snapshot still names the cover before, so the main thread never reads the old
+        /// shift against the new cover (`GhosttyScroller.refresh`).
+        var covered = 0
 
         var maxRow: Int { GhosttyScrollMath.maxRow(total: total, len: len) }
     }
@@ -190,6 +195,8 @@ final class GhosttyScrollState: @unchecked Sendable {
     private var coverChanged = false
     /// The shift that keeps the last row with content above the cover (last frame's).
     private var pin = 0
+    /// The cover the shift was last decided against (`Snapshot.covered`).
+    private var shiftCover = 0
     private var following = true
     private var frameActive = true
     private var frameRows = 0
@@ -449,6 +456,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         snap.alternateScreen = alternate
         snap.following = following
         snap.pin = pin
+        snap.covered = shiftCover
         frameSnapshot = snap
         publish(snap)
     }
@@ -462,9 +470,17 @@ final class GhosttyScrollState: @unchecked Sendable {
         guard covered > 0 || coverChanged else { return }
         let newCover = coverChanged
         coverChanged = false
+        // From here the shift is decided against this frame's cover. A view in the scrollback
+        // keeps its shift; the main thread puts a rubber band outside the new cover right.
+        shiftCover = covered
+        let coverNews = frameSnapshot.covered != covered
+        if coverNews {
+            frameSnapshot.covered = covered
+            if !frameActive { publish(frameSnapshot) }
+        }
         guard frameActive else { return }
         pin = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
-        var changed = false
+        var changed = coverNews
         if frameSnapshot.pin != pin {
             frameSnapshot.pin = pin
             changed = true
@@ -555,7 +571,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         lock.lock()
         latest = snap
         let news = snap.total != sent.total || snap.len != sent.len || snap.rebase != sent.rebase
-            || snap.cellHeight != sent.cellHeight || snap.programScroll != sent.programScroll
+            || snap.cellHeight != sent.cellHeight || snap.programScroll != sent.programScroll || snap.covered != sent.covered
             || snap.alternateScreen != sent.alternateScreen || snap.pin != sent.pin
         guard news, !publishScheduled, publishHandler != nil else {
             lock.unlock()

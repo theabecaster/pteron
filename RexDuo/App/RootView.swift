@@ -164,7 +164,8 @@ struct RootView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
-                layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen, insets: sim.insets(keyboard: simKeyboard))
+                layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen, insets: sim.insets(keyboard: simKeyboard),
+                       room: sim.keyboardRoom(simKeyboard))
                     .safeAreaPadding(sim.safeArea)
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
@@ -213,9 +214,10 @@ struct RootView: View {
     #endif
 
     /// The sidebar and the tab, arranged for the window's width and the fold. `fake` replaces the fold
-    /// (debug simulation), which then also says whether its window `fills` its screen and gives the
-    /// safe area's `insets`.
-    private func layout(_ theme: TermTheme, fake: Division??, fills: Bool? = nil, insets: EdgeInsets = EdgeInsets()) -> some View {
+    /// (debug simulation), which then also says whether its window `fills` its screen, gives the
+    /// safe area's `insets` and the `room` its keyboard takes.
+    private func layout(_ theme: TermTheme, fake: Division??, fills: Bool? = nil, insets: EdgeInsets = EdgeInsets(),
+                        room: CGFloat? = nil) -> some View {
         GeometryReader { geo in
             let division = fake ?? Self.division(geo)
             // The root ignores the keyboard, so the arrangement doesn't change when it shows.
@@ -284,6 +286,7 @@ struct RootView: View {
             .environment(\.bookCrease, creaseSettle.crease(division))
             .environment(\.verticalBarEdge, barEdge)
             .environment(\.verticalBarColumn, barColumn)
+            .environment(\.keyboardRoom, room ?? keyboardPad)
             .onChange(of: arr.inline, initial: true) { _, new in
                 // Wide: the launch's hold on the drawer ends, and the sidebar shows as it is.
                 if new { sidebar.resolve(inline: true) }

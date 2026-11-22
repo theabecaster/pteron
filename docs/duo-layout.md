@@ -117,6 +117,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   scene the system rebuilds, a return from the background and tab mode are as before. Only the
   drawer: beside the tab the sidebar shows as at any launch. Never saved. The first change to the
   sidebar ends it, and so does the window turning wide, where the sidebar shows beside the tab.
+  There it makes room in the unfold's own layout, with no slide first, so the panes are resized
+  once, not to the window's whole width and then again.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Show/Hide Sidebar command and a swipe from

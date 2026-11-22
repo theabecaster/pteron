@@ -689,8 +689,9 @@ final class PaneParkTests: XCTestCase {
 
     func testANewWidthWithTheKeyboardUpClaimsTheNewColumnsAndTheRestRows() throws {
         // Unfolded, then folded with the keyboard up: the pane is narrower and shorter. The rest
-        // size follows the width (`PaneLayout.restCanvas`), so the grid has the new columns and
-        // the rows of the pane with the keyboard down, in one resize.
+        // size is the folded pane's with the keyboard's room given back (`PaneLayout.restCanvas`),
+        // so the grid has the new columns and the rows of the pane with the keyboard down, in one
+        // resize.
         let pool = parkingPool()
         let transport = FakeFitTransport()
         let wide = CGSize(width: 320, height: 480)
@@ -698,7 +699,7 @@ final class PaneParkTests: XCTestCase {
         host.setRestSize(wide)
         host.layoutIfNeeded()
         let before = try XCTUnwrap(resizes(transport).last)
-        let folded = PaneLayout.restCanvas(kept: wide, now: CGSize(width: 200, height: 180), keyboardUp: true)
+        let folded = PaneLayout.restCanvas(now: CGSize(width: 200, height: 180), room: 300)
         host.setRestSize(folded)
         host.frame = CGRect(x: 0, y: 0, width: 200, height: 180)
         host.layoutIfNeeded()
@@ -710,7 +711,7 @@ final class PaneParkTests: XCTestCase {
         host.streamResized(cols: after.cols, rows: after.rows, owner: nil)
         XCTAssertTrue(drawnFits(host))
         // The keyboard goes down in the folded pane: nothing more to send.
-        host.setRestSize(PaneLayout.restCanvas(kept: folded, now: CGSize(width: 200, height: 480), keyboardUp: false))
+        host.setRestSize(PaneLayout.restCanvas(now: CGSize(width: 200, height: 480), room: 0))
         host.frame = CGRect(x: 0, y: 0, width: 200, height: 480)
         host.layoutIfNeeded()
         pause(0.2)
@@ -728,7 +729,7 @@ final class PaneParkTests: XCTestCase {
         let calls = transport.calls
         for height: CGFloat in [180, 240, 480, 200, 480] {
             // The keyboard comes and goes, and changes height (emoji, the key bar alone).
-            host.setRestSize(PaneLayout.restCanvas(kept: rest, now: CGSize(width: 320, height: height), keyboardUp: height < 480))
+            host.setRestSize(PaneLayout.restCanvas(now: CGSize(width: 320, height: height), room: 480 - height))
             host.frame = CGRect(x: 0, y: 0, width: 320, height: height)
             host.layoutIfNeeded()
         }

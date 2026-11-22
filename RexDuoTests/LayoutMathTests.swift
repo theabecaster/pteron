@@ -88,33 +88,48 @@ struct KeyboardCoverLayoutTests {
         #expect(TerminalLayout.fitSize(bounds: bounds, rest: nil, alternateScreen: false) == bounds)
     }
 
-    @Test func theRestCanvasTakesANewWidthAlsoWithTheKeyboardUp() {
-        // The unfolded canvas with the keyboard down, then the phone folds with the keyboard up.
-        let unfolded = CGSize(width: 606, height: 605)
-        let foldedNow = CGSize(width: 382, height: 177)
-        let rest = PaneLayout.restCanvas(kept: unfolded, now: foldedNow, keyboardUp: true)
-        #expect(rest == CGSize(width: 382, height: 605), "the new width, the height from the keyboard down")
-        // So the pane's grid has the folded columns and the rest rows, not the rows that show.
-        let cell = CGSize(width: 6.6, height: 14.3)
-        let grid = TerminalLayout.fitGrid(in: TerminalLayout.fitSize(bounds: foldedNow, rest: rest, alternateScreen: false), cell: cell)
-        #expect(grid == TerminalLayout.fitGrid(in: CGSize(width: 382, height: 605), cell: cell))
-        #expect(grid.cols < TerminalLayout.fitGrid(in: unfolded, cell: cell).cols)
+    @Test func theRestCanvasIsTheCanvasWithTheKeyboardsRoomGivenBack() {
+        // The keyboard took 285 pt of a 576 pt canvas: with it down the canvas is 576 again.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 382, height: 291), room: 285) == CGSize(width: 382, height: 576))
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 382, height: 576), room: 0) == CGSize(width: 382, height: 576))
+        // The key bar alone (a hardware keyboard) takes its room: the grid fits above it.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 382, height: 556), room: 20) == CGSize(width: 382, height: 556))
+        // Nothing measured yet stays unmeasured.
+        #expect(PaneLayout.restCanvas(now: .zero, room: 285) == .zero)
     }
 
-    @Test func theKeyboardAloneLeavesTheRestCanvasAsItWas() {
-        let kept = CGSize(width: 382, height: 600)
-        for h: CGFloat in [177, 250, 320] {
-            #expect(PaneLayout.restCanvas(kept: kept, now: CGSize(width: 382, height: h), keyboardUp: true) == kept)
-        }
-        // Half a point of layout noise is no new width.
-        #expect(PaneLayout.restCanvas(kept: kept, now: CGSize(width: 382.5, height: 177), keyboardUp: true) == kept)
-        #expect(PaneLayout.restCanvas(kept: kept, now: CGSize(width: 382, height: 600), keyboardUp: false) == kept)
+    @Test func aFoldWithTheKeyboardUpGivesTheNewPosturesCanvasNotTheOldOnesHeight() {
+        // Landscape, keyboard down: 594x374. The phone turns to portrait with the keyboard up: the
+        // canvas is 382x291 with 285 pt of keyboard. Its rest is portrait's 576, not landscape's 374
+        // (which would size the panes for 26 rows, then resize them again when the keyboard went).
+        let rest = PaneLayout.restCanvas(now: CGSize(width: 382, height: 291), room: 285)
+        #expect(rest == CGSize(width: 382, height: 576))
+        let cell = CGSize(width: 6.6, height: 14)
+        let grid = TerminalLayout.fitGrid(in: TerminalLayout.fitSize(bounds: CGSize(width: 382, height: 291), rest: rest,
+                                                                     alternateScreen: false), cell: cell)
+        #expect(grid == TerminalLayout.fitGrid(in: CGSize(width: 382, height: 576), cell: cell),
+                "the rows of the pane with the keyboard down, so its going down resizes nothing")
     }
 
-    @Test func theRestCanvasFollowsTheCanvasWithTheKeyboardDownAndStaysUnmeasuredUntilThen() {
-        #expect(PaneLayout.restCanvas(kept: CGSize(width: 606, height: 605), now: CGSize(width: 382, height: 600), keyboardUp: false)
-                == CGSize(width: 382, height: 600))
-        #expect(PaneLayout.restCanvas(kept: .zero, now: CGSize(width: 382, height: 177), keyboardUp: true) == .zero)
+    @Test func aHeaderThatSteppedAsideIsNotPartOfTheRestCanvas() {
+        // A short window: the 34 pt strip steps aside while the keyboard is up.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 594, height: 241), room: 167, header: 34)
+                == CGSize(width: 594, height: 374))
+        // The keyboard's room and the strip may change in either order: no layout in between
+        // gives another rest canvas.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 594, height: 408), room: 0, header: 34)
+                == CGSize(width: 594, height: 374), "the strip stepped aside, the root not padded yet")
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 594, height: 207), room: 167)
+                == CGSize(width: 594, height: 374), "the root padded, the strip still there")
+    }
+
+    @Test func tabletopKeepsThePanesAboveTheCrease() {
+        // The keyboard sits below the crease and takes nothing from the panes above it.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 669, height: 411), room: 300, limit: 411)
+                == CGSize(width: 669, height: 411))
+        // A keyboard tall enough to reach the region above the crease gives back only that much.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 669, height: 380), room: 360, limit: 411)
+                == CGSize(width: 669, height: 411))
     }
 
     @Test func aPaneTallerThanItsRestSizeFitsItself() {
@@ -128,6 +143,18 @@ struct KeyboardCoverLayoutTests {
         // A grid that fits its pane can be a point taller than it.
         #expect(TerminalLayout.cover(terminal: 574.5, pane: 573.3) == 0)
         #expect(TerminalLayout.cover(terminal: 300, pane: 576) == 0)
+    }
+
+    @Test func aGridAResizeWillReplaceIsCutNotCovered() {
+        // The keyboard over a pane whose grid fits it with the keyboard down: covered as before.
+        #expect(TerminalLayout.cover(terminal: 574, fits: 574, pane: 291) == 283)
+        // A rotation: the old 574 pt grid in a pane that now fits 364 pt, the resize on its way.
+        // Nothing is covered, so the rows aren't shifted up, then back when the resize lands.
+        #expect(TerminalLayout.cover(terminal: 574, fits: 364, pane: 374) == 0)
+        // The same with the keyboard up: only what it hides of the grid that fits.
+        #expect(TerminalLayout.cover(terminal: 574, fits: 364, pane: 207) == 157)
+        // A grid smaller than the one that fits (a resize to a bigger one on its way).
+        #expect(TerminalLayout.cover(terminal: 300, fits: 574, pane: 576) == 0)
     }
 
     @Test func paneSizesWithTheKeyboardDown() {

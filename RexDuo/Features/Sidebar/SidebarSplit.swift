@@ -65,6 +65,12 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
                     }
                 }
             }
+            // The window turned wide with the sidebar showing (an unfold after a launch that held
+            // the drawer shut): nothing slides, so the tab makes room in the unfold's own layout
+            // and its panes are resized once, not to the full width first.
+            .onChange(of: inline) { _, wide in
+                if wide, open, !makesRoom { still { makesRoom = true } }
+            }
         }
     }
 

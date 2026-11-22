@@ -38,7 +38,7 @@ struct TentBoard: ViewModifier {
     @State private var tent = TentModel()
 
     /// A docked keyboard taller than this is the software keyboard, not the key bar alone.
-    static let tallestKeyBar: CGFloat = 120
+    nonisolated static let tallestKeyBar: CGFloat = 120
 
     /// `-boardDemo`: the board shows at once, with no tent.
     private var demo: Bool {

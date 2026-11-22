@@ -215,8 +215,9 @@ final class FindHostTests: XCTestCase {
         hardware = true
     }
 
-    /// Under find's hold, a request still settling is superseded by the held size, not landed
-    /// later. Without a hold the claim works exactly as before: no request is added.
+    /// A request still settling is superseded by the claimed size when a layout finds that size
+    /// again, under find's hold as without one (a layout on the way, as a fold passes through): it
+    /// never lands later.
     func testUnderTheHoldALayoutReRequestsTheClaimedSizeWhileARequestSettles() async {
         for withHold in [true, false] {
             let transport = Transport()
@@ -242,15 +243,11 @@ final class FindHostTests: XCTestCase {
             host.relayoutAfterHold()
             host.layoutIfNeeded()
             await settle()
-            XCTAssertEqual(gates.count, withHold ? 2 : 1, withHold ? "the held size is asked for again" : "nothing added without a hold")
+            XCTAssertEqual(gates.count, 2, withHold ? "the held size is asked for again" : "the claimed size is asked for again")
             for g in gates { g.resume() }
             gates = []
             await settle(10)
-            if withHold {
-                XCTAssertEqual(transport.resizes, first, "the settling size never went out")
-            } else {
-                XCTAssertEqual(transport.resizes.count, 2, "as on main: the settling request lands")
-            }
+            XCTAssertEqual(transport.resizes, first, "the settling size never went out")
             host.closeFind(giveBack: false)
             host.stop()
             host.removeFromSuperview()

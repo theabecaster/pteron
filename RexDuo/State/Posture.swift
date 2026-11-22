@@ -209,6 +209,10 @@ extension EnvironmentValues {
     /// tall as the window (`KeyBarPlacement.column`). The key bar beside the keyboard ends short
     /// of it. Nil without a vertical bar.
     @Entry var verticalBarColumn: CGRect? = nil
+    /// The room the docked keyboard, or the key bar alone, takes from the root's bottom
+    /// (`KeyboardInset`): measured from the frames on every keyboard change and layout, so it is
+    /// never older than the layout it goes with. 0 with neither.
+    @Entry var keyboardRoom: CGFloat = 0
 }
 
 #if DEBUG
@@ -285,6 +289,12 @@ struct DuoSimulation: Equatable {
         var e = safeArea
         if keyboard > 0 { e.bottom = 0 }
         return e
+    }
+
+    /// The room a simulated keyboard `keyboard` pt tall takes from the root: it covers the bottom
+    /// inset, which the root kept clear of already (`KeyboardInset`, on a device).
+    func keyboardRoom(_ keyboard: CGFloat) -> CGFloat {
+        keyboard > 0 ? max(keyboard - safeArea.bottom, 0) : 0
     }
 
     /// The window inside its insets: the size the root is laid out in, which picks the

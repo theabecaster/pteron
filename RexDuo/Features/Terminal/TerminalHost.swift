@@ -1669,6 +1669,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             guard backgroundedAt == nil else { return }
             // Under the board the pane keeps the size it has; `setCovered(false)` lays out again.
             guard !covered else { return }
+            // Out of a window (a fold took the pane off screen, and the view it left is laid out
+            // once more on its way out): nothing is claimed for a pane nobody sees. Back in a
+            // window it lays out again and claims what fits then (`didMoveToWindow`).
+            guard window != nil else { return }
             // The stream starts beside the claim, not after it: a snapshot needs no size from
             // this client. The fence holds input until both are done, and the screen holds
             // still until the resize has landed (`streamFence`, `streamResized`).
@@ -1681,10 +1685,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             let reassert = reassertNext
             reassertNext = false
             if started, let c = claimedSize, c == want, serverSize == want {
-                // While find holds the fit, a request still settling would land after this layout
-                // with another size: ask again for this one, which supersedes it (and sends nothing
-                // for a size in place). With no hold the claim works as it always did.
-                if findHold != nil, claim.isSettling { requestClaim(want) }
+                // A request still settling would land after this layout with another size (one a
+                // layout on the way had, as a fold or find's hold passes through): ask again for
+                // this one, which supersedes it and sends nothing for a size in place.
+                if claim.isSettling { requestClaim(want) }
                 // Back from warm with its claim held at this size: current as it comes.
                 if back, !stream.isFenced { PerfProbe.active?.caughtUp(self) }  // PERF
                 return
@@ -1813,8 +1817,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             zoomer.contentSize = bounds.size
             zoomer.contentOffset = .zero
             // Under find's hold on the alternate screen the keyboard hides the program's bottom
-            // rows and shifts nothing, unless the current match is under it.
-            let cover = TerminalLayout.cover(terminal: size.height, pane: bounds.height - sheetCover)
+            // rows and shifts nothing, unless the current match is under it. A grid taller than
+            // the one that fits here (a resize on its way after a fold) isn't covered: it is cut.
+            let fits = ceil(CGFloat(fitGrid().1) * cell.height) + 0.5
+            let cover = TerminalLayout.cover(terminal: size.height, fits: fits, pane: bounds.height - sheetCover)
             let holds = findHold != nil && alternateScreen
             term.setCover(holds && !(finder?.liftsForMatch ?? false) ? 0 : cover)
         } else {

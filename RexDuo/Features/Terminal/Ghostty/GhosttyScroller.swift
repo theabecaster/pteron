@@ -181,9 +181,13 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         var settle = false
         if !interacting, snapshot.appliedSequence >= lastRequest {
             // The shift at rest is inside the cover; anything else is a rubber band that nothing
-            // brought back (an offset set past an edge without a finger), and is put right.
-            let shift = min(max(snapshot.bounce, 0), Int((coveredBottom * scale).rounded()))
-            settle = shift != snapshot.bounce
+            // brought back (an offset set past an edge without a finger), and is put right. Only
+            // a shift decided against the cover set here: one from before a new cover reached
+            // the render side is put inside it there, which moves the terminal by itself, and a
+            // position sent for it too would move the view that far again, into the scrollback.
+            let covered = Int((coveredBottom * scale).rounded())
+            let shift = min(max(snapshot.bounce, 0), covered)
+            settle = shift != snapshot.bounce && snapshot.covered == covered
             y = CGFloat(snapshot.position + shift) / scale
         }
         if abs(y - surface.contentOffset.y) > 0.01 { surface.contentOffset = CGPoint(x: 0, y: y) }
