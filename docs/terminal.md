@@ -581,9 +581,14 @@ VoiceOver reads the grid, so it reads confirmed text only.
 - A program's own underline (a syntax highlighter's path style) looks like an unconfirmed
   character. Accepted.
 - With an underline cursor the cursor sits in the cell after the trail at full strength.
-- A tap on the prompt that moves the cursor with arrow keys waits while a drawn guess is
-  unconfirmed, at most 2 s, since the cursor on screen is ahead of the program's
-  (`GhosttyTap`, the held prompt click). Any key drops it.
+- A tap on the prompt that moves the cursor with arrow keys is sent at once while guesses are
+  drawn, counted from the cursor on screen (`EchoPromptClick`): the engine's count plus the
+  pending keys on text the program has, the columns to the cursor on a guessed cell. Its arrows
+  queue behind the typed keys. On a wrapped input line or a row with a wide character it is
+  counted from the program's cursor, as without predicted echo. If a pending key does not land
+  as guessed the cursor ends up off by that much.
+- Prompt marks are forgotten for a new program in front at the next key, not when the computer
+  reports the change. Known; a follow-up.
 
 **Threads.** The main thread only hands on what it learned (a key's kind and number, a write's
 answer, a clear), in order with the bytes. The predictor runs on the feed queue with the

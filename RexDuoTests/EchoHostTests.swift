@@ -302,13 +302,11 @@ final class EchoHostTests: XCTestCase {
     /// A prompt whose shell says a click moves the cursor with arrow keys.
     private static let clickPrompt = "\u{1b}]133;A;cl=line\u{07}$ \u{1b}]133;B\u{07}"
 
-    /// A tap on the prompt while a drawn guess is unconfirmed waits: its arrows are counted
-    /// from the real cursor, which lags the one on screen.
-    func testAPromptClickWaitsForGuessesToSettle() async {
+    /// A tap on the prompt while guesses are drawn is sent at once, counted from the cursor the
+    /// user sees: its arrows leave behind the typed keys, and nothing waits for the echo.
+    func testAPromptClickIsSentAtOnceCountedFromTheCursorOnScreen() async {
         let p = await pane(level: .slow, prompt: Self.clickPrompt)
         let view = p.host.term
-        var now: CFTimeInterval = 100
-        view.taps.clock = { now }
         // "echo hello" typed and echoed, then "xy" typed and not echoed yet.
         await type(p, "e")
         await echo(p, "e", row: "$ e")
@@ -316,60 +314,45 @@ final class EchoHostTests: XCTestCase {
         await wait("the writes") { p.link.written.joined() == "echo hello" }
         await echo(p, "cho hello", row: "$ echo hello")
         for c in "xy" { p.host.term.insertText(String(c)) }
-        await wait("the writes") { p.link.written.joined() == "echo helloxy" }
         XCTAssertEqual(guesses(p), "xy")
         XCTAssertTrue(p.core.echoUnsettled)
-        let sent = p.link.written.count
-        // A tap on column 4 (the "c"): held, nothing is sent.
+        // The frame on screen shows the guesses and their cursor on column 14.
         _ = view.renderer.frame.update(core: view.core)
         view.scroller.apply(view.core.scroll.snapshot)
+        XCTAssertEqual(p.core.frameEcho?.cursor, .init(col: 14, row: 0))
+        // A tap on column 4 (the "h" of echo), on text the program has: the engine counts 8 from its
+        // cursor on column 12, and the two pending keys come on top.
         let rect = view.viewportRect(row: 0, columns: 4..<5)
         XCTAssertTrue(view.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), focused: true, shift: false), "the tap is used")
-        XCTAssertNotNil(view.taps.heldPrompt)
-        await Task.yield()
-        XCTAssertEqual(p.link.written.count, sent, "no arrow was sent from the lagging cursor")
-        // The echo of "xy": the guesses settle and the tap is decided against the grid now.
-        now += 0.3
-        await echo(p, "xy", row: "$ echo helloxy")
-        await wait("the held tap to go") { p.link.written.count == sent + 1 }
-        XCTAssertNil(view.taps.heldPrompt)
-        // The cursor is on column 14: ten steps left to column 4.
-        XCTAssertEqual(p.link.written.last, String(repeating: "\u{1b}[D", count: 10))
+        let arrows = String(repeating: "\u{1b}[D", count: 10)
+        await wait("the keys and then the arrows") { p.link.written.joined() == "echo helloxy" + arrows }
+        XCTAssertEqual(p.link.written.joined(), "echo helloxy" + arrows, "sent with no echo of xy yet, behind the typed keys")
+        XCTAssertEqual(rowText(p), "$ echo hello", "the program has not echoed xy")
     }
 
-    func testAHeldPromptClickIsDroppedByAKeyAndByTime() async {
+    /// A tap on a guessed character: the engine sees a blank cell there, so the columns to the
+    /// cursor on screen are counted.
+    func testAPromptClickOnAGuessedCharacterCountsFromTheCursorOnScreen() async {
         let p = await pane(level: .slow, prompt: Self.clickPrompt)
         let view = p.host.term
-        var now: CFTimeInterval = 100
-        view.taps.clock = { now }
         await type(p, "e")
         await echo(p, "e", row: "$ e")
-        for c in "cho hello" { p.host.term.insertText(String(c)) }
-        await wait("the writes") { p.link.written.joined() == "echo hello" }
-        await echo(p, "cho hello", row: "$ echo hello")
-        p.host.term.insertText("x")
-        await wait("the write") { p.link.written.joined() == "echo hellox" }
+        for c in "cho hello world" { p.host.term.insertText(String(c)) }
+        XCTAssertEqual(guesses(p), "chohelloworld")
         _ = view.renderer.frame.update(core: view.core)
         view.scroller.apply(view.core.scroll.snapshot)
-        let rect = view.viewportRect(row: 0, columns: 4..<5)
-        let point = CGPoint(x: rect.midX, y: rect.midY)
-        // A key typed while the tap waits: the tap is of another moment.
-        XCTAssertTrue(view.tapOpensLinkOrMovesCursor(at: point, focused: true, shift: false))
-        XCTAssertNotNil(view.taps.heldPrompt)
-        p.host.term.insertText("y")
-        XCTAssertNil(view.taps.heldPrompt)
-        await wait("the write") { p.link.written.joined() == "echo helloxy" }
-        // A tap that waited more than two seconds is not sent when the guesses settle.
-        now += 3
-        XCTAssertTrue(view.tapOpensLinkOrMovesCursor(at: point, focused: true, shift: false))
-        XCTAssertNotNil(view.taps.heldPrompt)
-        now += GhosttyTapState.heldPromptLife + 0.1
-        let sent = p.link.written.count
-        await echo(p, "xy", row: "$ echo helloxy")
-        // The core's `settled` event reaches the host one turn of the main queue later.
-        for _ in 0..<5 { await Task.yield() }
-        XCTAssertNil(view.taps.heldPrompt)
-        XCTAssertEqual(p.link.written.count, sent, "nothing was sent")
+        XCTAssertEqual(p.core.frameEcho?.cursor, .init(col: 18, row: 0))
+        // Column 8 is the guessed "e" of hello: ten columns left of the cursor on screen.
+        let rect = view.viewportRect(row: 0, columns: 8..<9)
+        XCTAssertTrue(view.tapOpensLinkOrMovesCursor(at: CGPoint(x: rect.midX, y: rect.midY), focused: true, shift: false))
+        let arrows = String(repeating: "\u{1b}[D", count: 10)
+        await wait("the keys and then the arrows") { p.link.written.joined() == "echo hello world" + arrows }
+        XCTAssertEqual(p.link.written.joined(), "echo hello world" + arrows)
+    }
+
+    private func rowText(_ p: Pane) -> String {
+        p.core.sync()
+        return p.core.rowText(0)
     }
 
     // MARK: Release

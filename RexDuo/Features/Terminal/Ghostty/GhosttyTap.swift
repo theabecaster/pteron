@@ -1,4 +1,5 @@
 import GhosttyVt
+import RexKit
 import UIKit
 
 // What a single tap on the terminal does, in order (with TerminalHost's focus tap,
@@ -80,6 +81,80 @@ extension GhosttyCore {
     }
 }
 
+/// What a prompt click needs to know while predicted echo's guesses are drawn. Columns and rows
+/// are active-area cells.
+struct EchoTapFacts: Equatable {
+    var tap: EchoOverlay.Point
+    /// The program's cursor, as parsed so far.
+    var real: EchoOverlay.Point
+    /// The cursor the user sees, after the guesses.
+    var predicted: EchoOverlay.Point
+    /// The row of the cursor holds a wide character or a cluster: columns are not characters.
+    var wide: Bool
+}
+
+/// A prompt click that moves the cursor with arrow keys, while drawn guesses are unconfirmed.
+///
+/// The engine counts the arrows from the program's cursor, which lags the one on screen by the
+/// pending keys. The click is not held for them: it is sent at once, counted from the cursor the
+/// user sees, and reaches the program after the keys it queues behind. If a pending key does
+/// not land as guessed the cursor ends up off by that much, as it does without predicted echo
+/// when a tap overtakes typed keys.
+enum EchoPromptClick {
+    /// Taps this close to the cursor move nothing, as without guesses (`GhosttyTapProbe.nearCursor`).
+    static let near = 4
+
+    /// `engine` is the engine's click from the program's cursor; `nearReal` says the engine
+    /// made none because the tap is near that cursor.
+    static func click(engine: GhosttyPromptClick, nearReal: Bool, _ f: EchoTapFacts) -> GhosttyPromptClick {
+        // Only on the cursor's own row, with one cell per character: a wrapped input line or a
+        // wide character is counted by the engine alone, from the program's cursor, as without
+        // predicted echo.
+        guard f.tap.row == f.real.row, f.predicted.row == f.real.row, !f.wide else { return nearReal ? .none : engine }
+        if abs(f.tap.col - f.predicted.col) < near { return .none }
+        let pending = f.predicted.col - f.real.col
+        if f.tap.col < f.real.col {
+            // On text the program has: the engine's count, and the pending keys on top. Near
+            // the program's cursor the engine counted nothing: the columns are counted here.
+            if nearReal {
+                let left = f.predicted.col - f.tap.col
+                return left > 0 ? .keys(left: left, right: 0) : .none
+            }
+            guard case .keys(let left, 0) = engine, left > 0 else { return engine }
+            let all = left + pending
+            return all > 0 ? .keys(left: all, right: 0) : .none
+        }
+        // On a guessed cell, or right of everything: counted from the cursor on screen.
+        let left = f.predicted.col - f.tap.col
+        return left > 0 ? .keys(left: left, right: 0) : .none
+    }
+}
+
+extension GhosttyCore {
+    /// The facts for `EchoPromptClick`, or nil when the frame on screen shows no predicted
+    /// cursor or the shell did not ask for arrow keys. Takes the terminal lock once.
+    func echoTapFacts(viewportCol col: Int, row: Int) -> EchoTapFacts? {
+        stateLock.lock()
+        let predicted = frameEcho?.cursor
+        stateLock.unlock()
+        guard let predicted else { return nil }
+        return withTerminal { t -> EchoTapFacts? in
+            guard promptWatch.mode == .cursorKeys else { return nil }
+            var point = GhosttyPoint()
+            point.tag = GHOSTTY_POINT_TAG_VIEWPORT
+            point.value.coordinate = GhosttyPointCoordinate(x: UInt16(clamping: col), y: UInt32(clamping: row))
+            var ref = GhosttyGridRef()
+            var active = GhosttyPointCoordinate()
+            guard ghostty_terminal_grid_ref(t, point, &ref) == GHOSTTY_SUCCESS,
+                  ghostty_terminal_point_from_grid_ref(t, &ref, GHOSTTY_POINT_TAG_ACTIVE, &active) == GHOSTTY_SUCCESS else { return nil }
+            let grid = GhosttyEchoGrid(t, marks: promptWatch.marks)
+            let wide = (0..<grid.cols).contains { grid.cell($0, grid.cursorY).scalar == GhosttyEchoGrid.foreign }
+            return EchoTapFacts(tap: .init(col: Int(active.x), row: Int(active.y)), real: .init(col: grid.cursorX, row: grid.cursorY),
+                                predicted: predicted, wide: wide)
+        } ?? nil
+    }
+}
+
 /// Per-view state for taps. Main thread.
 @MainActor
 final class GhosttyTapState {
@@ -88,16 +163,6 @@ final class GhosttyTapState {
     /// Both are wider than the host's own window for a multi-tap (`SelectionTapCounter`).
     static let repeatInterval: CFTimeInterval = 0.5
     static let repeatDistance: CGFloat = 40
-    /// How long a prompt click waits for predicted echo's guesses to settle.
-    static let heldPromptLife: CFTimeInterval = 2
-
-    /// A tap on the prompt that waits for drawn guesses to settle: its viewport cell.
-    struct HeldPrompt: Equatable {
-        var col: Int
-        var row: Int
-        var until: CFTimeInterval
-    }
-    var heldPrompt: HeldPrompt?
 
     /// Opens a link. `asked`: the user just confirmed it (`LinkOpenPolicy`), so whatever opens
     /// it doesn't ask again. `UIApplication.open` by default; a pane's link router
@@ -138,11 +203,18 @@ extension GhosttyTerminalView {
     /// the tap opened a link or moved the shell's cursor, and so is used up.
     func tapOpensLinkOrMovesCursor(at point: CGPoint, focused: Bool, shift: Bool) -> Bool {
         // The cheap conditions first: the rest costs a terminal lock.
-        // A tap ends the wait of the one before it (a prompt click held for predicted echo).
-        taps.heldPrompt = nil
         guard focused, !shift, !taps.repeats(at: point) else { return false }
         let cell = viewportCell(at: point)
-        let probe = core.tapProbe(viewportCol: cell.col, row: cell.row)
+        var probe = core.tapProbe(viewportCol: cell.col, row: cell.row)
+        // While drawn guesses are unconfirmed the cursor on screen is ahead of the program's.
+        // The click is still sent at once: its arrows are counted from the cursor the user
+        // sees, and they queue behind the typed keys (`EchoPromptClick`).
+        if core.echoUnsettled, probe.link == nil, !probe.mouseTracking,
+           let facts = core.echoTapFacts(viewportCol: cell.col, row: cell.row) {
+            // "Near the cursor" is judged against the cursor on screen from here on.
+            probe.prompt = EchoPromptClick.click(engine: probe.prompt, nearReal: probe.nearCursor, facts)
+            probe.nearCursor = false
+        }
         let action = GhosttyTapRouting.action(focusedAtTouch: focused, shift: shift, hasSelection: hasActiveSelection, probe: probe)
         var used = false
         switch action {
@@ -150,36 +222,13 @@ extension GhosttyTerminalView {
             if let link = probe.link { open(tapped: link, cell: cell) }
             used = true
         case .prompt(let click):
-            if case .keys = click, core.echoUnsettled {
-                // Arrow keys are counted from the real cursor, which lags the one on screen
-                // while drawn guesses are unconfirmed: they would land too far right. The tap
-                // waits for the guesses to settle and is decided again then (`echoSettled`).
-                taps.heldPrompt = GhosttyTapState.HeldPrompt(col: cell.col, row: cell.row, until: taps.clock() + GhosttyTapState.heldPromptLife)
-                used = true
-            } else {
-                used = send(promptClick: click)
-            }
+            used = send(promptClick: click)
         case .focusOnly, .dismissSelection, .mouseClick, .nothing:
             break
         }
         if used { taps.used(at: point) }
         return used
     }
-
-    /// No drawn guess is unconfirmed any more (`GhosttyEchoEvent.settled`): a prompt click that
-    /// waited for that is decided against the grid as it is now, and sent. One that waited too
-    /// long is dropped.
-    func echoSettled() {
-        guard let held = taps.heldPrompt else { return }
-        taps.heldPrompt = nil
-        guard taps.clock() <= held.until, !core.echoUnsettled else { return }
-        let probe = core.tapProbe(viewportCol: held.col, row: held.row)
-        let action = GhosttyTapRouting.action(focusedAtTouch: true, shift: false, hasSelection: hasActiveSelection, probe: probe)
-        if case .prompt(let click) = action { _ = send(promptClick: click) }
-    }
-
-    /// New input, a scroll or a cleared queue: a held prompt click is of another moment.
-    func dropHeldPromptClick() { taps.heldPrompt = nil }
 
     /// Opens a tapped link. A program wrote it: web and mail addresses open, anything else, and a
     /// label that names another site, is asked about first (`LinkOpenPolicy`). An address found

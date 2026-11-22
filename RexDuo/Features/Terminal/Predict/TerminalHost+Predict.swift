@@ -63,7 +63,6 @@ extension TerminalHost: EchoInputObserver, EchoWriteObserver {
     /// The link changed under the gate's samples: every guess goes.
     private func echoGateReset() {
         guard stream.inputObserver != nil else { return }
-        term.dropHeldPromptClick()
         term.core.echoCleared(.reconnected, through: stream.inputSeq)
     }
 
@@ -86,7 +85,8 @@ extension TerminalHost: EchoInputObserver, EchoWriteObserver {
         case .slow:
             stream.echoGate?.noteOverdue()
         case .settled:
-            term.echoSettled()
+            // Nothing waits for it: a prompt click is sent at once (`EchoPromptClick`).
+            break
         case .retired:
             // Nothing pending and the level off: the pane is the pane without predicted echo
             // again. Not if the gate turned predictions back on meanwhile.
@@ -109,7 +109,6 @@ extension TerminalHost: EchoInputObserver, EchoWriteObserver {
     func input(_ kind: EchoInputKind, seq: Int) {
         let began = EchoProbe.active != nil ? EchoProbe.clock() : 0  // PERF
         defer { EchoProbe.active?.cost(.mainKey, since: began) }  // PERF
-        term.dropHeldPromptClick()
         let conditions = echoConditions()
         if let before = echoForeground, before != conditions.foreground {
             // Another program in front: OSC 133 marks seen so far are not its own.
@@ -136,7 +135,6 @@ extension TerminalHost: EchoInputObserver, EchoWriteObserver {
     }
 
     func cleared(_ reason: EchoClearReason, through seq: Int) {
-        term.dropHeldPromptClick()
         term.core.echoCleared(reason, through: seq)
     }
 }

@@ -1632,8 +1632,6 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// The engine says where the view is in the scrollback: on its news, and on every scroll step.
     private func scrollPlaceChanged(_ place: GhosttyScrollPlace) {
-        // A prompt click held for predicted echo named a row of the view as it was.
-        if place.rowsAbove != scrollPlace.rowsAbove { term.dropHeldPromptClick() }
         scrollPlace = place
         updateJumpButton()
     }
