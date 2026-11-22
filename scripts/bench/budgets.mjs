@@ -51,9 +51,15 @@ export const scenarios = {
   // stream: the prediction path runs for no key, on either thread. What is left per key is the
   // stream's one check that it has no observer, and per write two clock readings and the
   // gate's running average.
-  'predict-fast': { 'echo.predictors': 0, 'echo.mainKeyUs.count': 0, 'echo.feedKeyUs.count': 0 },
-  // The fast link with no gate: `predict-fast`'s baseline.
-  'predict-fast-off': {},
+  // A key's whole send on the main thread: 100 µs (measured 60, 59 with no gate). On a fast link
+  // nearly every key finds the queue idle, so its write starts in the key's own turn instead of
+  // in a task (`TerminalStream.pump(now:)`); before that a send cost 32 µs here and the key
+  // waited for the turn to end. Ruled by lead dev, 2026-11-22: the write starts in the key's
+  // turn, and its cost on the main thread is accepted up to this limit.
+  'predict-fast': { 'echo.predictors': 0, 'echo.mainKeyUs.count': 0, 'echo.feedKeyUs.count': 0,
+                    'echo.mainSendUs.median': 100 },
+  // The fast link with no gate: `predict-fast`'s baseline, held to the same limit per send.
+  'predict-fast-off': { 'echo.mainSendUs.median': 100 },
 };
 
 // What one scenario may cost more than another: the difference of the two medians.
