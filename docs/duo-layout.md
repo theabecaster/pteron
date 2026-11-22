@@ -306,7 +306,14 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   the terminal's color runs on to the window's bottom: under the home indicator with the keyboard
   down, and behind the key bar and the keyboard's corners with it up. No band of chrome shows
   under the terminal.
-- **Short windows** (landscape iPhone): the title bar is 34 pt with no subtitle, and the key bar is
+- **Title bar** (`TitleLine`). 44 pt, as tall as tab mode's strip, with nothing above or below
+  it: one line, like the Mac's title bar. The tab's title (semibold), its status, then the
+  session's name in the secondary color (with the computer's name when more than one is set
+  up), then the menu chevron. When both don't fit, the session's name keeps up to a third of
+  the line and both truncate; where the title would keep less than 64 pt, the session's name
+  leaves the line. The text stops growing at the strip's limit (`StripStyle.chipTypeLimit`), so
+  the bar never clips it at the largest text sizes.
+- **Short windows** (landscape iPhone): the title bar and the strip are 34 pt, and the key bar is
   42 pt.
 - **Offline screen** (`OfflineLayout`). It fills the tab, so an inline sidebar stays beside it. Where
   the crease crosses it with room on both sides, it is two pages: the glyph large on the left (or top)

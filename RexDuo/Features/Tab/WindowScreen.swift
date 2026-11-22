@@ -923,13 +923,13 @@ struct WindowScreen: View {
         }
     }
 
-    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title with the shown pane's
-    /// status beside it, then the page dots and the pane menu. Where the system has a vertical bar, the buttons are there instead and this keeps the
-    /// title and status. Under a short window (landscape iPhone) it is thinner, to leave rows for the
-    /// panes.
+    /// Thin, like the Mac's title bar, and as tall as tab mode's strip: the sidebar toggle, the
+    /// tab's title with the shown pane's status and the session's name on one line (`TitleLine`),
+    /// then the page dots and the pane menu. Where the system has a vertical bar, the buttons are
+    /// there instead and this keeps the title line. Under a short window (landscape iPhone) it is
+    /// thinner, to leave rows for the panes.
     private func titleHeader(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         let bar = barEdge != nil
-        let short = vSize == .compact
         let height = barHeight
         return HStack(spacing: 0) {
             if !bar {
@@ -937,11 +937,13 @@ struct WindowScreen: View {
                            height: height) { sidebarVisible.toggle() }
             }
             if let w {
-                titleBar(w, theme, subtitle: !short)
+                titleBar(w, theme)
             } else {
                 Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(theme.chrome.tertiary)
+                    .lineLimit(1)
+                    .dynamicTypeSize(...TitleLine.typeLimit)
                     .padding(.leading, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -974,8 +976,8 @@ struct WindowScreen: View {
         .animation(.snappy(duration: 0.2), value: zoomedHere)
     }
 
-    private func titleBar(_ w: WindowInfo, _ theme: TermTheme, subtitle showsSubtitle: Bool) -> some View {
-        TabTitleBar(server: server, sessionID: sessionID, window: w, block: activeBlock(w), subtitle: subtitle, showsSubtitle: showsSubtitle,
+    private func titleBar(_ w: WindowInfo, _ theme: TermTheme) -> some View {
+        TabTitleBar(server: server, sessionID: sessionID, window: w, block: activeBlock(w), subtitle: subtitle,
                     theme: theme,
                     onSwipe: { switchTab(by: $0, haptic: false) },
                     onPick: { Haptic.selection(); onOpen($0) },

@@ -12,9 +12,8 @@ struct TabTitleBar: View {
     let window: WindowInfo
     /// The pane on screen: its status sits right after the title.
     let block: String?
+    /// The session's name (and the computer's, with more than one), after the title.
     let subtitle: String
-    /// A short title bar (landscape iPhone) keeps the title only.
-    var showsSubtitle = true
     let theme: TermTheme
     /// A committed swipe: +1 next tab, -1 previous tab.
     let onSwipe: (Int) -> Void
@@ -69,39 +68,40 @@ struct TabTitleBar: View {
         .accessibilityAdjustableAction { d in onSwipe(d == .increment ? 1 : -1) }
     }
 
-    /// Title, then status, then the menu chevron. The status rides with the title, so it stays
-    /// beside the text however long it is; the title truncates before the status does. The tab
-    /// sliding in under a swipe shows its own status, as its sidebar row does.
+    /// One line (`TitleLine`): title, then status, then the session's name in a quieter color,
+    /// then the menu chevron. The status rides with the title, so it stays beside the text however
+    /// long it is; the title truncates before the status does, and the session's name before the
+    /// title. The tab sliding in under a swipe shows its own status, as its sidebar row does.
     private func label(_ w: WindowInfo, _ sub: String, current: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 5) {
-                TabTitle(server: server, window: w)
-                Group {
-                    if current {
-                        if let block { BlockBadge(server: server, block: block, theme: theme) }
-                    } else {
-                        WindowBadge(server: server, window: w, theme: theme)
-                    }
-                }
-                .fixedSize()
-                .layoutPriority(1)
+        TitleLineLayout {
+            TabTitle(server: server, window: w)
+                .layoutValue(key: TitleLineLayout.RoleKey.self, value: .title)
+            Group {
                 if current {
-                    WakingSlot(server: server)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(theme.chrome.tertiary)
-                        .accessibilityHidden(true)
+                    if let block { BlockBadge(server: server, block: block, theme: theme) }
+                } else {
+                    WindowBadge(server: server, window: w, theme: theme)
                 }
             }
-            if showsSubtitle {
-                Text(sub)
-                    .font(.caption2)
+            .fixedSize()
+            .layoutValue(key: TitleLineLayout.RoleKey.self, value: .status)
+            Text(sub)
+                .font(.subheadline)
+                .foregroundStyle(theme.chrome.secondary)
+                .lineLimit(1)
+                .layoutValue(key: TitleLineLayout.RoleKey.self, value: .session)
+            if current {
+                WakingSlot(server: server)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(theme.chrome.tertiary)
-                    .lineLimit(1)
+                    .accessibilityHidden(true)
             }
         }
+        // The bar keeps its height at every text size: the line stops growing where the strip's
+        // chips do, and truncates past it instead of clipping.
+        .dynamicTypeSize(...TitleLine.typeLimit)
         .padding(.leading, 2)
-        .padding(.vertical, 3)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }
 
