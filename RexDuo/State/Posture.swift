@@ -124,7 +124,9 @@ enum SidebarMode: String, CaseIterable, Identifiable {
     case sessions, agents
     var id: String { rawValue }
     var title: String { self == .sessions ? "Sessions" : "Agents" }
-    var symbol: String { self == .sessions ? "list.bullet.indent" : "sparkles" }
+    /// Agents wears the app's generic agent glyph, the one the board and the agents list draw for
+    /// an agent of unknown kind, so the mode carries the same mark as its rows.
+    var symbol: String { self == .sessions ? "list.bullet.indent" : "cpu" }
 }
 
 /// The sidebar's width: limits, snap points and what a drag does. Pure, so it is tested.
