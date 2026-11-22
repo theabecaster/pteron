@@ -49,7 +49,22 @@ final class EchoRaceTests: XCTestCase {
         return thread
     }
 
+    /// The script's choices, from a seed: a failure prints it, and the same seed makes the same
+    /// script again (the threads' interleaving is still the machine's).
+    private struct Choices: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// `TEST_RUNNER_ECHO_RACE_SEED=<number>` runs the script of that seed.
     func testThreadedFramesNeverPairAGuessWithOtherRows() {
+        let seed = ProcessInfo.processInfo.environment["ECHO_RACE_SEED"].flatMap { UInt64($0) } ?? UInt64.random(in: 0...UInt64.max)
         let core = GhosttyCore(cols: 40, rows: 6)
         let clock = EchoTestClock()
         core.echo.clock = { clock.now }
@@ -59,8 +74,25 @@ final class EchoRaceTests: XCTestCase {
         let seen = Seen()
         let thread = frameThread(core, seen)
 
-        var rng = SystemRandomNumberGenerator()
+        var rng = Choices(state: seed)
         var seq = 0
+        // The clock is moved here, and read on the feed queue when it gets to each call. So
+        // however far this thread runs ahead of that queue is time that passes, for the
+        // predictor, between a key's answer and its echo, though both are already queued: after
+        // 1.5 s of it (`EchoPredictor.cap`) a guess is cleared for want of an echo that was only
+        // waiting its turn. A phone's clock does not run ahead of its feed queue. So this
+        // thread never moves the clock more than half the cap past what the queue has done.
+        let lead = EchoPredictor.cap / 2
+        var ahead = 0.0
+        func catchUp() {
+            core.sync()
+            ahead = 0
+        }
+        func pass(_ seconds: Double) {
+            if ahead + seconds > lead { catchUp() }
+            clock.advance(seconds)
+            ahead += seconds
+        }
         let letters = Array("abcdefghijklmnopqrstuvwxyz".utf8)
         func type(_ b: UInt8) {
             seq += 1
@@ -69,7 +101,7 @@ final class EchoRaceTests: XCTestCase {
         func answer() {
             let at = clock.now
             core.echoAnswered(through: seq, at: at)
-            clock.advance(EchoPredictor.settle)
+            pass(EchoPredictor.settle)
             core.echoSettled(after: at)
         }
         /// A new prompt line, as the shell writes it after Enter.
@@ -92,7 +124,7 @@ final class EchoRaceTests: XCTestCase {
             for b in word { type(b) }
             // Now and then the feed queue catches up here, so frames with guesses get built.
             if round % 8 == 0 {
-                core.sync()
+                catchUp()
                 Thread.sleep(forTimeInterval: 0.002)
             }
             switch Int.random(in: 0..<10, using: &rng) {
@@ -118,19 +150,19 @@ final class EchoRaceTests: XCTestCase {
                 core.feed(Array(EchoPane.prompt.utf8))
             }
             newLine()
-            if round % 50 == 49 { core.sync() }
+            if round % 50 == 49 { catchUp() }
         }
         core.sync()
         seen.stop.store(true, ordering: .relaxed)
         while !thread.isFinished { Thread.sleep(forTimeInterval: 0.005) }
 
-        XCTAssertEqual(seen.faults.withLock { $0 }, [], "no frame pairs a guess with rows of another moment")
+        XCTAssertEqual(seen.faults.withLock { $0 }, [], "no frame pairs a guess with rows of another moment (seed \(seed))")
         XCTAssertGreaterThan(seen.frames.load(ordering: .relaxed), 100)
         XCTAssertGreaterThan(seen.withGuess.load(ordering: .relaxed), 0, "frames with guesses were built, so the check had something to see")
         let counters = try? XCTUnwrap(core.echoCounters)
         XCTAssertGreaterThan(counters?.confirmed ?? 0, confirms, "guesses were confirmed")
         XCTAssertGreaterThan(counters?.mismatched ?? 0, 0, "and wrong ones found")
-        XCTAssertEqual(counters?.vanished, 0, "none was taken back for want of an echo")
+        XCTAssertEqual(counters?.vanished, 0, "none was taken back for want of an echo (seed \(seed), \(counters?.capped ?? 0) cleared at the cap)")
         _ = mismatches
     }
 }
