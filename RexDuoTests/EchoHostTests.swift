@@ -197,6 +197,29 @@ final class EchoHostTests: XCTestCase {
         XCTAssertEqual(p.core.echoCounters?.mismatched, 0)
     }
 
+    /// Without OSC 133 the tty is read once a line's first key was echoed, but not when the
+    /// program in front can prove nothing whatever the tty says: over `ssh` no call is made.
+    func testTheTtyIsNotReadWhenTheProgramInFrontCanProveNothing() async {
+        for (foreground, reads) in [("ssh", 0), ("zsh", 1)] {
+            let p = await pane(level: .slow, foreground: foreground, prompt: "$ ")
+            p.link.inputMode = (echo: false, canonical: false)
+            await type(p, "l")
+            await echo(p, "l", row: "$ l")
+            await wait("the reading, if one is made") { p.link.inputModeReads == reads && self.modeSettled(p) }
+            for _ in 0..<10 { await Task.yield() }
+            XCTAssertEqual(p.link.inputModeReads, reads, foreground)
+            await settle(p)
+            p.host.term.insertText("s")
+            XCTAssertEqual(guesses(p), reads == 1 ? "s" : "", "\(foreground): drawn only with proof")
+        }
+    }
+
+    /// The predictor's request for a reading has been answered (with a reading or with none).
+    private func modeSettled(_ p: Pane) -> Bool {
+        p.core.sync()
+        return true
+    }
+
     func testAnAgentPaneNeverPredicts() async {
         let p = await pane(level: .slow, agent: true, foreground: "claude")
         for c in "hello agent, this is fifty keys of typing in a box".prefix(50) { p.host.term.insertText(String(c)) }
@@ -502,6 +525,7 @@ final class EchoHostTests: XCTestCase {
         XCTAssertTrue(p.core.echoUnsettled)
 
         p.host.park()
+        XCTAssertNil(p.core.frameEcho, "parked: the frame it will show again carries no guess")
         XCTAssertEqual(guesses(p), "", "parked: the guess is gone")
         XCTAssertNil(p.core.publishedEcho)
         XCTAssertFalse(p.core.echoUnsettled)

@@ -72,6 +72,12 @@ extension TerminalHost: EchoInputObserver, EchoWriteObserver {
         switch event {
         case .inputMode(let generation):
             // Asked only in a pane whose shell sends no OSC 133, after a first key was echoed.
+            // Not when the program in front can prove nothing whatever the tty says (`ssh`,
+            // anything that is not a shell): the predictor hears "no proof" without a call.
+            guard EchoInputMode.canProve(foreground: echoContext?().foreground) else {
+                term.core.echoInputMode(nil, foreground: nil, generation: generation)
+                return
+            }
             Task { [weak self] in
                 guard let self else { return }
                 let mode = await self.stream.inputMode(marked: false)
