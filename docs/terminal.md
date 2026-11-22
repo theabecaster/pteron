@@ -530,10 +530,11 @@ Wi-Fi, where an echo lands within a few frames anyway.
 - Proof that the program echoes. With OSC 133 marks, the prompt's `B` mark of the line being
   typed. Without them, the first key of a line is tracked but not drawn; once the program has
   echoed it, the tty's state is read (`terminal.input_mode`, one call per line, on slow links
-  only) and the rest of the line is drawn only if canonical mode is off with a local shell in
-  front, which is a line editor reading a line. Echo off with canonical on is a password reader.
-  Echo on with canonical on proves nothing: it is the tty's resting state, and a program can turn
-  echo off from it at any moment. Over `ssh` the reading describes the local client, so an `ssh`
+  only) and the rest of the line is drawn only if echo and canonical mode are both off with a
+  local shell in front, which is a line editor reading a line. Echo off with canonical on is a
+  password reader. Echo on proves nothing, canonical or not: it is the tty's resting state or a
+  script reading keys, and a program can turn echo off from it at any moment. No reading is
+  asked for when the program in front could prove nothing anyway. Over `ssh` the reading describes the local client, so an `ssh`
   pane predicts only with OSC 133 marks from the remote shell.
 
 So a password prompt (`sudo`, `read -s`), an editor, a pager, an agent's input box and anything
@@ -545,7 +546,12 @@ way. A key is confirmed only from the screen after the answer to its own write, 
 order, and never from a grid that looks like the state before it. Only contrary screen content
 removes guesses: then the whole epoch's overlay goes in the frame that first draws what proved it
 wrong, with no notice. After wrong guesses (30% or fewer of the last 24 judged keys right) lines
-are tracked without being drawn until 60% are right again. A late echo removes nothing. A guess still unconfirmed 1.5 s after its
+are tracked without being drawn until 60% are right again. A late echo removes nothing. Enter
+does not either: while the prompt is not open no new key is drawn, but what is on screen stays
+until the screen confirms it. Guesses go at once when the program leaves the screen they were
+made on (the alternate screen, a hidden cursor). A hold of the screen (a program's synchronized
+output) keeps the guesses of the moment it began with its rows; the catch-up hold of a
+returning pane draws none. A guess still unconfirmed 1.5 s after its
 write's answer is cleared without a sign (counted as `vanished` when it was drawn). A resize, a
 reset, a restored snapshot, a theme, dropped output, a lost write, the fence, a park, a stop and
 a reconnect clear every guess.

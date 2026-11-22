@@ -216,7 +216,7 @@ final class Prefs {
     // bytes sent, at a shell's prompt on the primary screen, never in an agent's pane, behind
     // the fence, while composing, selecting, finding or scrolled back (`EchoHostGate`). A line
     // is drawn only after proof that the program echoes: an OSC 133 B, or, without OSC 133, the
-    // first key's own echo and then an input_mode read that shows a line editor (canonical off,
+    // first key's own echo and then an input_mode read that shows a line editor (echo and canonical off,
     // a local shell in front; never over ssh). It uses mosh's epochs and acknowledgement rule:
     // an epoch starts only once all earlier input is answered and 50 ms have passed, and a key
     // confirms only from the screen after its own write's answer, in typing order
