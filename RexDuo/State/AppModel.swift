@@ -551,6 +551,10 @@ final class AppModel {
                 return sel.sessionID
             }
             s.forward = forward
+            s.probePort = { [weak forward, weak s] target in
+                guard let forward, let s else { return .unknown }
+                return await forward.probe(target, on: s)
+            }
             palette.attach(s)
             return s
         }

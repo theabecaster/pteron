@@ -351,6 +351,23 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var createdAt: [String: Date] = [:]
     /// The app's forwards to dev servers; set by `AppModel`.
     @ObservationIgnored weak var forward: PortForward?
+    /// What each listed port answered (`ServerConnection+PortProbe.swift`).
+    @ObservationIgnored var portProbes = PortProbeBook()
+    /// Each pane's ports that show nowhere for now: held for their probe, or no web page. Its
+    /// own table, so the pane menu's row reads its pane's box and nothing else.
+    @ObservationIgnored let portsHidden = BlockBoxTable<Set<Int>>()
+    /// Panes whose port list is new since the probes last looked.
+    @ObservationIgnored var freshPortLists: Set<String> = []
+    /// Asks a port what it answers; set by `AppModel` (`PortForward.probe`). Nil: nothing is
+    /// asked and every port shows, as before the probe.
+    @ObservationIgnored var probePort: (@MainActor (PortForward.Target) async -> PortProbe.Verdict)?
+    /// A test launch's session label (`-autoOpen <label>`): only that session's ports are asked,
+    /// so a test never makes a tunnel in a session it didn't create. The others show unasked.
+    @ObservationIgnored var probeOnly: () -> String? = { UserDefaults.standard.string(forKey: "autoOpen") }
+    /// Seconds on a steady clock, for the probes' hold; tests move it by hand.
+    @ObservationIgnored var probeClock: () -> Double = { ProcessInfo.processInfo.systemUptime }
+    /// The one wake that shows a held port when its hold is up, and when it fires.
+    @ObservationIgnored var probeWake: (task: Task<Void, Never>, at: Double)?
 
     /// A drop from online shows nothing for this long: most end sooner.
     static let phaseGrace: Double = 5.0

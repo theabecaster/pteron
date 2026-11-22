@@ -19,10 +19,14 @@ struct PortRow: Equatable, Identifiable {
 enum PortRows {
     /// `panes` in sidebar order; each pane's web ports follow by number. A port an agent holds
     /// itself (its sign-in or editor link) is no dev server: it gets no row. A server the agent
-    /// started is another process and keeps its row.
-    static func rows(panes: [(session: String, block: String)], list: (String) -> PortList?) -> [PortRow] {
+    /// started is another process and keeps its row. `hidden`: each pane's ports that its probe
+    /// holds or found no web page (`ServerConnection+PortProbe.swift`).
+    static func rows(panes: [(session: String, block: String)], list: (String) -> PortList?,
+                     hidden: (String) -> Set<Int> = { _ in [] }) -> [PortRow] {
         panes.flatMap { p in
-            (list(p.block)?.webPorts ?? []).filter { !isAgent($0) }.map { PortRow(sessionID: p.session, blockID: p.block, entry: $0) }
+            let unshown = hidden(p.block)
+            return (list(p.block)?.webPorts ?? []).filter { !isAgent($0) && !unshown.contains($0.port) }
+                .map { PortRow(sessionID: p.session, blockID: p.block, entry: $0) }
         }
     }
 
@@ -160,6 +164,7 @@ extension ServerConnection {
             guard serial == connectionSerial, blockInfo(session: sid, block: bid) != nil else { return }
             capabilities.record(method: Self.portsMethod, host: nil, .present, serial: serial)
             pendingPorts[bid] = nil
+            freshPortLists.insert(bid)
             ports.set(bid, PortList(r, label: ProcessNames.label))
         } catch {
             guard serial == connectionSerial else { return }
@@ -188,6 +193,7 @@ extension ServerConnection {
         var waiting: [String: PortList] = [:]
         for (bid, list) in pendingPorts {
             if present.contains(bid) {
+                freshPortLists.insert(bid)
                 ports.set(bid, list)
             } else if createdAt[bid] != nil {
                 // A new block whose view is on its way: applied when it lands (`createdBlocksShown`).
@@ -242,16 +248,24 @@ extension ServerConnection {
     /// where a list or the gates change; nothing reads the lists per frame.
     func refreshPortRows() {
         var rows: [PortRow] = []
-        if portsAvailable, tunnelsAvailable, !ports.isEmpty || !heldPortRows.isEmpty {
+        var panes: [(session: String, block: String)] = []
+        let gates = portsAvailable && tunnelsAvailable
+        let open = gates && (!ports.isEmpty || !heldPortRows.isEmpty)
+        if open {
             let hidden = hiddenSessions()
-            var panes: [(session: String, block: String)] = []
             for e in orderedSessions where !hidden.contains(e.id) {
                 guard let v = views[e.id] else { continue }
                 for wid in orderedWindowIDs(e.id) {
                     for b in v.window(wid)?.allBlocks ?? [] where b.isTerminal && isLocal(b) { panes.append((e.id, b.id)) }
                 }
             }
-            rows = PortRows.rows(panes: panes) { ports.value($0) }
+        }
+        // Every list change lands here: the probes follow, and say which ports show nowhere yet.
+        // While a gate is closed (a reconnect that hasn't read the creators yet) no row shows,
+        // and the verdicts stay for when it opens.
+        let unshown = gates ? updatePortProbes(panes: panes) : [:]
+        if open {
+            rows = PortRows.rows(panes: panes, list: { ports.value($0) }, hidden: { unshown[$0] ?? [] })
             // A row that is being restarted keeps its place while its port is away.
             for held in heldPortRows.values.sorted(by: { $0.at < $1.at }) where !rows.contains(where: { $0.id == held.row.id }) {
                 guard panes.contains(where: { $0.block == held.row.blockID }) else { continue }
@@ -271,7 +285,7 @@ extension ServerConnection {
     func portRow(_ id: String) -> PortRow? {
         guard let place = portRowPlaces[id] else { return nil }
         guard let entry = ports.value(place.blockID)?.entry(place.entry.port) else { return heldPortRows[id]?.row }
-        guard PortRules.isWeb(entry), !PortRows.isAgent(entry) else { return nil }
+        guard PortRules.isWeb(entry), !PortRows.isAgent(entry), portsHidden.value(place.blockID)?.contains(entry.port) != true else { return nil }
         return PortRow(sessionID: place.sessionID, blockID: place.blockID, entry: entry)
     }
 

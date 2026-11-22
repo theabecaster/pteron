@@ -128,6 +128,10 @@ final class PortForward {
 
     /// Tunnel blocks this app made lately, newest last: their events change no view.
     private var made: [String] = []
+    /// The blocks of the probes running now (`probe`): no sweep closes them.
+    private var probing: Set<String> = []
+    /// How a probe waits for its reply; tests stand in for the clock. Must throw when cancelled.
+    var probeSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// Sessions where a `new_block` is under way, as "server session".
     private var creating: Set<String> = []
 
@@ -376,6 +380,78 @@ final class PortForward {
         }
     }
 
+    // MARK: Probes
+
+    /// Asks one port what it answers (`PortProbe`), for the Ports list and the pane menu's row:
+    /// a dial block of its own made for this alone (labeled and remembered as the browser's are,
+    /// so a sweep finds it after a kill), one data connection with `GET /` and at most 4 KB read,
+    /// then the block closes. It reads only: nothing reaches a pane, nothing is kept, nothing is
+    /// shown, whatever fails. Not through `CallGate`: the dial tunnel is separate from the sync's
+    /// calls, and a probe is one small request per new port, on cellular too.
+    func probe(_ target: Target, on server: any TunnelServer) async -> PortProbe.Verdict {
+        guard server.tunnelConnected, server.synced, server.tunnelsAvailable,
+              !PortRules.debuggerPorts.contains(target.port) else { return .unknown }
+        guard let bid = await probeBlock(target, on: server) else { return .unknown }
+        var bytes = Data()
+        let session = server.makeTunnelSession()
+        do {
+            let t = try await server.tunnelCall("data.connect", [
+                "session_id": target.sessionID, "block_id": bid,
+                "data_ref_id": BytesStream.ref("conn"), "subprotocol": BytesStream.subprotocol,
+            ])
+            if let ticket = t.str("ticket"), server.tunnelConnected {
+                let socket = try await server.openTunnel(ticket: ticket, in: session)
+                bytes = await PortProbe.read(socket, port: target.port, sleep: probeSleep)
+            }
+        } catch {
+            // No connection: nothing to go on.
+        }
+        session?.invalidate()
+        await closeBlocks([bid], session: target.sessionID, on: server)
+        probing.remove(bid)
+        let verdict = PortProbe.classify(bytes)
+        #if DEBUG
+        // The verdict and the reply's size only: never the page's content.
+        trace.append("probe \(target.dialHost):\(target.port) \(verdict)")
+        NSLog("PORTS_PROBE %@:%ld %@ bytes=%ld", target.dialHost, target.port, "\(verdict)", bytes.count)
+        #endif
+        return verdict
+    }
+
+    /// The probe's block: marked, made and remembered as the browser's is, on the same job
+    /// queue, so no sweep runs between its making and its entry in `probing`. No sweep first:
+    /// the next sync's sweep finds leftovers. Nil when it couldn't be made; no notice.
+    private func probeBlock(_ target: Target, on server: any TunnelServer) async -> String? {
+        await jobs.run { [self] () -> String? in
+            guard server.tunnelsAvailable, server.tunnelConnected else { return nil }
+            let sid = target.sessionID
+            ledger.mark(server: server.id, session: sid)
+            let key = "\(server.id) \(sid)"
+            creating.insert(key)
+            defer {
+                ledger.unmark(server: server.id, session: sid)
+                creating.remove(key)
+            }
+            do {
+                // No `client_address`: nothing on the phone listens for a probe.
+                let r = try await server.tunnelCall("session.new_block", [
+                    "session_id": sid, "flavor": Self.flavor, "label": label,
+                    "options": ["host": target.dialHost, "port": target.port] as JSONObject,
+                ])
+                guard let bid = r.str("block_id") else { return nil }
+                ledger.remember(server: server.id, session: sid, block: bid)
+                made.append(bid)
+                if made.count > 64 { made.removeFirst(made.count - 64) }
+                probing.insert(bid)
+                return bid
+            } catch {
+                let code = (error as? RexError)?.code
+                if code == "not_found" || code == "method_not_found" { server.tunnelsMissing() }
+                return nil
+            }
+        }
+    }
+
     // MARK: Server state
 
     /// A sync finished on `server`: waiting connections go on, a block owned under an old client
@@ -430,20 +506,22 @@ final class PortForward {
         trace.append("sweep \(sessions.sorted().joined(separator: ","))")
         NSLog("PORTS_SWEEP %@", sessions.sorted().joined(separator: ","))
         #endif
-        let live = forward?.server === server ? forward?.block?.id : nil
+        // The browser's block and the probes' are in use.
+        var live = probing
+        if forward?.server === server, let b = forward?.block?.id { live.insert(b) }
         for sid in sessions {
             do {
                 let r = try await server.tunnelCall("session.list_blocks", ["session_id": sid])
                 let mine = r.arr("blocks").filter {
-                    $0.str("flavor") == Self.flavor && $0.str("label") == label && $0.str("block_id") != live
+                    $0.str("flavor") == Self.flavor && $0.str("label") == label && !live.contains($0.str("block_id") ?? "")
                 }.compactMap { $0.str("block_id") }
                 let listed = Set(r.arr("blocks").compactMap { $0.str("block_id") })
                 // Remembered blocks the server no longer has are gone.
-                for b in ledger.blocks(server: server.id, session: sid) where !listed.contains(b) && b != live {
+                for b in ledger.blocks(server: server.id, session: sid) where !listed.contains(b) && !live.contains(b) {
                     ledger.forget(server: server.id, session: sid, block: b)
                 }
                 if !mine.isEmpty { await closeBlocks(mine, session: sid, on: server) }
-                if ledger.blocks(server: server.id, session: sid).allSatisfy({ $0 == live }) {
+                if ledger.blocks(server: server.id, session: sid).allSatisfy({ live.contains($0) }) {
                     ledger.forget(server: server.id, session: sid, keeping: live)
                 }
             } catch {
@@ -564,10 +642,11 @@ final class TunnelLedger {
         save()
     }
 
-    /// Forgets the session, except a block a browser still uses.
-    func forget(server: UUID, session: String, keeping live: String? = nil) {
-        if let live, blocks(server: server, session: session).contains(live) {
-            saved.blocks[server.uuidString]?[session] = [live]
+    /// Forgets the session, except the blocks a browser or a probe still uses.
+    func forget(server: UUID, session: String, keeping live: Set<String> = []) {
+        let kept = blocks(server: server, session: session).filter { live.contains($0) }
+        if !kept.isEmpty {
+            saved.blocks[server.uuidString]?[session] = kept
         } else {
             saved.blocks[server.uuidString]?[session] = nil
         }

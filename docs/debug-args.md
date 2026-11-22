@@ -5,6 +5,8 @@ Each is a UserDefaults key for that run only. All but `-autoOpen` and `-sizing` 
 builds.
 
 - `-autoOpen <session label>`: open that session's first tab. A label that doesn't exist opens nothing.
+  Such a test launch asks only that session's ports what they answer (docs/terminal.md, Ports,
+  "Which ports show"), so it makes no tunnel in another session; the others' ports show unasked.
 - `-sizing mirror`: keep the Mac's pane sizes instead of fitting panes to the phone.
 - `-servers 'Name=https://…,Other=http://127.0.0.1:8765'`: use these servers instead of the saved
   ones. A missing `.ts.net` host, a closed port or a 403 shows the real offline screens.

@@ -1002,6 +1002,45 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
   a read that fails takes that pane's list. Web ports are every port but debuggers, SSH, mail,
   DNS, databases, queues and caches, by number and by program (`PortRules`). The dial address
   is the program's loopback address; `0.0.0.0` dials 127.0.0.1 and `::` dials ::1.
+- **Which ports show** (`PortProbe`, `PortProbeBook` in RexKit;
+  `State/ServerConnection+PortProbe.swift`, `PortForward.probe`). A web port by `PortRules` may
+  still be no web page: an editor plugin's WebSocket server (Claude Code's IDE link in nvim
+  answers "Bad WebSocket upgrade request"), or a raw TCP service on an unknown port. So each
+  one is asked once what it answers, and the Ports list, its count on the globe, the palette
+  and the pane menu's row leave out only a port that gave positive evidence. A tapped link
+  never looks at the probes: one to a hidden port opens as before, since the user asked for
+  it. A typed address finds the shown rows, as the list does.
+  - The question: a dial block of its own (same label, ledger and sweep as the browser's, no
+    `client_address`), one data connection, `GET /` with `Host: localhost:<port>`,
+    `Accept: */*` and `Connection: close`, no cookies. At most 4 KB of the reply is read, for
+    at most 2 s, then the connection drops and the block closes. Nothing reaches a pane,
+    nothing is kept, nothing is shown when it fails, and the log has the verdict and the
+    reply's size only, never its content.
+  - No web page, hidden: 426; a 400 whose headers or body say "upgrade" and "websocket" (any
+    case); bytes that aren't HTTP (Redis's `-ERR`, an SSH banner, an HTTP/2 frame). A web
+    server, shown: every other HTTP status, 401, 403, 404 and 500 included (a dev server's 404
+    at `/` is still one), and an HTTP/0.9 page. Unknown, shown as before: no reply (refused, an
+    empty close, out of time), a tunnel that couldn't be made, offline, and a TLS record
+    (0x15 or 0x16 first: an HTTPS-only server such as `vite --https`). The browser opens
+    `http://` only, so such a server didn't open before either; it keeps its row.
+  - A verdict belongs to the process's port (pid, port, dial address), per computer, kept
+    across reconnects while the lists stay: one port in two panes is asked once, and a dev
+    server that restarts under a new pid is asked again. It goes when no list holds that
+    port for that pid. An answer for a port that went, or for an older ask, is dropped.
+    Web and no-web are final; unknown is asked again once at the next new list of a pane
+    that holds the port (a read on a new connection or a `ports_changed`), so a server that
+    was still starting isn't hidden or stuck. Nothing asks on a timer.
+  - No jump. A new port is held, in no list and with no count, until its answer or 1.5 s,
+    whichever comes first; then it shows unless the answer was no web page. One wake, set
+    for the earliest hold, shows it; the globe counts shown rows only. A port that takes the
+    place of a shown row on the same port within a minute (a restart, Restart's own) isn't
+    held. While probes can't run (offline, no tunnels) a new port shows at once and is asked
+    at its next listing. After an update, every port is new once at the first launch.
+  - Cost. At most 2 asks run at once per computer, and only while it is online with tunnels
+    and synced; the rest wait in order. Debugger and service ports are left out by
+    `PortRules` first and never dialed. The asks don't go through `CallGate`, on cellular
+    either: the dial tunnel is separate from the sync's calls, and each ask is one small
+    request per new port. A test launch (`-autoOpen <label>`) asks only that session's ports.
 - **A machine's ports** (`Features/Ports/MachinePorts.swift`, `PortsGroup.swift`;
   [sidebar.md](sidebar.md), Ports): the globe button on its sidebar header, or on its heading in
   tab mode's session popover, lists them. The rows are `ServerConnection.portRows`: the web ports of the machine's local terminals in
@@ -1185,10 +1224,13 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
   resets the browser's connection. A block a new client ID can't use (after a long drop) is
   dropped and a new one made; a 4006 before any byte came back, even one that comes while the
   request is still going up, sends the request again, once, on a new block. A server that is full (`conflict`), a refused block and a block request that never left (the connection dropped) show one notice per browser.
+  A probe (see **Which ports show**) makes a block of its own the same way, without
+  `client_address`, and shows no notice.
 - **Cleanup.** Rex never removes a tunnel block. Every block made is remembered in UserDefaults,
   and a session where one is about to be made is marked first. On each sync of a server with
   remembered blocks or a mark, and before each `new_block`, the sweep lists the session's blocks
-  and closes every dial block with this phone's label that no open browser uses, whoever owns it.
+  and closes every dial block with this phone's label that no open browser or running probe
+  uses, whoever owns it.
   When the app goes to the background (not merely inactive), a background task begins at once,
   then `block.close` goes for the browser's block (it ends the open streams with 4000) before the
   listener and the connections close; back in front with the page still up, the phone listens on

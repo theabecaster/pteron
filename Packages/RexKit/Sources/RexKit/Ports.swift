@@ -81,8 +81,9 @@ public struct PortList: Equatable, Sendable {
         entries = byPort.values.map(\.entry).sorted { $0.port < $1.port }
     }
 
-    /// The ports a browser can open: every one except databases, mail, DNS, SSH, queues and
-    /// debuggers (`PortRules.isWeb`).
+    /// The ports a browser may open: every one except databases, mail, DNS, SSH, queues and
+    /// debuggers (`PortRules.isWeb`). The app then asks each one what it answers (`PortProbe`)
+    /// before it shows.
     public var webPorts: [PortEntry] { entries.filter { PortRules.isWeb($0) } }
 
     public func entry(_ port: Int) -> PortEntry? { entries.first { $0.port == port } }
@@ -98,6 +99,10 @@ public enum PortRules {
     /// Programs that never serve a web page, by process name.
     public static let serviceProcesses: Set<String> = ["postgres", "mysqld", "redis-server", "mongod", "sshd"]
 
+    /// The first filter, by number and program name only: a port that fails it is never shown
+    /// and never probed. One that passes may still be no web page (an editor plugin's WebSocket
+    /// server, say): the app asks it once, `GET /` through a dial tunnel, and hides it only on
+    /// positive evidence (`PortProbe`, `PortProbeBook`; docs/terminal.md, Ports).
     public static func isWeb(_ e: PortEntry) -> Bool {
         if debuggerPorts.contains(e.port) || servicePorts.contains(e.port) { return false }
         if let p = e.process?.lowercased(), serviceProcesses.contains(p) { return false }
