@@ -36,7 +36,8 @@ struct ProgramFocus: Equatable {
         /// The pane came to the front or left it.
         case changed
         /// The stream is current again (its fence came down). A report made before may never
-        /// have arrived, so a pane in front says so again.
+        /// have arrived (a parked stream drops what it had queued), so the pane says again
+        /// where it is, in front or not.
         case current
         /// The program turned focus reports on. It has been told nothing yet, so a pane in
         /// front says so.
@@ -60,8 +61,11 @@ struct ProgramFocus: Equatable {
         switch moment {
         case .changed:
             return front != said ? front : nil
-        case .current, .asked:
-            // In front: said, also when it was said before. Not in front: only what is owed.
+        case .current:
+            return front
+        case .asked:
+            // In front: said. Not in front: the program takes that for granted, unless it was
+            // told otherwise.
             if front { return true }
             return said ? false : nil
         }

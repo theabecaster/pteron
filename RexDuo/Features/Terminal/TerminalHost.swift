@@ -2154,7 +2154,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if !stoppingStream, sizing == .fit, serverSize != (claimedSize ?? fitGrid()) { scheduleFitCheck() }
             if !stoppingStream {
                 // A focus report dropped behind the fence goes now, ahead of any held keys, and
-                // a pane in front says so again: one made before may never have arrived.
+                // the pane says again where it is: a report made before may never have arrived.
                 term.sayFocus(.current)
                 PerfProbe.active?.caughtUp(self)  // PERF
             }

@@ -296,8 +296,8 @@ final class ProgramFocusHostTests: XCTestCase {
     // MARK: The fence
 
     /// A report counts as said when the stream takes it; whether it arrived is not known. So
-    /// each time the stream is current again, a pane in front says so again.
-    func testAPaneInFrontSaysFocusGainedAgainEachTimeItsFenceComesDown() async {
+    /// each time the stream is current again, the pane says again where it is.
+    func testAPaneSaysWhereItIsAgainEachTimeItsFenceComesDown() async {
         let (host, stream, spy) = await makeHost()
         host.isActive = true
         XCTAssertEqual(spy.sent, [Self.gained])
@@ -307,13 +307,30 @@ final class ProgramFocusHostTests: XCTestCase {
         stream.fence.reset()
         XCTAssertEqual(spy.sent, [Self.gained, Self.gained])
 
-        // A pane that is not in front, and whose program knows it, says nothing.
+        // A pane that is not in front says that again too.
         host.isActive = false
         XCTAssertEqual(spy.sent, [Self.gained, Self.gained, Self.lost])
         stream.stop()
         stream.start()
         stream.fence.reset()
-        XCTAssertEqual(spy.sent, [Self.gained, Self.gained, Self.lost])
+        XCTAssertEqual(spy.sent, [Self.gained, Self.gained, Self.lost, Self.lost])
+    }
+
+    /// A parked stream drops what it had queued, the report that the pane lost the focus with
+    /// it. A pane that comes back and is not the front pane says so again.
+    func testAPaneBackFromAParkThatIsNotInFrontSaysFocusLostAgain() async {
+        let (host, stream, spy) = await makeHost()
+        host.isActive = true
+        host.park()
+        XCTAssertEqual(spy.sent, [Self.gained, Self.lost])
+        XCTAssertFalse(stream.hasPendingInput, "the park dropped the queue")
+        // Another pane of its split is the active one when it comes back.
+        host.isActive = false
+        host.cameBackOnScreen()
+        XCTAssertTrue(stream.isFenced)
+        XCTAssertEqual(spy.sent, [Self.gained, Self.lost])
+        stream.fence.reset()
+        XCTAssertEqual(spy.sent, [Self.gained, Self.lost, Self.lost])
     }
 
     // MARK: Mode 1004

@@ -308,15 +308,25 @@ final class CatchUpFenceHostTests: XCTestCase {
         host.removeFromSuperview()
     }
 
-    func testNoFocusReportWhenTheProgramAlreadyKnows() {
+    func testAPaneThatIsNotInFrontSaysSoWhenTheFenceComesDown() {
         let (host, stream) = makeHost()
         host.term.feed(text: "\u{1b}[?1004h")
         host.term.core.sync()
-        // Not in front, as the program was last told: a fence that comes and goes says nothing.
+        // Not in front. Whether the program knows is not known: an earlier report may have
+        // been dropped with a parked stream's queue.
+        stream.start()
+        stream.fence.reset()
+        XCTAssertTrue(stream.hasPendingInput)
+        XCTAssertFalse(host.term.programFocus.said)
+        stream.stop()
+    }
+
+    func testNoFocusReportForAProgramThatNeverAsked() {
+        // In front or not, a fence that comes and goes says nothing.
+        let (host, stream) = makeHost()
         stream.start()
         stream.fence.reset()
         XCTAssertFalse(stream.hasPendingInput)
-        // A program that never asked is told nothing either, in front or not.
         let (other, plain) = makeHost()
         plain.start()
         bringToFront(other)

@@ -57,27 +57,29 @@ struct ProgramFocusTests {
         // Dropped: nobody calls `told`.
         #expect(focus.due(at: .changed) == true)
         #expect(focus.due(at: .current) == true)
-        // The pane left the front again before anything was said: nothing is owed.
+        // The pane left the front again before anything was said: no change is owed.
         _ = focus.set(front: false)
         #expect(focus.due(at: .changed) == nil)
-        #expect(focus.due(at: .current) == nil)
     }
 
-    @Test func aPaneInFrontSaysSoAgainWhenItsStreamIsCurrentAgain() {
+    @Test func aPaneSaysWhereItIsAgainWhenItsStreamIsCurrentAgain() {
         var focus = ProgramFocus()
         _ = focus.set(front: true)
         focus.told(true)
         #expect(focus.due(at: .current) == true, "the earlier report may never have arrived")
-        // Not in front: only a report still owed.
         _ = focus.set(front: false)
         #expect(focus.due(at: .current) == false)
         focus.told(false)
-        #expect(focus.due(at: .current) == nil)
+        #expect(focus.due(at: .current) == false, "nor the one that it left the front")
     }
 
     @Test func aProgramThatStartsToAskIsToldOnlyWhileItsPaneIsInFront() {
         var focus = ProgramFocus()
         #expect(focus.due(at: .asked) == nil)
+        // Told that it lost the focus before it stopped asking: that still stands.
+        focus.told(true)
+        #expect(focus.due(at: .asked) == false)
+        focus.told(false)
         _ = focus.set(front: true)
         // While it did not ask, the change counted as said.
         focus.told(true)
