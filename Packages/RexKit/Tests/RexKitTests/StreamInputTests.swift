@@ -17,6 +17,12 @@ final class StreamInputTests: XCTestCase {
         return (s, log)
     }
 
+    /// A yes or no that a test changes after a closure has it.
+    @MainActor
+    private final class Flag {
+        var on = true
+    }
+
     private func action(_ s: TerminalStream, _ name: String = "pane.clear") {
         s.perform(action: name, args: nil) { _ in }
     }
@@ -535,14 +541,14 @@ final class StreamInputTests: XCTestCase {
     func testSendOnceThatIsNoLongerWantedAtItsTurnIsDropped() async {
         let link = FakeLink()
         let (s, _) = stream(link)
-        var wanted = true
+        let wanted = Flag()
         var ended: [TerminalStream.Delivery] = []
         link.held = [Self.write]
         s.send(text: "a")
         _ = await eventually { link.waitingCount == 1 }
-        s.sendOnce(text: "C", still: { wanted }) { ended.append($0) }
+        s.sendOnce(text: "C", still: { wanted.on }) { ended.append($0) }
         s.send(text: "b")
-        wanted = false
+        wanted.on = false
         for _ in 0..<2 {
             _ = await eventually { link.waitingCount == 1 }
             link.release()
