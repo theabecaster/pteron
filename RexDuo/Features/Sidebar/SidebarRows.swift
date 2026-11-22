@@ -539,7 +539,9 @@ struct TabRowLabel: View {
         RoundedRectangle(cornerRadius: a == nil ? 5 : 9)
     }
 
-    static func tint(_ a: AgentKind?, _ theme: TermTheme) -> Color {
+    /// A color from the theme alone, so not tied to the main actor: `AgentGlyph.ink` reads it
+    /// from anywhere.
+    nonisolated static func tint(_ a: AgentKind?, _ theme: TermTheme) -> Color {
         switch a {
         case .claude: return Color(hex: "#d97757")
         case .codex: return theme.fg
