@@ -202,7 +202,8 @@ builds.
   traits and safe area), `tap:<column>,<row>` (a finger's tap on that cell of the screen, from 0,
   decided by the host as a real tap is; it logs `tap … keyboardUp= outcome=`), `away` (waits until
   the app has left the front and is active again; send it away with `xcrun simctl launch <id>
-  com.apple.Preferences` and bring it back with `xcrun simctl openurl <id> rexduo://open`),
+  com.apple.Preferences` and bring it back with `xcrun simctl launch <id> dev.abrahamgonzalez.rexduo`,
+  which leaves a running app as it is; `openurl` would put the system's "Open in" question over it),
   `reconnect` (starts the pane's stream over and waits until it is current again), and
   `<step>+<step>` (the steps with no pause between them: `away+tap:3,1` taps right after the
   return). Each step logs the
