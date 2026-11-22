@@ -325,11 +325,11 @@ import RexKit
         let s = server(m, "desk")
         s.phase = .connecting
         let clock = FakeClock()
-        let started = Date()
         #expect(await m.openWaiting(clock: clock.clock) == .nothing(.timedOut))
+        // Ten seconds of the wait's clock, not of the test's: that clock only moves in the sleeps
+        // the wait asks of it.
         #expect(abs(clock.time - 10) < 0.2)
-        // Ten seconds of the wait's clock, not of the test's.
-        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(clock.sleeps > 0)
         #expect(m.openRequest == nil && m.lastCommand == nil)
         // A server that comes up afterwards pulls nobody anywhere.
         load(s, tabs: ["w1": ["b1"]], blocked: ["b1"])

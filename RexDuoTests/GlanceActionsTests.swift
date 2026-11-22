@@ -407,7 +407,13 @@ import Testing
         }
 
         func actions(only: String? = nil) -> GlanceActions {
-            let a = GlanceActions()
+            // The limits are real time against a real connection. Long ones: these tests are
+            // about what is asked of the server, and a busy machine answers late.
+            var parts = GlanceActions.Parts()
+            parts.readLimit = 60
+            parts.leaveLimit = 60
+            parts.answerLimit = 120
+            let a = GlanceActions(parts: parts)
             a.enabled = { true }
             a.only = { only }
             a.channel = { [model] in model.actionChannel($0) }

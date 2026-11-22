@@ -749,6 +749,9 @@ final class ServerEventsTests: XCTestCase {
         for m in Self.metaReads { rig.fake.delay("\(Self.terminal).\(m)", seconds: 0.03) }
         rig.fake.delay("session.attach", seconds: 0.03)
         await rig.connect()
+        // The sync of the connect is over, however long it took: a sync asked for while one
+        // is under way only marks that one to run again, and reads nothing itself.
+        _ = await eventually(seconds: 60) { !rig.server.syncing }
         return rig
     }
 

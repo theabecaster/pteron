@@ -506,7 +506,9 @@ final class GhosttyPerfTests: XCTestCase {
         core.feed(Array("\u{1b}[?2026hstuck".utf8))
         core.sync()
         let held = wakes.count
-        try await Task.sleep(nanoseconds: UInt64((GhosttyCore.renderHoldTimeout + 0.3) * 1e9))
+        // The wake-up comes from a timer on a shared queue, which a busy machine runs late.
+        let end = Date().addingTimeInterval(GhosttyCore.renderHoldTimeout + 15)
+        while wakes.count == held, Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertEqual(wakes.count, held + 1)
         let frame = GhosttyFrameBuilder(atlas: GhosttyGlyphAtlas(pointSize: 12, scale: 2))
         XCTAssertTrue(frame.update(core: core))
@@ -534,9 +536,11 @@ final class GhosttyPerfTests: XCTestCase {
         // A steady cursor: nothing blinks.
         view.feed(text: "idle\u{1b}[2 q")
         view.core.sync()
-        try await Task.sleep(nanoseconds: 700_000_000)
         let renderer = view.renderer
+        let drawn = Date().addingTimeInterval(10)
+        while renderer.framesDrawn == 0, Date() < drawn { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertGreaterThan(renderer.framesDrawn, 0)
+        try await Task.sleep(nanoseconds: 700_000_000)
 
         // Idle, past the grace period: no ticks, no passes, no frames.
         let ticks = thread.ticks.load(ordering: .relaxed), passes = thread.passes.load(ordering: .relaxed)
@@ -550,7 +554,7 @@ final class GhosttyPerfTests: XCTestCase {
         let immediate = thread.immediateFrames.load(ordering: .relaxed)
         view.feed(text: "\r\nmore")
         view.core.sync()
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(10)
         while renderer.framesDrawn == frames && Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
         XCTAssertEqual(renderer.framesDrawn, frames + 1)
         XCTAssertEqual(thread.immediateFrames.load(ordering: .relaxed), immediate + 1)

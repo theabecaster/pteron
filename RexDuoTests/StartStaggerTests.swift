@@ -87,6 +87,11 @@ import Testing
     @Test func afterASecondTheOthersStartOneAtATime() async throws {
         let (m, waits, started) = try model()
         m.sceneVisible()
+        // The resume below tries the first computer's address for real, and nothing listens
+        // there. A first computer that failed lets the others start (tested below by its
+        // report), whenever that refusal comes: here its report is kept out, so that only the
+        // wait starts them.
+        for s in m.servers { s.linkChanged = nil }
         // The launch's first `.active` phase resumes the servers: those that wait keep waiting.
         m.foregroundResumed()
         await turn()

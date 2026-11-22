@@ -1557,6 +1557,8 @@ struct NotificationChoiceTests {
         #expect(s.prefs.notificationsOff == [other] && s.prefs.helperSeen.isEmpty)
         await s.world.eventually { s.world.store.value?.servers[server.uuidString] == nil }
         #expect(s.prefs.helpersToTell.isEmpty)
+        // The secret is taken back after the store has let it go.
+        await s.world.eventually { s.gateway.lines.last == "DELETE /v1/devices/\(device)/secrets/\(secret)" }
         #expect(s.gateway.lines.last == "DELETE /v1/devices/\(device)/secrets/\(secret)")
         // The other computer's secret and the device stay.
         #expect(s.gateway.devices[device]?.secrets.count == 1 && s.world.store.value?.servers[other.uuidString]?.pushSecret != nil)

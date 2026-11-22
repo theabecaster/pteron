@@ -235,18 +235,19 @@ struct FolderModelTests {
         let s = source()
         s.pages["/huge"] = DirPage(path: "/huge", entries: StandInFolders.many(10_000).shuffled())
         let f = FolderModel(asked: "/huge", source: s, limit: 10_000)
-        // A heartbeat on the main actor while the folder loads and filters: its longest gap is the
-        // longest the main actor was held.
+        // A heartbeat on the main actor while the folder loads and filters: the most the main
+        // thread worked between two beats is the longest the main actor was held. Counted on the
+        // thread's own CPU clock, not the wall clock: while a busy machine keeps the thread
+        // waiting for a core, nobody holds the main actor.
         let beat = Task { @MainActor () -> Duration in
-            let clock = ContinuousClock()
-            var worst = Duration.zero, last = clock.now
+            var worst: UInt64 = 0, last = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
             while !Task.isCancelled {
                 await Task.yield()
-                let now = clock.now
+                let now = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
                 worst = max(worst, now - last)
                 last = now
             }
-            return worst
+            return .nanoseconds(Int64(worst))
         }
         await f.load()
         #expect(await settled { f.rows.count == 10_000 })

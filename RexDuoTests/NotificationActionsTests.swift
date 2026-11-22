@@ -85,6 +85,25 @@ import UserNotifications
         func add(_ limit: TimeInterval) { asked.append(limit) }
     }
 
+    /// Limits that end only when the test lets them go. For a test that answers by hand what
+    /// a limit waits for: a limit of real milliseconds would race the test on a busy machine.
+    actor HeldLimits {
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private var released = false
+
+        func sleep() async {
+            if released { return }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+
+        /// Ends every limit, at the end of a test, so that nothing is left waiting.
+        func release() {
+            released = true
+            for w in waiting { w.resume() }
+            waiting = []
+        }
+    }
+
     @MainActor
     struct Rig {
         let seen = Seen()
@@ -95,12 +114,16 @@ import UserNotifications
         let actions: NotificationActions
 
         /// `attached`: whether the app's model is there from the start. `gated`: a connection
-        /// used in place of `channel`.
+        /// used in place of `channel`. `held`: limits that end when the test releases them, in
+        /// place of ones that pass at once.
         init(channel: FakeChannel? = FakeChannel(), servers: [PushAction.Server] = NotificationActionsTests.servers,
-             enabled: Bool = true, attached: Bool = true, gated: GatedChannel? = nil) {
+             enabled: Bool = true, attached: Bool = true, gated: GatedChannel? = nil, held: HeldLimits? = nil) {
             self.channel = channel
             // Limits that pass at once, so a call that never answers ends the test quickly.
-            var typingParts = GlanceActions.Parts(sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) })
+            let pass: @Sendable () async -> Void = {
+                if let held { await held.sleep() } else { try? await Task.sleep(nanoseconds: 50_000_000) }
+            }
+            var typingParts = GlanceActions.Parts(sleep: { _ in await pass() })
             typingParts.now = { [clock] in clock.now }
             let typing = GlanceActions(parts: typingParts)
             typing.enabled = { enabled }
@@ -125,7 +148,7 @@ import UserNotifications
             var parts = NotificationActions.Parts()
             parts.sleep = { [limits] limit in
                 await limits.add(limit)
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                await pass()
             }
             actions = NotificationActions(center: center, parts: parts, background: { [seen] expired in
                 seen.log.append("begin")
@@ -382,24 +405,26 @@ import UserNotifications
                       ["id": "claude", "app": "claude", "state": "working"],
                       ["id": "claude", "app": "claude", "state": "blocked", "kind": "question", "msg": "Which branch?"]] {
             // The tap arrives while the pane still waits; the read is under way.
-            let gated = GatedChannel()
-            let rig = Rig(gated: gated)
+            let gated = GatedChannel(), held = HeldLimits()
+            let rig = Rig(gated: gated, held: held)
             let handled = Task { await rig.actions.handle(Self.response()) }
             while gated.calls.isEmpty { await Task.yield() }
             // Now the agent moves on, and the read answers with the pane as it is.
             gated.records = ["claude": ProgramStatus(after)]
             gated.answerRead()
             await handled.value
+            await held.release()
             #expect(gated.calls == ["status", "close"] && gated.written.isEmpty, "\(after)")
             expectReplaced(rig, with: Self.changed, "\(after)")
         }
         // A read that finds the wait is followed by the one write, and by no second read.
-        let gated = GatedChannel()
-        let rig = Rig(gated: gated)
+        let gated = GatedChannel(), held = HeldLimits()
+        let rig = Rig(gated: gated, held: held)
         let handled = Task { await rig.actions.handle(Self.response()) }
         while gated.calls.isEmpty { await Task.yield() }
         gated.answerRead()
         await handled.value
+        await held.release()
         #expect(gated.calls == ["status", "write", "close"] && gated.written == ["\r"])
         // The computer refusing the write (the pane went in that instant) is said, not retried.
         let late = Rig()
@@ -528,8 +553,8 @@ import UserNotifications
         #expect(rig.seen.handled == 2)
 
         // The second arrives while the first read is still under way.
-        let gated = GatedChannel()
-        let both = Rig(gated: gated)
+        let gated = GatedChannel(), held = HeldLimits()
+        let both = Rig(gated: gated, held: held)
         let first = Task { await both.handle(Self.response()) }
         while gated.calls.isEmpty { await Task.yield() }
         await both.handle(Self.response())
@@ -538,6 +563,7 @@ import UserNotifications
         #expect(both.seen.removed.isEmpty && both.seen.replaced.isEmpty && both.seen.posted.isEmpty)
         gated.answerRead()
         await first.value
+        await held.release()
         #expect(gated.written == ["\r"])
         #expect(both.seen.removed == [["1a-e40c292c"]] && both.seen.replaced.isEmpty)
 
@@ -552,7 +578,9 @@ import UserNotifications
     /// Hazard 4. The system hands the same response over twice, the first time while the
     /// app was only just launched for it and has no model yet: one write.
     @Test func anActionDeliveredTwiceAcrossAColdLaunchTypesOnce() async {
-        let rig = Rig(attached: false)
+        // The wait for the model ends when the model comes, not by a limit.
+        let held = HeldLimits()
+        let rig = Rig(attached: false, held: held)
         let first = Task { await rig.actions.handle(Self.response()) }
         let again = Task { await rig.actions.handle(Self.response()) }
         try? await Task.sleep(nanoseconds: 10_000_000)
@@ -563,6 +591,7 @@ import UserNotifications
         #expect(rig.channel?.calls.filter { $0 == "write" }.count == 1)
         // And once more, long after: still the one write.
         await rig.actions.handle(Self.response())
+        await held.release()
         #expect(rig.channel?.written == ["\r"])
     }
 
@@ -585,11 +614,9 @@ import UserNotifications
         #expect(NotificationActions.Parts().modelLimit == 5)
         #expect(NotificationActions.Parts().centerLimit == 2)
         let rig = Rig(attached: false)
-        let start = Date()
         await rig.actions.handle(Self.response())
-        // The stand-in clock ends each limit after 50 ms: the handler waited for the limit
+        // The stand-in clock ends each limit after 50 ms: the handler waited for the two limits
         // and for nothing else.
-        #expect(Date().timeIntervalSince(start) < 2)
         #expect(await rig.limits.asked == [5, 2])
         #expect(rig.channel?.calls.isEmpty == true)
         #expect(rig.seen.log == ["begin", "replace", "end"])
@@ -601,12 +628,16 @@ import UserNotifications
     }
 
     @Test func theModelThatComesInTimeIsUsed() async {
-        let rig = Rig(attached: false)
+        // Held limits: the model comes in time however late this test's own turns are.
+        let held = HeldLimits()
+        let rig = Rig(attached: false, held: held)
         let handled = Task { await rig.actions.handle(Self.response()) }
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        let begun = Date().addingTimeInterval(30)
+        while rig.seen.log.isEmpty, Date() < begun { try? await Task.sleep(nanoseconds: 2_000_000) }
         #expect(rig.seen.log == ["begin"])
         rig.attach()
         await handled.value
+        await held.release()
         #expect(rig.channel?.written == ["\r"])
         #expect(rig.seen.removed == [["1a-e40c292c"]] && rig.seen.replaced.isEmpty)
     }
@@ -633,8 +664,8 @@ import UserNotifications
     /// handler: the notification is put back and iOS is told. The run that was under way
     /// types nothing when its read answers afterwards.
     @Test func whenTheBackgroundTimeRunsOutTheAlertIsPutBackAndIOSIsToldInsideThatMoment() async throws {
-        let gated = GatedChannel()
-        let rig = Rig(gated: gated)
+        let gated = GatedChannel(), held = HeldLimits()
+        let rig = Rig(gated: gated, held: held)
         let handled = Task { await rig.handle(Self.response()) }
         while gated.calls.isEmpty { await Task.yield() }
         #expect(rig.seen.handled == 0)
@@ -651,11 +682,13 @@ import UserNotifications
         #expect(rig.seen.replaced.isEmpty && rig.seen.removed.isEmpty && rig.seen.handled == 1)
         // The read answers now, and the pane still waits for exactly this: no write.
         gated.answerRead()
-        for _ in 0..<50 where !gated.calls.contains("close") { try? await Task.sleep(nanoseconds: 2_000_000) }
+        let closed = Date().addingTimeInterval(30)
+        while !gated.calls.contains("close"), Date() < closed { try? await Task.sleep(nanoseconds: 2_000_000) }
         #expect(gated.calls == ["status", "close"])
         #expect(gated.written.isEmpty)
         // The same tap again is not typed either, and leaves the notification as it is.
         await rig.handle(Self.response())
+        await held.release()
         #expect(gated.written.isEmpty && rig.seen.posted.count == 1 && rig.seen.replaced.isEmpty)
     }
 

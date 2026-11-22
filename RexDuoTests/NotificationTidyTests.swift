@@ -140,11 +140,21 @@ struct NotificationTidyTests {
         }
     }
 
+    @MainActor
     private struct Rig {
         var center: Center
         var clock: TestClock
         var tidier: NotificationTidier
 
+        /// Waits for what a pass does, 30 s at most: a pass takes a few turns of the main
+        /// actor, which a busy machine gives late.
+        func until(_ done: () -> Bool) async {
+            let end = Date().addingTimeInterval(30)
+            while !done(), Date() < end { try? await Task.sleep(nanoseconds: 2_000_000) }
+        }
+
+        /// Long enough for a pass that was going to do more to have done it. Only for what
+        /// must not happen.
         func settle() async {
             for _ in 0..<20 { await Task.yield() }
             try? await Task.sleep(nanoseconds: 20_000_000)
@@ -172,7 +182,7 @@ struct NotificationTidyTests {
         let r = rig(waiting: ["block:b"])
         r.center.delivered = [note("a", block: "block:a"), note("b", block: "block:b"), note("n", "NOTICE", block: "block:a")]
         r.tidier.becameActive()
-        await r.settle()
+        await r.until { !r.center.removed.isEmpty }
         #expect(r.center.removed == [["a"]])
         #expect(r.center.delivered.map(\.identifier) == ["b", "n"])
     }
@@ -181,6 +191,7 @@ struct NotificationTidyTests {
         let r = rig(waiting: ["block:a"])
         r.center.delivered = [note("a")]
         r.tidier.becameActive()
+        await r.until { r.center.reads == 1 }
         await r.settle()
         #expect(r.center.reads == 1 && r.center.removed.isEmpty)
     }
@@ -188,15 +199,17 @@ struct NotificationTidyTests {
     @Test func manyRequestsInOneSecondAreOneMorePass() async {
         let r = rig()
         r.tidier.becameActive()
+        await r.until { r.center.reads == 1 }
         await r.settle()
         #expect(r.center.reads == 1)
         for _ in 0..<50 { r.tidier.request() }
+        await r.until { !r.clock.sleeps.isEmpty }
         await r.settle()
         // Held until a second after the first pass.
         #expect(r.center.reads == 1 && r.clock.sleeps == [1])
         r.center.delivered = [note("a")]
         r.clock.advance(by: 1)
-        await r.settle()
+        await r.until { !r.center.removed.isEmpty }
         #expect(r.center.reads == 2 && r.center.removed == [["a"]])
         // Nothing was asked for since: no third pass.
         r.clock.advance(by: 10)
@@ -207,16 +220,18 @@ struct NotificationTidyTests {
     @Test func aRequestAfterAQuietSecondRunsAtOnce() async {
         let r = rig()
         r.tidier.becameActive()
+        await r.until { r.center.reads == 1 }
         await r.settle()
         r.clock.advance(by: 3)
         r.tidier.request()
-        await r.settle()
+        await r.until { r.center.reads == 2 }
         #expect(r.center.reads == 2 && r.clock.sleeps.isEmpty)
     }
 
     @Test func nothingIsRemovedOnceTheAppLeftTheFront() async {
         let r = rig()
         r.tidier.becameActive()
+        await r.until { r.center.reads == 1 }
         await r.settle()
         r.center.delivered = [note("a")]
         r.tidier.request()
@@ -229,7 +244,7 @@ struct NotificationTidyTests {
         // Back in front, it is removed.
         r.clock.advance(by: 5)
         r.tidier.becameActive()
-        await r.settle()
+        await r.until { !r.center.removed.isEmpty }
         #expect(r.center.removed == [["a"]])
     }
 }
