@@ -234,6 +234,10 @@ is not a cold start.
   status 1000 close (the server keeps the stream for its resume window, 60 s), the input queue
   is dropped (nothing sent is sent again), the drawables are freed, find closes, and no timer or
   ping runs. A parked pane uses no CPU and no network.
+- **The 0.5 s wait holds the host** (`TerminalHost.scheduleStop`): its timer on the main queue
+  keeps a host that left its window alive until it has run, so that the stream is parked or
+  stopped even when nothing else owns the host. A test that takes a host out of a window sees
+  it freed only after the main queue has run that long.
 - **Coming back**: the same host is on screen in its first frame with its last screen and no
   loader. The fence goes up, and one RESUME starts at once, with no ticket and no control
   connection; only the missed bytes arrive. Typed on an idle pane, keys arrive as the fence

@@ -48,7 +48,8 @@
 # long a title takes to show during a flood of progress reports, an app test in the simulator,
 # a Debug build of its own the first time).
 #
-# Environment: BENCH_DD (derived data, default build/dd-bench).
+# Environment: BENCH_DD (derived data, default build/dd-bench). BENCH_LOAD_FLOOR (default 10):
+# the runs start once the Mac's 1-minute load is under it, or after 300 s.
 set -euo pipefail
 
 self=$0   # inside a function, $0 is the function's name
@@ -104,7 +105,16 @@ fi
 app="$dd/Build/Products/Release-iphonesimulator/RexDuo.app"
 [[ -d $app ]] || { echo "no app at $app" >&2; exit 1; }
 
+# The simulator boots after the build, never during it: a first boot takes the Mac's 1-minute
+# load past 100 for about a minute, and on top of a build it passed 240.
 xcrun simctl bootstatus "$sim" -b >/dev/null
+# The numbers are only good on a quiet Mac: wait for the 1-minute load to fall under the floor,
+# 300 s at most, and go on either way. The load at the start is printed with the wait.
+floor=${BENCH_LOAD_FLOOR:-10}
+load1() { sysctl -n vm.loadavg | awk '{print $2}'; }
+waited=0
+while (( waited < 300 )) && (( $(load1) >= floor )); do sleep 10; (( waited += 10 )); done
+echo "load $(load1) after waiting $waited s for it to fall under $floor" >&2
 xcrun simctl install "$sim" "$app"
 node "$here/gen.mjs" "$out/scenarios" --cols $cols --rows $rows >&2
 # `predict` replays recordings kept with the tests: a pane's stream after `seq 1 3000` (its

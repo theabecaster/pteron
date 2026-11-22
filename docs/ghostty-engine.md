@@ -399,6 +399,10 @@ scripts/bench/run.sh <simulator id> --fresh --runs 3 [--live zz-bench]
   exits 1 if a budget is passed, a run failed or a scenario has no result.
 - Run it at normal priority on an otherwise idle machine, never under `taskpolicy -b`: at
   background priority the main-thread times grow past their budgets with no change in the code.
+- It boots the simulator after the build, never during it: a simulator's first boot takes the
+  Mac's 1-minute load past 100 for about a minute. Then it waits until that load is under
+  `BENCH_LOAD_FLOOR` (default 10), checking every 10 s for 300 s at most, prints the load and
+  the wait, and goes on either way.
 - Results: `build/bench/results/<scenario>__<run>.json`, one file per run.
   `node scripts/bench/report.mjs build/bench/results` prints and checks the report again.
 - Resumable: a run whose file exists is skipped, so the same command without `--fresh` goes on
