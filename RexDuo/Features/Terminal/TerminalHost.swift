@@ -1479,6 +1479,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         stream.park()
         stoppingStream = false
         keptBytes = term.core.memoryBytes
+        term.core.dropFrameEcho()
         term.releaseDrawables()
         files?.close()
         ports?.unwatch()
@@ -1491,6 +1492,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func warm() {
         guard !isWarm, !isParked else { return }
         isWarm = true
+        term.core.dropFrameEcho()
         keptBytes = term.core.memoryBytes
         stopKeyRepeats()
         closeFind(giveBack: false)

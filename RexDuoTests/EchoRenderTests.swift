@@ -250,6 +250,54 @@ final class EchoRenderTests: XCTestCase {
         XCTAssertTrue(frame.echoGlyphs.isEmpty, "only")
     }
 
+    /// A hold keeps the rows of the moment it began. The guesses kept with them are of that
+    /// moment too, not the last drawn frame's: a guess confirmed since is not drawn a second
+    /// time over the character that confirmed it.
+    func testAHoldTakesTheGuessesOfTheMomentItBeginsNotTheLastFramesGuesses() {
+        let pane = EchoPane()
+        pane.confirmed("l")
+        pane.type("s")
+        let frame = builder()
+        _ = frame.update(core: pane.core)
+        XCTAssertEqual(frame.echoGlyphs.map { Int($0.col) }, [3], "the last drawn frame shows the guess")
+        // The echo arrives and no frame is drawn; then the program begins a hold.
+        pane.server("s")
+        pane.server("\u{1b}[?2026h!")
+        _ = frame.update(core: pane.core)
+        XCTAssertEqual(columns(frame, row: 0), [0, 2, 3], "the held rows show the echoed character")
+        XCTAssertTrue(frame.echoGlyphs.isEmpty, "and no guess is drawn over it")
+        pane.server("\u{1b}[?2026l")
+    }
+
+    /// While a pane's stream catches up its screen may be behind the program: the held frame
+    /// carries no guess, whatever the frame before it showed.
+    func testTheCatchUpHoldDrawsNoGuess() {
+        let pane = EchoPane()
+        pane.confirmed("l")
+        pane.type("s")
+        let frame = builder()
+        _ = frame.update(core: pane.core)
+        XCTAssertEqual(frame.echoGlyphs.map { Int($0.col) }, [3])
+        pane.core.setCatchUpHold(true)
+        _ = frame.update(core: pane.core)
+        XCTAssertTrue(frame.echoGlyphs.isEmpty, "held: no guess over a screen that may be behind")
+        XCTAssertEqual(columns(frame, row: 0), [0, 2])
+        pane.core.setCatchUpHold(false)
+    }
+
+    /// A pane that leaves the screen takes no guess with it into the frame it shows when it
+    /// comes back and is held.
+    func testAPaneThatLeftTheScreenComesBackHeldWithoutItsGuess() {
+        let pane = EchoPane()
+        pane.confirmed("l")
+        pane.type("s")
+        let frame = builder()
+        _ = frame.update(core: pane.core)
+        XCTAssertNotNil(pane.core.frameEcho)
+        pane.core.dropFrameEcho()
+        XCTAssertNil(pane.core.frameEcho)
+    }
+
     func testAScrolledViewportDrawsNoGuess() {
         let pane = EchoPane(before: (1...12).map { "\($0)\r\n" }.joined())
         pane.confirmed("l")

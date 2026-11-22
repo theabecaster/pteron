@@ -148,7 +148,8 @@ extension GhosttyCore {
     /// After a slice was parsed into `t` (and judged, at the end of a drain batch). Only called
     /// while a predictor exists. Returns true when the overlay changed.
     func echoAfterSlice(_ t: GhosttyTerminal, batchEnd: Bool, events: inout [GhosttyEchoEvent]) -> Bool {
-        guard let p = echo.predictor else { return false }
+        // Nothing tracked and nothing drawn: output is not looked at (no grid is made).
+        guard let p = echo.predictor, !p.isIdle else { return false }
         let began = EchoProbe.active != nil ? EchoProbe.clock() : 0  // PERF
         let grid = GhosttyEchoGrid(t, marks: promptWatch.marks)
         if batchEnd { p.batchEnd(grid: grid, now: echo.now) } else { p.slice(grid: grid, now: echo.now) }

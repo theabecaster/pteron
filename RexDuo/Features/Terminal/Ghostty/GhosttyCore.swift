@@ -753,6 +753,11 @@ final class GhosttyCore: @unchecked Sendable {
             // hold begins. Nothing after it has been processed yet.
             ghostty_render_state_update(rs, t)
             holdStarted = CACurrentMediaTime()
+            // The guesses of the frame that is kept, from the same moment as its rows: not the
+            // last drawn frame's, which may be of keys since confirmed, cleared or never sent.
+            var atBottom = false
+            ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &atBottom)
+            frameEcho = atBottom ? echoPublished : nil
         }
         held = nowHeld
         // The terminal has no clock. Wake the renderer after the limit so it can end a hold the
@@ -803,6 +808,9 @@ final class GhosttyCore: @unchecked Sendable {
             stateLock.lock()
             // The frame to keep is the terminal as it is now, drawn or not.
             if !catchUpHeld, !held, let rs = renderState, let t = terminal { ghostty_render_state_update(rs, t) }
+            // The screen may be behind the program while the stream catches up: no guess is
+            // drawn over it, whatever the last frame showed.
+            frameEcho = nil
             catchUpHeld = true
             catchUpStarted = CACurrentMediaTime()
             catchUpSerial += 1
@@ -824,6 +832,14 @@ final class GhosttyCore: @unchecked Sendable {
             stateLock.unlock()
             if was { onDirty?() }
         }
+    }
+
+    /// The pane leaves the screen (parked or kept warm): the frame it shows when it comes back
+    /// carries no guess from before. Any thread.
+    func dropFrameEcho() {
+        stateLock.lock()
+        frameEcho = nil
+        stateLock.unlock()
     }
 
     /// The host's hold is on (and not past its limit). For tests.
