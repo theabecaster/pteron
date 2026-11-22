@@ -66,6 +66,34 @@ final class TerminalTapTests: XCTestCase {
                                          .focus(clearsSelection: true), .dismissSelection, .engineUsed, .pasteMenu, .nothing]
         XCTAssertTrue(all.allSatisfy { !$0.isForProgram })
         XCTAssertTrue(TerminalTapOutcome.programClick.isForProgram)
+        XCTAssertTrue(TerminalTapOutcome.programClickThenKeyboard.isForProgram)
+    }
+
+    /// Step 3 on the active pane: with the keyboard down, a tap in a program that tracks the
+    /// mouse is a click, and the keyboard follows it.
+    func testWithTheKeyboardDownATapOnTheActivePaneIsAClickInAMouseProgram() {
+        let down = Facts(keyboardUp: false, active: true)
+        XCTAssertEqual(decide(down, mouse: true).outcome, .programClickThenKeyboard)
+        XCTAssertEqual(decide(down, mouse: true).asked, ["link", "mouse"], "no prompt move, no menu")
+        // A link under the finger still wins, and the keyboard stays down.
+        XCTAssertEqual(decide(down, link: true, mouse: true).outcome, .engineUsed)
+        XCTAssertEqual(decide(down, link: true, mouse: true).asked, ["link"])
+        // A program that does not track the mouse: the tap focuses, as it always did.
+        XCTAssertEqual(decide(down, engine: true, cursor: true).outcome, .focus(clearsSelection: false))
+        // A pane that is not the active one is only made active and focused.
+        XCTAssertEqual(decide(Facts(keyboardUp: false), mouse: true).outcome, .focus(clearsSelection: false))
+        XCTAssertEqual(decide(Facts(keyboardUp: false), mouse: true).asked, ["link"], "the mouse mode is not even read")
+        // VoiceOver: a tap only focuses.
+        XCTAssertEqual(decide(Facts(keyboardUp: false, active: true, voiceOver: true), mouse: true).outcome, .focus(clearsSelection: false))
+        // Shift, and a tap that clears a selection, keep the tap from the program.
+        XCTAssertEqual(decide(Facts(keyboardUp: false, shift: true, active: true), mouse: true).outcome, .focus(clearsSelection: false))
+        XCTAssertEqual(decide(Facts(keyboardUp: false, shift: true, active: true), mouse: true).asked, [])
+        XCTAssertEqual(decide(Facts(keyboardUp: false, hadSelection: true, active: true), mouse: true).outcome, .focus(clearsSelection: true))
+        // A tap that catches a scroll does nothing, and the second tap of a double tap selects.
+        XCTAssertEqual(decide(Facts(keyboardUp: false, stopsScroll: true, active: true), mouse: true).outcome, .nothing)
+        XCTAssertEqual(decide(Facts(tapCount: 2, keyboardUp: false, active: true), mouse: true).outcome, .select(line: false))
+        // With the keyboard up nothing changed: VoiceOver or not, active or not.
+        XCTAssertEqual(decide(Facts(active: true, voiceOver: true), mouse: true).outcome, .programClick)
     }
 
     func testTheEngineAndTheTerminalAreAskedOnlyWhenTheTapGetsThatFar() {
@@ -107,17 +135,117 @@ final class TerminalTapTests: XCTestCase {
 
     private let mouseProgram = "\u{1b}[?1000h\u{1b}[?1006h"
 
-    func testTheTapThatBringsTheKeyboardIsNeverAClickForAMouseProgram() {
-        let (host, spy) = makeHost(mouseProgram + "menu")
+    private func show(_ bytes: [UInt8]) -> String { String(decoding: bytes, as: UTF8.self) }
+
+    /// The cell under `point`, 1-based, as a mouse report names it.
+    private func cell(_ host: TerminalHost, _ point: CGPoint) -> (col: Int, row: Int) {
+        let size = host.term.cellSize
+        return (Int(point.x / size.width) + 1, Int(point.y / size.height) + 1)
+    }
+
+    func testWithTheKeyboardDownATapOnTheActivePaneClicksOnce() {
+        let (host, spy) = makeHost(mouseProgram + "\u{1b}[?1004h" + "menu")
+        host.isActive = true
         let point = CGPoint(x: 20, y: 20)
-        // The suspected defect: the focusing tap reached a program that tracks the mouse.
-        XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .focus(clearsSelection: false))
-        XCTAssertEqual(spy.sent, [], "no click for the tap that only focused")
-        // And nothing is left behind to eat the next tap: a second tap far away, at once, clicks.
+        let at = cell(host, point)
+        XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .programClickThenKeyboard)
+        // Press and release in one write, and nothing else: no focus report goes with a tap.
+        XCTAssertEqual(spy.sent.map(show), ["\u{1b}[<0;\(at.col);\(at.row)M\u{1b}[<0;\(at.col);\(at.row)m"])
+        // A second tap far away, with the keyboard up by now, clicks as before.
         let next = CGPoint(x: 200, y: 100)
         XCTAssertEqual(host.tap(at: next, shift: false, keyboardUp: true, hadSelection: false), .programClick)
+        XCTAssertEqual(spy.sent.count, 2)
+    }
+
+    func testTheClickOfAProgramWithoutSGRReportsIsTheLegacyOne() {
+        // Mode 1000 alone: `ESC [ M`, then the button, the column and the row, each plus 32.
+        let (host, spy) = makeHost("\u{1b}[?1000h")
+        host.isActive = true
+        let point = CGPoint(x: 20, y: 20)
+        let at = cell(host, point)
+        XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .programClickThenKeyboard)
+        let press: [UInt8] = [0x1b, 0x5b, 0x4d, 32, UInt8(32 + at.col), UInt8(32 + at.row)]
+        let release: [UInt8] = [0x1b, 0x5b, 0x4d, 35, UInt8(32 + at.col), UInt8(32 + at.row)]
+        XCTAssertEqual(spy.sent, [press + release])
+    }
+
+    func testWithTheKeyboardDownOnlyTheActivePanesTapIsAClick() {
+        let point = CGPoint(x: 20, y: 20)
+        // A pane that is not the active one: the tap makes it active and focuses it.
+        let (other, otherSpy) = makeHost(mouseProgram + "menu")
+        var focused = 0
+        other.onFocus = { focused += 1 }
+        XCTAssertEqual(other.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .focus(clearsSelection: false))
+        XCTAssertEqual(focused, 1)
+        XCTAssertEqual(otherSpy.sent, [], "no click for the tap that made the pane the active one")
+        // VoiceOver: a tap only focuses.
+        let (spoken, spokenSpy) = makeHost(mouseProgram + "menu")
+        spoken.isActive = true
+        spoken.voiceOver = { true }
+        XCTAssertEqual(spoken.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .focus(clearsSelection: false))
+        XCTAssertEqual(spokenSpy.sent, [])
+        // A program that does not track the mouse.
+        let (shell, shellSpy) = makeHost("$ ")
+        shell.isActive = true
+        XCTAssertEqual(shell.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .focus(clearsSelection: false))
+        XCTAssertEqual(shellSpy.sent, [])
+    }
+
+    func testWithTheKeyboardDownShiftASelectionAndACaughtScrollKeepTheTapFromTheProgram() {
+        let (host, spy) = makeHost(mouseProgram + "some words here")
+        host.isActive = true
+        let point = CGPoint(x: 200, y: 100)
+        XCTAssertEqual(host.tap(at: point, shift: true, keyboardUp: false, hadSelection: false), .focus(clearsSelection: false))
+        XCTAssertEqual(host.tap(at: CGPoint(x: 20, y: 60), shift: false, keyboardUp: false, hadSelection: false, stopsScroll: true), .nothing)
+        host.term.beginSelection(at: CGPoint(x: 10, y: 8), word: true)
+        host.term.endSelectionDrag()
+        XCTAssertTrue(host.term.hasActiveSelection)
+        XCTAssertEqual(host.tap(at: CGPoint(x: 120, y: 30), shift: false, keyboardUp: false, hadSelection: true), .focus(clearsSelection: true))
+        XCTAssertFalse(host.term.hasActiveSelection)
+        XCTAssertEqual(spy.sent, [])
+    }
+
+    /// A double tap with the keyboard down: the first tap clicks, the second selects the word.
+    func testWithTheKeyboardDownADoubleTapClicksOnceAndSelects() {
+        let (host, spy) = makeHost(mouseProgram + "some words here")
+        host.isActive = true
+        let size = host.term.cellSize
+        let point = CGPoint(x: size.width * 6.5, y: size.height * 0.5)
+        XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .programClickThenKeyboard)
+        XCTAssertEqual(host.tap(at: point, shift: false, keyboardUp: false, hadSelection: false), .select(line: false))
+        XCTAssertEqual(spy.sent.count, 1, "only the first tap clicked")
+        XCTAssertEqual(host.term.selectedText, "words")
+    }
+
+    /// A row of the scrollback is no place in the program: the tap makes no click, and what
+    /// waits for the click hears that none went.
+    func testATapOnARowOfTheScrollbackSendsNothing() {
+        let lines = (1...40).map { "\($0) line\r\n" }.joined()
+        let (host, spy) = makeHost(lines + mouseProgram)
+        let view = host.term
+        view.scroller.jump(.lines(-4))
+        view.core.sync()
+        _ = view.renderer.frame.update(core: view.core)
+        view.scroller.apply(view.core.scroll.snapshot)
+        XCTAssertFalse(view.core.scroll.snapshot.active)
+        var heard: [Bool] = []
+        view.sendClickToProgram(at: CGPoint(x: 20, y: view.cellSize.height * 0.5)) { heard.append($0) }
+        XCTAssertEqual(heard, [false])
+        XCTAssertEqual(spy.sent, [])
+        // A row of the live screen below it clicks.
+        view.sendClickToProgram(at: CGPoint(x: 20, y: view.cellSize.height * 6.5)) { heard.append($0) }
+        XCTAssertEqual(heard, [false, true])
         XCTAssertEqual(spy.sent.count, 1)
-        XCTAssertTrue(spy.sent[0].starts(with: Array("\u{1b}[<0;".utf8)), "an SGR left press")
+    }
+
+    /// A click is not typing on the line the keyboard mirrors: the mirror starts over.
+    func testAClickResetsTheKeyboardsMirroredInput() {
+        let (host, spy) = makeHost(mouseProgram)
+        host.term.insertText("ab")
+        XCTAssertTrue(host.term.hasText)
+        host.term.sendClickToProgram(at: CGPoint(x: 20, y: 20))
+        XCTAssertFalse(host.term.hasText)
+        XCTAssertEqual(spy.sent.count, 2, "the typed text and the click")
     }
 
     func testTheEnginesOwnTapNeverFiresUnderAHost() {

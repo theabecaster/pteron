@@ -182,9 +182,28 @@ from a program state the user has not seen.
   tap or a drag makes (`engineSendReport`, `TerminalStream.send(report:)`), silently; server
   actions bound to keys, forwarded keys, palette runs and Insert Path, with the notice;
   `sendOnce` (the watch) is told it never left.
-- **Made up for when it comes down**: the focus report. A program that asked for focus reports
-  and was last told otherwise learns that the pane has the keyboard, ahead of any held keys
-  (`GhosttyTerminalView.sayFocus`).
+- **Said again when it comes down**: the focus report. A program that asked for focus reports
+  (mode 1004) is told where its pane is, in front or not, ahead of any held keys
+  (`GhosttyTerminalView.sayFocus`): a report made before may never have arrived.
+- **A program's focus is the front pane's** (`PaneFront`, `ProgramFocus`), not the keyboard's.
+  The front pane is the tab's active pane, on screen, in the app in front, with no agent board,
+  sheet, alert, menu or palette over it. A program that asked for focus reports hears `CSI I`
+  when its pane becomes the front pane and `CSI O` when it stops being it
+  (`TerminalHost.refreshProgramFocus`).
+  - The keyboard says nothing: hiding it, a drag into the scrollback that puts it away, and a
+    hardware keyboard's quiet hold leave the program focused. Only the cursor's look, solid or
+    hollow, follows the keyboard.
+  - In a split only the active pane's program has the focus.
+  - The app leaving the front takes the focus: another app, the Home Screen, and also Control
+    Center, Notification Center and the app switcher, which make the app inactive. It comes
+    back when the app is active again.
+  - A pane that leaves its window says so only after it has stayed away 0.5 s, so a fold, which
+    moves the pane through no window for a moment, says nothing. A pane that parks says so
+    before its stream parks.
+  - A program that turns focus reports on while its pane is the front pane is told `CSI I`.
+  - A program that never asked is told nothing.
+  - The program's right to write the pasteboard (OSC 52) asks the same question, so a covered
+    pane has neither.
 - **A file send** waits for the fence and then goes: the user picked a file, not a place on the
   screen (`whenCurrent`). It waits 10 s at most; if the pane is still behind then, or leaves
   the screen or closes first, the notice says "Didn't send <files>: the pane was still
@@ -346,7 +365,15 @@ is not a cold start.
 
 ## Gestures
 
-- Tap: focus the pane, clear a selection, raise the keyboard on the first tap. A tap on a link
+- Tap: focus the pane, clear a selection, raise the keyboard on the first tap. In a program that
+  tracks the mouse, the first tap on the active pane is also the program's click, as a click on
+  a Mac terminal is: the click is sent, and the keyboard comes up once the server has taken it,
+  so the resize the keyboard can bring never passes the click. A click that can't go (the pane
+  is catching up, no connection, a row of the scrollback) is dropped and the keyboard comes up
+  at once. A tap on a pane that is not the active one only makes it active and focuses it, and
+  so does every tap while VoiceOver runs. A click made less than 0.45 s after the program was
+  told that it gained the focus waits out the rest of that time: programs take a press that
+  soon for the click that brought the focus, and drop it. A tap on a link
   (an OSC 8 hyperlink or a web address in the text) opens it every time, also on the first tap
   and with the keyboard down; the keyboard stays as it was. On a focused pane a tap elsewhere
   moves the shell's cursor on its prompt (`TerminalTap.swift` has the order,

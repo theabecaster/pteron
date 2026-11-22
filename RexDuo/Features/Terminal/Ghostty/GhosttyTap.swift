@@ -6,7 +6,9 @@ import UIKit
 // `TerminalTapDecision`):
 //
 // 1. A tap on a pane that doesn't have the keyboard opens the link under it (`tapOpensLink`)
-//    and leaves the keyboard down; anywhere else it only focuses the pane (the host does that).
+//    and leaves the keyboard down. On the active pane a program that tracks the mouse gets a
+//    click, and the keyboard follows it; anywhere else the tap only focuses the pane (the host
+//    does that).
 // 2. A tap while text is selected only clears the selection.
 // 3. A link opens: an OSC 8 hyperlink or a web address in the text, also in a program that
 //    tracks the mouse. A tap on a link is the phone's Cmd-click, as Mac terminals open a link
@@ -252,9 +254,46 @@ extension GhosttyTerminalView {
         }
     }
 
-    /// A click the host decided on (`TerminalTapDecision`): press and release at the cell.
-    func sendClickToProgram(at point: CGPoint) {
-        scroller.forwardTap(at: point)
+    /// A click the host decided on (`TerminalTapDecision`): press and release at the cell, as
+    /// one write. The bytes are made now, from the screen the user tapped. The click is not
+    /// typing on the line the keyboard mirrors, so that mirror starts over.
+    ///
+    /// A program told less than `ProgramFocus.activationWindow` ago that it gained the focus
+    /// may take the press for the click that brought the focus and drop it. So the click
+    /// waits out the rest of that window, and is dropped if another such report went out
+    /// meanwhile (the stream caught up again: the screen may be another).
+    ///
+    /// With `delivered`, the click goes now or not at all, and `delivered` hears once whether
+    /// the server took it; false also for a place that makes no click (a row of the scrollback).
+    func sendClickToProgram(at point: CGPoint, delivered: (@MainActor (Bool) -> Void)? = nil) {
+        resetInputDocument()
+        let bytes = scroller.tapBytes(at: point)
+        guard !bytes.isEmpty else {
+            delivered?(false)
+            return
+        }
+        let wait = programFocus.clickWait(at: CACurrentMediaTime())
+        guard wait > 0 else { return send(click: bytes, delivered: delivered) }
+        let told = programFocus.gainedAt
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self, self.programFocus.gainedAt == told else {
+                delivered?(false)
+                return
+            }
+            self.send(click: bytes, delivered: delivered)
+        }
+    }
+
+    private func send(click bytes: [UInt8], delivered: (@MainActor (Bool) -> Void)?) {
+        guard let engineDelegate else {
+            delivered?(false)
+            return
+        }
+        if let delivered {
+            engineDelegate.engineSendReport(bytes, delivered: delivered)
+        } else {
+            engineDelegate.engineSendReport(bytes)
+        }
     }
 
     /// Sends a prompt click as one write.

@@ -48,6 +48,13 @@ struct ProgramFocus: Equatable {
     private(set) var front = false
     /// What the program was last told, or would have been had it asked.
     private(set) var said = false
+    /// When a report that the focus was gained was last handed on for sending; nil before the
+    /// first one.
+    private(set) var gainedAt: Double?
+
+    /// How long after it is told that it gained the focus a program may take a press for the
+    /// click that brought the focus, and drop it. Programs that do so use about 0.4 s.
+    static let activationWindow = 0.45
 
     /// Returns whether it changed.
     mutating func set(front now: Bool) -> Bool {
@@ -73,4 +80,15 @@ struct ProgramFocus: Equatable {
 
     /// The report was handed on for sending, or the program asks for none.
     mutating func told(_ gained: Bool) { said = gained }
+
+    /// A report that the focus was gained was handed on for sending at `time`.
+    mutating func gainedSent(at time: Double) { gainedAt = time }
+
+    /// How long a click made at `now` waits before it is sent, so that it is not the first
+    /// thing after a report that the focus was gained: the rest of `activationWindow`, or 0.
+    func clickWait(at now: Double) -> Double {
+        guard let gainedAt else { return 0 }
+        let left = Self.activationWindow - (now - gainedAt)
+        return left > 0 && left <= Self.activationWindow ? left : 0
+    }
 }

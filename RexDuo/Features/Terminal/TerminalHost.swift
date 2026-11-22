@@ -160,6 +160,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var resignedUnderCover = false
     /// Whether a hardware keyboard is attached. Tests put their own here.
     var hardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
+    /// Whether VoiceOver runs. Tests put their own here.
+    var voiceOver: () -> Bool = { UIAccessibility.isVoiceOverRunning }
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
     /// How long a pane off screen waits before it lets go, and how long it keeps its fit claim.
@@ -647,9 +649,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
              stopsScroll: Bool = false) -> TerminalTapOutcome {
         // SELECTION UI: handles, and which tap of a double or triple tap this is.
         let counted = selectionUI.countTap(at: point)
+        // `isActive` is still what it was at touch time: `onFocus` comes after the decision.
         let facts = TerminalTapFacts(onHandle: counted.onHandle, tapCount: counted.count, keyboardUp: keyboardUp,
                                      hadSelection: hadSelection, shift: shift, menuVisible: selectionUI.menuVisible,
-                                     stopsScroll: stopsScroll)
+                                     stopsScroll: stopsScroll, active: isActive, voiceOver: voiceOver())
         let outcome = TerminalTapDecision.outcome(
             facts,
             // TAP HOOK (links): with the keyboard down, a link still opens and the keyboard stays.
@@ -675,6 +678,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .programClick:
             editMenu.dismissMenu()
             term.sendClickToProgram(at: point)
+        case .programClickThenKeyboard:
+            editMenu.dismissMenu()
+            // The keyboard waits for the click: it resizes a fitted pane on the alternate
+            // screen, and the server does not order that resize with the click's write. A
+            // click that could not go (the fence, no connection, a row of the scrollback)
+            // still brings the keyboard: no tap is a dead one.
+            term.sendClickToProgram(at: point) { [weak self] _ in self?.showKeyboardAfterClick() }
         case .pasteMenu:
             // SELECTION UI: a tap by the cursor offers Paste.
             presentEditMenu(at: CGRect(origin: point, size: .zero).insetBy(dx: -4, dy: -4))
@@ -1214,6 +1224,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         userHidKeyboard = false
         setKeyboardQuiet(false)
         if !term.isFirstResponder { _ = term.becomeFirstResponder() }
+    }
+
+    /// The click of a tap with the keyboard down has left, or never will: the keyboard comes up
+    /// as for any tap, unless the pane stopped being the one to type into meanwhile.
+    private func showKeyboardAfterClick() {
+        guard isActive, window != nil, !covered, !isParked else { return }
+        showKeyboard()
     }
 
     /// UIKit dims the tint of everything under a sheet, an alert or a menu, and tells each view:
@@ -2291,6 +2308,15 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     @discardableResult
     func engineSendReport(_ bytes: [UInt8]) -> Bool {
         stream.send(report: bytes)
+    }
+
+    /// A click that something waits for (the keyboard, raised only once the click is with the
+    /// program): through the same queue, sent now or not at all, once. Behind the fence, without
+    /// a connection, or as bytes the server can't take, it never leaves and `delivered` hears
+    /// false at once.
+    func engineSendReport(_ bytes: [UInt8], delivered: @escaping @MainActor (Bool) -> Void) {
+        guard let text = String(bytes: bytes, encoding: .utf8) else { return delivered(false) }
+        stream.sendOnce(text: text) { delivered($0 == .delivered) }
     }
 
     /// Insert Path: a path picked for the program on screen. Behind the fence it is dropped,

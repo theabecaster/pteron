@@ -447,7 +447,8 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
 
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         guard g.state == .ended, let view else { return }
-        // The host focuses an unfocused pane with its own tap; that tap is never also a click.
+        // Under a host this never fires: the host decides every tap and sends the click itself
+        // (`tapGate`, `TerminalTapDecision`). Alone, a view without the keyboard takes no click.
         guard view.isFirstResponder, !g.modifierFlags.contains(.shift) else { return }
         guard core.programScrollModes().mouseTracking else { return }
         if view.hasActiveSelection {
@@ -462,6 +463,14 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     /// tracking mode reports releases. Uses up a one-shot ctrl from the key bar.
     @discardableResult
     func forwardTap(at point: CGPoint) -> [UInt8] {
+        let bytes = tapBytes(at: point)
+        sendReport(bytes)
+        return bytes
+    }
+
+    /// The bytes of a left click at `point`, not sent; empty where there is no cell to click
+    /// (a row of the scrollback). Uses up a one-shot ctrl from the key bar.
+    func tapBytes(at point: CGPoint) -> [UInt8] {
         guard let view, let position = mousePosition(point) else { return [] }
         var modifiers: GhosttyMouseReporter.Modifiers = []
         if view.controlModifier { modifiers.insert(.control) }
@@ -473,7 +482,6 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             view.controlModifier = false
             NotificationCenter.default.post(name: .terminalEngineControlModifierReset, object: view)
         }
-        sendReport(bytes)
         return bytes
     }
 

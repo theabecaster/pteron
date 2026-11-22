@@ -12,12 +12,20 @@ protocol TerminalEngineDelegate: AnyObject {
     /// reports, a focus report, the keys of a tap or a drag. They are right only for the screen
     /// they were made on (`TerminalStream.send(report:)`).
     @discardableResult func engineSendReport(_ bytes: [UInt8]) -> Bool
+    /// A report whose sender waits for it: sent now or not at all, once, behind what was typed
+    /// before it. `delivered` hears once how it went: true when the server took it, false when
+    /// it never left, was refused, or nobody knows (`TerminalStream.sendOnce`).
+    func engineSendReport(_ bytes: [UInt8], delivered: @escaping @MainActor (Bool) -> Void)
 }
 
 extension TerminalEngineDelegate {
     @discardableResult func engineSendReport(_ bytes: [UInt8]) -> Bool {
         engineSend(bytes)
         return true
+    }
+
+    func engineSendReport(_ bytes: [UInt8], delivered: @escaping @MainActor (Bool) -> Void) {
+        delivered(engineSendReport(bytes))
     }
 }
 

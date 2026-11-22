@@ -76,6 +76,21 @@ struct ProgramFocusTests {
         #expect(focus.due(at: .current) == false, "nor the one that it left the front")
     }
 
+    @Test func aClickWaitsOutTheWindowAfterAReportThatTheFocusWasGained() {
+        var focus = ProgramFocus()
+        #expect(focus.clickWait(at: 100) == 0, "no such report yet")
+        focus.gainedSent(at: 100)
+        #expect(focus.clickWait(at: 100) == ProgramFocus.activationWindow)
+        #expect(abs(focus.clickWait(at: 100.25) - (ProgramFocus.activationWindow - 0.25)) < 0.0001)
+        #expect(focus.clickWait(at: 100 + ProgramFocus.activationWindow) == 0)
+        #expect(focus.clickWait(at: 200) == 0)
+        // A report that the focus was lost opens no window.
+        focus.told(false)
+        #expect(focus.clickWait(at: 300) == 0)
+        // Longer than programs wait before they take a press for a click.
+        #expect(ProgramFocus.activationWindow > 0.4)
+    }
+
     @Test func aProgramThatStartsToAskIsToldOnlyWhileItsPaneIsInFront() {
         var focus = ProgramFocus()
         #expect(focus.due(at: .asked) == nil)

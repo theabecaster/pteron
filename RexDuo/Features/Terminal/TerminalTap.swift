@@ -18,6 +18,10 @@ struct TerminalTapFacts: Equatable {
     /// The finger came down on scrollback that was moving or had just stopped
     /// (`TerminalScrollTouch`): the touch stops or ends a scroll.
     var stopsScroll = false
+    /// The pane was the tab's active pane.
+    var active = false
+    /// VoiceOver runs.
+    var voiceOver = false
 }
 
 /// The one thing a single-finger tap on a pane does.
@@ -35,13 +39,15 @@ enum TerminalTapOutcome: Equatable {
     case engineUsed
     /// A mouse click for the program.
     case programClick
+    /// A mouse click for the program, and the keyboard once the click is with it.
+    case programClickThenKeyboard
     /// Paste is offered at the cursor.
     case pasteMenu
     /// Nothing but closing a menu that was up.
     case nothing
 
-    /// The only tap the program ever hears about.
-    var isForProgram: Bool { self == .programClick }
+    /// The only taps the program ever hears about.
+    var isForProgram: Bool { self == .programClick || self == .programClickThenKeyboard }
 }
 
 /// The order of everything a tap can mean. A tap means the first of these that applies, and
@@ -53,9 +59,12 @@ enum TerminalTapOutcome: Equatable {
 /// 2. The second or third tap of a run: select the word or the line. (The first tap already did
 ///    what a single tap does.)
 /// 3. The keyboard was not up on this pane: a link under the finger opens (`opensLink`) and the
-///    keyboard stays down; anywhere else the pane is focused. Never a click, a prompt move or a
-///    menu, so the tap that brings the keyboard can't also press a button in a program. A tap
-///    that clears a selection or holds Shift only focuses.
+///    keyboard stays down. On the active pane, in a program that tracks the mouse, the tap is
+///    a click, as a click on a Mac terminal is, and the keyboard comes up once the click is
+///    with the program. Anywhere else the pane is focused: never a prompt move or a menu. A
+///    tap on a pane that is not the active one only makes it the active one and focuses it,
+///    and so does every tap while VoiceOver runs. A tap that clears a selection or holds Shift
+///    only focuses.
 /// 4. Text was selected: clear the selection.
 /// 5. Shift is held: nothing.
 /// 6. The engine's own use: a link under the finger opens, a tap on the shell's prompt moves
@@ -75,7 +84,10 @@ enum TerminalTapDecision {
         if facts.tapCount == 2 { return .select(line: false) }
         if facts.tapCount >= 3 { return .select(line: true) }
         if !facts.keyboardUp {
-            if !facts.hadSelection, !facts.shift, opensLink() { return .engineUsed }
+            if !facts.hadSelection, !facts.shift {
+                if opensLink() { return .engineUsed }
+                if facts.active, !facts.voiceOver, tracksMouse() { return .programClickThenKeyboard }
+            }
             return .focus(clearsSelection: facts.hadSelection)
         }
         if facts.hadSelection { return .dismissSelection }
