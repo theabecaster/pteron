@@ -222,10 +222,11 @@ final class HandleStripHostTests: XCTestCase {
     func testTheSidebarHandleOverTheTabsLeftPane() {
         // The sidebar's edge at x = 0, its handle reaching 22 pt either side: a 16 pt strip
         // along the edge (10 pt over the tab) and the 88 pt grip in the middle.
-        let shape = AnyShape(HandleShape(reach: 22, grip: 88))
-        let strip = makeStrip(CGRect(x: -22, y: 0, width: 44, height: 200), sideways: true, shape: shape)
+        // The tab first, then the sidebar's handle over it, as `SidebarSplit` draws them.
         let byGrip = makeHost(at: CGPoint(x: 0, y: 95))
         let byEdge = makeHost(at: CGPoint(x: 0, y: 5))
+        let shape = AnyShape(HandleShape(reach: 22, grip: 88))
+        let strip = makeStrip(CGRect(x: -22, y: 0, width: 44, height: 200), sideways: true, shape: shape)
         // In the grip, 15 pt into the pane: a sideways drag resizes the sidebar and doesn't focus the pane.
         XCTAssertTrue(byGrip.noteGripTouch(at: CGPoint(x: 15, y: 100)) === strip)
         XCTAssertTrue(waits(byGrip, byGrip.tapGR), "a drag on the sidebar's handle doesn't focus the tab's left pane")
