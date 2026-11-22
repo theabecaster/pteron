@@ -613,6 +613,16 @@ public final class TerminalStream {
     /// The number of the last input call `item` holds, as the observer knows it.
     private func seq(_ item: InputItem) -> Int { max(item.through, unseenThrough) }
 
+    /// The number the answer to `item` acknowledges. The number that stands for unseen input
+    /// is acknowledged only by the answer that covers all of it: an item that also holds
+    /// numbered input (it left after everything unseen), or the last item of the queue. An
+    /// earlier unseen item's answer acknowledges nothing new, so no guess starts on a screen
+    /// that still lacks the echo of input on its way.
+    private func acknowledged(by item: InputItem) -> Int {
+        if item.through >= unseenThrough || inputQueue.isEmpty { return seq(item) }
+        return unseenThrough - 1
+    }
+
     /// Numbers an input call and tells the observer what it is. Without an observer it does
     /// nothing: the item carries the last number given, and `echoAttached` covers it.
     @inline(__always)
@@ -1713,7 +1723,9 @@ public final class TerminalStream {
             if let timed, syncCalls.map({ $0.quiet(since: timed.syncMark) }) ?? true {
                 echoGate?.sample(ms: (now - timed.started) * 1000, at: now)
             }
-            echoAnswered(through: seq(item), at: now)
+            // After the sample: it can turn the gate on, and an observer set there numbers the
+            // input still queued.
+            echoAnswered(through: acknowledged(by: item), at: now)
         }
         if case .work(let work, _) = item, let once = work.once {
             // Told whatever happened since, a `stop()` too: its request did leave, or didn't.

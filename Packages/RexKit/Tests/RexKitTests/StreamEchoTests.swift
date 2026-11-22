@@ -329,13 +329,14 @@ final class StreamEchoTests: XCTestCase {
         XCTAssertEqual(r.inputs, [.char(0x63)])
         XCTAssertTrue(r.events.contains(.input(.char(0x63), 2)))
         link.release()
-        _ = await eventually { link.waitingCount == 1 && r.answers == [1] }
-        XCTAssertEqual(r.answers, [1], "the unseen write answers as the number that stands for it")
+        _ = await eventually { link.waitingCount == 1 && r.answers == [0] }
+        XCTAssertEqual(r.answers, [0], "unseen input is still queued: the first unseen write's answer acknowledges none of it")
+        XCTAssertEqual(s.echoAck.answeredThrough, 0)
         XCTAssertEqual(link.written, ["a", "bc"])
         XCTAssertTrue(r.events.contains(.left(2)))
         link.release()
-        _ = await eventually { r.answers == [1, 2] }
-        XCTAssertEqual(r.answers, [1, 2])
+        _ = await eventually { r.answers == [0, 2] }
+        XCTAssertEqual(r.answers, [0, 2], "the write that holds the rest of it acknowledges all")
         // The settle ops: only the newest answer's fires.
         await settle()
         XCTAssertEqual(r.settledAfter, [])
@@ -343,6 +344,39 @@ final class StreamEchoTests: XCTestCase {
         _ = await eventually { !r.settledAfter.isEmpty }
         await settle()
         XCTAssertEqual(r.settledAfter, [r.answerTimes[1]])
+    }
+
+    /// The answer that turns the gate on sets the pane's observer in the middle of its own
+    /// handling, with a key queued behind it. That answer must not count for the queued key:
+    /// its echo is not on the screen yet (a guess started then sat one column left, and the
+    /// late echo proved it wrong).
+    func testTheAnswerThatTurnsTheGateOnAcknowledgesNoQueuedInput() async {
+        let link = FakeLink()
+        link.held = [Self.write]
+        let gate = EchoGate()
+        let (s, r, _) = stream(link, gate: gate, observed: false)
+        for _ in 0..<4 { gate.sample(ms: 150, at: clock.now) }
+        XCTAssertEqual(gate.level, .off)
+        _ = gate.watch(changed: { level in
+            guard level != .off, s.inputObserver == nil else { return }
+            s.writeObserver = r
+            s.inputObserver = r
+        }, reset: {})
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        s.send(text: "b")
+        clock.now += 0.15
+        link.release()
+        _ = await eventually { link.waitingCount == 1 && !r.answers.isEmpty }
+        XCTAssertNotEqual(gate.level, .off, "the fifth slow write turned predictions on")
+        XCTAssertEqual(r.answers, [0], "b is still on its way")
+        XCTAssertEqual(s.echoAck.lastSeq, 1)
+        XCTAssertEqual(s.echoAck.answeredThrough, 0)
+        clock.now += 0.15
+        link.release()
+        _ = await eventually { r.answers == [0, 1] }
+        XCTAssertEqual(r.answers, [0, 1], "b's own answer acknowledges it")
+        XCTAssertEqual(s.echoAck.answeredThrough, 1)
     }
 
     func testAnObserverSetOnAnIdleStreamSettlesFiftyMillisecondsLater() async {

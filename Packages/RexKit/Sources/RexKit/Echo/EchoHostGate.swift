@@ -33,8 +33,7 @@ public struct EchoHostConditions: Equatable, Sendable {
     /// and nothing of the pane's own is in the way. An unknown foreground allows nothing.
     public var allowsGuesses: Bool {
         guard !fenced, !composing, !selecting, !finding, !scrolledBack, !agent else { return false }
-        guard let front = EchoForeground.normalize(foreground) else { return false }
-        return EchoForeground.shells.contains(front)
+        return EchoForeground.allows(foreground)
     }
 }
 

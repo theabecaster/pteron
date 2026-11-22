@@ -150,8 +150,10 @@ public final class EchoPredictor {
         /// Keys drawn at least once.
         public var drawn = 0
         public var confirmed = 0
-        /// Epochs the screen proved wrong.
+        /// Epochs the screen proved wrong, drawn or not.
         public var mismatched = 0
+        /// Of those, epochs with a guess that was on screen: characters the user saw taken back.
+        public var mismatchedDrawn = 0
         /// Cap clears that removed a drawn guess.
         public var vanished = 0
         /// Every cap clear.
@@ -612,6 +614,7 @@ public final class EchoPredictor {
         epoch = nil
         if e.endedByNewLine { counters.resets += 1; return }
         counters.mismatched += 1
+        if e.keys.contains(where: { $0.drawnAt != nil }) { counters.mismatchedDrawn += 1 }
         for _ in e.confirmed..<e.keys.count { note(false) }
         lockout = e.tentative ? .untilBoundary : .untilNewLine
     }

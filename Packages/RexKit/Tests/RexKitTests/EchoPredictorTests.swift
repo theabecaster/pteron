@@ -266,10 +266,25 @@ final class EchoPredictorTests: XCTestCase {
         s.echo("x")
         XCTAssertNil(s.overlay, "hidden in the frame that shows the server's text")
         XCTAssertEqual(s.p.counters.mismatched, 1)
+        XCTAssertEqual(s.p.counters.mismatchedDrawn, 1, "guesses the user saw were taken back")
         let placed = s.p.counters.placed
         s.answerAll()
         s.key(char("d"))
         XCTAssertEqual(s.p.counters.placed, placed, "a confirmed epoch was wrong: nothing until the next Enter")
+    }
+
+    /// A line's first key is only tracked. When the screen proves it wrong nothing was on
+    /// screen to take back, and the count of taken-back guesses says so.
+    func testAWrongKeyThatWasNeverDrawnTakesNothingBack() {
+        let s = EchoScript()
+        s.prompt()
+        let k = s.key(char("l"))
+        XCTAssertNil(s.overlay)
+        s.answer(k)
+        s.echo("x")
+        XCTAssertEqual(s.p.counters.mismatched, 1)
+        XCTAssertEqual(s.p.counters.mismatchedDrawn, 0)
+        XCTAssertEqual(s.p.counters.drawn, 0)
     }
 
     func testContentRightOfTheCursorIsNeverJudged() {

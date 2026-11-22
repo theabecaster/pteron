@@ -86,8 +86,12 @@ public enum EchoForeground {
         return n.isEmpty ? nil : n.lowercased()
     }
 
+    /// Asked for every typed key while predictions are on: a plain name (`zsh`), which is what
+    /// the server sends, is one set lookup with nothing allocated.
     public static func allows(_ name: String?) -> Bool {
-        normalize(name).map(shells.contains) ?? false
+        guard let name else { return false }
+        if shells.contains(name) { return true }
+        return normalize(name).map(shells.contains) ?? false
     }
 }
 
