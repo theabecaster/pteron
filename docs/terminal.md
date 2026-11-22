@@ -510,8 +510,8 @@ stands among these calls decides how long a key waits:
   started in a task, the task waits for the turn to end, did-change calls included; with the
   hand-off in the key's turn but the keyboard told first, the key still waits for the keyboard.
   Measured in a simulator against a local server (Debug, median, key to socket): 21.9 ms before,
-  21.6 ms with the send first alone, 19.9 ms with the hand-off alone, 0.7 ms with both at typing
-  pace; 10.1, 10.1, 9.5 and 0.13 ms in a burst.
+  21.6 ms with the send first alone, 19.9 ms with the hand-off alone, 0.5 ms with both at typing
+  pace; 10.1, 10.1, 9.5 and 0.10 ms in a burst.
 
 Around that:
 
