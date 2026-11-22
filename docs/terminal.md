@@ -498,11 +498,19 @@ stands among these calls decides how long a key waits:
   units. A hardware key that types and a letter after the key bar's one-shot ctrl or alt are
   plain keys too.
 - **Everything else tells the keyboard first, then sends**, as before: an input method's
-  updates and its commit, dictation (`insertDictationResult`, or any text while the keyboard's
-  input mode is `dictation`), a replacement (`replace(_:withText:)`, text over a selection or
-  away from the program's cursor), more than one character at once (a suggestion, a swipe, a
-  paste from the keyboard), Backspace, Return, and the keys that reset the shadow (the key
-  bar's keys, raw sends, a paste, hardware keys encoded here).
+  updates and its commit, dictation (below), a replacement (`replace(_:withText:)`, text over
+  a selection or away from the program's cursor), more than one character at once (a
+  suggestion, a swipe, a paste from the keyboard), Backspace, Return, and the keys that reset
+  the shadow (the key bar's keys, raw sends, a paste, hardware keys encoded here).
+- **What counts as dictated.** Text that comes through `insertDictationResult` always does.
+  Text that comes through `insertText` does when the language of the keyboard's input mode
+  (`textInputMode?.primaryLanguage`) is the string `dictation`. The view reads that once per
+  mode and keeps it, and reads it again after the input mode changes or the keyboard comes or
+  goes. The tests cover `insertDictationResult`, a mode that the test sets itself, and that
+  the mode is read once and again after a change. No test covers what a real keyboard reports
+  there while it dictates: if it reports another language, one dictated character that comes
+  through `insertText` is sent as a plain key, before the keyboard is told. The bytes are the
+  same either way; only the order of the send and the did-change calls differs.
 - The send itself is the same in both orders: the fence holds or drops it, a guess is drawn for
   it (Predicted echo) before it is queued, and the queue below takes it. With nothing out, the
   queue hands the write to the socket in that same turn, so a plain key is on the wire before
