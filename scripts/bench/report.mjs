@@ -109,6 +109,8 @@ if (runs.predict) {
     ['feed: publish µs', 'echo.feedPublishUs.median'],
     ['cells read per key', 'echo.feedCellReads.median', 'echo.feedCellReads.max', 'max'],
     ['predictors made', 'echo.predictors'],
+    // Only slices of output that arrive while a key is tracked or drawn are looked at, and timed.
+    ['slices looked at', 'echo.feedSliceUs.count'],
     ['feed µs per slice', 'echo.feedSliceUs.median', 'echo.feedSliceUs.max', 'max'],
   ]);
 }
