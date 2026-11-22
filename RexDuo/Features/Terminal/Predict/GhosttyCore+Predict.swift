@@ -73,6 +73,7 @@ extension GhosttyCore {
                 if current != .off { p.level = current }
                 p.tick(grid: GhosttyEchoGrid(t, marks: promptWatch.marks), now: echo.now)
                 changed = echoPublish(&events)
+            echoTrace(changed: changed)  // PERF
             }
             termLock.unlock()
             if changed { onDirty?() }
@@ -122,6 +123,7 @@ extension GhosttyCore {
             var events: [GhosttyEchoEvent] = []
             let changed = echoPublish(&events)
             if let cost { EchoProbe.active?.cost(cost, since: began) }  // PERF
+            echoTrace(changed: changed)  // PERF
             termLock.unlock()
             if changed { onDirty?() }
             deliverEcho(events)
@@ -139,6 +141,7 @@ extension GhosttyCore {
         if batchEnd { p.batchEnd(grid: grid, now: echo.now) } else { p.slice(grid: grid, now: echo.now) }
         let changed = echoPublish(&events)
         EchoProbe.active?.cost(.feedSlice, since: began)  // PERF
+        echoTrace(changed: changed)  // PERF
         return changed
     }
 
@@ -176,7 +179,6 @@ extension GhosttyCore {
         if changed {
             echoPublished = overlay
             echo.publishes.add(1, ordering: .relaxed)
-            EchoProbe.active?.published(overlay, core: self)  // PERF
         }
         let unsettled = overlay?.unsettled ?? false
         if echo.unsettled.exchange(unsettled, ordering: .relaxed), !unsettled { events.append(.settled) }
@@ -187,6 +189,21 @@ extension GhosttyCore {
         return changed
     }
 
+    /// PERF: after a predictor call, with `termLock` held and outside what the probe times:
+    /// the overlay if the call changed it, and the screen at the moment the predictor counted
+    /// a wrong guess, a cap or a reset.
+    private func echoTrace(changed: Bool) {
+        guard let probe = EchoProbe.active else { return }
+        if changed { probe.published(echoPublished, core: self) }
+        guard let t = terminal, let p = echo.predictor else { return }
+        probe.counted(p.counters) {
+            let grid = GhosttyEchoGrid(t, marks: promptWatch.marks)
+            var row = String.UnicodeScalarView()
+            for x in 0..<min(grid.cols, 60) { row.append(Unicode.Scalar(max(grid.cell(x, grid.cursorY).scalar, 0x20)) ?? " ") }
+            return "cursor=\(grid.cursorX),\(grid.cursorY) row='\(String(row))'"
+        }
+    }
+
     private func echoTick(_ due: Double) {
         termLock.lock()
         if echo.tickAt == due { echo.tickAt = nil }
@@ -195,6 +212,7 @@ extension GhosttyCore {
         if let t = terminal, let p = echo.predictor {
             p.tick(grid: GhosttyEchoGrid(t, marks: promptWatch.marks), now: echo.now)
             changed = echoPublish(&events)
+            echoTrace(changed: changed)  // PERF
         }
         termLock.unlock()
         if changed { onDirty?() }

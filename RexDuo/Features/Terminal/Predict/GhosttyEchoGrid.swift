@@ -6,9 +6,16 @@ import RexKit
 ///
 /// Made and used on the feed queue with the terminal lock held, for one predictor call: the
 /// scalar facts are read once when it is made (a few `ghostty_terminal_get`s), cells only when
-/// the predictor asks, at most a row's worth per call.
+/// the predictor asks, at most a row's worth per call. A call checks, judges and draws from
+/// the same cells of one row, so the row asked for last is kept: each cell is read from the
+/// terminal once per call.
 struct GhosttyEchoGrid: EchoGrid {
     private let t: GhosttyTerminal
+    private final class Row {
+        var y = -1
+        var cells: [EchoCell?] = []
+    }
+    private let kept = Row()
     let cols: Int
     let rows: Int
     let cursorX: Int
@@ -67,6 +74,17 @@ struct GhosttyEchoGrid: EchoGrid {
 
     func cell(_ x: Int, _ y: Int) -> EchoCell {
         guard x >= 0, x < cols, y >= 0, y < rows else { return .blank }
+        if kept.y != y {
+            kept.y = y
+            kept.cells = [EchoCell?](repeating: nil, count: cols)
+        }
+        if let have = kept.cells[x] { return have }
+        let read = readCell(x, y)
+        kept.cells[x] = read
+        return read
+    }
+
+    private func readCell(_ x: Int, _ y: Int) -> EchoCell {
         var point = GhosttyPoint()
         point.tag = GHOSTTY_POINT_TAG_ACTIVE
         point.value.coordinate = GhosttyPointCoordinate(x: UInt16(x), y: UInt32(y))

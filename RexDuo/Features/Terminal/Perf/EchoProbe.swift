@@ -35,7 +35,8 @@ import Synchronization
 /// With predicted echo the result also holds the predictor's counters (`drawn`, `confirmed`,
 /// `mismatched`, `vanished` and the rest, summed over the run's predictors) and what a key cost
 /// in microseconds: `mainKeyUs` on the main thread (the host's gate and the hand-off to the feed
-/// queue), `feedKeyUs` on the feed queue (placing the guess and publishing the overlay) and
+/// queue; `mainGateUs` is the gate alone, the rest is waking the feed queue; `mainSendUs` is
+/// the whole of the host's send of one typed key, with or without predicted echo), `feedKeyUs` on the feed queue (placing the guess and publishing the overlay) and
 /// `feedSliceUs` (the overlay's check after a slice of output while a predictor exists).
 ///
 /// `-echoScript <file>` (`EchoScriptPlayer`, the benchmark's `predict` scenario) turns the probe
@@ -65,11 +66,13 @@ final class EchoProbe: Sendable {
 
     /// A step of a key's path whose cost is sampled.
     enum Cost: Int, CaseIterable {
-        case mainKey, feedKey, feedSlice
+        case mainSend, mainKey, mainGate, feedKey, feedSlice
 
         var title: String {
             switch self {
+            case .mainSend: "mainSendUs"
             case .mainKey: "mainKeyUs"
+            case .mainGate: "mainGateUs"
             case .feedKey: "feedKeyUs"
             case .feedSlice: "feedSliceUs"
             }
@@ -85,6 +88,9 @@ final class EchoProbe: Sendable {
         /// The counters of predictors that retired during the run.
         var retired: [EchoPredictor.Counters] = []
         weak var watched: GhosttyCore?
+        /// What the screen showed each time a predictor counted a wrong guess, a cap or a reset.
+        var trace: [String] = []
+        var traced = [0, 0, 0]
     }
     /// Samples kept per cost: a run types tens of keys, and a flood's slices need no more.
     private static let costCap = 4096
@@ -114,6 +120,28 @@ final class EchoProbe: Sendable {
                 let c = UInt32(s.keys[i].char)
                 if overlay.cells.contains(where: { $0.scalar == c }) { s.keys[i].guessed = now }
             }
+        }
+    }
+
+    /// The predictor's counters after an op. When it counted a wrong guess, a cap or a reset
+    /// since the last call, `screen` is asked for the cursor's row and the moment is kept.
+    func counted(_ c: EchoPredictor.Counters, screen: () -> String) {
+        let now = Self.clock()
+        let have = [c.mismatched, c.capped, c.resets]
+        let changed = state.withLock { s -> Bool in
+            defer { s.traced = have }
+            return s.traced != have
+        }
+        guard changed else { return }
+        let row = screen()
+        state.withLock { s in
+            guard s.trace.count < 64 else { return }
+            let first = s.keys.first?.typed ?? now
+            let typed = String(decoding: s.keys.suffix(12).map(\.char), as: UTF8.self)
+            let pending = String(decoding: s.keys.filter { $0.fed == nil }.map(\.char), as: UTF8.self)
+            s.trace.append("t=\(((now - first) * 1000).rounded() / 1000) mismatched=\(c.mismatched) drawnMismatched=\(c.mismatchedDrawn) capped=\(c.capped) "
+                + "vanished=\(c.vanished) resets=\(c.resets) placed=\(c.placed) drawn=\(c.drawn) confirmed=\(c.confirmed) "
+                + "lastKeys='\(typed)' notEchoed='\(pending)' \(row)")
         }
     }
 
@@ -174,7 +202,14 @@ final class EchoProbe: Sendable {
             if presented { s.lastPresent = now }
             for i in s.keys.indices {
                 if s.keys[i].predicted == nil, let g = s.keys[i].guessed, built > 0, g <= built {
-                    s.keys[i].predicted = presented ? now : max(s.lastPresent ?? now, g)
+                    // A pass with nothing new to draw: a frame handed over since the overlay
+                    // was published showed it (a pass that began before and latched after).
+                    // Without such a frame nothing has shown the guess yet.
+                    if presented {
+                        s.keys[i].predicted = now
+                    } else if let last = s.lastPresent, last >= g {
+                        s.keys[i].predicted = last
+                    }
                 }
                 guard s.keys[i].shown == nil, let p = s.keys[i].parsed, built > 0, p <= built else { continue }
                 // A pass with nothing new to draw: the frame before it showed the echo.
@@ -211,7 +246,7 @@ final class EchoProbe: Sendable {
     /// The result, as written to the file. `live` is the counters of the pane's predictor, if
     /// it has one now.
     func result(live: EchoPredictor.Counters? = nil) -> [String: Any] {
-        let (keys, costs, retired) = state.withLock { ($0.keys, $0.costs, $0.retired) }
+        let (keys, costs, retired, trace) = state.withLock { ($0.keys, $0.costs, $0.retired, $0.trace) }
         func ms(_ a: Double, _ b: Double?) -> Double? { b.map { (($0 - a) * 1e5).rounded() / 100 } }
         func visible(_ k: Key) -> Double? { [k.predicted, k.shown].compactMap { $0 }.min() }
         let fed = keys.compactMap { ms($0.typed, $0.fed) }, shown = keys.compactMap { ms($0.typed, $0.shown) }
@@ -251,6 +286,7 @@ final class EchoProbe: Sendable {
             "firstVisibleOthersMedianMs": pct(seenOthers, 0.5) ?? NSNull(), "firstVisibleOthersP95Ms": pct(seenOthers, 0.95) ?? NSNull(),
         ]
         for (name, n) in counters { out[name] = n }
+        out["trace"] = trace
         for c in Cost.allCases {
             let us = costs[c.rawValue].map { ($0 * 1e8).rounded() / 100 }
             let numbers: [String: Any] = ["count": us.count, "median": pct(us, 0.5) ?? NSNull(), "p95": pct(us, 0.95) ?? NSNull(),

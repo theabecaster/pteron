@@ -8,7 +8,7 @@ import Foundation
 /// `scripts/record-echo-fixtures.py`), for the benchmark's `predict` scenario: what a shell wrote
 /// and when, when each key was typed, and the tty's state, on the client's clock.
 ///
-/// `-replay <capture> -echoScript <file>`: the pane opens with the recorded stream `<capture>`
+/// `-replay <capture> -echoScript <file> [-echoLoops <n>]`: the pane opens with the recorded stream `<capture>`
 /// (its snapshot and size) on a scripted link that answers every call after `-echoDelay`
 /// milliseconds (default 150), and the script is typed into it (`EchoScriptPlayer`).
 struct EchoScript: Decodable {
@@ -38,6 +38,13 @@ struct EchoScript: Decodable {
         let url = path.hasPrefix("/") ? URL(fileURLWithPath: path)
             : URL(fileURLWithPath: capture).deletingLastPathComponent().appendingPathComponent(path)
         return try JSONDecoder().decode(EchoScript.self, from: Data(contentsOf: url))
+    }
+
+    /// How many times the script is played, from `-echoLoops <n>` (default 1). A script that
+    /// starts by clearing the screen can follow itself; from the second time on the link is
+    /// already known to be slow, so whole lines are guessed.
+    static func loops(defaults d: UserDefaults = .standard) -> Int {
+        max(1, d.integer(forKey: "echoLoops"))
     }
 
     /// The scripted link's delay, from `-echoDelay <ms>`.
@@ -87,6 +94,17 @@ final class EchoScriptPlayer {
         // The launch transition and the first frame stay out of the measured window.
         try? await Task.sleep(for: .seconds(1))
         let clock = ContinuousClock()
+        for _ in 0..<EchoScript.loops() {
+            await play(clock: clock, probe: probe)
+            // The last answer and its settle, before the script starts again.
+            try? await Task.sleep(for: .seconds(1))
+        }
+        // The frame that shows the last output.
+        try? await Task.sleep(for: .seconds(0.5))
+        if let host = self.host { PerfProbe.active?.sourceFinished(host) }
+    }
+
+    private func play(clock: ContinuousClock, probe: EchoProbe?) async {
         let start = clock.now
         for step in script.steps {
             try? await clock.sleep(until: start + .seconds(step.t))
@@ -106,9 +124,6 @@ final class EchoScriptPlayer {
                 host.engineSend([step.newLine == true ? 0x0D : 0x0C])
             }
         }
-        // The last answer, its settle and the frame that shows it.
-        try? await Task.sleep(for: .seconds(1.5))
-        if let host = self.host { PerfProbe.active?.sourceFinished(host) }
     }
 }
 #endif

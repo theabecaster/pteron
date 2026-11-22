@@ -104,7 +104,9 @@ extension TerminalHost: EchoInputObserver, EchoWriteObserver {
             term.core.echoForegroundChanged()
         }
         echoForeground = .some(conditions.foreground)
-        term.core.echoTyped(EchoHostGate.admit(kind, conditions), seq: seq, at: EchoClock.now)
+        let admitted = EchoHostGate.admit(kind, conditions)
+        EchoProbe.active?.cost(.mainGate, since: began)  // PERF
+        term.core.echoTyped(admitted, seq: seq, at: EchoClock.now)
     }
 
     // MARK: EchoWriteObserver

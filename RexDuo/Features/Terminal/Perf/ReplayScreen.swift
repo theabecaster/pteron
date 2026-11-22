@@ -157,7 +157,9 @@ final class ReplayView: UIView {
     private func openScripted(_ script: EchoScript, capture: ReplayCapture, in area: CGRect) {
         let link = ScriptedEchoLink(writeDelay: EchoScript.delay(), opening: [UInt8](capture.data), nonce: capture.nonce)
         let control = RexControl(address: "", client: ClientInfo(name: "replay", version: "0", label: "replay"))
-        let stream = link.stream(control: control, sessionID: "replay", blockID: "replay", echoGate: EchoGate())
+        // `-predict never`: no gate at all, which is the pane without predicted echo, to compare.
+        let gate = UserDefaults.standard.string(forKey: "predict") == "never" ? nil : EchoGate()
+        let stream = link.stream(control: control, sessionID: "replay", blockID: "replay", echoGate: gate)
         let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: config.fontSize, theme: theme)
         let player = EchoScriptPlayer(script: script, link: link, host: host)
         host.echoContext = { [weak player] in (agent: false, foreground: player?.foreground) }

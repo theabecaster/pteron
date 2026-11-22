@@ -2158,7 +2158,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func engineSend(_ bytes: [UInt8]) {
+        let began = EchoProbe.active != nil ? EchoProbe.clock() : 0  // PERF
         stream.send(bytes)
+        EchoProbe.active?.cost(.mainSend, since: began)  // PERF
         keyBar.consumedModifiers()
     }
 
