@@ -19,6 +19,14 @@ import UIKit
 /// - `wait:<seconds>`: pause.
 /// - `rotate:<portrait|landscapeLeft|landscapeRight>`: turn the app's window, as the phone does:
 ///   a real change of its size, traits and safe area, the nearest the simulator comes to a fold.
+/// - `tap:<column>,<row>`: a finger's tap on that cell of the screen (both from 0), decided by
+///   the host from what the pane knows at that moment (`TerminalHost.tap`). It logs the outcome.
+/// - `away`: wait until the app has left the front and is active again (at most two minutes
+///   each way); something else sends it away and brings it back (`simctl`).
+/// - `reconnect`: start the pane's stream over, as after a lost connection, and wait until it
+///   is current again (at most 20 s).
+/// - `<step>+<step>`: the steps one after the other with no pause between them, for a tap
+///   right after a return or a reconnect: `away+tap:3,1`.
 ///
 /// Use only with a throwaway `zz-` session.
 @MainActor
@@ -50,6 +58,10 @@ enum KeyboardTest {
     }
 
     private static func perform(_ step: String, on host: TerminalHost) async {
+        if step.contains("+") {
+            for part in step.split(separator: "+") { await perform(String(part), on: host) }
+            return
+        }
         let (verb, arg) = step.firstIndex(of: ":").map { (String(step[..<$0]), String(step[step.index(after: $0)...])) } ?? (step, "")
         switch verb {
         case "up":
@@ -75,6 +87,35 @@ enum KeyboardTest {
             if host.jumpButton.shown { host.jumpButton.sendActions(for: .touchUpInside) }
         case "wait":
             try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+        case "tap":
+            let cell = arg.split(separator: ",").compactMap { Int($0) }
+            guard cell.count == 2 else { break }
+            let rect = host.term.viewportRect(row: cell[1], columns: cell[0]..<(cell[0] + 1))
+            let up = host.keyboardUp
+            let outcome = host.tap(at: CGPoint(x: rect.midX, y: rect.midY), shift: false, keyboardUp: up,
+                                   hadSelection: host.term.hasActiveSelection)
+            NSLog("KEYBOARD_TEST tap %d,%d keyboardUp=%d outcome=%@", cell[0], cell[1], up ? 1 : 0, "\(outcome)")
+        case "away":
+            // Bounded both ways: 2400 looks, 50 ms apart.
+            var looks = 0
+            while UIApplication.shared.applicationState == .active, looks < 2400 {
+                looks += 1
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            looks = 0
+            while UIApplication.shared.applicationState != .active, looks < 2400 {
+                looks += 1
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            NSLog("KEYBOARD_TEST away back=%d", UIApplication.shared.applicationState == .active ? 1 : 0)
+        case "reconnect":
+            host.stream.restart()
+            var looks = 0
+            while host.isCatchingUp, looks < 400 {
+                looks += 1
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            NSLog("KEYBOARD_TEST reconnect current=%d", host.isCatchingUp ? 0 : 1)
         case "rotate":
             // A real change of the window's size, traits and safe area, as a fold makes: the
             // simulator can't fold the Duo, but it can turn it.

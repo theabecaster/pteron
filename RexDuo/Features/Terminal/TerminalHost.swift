@@ -1109,7 +1109,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     /// The terminal has the keyboard and shows it (the system keyboard or the key bar).
-    private var keyboardUp: Bool { term.isFirstResponder && !keyboardQuiet }
+    var keyboardUp: Bool { term.isFirstResponder && !keyboardQuiet }
 
     /// The pane the user is working in: active, on screen, in the app in front, with nothing
     /// lying over it (`PaneFront`). The program's focus and its right to write the pasteboard

@@ -199,7 +199,13 @@ builds.
   it is live (`Features/Terminal/KeyboardTest.swift`): `up`, `down`, `scroll:<points>`,
   `drag:<points>` (a drag let go there, which ends at the pin within a row of it), `type:<text>`, `jump` (a tap on the jump-to-bottom button), `wait:<s>`,
   `rotate:<portrait|landscapeLeft|landscapeRight>` (turns the window: a real change of its size,
-  traits and safe area). Each step logs the
+  traits and safe area), `tap:<column>,<row>` (a finger's tap on that cell of the screen, from 0,
+  decided by the host as a real tap is; it logs `tap … keyboardUp= outcome=`), `away` (waits until
+  the app has left the front and is active again; send it away with `xcrun simctl launch <id>
+  com.apple.Preferences` and bring it back with `xcrun simctl openurl <id> rexduo://open`),
+  `reconnect` (starts the pane's stream over and waits until it is current again), and
+  `<step>+<step>` (the steps with no pause between them: `away+tap:3,1` taps right after the
+  return). Each step logs the
   grid, the cover, the scroll position (`y=<offset>/<offset at the pin>` in points), the button's state, `jump=` and `unseen=`, and whether
   the terminal is first responder, `first=` (`KEYBOARD_TEST`). A second line per step gives, on
   screen, the keyboard's last reported end frame `kb=x,y,wxh` (`null` before any report), the key
