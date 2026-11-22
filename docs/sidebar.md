@@ -41,7 +41,8 @@ Sessions are what people look for, so their names are full contrast and semibold
   Aider, Cursor), else an SF Symbol (`cpu` for Amp, which publishes only a wordmark; `terminal`
   for a shell). One table for the whole app, `AgentGlyph` (GlanceUI); the marks and their sources
   are in `Brand/agents/README.md`. The tab strip's chips, Go to Anything and the pane menus draw
-  the same glyphs.
+  the same glyphs. A mark is never recolored: in a tile it is knocked out in the background
+  color; on its own (the board's ring) it is the foreground, or Clay for Claude.
 - **Rhythm.** Tighter within a group, looser between groups: 18 pt above each machine, 6 pt above
   each session after the first, none between tabs. Machine rows are 44 pt, session and tab rows
   36 pt. The gaps scale with Dynamic Type up to 30 and 10 pt.

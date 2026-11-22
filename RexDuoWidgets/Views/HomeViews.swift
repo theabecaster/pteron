@@ -85,7 +85,7 @@ struct GlanceHomeView: View {
     }
 
     private func ring(_ agent: GlanceSnapshot.Agent, _ d: CGFloat) -> some View {
-        GlanceRing(state: "blocked", kind: agent.kind, symbol: agent.symbol, bundle: style.symbols, tint: style.tint(kind: agent.kind),
+        GlanceRing(state: "blocked", kind: agent.kind, symbol: agent.symbol, bundle: style.symbols, tint: style.ink(kind: agent.kind),
                    color: style.state(.waiting), ground: style.ground, diameter: d, strokes: Accented()) {
             $0.widgetAccentedRenderingMode(.accentedDesaturated)
         }

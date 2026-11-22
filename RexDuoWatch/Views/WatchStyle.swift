@@ -25,7 +25,8 @@ struct WatchStyle {
     var waiting: Color { colors.blocked }
 
     func state(_ urgency: GlanceDigest.Urgency) -> Color { colors.state(urgency) }
-    func tint(kind: String?) -> Color { AgentGlyph.tint(kind: kind, colors) }
+    /// A ring's glyph: a mark in the foreground, never recolored (`AgentGlyph.ink`).
+    func ink(kind: String?) -> Color { AgentGlyph.ink(kind: kind, colors) }
 
     /// The headline's color: the state's, as on the agent board ("2 need you" in the waiting
     /// color, "3 working" in the working color, "All done" in green). Plain when all is quiet,
@@ -71,7 +72,7 @@ struct WatchRing: View {
     var breathes = false
 
     var body: some View {
-        GlanceRing(state: "blocked", kind: row.kind, symbol: row.symbol, tint: style.tint(kind: row.kind), color: style.waiting,
+        GlanceRing(state: "blocked", kind: row.kind, symbol: row.symbol, tint: style.ink(kind: row.kind), color: style.waiting,
                    ground: .black, diameter: diameter)
             .modifier(WatchBreath(on: breathes && !row.lastKnown, color: style.waiting, diameter: diameter))
     }

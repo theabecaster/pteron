@@ -30,6 +30,8 @@ struct GlanceStyle {
     }
 
     func tint(kind: String?) -> Color { fullColor ? AgentGlyph.tint(kind: kind, colors) : .primary }
+    /// A ring's glyph: a mark in the foreground, never recolored (`AgentGlyph.ink`).
+    func ink(kind: String?) -> Color { fullColor ? AgentGlyph.ink(kind: kind, colors) : .primary }
 
     /// The headline's color: its state's, as on the agent board and the watch ("2 need you" in
     /// the waiting color, "All done" in green). Plain when all is quiet or the snapshot is old,

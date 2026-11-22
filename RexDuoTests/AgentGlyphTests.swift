@@ -43,6 +43,21 @@ import UIKit
         #expect(AgentGlyph.name(agent: nil, fallback: "cpu") == "cpu")
     }
 
+    /// A mark is never recolored: on its own it is the foreground, Claude's is Anthropic's Clay,
+    /// and only a kind without a mark keeps its tint.
+    @Test func aMarkIsDrawnInTheForeground() {
+        for theme in ThemeStore.all {
+            for kind in AgentKind.allCases + [nil] {
+                let ink = AgentGlyph.ink(agent: kind, theme)
+                switch kind {
+                case .claude: #expect(ink == Color(hex: "#d97757"), "\(theme.id)")
+                case .amp, nil: #expect(ink == TabRowLabel.tint(kind, theme), "\(theme.id)")
+                default: #expect(ink == theme.fg, "\(kind?.rawValue ?? "") in \(theme.id)")
+                }
+            }
+        }
+    }
+
     /// A mark at a font's size is about as tall and wide as the SF Symbols it replaced, so no
     /// row, ring or tile changes its layout.
     @Test func aMarkSizesLikeTheSymbols() throws {

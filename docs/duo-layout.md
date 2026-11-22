@@ -201,9 +201,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     "3 working", "All done", "All quiet"), and under it the machine, or how many are connected.
     Then a tile per agent that isn't idle, from the same data and in the same order as the
     sidebar's Agents mode, across machines: waiting (the longest first), error, working, done.
-    A tile has the agent's glyph (its maker's mark, `AgentGlyph`) in a ring for its state (an arc that turns slowly, or fills to
-    its progress; a solid ring that breathes, with a raised hand; a full ring with a check or an
-    x), its name, the state in the Agents mode's words, its last message and "session › tab".
+    A tile has the agent's glyph (its maker's mark in the foreground, `AgentGlyph`) in a ring
+    for its state (an arc that turns slowly, or fills to its progress; a solid ring that
+    breathes, with a raised hand; a full ring with a check or an x), its name, the state in the
+    Agents mode's words, its last message and "session › tab".
     A waiting tile also says for how long ("12m"), the one time the app tracks. The machine's
     name shows only when the tiles span machines. Idle agents are a "+N idle" line. The edges
     glow in the most urgent state's color while somebody waits, fails or works.

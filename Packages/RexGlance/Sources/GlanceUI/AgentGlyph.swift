@@ -45,6 +45,15 @@ public enum AgentGlyph {
         image(name(kind: kind, symbol: symbol), bundle: bundle)
     }
 
+    /// The color of an agent's glyph drawn on its own (the ring's), not knocked out of a tile:
+    /// a mark is never recolored, so it takes the foreground, as its owner publishes it in one
+    /// neutral color, except Claude's, in Anthropic's own Clay. A kind without a mark keeps its
+    /// tint. A tile draws its glyph in the background color over the tint instead.
+    public static func ink(kind: String?, _ colors: GlanceColors) -> Color {
+        kind != "claude" && mark(kind: kind) != nil ? colors.fg : tint(kind: kind, colors)
+    }
+
+    /// An agent's tint: its tile's fill, and the glyph of a kind without a mark.
     public static func tint(kind: String?, _ colors: GlanceColors) -> Color {
         switch kind {
         case "claude": Color(glanceHex: "#d97757")

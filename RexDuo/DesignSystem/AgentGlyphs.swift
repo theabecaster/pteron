@@ -13,6 +13,12 @@ extension AgentGlyph {
     static func image(agent: AgentKind?, fallback: String = "terminal") -> Image {
         image(name(agent: agent, fallback: fallback))
     }
+
+    /// `ink(kind:_:)` for the app's theme: the foreground for a mark, Clay for Claude, else the
+    /// sidebar's tint (`TabRowLabel.tint`). A test holds the two together.
+    static func ink(agent: AgentKind?, _ theme: TermTheme) -> Color {
+        agent != .claude && mark(kind: agent?.rawValue) != nil ? theme.fg : TabRowLabel.tint(agent, theme)
+    }
 }
 
 extension Label where Title == Text, Icon == Image {

@@ -282,7 +282,7 @@ private struct BoardTile: View {
 
     private func ring(_ d: CGFloat) -> some View {
         BoardRing(state: agent.state, progress: agent.progress, glyph: AgentGlyph.name(agent: agent.kind, fallback: "cpu"),
-                  tint: TabRowLabel.tint(agent.kind, theme), color: stateColor, ground: theme.chrome.sidebar,
+                  tint: AgentGlyph.ink(agent: agent.kind, theme), color: stateColor, ground: theme.chrome.sidebar,
                   diameter: d, still: still || tile.stale)
     }
 

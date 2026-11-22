@@ -198,7 +198,7 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
   theme's own appearance (`GlanceColors`): the widget's background is the app's canvas, tiles
   are the sidebar color, secondary and tertiary text the app's, all through the same
   perceptual `Color.mix` and fractions as `TermTheme.Chrome` (a test in the app compares them
-  for every theme in both slots, and every agent's tint with the sidebar's).
+  for every theme in both slots, and every agent's tint and glyph color with the app's).
 - **State** has the board's colors (waiting ANSI 3, error 1, working 4, done 2) and always a
   word or a badge as well. A 1.5 pt edge in the most urgent state's color shows only while
   someone waits, fails or works. The headline takes its state's color, as on the watch ("All
@@ -212,7 +212,9 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
   for another program, in the agent's tint with its glyph (`kind`, else `symbol`), and the
   state's badge: the raised hand, the x, the check, or the sidebar's dot for working. Idle and
   last-known tiles are dimmed. A waiting agent's tile opens its pane; the others open what the widget opens.
-- **`GlanceRing`** is the board's ring with no motion.
+- **`GlanceRing`** is the board's ring with no motion. Its glyph is never recolored: a mark is
+  in the foreground, Claude's in Anthropic's Clay, and only a kind without a mark takes its
+  tint (`AgentGlyph.ink`); the state's color is on the ring, never on the mark.
 - **Type**: the system font. Headline 22 pt bold in small, 20 pt elsewhere; names 13 pt
   semibold; state words 12 pt semibold; places 11 pt. Dynamic Type stops at xxLarge.
 - **Tinted, clear and vibrant** (`GlanceStyle`): no palette; text is primary or secondary,

@@ -45,7 +45,14 @@ partnership. All rights belong to their owners.
 ## How they were made
 
 Each mark is its owner's own vector, unchanged in shape: only scaled, placed on Apple's symbol
-template and drawn in one color, as every glyph in the app is. Nothing else was added or redrawn.
+template and drawn in one color. Nothing else was added or redrawn.
+
+No mark is recolored. On its own (the agent board's ring, the widgets' and the watch's rings) a
+mark is drawn in the text's foreground color, near black or near white, and Claude's in
+Anthropic's own Clay; a state's color stays on the ring around it. In a tile (the sidebar, the
+tab strip, the widgets' tiles) the mark is knocked out in the background color. The widgets'
+tinted and clear modes and the Lock Screen and watch faces tint everything, marks included: that
+is the system's doing (`AgentGlyph.ink` in GlanceUI).
 
 - Each is sized to read as large as the SF Symbols it replaced at the same font size (about 68
   to 84 units tall at 100 pt, centered on the cap height) with a 7-unit margin on each side.

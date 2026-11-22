@@ -59,6 +59,7 @@ import Testing
             let colors = GlanceColors.pick(GlanceSource.palette(p), system: .dark)
             for kind in kinds {
                 same(AgentGlyph.tint(kind: kind?.rawValue, colors), TabRowLabel.tint(kind, theme), "\(kind?.rawValue ?? "none") in \(theme.id)")
+                same(AgentGlyph.ink(kind: kind?.rawValue, colors), AgentGlyph.ink(agent: kind, theme), "ink, \(kind?.rawValue ?? "none") in \(theme.id)")
             }
         }
     }
