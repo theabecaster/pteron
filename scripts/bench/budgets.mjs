@@ -56,6 +56,12 @@ export const scenarios = {
   // in a task (`TerminalStream.pump(now:)`); before that a send cost 32 µs here and the key
   // waited for the turn to end. Ruled by lead dev, 2026-11-22: the write starts in the key's
   // turn, and its cost on the main thread is accepted up to this limit.
+  // The number is taken on the benchmark's scripted link, whose `start` only records the text.
+  // It leaves out what `RexControl.start` does in the same turn on a real connection: the
+  // request's JSON, URLSession's send and the watchdog. That part is measured alone, on the
+  // Mac, against a local server: 32 µs (RexKit's `ControlStartTests`,
+  // `testWhatAStartCostsTheCallersTurn`, run by hand). It has no budget: there is nothing to
+  // take its ratio to, and one process's median in µs moves with the machine.
   'predict-fast': { 'echo.predictors': 0, 'echo.mainKeyUs.count': 0, 'echo.feedKeyUs.count': 0,
                     'echo.mainSendUs.median': 100 },
   // The fast link with no gate: `predict-fast`'s baseline, held to the same limit per send.

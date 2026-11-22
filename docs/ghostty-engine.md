@@ -465,6 +465,19 @@ and `predict-fast-off` are the pair on a 5 ms link, where the gate is there and 
 | gate present and off: a key's send, against the same with no gate | 1.05 times | 1.01 to 1.03 times (59.7 against 59.0, 60.7 against 59.2) |
 | fast link: a key's whole send on the main thread, with and without a gate | 100 µs | 60 µs; 59 µs. Nearly every key finds the queue idle there, so its write starts in the key's own turn (docs/terminal.md, Input); it was 32 µs when the write started in a task |
 
+The send's numbers are taken on the benchmark's scripted link, whose `start` only records the
+text. They leave out what `RexControl.start` does in the same turn on a real connection: it
+encodes the request as JSON with sorted keys, hands it to URLSession's socket and arms the
+watchdog. That part is measured alone, in RexKit on the Mac against a local server
+(`ControlStartTests`, `testWhatAStartCostsTheCallersTurn`; the unit suite skips it, and its
+comment has the command): a median of 32 µs over 400 calls in a Debug build (31.5, 32.1 and
+32.4 in three runs, 1-minute load 2.5; p95 62 to 73, least 7). It has no budget. The three
+medians agree, but they were taken in one quiet minute, the calls in one run spread from 7 to
+73 µs with the state of the machine, and there is no second number in the same process to take
+a ratio to, as the filter's measurement has. So a real key's send costs the main thread the
+table's number plus this part, which is known for the Mac only, and only the table's number
+is held to a limit.
+
 With the gate off a key costs the stream one check that it has no observer; a write of typed
 text costs one reading of the uptime clock when it leaves and one with the running average
 when it is answered.
