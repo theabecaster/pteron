@@ -135,6 +135,7 @@ final class GhosttyRenderer: @unchecked Sendable {
     private var pendingAtlas: GhosttyGlyphAtlas?
     private var pendingSelection: UInt32?
     private var pendingFindColors: GhosttyFindHighlights.Colors?
+    private var pendingContrast: Bool?
     private var redraw = true
     /// The layer, its size or its visibility changed: what was learned about its drawables
     /// (`drawableRetryAt`) no longer holds.
@@ -175,6 +176,9 @@ final class GhosttyRenderer: @unchecked Sendable {
         var highlights: MTLBuffer?
         /// The `frame.highlightsVersion` the highlight buffer holds. -1: none.
         var highlightsVersion = -1
+        /// Predicted echo: masks then underlines, and the guessed glyphs. Made on the first guess.
+        var echoRects: MTLBuffer?
+        var echoGlyphs: MTLBuffer?
     }
 
     /// Any buffer set holds a highlight buffer (tests: none before the first match, none after
@@ -263,6 +267,8 @@ final class GhosttyRenderer: @unchecked Sendable {
     func setAtlas(_ a: GhosttyGlyphAtlas) { configure { pendingAtlas = a } }
     func setSelectionColor(_ c: UInt32) { configure { pendingSelection = c } }
     func setFindColors(_ c: GhosttyFindHighlights.Colors) { configure { pendingFindColors = c } }
+    /// Increase Contrast: predicted echo's underline at full alpha instead of half.
+    func setIncreaseContrast(_ on: Bool) { configure { pendingContrast = on } }
 
     // MARK: Cursor blink (render thread)
 
@@ -406,12 +412,14 @@ final class GhosttyRenderer: @unchecked Sendable {
         configLock.lock()
         var mustDraw = redraw
         redraw = false
-        let atlas = pendingAtlas, selection = pendingSelection, findColors = pendingFindColors
+        let atlas = pendingAtlas, selection = pendingSelection, findColors = pendingFindColors, contrast = pendingContrast
         pendingAtlas = nil
         pendingSelection = nil
         pendingFindColors = nil
+        pendingContrast = nil
         configLock.unlock()
         if let findColors { frame.findColors = findColors }
+        if let contrast { frame.echoUnderlineAlpha = contrast ? 255 : 128 }
         if let atlas {
             frame.atlas = atlas
             frame.invalidate()
@@ -601,6 +609,40 @@ final class GhosttyRenderer: @unchecked Sendable {
         textures.sync(atlas, device: metal.device)
         atlas.unlock()
 
+        // Predicted echo: its own buffers, so the rows' buffers keep their version. Small (at most
+        // three instances per guess), so they are filled every frame that has any; a mask on the
+        // block cursor's cell keeps the cursor's colour.
+        let echoMasks = frame.echoMasks, echoLines = frame.echoLines, echoGlyphs = frame.echoGlyphs
+        var echoRectBuffer: MTLBuffer?, echoGlyphBuffer: MTLBuffer?
+        let echoRectCount = echoMasks.count + echoLines.count
+        if echoRectCount > 0 {
+            let bytes = echoRectCount * stride
+            if (set.echoRects?.length ?? 0) < bytes {
+                set.echoRects = metal.device.makeBuffer(length: max(1024, bytes * 2), options: .storageModeShared)
+            }
+            if let b = set.echoRects {
+                let p = b.contents().bindMemory(to: GhosttyRectInstance.self, capacity: echoRectCount)
+                let cursorRow = UInt16(clamping: cursor.y), cursorX = cursor.x * m.cellWidth
+                for (i, r) in echoMasks.enumerated() {
+                    var r = r
+                    if isBlock, r.row == cursorRow, Int(r.x) == cursorX { r.color = cursor.color }
+                    p[i] = r
+                }
+                for (i, r) in echoLines.enumerated() { p[echoMasks.count + i] = r }
+                echoRectBuffer = b
+            }
+        }
+        if !echoGlyphs.isEmpty {
+            let bytes = echoGlyphs.count * glyphStride
+            if (set.echoGlyphs?.length ?? 0) < bytes {
+                set.echoGlyphs = metal.device.makeBuffer(length: max(1024, bytes * 2), options: .storageModeShared)
+            }
+            if let b = set.echoGlyphs {
+                echoGlyphs.withUnsafeBufferPointer { b.contents().copyMemory(from: UnsafeRawPointer($0.baseAddress!), byteCount: bytes) }
+                echoGlyphBuffer = b
+            }
+        }
+
         // Smooth scrolling: the grid is shifted up by the part of a row scrolled past (the overscan
         // row fills the bottom edge), and by the rubber band past either end.
         let scroll = Float(frame.scrollOffset)
@@ -659,6 +701,24 @@ final class GhosttyRenderer: @unchecked Sendable {
             encoder.setFragmentTexture(mask, index: 0)
             encoder.setFragmentTexture(color, index: 1)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: g)
+        }
+        // Predicted echo over the rows' glyphs: masks, guessed glyphs, underlines.
+        if let echoRectBuffer, !echoMasks.isEmpty {
+            encoder.setRenderPipelineState(metal.rectPipeline)
+            encoder.setVertexBuffer(echoRectBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: echoMasks.count)
+        }
+        if let echoGlyphBuffer, let mask = textures.mask, let color = textures.color {
+            encoder.setRenderPipelineState(metal.glyphPipeline)
+            encoder.setVertexBuffer(echoGlyphBuffer, offset: 0, index: 0)
+            encoder.setFragmentTexture(mask, index: 0)
+            encoder.setFragmentTexture(color, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: echoGlyphs.count)
+        }
+        if let echoRectBuffer, !echoLines.isEmpty {
+            encoder.setRenderPipelineState(metal.rectPipeline)
+            encoder.setVertexBuffer(echoRectBuffer, offset: echoMasks.count * stride, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: echoLines.count)
         }
         if totalRects > firstB {
             encoder.setRenderPipelineState(metal.rectPipeline)
