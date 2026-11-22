@@ -41,6 +41,8 @@ public final class ScriptedEchoLink {
         set { link.inputMode = newValue }
     }
 
+    /// How many times `terminal.input_mode` was asked.
+    public var inputModeReads: Int { link.inputModeReads }
     /// The texts of the writes the stream sent, in order.
     public var written: [String] { link.written }
     /// The stream has opened its data socket: what `deliver` is given now arrives.
@@ -64,6 +66,7 @@ public final class ScriptedEchoLink {
         let sleep: @MainActor (Duration) async -> Void
         var written: [String] = []
         var inputMode: (echo: Bool, canonical: Bool)?
+        var inputModeReads = 0
         var socket: Socket?
 
         init(writeDelay: Duration, opening: [UInt8], nonce: UInt64, sleep: @escaping @MainActor (Duration) async -> Void) {
@@ -90,6 +93,7 @@ public final class ScriptedEchoLink {
             case "com.superlogical.terminal.input_mode":
                 // One round trip, as any call.
                 let mode = inputMode
+                inputModeReads += 1
                 await sleep(writeDelay)
                 return mode.map { ["echo": $0.echo, "canonical": $0.canonical] } ?? [:]
             default:

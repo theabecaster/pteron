@@ -516,10 +516,80 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertNil(m.overlay)
     }
 
+    /// Enter ends the line, and the prompt is not open again until the shell says so. The
+    /// guesses already on screen stay through that round trip: only the screen takes them back.
+    func testEnterDoesNotHideGuessesAlreadyDrawn() {
+        for markers in [false, true] {
+            let s = ready(markers: markers)
+            s.type("bc")
+            XCTAssertEqual(s.guesses, "bc", "markers \(markers)")
+            s.key(.boundary(newLine: true))
+            XCTAssertEqual(s.guesses, "bc", "markers \(markers): Enter does not blank the end of the line")
+            XCTAssertEqual(s.visible(0), "$ abc")
+            // A key typed after Enter is never drawn: the line is over.
+            s.key(char("x"))
+            XCTAssertEqual(s.guesses, "bc", "markers \(markers)")
+            s.echo("bc")
+            XCTAssertNil(s.overlay, "markers \(markers): the screen shows them")
+            XCTAssertEqual(s.p.counters.mismatchedDrawn, 0)
+            XCTAssertEqual(s.p.counters.vanished, 0)
+        }
+    }
+
+    /// While the prompt is not open no new key is drawn, drawn neighbours or not.
+    func testAfterEnterNoNewKeyIsDrawn() {
+        let s = ready()
+        s.type("b")
+        s.key(.boundary(newLine: true))
+        let drawn = s.p.counters.drawn
+        s.type("cd")
+        XCTAssertEqual(s.p.counters.drawn, drawn)
+        XCTAssertEqual(s.guesses, "b")
+    }
+
+    /// The program leaves the screen the guesses were made on (an editor opened from the line
+    /// on the alternate screen): they go at once.
+    func testGuessesGoWhenTheScreenNoLongerAllowsThem() {
+        let s = ready()
+        s.type("bc")
+        XCTAssertEqual(s.guesses, "bc")
+        s.output { $0.screenAllows = false }
+        XCTAssertNil(s.overlay)
+        XCTAssertEqual(s.p.counters.resets, 1)
+        XCTAssertEqual(s.p.counters.mismatched, 0)
+        s.output { $0.screenAllows = true }
+        XCTAssertNil(s.overlay, "and do not come back with it")
+    }
+
+    /// Confirmed keys are dropped from the epoch, so a long line keeps only what is pending,
+    /// and the predictor is idle (output needs no look at the grid) once nothing is tracked.
+    func testALongLineKeepsOnlyWhatIsPending() {
+        let s = ready(cols: 200)
+        for i in 0..<150 {
+            let c = Character(UnicodeScalar(UInt8(97 + i % 26)))
+            let k = s.key(char(c))
+            XCTAssertEqual(s.guesses, String(c), "key \(i) is drawn alone: the ones before are confirmed and gone")
+            s.echo(String(c))
+            s.answer(k)
+        }
+        XCTAssertEqual(s.p.counters.confirmed, 151)
+        XCTAssertEqual(s.p.counters.mismatched, 0)
+        XCTAssertEqual(s.p.pendingKeys, 0)
+        XCTAssertFalse(s.p.isIdle, "the line is still open")
+        s.key(.boundary(newLine: true))
+        s.echo("\r\n")
+        XCTAssertTrue(s.p.isIdle, "nothing tracked, nothing drawn")
+    }
+
     func testInputModeDecision() {
         XCTAssertTrue(EchoInputMode.proves(.init(echo: false, canonical: false), foreground: "zsh"))
         XCTAssertTrue(EchoInputMode.proves(.init(echo: false, canonical: false), foreground: "-zsh"))
-        XCTAssertTrue(EchoInputMode.proves(.init(echo: true, canonical: false), foreground: "/bin/bash"))
+        XCTAssertFalse(EchoInputMode.proves(.init(echo: true, canonical: false), foreground: "/bin/bash"),
+                       "a script's read -n1: the tty echoes for it, until its next read says otherwise")
+        XCTAssertTrue(EchoInputMode.canProve(foreground: "/bin/zsh"))
+        for front in ["ssh", "vim", "python3", nil] as [String?] {
+            XCTAssertFalse(EchoInputMode.canProve(foreground: front), "no reading can prove anything in front of \(front ?? "nothing")")
+        }
         XCTAssertFalse(EchoInputMode.proves(.init(echo: false, canonical: true), foreground: "zsh"), "a password reader")
         XCTAssertFalse(EchoInputMode.proves(.init(echo: true, canonical: true), foreground: "zsh"),
                        "an echoing tty proves nothing: its program can turn echo off without a word")

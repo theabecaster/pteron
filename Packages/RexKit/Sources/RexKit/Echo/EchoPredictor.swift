@@ -199,10 +199,17 @@ public final class EchoPredictor {
         /// `marks.lastEnd` when the epoch began.
         var endSerial: Int
         var keys: [Key] = []
-        /// L₀…Lₙ; `states[i]` is the line after `keys[i - 1]`.
+        /// `states[i]` is the line after `keys[i - 1]`; `states[0]` is the line before
+        /// `keys[0]`. Keys the screen confirmed are dropped with their states (`trim`), so
+        /// both hold only what is pending and a long line costs no more per key than a short
+        /// one.
         var states: [Line]
-        /// The index of the confirmed state (0 at the start).
+        /// The index of the confirmed state: 0 after every `trim`.
         var confirmed = 0
+        /// Keys confirmed and dropped so far.
+        var trimmed = 0
+        /// The widest any state of the epoch has been, in cells from `start`.
+        var extent: Int
         /// No more keys: a boundary came.
         var closed = false
         /// The boundary was a new line: what the screen does now is the program's, so a failed
@@ -210,8 +217,17 @@ public final class EchoPredictor {
         var endedByNewLine = false
         /// Drain batches in a row that ended with the cursor away from the epoch's row.
         var awayBatches = 0
-        var tentative: Bool { confirmed == 0 }
-        var extent: Int { states.map(\.cells.count).max() ?? 0 }
+        /// No key of the epoch was confirmed yet.
+        var tentative: Bool { confirmed == 0 && trimmed == 0 }
+
+        /// Drops the confirmed keys and the states before the confirmed one.
+        mutating func trim() {
+            guard confirmed > 0 else { return }
+            keys.removeFirst(confirmed)
+            states.removeFirst(confirmed)
+            trimmed += confirmed
+            confirmed = 0
+        }
     }
 
     private enum Lockout { case none, untilBoundary, untilNewLine }
@@ -366,6 +382,7 @@ public final class EchoPredictor {
                 if i < next.cells.count { next.cells[i] = 0 }
             }
             e.keys.append(Key(op: op, seq: seq, typedAt: now))
+            e.extent = max(e.extent, next.cells.count)
             e.states.append(next)
             counters.placed += 1
             return true
@@ -379,7 +396,7 @@ public final class EchoPredictor {
         first.cells = [UInt32(b)]
         epoch = Epoch(row: y, start: x, anchor: x > 0 ? Self.norm(grid.cell(x - 1, y).scalar) : 0,
                       scrollback: grid.scrollbackRows, endSerial: grid.marks.lastEnd,
-                      keys: [Key(op: op, seq: seq, typedAt: now)], states: [Line(cursor: x), first])
+                      keys: [Key(op: op, seq: seq, typedAt: now)], states: [Line(cursor: x), first], extent: 1)
         counters.placed += 1
         return true
     }
@@ -538,10 +555,24 @@ public final class EchoPredictor {
     }
 
     private func killOnMarker(_ grid: some EchoGrid) {
-        guard let e = epoch, grid.marks.sentB, grid.marks.lastEnd != e.endSerial else { return }
+        guard let e = epoch else { return }
+        // The program left the screen the guesses were made on (the alternate screen of an
+        // editor opened from the line, a hidden cursor): they go with it.
+        if !grid.screenAllows {
+            epoch = nil
+            counters.resets += 1
+            return
+        }
+        guard grid.marks.sentB, grid.marks.lastEnd != e.endSerial else { return }
         epoch = nil
         counters.markerKills += 1
     }
+
+    /// Keys the epoch still holds (tests): those the screen has not confirmed.
+    var pendingKeys: Int { epoch.map { $0.keys.count } ?? 0 }
+
+    /// Nothing is tracked or drawn: output needs no look at the grid.
+    public var isIdle: Bool { epoch == nil && overlay == nil }
 
     /// With OSC 133: the shell's input is open now.
     private func markersOpen(_ grid: some EchoGrid) -> Bool {
@@ -596,6 +627,7 @@ public final class EchoPredictor {
         // evidence: the grid looks that way before the echo too. It is confirmed with the next
         // state that differs, or goes with the safety cap.
         let before = e.confirmed
+        let first = e.tentative
         var j = e.confirmed + 1
         while j <= e.keys.count, e.keys[j - 1].seq <= answeredThrough {
             if matches(e, j, grid), !Self.sameView(e.states[e.confirmed], e.states[j], start: e.start) {
@@ -608,7 +640,7 @@ public final class EchoPredictor {
             let n = e.confirmed - before
             counters.confirmed += n
             for _ in 0..<n { note(true) }
-            if before == 0, !grid.marks.sentB, !proven, !proofInFlight {
+            if first, !grid.marks.sentB, !proven, !proofInFlight {
                 proofInFlight = true
                 proofWanted = proofGeneration
             }
@@ -618,6 +650,7 @@ public final class EchoPredictor {
             epoch = nil
             return
         }
+        e.trim()
         epoch = e
     }
 
@@ -659,11 +692,17 @@ public final class EchoPredictor {
         if lowAccuracy, ratio > Self.high { lowAccuracy = false }
     }
 
-    /// How many keys of `e` are drawn: none while tentative, while the prompt isn't open or
-    /// accuracy is low; otherwise all, except keys typed `overdue` after an unconfirmed drawn
-    /// key's answer, which wait for it.
+    /// How many keys of `e` are drawn: none while tentative. While the prompt isn't open or
+    /// accuracy is low no NEW key is drawn, but the keys already on screen stay: they were
+    /// drawn with proof, and only the screen takes a guess back (confirmed, contrary content,
+    /// the cap, a reset). So Enter does not blank the end of the line for a round trip.
+    /// Otherwise all are drawn, except keys typed `overdue` after an unconfirmed drawn key's
+    /// answer, which wait for it.
     private func shown(_ e: Epoch, grid: some EchoGrid) -> Int {
-        guard !e.tentative, !lowAccuracy, promptOpen(grid) else { return e.confirmed }
+        guard !e.tentative else { return e.confirmed }
+        guard !lowAccuracy, promptOpen(grid) else {
+            return e.keys[e.confirmed...].firstIndex { $0.drawnAt == nil } ?? e.keys.count
+        }
         var d = e.keys.count
         var i = e.confirmed
         while i < e.keys.count {
@@ -685,7 +724,7 @@ public final class EchoPredictor {
         epoch = nil
         defer { epoch = e }
         let d = shown(e, grid: grid)
-        guard d > e.confirmed, grid.cursorY == e.row, grid.cursorX >= e.start,
+        guard d > e.confirmed, grid.screenAllows, grid.cursorY == e.row, grid.cursorX >= e.start,
               grid.scrollbackRows == e.scrollback, anchorHolds(e, grid) else { overlay = nil; return }
         let target = e.states[d]
         let realX = grid.cursorX

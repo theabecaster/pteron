@@ -56,8 +56,8 @@ public struct EchoInputMode: Equatable, Sendable {
         self.init(echo: echo, canonical: canonical)
     }
 
-    /// Whether a reading proves the program reads a line that the screen will echo: canonical
-    /// mode off with a local shell in front. A line editor (zsh ZLE, readline, fish) turns echo
+    /// Whether a reading proves the program reads a line that the screen will echo: echo and
+    /// canonical mode both off with a local shell in front. A line editor (zsh ZLE, readline, fish) turns echo
     /// and canonical mode off while it reads a line and draws what is typed itself, and it stays
     /// that way until the user ends the line, which is a boundary the predictor sees.
     ///
@@ -69,9 +69,18 @@ public struct EchoInputMode: Equatable, Sendable {
     ///   moment would be drawn though the tty no longer echoes them;
     /// - over `ssh` the reading describes the local ssh client's tty, not the remote program.
     public static func proves(_ mode: EchoInputMode?, foreground: String?) -> Bool {
-        guard let mode, let front = EchoForeground.normalize(foreground), front != "ssh",
-              EchoForeground.shells.contains(front) else { return false }
-        return !mode.canonical
+        guard let mode, canProve(foreground: foreground) else { return false }
+        // Both off: a line editor. Canonical off with echo on is a program that reads keys
+        // itself and lets the tty echo them (a script's `read -n1`), which can stop echoing
+        // at its next read.
+        return !mode.canonical && !mode.echo
+    }
+
+    /// Whether any reading could prove anything with this program in front: a local shell.
+    /// When not, the reading is not worth a call.
+    public static func canProve(foreground: String?) -> Bool {
+        guard let front = EchoForeground.normalize(foreground), front != "ssh" else { return false }
+        return EchoForeground.shells.contains(front)
     }
 }
 
