@@ -67,10 +67,6 @@ enum KeyBarLayout: String, CaseIterable, Identifiable {
 enum NavigationStyle: String, CaseIterable, Identifiable {
     case sidebar, tabs
 
-    /// Whether Settings offers the choice (Appearance → Navigation). A build constant, not a
-    /// setting.
-    static let isAvailable = true
-
     var id: String { rawValue }
     var title: String {
         switch self {

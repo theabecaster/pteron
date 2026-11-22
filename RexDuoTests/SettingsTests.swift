@@ -86,10 +86,6 @@ import UIKit
 
     // MARK: The Navigation setting
 
-    @Test func settingsOffersTheNavigationStyle() {
-        #expect(NavigationStyle.isAvailable)
-    }
-
     @Test func navigationIsTheSidebarUntilTabsIsPicked() throws {
         let suite = "settings-nav-\(UUID().uuidString)"
         let d = try #require(UserDefaults(suiteName: suite))
