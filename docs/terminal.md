@@ -490,6 +490,100 @@ Around that:
   work when no terminal is first responder (no tab open, keyboard put away). The menu replaces
   the system's Settings item, whose ⌘, would open the Settings app before the keymap sees it.
 
+## Predicted echo
+
+On a slow link a typed character shows at once, before the program's echo comes back, as mosh
+does it. Nothing changes in what is sent: the guess is drawn over the grid and never written to
+the terminal, and the program's output always wins. On a fast link there is no predictor and the
+key path is the one without it.
+
+**When it is on.** `EchoGate` (RexKit, one per server, since a server's panes share one control
+connection) keeps a smoothed round trip (α 1/8) of the `terminal.write` calls typing already
+makes, each from the moment the write leaves to its answer. Nothing is sent to measure.
+
+| Change | When |
+| --- | --- |
+| off → on | 5 samples since the last reset, and the smoothed round trip over 60 ms or two writes of 250 ms within 10 s. One spike does not turn it on. |
+| on → slow | Over 80 ms, or a drawn guess still unconfirmed 300 ms after it was typed. |
+| slow → on | 50 ms or less, the last 10 samples each under 250 ms. |
+| → off | 40 ms or less with no spike in the last 10 samples. |
+| reset to off | A new control connection, a change of route (`RexControl.observeRoute`). Every guess goes too. |
+
+A pane shows more at once; it shows less (slow → on, → off) only once it has nothing pending,
+so the look never changes in the middle of a word (`EchoPaneLevel`). The 80 and 50 ms marks are
+mosh's. The 60 and 40 are not (mosh starts at 30): the off path has to cover a nearby computer on
+Wi-Fi, where an echo lands within a few frames anyway.
+
+**Where a key may be a guess.** Only at a shell's prompt, and every gate must say so:
+
+- The stream classifies every input call (`EchoInputClassifier`): one printable ASCII byte or one
+  Backspace can be a guess; everything else (Enter, control keys, escape sequences, a paste, a
+  key with a modifier, more than one character in a call, a report, an action) is a boundary
+  that ends the line being guessed.
+- The pane's gate on the main thread (`EchoHostGate`): a shell is the program in front
+  (`EchoForeground.shells`), no agent runs in the pane (`BlockMeta.agentKind`), the catch-up
+  fence is down, the keyboard is not composing, no selection is up, Find is closed, and the view
+  is at the bottom. Anything else makes the key a boundary. A pane whose program is unknown
+  guesses nothing.
+- The predictor on the feed queue (`EchoPredictor`), against the grid: the primary screen, the
+  cursor visible, room ahead on the row.
+- Proof that the program echoes. With OSC 133 marks, the prompt's `B` mark of the line being
+  typed. Without them, the first key of a line is tracked but not drawn; once the program has
+  echoed it, the tty's state is read (`terminal.input_mode`, one call per line, on slow links
+  only) and the rest of the line is drawn only if canonical mode is off with a local shell in
+  front, which is a line editor reading a line. Echo off with canonical on is a password reader.
+  Echo on with canonical on proves nothing: it is the tty's resting state, and a program can turn
+  echo off from it at any moment. Over `ssh` the reading describes the local client, so an `ssh`
+  pane predicts only with OSC 133 marks from the remote shell.
+
+So a password prompt (`sudo`, `read -s`), an editor, a pager, an agent's input box and anything
+on the alternate screen draw no guess, typed ahead or not.
+
+**Confirming.** mosh's rules. A line being guessed is an epoch. It starts only once every
+earlier input is answered and 50 ms have passed, so guesses never build on output still on its
+way. A key is confirmed only from the screen after the answer to its own write, in typing
+order, and never from a grid that looks like the state before it. Only contrary screen content
+removes guesses: then the whole epoch's overlay goes in the frame that first draws what proved it
+wrong, with no notice. After wrong guesses (30% or fewer of the last 24 judged keys right) lines
+are tracked without being drawn until 60% are right again. A late echo removes nothing. A guess still unconfirmed 1.5 s after its
+write's answer is cleared without a sign (counted as `vanished` when it was drawn). A resize, a
+reset, a restored snapshot, a theme, dropped output, a lost write, the fence and a reconnect
+clear every guess.
+
+**How a guess looks.** The glyph the program will draw: same font and atlas, the colour and
+bold of the typed cell to its left, else the theme's foreground. No background is drawn over a
+blank cell, so a prompt's own background shows; a cell that holds a character a pending
+Backspace removes gets a mask in that cell's background. The cursor is drawn after the last
+guess, in the terminal's cursor style. While the link is slow every unconfirmed character,
+spaces too, carries a solid underline in its own colour at half strength (full with Increase
+Contrast), and loses it in the frame that draws the program's character. Nothing animates.
+VoiceOver reads the grid, so it reads confirmed text only.
+
+- A program's own underline (a syntax highlighter's path style) looks like an unconfirmed
+  character. Accepted.
+- With an underline cursor the cursor sits in the cell after the trail at full strength.
+- A tap on the prompt that moves the cursor with arrow keys waits while a drawn guess is
+  unconfirmed, at most 2 s, since the cursor on screen is ahead of the program's
+  (`GhosttyTap`, the held prompt click). Any key drops it.
+
+**Threads.** The main thread only hands on what it learned (a key's kind and number, a write's
+answer, a clear), in order with the bytes. The predictor runs on the feed queue with the
+terminal lock held, publishes its overlay in the same lock section as the rows it was computed
+for, and the render thread latches both together (docs/ghostty-engine.md, Predicted echo). The
+host listens to its stream (`inputObserver`, `writeObserver`) only while its gate is on; when
+the gate turns off and nothing is pending, the predictor retires and the host stops listening.
+
+**Limits.** ASCII and Backspace only: no IME text, no emoji, no cursor keys, no completion. No
+guess in the last cells of a row, on a wrapped line's next row, or beside a right-hand prompt
+that the line reaches. An agent that keeps running after its status record is gone is only kept
+out by the other gates.
+
+**Measuring and testing.** `-predict never|always` (Debug only) forces the gate; `-echoTest`
+reports `predictedMs` and the counters; the benchmark's `predict` scenario plays a recorded
+typing session on a scripted link (docs/debug-args.md, docs/ghostty-engine.md, Measurements).
+Recorded sessions of a real shell (`RexDuoTests/Fixtures/echo`, from
+`scripts/record-echo-fixtures.py`) run through the real core in `EchoScriptTests`.
+
 ## Find
 
 Find in Pane, as on the Rex Mac app: type a needle, every match on screen is tinted, the

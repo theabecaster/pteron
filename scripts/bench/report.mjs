@@ -52,7 +52,7 @@ const warm = runs.warm;
 delete runs.warm;
 const scenarios = Object.keys(runs);
 
-// column title, path, and a second path shown beside it
+// column title, path, and a second path shown beside it (labelled `main` unless a label follows)
 const flowColumns = [
   ['first output ms', 'flow.firstOutputMs'],
   ['parsed ms', 'flow.parseMs'],
@@ -73,10 +73,10 @@ function table(title, rows, columns) {
   console.log(`| Scenario | ${columns.map((c) => c[0]).join(' | ')} |`);
   console.log(`| --- | ${columns.map(() => '---').join(' | ')} |`);
   for (const [name, list] of rows) {
-    const cells = columns.map(([, p, extra]) => {
+    const cells = columns.map(([, p, extra, label]) => {
       const main = cell(stat(list, p));
       const also = extra ? stat(list, extra) : null;
-      return also ? `${main}, main ${num(also.median)}` : main;
+      return also ? `${main}, ${label ?? 'main'} ${num(also.median)}` : main;
     });
     console.log(`| ${name} | ${cells.join(' | ')} |`);
   }
@@ -88,6 +88,25 @@ if (scenarios.length) {
   console.log(`Replay: ${n} runs per cell, median (min–max). ${sample.device.model}${sample.device.simulator ? ' simulator' : ''}, ` +
     `${sample.device.os}, ${sample.device.screenHz} Hz, grid ${sample.replay.cols}×${sample.replay.rows}, ${sample.replay.fontSize} pt.`);
   table('### Replay', scenarios.map((s) => [s, runs[s]]), flowColumns);
+}
+if (runs.predict) {
+  table('### Predicted echo: a recorded typing session on a link with a 150 ms round trip (`predict-off`: the same with no gate)',
+    ['predict', 'predict-off'].filter((s) => runs[s]).map((s) => [s, runs[s]]), [
+    ['guessed keys', 'echo.predictedKeys'],
+    ['guess shown ms', 'echo.predictedMedianMs', 'echo.predictedP95Ms', 'p95'],
+    ['guessed keys first seen ms', 'echo.firstVisibleGuessedMedianMs', 'echo.firstVisibleGuessedP95Ms', 'p95'],
+    ['main busy ms', 'mainBusy.totalMs'],
+    ['main µs per send', 'echo.mainSendUs.median', 'echo.mainSendUs.p95', 'p95'],
+    ['echo shown ms', 'echo.shownMedianMs'],
+    ['drawn', 'echo.drawn'],
+    ['confirmed', 'echo.confirmed'],
+    ['taken back', 'echo.mismatchedDrawn'],
+    ['wrong, never drawn', 'echo.mismatched'],
+    ['vanished', 'echo.vanished'],
+    ['main µs per key', 'echo.mainKeyUs.median', 'echo.mainGateUs.median', 'gate'],
+    ['feed µs per key', 'echo.feedKeyUs.median', 'echo.feedKeyUs.max', 'max'],
+    ['feed µs per slice', 'echo.feedSliceUs.median', 'echo.feedSliceUs.max', 'max'],
+  ]);
 }
 if (live) {
   // No budget: these depend on the network and the server.

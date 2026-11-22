@@ -107,6 +107,11 @@ app="$dd/Build/Products/Release-iphonesimulator/RexDuo.app"
 xcrun simctl bootstatus "$sim" -b >/dev/null
 xcrun simctl install "$sim" "$app"
 node "$here/gen.mjs" "$out/scenarios" --cols $cols --rows $rows >&2
+# `predict` replays recordings kept with the tests: a pane's stream after `seq 1 3000` (its
+# snapshot, 80×24) and a typing session at a zsh prompt (scripts/record-echo-fixtures.py).
+cp "$root/Packages/RexKit/Tests/RexKitTests/Fixtures/stream-scroll.bin" "$out/scenarios/predict.bin"
+cp "$root/Packages/RexKit/Tests/RexKitTests/Fixtures/stream-scroll.bin.nonce" "$out/scenarios/predict.bin.nonce"
+cp "$root/RexDuoTests/Fixtures/echo/echo-zsh-typing.json" "$out/scenarios/predict.json"
 
 # One run: launches with the given arguments and waits for the probe's file.
 missing=0
@@ -154,6 +159,12 @@ scenarios=(
   "unicode-find|unicode.vt|-replayRate max -findTest e -findSteps 20"
   "claude-find|claude.timed|-findTest e -findSteps 20"
   "cap-find|cap.vt|-replayRate max -findTest 99"
+  # Predicted echo: a pane with history on a scripted link with a 150 ms round trip, typed into
+  # from a recording, three times over: the gate turns predictions on during the first, so the
+  # other two are guessed from their first line on. 8 pt draws the recording's 80 columns 1:1.
+  "predict|predict.bin|-echoScript predict.json -echoLoops 3 -replayFontSize 8"
+  # The same pane, script and link with no gate: what the scenario costs without predicted echo.
+  "predict-off|predict.bin|-echoScript predict.json -echoLoops 3 -replayFontSize 8 -predict never"
 )
 
 # A warm-up for `unicode`. Its time to the final frame is likely mostly CoreText loading its fallback

@@ -295,7 +295,24 @@ builds.
   that shows it, with medians and p95. `-echoWalk YES` first goes back two panes and forward
   two, as `-perfSwitchWalk` does, which leaves two panes warm, and waits `-echoAfterWalk`
   seconds (default 3). It types into a real shell: use `-autoOpen zz-…`. Unlike `-typeTest`,
-  which sends its text in one write, every key is a keypress of its own.
+  which sends its text in one write, every key is a keypress of its own. With predicted echo
+  (docs/terminal.md) each key also has `predictedMs` (the first frame that shows its guess; none
+  on a fast link) and `firstVisibleMs` (the earlier of the guess and the echo), and the result
+  holds the predictor's counters (`drawn`, `confirmed`, `mismatched`, `mismatchedDrawn` for
+  guesses the user saw taken back, `vanished`, …), a `trace` line with the screen row for each
+  wrong guess, cap or reset, when a key's write left (`leftMs`), and a key's cost in
+  microseconds on the main thread and the feed queue (`mainSendUs` for the host's whole send,
+  `mainKeyUs` for prediction's part, `mainGateUs` for the gate alone, `feedKeyUs`,
+  `feedSliceUs`). A `-perfLog` result of the same run holds all of it under `echo`.
+- `-predict never|always` (Debug only): predicted echo's gate for every server, whatever the
+  link's round trip is. `always` is the slow level, so every guess is underlined. Without it
+  the gate follows the measured round trip; `-netDelay 150` makes a link slow enough.
+- `-echoScript <file> [-echoDelay <ms>] [-echoLoops <n>]`, with `-replay <rex capture>` (also in the `BENCH`
+  build): the pane is a real stream on a scripted link that opens with the capture and answers
+  every call after the delay (default 150 ms), and a recorded typing session
+  (`RexDuoTests/Fixtures/echo`) is typed into it at its own pace, `-echoLoops` times (default 1). No server. The benchmark's
+  `predict` scenario; a file name without a folder is looked for beside the capture. With
+  `-predict never` the pane's stream gets no gate at all (`predict-off`).
 - `-selectionDemo <steps>`, `-selectionLoupe off`: docs/selection.md.
 - `-simulateScan <payload>`: open "Pair via QR Code" at launch and read this payload as if the
   camera had (the simulator has no camera). `open` only opens the scanner. With `-settings

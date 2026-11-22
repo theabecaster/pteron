@@ -32,6 +32,13 @@ export const scenarios = {
   'unicode-find': { 'mainBusy.totalMs': 15,  'presents.gapsOver25': 1, 'flow.drawnMs': 150 },
   'claude-find':  { 'mainBusy.totalMs': 250, 'presents.gapsOver25': 1 },
   'cap-find':     { 'mainBusy.totalMs': 10,  'presents.gapsOver25': 1, 'flow.drawnMs': 60 },
+  // Predicted echo on a link with a 150 ms round trip (docs/terminal.md, Predicted echo). The
+  // plan's numbers: a guessed key is on screen within a frame (17 ms), no guess the user saw is
+  // taken back and none vanishes, a key costs 2 µs on the main thread and 20 µs on the feed
+  // queue, and the main thread's whole work stays at `seq`'s 10 ms.
+  // No frame-gap budget: frames come when keys do. `predict-off` (no gate) has no budget.
+  predict: { 'mainBusy.totalMs': 10, 'echo.firstVisibleGuessedMedianMs': 17, 'echo.mismatchedDrawn': 0, 'echo.vanished': 0,
+             'echo.mainKeyUs.median': 2, 'echo.feedKeyUs.median': 20 },
 };
 
 // The stream's filter (`APCFilter`), on the Mac with no simulator (scripts/bench/filter.sh): how

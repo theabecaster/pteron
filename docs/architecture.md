@@ -33,7 +33,9 @@ the app; it speaks the same control protocol over Rex's Unix socket.
 5. User actions call `ServerConnection` methods, then re-read the session's view. The server's
    `session_view_changed` is the truth for layout; nothing guesses a layout locally.
 6. Each visible pane is `PaneView` → `TerminalHost` (UIKit) → `TerminalStream` (RexKit).
-   Settings and theme are pushed into the host from `updateUIView`.
+   Settings and theme are pushed into the host from `updateUIView`. Each `ServerConnection`
+   also owns an `EchoGate`, which its panes' streams feed with their writes' round trips and
+   their hosts follow (docs/terminal.md, Predicted echo).
 7. Reconnects, returning to the foreground and an event `seq` gap all trigger a full resync.
 
 Three things from outside put a tab on screen, and all end in `AppModel.openRequest`, which

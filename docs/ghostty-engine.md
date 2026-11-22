@@ -137,6 +137,34 @@ Accepted, with the bound:
 - **Hit-testing against the last frame.** A touch is mapped with the scroll position of the last
   drawn frame, and the terminal may have scrolled since (one frame of output at most).
 
+## Predicted echo
+
+What it is and when it runs: [terminal.md](terminal.md), Predicted echo. In the engine:
+
+- **The predictor is on the feed queue.** `GhosttyCore+Predict.swift` holds an `EchoPredictor`
+  (RexKit) only while the pane's level is not off, and touches it only on the feed queue with
+  `termLock` held. The main thread enqueues what it learned (`echoTyped`, `echoAnswered`,
+  `echoSettled`, `echoCleared`, `echoInputMode`), so each is in order with the bytes. After every
+  slice the overlay is checked against the rows just parsed, and at the end of a drain batch the
+  guesses are judged. `GhosttyEchoGrid` is the predictor's read-only view of the terminal.
+- **The overlay travels with the rows.** `echoPublished` is written in the lock section that
+  parsed the slice, and `lockFrame` latches it (`frameEcho`) with the rows. A frame therefore
+  never shows a guess beside the character that confirms it, or rows without the guess they
+  were judged against. Every mutation of the grid from outside the parser (resize, reset,
+  restore, theme, dropped output) clears the guesses in its own lock section.
+- **Drawing.** The row builder turns the frame's overlay into three small instance lists
+  (masks, glyphs, underlines and the cursor) with a version of their own; rows keep their
+  `rowsVersion` reuse. The renderer keeps them in buffers apart from the rows', one set per
+  frame in flight, and fills a set only when its `EchoFill` (the lists' version and the cursor)
+  differs from what that set holds: a frame with the same guesses reuses its buffers, and a pane
+  with no overlay has none and builds nothing.
+- **Off costs nothing.** With the gate off there is no predictor, the stream has no observer
+  (one `nil` check per input call), `echoPublished` stays `nil`, and the builder and renderer
+  take the path without it. `EchoParityTests` holds that: a fast pane makes no predictor, no
+  echo build and no echo buffer.
+- **Timers.** One `asyncAfter` on the feed queue for the predictor's next deadline (the 1.5 s
+  cap, the 300 ms slow signal), armed only while a guess is pending.
+
 ## From bytes to a frame
 
 1. `TerminalHost.streamFeed` calls `feed(buffer:)`. `GhosttyCore.feed` copies the bytes under
@@ -417,6 +445,25 @@ pass:
 | frame gaps over 25 ms | 1, every scenario but `top` (it draws twice a second by itself) | 0 |
 | first byte to the final frame | `seq`, `yes` 60 ms; `unicode` 150 | 19.7, 21.4; 38.3 |
 | memory peak, at rest | 40 MB, 32 MB | 23.5 to 32, 23.4 to 26.6 |
+
+`predict` is predicted echo: a pane that opens with a recorded stream (a snapshot after
+`seq 1 3000`, 80×24 at 8 pt) on a scripted link with a 150 ms round trip
+(`ScriptedEchoLink`), typed into from a recorded zsh session (`EchoScript`) three times over.
+The stream, the gate and the host's gates run as on a slow link; nothing forces predictions on:
+the gate turns them on during the first pass, so 48 of the 69 keys are guessed. `predict-off`
+is the same pane, script and link with no gate, to tell what prediction adds. The budgets are
+the plan's numbers, and three of them are not met yet:
+
+| Number (median of 3 runs) | Budget | Measured |
+| --- | --- | --- |
+| a guessed key to the frame that shows it | 17 ms | 0.45 ms (the program's echo of the same keys: 207 ms) |
+| guesses the user saw taken back; guesses that vanished | 0; 0 | 0; 0 |
+| a key on the main thread, prediction's part | 2 µs | 30 µs: 4.4 for the host's gate, the rest wakes the feed queue. A key's whole send is 42 µs, 9.8 without a gate |
+| a key on the feed queue | 20 µs | 41 µs |
+| main busy | 10 ms | 110 ms; 101 ms without a gate, over the scenario's 25.6 s |
+
+Each result's `echo` also holds every key's times, the predictors' counters and a `trace` line
+for each wrong guess, cap or reset the predictor counted, with the screen row at that moment.
 
 Find open runs the same budgets: `seq-find`, `unicode-find` and `claude-find` replay with find
 open and step 20 matches (`-findTest 99` for `seq`'s digits, `e` for the others, `-findSteps 20`;
