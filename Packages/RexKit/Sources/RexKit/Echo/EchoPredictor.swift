@@ -343,6 +343,10 @@ public final class EchoPredictor {
         if grid.marks.sentB, !markersOpen(grid) { return false }
         let cols = grid.cols
         if var e = epoch {
+            // Taken out while it changes and put back whatever happens: with `epoch` still
+            // holding them, appending a key would copy the epoch's keys and states each time.
+            epoch = nil
+            defer { epoch = e }
             guard !e.closed, consistent(e, grid) else { return false }
             let last = e.states[e.states.count - 1]
             var next = last
@@ -363,7 +367,6 @@ public final class EchoPredictor {
             }
             e.keys.append(Key(op: op, seq: seq, typedAt: now))
             e.states.append(next)
-            epoch = e
             counters.placed += 1
             return true
         }
@@ -678,6 +681,9 @@ public final class EchoPredictor {
     /// masks over expected stale content, nothing at all if the grid contradicts the epoch.
     private func publish(grid: some EchoGrid, now: Double) {
         guard var e = epoch else { overlay = nil; return }
+        // Out and back, as in `place`: marking keys drawn would copy them otherwise.
+        epoch = nil
+        defer { epoch = e }
         let d = shown(e, grid: grid)
         guard d > e.confirmed, grid.cursorY == e.row, grid.cursorX >= e.start,
               grid.scrollbackRows == e.scrollback, anchorHolds(e, grid) else { overlay = nil; return }
@@ -729,7 +735,6 @@ public final class EchoPredictor {
             e.keys[i].drawnAt = now
             counters.drawn += 1
         }
-        epoch = e
         overlay = EchoOverlay(cells: cells, cursor: cursor, unsettled: true)
     }
 }

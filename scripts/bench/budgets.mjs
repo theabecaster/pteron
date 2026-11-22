@@ -36,14 +36,14 @@ export const scenarios = {
   // recorded typing session played three times into a pane that opens with a recorded stream.
   // - A guessed key is on screen within a frame (17 ms; measured 0.45).
   // - No guess the user saw is taken back, and none vanishes.
-  // - A key costs the main thread at most 50 µs more than without predictions (measured 30):
+  // - A key costs the main thread at most 50 µs more than without predictions (measured 24):
   //   the host's gate, then one wake of the feed queue, where the predictor lives beside the
   //   grid it judges. Only while the gate is on; `predict-fast` holds the off state.
-  // - A key costs the feed queue 51 µs (measured 41, plus a quarter): the predictor
-  //   places the guess and publishes the overlay under the terminal lock.
+  // - A key costs the feed queue 40 µs (measured 32, plus a quarter): the predictor places the
+  //   guess and publishes the overlay under the terminal lock; 28 of the 32 are its own call.
   // No frame-gap budget: frames come when keys do. Main busy is budgeted as a difference below.
   predict: { 'echo.firstVisibleGuessedMedianMs': 17, 'echo.mismatchedDrawn': 0, 'echo.vanished': 0,
-             'echo.mainKeyUs.median': 50, 'echo.feedKeyUs.median': 51 },
+             'echo.mainKeyUs.median': 50, 'echo.feedKeyUs.median': 40 },
   // The same pane, script and link with no gate: the baseline for what predictions add.
   'predict-off': {},
   // A fast link (5 ms round trips): the gate is there and stays off, which is every session on
@@ -58,10 +58,10 @@ export const scenarios = {
 
 // What one scenario may cost more than another: the difference of the two medians.
 // - A session's whole main-thread work with predictions on, over the same session without a
-//   gate: 15 ms over the scenario's 25 s (measured 9). The scenario itself costs about 100 ms
+//   gate: 15 ms over the scenario's 25 s (measured 5 to 8). The scenario itself costs about 100 ms
 //   either way, most of it the frames its 69 keys draw.
 // - A key's send on a fast link with the gate present and off, over the same with no gate: the
-//   two must be the same. 1.5 µs is the spread of the baseline's own runs (measured 0).
+//   two must be the same. 1.5 µs is the spread of the baseline's own runs (measured 0.8).
 export const differences = {
   'predictions add, main busy ms': { of: 'predict', against: 'predict-off', path: 'mainBusy.totalMs', limit: 15 },
   'a gate that is off adds, µs per key': { of: 'predict-fast', against: 'predict-fast-off', path: 'echo.mainSendUs.median', limit: 1.5 },

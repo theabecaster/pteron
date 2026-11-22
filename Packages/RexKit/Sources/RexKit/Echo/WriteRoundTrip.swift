@@ -15,7 +15,9 @@ public enum EchoLevel: Int, Comparable, Sendable {
 /// The monotonic clock every echo time is read from, in seconds. The same clock on the main
 /// thread and the feed queue, so a key's typed time and a check's time compare.
 public enum EchoClock {
-    @inline(__always) public static var now: Double { ProcessInfo.processInfo.systemUptime }
+    /// The system's uptime clock, read without a call into Foundation: it is read for every
+    /// write of typed text on a server that has a gate, on or off.
+    @inline(__always) public static var now: Double { Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9 }
 }
 
 /// The smoothed round trip of a server's `terminal.write` calls, from the writes typing already

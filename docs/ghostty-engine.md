@@ -451,16 +451,22 @@ pass:
 (`ScriptedEchoLink`), typed into from a recorded zsh session (`EchoScript`) three times over.
 The stream, the gate and the host's gates run as on a slow link; nothing forces predictions on:
 the gate turns them on during the first pass, so 48 of the 69 keys are guessed. `predict-off`
-is the same pane, script and link with no gate, to tell what prediction adds. The budgets are
-the plan's numbers, and three of them are not met yet:
+is the same pane, script and link with no gate, to tell what prediction adds. `predict-fast`
+and `predict-fast-off` are the pair on a 5 ms link, where the gate is there and stays off.
 
 | Number (median of 3 runs) | Budget | Measured |
 | --- | --- | --- |
-| a guessed key to the frame that shows it | 17 ms | 0.45 ms (the program's echo of the same keys: 207 ms) |
+| a guessed key to the frame that shows it | 17 ms | 0.43 ms (the program's echo of the same keys: 209 ms) |
 | guesses the user saw taken back; guesses that vanished | 0; 0 | 0; 0 |
-| a key on the main thread, prediction's part | 2 µs | 30 µs: 4.4 for the host's gate, the rest wakes the feed queue. A key's whole send is 42 µs, 9.8 without a gate |
-| a key on the feed queue | 20 µs | 41 µs |
-| main busy | 10 ms | 110 ms; 101 ms without a gate, over the scenario's 25.6 s |
+| a key on the main thread, prediction's part, gate on | 50 µs | 24 µs: 4.4 for the host's gate, the rest wakes the feed queue, where the predictor lives. A key's whole send is 35 µs, 9.4 without a gate |
+| a key on the feed queue | 40 µs (measured plus a quarter) | 32 µs: 28.5 the predictor's call, 3 the grid's facts, 1.5 the publish; 6 cells read |
+| main busy, more than with no gate | 15 ms | 5 ms (104 against 99, over the scenario's 25 s) |
+| gate present and off: predictors made, keys through prediction code | 0; 0 | 0; 0 |
+| gate present and off: a key's send, more than with no gate | 1.5 µs | 0.8 µs (32.1 against 31.3) |
+
+With the gate off a key costs the stream one check that it has no observer; a write of typed
+text costs one reading of the uptime clock when it leaves and one with the running average
+when it is answered.
 
 Each result's `echo` also holds every key's times, the predictors' counters and a `trace` line
 for each wrong guess, cap or reset the predictor counted, with the screen row at that moment.
