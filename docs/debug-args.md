@@ -166,6 +166,10 @@ builds.
   wait). Rows: `settings`, `agents`, `goTo`, `renameSession` and `closeSession`
   (the session on screen), `add` (the first computer that isn't added), `ports` (the first
   heading with a ports globe). `StripPopoverTest`.
+- `-stripChip close|closeOthers|rename` (tab mode): run that action on the chip of the tab on
+  screen, once, `-stripChipAfter` seconds (default 3) after the chips show: `close` as a tap on
+  its close button, the others as its menu's rows. In a tab with two panes or an agent, `close`
+  puts up Close Tab's question by the button; the answer is left to a finger. `StripChipTest`.
 - `-renderCount YES`: log one `RENDER_COUNT` line every 5 s with how often the sidebar's bodies
   ran since launch (`sessionLists`, `tabRows`, `tabRowLabels`, `statusLeaves`, `portButtons` for the machines' ports buttons and `portRows` for the rows of their lists), how many
   progress values were written (`progressWrites`), how often the tab screen and the pane

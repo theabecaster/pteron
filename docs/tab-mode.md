@@ -60,6 +60,15 @@ A chip shows up to three pane icons, the tab's title and its status (`TabChip`, 
 - Touch and hold: Rename Tab…, Move Tab Backward, Move Tab Forward, Close Tab, Close Other
   Tabs. They run what the sidebar's tab rows run (`StripRoutes`). A tab with an agent, or with
   two panes or more, asks before it closes; Close Other Tabs always asks.
+- A question shows from the control that was tapped, never from the bottom of the screen:
+  Close Tab at the chip's close button (at the chip, from its menu), Close Other Tabs at the
+  chip, and Close Pane, Close Tab and Close Other Panes from the pane menu at the pane menu
+  (`StripDialogs`, `ChipsAnchor`). The words are the sidebar's (`SidebarDialogs`). The chips'
+  questions show from one view laid over the row, not from a chip: chips are drawn only in
+  view, and the question stays up while they are drawn again, scrolled away or moved. Each
+  question holds the ids it was asked about, so its answer closes that tab even after the
+  computer reordered the tabs, and while one is up another tap asks nothing
+  (`StripRoutesTests`, `StripViewTests`). The rename alert shows in the middle, as alerts do.
 - A move shows at once and is held for the server. A server without `session.move_window`
   offers no Move rows. Chips aren't dragged: a sideways drag scrolls the row.
 - Only the chips in view are drawn, and a status or a title that changes draws its own chip
@@ -82,7 +91,8 @@ tall enough.
     and the globe of its web ports while it has one, which opens them in a sheet
     (`PortsSheet`);
   - its sessions: a tap shows the session's front tab; touch and hold for Rename Session… and
-    Close Session (none on a computer that is down);
+    Close Session (none on a computer that is down). Close Session asks from the session chip,
+    once the popover has gone;
   - the computers that aren't added, each with Add;
   - a footer: Go to Anything…, Agents, Settings.
 - With no session on screen the chip says "Sessions", and the strip holds little else.

@@ -403,13 +403,26 @@ final class SidebarActions {
 }
 
 /// The rename alert and the close confirmations, driven by `SidebarActions`. The sidebar's list
-/// shows them, and in tab mode the root does, for the strip.
+/// shows them all. In tab mode the root shows the rename alert, and the strip shows each close
+/// confirmation from the control that was tapped (`StripDialogs`).
 struct SidebarDialogs: ViewModifier {
+    /// One of the questions.
+    enum Question: CaseIterable {
+        case rename, closeSession, closeTab, closeOthers
+    }
+
     @Bindable var actions: SidebarActions
+    /// The questions this view shows.
+    var shows: Set<Question> = Set(Question.allCases)
+    /// What Close Tab runs: closes `actions.closingTab` and clears it.
+    var closeTab: @MainActor (SidebarActions) -> Void = { actions in
+        if let c = actions.closingTab, let w = c.windowID { Task { await c.server.closeWindow(c.sessionID, w) } }
+        actions.closingTab = nil
+    }
 
     func body(content: Content) -> some View {
         content
-            .alert(actions.renaming?.windowID == nil ? "Rename Session" : "Rename Tab", isPresented: Binding(get: { actions.renaming != nil }, set: { if !$0 { actions.renaming = nil } })) {
+            .alert(actions.renaming?.windowID == nil ? "Rename Session" : "Rename Tab", isPresented: Binding(get: { shows.contains(.rename) && actions.renaming != nil }, set: { if !$0 { actions.renaming = nil } })) {
                 TextField("Name", text: $actions.renameText)
                 Button("Cancel", role: .cancel) { actions.renaming = nil }
                 Button("Rename") {
@@ -424,7 +437,7 @@ struct SidebarDialogs: ViewModifier {
                 }
             }
             .confirmationDialog(actions.closing.map { "Close session “\($0.label.isEmpty ? "session" : $0.label)”?" } ?? "",
-                                isPresented: Binding(get: { actions.closing != nil }, set: { if !$0 { actions.closing = nil } }),
+                                isPresented: Binding(get: { shows.contains(.closeSession) && actions.closing != nil }, set: { if !$0 { actions.closing = nil } }),
                                 titleVisibility: .visible) {
                 Button("Close Session", role: .destructive) {
                     if let c = actions.closing { Task { await c.server.destroySession(c.sessionID) } }
@@ -435,18 +448,15 @@ struct SidebarDialogs: ViewModifier {
                 Text("Every tab in it closes, and its programs stop on \(actions.closing?.server.config.name ?? "the computer") too.")
             }
             .confirmationDialog(CloseTabAsk.title,
-                                isPresented: Binding(get: { actions.closingTab != nil }, set: { if !$0 { actions.closingTab = nil } }),
+                                isPresented: Binding(get: { shows.contains(.closeTab) && actions.closingTab != nil }, set: { if !$0 { actions.closingTab = nil } }),
                                 titleVisibility: .visible) {
-                Button("Close Tab", role: .destructive) {
-                    if let c = actions.closingTab, let w = c.windowID { Task { await c.server.closeWindow(c.sessionID, w) } }
-                    actions.closingTab = nil
-                }
+                Button("Close Tab", role: .destructive) { closeTab(actions) }
                 Button("Cancel", role: .cancel) { actions.closingTab = nil }
             } message: {
                 Text(actions.closingTabAsk.message(computer: actions.closingTab?.server.config.name ?? "the computer"))
             }
             .confirmationDialog(actions.closingOthers.map { $0.tabs.count == 1 ? "Close 1 other tab?" : "Close \($0.tabs.count) other tabs?" } ?? "",
-                                isPresented: Binding(get: { actions.closingOthers != nil }, set: { if !$0 { actions.closingOthers = nil } }),
+                                isPresented: Binding(get: { shows.contains(.closeOthers) && actions.closingOthers != nil }, set: { if !$0 { actions.closingOthers = nil } }),
                                 titleVisibility: .visible, presenting: actions.closingOthers) { c in
                 Button(c.tabs.count == 1 ? "Close Other Tab" : "Close Other Tabs", role: .destructive) {
                     let server = c.target.server, sid = c.target.sessionID

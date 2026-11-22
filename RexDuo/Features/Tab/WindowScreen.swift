@@ -71,6 +71,11 @@ struct WindowScreen: View {
     @State private var liveKeyboard = LiveKeyboard()
     @State private var showOverview = false
     @State private var confirm: Confirm?
+    /// The confirmation shows from the pane menu in the tab strip, not from the tab (`ask`).
+    @State private var confirmInStrip = false
+    /// The tab strip holds the pane menu now: tab mode, no vertical bar, and the strip on screen
+    /// with room for it.
+    @State private var stripMenuShown = false
     /// Move Pane to Tab… from its key: the tabs to pick from.
     @State private var moveChoices: [MoveChoice]?
     /// The panes' area with the keyboard down. For the folded legibility check: typing must not
@@ -141,25 +146,9 @@ struct WindowScreen: View {
             Button("Cancel", role: .cancel) {}
             Button("Rename") { Task { await server.renameWindow(sessionID, windowID, renameText) } }
         }
-        .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
-                            titleVisibility: .visible, presenting: confirm) { c in
-            switch c {
-            case .pane(let b):
-                Button("Close Pane", role: .destructive) { Task { await server.closeBlock(sessionID, b) } }
-            case .tab:
-                Button("Close Tab", role: .destructive) { closeTab() }
-            case .others(let ids, _):
-                Button(ids.count == 1 ? "Close Other Pane" : "Close Other Panes", role: .destructive) { closeOthers(ids) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { c in
-            switch c {
-            case .others(_, agent: false): EmptyView()
-            case .others: Text("The agents running there stop on \(server.config.name) too.")
-            case .tab(let ask): Text(ask.message(computer: server.config.name))
-            default: Text("The agent running there stops on \(server.config.name) too.")
-            }
-        }
+        // Tab mode's pane menu in the strip shows it by itself (`confirmInStrip`).
+        .confirmationDialog(confirmTitle, isPresented: confirmShown(!confirmInStrip), titleVisibility: .visible,
+                            presenting: confirm) { confirmButtons($0) } message: { confirmMessage($0) }
         .confirmationDialog("Move Pane to Tab", isPresented: Binding(get: { moveChoices != nil }, set: { if !$0 { moveChoices = nil } }),
                             titleVisibility: .visible, presenting: moveChoices) { choices in
             ForEach(choices) { c in Button(c.name) { moveToTab(c.id) } }
@@ -234,6 +223,41 @@ struct WindowScreen: View {
     /// Under compact height (landscape iPhone, folded Duo on its side) the title bar steps aside while
     /// the keyboard is up, so the terminal keeps its rows. The edge swipe still goes back.
     private var showsHeader: Bool { !(vSize == .compact && keyboardUp) }
+
+    /// Whether the confirmation shows from here: `here` is where it was asked to show.
+    private func confirmShown(_ here: Bool) -> Binding<Bool> {
+        Binding(get: { here && confirm != nil }, set: { if !$0 { confirm = nil } })
+    }
+
+    /// Puts up a confirmation: from the pane menu while the tab strip holds it, where a tap
+    /// opened it, else from the tab.
+    private func ask(_ c: Confirm) {
+        confirmInStrip = stripMenuShown
+        confirm = c
+    }
+
+    @ViewBuilder
+    private func confirmButtons(_ c: Confirm) -> some View {
+        switch c {
+        case .pane(let b):
+            Button("Close Pane", role: .destructive) { Task { await server.closeBlock(sessionID, b) } }
+        case .tab:
+            Button("Close Tab", role: .destructive) { closeTab() }
+        case .others(let ids, _):
+            Button(ids.count == 1 ? "Close Other Pane" : "Close Other Panes", role: .destructive) { closeOthers(ids) }
+        }
+        Button("Cancel", role: .cancel) {}
+    }
+
+    @ViewBuilder
+    private func confirmMessage(_ c: Confirm) -> some View {
+        switch c {
+        case .others(_, agent: false): EmptyView()
+        case .others: Text("The agents running there stop on \(server.config.name) too.")
+        case .tab(let ask): Text(ask.message(computer: server.config.name))
+        default: Text("The agent running there stops on \(server.config.name) too.")
+        }
+    }
 
     private var confirmTitle: String {
         switch confirm {
@@ -392,13 +416,13 @@ struct WindowScreen: View {
 
     /// Closing stops whatever runs there; ask first when that's an agent.
     private func requestClose(_ b: String) {
-        if server.meta[b]?.agentKind != nil { confirm = .pane(b); return }
+        if server.meta[b]?.agentKind != nil { ask(.pane(b)); return }
         Task { await server.closeBlock(sessionID, b) }
     }
 
     private func requestCloseTab() {
         if let w = window, let ask = CloseTabAsk.decide(panes: w.allBlocks.count, agent: server.windowAgent(w) != nil) {
-            confirm = .tab(ask)
+            self.ask(.tab(ask))
             return
         }
         closeTab()
@@ -570,7 +594,7 @@ struct WindowScreen: View {
         guard let t = arrangeTarget(.closeOthers) else { Haptic.bump(); return }
         let ids = PaneScope.arrangeable(window: t.window).filter { $0 != t.block }
         guard !ids.isEmpty else { Haptic.bump(); return }
-        confirm = .others(ids, agent: ids.contains { server.meta[$0]?.agentKind != nil })
+        ask(.others(ids, agent: ids.contains { server.meta[$0]?.agentKind != nil }))
     }
 
     private func closeOthers(_ ids: [String]) {
@@ -911,11 +935,9 @@ struct WindowScreen: View {
                 Haptic.selection()
                 onOpen(Selection(serverID: server.id, sessionID: sessionID, windowID: id))
             },
-            chip: { action, id in
-                // Closing the tab on screen shows its neighbor, as Close Tab does everywhere.
-                if action == .close, id == windowID { return requestCloseTab() }
-                strip?.run(action, tab: id, session: sessionID, server: server)
-            },
+            // Closing the tab on screen shows its neighbor, as Close Tab does everywhere
+            // (`StripRoutes.confirmCloseTab`).
+            chip: { action, id in strip?.run(action, tab: id, session: sessionID, server: server) },
             newTab: { newTab() },
             unzoom: { toggleZoom() },
             stepPane: { dir in if let w = window { switchPane(w, by: dir, from: p?.pageCurrent) } },
@@ -924,8 +946,14 @@ struct WindowScreen: View {
         return TabStrip(target: StripTarget(server: server, sessionID: sessionID, windowID: w?.id, block: block),
                         dots: dots, dotsCurrent: p?.pageCurrent, visible: visible, zoomed: zoomedHere, bar: barEdge != nil,
                         height: barHeight, theme: theme, actions: actions,
-                        floats: w.flatMap { floatsControl($0, p, style: .titleBar, height: barHeight) }) {
-            if let w, let block { paneMenu(w, block: block, p) }
+                        floats: w.flatMap { floatsControl($0, p, style: .titleBar, height: barHeight) }, routes: strip) {
+            if let w, let block {
+                paneMenu(w, block: block, p)
+                    .confirmationDialog(confirmTitle, isPresented: confirmShown(confirmInStrip), titleVisibility: .visible,
+                                        presenting: confirm) { confirmButtons($0) } message: { confirmMessage($0) }
+                    .onAppear { stripMenuShown = true }
+                    .onDisappear { stripMenuShown = false }
+            }
         }
     }
 

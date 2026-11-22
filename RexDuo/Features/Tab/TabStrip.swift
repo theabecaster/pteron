@@ -53,6 +53,10 @@ struct TabStrip<PaneMenu: View>: View {
     var actions = StripActions()
     /// A narrow tab's floating windows control (`FloatsControl`); nil without a float.
     var floats: FloatsControl?
+    /// The close confirmations the chips and the session popover ask, and what their answers
+    /// run (`StripRoutes`). The strip shows each from the control that was tapped
+    /// (`StripDialogs`). Nil shows none.
+    var routes: StripRoutes?
     /// The Pane Actions menu, as the title bar shows it.
     @ViewBuilder var paneMenu: PaneMenu
 
@@ -92,10 +96,10 @@ struct TabStrip<PaneMenu: View>: View {
     private func part(_ part: StripLayout.Part, _ layout: StripLayout, _ session: SessionView?) -> some View {
         switch part {
         case .session:
-            SessionChipSlot(target: target, form: layout.session, theme: theme, onAction: actions.sessions)
+            SessionChipSlot(target: target, form: layout.session, theme: theme, routes: routes, onAction: actions.sessions)
         case .chips:
             if let target, let session {
-                TabChips(target: target, session: session, layout: layout, theme: theme, actions: actions)
+                TabChips(target: target, session: session, layout: layout, theme: theme, actions: actions, routes: routes)
             }
         case .dots:
             // The title bar's own dots, or their count where dots would be crowded.
@@ -129,6 +133,9 @@ private struct TabChips: View {
     let layout: StripLayout
     let theme: TermTheme
     let actions: StripActions
+    let routes: StripRoutes?
+    /// Where each chip is in the row, for the close questions (`ChipsAnchor`).
+    @State private var frames = ChipFrames()
 
     var body: some View {
         // A move's new order shows at once, as in the sidebar (`PendingOrder`).
@@ -146,7 +153,17 @@ private struct TabChips: View {
                                         active: w.id == target.windowID, block: target.block, layout: layout, room: room,
                                         theme: theme, actions: actions)
                                 .id(w.id)
+                                // In the row's own space, so a scroll changes nothing here.
+                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(ChipFrames.space)) } action: { [frames] in
+                                    frames.byID[w.id] = $0
+                                }
                         }
+                    }
+                    .coordinateSpace(.named(ChipFrames.space))
+                    // Not a chip: chips are drawn only in view, and a question stays up while
+                    // they are drawn again, scrolled away or moved.
+                    .overlay(alignment: .topLeading) {
+                        ChipsAnchor(routes: routes, frames: frames, active: target.windowID, showsClose: layout.showsClose)
                     }
                 }
                 .onChange(of: InView(tab: target.windowID, order: ids, width: room), initial: true) { was, now in
@@ -161,6 +178,9 @@ private struct TabChips: View {
                 }
             }
         }
+        #if DEBUG
+        .modifier(StripChipRuns(tab: target.windowID, run: actions.chip))
+        #endif
     }
 
     /// What decides where the row rests.
@@ -221,6 +241,7 @@ private struct SessionChipSlot: View {
     let target: StripTarget?
     let form: StripLayout.SessionForm
     let theme: TermTheme
+    let routes: StripRoutes?
     let onAction: (SessionPopover.Action) -> Void
     @State private var open = false
 
@@ -235,6 +256,9 @@ private struct SessionChipSlot: View {
             SessionPopoverHost(theme: theme, close: { open = false }, onAction: onAction)
                 .environment(model)
         }
+        // Close Session, from the popover's menu: by the chip, once the popover has gone. On a
+        // view of its own beside the popover's.
+        .background { Color.clear.modifier(StripDialogs(routes: routes, shows: [.closeSession])) }
         #if DEBUG
         .modifier(StripPopoverOpens(open: $open))
         #endif

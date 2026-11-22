@@ -92,6 +92,8 @@ import Testing
         // A session without a name: the popover calls it "session", the alert starts empty.
         r.routes.run(.renameSession(r.server.id, session: "play", name: "session"))
         #expect(r.dialogs.renaming?.sessionID == "play" && r.dialogs.renameText.isEmpty)
+        // Answered: one question at a time.
+        r.dialogs.renaming = nil
 
         r.routes.run(.closeSession(r.server.id, session: "work", name: "work"))
         #expect(r.dialogs.closing?.sessionID == "work" && r.dialogs.closing?.label == "work")
@@ -170,6 +172,64 @@ import Testing
         r.dialogs.closingOthers = nil
         r.routes.run(.closeOthers, tab: "game", session: "play", server: r.server)
         #expect(r.dialogs.closingOthers == nil)
+    }
+
+    /// Close Tab's question holds the tab that was tapped, by its id: the tabs reordered by
+    /// the computer and another tab on screen meanwhile, the answer closes that tab and no other.
+    @Test func closeTabAnswersForTheTabThatWasTapped() throws {
+        let r = try rig()
+        r.routes.run(.close, tab: "web", session: "work", server: r.server)
+        #expect(r.dialogs.closingTab?.windowID == "web" && r.dialogs.closingTab?.sessionID == "work")
+
+        // An event from the computer: the tabs in another order, web no longer second.
+        func window(_ id: String) -> JSONObject {
+            ["window_id": id, "label": id, "layers": [["kind": "tiled", "blocks": [
+                ["block_id": "b-\(id)", "creator_name": "com.superlogical.terminal"] as JSONObject,
+            ]] as JSONObject]]
+        }
+        r.server.views["work"] = SessionView(["revision": 2, "session_id": "work", "label": "work", "active_window_id": "api",
+                                              "windows": ["logs", "api", "web"].map(window)])
+        r.model.selection = Selection(serverID: r.server.id, sessionID: "work", windowID: "logs")
+        #expect(r.server.orderedWindowIDs("work") == ["logs", "api", "web"])
+
+        let closed = try #require(r.routes.confirmCloseTab())
+        #expect(closed.windowID == "web" && closed.sessionID == "work" && closed.server === r.server)
+        #expect(r.dialogs.closingTab == nil)
+        // Answered once.
+        #expect(r.routes.confirmCloseTab() == nil)
+    }
+
+    /// While a question is up, another tap asks nothing and closes nothing: the first question
+    /// stays as it was.
+    @Test func oneQuestionAtATime() throws {
+        let r = try rig()
+        r.routes.run(.close, tab: "web", session: "work", server: r.server)
+        r.routes.run(.close, tab: "api", session: "work", server: r.server)
+        r.routes.run(.closeOthers, tab: "api", session: "work", server: r.server)
+        r.routes.run(.rename, tab: "logs", session: "work", server: r.server)
+        r.routes.run(.closeSession(r.server.id, session: "play", name: "session"))
+        r.routes.run(.renameSession(r.server.id, session: "play", name: "session"))
+        #expect(r.dialogs.closingTab?.windowID == "web")
+        #expect(r.dialogs.closingOthers == nil && r.dialogs.renaming == nil && r.dialogs.closing == nil)
+
+        // Answered, the next tap asks again.
+        r.dialogs.closingTab = nil
+        r.routes.run(.closeOthers, tab: "api", session: "work", server: r.server)
+        #expect(r.dialogs.closingOthers?.target.windowID == "api")
+    }
+
+    /// The chips' questions show at the asked tab's close button, the end of its chip a hit
+    /// target wide, where the chip has one; at its chip where it hasn't.
+    @Test func theQuestionShowsByTheTappedControl() {
+        let frames = ["a": CGRect(x: 0, y: 0, width: 100, height: 44), "b": CGRect(x: 106, y: 0, width: 160, height: 44)]
+        #expect(ChipsAnchor.anchor(for: "b", frames: frames, active: "b", showsClose: true)
+            == CGRect(x: 266 - StripLayout.hit, y: 0, width: StripLayout.hit, height: 44))
+        // No close button: the chip.
+        #expect(ChipsAnchor.anchor(for: "b", frames: frames, active: "b", showsClose: false) == frames["b"])
+        // Another tab's chip, from its menu.
+        #expect(ChipsAnchor.anchor(for: "a", frames: frames, active: "b", showsClose: true) == frames["a"])
+        // A chip never laid out: the tab on screen's.
+        #expect(ChipsAnchor.anchor(for: "z", frames: frames, active: "a", showsClose: true) == frames["a"])
     }
 
     /// Move Left and Move Right take the sidebar drag's path: the new order shows at once and is

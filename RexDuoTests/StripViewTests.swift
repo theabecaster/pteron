@@ -179,6 +179,50 @@ import UIKit
         }
     }
 
+    /// The tab on screen's close button asks by the button: the confirmation points at the ×
+    /// the finger tapped, not at the bottom of the screen, and asks about that tab.
+    @Test func closeTabAsksByItsCloseButton() async throws {
+        try #require(Hosted.setAccessibility(on: true), "the simulator's accessibility runtime")
+        defer { _ = Hosted.setAccessibility(on: false) }
+        let m = try model()
+        let s = server(m, tabs: 3)
+        // Tab 2 has two panes: closing it asks.
+        func tab(_ n: Int, panes: Int) -> JSONObject {
+            ["window_id": "w\(n)", "label": "tab-\(n)", "focused_block_id": "b\(n)",
+             "layers": [["kind": "tiled", "blocks": (0..<panes).map { p -> JSONObject in
+                ["block_id": p == 0 ? "b\(n)" : "b\(n)-\(p)", "creator_name": "com.superlogical.terminal"]
+             }] as JSONObject]]
+        }
+        s.views["work"] = SessionView(["revision": 2, "session_id": "work", "label": "work", "active_window_id": "w2",
+                                       "windows": [tab(1, panes: 1), tab(2, panes: 2), tab(3, panes: 1)]])
+        let routes = StripRoutes(model: m, dialogs: SidebarActions(), open: { _ in })
+        let strip = TabStrip(target: StripTarget(server: s, sessionID: "work", windowID: "w2", block: "b2"), theme: theme,
+                             actions: StripActions(chip: { routes.run($0, tab: $1, session: "work", server: s) }),
+                             routes: routes) { EmptyView() }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .environment(m)
+            .environment(m.prefs)
+        let window = Hosted.window(strip, size: CGSize(width: 402, height: 874))
+        defer {
+            window.rootViewController?.dismiss(animated: false)
+            window.isHidden = true
+        }
+        let close = try await Hosted.eventually {
+            Hosted.accessibilityElements(in: window).first { $0.isAccessibilityElement && $0.accessibilityLabel == "Close Tab" }
+        }
+        let button = close.accessibilityFrame
+        #expect(close.accessibilityActivate())
+        #expect(routes.dialogs.closingTab?.windowID == "w2")
+
+        let shown = try await Hosted.eventually { window.rootViewController?.presentedViewController }
+        #expect((shown as? UIAlertController)?.title == CloseTabAsk.title)
+        let popover = try #require(shown.popoverPresentationController, "\(type(of: shown)) has no source")
+        let source = try #require(popover.sourceView)
+        let rect = source.convert(popover.sourceRect.isNull ? source.bounds : popover.sourceRect, to: nil)
+        #expect(button.insetBy(dx: -2, dy: -2).contains(CGPoint(x: rect.midX, y: rect.midY)),
+                "the question points at \(rect), the button is at \(button)")
+    }
+
     #if DEBUG
     private final class Reported {
         var picked: [String] = []

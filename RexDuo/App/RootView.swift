@@ -36,6 +36,8 @@ struct RootView: View {
     /// Keeps each pane's terminal alive while a fold or unfold rebuilds the layout.
     @State private var hostPool = TerminalHostPool()
     /// Tab mode's rename alert and close confirmations, which the sidebar's list shows itself.
+    /// The root shows the alert; the strip shows each confirmation by the control that was
+    /// tapped (`StripDialogs`).
     @State private var stripDialogs = SidebarActions()
     /// What a row of the ports sheet opens, held until the sheet has gone.
     @State private var portsWait = DismissalWait()
@@ -66,7 +68,7 @@ struct RootView: View {
                 if barColumn != column { barColumn = column }
             })
             .background(ParkWatcher(pool: hostPool))
-            .modifier(SidebarDialogs(actions: stripDialogs))
+            .modifier(SidebarDialogs(actions: stripDialogs, shows: [.rename]))
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)
@@ -568,7 +570,7 @@ struct EmptyState: View {
             let theme = prefs.theme(for: scheme)
             VStack(spacing: 0) {
                 TabStrip(target: nil, bar: barEdge != nil, height: vSize == .compact ? 34 : 44, theme: theme,
-                         actions: StripActions(jump: { strip?.jump($0) }, sessions: { strip?.run($0) })) {
+                         actions: StripActions(jump: { strip?.jump($0) }, sessions: { strip?.run($0) }), routes: strip) {
                     EmptyView()
                 }
                 content

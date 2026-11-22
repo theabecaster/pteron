@@ -83,6 +83,50 @@ struct StripPopoverOpens: ViewModifier {
     }
 }
 
+/// `-stripChip close|closeOthers|rename` (testing, tab mode): runs that action on the chip of
+/// the tab on screen, once, `-stripChipAfter` seconds (default 3) after the chips show: `close`
+/// as a tap on its close button, the others as its menu's rows. Only the question goes up; the
+/// answer is left to a finger.
+enum StripChipTest {
+    @MainActor private static var ran = false
+
+    static var action: TabChip.Action? {
+        switch UserDefaults.standard.string(forKey: "stripChip") {
+        case "close": .close
+        case "closeOthers": .closeOthers
+        case "rename": .rename
+        default: nil
+        }
+    }
+
+    static var delay: Duration {
+        let v = UserDefaults.standard.double(forKey: "stripChipAfter")
+        return .milliseconds(Int((v > 0 ? v : 3) * 1000))
+    }
+
+    /// The action to run now: once per launch, when asked for.
+    @MainActor
+    static func take() -> TabChip.Action? {
+        guard !ran, let a = action else { return nil }
+        ran = true
+        return a
+    }
+}
+
+/// Runs `-stripChip` on the chips' row.
+struct StripChipRuns: ViewModifier {
+    let tab: String?
+    let run: (TabChip.Action, String) -> Void
+
+    func body(content: Content) -> some View {
+        content.task {
+            guard StripChipTest.action != nil else { return }
+            try? await Task.sleep(for: StripChipTest.delay)
+            if !Task.isCancelled, let tab, let a = StripChipTest.take() { run(a, tab) }
+        }
+    }
+}
+
 /// `-showPorts YES` in tab mode, where no sidebar header has a ports button: the first computer
 /// that connects has its ports sheet opened, once (`AppModel.showPorts`).
 struct PortsSheetAtLaunch: ViewModifier {
