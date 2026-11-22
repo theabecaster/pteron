@@ -8,6 +8,7 @@ import XCTest
 final class FindHostTests: XCTestCase {
     private var window: UIWindow!
     private var hardware = true
+    private var panes = PaneBaseline()
 
     private final class Transport: FitClaimTransport {
         var calls: [String] = []
@@ -19,6 +20,7 @@ final class FindHostTests: XCTestCase {
     }
 
     override func setUp() async throws {
+        panes = PaneBaseline()
         window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 700))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
         window.rootViewController = UIViewController()
@@ -42,8 +44,8 @@ final class FindHostTests: XCTestCase {
         window.isHidden = true
         window = nil
         // Let the hosts go before the next test class counts the render thread's panes.
-        let gone = await eventually(3) { GhosttyRenderThread.shared.paneCount == 0 }
-        XCTAssertTrue(gone, "LEAKCHECK \(name): \(GhosttyRenderThread.shared.paneCount) panes left")
+        let gone = await panes.cleared()
+        XCTAssertTrue(gone, "LEAKCHECK \(name): \(panes.left) panes left")
     }
 
     private func settle(_ turns: Int = 6) async {

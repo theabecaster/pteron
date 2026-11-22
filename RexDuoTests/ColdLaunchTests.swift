@@ -131,8 +131,10 @@ struct LaunchHoldTests {
 final class ColdLaunchHostTests: XCTestCase {
     private var window: UIWindow!
     private var prefs: Prefs!
+    private var panes = PaneBaseline()
 
     override func setUp() async throws {
+        panes = PaneBaseline()
         let suite = "cold-launch-host-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -148,7 +150,8 @@ final class ColdLaunchHostTests: XCTestCase {
         window.rootViewController = nil
         window = nil
         prefs = nil
-        XCTAssertEqual(GhosttyRenderThread.shared.paneCount, 0, "LEAKCHECK \(name)")
+        let cleared = await panes.cleared()
+        XCTAssertTrue(cleared, "LEAKCHECK \(name): \(panes.left) panes left")
     }
 
     private func settle(_ turns: Int = 8) async {

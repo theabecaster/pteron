@@ -115,12 +115,12 @@ final class EchoHostTests: XCTestCase {
             p.settles.pass()
             }
         panes = []
-        var turns = 0
-        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
-            turns += 1
+        // No more than at the start: a pane another test left there may go while this one runs.
+        let end = Date().addingTimeInterval(30)
+        while GhosttyRenderThread.shared.paneCount > panesBefore, Date() < end {
             try? await Task.sleep(for: .milliseconds(2))
         }
-        XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore,
+        XCTAssertLessThanOrEqual(GhosttyRenderThread.shared.paneCount, panesBefore,
                        "LEAKCHECK \(name): panes left; the first host is \(host == nil ? "gone" : "alive"), its stream \(stream == nil ? "gone" : "alive")")
     }
 

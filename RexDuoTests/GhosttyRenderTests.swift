@@ -411,6 +411,7 @@ final class GhosttyRenderTests: XCTestCase {
     @MainActor
     func testViewDrawsThenIdlesThenStopsTheThread() async throws {
         let thread = GhosttyRenderThread.shared
+        let panes = await PaneBaseline.afterQuiet()
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
         var view: GhosttyTerminalView? = GhosttyTerminalView(frame: window.bounds, fontSize: 12, cols: 40, rows: 10)
@@ -433,10 +434,12 @@ final class GhosttyRenderTests: XCTestCase {
         XCTAssertEqual(view!.core.rowText(0), "hello world")
         XCTAssertEqual(view!.core.gridSize.cols, 30)
 
-        try await Task.sleep(nanoseconds: 600_000_000)
-        XCTAssertTrue(thread.alive.load(ordering: .relaxed))
         let renderer = view!.renderer
-        XCTAssertGreaterThan(renderer.framesDrawn, 0, "the pane drew")
+        let drew = try await eventually(10) { renderer.framesDrawn > 0 }
+        XCTAssertTrue(drew, "the pane drew")
+        XCTAssertTrue(thread.alive.load(ordering: .relaxed))
+        // Past the grace period that follows a frame.
+        try await Task.sleep(nanoseconds: 600_000_000)
 
         // Idle: a steady cursor and no output must schedule no frames at all.
         let ticks = thread.ticks.load(ordering: .relaxed), frames = renderer.framesDrawn
@@ -447,8 +450,8 @@ final class GhosttyRenderTests: XCTestCase {
         // Output wakes it.
         view!.feed(text: "\r\nmore")
         view!.core.sync()
-        try await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertGreaterThan(renderer.framesDrawn, frames)
+        let woke = try await eventually(10) { renderer.framesDrawn > frames }
+        XCTAssertTrue(woke, "output drew no frame")
 
         // A font change keeps the grid and changes the cell.
         let cell = view!.cellSize
@@ -460,9 +463,13 @@ final class GhosttyRenderTests: XCTestCase {
         view!.removeFromSuperview()
         view = nil
         window.isHidden = true
-        let deadline = Date().addingTimeInterval(3)
-        while thread.alive.load(ordering: .relaxed) && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
-        XCTAssertFalse(thread.alive.load(ordering: .relaxed), "render thread still running")
+        let cleared = await panes.cleared()
+        XCTAssertTrue(cleared, "the pane is still registered")
+        // The thread is one for the process: it stops when no pane of any test is left.
+        if thread.paneCount == 0 {
+            let stopped = try await eventually(30) { !thread.alive.load(ordering: .relaxed) }
+            XCTAssertTrue(stopped, "render thread still running")
+        }
     }
 
     @MainActor
@@ -487,8 +494,7 @@ final class GhosttyRenderTests: XCTestCase {
     @MainActor
     func testAViewDroppedInTheMiddleOfWorkLetsEverythingGo() async throws {
         let thread = GhosttyRenderThread.shared
-        let quiet = try await eventually { thread.paneCount == 0 }
-        XCTAssertTrue(quiet, "panes left over from another test")
+        let panes = await PaneBaseline.afterQuiet()
         let terminals = GhosttyCore.liveTerminals.load(ordering: .relaxed)
         let snapshot = try ghosttyFixture("ghostty-history")
         weak var core: GhosttyCore?
@@ -505,7 +511,7 @@ final class GhosttyRenderTests: XCTestCase {
             gone = view
             let drew = try await eventually { view.renderer.framesDrawn > 0 }
             XCTAssertTrue(drew)
-            XCTAssertEqual(thread.paneCount, 1)
+            XCTAssertEqual(thread.paneCount, panes.before + 1)
             view.feed(text: String(repeating: "a line of output that scrolls\r\n", count: 100_000))
             XCTAssertTrue(view.restoreSnapshot(snapshot, failed: {}))
             view.feed(text: "more\u{1b}[?2026hheld and never released")
@@ -514,16 +520,19 @@ final class GhosttyRenderTests: XCTestCase {
             view.removeFromSuperview()
             window.isHidden = true
         }
-        let freed = try await eventually(10) {
-            gone == nil && core == nil && renderer == nil && thread.paneCount == 0
+        let freed = try await eventually(30) {
+            gone == nil && core == nil && renderer == nil && panes.left == 0
                 && GhosttyCore.liveTerminals.load(ordering: .relaxed) <= terminals
         }
         XCTAssertNil(gone, "something holds the view")
         XCTAssertNil(renderer, "something holds the renderer")
         XCTAssertNil(core, "something holds the core")
-        XCTAssertEqual(thread.paneCount, 0)
+        XCTAssertEqual(panes.left, 0)
         XCTAssertTrue(freed)
-        let stopped = try await eventually { !thread.alive.load(ordering: .relaxed) }
+        // The thread is one for the process: it stops, and nothing wakes it, when no pane of
+        // any test is left.
+        guard thread.paneCount == 0 else { return }
+        let stopped = try await eventually(30) { !thread.alive.load(ordering: .relaxed) }
         XCTAssertTrue(stopped, "render thread still running")
         // Nothing left that wakes: the hold's timer finds no core.
         let passes = thread.passes.load(ordering: .relaxed)

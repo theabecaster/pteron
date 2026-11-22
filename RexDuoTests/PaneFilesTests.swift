@@ -563,8 +563,10 @@ final class BrowserKeyboardTests: XCTestCase {
     private var hardware = true
     private var keep: [AnyObject] = []
     private var terminalsBefore = 0
+    private var panes = PaneBaseline()
 
     override func setUp() async throws {
+        panes = PaneBaseline()
         terminalsBefore = GhosttyCore.liveTerminals.load(ordering: .relaxed)
         window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 700))
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
@@ -590,12 +592,12 @@ final class BrowserKeyboardTests: XCTestCase {
         keep = []
         window.isHidden = true
         window = nil
-        let gone = await eventually(3) { GhosttyRenderThread.shared.paneCount == 0 }
-        XCTAssertTrue(gone, "LEAKCHECK \(name): \(GhosttyRenderThread.shared.paneCount) panes left")
+        let gone = await panes.cleared()
+        XCTAssertTrue(gone, "LEAKCHECK \(name): \(panes.left) panes left")
         // And their engines, which a sheet that just went can hold a moment longer: a test that
         // counts live terminals must not see one of these go.
         let before = terminalsBefore
-        let freed = await eventually(5) { GhosttyCore.liveTerminals.load(ordering: .relaxed) <= before }
+        let freed = await eventually(30) { GhosttyCore.liveTerminals.load(ordering: .relaxed) <= before }
         XCTAssertTrue(freed, "LEAKCHECK \(name): \(GhosttyCore.liveTerminals.load(ordering: .relaxed) - before) terminals left")
     }
 

@@ -9,8 +9,10 @@ import XCTest
 final class CloseNextHostTests: XCTestCase {
     private var window: UIWindow!
     private var prefs: Prefs!
+    private var panes = PaneBaseline()
 
     override func setUp() async throws {
+        panes = PaneBaseline()
         let suite = "close-next-host-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -28,7 +30,8 @@ final class CloseNextHostTests: XCTestCase {
         window = nil
         prefs = nil
         // The tabs hold no panes, so no terminal is left for the next class's leak checks.
-        XCTAssertEqual(GhosttyRenderThread.shared.paneCount, 0, "LEAKCHECK \(name)")
+        let cleared = await panes.cleared()
+        XCTAssertTrue(cleared, "LEAKCHECK \(name): \(panes.left) panes left")
     }
 
     /// A tab with no pane: what draws in the tab's place is all these tests look at.
