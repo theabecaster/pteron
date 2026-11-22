@@ -208,7 +208,7 @@ final class EchoHostTests: XCTestCase {
             await wait("the reading, if one is made") { p.link.inputModeReads == reads && self.modeSettled(p) }
             for _ in 0..<10 { await Task.yield() }
             XCTAssertEqual(p.link.inputModeReads, reads, foreground)
-            await settle(p)
+            // The answer of "l" has settled already (`type`).
             p.host.term.insertText("s")
             XCTAssertEqual(guesses(p), reads == 1 ? "s" : "", "\(foreground): drawn only with proof")
         }
