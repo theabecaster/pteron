@@ -80,6 +80,43 @@ final class StreamParkTests: XCTestCase {
         XCTAssertEqual(notices, [])
     }
 
+    /// `park()` with a request out that left in the key's turn (`StreamLink.start`). However
+    /// it ends afterwards, nothing is in flight, nothing is sent again, nobody is told, and
+    /// the pane that comes back takes the next key in that key's turn.
+    func testParkingWithAKeyOutThatLeftInItsOwnTurnKeepsNothingOfIt() async {
+        let ends: [(String, Error?)] = [
+            ("answered", nil),
+            ("never sent", RexError.unsent("socket is not connected")),
+            ("lost", RexError.local("connection lost")),
+        ]
+        for (name, failure) in ends {
+            let link = FakeLink()
+            let (s, _, log) = await current(link)
+            if let failure { link.failures[Self.write] = [failure] }
+            let left = (failure as? RexError)?.neverSent == true ? [String]() : ["a"]
+            s.send(text: "a")
+            XCTAssertEqual(link.startedNow, 1, name)
+            s.send(text: "b")
+            s.park()
+            XCTAssertFalse(s.hasPendingInput, name)
+            await settle()
+            XCTAssertFalse(s.hasPendingInput, name)
+            XCTAssertEqual(link.written, left, name)
+            s.unpark()
+            let back = await eventually { !s.isFenced }
+            XCTAssertTrue(back, name)
+            await settle()
+            XCTAssertEqual(link.written, left, "\(name): what had left is not sent again, what had not is gone")
+            XCTAssertFalse(log.asked.contains(.milliseconds(250)), "\(name): no retry was asked for")
+            s.send(text: "c")
+            XCTAssertEqual(link.written, left + ["c"], name)
+            XCTAssertEqual(link.startedNow, 2, name)
+            let idle = await eventually { !s.hasPendingInput }
+            XCTAssertTrue(idle, name)
+            XCTAssertEqual(notices, [], name)
+        }
+    }
+
     func testTheReturnResumesAtOnceWithTheBytesTaken() async {
         let link = FakeLink()
         let (s, sink, log) = await current(link)

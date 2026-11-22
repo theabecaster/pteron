@@ -863,4 +863,139 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(link.startedNow, 1)
         XCTAssertEqual(notices, [])
     }
+
+    // MARK: A key that left in its own turn, and what became of its request
+
+    /// The request left in the key's turn and the connection broke before the answer: nobody
+    /// knows whether the server ran it. It is not sent again, what was typed behind it goes
+    /// with it, and the user is told, once, in a later turn.
+    func testAKeyThatLeftInItsOwnTurnAndLostItsConnectionDropsTheQueueAndTellsTheUser() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "rm x\r")
+        XCTAssertEqual(link.startedNow, 1)
+        s.send(text: "ls\r")
+        let out = await eventually { link.waitingCount == 1 }
+        XCTAssertTrue(out)
+        link.held = []
+        link.disconnect()
+        XCTAssertEqual(notices, [], "the link answers from its task, not inside the loss")
+        let told = await eventually { self.notices == [.inputLost] }
+        XCTAssertTrue(told)
+        XCTAssertFalse(s.hasPendingInput, "nothing in flight, nothing queued")
+        link.connect()
+        await settle()
+        XCTAssertEqual(link.written, ["rm x\r"], "neither it nor what was typed behind it goes out again")
+
+        // The same with the connection still up when the answer fails. The next key is free.
+        link.failures[Self.write] = [RexError.local("connection lost")]
+        s.send(text: "a")
+        XCTAssertEqual(link.startedNow, 2)
+        XCTAssertTrue(s.hasPendingInput, "out until the link says how it ended")
+        s.send(text: "b")
+        let again = await eventually { self.notices == [.inputLost, .inputLost] }
+        XCTAssertTrue(again)
+        XCTAssertFalse(s.hasPendingInput)
+        s.send(text: "c")
+        XCTAssertEqual(link.startedNow, 3, "the queue is idle again: the next key leaves in its own turn")
+        let done = await eventually { !s.hasPendingInput }
+        XCTAssertTrue(done)
+        await settle()
+        XCTAssertEqual(link.written, ["rm x\r", "a", "c"])
+        XCTAssertEqual(notices, [.inputLost, .inputLost])
+    }
+
+    /// The socket did not take a request that was handed to it in the key's turn: the server
+    /// never saw it. It goes out once more, from a task, with what was typed behind it, and
+    /// only once.
+    func testAKeyTheSocketRefusedInItsOwnTurnIsSentOnceMoreAndOnlyOnce() async {
+        let link = FakeLink()
+        let (s, log) = stream(link)
+        link.failures[Self.write] = [RexError.unsent("socket is not connected")]
+        s.send(text: "a")
+        XCTAssertEqual(link.startedNow, 1, "handed to the socket in the key's turn")
+        XCTAssertEqual(link.written, [], "which did not take it")
+        XCTAssertTrue(s.hasPendingInput, "in flight until the socket says so")
+        s.send(text: "b")
+        XCTAssertEqual(link.startedNow, 1, "a key behind it starts nothing")
+        let sent = await eventually { !link.written.isEmpty && !s.hasPendingInput }
+        XCTAssertTrue(sent)
+        await settle()
+        XCTAssertEqual(link.written, ["ab"], "first again, ahead of what was typed since, in one write")
+        XCTAssertEqual(link.count(Self.write), 1, "the server saw it once")
+        XCTAssertEqual(link.startedNow, 1, "the second try left from a task")
+        XCTAssertEqual(log.asked.filter { $0 == .milliseconds(250) }.count, 1, "one retry")
+        XCTAssertEqual(notices, [])
+    }
+
+    /// `stop()` with a request out that left in the key's turn. However the request ends
+    /// afterwards (answered, never taken by the socket, lost with its connection), nothing is
+    /// in flight, nothing is sent again and nobody is told.
+    func testStopWithAKeyOutThatLeftInItsOwnTurnKeepsNothingOfIt() async {
+        let ends: [(String, Error?)] = [
+            ("answered", nil),
+            ("never sent", RexError.unsent("socket is not connected")),
+            ("lost", RexError.local("connection lost")),
+        ]
+        for (name, failure) in ends {
+            let link = FakeLink()
+            let (s, log) = stream(link)
+            if let failure { link.failures[Self.write] = [failure] }
+            s.send(text: "a")
+            XCTAssertEqual(link.startedNow, 1, name)
+            s.send(text: "b")
+            s.stop()
+            XCTAssertFalse(s.hasPendingInput, name)
+            XCTAssertFalse(s.control.inputActivity.busy, name)
+            await settle()
+            XCTAssertFalse(s.hasPendingInput, name)
+            XCTAssertFalse(s.control.inputActivity.busy, name)
+            XCTAssertEqual(link.written, failure.map(Self.neverLeft) == true ? [] : ["a"], name)
+            XCTAssertFalse(log.asked.contains(.milliseconds(250)), "\(name): no retry was asked for")
+            XCTAssertEqual(notices, [], name)
+        }
+    }
+
+    private static func neverLeft(_ error: Error) -> Bool { (error as? RexError)?.neverSent == true }
+
+    /// The pane is opened again, and keys typed, before the request that was out at `stop()`
+    /// has ended. The server may still be running that request, and it orders no two writes,
+    /// so the new keys wait for its end and then go out once, from a task; the end itself is
+    /// no answer for them. After that the queue is idle and a key leaves in its own turn.
+    func testKeysTypedAfterStopAndStartWaitForTheRequestThatWasOutAndGoOnce() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        XCTAssertEqual(link.startedNow, 1)
+        let out = await eventually { link.waitingCount == 1 }
+        XCTAssertTrue(out)
+        s.stop()
+        s.start()
+        await catchUp(s, link)
+        s.send(text: "c")
+        s.send(text: "d")
+        await settle()
+        XCTAssertEqual(link.written, ["a"], "one request at a time: the write from before `stop()` is still out")
+        XCTAssertEqual(link.startedNow, 1)
+        // The answer to "a", late.
+        link.release()
+        let next = await eventually { link.written.count == 2 && link.waitingCount == 1 }
+        XCTAssertTrue(next)
+        XCTAssertEqual(link.written, ["a", "cd"])
+        XCTAssertEqual(link.startedNow, 1, "what waited went out from a task")
+        XCTAssertTrue(s.hasPendingInput, "the late answer was not the answer to the new keys")
+        link.release()
+        let idle = await eventually { !s.hasPendingInput }
+        XCTAssertTrue(idle)
+        link.held = []
+        s.send(text: "e")
+        XCTAssertEqual(link.written, ["a", "cd", "e"])
+        XCTAssertEqual(link.startedNow, 2)
+        _ = await eventually { !s.hasPendingInput }
+        await settle()
+        XCTAssertEqual(link.written, ["a", "cd", "e"], "nothing left twice")
+        XCTAssertEqual(notices, [])
+    }
 }

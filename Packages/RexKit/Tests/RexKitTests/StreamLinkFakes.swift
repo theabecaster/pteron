@@ -84,13 +84,17 @@ final class FakeLink: StreamLink {
 
     /// False: `start` takes nothing, and every request goes through `call`, in a task.
     var startsNow = true
-    /// Errors that the next `start`s answer with before they return.
+    /// Errors that the next `start`s answer with before they return. `RexControl` never answers
+    /// inside the call; this is the harder case, where the request ends inside `pump`.
     var startFailures: [Error] = []
     /// How many requests `start` took: they were with the "server" in the caller's turn.
     private(set) var startedNow = 0
 
-    /// As `RexControl.start`: the request is recorded before this returns. What `call` would
-    /// throw before the send (no connection, a planned failure) is left to `call`.
+    /// As `RexControl.start`: the request is with the socket before this returns, and its
+    /// answer comes from a task, in a later turn. That holds for a planned failure of the
+    /// method (`failures`) too: the socket that did not take the message says so later, and so
+    /// does the connection that broke after the send. Only what `call` would refuse before the
+    /// send (no connection) is left to `call`.
     func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool {
         guard startsNow, isConnected else { return false }
         if !startFailures.isEmpty {
@@ -98,10 +102,17 @@ final class FakeLink: StreamLink {
             answer(.failure(startFailures.removeFirst()))
             return true
         }
-        guard failures[method]?.isEmpty ?? true else { return false }
         let call = Call(method: method, payload: payload ?? [:])
-        calls.append(call)
         startedNow += 1
+        if var errors = failures[method], !errors.isEmpty {
+            let e = errors.removeFirst()
+            failures[method] = errors
+            // A request the socket didn't take never reached the server.
+            if (e as? RexError)?.neverSent != true { calls.append(call) }
+            Task { answer(.failure(e)) }
+            return true
+        }
+        calls.append(call)
         Task {
             do { answer(.success(try await self.answer(to: call))) } catch { answer(.failure(error)) }
         }
