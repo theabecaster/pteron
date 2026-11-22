@@ -1,7 +1,7 @@
 # Tab mode
 
 Tab mode is the app's second navigation style, like the Rex Mac app's horizontal tabs: a tab
-strip takes the title bar's place, at its height, and there is no sidebar. Sidebar mode is the
+strip takes the title bar's place, and there is no sidebar. Sidebar mode is the
 default and is unchanged. The choice is Settings → Appearance → Navigation: Sidebar or Tabs
 (`NavigationStyle`, stored as `Prefs.navigation`).
 
@@ -28,7 +28,8 @@ width alone. Left to right:
 
 - Every part a finger taps is 44 pt wide or more. 6 pt lie between the session chip and the
   chips, between two chips, and after the chips.
-- The strip is 44 pt tall, and 34 pt in a short window, as the title bar is.
+- The strip is 44 pt tall, and 34 pt in a short window. (Sidebar mode's title bar is as tall as
+  its one line: [duo-layout.md](duo-layout.md), Title bar.)
 - Where the system has a vertical bar (the iPhone Duo), Unzoom and the pane menu are in that
   bar and not in the strip.
 - **Compact.** Where the full strip would leave the chips less than 144 pt, New Tab and Unzoom

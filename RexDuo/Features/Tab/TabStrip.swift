@@ -29,8 +29,8 @@ struct StripActions {
 
 /// Tab mode's title bar (`NavigationStyle.tabs`), like the Mac app's tabs above: the session
 /// chip, the session's tabs as chips, then what the title bar holds. It takes the title bar's
-/// place at the title bar's height. `StripLayout` says what shows and where; `TabChip`,
-/// `SessionChip` and `SessionPopover` say what each part shows.
+/// place, at its own height (44 pt, 34 pt in a short window). `StripLayout` says what shows and
+/// where; `TabChip`, `SessionChip` and `SessionPopover` say what each part shows.
 struct TabStrip<PaneMenu: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.rootOrigin) private var rootOrigin

@@ -1,9 +1,10 @@
 import SwiftUI
+import UIKit
 
 /// Sidebar mode's title on one line, like the Mac's title bar: the tab's title, its status, then
-/// the session's name in a quieter color, then the menu chevron. One line keeps the title bar as
-/// thin as tab mode's strip. `fit` decides how the title and the session share the line; the
-/// status and the chevron always keep their own width.
+/// the session's name in a quieter color, then the menu chevron. One line keeps the title bar
+/// thin (`barHeight`). `fit` decides how the title and the session share the line; the status and
+/// the chevron always keep their own width.
 enum TitleLine {
     /// Between the title (or its status) and the session's name.
     static let gap: CGFloat = 7
@@ -14,9 +15,42 @@ enum TitleLine {
     /// The title keeps at least this much (all of it, when it is shorter) before the session's
     /// name leaves the line for it.
     static let titleMin: CGFloat = 64
-    /// The line's text stops growing where the strip's chips do: the bar keeps its height at
-    /// every text size, so a larger title would clip.
+    /// The line's text stops growing where the strip's chips do, and the bar with it.
     static let typeLimit: DynamicTypeSize = StripStyle.chipTypeLimit
+
+    // MARK: The bar's height
+
+    /// The bar's glyphs (the sidebar toggle, the pane menu, Unzoom) at the bar's 17 pt: they fit
+    /// this box, and don't grow with the text size.
+    static let glyph: CGFloat = 22
+    /// Above and below the tallest of the line and the glyphs.
+    static let padding: CGFloat = 6
+    /// The same in a short window (landscape iPhone), where every point is a row of text less.
+    static let compactPadding: CGFloat = 4
+    /// A short window's bar never passes this, whatever the text size: the line still fits.
+    static let compactMax: CGFloat = 34
+
+    /// The title bar's height: its content, the taller of the line (`lineHeight`) and the glyphs,
+    /// with even padding above and below. It grows with the text size up to `typeLimit`, and in a
+    /// short window stays at most `compactMax`. Whether the session's name is on the line or not
+    /// changes nothing: one line, one height.
+    static func barHeight(line: CGFloat, compact: Bool) -> CGFloat {
+        let h = (max(line, glyph) + 2 * (compact ? compactPadding : padding)).rounded(.up)
+        return compact ? min(h, compactMax) : h
+    }
+
+    /// The line's height at a text size, from the title's font (subheadline, the session's size
+    /// too), capped at `typeLimit`. Read from the font's metrics, not from the drawn bar, so the
+    /// bar's height never feeds back into its own layout.
+    static func lineHeight(_ size: DynamicTypeSize) -> CGFloat {
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(min(size, typeLimit)))
+        return UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits).lineHeight.rounded(.up)
+    }
+
+    /// The title bar's height at a text size, in a short window or not.
+    static func barHeight(_ size: DynamicTypeSize, compact: Bool) -> CGFloat {
+        barHeight(line: lineHeight(size), compact: compact)
+    }
 
     struct Widths: Equatable {
         var title: CGFloat

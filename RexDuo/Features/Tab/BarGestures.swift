@@ -98,8 +98,8 @@ struct TabTitleBar: View {
                     .accessibilityHidden(true)
             }
         }
-        // The bar keeps its height at every text size: the line stops growing where the strip's
-        // chips do, and truncates past it instead of clipping.
+        // The line stops growing where the bar does (`TitleLine.barHeight`), and truncates past
+        // it instead of clipping.
         .dynamicTypeSize(...TitleLine.typeLimit)
         .padding(.leading, 2)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)

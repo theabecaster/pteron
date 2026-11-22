@@ -158,6 +158,8 @@ struct WaitingPill: View {
     /// Panes on screen right now; agents waiting there are already in view.
     let visible: Set<String>
     let theme: TermTheme
+    /// The hit height: the bar's.
+    var height: CGFloat = 44
     let onJump: (Waiting.Item) -> Void
 
     var body: some View {
@@ -180,7 +182,7 @@ struct WaitingPill: View {
                 .frame(minHeight: 26)
                 .background(Capsule().fill(theme.chrome.blocked.opacity(0.18)))
                 .fixedSize()
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 44, minHeight: height)
                 .contentShape(Rectangle())
                 // The title bar keeps its height, so the count stops growing where it would clip.
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)

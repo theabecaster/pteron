@@ -28,8 +28,9 @@ enum StripStyle {
     /// The hairline that ends the session chip, so it reads apart from the first tab.
     static let separatorHeight: CGFloat = 16
 
-    /// The chips' text stops growing here: the strip keeps the title bar's height at every text
-    /// size, so a larger title would clip. Past it the title truncates.
+    /// The chips' text stops growing here: the strip keeps its height at every text size, so a
+    /// larger title would clip. Past it the title truncates. Sidebar mode's title line stops here
+    /// too (`TitleLine.typeLimit`).
     static let chipTypeLimit: DynamicTypeSize = .xxxLarge
 
     /// A chip's title: the active one at the title bar's weight, any other quieter.

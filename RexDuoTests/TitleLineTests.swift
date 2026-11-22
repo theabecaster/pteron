@@ -59,6 +59,51 @@ import UIKit
         }
     }
 
+    // MARK: The bar's height
+
+    @Test func theBarIsItsContentWithEvenPadding() {
+        // The glyphs are the content while the line is shorter.
+        #expect(TitleLine.barHeight(line: 18, compact: false) == TitleLine.glyph + 2 * TitleLine.padding)
+        #expect(TitleLine.barHeight(line: 18, compact: true) == TitleLine.glyph + 2 * TitleLine.compactPadding)
+        // A taller line grows the bar, rounded up to whole points.
+        #expect(TitleLine.barHeight(line: 25, compact: false) == 25 + 2 * TitleLine.padding)
+        #expect(TitleLine.barHeight(line: 24.2, compact: false) == (24.2 + 2 * TitleLine.padding).rounded(.up))
+        // A short window's bar stops at its cap.
+        #expect(TitleLine.barHeight(line: 40, compact: true) == TitleLine.compactMax)
+    }
+
+    /// Thinner than the 44 pt it was, and no taller in a short window than the 34 pt it was.
+    @Test func thinnerAtTheDefaultTextSize() {
+        #expect(TitleLine.barHeight(.large, compact: false) < 44)
+        #expect(TitleLine.barHeight(.large, compact: true) < 34)
+    }
+
+    /// The bar grows with the text, never shrinks as it grows, stops at the cap, and in a short
+    /// window never passes `compactMax`.
+    @Test func theBarGrowsWithTheTextUpToTheCap() {
+        var last: (CGFloat, CGFloat) = (0, 0)
+        let capped = (TitleLine.barHeight(TitleLine.typeLimit, compact: false), TitleLine.barHeight(TitleLine.typeLimit, compact: true))
+        for type in DynamicTypeSize.allCases {
+            let h = (TitleLine.barHeight(type, compact: false), TitleLine.barHeight(type, compact: true))
+            #expect(h.0 >= last.0 && h.1 >= last.1, "\(type) shrank: \(h)")
+            #expect(h.1 <= TitleLine.compactMax && h.1 <= h.0, "\(type): \(h)")
+            if type >= TitleLine.typeLimit { #expect(h == capped, "\(type) grows past the cap") }
+            last = h
+        }
+        #expect(capped.0 > TitleLine.barHeight(.large, compact: false), "a larger text size grows the bar")
+    }
+
+    /// The glyphs in the bar fit the box the height counts for them.
+    @Test func theGlyphsFitTheirBox() {
+        for symbol in ["sidebar.left", TabAction.paneActions.symbol, TabAction.unzoom.symbol, TabAction.floats.symbol] {
+            for type in [DynamicTypeSize.large, .accessibility5] {
+                let v = Image(systemName: symbol).font(.system(size: 17)).environment(\.dynamicTypeSize, type)
+                let s = size(v, width: 200)
+                #expect(s.height <= TitleLine.glyph, "\(symbol) at \(type): \(s)")
+            }
+        }
+    }
+
     // MARK: The line drawn
 
     /// The title bar's line as `TabTitleBar` draws it: title, status, session, chevron.
@@ -78,13 +123,14 @@ import UIKit
         UIHostingController(rootView: v).sizeThatFits(in: CGSize(width: width, height: 200))
     }
 
-    /// At every text size the line fits the short bar (34 pt), so nothing clips: the largest
-    /// sizes draw as the cap does.
-    @Test func theLineFitsTheShortBarAtEveryTextSize() {
+    /// At every text size the drawn line fits the bar's content box, short window included, so
+    /// nothing clips: the largest sizes draw as the cap does.
+    @Test func theLineFitsTheBarAtEveryTextSize() {
         let capped = size(line("api", "zz-session", type: TitleLine.typeLimit), width: 400)
         for type in DynamicTypeSize.allCases {
             let s = size(line("api", "zz-session", type: type), width: 400)
-            #expect(s.height <= 34, "\(type): \(s.height)")
+            #expect(s.height <= max(TitleLine.lineHeight(type), TitleLine.glyph) + 0.5, "\(type): \(s.height)")
+            #expect(s.height <= TitleLine.barHeight(type, compact: true), "\(type): \(s.height)")
             if type >= TitleLine.typeLimit { #expect(s == capped, "\(type) grows past the cap") }
         }
     }

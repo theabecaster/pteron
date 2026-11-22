@@ -39,6 +39,7 @@ struct WindowScreen: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
     @Environment(\.verticalSizeClass) private var vSize
+    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Where the system's vertical bar is, if any: the tab's actions go there as toolbar items.
     @Environment(\.verticalBarEdge) private var barEdge
@@ -867,8 +868,8 @@ struct WindowScreen: View {
         }
     }
 
-    /// The bar above the panes: the title bar, or in tab mode the tab strip in its place, at the
-    /// same height. Branched here, so a change of mode keeps the tab's panes and its state.
+    /// The bar above the panes: the title bar, or in tab mode the tab strip in its place, each at
+    /// its own height. Branched here, so a change of mode keeps the tab's panes and its state.
     private func header(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         bar(w, theme, p)
             // The palette opens just below the bar: where it ends, read at open.
@@ -886,8 +887,13 @@ struct WindowScreen: View {
         }
     }
 
-    /// Under a short window (landscape iPhone) the bar is thinner, to leave rows for the panes.
+    /// Tab mode's strip. Under a short window (landscape iPhone) it is thinner, to leave rows for
+    /// the panes.
     private var barHeight: CGFloat { vSize == .compact ? 34 : 44 }
+
+    /// Sidebar mode's title bar: as tall as its one line and its glyphs, with even padding
+    /// (`TitleLine.barHeight`). Every part of the bar takes this height as its hit height.
+    private var titleBarHeight: CGFloat { TitleLine.barHeight(typeSize, compact: vSize == .compact) }
 
     /// Tab mode's bar (`TabStrip`): the session's tabs as chips, with what the title bar holds.
     private func tabStrip(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
@@ -923,14 +929,14 @@ struct WindowScreen: View {
         }
     }
 
-    /// Thin, like the Mac's title bar, and as tall as tab mode's strip: the sidebar toggle, the
-    /// tab's title with the shown pane's status and the session's name on one line (`TitleLine`),
-    /// then the page dots and the pane menu. Where the system has a vertical bar, the buttons are
-    /// there instead and this keeps the title line. Under a short window (landscape iPhone) it is
-    /// thinner, to leave rows for the panes.
+    /// Thin, like the Mac's title bar: the sidebar toggle, the tab's title with the shown pane's
+    /// status and the session's name on one line (`TitleLine`), then the page dots and the pane
+    /// menu. As tall as that line and the glyphs, with even padding (`titleBarHeight`): it grows
+    /// with the text size up to the line's cap. Where the system has a vertical bar, the buttons
+    /// are there instead and this keeps the title line.
     private func titleHeader(_ w: WindowInfo?, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         let bar = barEdge != nil
-        let height = barHeight
+        let height = titleBarHeight
         return HStack(spacing: 0) {
             if !bar {
                 IconButton(symbol: "sidebar.left", label: sidebarVisible ? "Hide Sidebar" : "Show Sidebar",
@@ -943,7 +949,6 @@ struct WindowScreen: View {
                     .font(.caption2)
                     .foregroundStyle(theme.chrome.tertiary)
                     .lineLimit(1)
-                    .dynamicTypeSize(...TitleLine.typeLimit)
                     .padding(.leading, 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -952,10 +957,12 @@ struct WindowScreen: View {
                 let visible = p.map { VisiblePanes.inTab(w, $0) } ?? VisiblePanes.inTab(w, active: b, single: single)
                 // One pane at a time: the dots say which, of the tab's panes on screen or a swipe away.
                 let dots = p.map(\.pageIDs) ?? (single ? w.pageBlockIDs : nil)
-                WaitingPill(visible: visible, theme: theme, onJump: jump)
+                WaitingPill(visible: visible, theme: theme, height: height, onJump: jump)
                     .layoutPriority(1)
                 if let dots, dots.count > 1 {
-                    PaneDots(ids: dots, current: p?.pageCurrent ?? b, theme: theme) { switchPane(w, by: $0, from: p?.pageCurrent) }
+                    PaneDots(ids: dots, current: p?.pageCurrent ?? b, theme: theme, height: height) {
+                        switchPane(w, by: $0, from: p?.pageCurrent)
+                    }
                 }
                 if !bar {
                     if mode == .narrow { floatsControl(w, p, style: .titleBar, height: height) }
@@ -969,6 +976,9 @@ struct WindowScreen: View {
         }
         .font(.system(size: 17))
         .foregroundStyle(theme.fg)
+        // The bar's height follows the text only up to the line's cap, and so does its text:
+        // the title, the pill's count, the floats' count. Nothing in it outgrows the bar.
+        .dynamicTypeSize(...TitleLine.typeLimit)
         .frame(height: height)
         .padding(.leading, bar ? 12 : 4)
         .padding(.trailing, 4)
@@ -1303,6 +1313,8 @@ struct PaneDots: View {
     /// The count at any number of panes: the tab strip's, where dots would be crowded
     /// (`StripLayout.dotsForm`). The title bar leaves it off.
     var counts = false
+    /// The hit height: the bar's.
+    var height: CGFloat = 44
     let onStep: (Int) -> Void
 
     var body: some View {
@@ -1325,7 +1337,7 @@ struct PaneDots: View {
             }
         }
         .padding(.horizontal, 8)
-        .frame(minHeight: 44)
+        .frame(minHeight: height)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Pane \(idx + 1) of \(ids.count)")

@@ -43,7 +43,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   Duo on its side, which is 594 pt inside its vertical bar) the same sidebar is a drawer over the
   tab.
 - **Tab mode** (`NavigationStyle`, `Prefs.navigation`). The other way around the app, like the
-  Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at its height,
+  Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at 44 pt (34 pt in a short window),
   the tab strip (`TabStrip`). The choice is Settings → Appearance → Navigation; sidebar mode
   is the default. [tab-mode.md](tab-mode.md) has all of it; what follows is what the window
   and the fold decide.
@@ -306,15 +306,20 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   the terminal's color runs on to the window's bottom: under the home indicator with the keyboard
   down, and behind the key bar and the keyboard's corners with it up. No band of chrome shows
   under the terminal.
-- **Title bar** (`TitleLine`). 44 pt, as tall as tab mode's strip, with nothing above or below
-  it: one line, like the Mac's title bar. The tab's title (semibold), its status, then the
-  session's name in the secondary color (with the computer's name when more than one is set
-  up), then the menu chevron. When both don't fit, the session's name keeps up to a third of
-  the line and both truncate; where the title would keep less than 64 pt, the session's name
-  leaves the line. The text stops growing at the strip's limit (`StripStyle.chipTypeLimit`), so
-  the bar never clips it at the largest text sizes.
-- **Short windows** (landscape iPhone): the title bar and the strip are 34 pt, and the key bar is
-  42 pt.
+- **Title bar** (`TitleLine`). One line, like the Mac's title bar: the tab's title (semibold),
+  its status, then the session's name in the secondary color (with the computer's name when
+  more than one is set up), then the menu chevron. When both don't fit, the session's name
+  keeps up to a third of the line and both truncate; where the title would keep less than
+  64 pt, the session's name leaves the line.
+  - **Height.** As tall as its content, the taller of the line (from the font's metrics) and the
+    22 pt glyphs, with 6 pt above and below: 34 pt at the default text size, nothing above or
+    below it. It grows with the text size up to the strip's limit (`StripStyle.chipTypeLimit`),
+    where the text stops growing too, so nothing in the bar clips. The session's name leaving
+    the line changes nothing: one line, one height. Every button keeps its 44 pt width and
+    takes the bar's height as its hit height; no hit area reaches over the terminal.
+  - **Short windows** (landscape iPhone): 4 pt above and below, 30 pt at the default text size
+    and never more than 34 pt.
+- **Short windows** (landscape iPhone): the strip is 34 pt and the key bar 42 pt.
 - **Offline screen** (`OfflineLayout`). It fills the tab, so an inline sidebar stays beside it. Where
   the crease crosses it with room on both sides, it is two pages: the glyph large on the left (or top)
   page, the card on the other, each centered in its page and 12 pt clear of the crease. With room for
