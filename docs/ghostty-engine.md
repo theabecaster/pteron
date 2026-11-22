@@ -462,7 +462,7 @@ and `predict-fast-off` are the pair on a 5 ms link, where the gate is there and 
 | a key on the feed queue | 40 µs (measured plus a quarter) | 32 µs: 28.5 the predictor's call, 3 the grid's facts, 1.5 the publish; 6 cells read |
 | main busy, more than with no gate | 15 ms | 5 ms (104 against 99, over the scenario's 25 s) |
 | gate present and off: predictors made, keys through prediction code | 0; 0 | 0; 0 |
-| gate present and off: a key's send, more than with no gate | 1.5 µs | 0.7 µs (59.7 against 59.0) |
+| gate present and off: a key's send, against the same with no gate | 1.05 times | 1.01 to 1.03 times (59.7 against 59.0, 60.7 against 59.2) |
 | fast link: a key's whole send on the main thread, with and without a gate | 100 µs | 60 µs; 59 µs. Nearly every key finds the queue idle there, so its write starts in the key's own turn (docs/terminal.md, Input); it was 32 µs when the write started in a task |
 
 With the gate off a key costs the stream one check that it has no observer; a write of typed

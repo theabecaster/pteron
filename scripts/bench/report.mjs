@@ -174,7 +174,8 @@ for (const s of Object.keys(budgets.scenarios)) {
     verdicts.push([title[p] ?? p, s, got.median <= limit ? 'pass' : 'FAIL', `${num(got.median)}, budget ${num(limit)}`]);
   }
 }
-// What one scenario may cost more than another (budgets.differences): the medians' difference.
+// What one scenario may cost more than another (budgets.differences): the medians' difference,
+// or their ratio.
 for (const [name, d] of Object.entries(budgets.differences)) {
   if (!runs[d.of] || !runs[d.against]) {
     if (!partial) verdicts.push([name, d.of, 'no data', 'no result']);
@@ -182,6 +183,11 @@ for (const [name, d] of Object.entries(budgets.differences)) {
   }
   const a = stat(runs[d.of], d.path), b = stat(runs[d.against], d.path);
   if (!a || !b) { verdicts.push([name, d.of, 'no data', 'not in the results']); continue; }
+  if (d.ratio !== undefined) {
+    const times = b.median > 0 ? a.median / b.median : Infinity;
+    verdicts.push([name, d.of, times <= d.ratio ? 'pass' : 'FAIL', `${num(a.median)} against ${num(b.median)} (${d.against}), ${times.toFixed(3)} times, budget ${d.ratio}`]);
+    continue;
+  }
   const diff = a.median - b.median;
   verdicts.push([name, d.of, diff <= d.limit ? 'pass' : 'FAIL', `${num(a.median)} against ${num(b.median)} (${d.against}), ${num(diff)} more, budget ${num(d.limit)}`]);
 }

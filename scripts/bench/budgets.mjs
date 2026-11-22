@@ -62,15 +62,19 @@ export const scenarios = {
   'predict-fast-off': { 'echo.mainSendUs.median': 100 },
 };
 
-// What one scenario may cost more than another: the difference of the two medians.
+// What one scenario may cost more than another: the difference of the two medians (`limit`),
+// or one median as a multiple of the other (`ratio`).
 // - A session's whole main-thread work with predictions on, over the same session without a
 //   gate: 15 ms over the scenario's 25 s (measured 5 to 8). The scenario itself costs about 100 ms
 //   either way, most of it the frames its 69 keys draw.
 // - A key's send on a fast link with the gate present and off, over the same with no gate: the
-//   two must be the same. 1.5 µs is the spread of the baseline's own runs (measured 0.8).
+//   two must be the same. Since the write starts in the key's own turn a send costs about
+//   60 µs in both, and the spread of the baseline's own runs is 1 to 2 µs, so the limit is a
+//   ratio: at most 1.05 times the send with no gate (measured 1.01 to 1.03). Ruled by lead dev,
+//   2026-11-22: a fixed 1.5 µs between two 60 µs medians measured the noise.
 export const differences = {
   'predictions add, main busy ms': { of: 'predict', against: 'predict-off', path: 'mainBusy.totalMs', limit: 15 },
-  'a gate that is off adds, µs per key': { of: 'predict-fast', against: 'predict-fast-off', path: 'echo.mainSendUs.median', limit: 1.5 },
+  'a gate that is off, a send against no gate': { of: 'predict-fast', against: 'predict-fast-off', path: 'echo.mainSendUs.median', ratio: 1.05 },
 };
 
 // The stream's filter (`APCFilter`), on the Mac with no simulator (scripts/bench/filter.sh): how
