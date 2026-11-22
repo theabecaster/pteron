@@ -1,6 +1,7 @@
 import Foundation
 import GhosttyVt
 import QuartzCore
+import RexKit
 import Synchronization
 import os
 
@@ -140,6 +141,20 @@ final class GhosttyCore: @unchecked Sendable {
     /// frame that redraws for another reason keeps the result of the rows it shows. Guarded by
     /// `stateLock`.
     var frameFind: FindResult?
+
+    /// Predicted echo (GhosttyCore+Predict.swift): the predictor and the pane's level, on the
+    /// feed queue under `termLock`.
+    let echo = GhosttyEchoState()
+    /// The guesses the feed queue last published for the rows parsed so far. Guarded by
+    /// `termLock`. Every change to the grid other than parsing (the backlog drop in `write`,
+    /// `resize`, `reset`, `restore`, `setColors`) sets it to nil with `echoInvalidate()` in the
+    /// same lock section as its change, so no frame latches new rows with an overlay computed
+    /// for the old grid. A mutator added later must do the same.
+    var echoPublished: EchoOverlay?
+    /// The guesses the frame being drawn shows: latched with its rows where `begin_update` runs,
+    /// so they freeze with the rows during a hold. Nil while the view is in the scrollback.
+    /// Guarded by `stateLock`.
+    var frameEcho: EchoOverlay?
 
     /// The key encoder and the input modes, synced under `termLock` after every change to the
     /// terminal that can change a mode, so typing never waits for that lock (GhosttyCore+Input.swift).
@@ -381,6 +396,11 @@ final class GhosttyCore: @unchecked Sendable {
                 if dropEpoch.load(ordering: .relaxed) != epoch {
                     backlog.subtract(buf.count - off, ordering: .relaxed)
                     noteDropped(buf.count - off)
+                    // The skipped output may hold echoes: the guesses go with it.
+                    termLock.lock()
+                    let settled = echoInvalidate()
+                    termLock.unlock()
+                    if settled { deliverEcho([.settled]) }
                     break
                 }
                 let n = min(Self.sliceSize, buf.count - off)
@@ -392,12 +412,17 @@ final class GhosttyCore: @unchecked Sendable {
                     spins += 1
                 }
                 termLock.lock()
+                var echoEvents: [GhosttyEchoEvent] = []
                 if let t = terminal {
                     // A plain write that also reads the prompt click mode (GhosttyPrompts.swift).
                     writeWatchingPrompts(t, base + off, n)
                     input.sync(from: t)
+                    // Predicted echo: the overlay for these rows, published with them; judged
+                    // once the batch is parsed. One nil check while predictions are off.
+                    if echo.predictor != nil { _ = echoAfterSlice(t, batchEnd: off + n >= buf.count, events: &echoEvents) }
                 }
                 termLock.unlock()
+                deliverEcho(echoEvents)
                 off += n
                 bytesParsed += n
                 backlog.subtract(n, ordering: .relaxed)
@@ -542,7 +567,9 @@ final class GhosttyCore: @unchecked Sendable {
                                         self.cellWidthPx, self.cellHeightPx)
             }
             scroll.gridChanged()
+            let settled = echoInvalidate()
             termLock.unlock()
+            if settled { deliverEcho([.settled]) }
             onDirty?()
             noteFindChanged()
         }
@@ -553,7 +580,9 @@ final class GhosttyCore: @unchecked Sendable {
             termLock.lock()
             colors = c
             if let t = terminal { applyColors(t) }
+            let settled = echoInvalidate()
             termLock.unlock()
+            if settled { deliverEcho([.settled]) }
             onDirty?()
         }
     }
@@ -568,7 +597,9 @@ final class GhosttyCore: @unchecked Sendable {
                 scroll.gridChanged()
                 input.sync(from: t)
             }
+            let settled = echoInvalidate()
             termLock.unlock()
+            if settled { deliverEcho([.settled]) }
             onDirty?()
             noteFindChanged()
         }
@@ -681,7 +712,9 @@ final class GhosttyCore: @unchecked Sendable {
                 ghostty_terminal_free(old)
                 Self.liveTerminals.subtract(1, ordering: .relaxed)
             }
+            let settled = echoInvalidate()
             termLock.unlock()
+            if settled { deliverEcho([.settled]) }
             onDirty?()
             noteFindChanged()
             if let trailing, consumed < snapshot.count {
@@ -859,6 +892,9 @@ final class GhosttyCore: @unchecked Sendable {
             // Read in the same critical section so they describe the same moment as the rows.
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar)
             ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &viewportActive)
+            // The guesses for these rows. Overlay rows are active-area rows, which are the
+            // viewport's only at the bottom.
+            frameEcho = viewportActive ? echoPublished : nil
         }
         termLock.unlock()
         ghostty_render_state_end_update(rs)

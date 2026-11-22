@@ -1,5 +1,6 @@
 import Foundation
 import GhosttyVt
+import RexKit
 
 // Prompt click: a tap on the shell's input line moves the shell's cursor there (OSC 133).
 //
@@ -63,6 +64,14 @@ struct GhosttyPromptWatch {
 
     /// The primary screen's mode. Prompt clicks never happen on the alternate screen.
     private(set) var mode = GhosttyPromptClickMode.none
+    /// Every `133;A`, `B`, `C` and `D` on the primary screen, by serial, for predicted echo
+    /// (`EchoPredictor`). Kept across resets and restores, so serials only grow.
+    private(set) var marks = EchoPromptMarks()
+    private var serial = 0
+
+    /// The program in front changed: a remote shell without OSC 133 must not inherit the local
+    /// shell's markers.
+    mutating func foregroundChanged() { marks.sentB = false }
     private var capturing = false
     private var overflowed = false
     private var content: [UInt8] = []
@@ -92,7 +101,22 @@ struct GhosttyPromptWatch {
     fileprivate mutating func end(complete: Bool, primaryScreen: Bool) {
         defer { capturing = false }
         guard capturing, complete, !overflowed, primaryScreen, content.starts(with: Array("133;".utf8)) else { return }
+        if content.count > 4 { noteMarker(content[4]) }
         if let announced = GhosttyPromptClickMode.announced(by: content.dropFirst(4)) { mode = announced }
+    }
+
+    private mutating func noteMarker(_ letter: UInt8) {
+        switch letter {
+        case UInt8(ascii: "B"):
+            serial += 1
+            marks.lastB = serial
+            marks.sentB = true
+        case UInt8(ascii: "A"), UInt8(ascii: "C"), UInt8(ascii: "D"):
+            serial += 1
+            marks.lastEnd = serial
+        default:
+            break
+        }
     }
 }
 
