@@ -474,6 +474,29 @@ the first call's response before you send the second").
   of 128 or more. The mouse encoder uses the format the program asked for, and programs that
   track the mouse on wide screens ask for SGR (mode 1006) or UTF-8 (1005), both plain UTF-8.
 
+Before the stream, on the phone's main thread, the engine view keeps a shadow of the line being
+typed for the keyboard (`GhosttyInputDocument`), and tells the keyboard about every change to
+it, as `UITextInput` asks: `selectionWillChange` and `textWillChange` before the change,
+`textDidChange` and `selectionDidChange` after. The keyboard takes its time over the last two
+(about 20 ms per key at typing pace in a simulator, about 9 ms in a burst), so where the send
+stands among these calls decides how long a key waits:
+
+- **One plain key is sent before the keyboard is told.** The order is: the two will-change
+  calls, the shadow's edit, the send, the two did-change calls. A plain key
+  (`GhosttyPlainInsertion`) is text from `insertText` that is one character (an emoji or a wide
+  character counts as one), typed at the program's cursor with nothing selected, with no
+  composition before or after it, not dictated, and that leaves the shadow within its 4096
+  units. A hardware key that types and a letter after the key bar's one-shot ctrl or alt are
+  plain keys too.
+- **Everything else tells the keyboard first, then sends**, as before: an input method's
+  updates and its commit, dictation (`insertDictationResult`, or any text while the keyboard's
+  input mode is `dictation`), a replacement (`replace(_:withText:)`, text over a selection or
+  away from the program's cursor), more than one character at once (a suggestion, a swipe, a
+  paste from the keyboard), Backspace, Return, and the keys that reset the shadow (the key
+  bar's keys, raw sends, a paste, hardware keys encoded here).
+- The send itself is the same in both orders: the fence holds or drops it, a guess is drawn for
+  it (Predicted echo) before it is queued, and the queue below takes it.
+
 Around that:
 
 - Paste goes through the engine's `pasteText`, so programs that asked for bracketed paste get it.

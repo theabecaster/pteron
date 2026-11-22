@@ -591,4 +591,57 @@ final class EchoHostTests: XCTestCase {
         XCTAssertEqual(guesses(p), "b")
         XCTAssertEqual(p.core.echoCounters?.mismatchedDrawn, 0)
     }
+
+    // MARK: A plain key is sent before the keyboard is told (`GhosttyPlainInsertion`)
+
+    /// Order: the guess is drawn and the key is on its way to the program when the keyboard is
+    /// told that the text changed, and the guess comes before the send, as it always did.
+    func testAGuessIsDrawnAndItsKeySentBeforeTheKeyboardIsTold() async {
+        let p = await pane(level: .slow)
+        await type(p, "l")
+        await echo(p, "l", row: "$ l")
+        let log = KeyOrderLog()
+        p.host.term.inputDelegate = log
+        var guessWhenTold: String?, onItsWayWhenTold: Bool?, writtenWhenTold: String?
+        log.onTextDid = {
+            guessWhenTold = self.guesses(p)
+            onItsWayWhenTold = p.stream.hasPendingInput
+            writtenWhenTold = p.link.written.joined()
+        }
+        p.host.term.insertText("s")
+        XCTAssertEqual(log.events, [.selectionWill, .textWill, .textDid, .selectionDid])
+        XCTAssertEqual(guessWhenTold, "s", "drawn before the keyboard heard of the key")
+        XCTAssertEqual(onItsWayWhenTold, true, "its write was out")
+        XCTAssertEqual(writtenWhenTold, "l", "and not yet answered: the keyboard was told in the same turn")
+        XCTAssertEqual(p.core.publishedEcho?.cells.first?.col, 3)
+        await wait("the write") { p.link.written.joined() == "ls" && !p.stream.hasPendingInput }
+        await echo(p, "s", row: "$ ls")
+        XCTAssertEqual(guesses(p), "", "the server shows it")
+        XCTAssertEqual(p.core.echoCounters?.mismatched, 0)
+    }
+
+    /// Order: behind the catch-up fence a plain key reaches the fence before the keyboard is
+    /// told, and the fence holds it: nothing is sent until the stream is current, then the key
+    /// goes out once.
+    func testAPlainKeyBehindTheFenceIsHeldBeforeTheKeyboardIsTold() async {
+        let p = await pane(level: nil)
+        let log = KeyOrderLog()
+        p.host.term.inputDelegate = log
+        // The app came back: nobody knows yet what the program wrote meanwhile.
+        p.stream.returned()
+        XCTAssertTrue(p.stream.isFenced)
+        var heldWhenTold: Int?, pendingWhenTold: Bool?
+        log.onTextDid = {
+            heldWhenTold = p.stream.fence.heldCount
+            pendingWhenTold = p.stream.hasPendingInput
+        }
+        p.host.term.insertText("x")
+        XCTAssertEqual(log.events, [.selectionWill, .textWill, .textDid, .selectionDid])
+        XCTAssertEqual(heldWhenTold, 1, "the fence had the key")
+        XCTAssertEqual(pendingWhenTold, false, "and kept it out of the queue")
+        XCTAssertEqual(p.link.written, [], "nothing leaves behind the fence")
+        await wait("the fence to come down and the key to go out") { !p.stream.isFenced && p.link.written.joined() == "x" }
+        await wait("the answer") { !p.stream.hasPendingInput }
+        XCTAssertEqual(p.link.written.joined(), "x", "sent once")
+    }
 }

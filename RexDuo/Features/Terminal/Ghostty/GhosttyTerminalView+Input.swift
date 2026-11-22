@@ -124,7 +124,10 @@ extension GhosttyTerminalView {
     override func becomeFirstResponder() -> Bool {
         let was = isFirstResponder
         let ok = super.becomeFirstResponder()
-        if ok, !was { focusChanged(true) }
+        if ok, !was {
+            inputState.modeLanguage = nil
+            focusChanged(true)
+        }
         return ok
     }
 
@@ -135,6 +138,7 @@ extension GhosttyTerminalView {
             stopKeyRepeat()
             inputState.pending = nil
             inputState.down.removeAll()
+            inputState.modeLanguage = nil
             focusChanged(false)
         }
         return ok
@@ -209,14 +213,28 @@ extension GhosttyTerminalView {
 
     /// Text from the system keyboard, an input method's commit, dictation, or a hardware key
     /// that went through the text system.
+    ///
+    /// One plain key (`GhosttyPlainInsertion`) is sent before the keyboard is told that the
+    /// text changed; anything else after, as every other edit of the shadow document is.
     func insertText(_ text: String) {
         guard !covered else { return }
         if takeCommandKey(text) { return }
-        // Return ends the line: nothing on it is edited any more.
-        if text == "\n" { resetInputDocument() }
-        let edit = text == "\n" ? GhosttyInputEdit(text: text) : editInputDocument { $0.insert(text) }
+        if text == "\n" {
+            // Return ends the line: nothing on it is edited any more.
+            resetInputDocument()
+            return sendKeyboardText(text)
+        }
+        let before = GhosttyPlainInsertion(before: inputState.document)
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        let edit = inputState.document.insert(text)
+        let plain = before.holds(text, edit: edit, after: inputState.document, dictation: isDictating)
+        if plain { sendKeyboardText(text) }
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+        if plain { return }
         // The shadow only needs the line being typed.
-        if inputState.document.length > 4096 { resetInputDocument() }
+        if inputState.document.length > GhosttyPlainInsertion.longestLine { resetInputDocument() }
         guard edit.move == 0, edit.backspaces == 0, edit.text == text else {
             // The keyboard put the text somewhere other than the program's cursor (a caret it
             // moved, a selection it replaced): the program's line is edited to match.
@@ -224,7 +242,25 @@ extension GhosttyTerminalView {
             _ = takeOneShotModifiers()
             return sendEdit(edit)
         }
+        sendKeyboardText(text)
+    }
 
+    /// Dictation is putting text in: its own call, or the keyboard is in its dictation mode.
+    private var isDictating: Bool {
+        inputState.dictating || (inputState.layoutLanguage ?? modeLanguage) == "dictation"
+    }
+
+    /// The language of the keyboard's input mode, read once per mode (`GhosttyInputState.modeLanguage`).
+    private var modeLanguage: String? {
+        if let known = inputState.modeLanguage { return known }
+        let language = textInputMode?.primaryLanguage
+        inputState.modeLanguage = .some(language)
+        return language
+    }
+
+    /// Sends text typed at the program's cursor as keys: the hardware key that typed it if one
+    /// is waiting, with the key bar's one-shot ctrl and alt.
+    private func sendKeyboardText(_ text: String) {
         var keys = GhosttyInputKeymap.typed(text)
         guard !keys.isEmpty else { return }
         if keys.count == 1, let pending = takePending(for: keys[0]) {

@@ -247,10 +247,17 @@ final class GhosttyInputState {
     /// Repeats the held key that was encoded here (`KeyRepeater`).
     var keyRepeat = KeyRepeater()
     /// The hardware keyboard's language, for what Option means (`GhosttyInputKeymap.optionRole`).
+    /// It is also where dictation shows ("dictation"; `GhosttyPlainInsertion`).
     /// Nil: the view's input mode says. Tests set it.
     var layoutLanguage: String?
     /// Last point of a space-bar trackpad drag.
     var floatingCursor: CGPoint?
+    /// True while `insertDictationResult` puts its text in.
+    var dictating = false
+    /// The language of the keyboard's input mode as last read (`.some(nil)`: it has none), or
+    /// nil when it must be read again: the mode changed, or the keyboard came or went. Asking
+    /// UIKit for it costs about 0.2 ms, too much for every key.
+    var modeLanguage: String??
 }
 
 // MARK: UITextInput
@@ -396,7 +403,10 @@ extension GhosttyTerminalView: UITextInput {
 
     func insertDictationResult(_ dictationResult: [UIDictationPhrase]) {
         let text = dictationResult.map(\.text).joined()
-        if !text.isEmpty { insertText(text) }
+        guard !text.isEmpty else { return }
+        inputState.dictating = true
+        defer { inputState.dictating = false }
+        insertText(text)
     }
 
     func dictationRecordingDidEnd() {}

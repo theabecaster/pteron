@@ -184,11 +184,16 @@ final class GhosttyTerminalView: UIView {
         renderer.setIncreaseContrast(UIAccessibility.isDarkerSystemColorsEnabled)
         NotificationCenter.default.addObserver(self, selector: #selector(contrastChanged),
                                                name: UIAccessibility.darkerSystemColorsStatusDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(inputModeChanged),
+                                               name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func contrastChanged() { renderer.setIncreaseContrast(UIAccessibility.isDarkerSystemColorsEnabled) }
+
+    /// The keyboard changed its input mode (a language, dictation): what was read of it is old.
+    @objc private func inputModeChanged() { inputState.modeLanguage = nil }
 
     /// The one teardown: the host keeps a pane's view while the pane may come back on screen
     /// (`TerminalHostPool`) and lets go of it when the pane is closed.
