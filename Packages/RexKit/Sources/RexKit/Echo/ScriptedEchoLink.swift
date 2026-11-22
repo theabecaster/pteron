@@ -101,6 +101,17 @@ public final class ScriptedEchoLink {
             }
         }
 
+        /// A write is with the "server" when this returns, as on `RexControl`.
+        func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool {
+            guard method == "com.superlogical.terminal.write" else { return false }
+            written.append(payload?.obj("args")?.str("data") ?? "")
+            Task {
+                await self.sleep(self.writeDelay)
+                answer(.success([:]))
+            }
+            return true
+        }
+
         func openDataSocket(subprotocol: String) throws -> any StreamSocket {
             socket?.close()
             let s = Socket(opening: opening, nonce: nonce)

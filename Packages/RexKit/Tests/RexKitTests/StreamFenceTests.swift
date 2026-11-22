@@ -689,4 +689,45 @@ final class StreamFenceTests: XCTestCase {
         XCTAssertEqual(notices, [], "not through the failure notice when the app gave a calm one")
         XCTAssertEqual(link.written, [])
     }
+
+    // MARK: A key that would leave in its own turn (`StreamLink.start`)
+
+    /// Behind the fence no request starts, in the key's turn or later; when the fence comes
+    /// down over the same screen the held keys go out once, in order.
+    func testNoRequestStartsBehindTheFenceAndHeldKeysGoOutOnce() async {
+        let link = FakeLink()
+        let (s, _, log) = await current(link)
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
+        s.send(text: "a")
+        XCTAssertEqual(link.written, ["a"], "current: the key is with the socket in its own turn")
+        _ = await eventually { !s.hasPendingInput }
+        let started = link.startedNow
+        let socket = await dropAndWaitForResume(link, s)
+        s.send(text: "l")
+        s.send(text: "s")
+        XCTAssertEqual(link.written, ["a"], "nothing leaves behind the fence")
+        XCTAssertEqual(link.startedNow, started)
+        XCTAssertFalse(s.hasPendingInput, "held by the fence, not queued")
+        await settle()
+        XCTAssertEqual(link.written, ["a"])
+        socket.push(FakeLink.welcome())
+        let sent = await eventually { link.written.count == 2 && !s.hasPendingInput }
+        XCTAssertTrue(sent)
+        await settle()
+        XCTAssertEqual(link.written, ["a", "ls"])
+        XCTAssertEqual(notices, [])
+    }
+
+    /// A report made on the screen is dropped behind the fence, as before, and starts nothing.
+    func testAReportBehindTheFenceStartsNothing() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        _ = await dropAndWaitForResume(link, s)
+        let started = link.startedNow
+        XCTAssertFalse(s.send(report: Array("\u{1b}[<0;10;5M".utf8)))
+        await settle()
+        XCTAssertEqual(link.written, [])
+        XCTAssertEqual(link.startedNow, started)
+    }
 }

@@ -69,11 +69,43 @@ final class FakeLink: StreamLink {
         }
         let call = Call(method: method, payload: payload ?? [:])
         calls.append(call)
+        return try await answer(to: call)
+    }
+
+    /// The answer to a call that reached the "server": at once, or when the test releases it.
+    private func answer(to call: Call) async throws -> JSONObject {
+        let method = call.method
         if held.contains(method) {
             try await withCheckedThrowingContinuation { waiting.append((call, $0)) }
         }
         if let reply = replies[method] { return reply }
         return method == "data.connect" ? ["ticket": "AAECAwQFBgcICQoLDA0ODw"] : [:]
+    }
+
+    /// False: `start` takes nothing, and every request goes through `call`, in a task.
+    var startsNow = true
+    /// Errors that the next `start`s answer with before they return.
+    var startFailures: [Error] = []
+    /// How many requests `start` took: they were with the "server" in the caller's turn.
+    private(set) var startedNow = 0
+
+    /// As `RexControl.start`: the request is recorded before this returns. What `call` would
+    /// throw before the send (no connection, a planned failure) is left to `call`.
+    func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool {
+        guard startsNow, isConnected else { return false }
+        if !startFailures.isEmpty {
+            startedNow += 1
+            answer(.failure(startFailures.removeFirst()))
+            return true
+        }
+        guard failures[method]?.isEmpty ?? true else { return false }
+        let call = Call(method: method, payload: payload ?? [:])
+        calls.append(call)
+        startedNow += 1
+        Task {
+            do { answer(.success(try await self.answer(to: call))) } catch { answer(.failure(error)) }
+        }
+        return true
     }
 
     /// Answers for methods, instead of an empty object.

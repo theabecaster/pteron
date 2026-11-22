@@ -1627,7 +1627,7 @@ public final class TerminalStream {
             return true
         }
         let seq = noteInput(report ? EchoInputClassifier.boundary(bytes) : EchoInputClassifier.classify(bytes))
-        append(text, through: seq)
+        append(text, through: seq, now: true)
         return true
     }
 
@@ -1647,13 +1647,14 @@ public final class TerminalStream {
         append(text, through: noteInput(EchoInputClassifier.boundary(bytes)))
     }
 
-    private func append(_ text: String, through seq: Int) {
+    /// `now`: typed in this turn, so it may leave in it (`pump(now:)`).
+    private func append(_ text: String, through seq: Int, now: Bool = false) {
         if case .text(let have, _)? = inputQueue.last {
             inputQueue[inputQueue.count - 1] = .text(have + text, through: seq)
         } else {
             inputQueue.append(.text(text, through: seq))
         }
-        pump()
+        pump(now: now)
     }
 
     @discardableResult
@@ -1661,7 +1662,14 @@ public final class TerminalStream {
 
     /// Sends the next item, unless one is out, the queue is empty, there is no connection
     /// (`controlConnected()` pumps again) or the fence is up (it pumps when it comes down).
-    private func pump() {
+    ///
+    /// `now`: text was just typed. If nothing is out, its write is handed to the socket before
+    /// this returns (`StreamLink.start`), so the key doesn't wait for a task to start, nor for
+    /// what the caller still does in this turn of the main actor. Every other pump (the answer
+    /// of the request before, the fence coming down, a reconnect, a retry) and every item that
+    /// isn't text starts its request in a task, as before. Either way the item is in flight
+    /// before its request starts, and its end goes through `finished`.
+    private func pump(now: Bool = false) {
         // Nothing leaves while the screen may be behind: the queue waits for the fence.
         guard !inFlight, !stopped, !inputQueue.isEmpty, link.isConnected, !fence.isUp else { return }
         // In flight first, so the stream never looks idle between the two.
@@ -1675,13 +1683,18 @@ public final class TerminalStream {
             // The round trip runs from here, so time spent waiting in the queue never counts.
             // Without a gate nothing is timed.
             let timed = echoGate.map { _ in Flight(started: echoNow(), syncMark: syncCalls?.mark) }
+            let ended: @MainActor (Error?) -> Void = { failure in
+                if failure == nil { self.onWritten?() }
+                self.finished(item, failure: failure, id: id, epoch: epoch, timed: timed)
+            }
+            let method = "com.superlogical.terminal.write"
+            if now, link.start(method, ["session_id": sessionID, "block_id": blockID, "args": ["data": text]], answer: { reply in
+                if case .failure(let error) = reply { ended(error) } else { ended(nil) }
+            }) { return }
             Task {
                 var failure: Error?
-                do {
-                    _ = try await self.blockCall("com.superlogical.terminal.write", args: ["data": text])
-                    self.onWritten?()
-                } catch { failure = error }
-                self.finished(item, failure: failure, id: id, epoch: epoch, timed: timed)
+                do { _ = try await self.blockCall(method, args: ["data": text]) } catch { failure = error }
+                ended(failure)
             }
         case .work(let work, _):
             Task {

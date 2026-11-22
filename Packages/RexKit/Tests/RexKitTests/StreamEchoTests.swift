@@ -645,6 +645,69 @@ final class StreamEchoTests: XCTestCase {
         link.release()
         await asked.value
     }
+
+    // MARK: A key that leaves in its own turn (`StreamLink.start`)
+
+    /// What predicted echo is told, with its numbers, for one script of typing.
+    private func trace(startsNow: Bool) async -> (events: [Recorder.Event], written: [String], samples: Int) {
+        let link = FakeLink()
+        link.startsNow = startsNow
+        let gate = EchoGate(forced: nil)
+        let (s, r, _) = stream(link, gate: gate)
+        link.held = [Self.write]
+        s.send(text: "l")
+        s.send(text: "s")
+        s.send([0x7f])
+        _ = await eventually { link.waitingCount == 1 }
+        clock.now += 0.2
+        link.release()
+        _ = await eventually { link.waitingCount == 1 && link.written.count == 2 }
+        s.sendOnce(text: "y") { _ in }
+        s.send(text: "\r")
+        for _ in 0..<3 {
+            clock.now += 0.2
+            link.release()
+            await settle()
+        }
+        _ = await eventually { !s.hasPendingInput }
+        s.send(text: "x")
+        _ = await eventually { link.waitingCount == 1 }
+        clock.now += 0.2
+        link.release()
+        _ = await eventually { !s.hasPendingInput }
+        await settle()
+        return (r.events, link.written, gate.roundTrip.samples)
+    }
+
+    /// The numbering of input, the order of "left" and "answered", and the gate's round-trip
+    /// samples are the same whether a key's request starts in its own turn or in a task.
+    func testNumberingOrderAndSamplesAreTheSameWhenAKeyLeavesInItsOwnTurn() async {
+        let now = await trace(startsNow: true)
+        let task = await trace(startsNow: false)
+        XCTAssertEqual(now.events, task.events)
+        XCTAssertEqual(now.written, task.written)
+        XCTAssertEqual(now.written, ["l", "s\u{7f}", "y", "\r", "x"])
+        XCTAssertEqual(now.samples, task.samples)
+        XCTAssertGreaterThan(now.samples, 0)
+        let inputs = now.events.compactMap { if case .input(_, let n) = $0 { return n } else { return nil } }
+        XCTAssertEqual(inputs, Array(1...6), "every call has the next number")
+    }
+
+    /// A key typed at an idle queue: the predictor hears of the input, then that it left, in
+    /// the turn it is typed, and of the answer later.
+    func testAKeyThatLeavesInItsOwnTurnIsNumberedThenLeftThenAnswered() async {
+        let link = FakeLink()
+        let (s, r, _) = stream(link)
+        link.held = [Self.write]
+        s.send([0x63])
+        XCTAssertEqual(r.events, [.input(.char(0x63), 1), .left(1)])
+        XCTAssertEqual(link.startedNow, 1)
+        _ = await eventually { link.waitingCount == 1 }
+        link.release()
+        _ = await eventually { r.answers == [1] }
+        XCTAssertEqual(r.events.filter { $0 != .settled }, [.input(.char(0x63), 1), .left(1), .answered(1)])
+    }
+
 }
 
 /// A small deterministic generator (SplitMix64), so a random test types the same keys each run.

@@ -13,6 +13,13 @@ protocol StreamLink: AnyObject {
     /// Throws a `RexError`: with `neverSent` when the request never left, with the server's code
     /// when the server refused it, and a plain local one when the connection broke after the send.
     func call(_ method: String, _ payload: JSONObject?) async throws -> JSONObject
+    /// Hands a request to the socket before it returns, in the caller's turn of the main actor,
+    /// and returns true; `answer` is then called once with what `call` would return or throw.
+    /// Returns false, having done nothing, when the request can't leave in this turn (no
+    /// connection, a delayed link, a method the server doesn't have): the caller uses `call`,
+    /// which says why. Typed text leaves this way (`TerminalStream.pump`), so a key doesn't
+    /// wait for a task to start.
+    func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool
     /// A new socket to `GET /api/data` with `subprotocol`, before its handshake: a terminal stream
     /// (`rex.data.terminal.v1`) or a file's bytes (`rex.data.bytes.v1`).
     func openDataSocket(subprotocol: String) throws -> any StreamSocket
@@ -42,6 +49,10 @@ extension StreamLink {
 
     func paceProbe() async -> PaceSample {
         (try? await ping()) != nil ? .answered : .none
+    }
+
+    func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool {
+        false
     }
 }
 

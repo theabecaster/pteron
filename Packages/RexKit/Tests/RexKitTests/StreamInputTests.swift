@@ -672,4 +672,189 @@ final class StreamInputTests: XCTestCase {
         s.stop()
         XCTAssertNil(s.control.stream(block: s.blockID))
     }
+
+    // MARK: A typed key leaves in the turn it is typed (`StreamLink.start`)
+
+    func testTextTypedWithNothingOutIsWithTheSocketBeforeSendReturns() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        XCTAssertEqual(link.written, ["a"], "no task, no turn of the main actor between the key and its request")
+        XCTAssertEqual(link.startedNow, 1)
+        XCTAssertTrue(s.hasPendingInput, "in flight from before the hand-off")
+        _ = await eventually { link.waitingCount == 1 }
+        link.release()
+        let idle = await eventually { !s.hasPendingInput }
+        XCTAssertTrue(idle)
+        XCTAssertEqual(link.written, ["a"])
+    }
+
+    /// A busy queue is as it was: what is typed behind a request waits for its answer, goes
+    /// out in a task, in order, and nothing overtakes. The next key typed at an idle queue
+    /// leaves in its own turn again.
+    func testABurstBehindARequestKeepsItsOrderAndLeavesFromATask() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write, "client.action"]
+        s.send(text: "a")
+        s.send(text: "b")
+        action(s)
+        s.send(text: "c")
+        s.send(text: "d")
+        XCTAssertEqual(link.inputTrace, ["w:a"], "only the first is out")
+        XCTAssertEqual(link.startedNow, 1)
+        var expected = ["w:a"]
+        for next in ["w:b", "client.action", "w:cd"] {
+            await settle()
+            XCTAssertEqual(link.inputTrace, expected, "nothing overtakes the request that is out")
+            link.release()
+            expected.append(next)
+            let sent = await eventually { link.inputTrace.count == expected.count }
+            XCTAssertTrue(sent)
+        }
+        XCTAssertEqual(link.inputTrace, ["w:a", "w:b", "client.action", "w:cd"])
+        XCTAssertEqual(link.startedNow, 1, "what waited went out from a task")
+        link.release()
+        let idle = await eventually { !s.hasPendingInput }
+        XCTAssertTrue(idle)
+        link.held = []
+        s.send(text: "e")
+        XCTAssertEqual(link.inputTrace.last, "w:e")
+        XCTAssertEqual(link.startedNow, 2)
+        XCTAssertEqual(notices, [])
+    }
+
+    /// A link whose `start` answers with a failure before it returns: `finished` runs inside
+    /// `pump`. The request that never left is sent again once, the refused one is dropped,
+    /// the lost one tells the user, and after each the queue is free for the next key.
+    func testAStartThatFailsBeforeItReturnsSendsNothingTwiceAndLeavesNothingInFlight() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        // Never left: it stays first and goes out once, with what was typed behind it.
+        link.startFailures = [RexError.unsent("socket is not connected")]
+        s.send(text: "a")
+        XCTAssertEqual(link.written, [], "the failed start sent nothing")
+        s.send(text: "b")
+        let sent = await eventually { !link.written.isEmpty && !s.hasPendingInput }
+        XCTAssertTrue(sent)
+        await settle()
+        XCTAssertEqual(link.written.joined(), "ab")
+        XCTAssertEqual(notices, [])
+
+        // Refused: dropped, and the next key leaves at once.
+        link.startFailures = [RexError(code: "not_found", message: "block not found", status: 404)]
+        s.send(text: "c")
+        XCTAssertFalse(s.hasPendingInput, "nothing is left in flight")
+        s.send(text: "d")
+        XCTAssertEqual(link.written.joined(), "abd")
+        _ = await eventually { !s.hasPendingInput }
+        XCTAssertEqual(notices, [])
+
+        // The connection broke after the send: dropped, never sent again, and the user is told.
+        link.startFailures = [RexError.local("connection lost")]
+        s.send(text: "e")
+        XCTAssertFalse(s.hasPendingInput)
+        XCTAssertEqual(notices, [.inputLost])
+        s.send(text: "f")
+        let done = await eventually { !s.hasPendingInput }
+        XCTAssertTrue(done)
+        await settle()
+        XCTAssertEqual(link.written.joined(), "abdf", "no request left twice")
+    }
+
+    func testALinkThatCannotStartNowSendsFromATaskAsBefore() async {
+        let link = FakeLink()
+        link.startsNow = false
+        let (s, _) = stream(link)
+        s.send(text: "a")
+        s.send(text: "b")
+        XCTAssertEqual(link.written, [])
+        let sent = await eventually { link.written.joined() == "ab" && !s.hasPendingInput }
+        XCTAssertTrue(sent)
+        XCTAssertEqual(link.startedNow, 0)
+    }
+
+    /// Input that goes once runs in a task, as before, in its place: behind the key typed
+    /// before it, and ahead of the key typed after it.
+    func testSendOnceKeepsItsPlaceAroundKeysThatLeaveAtOnce() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        var ended: [TerminalStream.Delivery] = []
+        s.sendOnce(text: "\r") { ended.append($0) }
+        XCTAssertEqual(link.written, [], "its request starts in a task")
+        s.send(text: "a")
+        XCTAssertEqual(link.written, [], "and a key typed behind it waits for it")
+        let first = await eventually { link.inputTrace == ["w:\r", "w:a"] && !s.hasPendingInput }
+        XCTAssertTrue(first)
+        XCTAssertEqual(ended, [.delivered])
+
+        link.held = [Self.write]
+        s.send(text: "b")
+        s.sendOnce(text: "y") { ended.append($0) }
+        XCTAssertEqual(link.inputTrace, ["w:\r", "w:a", "w:b"])
+        for _ in 0..<2 {
+            await settle()
+            link.release()
+        }
+        let second = await eventually { ended.count == 2 }
+        XCTAssertTrue(second)
+        XCTAssertEqual(link.inputTrace, ["w:\r", "w:a", "w:b", "w:y"])
+        XCTAssertEqual(ended, [.delivered, .delivered])
+        XCTAssertEqual(link.startedNow, 1, "only the key typed at an idle queue left in its own turn")
+    }
+
+    /// The click path (`TerminalHost.engineSendClick`: `sendOnce` with a hold) with keys that
+    /// leave in their own turn. A click at an idle queue is in flight while it holds, so a key
+    /// typed meanwhile starts nothing and stays behind it; the click is told once that it was
+    /// delivered. A click behind a key that left in its own turn still waits for its turn
+    /// before it is asked how long to hold.
+    func testAHeldClickKeepsKeysBehindItThoughAKeyLeavesInItsOwnTurn() async {
+        let link = FakeLink()
+        let (s, log) = stream(link)
+        let hold = Duration.milliseconds(30)
+        log.held = [hold]
+        var asked = 0
+        var ended: [TerminalStream.Delivery] = []
+        XCTAssertTrue(s.sendOnce(text: "C", hold: { asked += 1; return hold }) { ended.append($0) })
+        let holding = await eventually { asked == 1 }
+        XCTAssertTrue(holding, "its turn came at once: nothing was out")
+        s.send(text: "a")
+        s.send(text: "b")
+        await settle()
+        XCTAssertEqual(link.inputTrace, [], "the click holds, and the keys typed meanwhile wait behind it")
+        XCTAssertEqual(link.startedNow, 0, "a key behind a request in flight starts nothing in its own turn")
+        XCTAssertEqual(ended, [])
+        log.release(hold)
+        let sent = await eventually { link.inputTrace.count == 2 && !s.hasPendingInput }
+        XCTAssertTrue(sent)
+        XCTAssertEqual(link.inputTrace, ["w:C", "w:ab"])
+        XCTAssertEqual(ended, [.delivered], "told once")
+
+        // Behind a key that left in its own turn: the click waits for that key's answer.
+        link.held = [Self.write]
+        s.send(text: "c")
+        XCTAssertEqual(link.inputTrace.last, "w:c")
+        XCTAssertEqual(link.startedNow, 1)
+        XCTAssertTrue(s.sendOnce(text: "D", hold: { asked += 1; return hold }) { ended.append($0) })
+        s.send(text: "e")
+        await settle()
+        XCTAssertEqual(asked, 1, "not asked before its turn")
+        link.release()
+        let turn = await eventually { asked == 2 }
+        XCTAssertTrue(turn)
+        await settle()
+        XCTAssertEqual(link.inputTrace, ["w:C", "w:ab", "w:c"], "holding at its turn")
+        log.release(hold)
+        for _ in 0..<2 {
+            _ = await eventually { link.waitingCount == 1 }
+            link.release()
+        }
+        let done = await eventually { !s.hasPendingInput }
+        XCTAssertTrue(done)
+        XCTAssertEqual(link.inputTrace, ["w:C", "w:ab", "w:c", "w:D", "w:e"])
+        XCTAssertEqual(ended, [.delivered, .delivered])
+        XCTAssertEqual(link.startedNow, 1)
+        XCTAssertEqual(notices, [])
+    }
 }

@@ -612,7 +612,7 @@ final class EchoHostTests: XCTestCase {
         XCTAssertEqual(log.events, [.selectionWill, .textWill, .textDid, .selectionDid])
         XCTAssertEqual(guessWhenTold, "s", "drawn before the keyboard heard of the key")
         XCTAssertEqual(onItsWayWhenTold, true, "its write was out")
-        XCTAssertEqual(writtenWhenTold, "l", "and not yet answered: the keyboard was told in the same turn")
+        XCTAssertEqual(writtenWhenTold, "ls", "and with the socket (`StreamLink.start`)")
         XCTAssertEqual(p.core.publishedEcho?.cells.first?.col, 3)
         await wait("the write") { p.link.written.joined() == "ls" && !p.stream.hasPendingInput }
         await echo(p, "s", row: "$ ls")

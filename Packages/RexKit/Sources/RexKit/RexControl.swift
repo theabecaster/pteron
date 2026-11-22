@@ -1237,6 +1237,18 @@ public final class RexControl {
         return reply.value
     }
 
+    /// `StreamLink.start`: the request is with the socket when this returns true. Anything
+    /// `callAny` would wait for or refuse before the send is left to it.
+    func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool {
+        guard linkDelay.isZero, let t = task, state == .connected, Self.tooNew(method, for: negotiatedRevision) == nil else { return false }
+        // The answer goes to the caller in a turn of its own, as `callAny`'s does: nothing of
+        // the caller's runs inside this connection's own handling of a reply or a loss.
+        send(method, payload, on: t) { reply in
+            Task { @MainActor in answer(reply.map { $0.value as? JSONObject ?? [:] }) }
+        }
+        return true
+    }
+
     /// Sends every request in `calls` in this one turn of the main actor, in order, then waits
     /// for all the answers, which come back in the same order whatever order they arrive in.
     ///

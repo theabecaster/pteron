@@ -452,6 +452,15 @@ the first call's response before you send the second").
   typed while a request is out goes together as the next write. An action waits for the text
   typed before it, and text typed after it waits for the action, at most 1.5 s (a Lua action can
   run for seconds).
+- **A key typed at an idle queue leaves in its own turn.** When text is typed and no request is
+  out, its write is handed to the control socket before `send` returns
+  (`StreamLink.start`, `RexControl.start`): no task starts first, and the key doesn't wait for
+  whatever the main thread still does in that turn. The item is marked in flight before the
+  hand-off, and its answer comes in a later turn, through the same `finished` as every request.
+  Everything else starts in a task, as before: what waited behind a request (sent when its
+  answer comes), keys the fence held and what a reconnect lets go, a retry, a key-bound server call, input
+  that goes once (`sendOnce`), and any text on a link that can't take it now (no connection, a
+  simulated delay, a method the server lacks; `call` then says why it never left).
 - **Held while offline.** Without a control connection nothing is sent; the queue waits. When
   `RexControl` is connected again it goes out, in order, once the stream has caught up and only
   if the screen it was typed at is still exact (The catch-up fence); otherwise it is dropped
@@ -495,7 +504,14 @@ stands among these calls decides how long a key waits:
   paste from the keyboard), Backspace, Return, and the keys that reset the shadow (the key
   bar's keys, raw sends, a paste, hardware keys encoded here).
 - The send itself is the same in both orders: the fence holds or drops it, a guess is drawn for
-  it (Predicted echo) before it is queued, and the queue below takes it.
+  it (Predicted echo) before it is queued, and the queue below takes it. With nothing out, the
+  queue hands the write to the socket in that same turn, so a plain key is on the wire before
+  the keyboard's did-change calls begin. Both halves are needed: with the send first but
+  started in a task, the task waits for the turn to end, did-change calls included; with the
+  hand-off in the key's turn but the keyboard told first, the key still waits for the keyboard.
+  Measured in a simulator against a local server (Debug, median, key to socket): 21.9 ms before,
+  21.6 ms with the send first alone, 19.9 ms with the hand-off alone, 0.7 ms with both at typing
+  pace; 10.1, 10.1, 9.5 and 0.13 ms in a burst.
 
 Around that:
 
