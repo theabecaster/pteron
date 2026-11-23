@@ -314,6 +314,73 @@ final class GhosttyScrollTests: XCTestCase {
         core.sync()
     }
 
+    func testAScrollIsAppliedDuringTheCatchUpHold() {
+        let (core, frame) = make(100)
+        let s0 = core.scroll.snapshot
+        core.setCatchUpHold(true)
+        _ = frame.update(core: core)
+        // Into the history while the stream catches up: it keeps drawing.
+        core.scrollViewport(.position(px: 20 * s0.cellHeight, rebaseSeen: s0.rebase))
+        XCTAssertTrue(core.scroll.hasRequest)
+        XCTAssertTrue(frame.update(core: core), "a scroll draws through the catch-up hold")
+        XCTAssertEqual(core.scroll.snapshot.offset, 20)
+        core.setCatchUpHold(false)
+    }
+
+    func testANewCoverWaitsForTheCatchUpHoldsLastFrame() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        let shown = frame.rows.map(\.glyphs.count)
+        core.setCatchUpHold(true)
+        // The stream catches up to another grid's output, and the pane's layout follows it.
+        core.feed(lines(101...103))
+        core.sync()
+        core.scroll.setCover(px: 4 * cell)
+        XCTAssertTrue(core.scroll.hasPending, "a cover to take")
+        XCTAssertFalse(core.scroll.hasRequest, "nothing asked to move the view")
+        for _ in 0..<3 {
+            _ = frame.update(core: core)
+            XCTAssertEqual(core.scroll.snapshot.covered, 0, "no frame was built for the cover")
+            XCTAssertEqual(frame.scrollOffset, 0)
+            XCTAssertEqual(frame.rows.map(\.glyphs.count), shown, "still the screen of the hold's start")
+        }
+        XCTAssertTrue(core.scroll.hasPending, "the cover is still wanted")
+        core.setCatchUpHold(false)
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(core.scroll.snapshot.covered, 4 * cell, "the hold's last frame took it")
+        XCTAssertEqual(core.scroll.snapshot.bounce, 4 * cell)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+        XCTAssertFalse(core.scroll.hasPending)
+    }
+
+    func testANewCoverUnderAHoldThatIsNeverReleasedIsTakenAtTheLimit() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.setCatchUpHold(true)
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        XCTAssertEqual(core.scroll.snapshot.covered, 0)
+        XCTAssertTrue(frame.update(core: core, now: CACurrentMediaTime() + GhosttyCore.renderHoldTimeout + 0.1),
+                      "the hold never sticks: after a second the screen follows again")
+        XCTAssertEqual(core.scroll.snapshot.covered, 4 * cell)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+        XCTAssertFalse(core.scroll.hasPending)
+    }
+
+    func testANewCoverStillDrawsThroughAProgramsOwnHold() {
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.feed(Array("\u{1b}[?2026h".utf8))
+        core.sync()
+        _ = frame.update(core: core)
+        core.scroll.setCover(px: 4 * cell)
+        XCTAssertTrue(frame.update(core: core), "the prompt comes above the keyboard at once")
+        XCTAssertEqual(core.scroll.snapshot.covered, 4 * cell)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+        core.feed(Array("\u{1b}[?2026l".utf8))
+        core.sync()
+    }
+
     // MARK: Row reuse
 
     /// Rows as the renderer would draw them, for comparing two builders.

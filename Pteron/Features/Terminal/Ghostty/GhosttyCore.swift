@@ -800,7 +800,8 @@ final class GhosttyCore: @unchecked Sendable {
     /// the output it missed or through a resize. The same limit as a program's own hold
     /// (`renderHoldTimeout`): after that the screen follows the bytes again.
     ///
-    /// Parsing goes on as always. Scrolling, a selection and find still draw (`lockFrame`).
+    /// Parsing goes on as always. Scrolling, a selection and find still draw (`lockFrame`); a
+    /// new cover (the keyboard's, find's bar) waits for the hold's last frame.
     /// Called on the main thread; it waits for `termLock` like a selection does.
     func setCatchUpHold(_ on: Bool) {
         if on {
@@ -891,7 +892,12 @@ final class GhosttyCore: @unchecked Sendable {
         // too; a refresh caused by output waits for the program's frame.
         let selectionChanged = selectionDirty.exchange(false, ordering: .relaxed)
         let findChanged = findDirty.exchange(false, ordering: .relaxed)
-        if !(held || catchUpHeld) || scroll.hasPending || selectionChanged || findChanged {
+        // A cover or an inset to take draws through the program's hold, so the prompt comes
+        // above the keyboard at once. Not through the catch-up hold: there the cover changes
+        // with the grid the stream is catching up to, and a frame built for it would show the
+        // screen half caught up. It stays wanted, and the hold's last frame takes it.
+        let scrolled = catchUpHeld ? scroll.hasRequest : scroll.hasPending
+        if !(held || catchUpHeld) || scrolled || selectionChanged || findChanged {
             scroll.prepareFrame(terminal: t, renderState: rs, cellHeightPx: Int(cellHeightPx), generation: stateGeneration)
             ghostty_render_state_begin_update(rs, t)
             // The find result these rows go with (a leaf lock, under `stateLock`).

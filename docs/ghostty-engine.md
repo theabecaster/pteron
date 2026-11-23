@@ -190,7 +190,13 @@ What it is and when it runs: [terminal.md](terminal.md), Predicted echo. In the 
   is the terminal as it was when the hold began, bytes are parsed as always, and the first frame
   after the hold shows everything at once, so a pane that comes back doesn't flicker through
   missed output or the reflow of a resize. It has the program hold's limit (1 s, then the screen
-  follows the bytes) and its exceptions (a scroll, a selection and find still draw). The two
+  follows the bytes) and its exceptions (a scroll, a selection and find still draw), but one:
+  a new cover (the keyboard's, find's bar) draws through the program's hold, so the prompt
+  comes above the keyboard at once, and not through this one. Behind a fence the cover changes
+  with the grid the stream is catching up to, and a frame takes the whole terminal as parsed
+  so far: built for the cover, it showed the screen half caught up, at a size on the way. The
+  cover stays wanted and the hold's last frame takes it (`GhosttyScrollState.hasRequest` is
+  what counts as a scroll). The two
   holds are independent: a frame is updated only when neither is on. Setting it takes `termLock`
   once on the main thread, as a selection does, to capture the frame to keep; it is set only
   when a fence goes up, never at rest. A fenced pane's cursor is drawn hollow

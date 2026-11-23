@@ -240,10 +240,20 @@ final class GhosttyScrollState: @unchecked Sendable {
         return s
     }
 
+    /// The next frame has something of the scroll's to do: a request to move the view, or a
+    /// cover or an inset to take.
     var hasPending: Bool {
         lock.lock()
         defer { lock.unlock() }
         return pending != nil || coverWanted != coverTaken || findInsetWanted != findInsetTaken
+    }
+
+    /// Someone asked to move the view (a drag, a jump, find's reveal). A cover or an inset to
+    /// take is not that: nothing scrolls, the pane's layout changed.
+    var hasRequest: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending != nil
     }
 
     /// How many pixels of the view's bottom are covered, from the next frame on. Doesn't ask for
