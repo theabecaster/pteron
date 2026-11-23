@@ -74,6 +74,14 @@ struct PaneHostView: UIViewRepresentable {
         host.blockOwner = { [weak server, sessionID, blockID] in
             server?.views[sessionID]?.windowContaining(block: blockID)?.block(blockID)?.owner
         }
+        // The connection log's lines about this pane go the way the connection's own notes do.
+        host.note = { [weak server] in server?.control.onNote?($0) }
+        // For as long as the host lives: a parked pane still hears who has it.
+        server.ownerChanges.observe(block: blockID) { [weak host] change in
+            guard let host else { return false }
+            host.ownerChanged(change)
+            return true
+        }
         // Read for each key while predicted echo is on (a slow link), never otherwise.
         host.echoContext = { [weak server, blockID] in
             let meta = server?.meta[blockID]

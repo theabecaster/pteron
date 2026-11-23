@@ -1126,6 +1126,21 @@ public final class RexControl {
         guard task != nil else { return }
         handleDrop(gen: generation, failure: ConnectionFailure(URLError(.networkConnectionLost)))
     }
+
+    /// Testing (`-dropTest`): the host goes silent with the app in front, as when a phone loses
+    /// its network: the control socket and every data socket drop with no close frame, and
+    /// attempts fail for `seconds`. Then one attempt is asked for.
+    public func loseHostForTesting(for seconds: TimeInterval) {
+        unreachableForTesting = true
+        hostDied()
+        if task != nil { handleDrop(gen: generation, failure: ConnectionFailure(URLError(.networkConnectionLost))) }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            guard let self else { return }
+            self.unreachableForTesting = nil
+            self.kick(.user)
+        }
+    }
     #endif
 
     /// Calls `body` each time the connection becomes connected, the first time and after every

@@ -143,6 +143,8 @@ final class ServerConnection: Identifiable {
     /// Counts successful connections, so per-connection work (push registration) can tell a new
     /// connection from a resync.
     @ObservationIgnored private(set) var connectionSerial = 0
+    /// The panes that are told when their owner changes (`block_owner_changed`).
+    @ObservationIgnored let ownerChanges = OwnerChanges()
     /// What this server can do: its API revision, its creators, and what probes found.
     @ObservationIgnored let capabilities = ServerCapabilities()
     /// What to read again when the server drops an oversized event (`recover(dropped:)`).
@@ -648,12 +650,31 @@ final class ServerConnection: Identifiable {
                 try await control.connect()
                 lastSeq = 0
                 await bootstrap()
+                #if DEBUG
+                dropForTesting()
+                #endif
             } catch {
                 // RexControl keeps retrying with backoff; a later connect resyncs via `onReconnected`.
                 lastError = ConnectionFailure(error).message
             }
         }
     }
+
+    #if DEBUG
+    /// `-dropTest <after>,<away>` (testing): that many seconds after the first sync the computer
+    /// goes silent for `away` seconds with the app in front, as a phone's network does
+    /// (docs/debug-args.md).
+    private func dropForTesting() {
+        guard let arg = UserDefaults.standard.string(forKey: "dropTest") else { return }
+        let parts = arg.split(separator: ",").compactMap { Double($0) }
+        guard parts.count == 2 else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(parts[0] * 1_000_000_000))
+            NSLog("DROP_TEST away %.0fs", parts[1])
+            self?.control.loseHostForTesting(for: parts[1])
+        }
+    }
+    #endif
 
     func stop() {
         control.disconnect()

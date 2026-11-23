@@ -48,6 +48,14 @@ public struct ConnectionEvent: Equatable, Sendable {
         /// A pane's stream left its RESUME out: the client it was welcomed under is gone, so the
         /// server has stopped it.
         case resumeSkipped
+        /// A pane on screen changed owner (`block_owner_changed`). `flags`: the
+        /// `BlockOwnerChange.Reason`. `code`: who owned it before, `value`: who owns it now,
+        /// each a `BlockOwnerChange.Party`: nobody, this phone or another client, never an id.
+        /// Its number is fixed, so a kind added before it never moves it.
+        case owner = 40
+        /// What fit mode did with a pane on screen. `flags`: a `Fit`. `code`: for `lost`, a
+        /// `FitLoss`.
+        case fit
     }
 
     /// Why a connection ended, as far as the error's codes say.
@@ -92,6 +100,33 @@ public struct ConnectionEvent: Equatable, Sendable {
         case inactive = 1
         case active
         case background
+    }
+
+    /// What fit mode did with a pane.
+    public enum Fit: UInt8, Sendable {
+        /// Another client has the pane: the chip shows. `code` says how it was found.
+        case lost = 1
+        /// The pane passed to another client only because this phone dropped or left: it was
+        /// taken again, with no chip.
+        case takenBack
+        /// The server gave the pane back to this phone when it reconnected.
+        case givenBack
+    }
+
+    /// How a fitted pane found that another client has it.
+    public enum FitLoss: Int32, Sendable, CaseIterable {
+        /// Another client's size came in the stream.
+        case resize = 1
+        /// The claim was answered and the server kept another size.
+        case unapplied
+        /// The session's view names another owner.
+        case owner
+        /// The server refused the claim.
+        case refused
+        /// Nothing was claimed, one claim was made, and it did not hold.
+        case `guard`
+        /// Another client asked for the pane (`block_owner_changed`, a take or a request).
+        case taken
     }
 
     /// What the phone's network path looks like: four yes-or-no facts and nothing else.
@@ -166,6 +201,22 @@ public struct ConnectionEvent: Equatable, Sendable {
         var e = ConnectionEvent(kind: .probe)
         e.flags = reachable ? 1 : 0
         e.value = max(0, milliseconds)
+        return e
+    }
+
+    /// The change's reason and who the two clients are to `me`, this client's id. No id is kept.
+    public static func owner(_ change: BlockOwnerChange, me: String?) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .owner)
+        e.flags = change.reason.rawValue
+        e.code = Int32(BlockOwnerChange.party(change.previous, me: me).rawValue)
+        e.value = Int64(BlockOwnerChange.party(change.owner, me: me).rawValue)
+        return e
+    }
+
+    public static func fit(_ what: Fit, loss: FitLoss? = nil) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .fit)
+        e.flags = what.rawValue
+        e.code = loss?.rawValue ?? 0
         return e
     }
 
@@ -312,6 +363,23 @@ public struct ConnectionEvent: Equatable, Sendable {
         case .streamRefused: return "stream refused \(flags == 1 ? "resume" : "hello") reason=\(code)"
         case .ticketRefused: return "ticket refused \(flags == 1 ? "conflict" : "other") times=\(value)"
         case .resumeSkipped: return "resume skipped"
+        case .owner:
+            func who(_ n: Int64) -> String {
+                switch BlockOwnerChange.Party(rawValue: UInt8(clamping: n)) {
+                case .me: return "phone"
+                case .other: return "other"
+                default: return "none"
+                }
+            }
+            let reason = BlockOwnerChange.Reason(rawValue: flags) ?? .unknown
+            return "pane owner reason=\(reason) previous=\(who(Int64(code))) owner=\(who(value))"
+        case .fit:
+            switch Fit(rawValue: flags) {
+            case .lost: return "pane fit lost how=\(FitLoss(rawValue: code).map { "\($0)" } ?? "\(code)")"
+            case .takenBack: return "pane fit taken back"
+            case .givenBack: return "pane fit given back"
+            case nil: return "pane fit \(flags)"
+            }
         }
     }
 }

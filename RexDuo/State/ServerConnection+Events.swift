@@ -105,7 +105,10 @@ extension ServerConnection {
             if type == "block_closed" || type == "block_owner_changed", let bid = p.str("block_id"), forward?.owns(bid) == true {
                 return
             }
+            // A pane that shows the block hears who has it now, and why (`TerminalHost.ownerChanged`).
+            if type == "block_owner_changed", let change = BlockOwnerChange(p) { ownerChanges.send(change) }
             if type == "block_closed", let bid = p.str("block_id") {
+                ownerChanges.forget(block: bid)
                 forgetBlockAlerts(bid)
                 paneNames.remove(bid)
                 forgetPorts(bid)

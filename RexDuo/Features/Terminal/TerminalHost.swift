@@ -318,6 +318,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane's owner as the session's view last said; nil when unknown or when the server has
     /// no owners. Read only by `checkFit`.
     var blockOwner: (() -> String?)?
+    /// Writes a line about this pane's computer into the connection log (`ownerChanged`,
+    /// `resizedElsewhere`). Nil where there is no log.
+    var note: ((ConnectionEvent) -> Void)?
 
     // Predicted echo (Predict/TerminalHost+Predict.swift).
     /// Whether an agent runs in the pane, and the program in front, as the server's metadata
@@ -363,7 +366,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         super.init(frame: .zero)
         appActive = UIApplication.shared.applicationState == .active
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
-        self.claim.onRefused = { [weak self] in self?.resizedElsewhere("refused") }
+        self.claim.onRefused = { [weak self] in self?.resizedElsewhere(.refused) }
         self.claim.reported = { [weak self] in self?.reportedSize }
         term.engineDelegate = self
         keyBar.terminal = term
@@ -2034,10 +2037,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// Another client has the pane: the claim ends, the pane shows the server's grid scaled to
     /// its width, as mirror does, and the chip offers to fit it here. Never fought over.
-    private func resizedElsewhere(_ why: StaticString) {
+    private func resizedElsewhere(_ why: ConnectionEvent.FitLoss) {
         #if DEBUG
         NSLog("FIT_LOST %@ %@ server=%dx%d", stream.blockID, "\(why)", serverSize.0, serverSize.1)
         #endif
+        if window != nil { note?(.fit(.lost, loss: why)) }
         fitCheckWork?.cancel()
         fitCheckWork = nil
         claimedSize = nil
@@ -2048,6 +2052,18 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         showStatus(Self.lostText)
         guard window != nil else { return }
         positionTerm()
+    }
+
+    /// The pane's owner changed (`block_owner_changed`), as the computer's control connection
+    /// heard it. For a pane on screen it goes into the connection log, so a diagnostics file
+    /// says why a pane changed size: the reason, and who the two clients are to this phone.
+    func ownerChanged(_ change: BlockOwnerChange) {
+        let me = ownClientID?() ?? stream.control.clientID
+        #if DEBUG
+        NSLog("OWNER_EVENT %@ reason=%@ previous=%@ owner=%@", stream.blockID, "\(change.reason)",
+              "\(BlockOwnerChange.party(change.previous, me: me))", "\(BlockOwnerChange.party(change.owner, me: me))")
+        #endif
+        if window != nil { note?(.owner(change, me: me)) }
     }
 
     /// Looks again in `fitCheckDelay`, from now (`checkFit`).
@@ -2078,7 +2094,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         case .fine:
             if claimedSize != nil { fitGuardUsed = false }
         case .elsewhere:
-            resizedElsewhere(claimedSize == nil ? "guard" : foreign ? "owner" : "unapplied")
+            resizedElsewhere(claimedSize == nil ? .guard : foreign ? .owner : .unapplied)
         case .claim:
             fitGuardUsed = true
             #if DEBUG
@@ -2160,6 +2176,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         serverSizeReported = true
         let wasFitted = fitted
         let mine = owner == (ownClientID?() ?? stream.control.clientID)
+        #if DEBUG
+        // One line per size the stream reports, to see whose it is (docs/debug-args.md).
+        NSLog("FIT_SIZE %@ %dx%d mine=%d", stream.blockID, cols, rows, mine ? 1 : 0)
+        #endif
         if mine { ownResizeSeen = true }
         // While the stream catches up, a size from before our own resize can still arrive (the
         // snapshot's, or one the pane had while it was parked): that is not another client
@@ -2173,7 +2193,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             && (claim.wanted.map { $0 != (cols, rows) } ?? false)
         if sizing == .fit, !mine, (claimedSize.map { $0 != (cols, rows) && later } ?? false) || pending {
             // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
-            resizedElsewhere("resize")
+            resizedElsewhere(.resize)
         } else if sizing == .fit, lostOwnership, mine, owner != nil, window != nil, backgroundedAt == nil,
                   (cols, rows) == fitGrid() {
             // The server gave the pane back at the size that fits here: after a dropped
@@ -2181,6 +2201,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             #if DEBUG
             NSLog("FIT_BACK %@ %dx%d", stream.blockID, cols, rows)
             #endif
+            note?(.fit(.givenBack))
             lostOwnership = false
             hideStatus()
             claim.adopt(cols: cols, rows: rows)
