@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: rexduo-ci-${{ github.ref }}
+  group: pteron-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           # Trusted runs only: the cache lives outside the workspace and persists between runs.
-          CACHE="$HOME/actions-runner/rexduo-vendor"
+          CACHE="$HOME/actions-runner/pteron-vendor"
           mkdir -p "$CACHE"
           ln -sfn "$CACHE" Vendor
           scripts/build-ghostty.sh
@@ -38,10 +38,10 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           /opt/homebrew/bin/xcodegen generate --quiet
-          SIM=$(xcrun simctl create "ci-rexduo-$GITHUB_RUN_ID" "iPhone 17")
+          SIM=$(xcrun simctl create "ci-pteron-$GITHUB_RUN_ID" "iPhone 17")
           trap 'xcrun simctl delete "$SIM" >/dev/null 2>&1' EXIT
-          xcodebuild test -project RexDuo.xcodeproj -scheme RexDuo -destination "id=$SIM" \
-            -derivedDataPath "$HOME/actions-runner/rexduo-dd" -quiet
+          xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
+            -derivedDataPath "$HOME/actions-runner/pteron-dd" -quiet
 
   helper:
     runs-on: ubuntu-latest

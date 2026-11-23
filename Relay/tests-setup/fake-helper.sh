@@ -23,7 +23,7 @@
 # test-install.sh puts a version in place of @VERSION@ and the program's name in place of
 # @BEACON@; inside an app bundle the version is the bundle's.
 set -eu
-home="${REXDUO_TEST_HOME:?fake-helper.sh runs only inside Relay/test-install.sh}"
+home="${PTERON_TEST_HOME:?fake-helper.sh runs only inside Relay/test-install.sh}"
 version="@VERSION@"
 beacon="@BEACON@"
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -40,7 +40,7 @@ printf '%s %s\n' "$version" "${1:-}" >>"$home/helper-runs.log"
 agents="$home/Library/LaunchAgents"
 prefix="dev.abrahamgonzalez.rexduo"
 # The stand-in of Relay/test-install.sh, which keeps the jobs it has in the folder `loaded`.
-launchctl() { REXDUO_TEST_BY=helper "$home/../../tools-mac/launchctl" "$@"; }
+launchctl() { PTERON_TEST_BY=helper "$home/../../tools-mac/launchctl" "$@"; }
 load() { [ -e "$home/loaded/$1" ] || launchctl bootstrap "gui/$(/usr/bin/id -u)" "$agents/$1.plist"; }
 boot_out() { [ ! -e "$home/loaded/$1" ] || launchctl bootout "gui/$(/usr/bin/id -u)/$1"; }
 
@@ -130,7 +130,7 @@ case "${1:-}" in
     if [ -f "$home/no-report" ]; then exit 0; fi
     mkdir -p "$state"
     printf '{"version":"%s","pid":%s,"connected":true,"min_version":"99.0.0","latest_version":"99.9.9"}\n' \
-      "$version" "${REXDUO_TEST_PID:?}" >"$state/status.json"
+      "$version" "${PTERON_TEST_PID:?}" >"$state/status.json"
     ;;
   update)
     # With a version in `update-to`, the app becomes that version, as a real update would. An

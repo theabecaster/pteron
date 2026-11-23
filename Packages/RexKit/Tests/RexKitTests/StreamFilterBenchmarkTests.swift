@@ -88,7 +88,7 @@ final class StreamFilterBenchmarkTests: XCTestCase {
     /// machine failed it: `scripts/bench/filter.sh` runs it, with the budget from
     /// `scripts/bench/budgets.mjs` (`filter`). Without the benchmark's variable it is skipped.
     func testCollectionOffIsAsFastAsBefore() throws {
-        guard let ratio = ProcessInfo.processInfo.environment["REXDUO_BENCH_FILTER_RATIO"].flatMap(Double.init) else {
+        guard let ratio = ProcessInfo.processInfo.environment["PTERON_BENCH_FILTER_RATIO"].flatMap(Double.init) else {
             throw XCTSkip("measured by scripts/bench/filter.sh")
         }
 

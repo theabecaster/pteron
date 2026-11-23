@@ -10,7 +10,7 @@ built: [ghostty-engine.md](ghostty-engine.md). The stream and input rules:
 
 How a row is verified:
 
-- a test name: an XCTest or Swift Testing test in `RexDuoTests` (runs in the simulator), or
+- a test name: an XCTest or Swift Testing test in `PteronTests` (runs in the simulator), or
   in RexKit where it says so.
 - **live**: run in the simulator in a throwaway `zz-` session, checked with screenshots and
   `rex capture` of that pane.

@@ -96,13 +96,13 @@ if (( build )); then
   # build (`#if DEBUG || BENCH`). It is set here, for this build only; the shipped Release
   # configuration doesn't have it, so a shipped app has neither argument.
   # Nothing else differs from an archive build's settings.
-  xcodebuild -project "$root/RexDuo.xcodeproj" -scheme RexDuo -configuration Release \
+  xcodebuild -project "$root/Pteron.xcodeproj" -scheme Pteron -configuration Release \
     -destination "id=$sim" -derivedDataPath "$dd" -jobs 4 ONLY_ACTIVE_ARCH=YES \
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) BENCH' \
     build > "$out/build.log" 2>&1 \
     || { tail -30 "$out/build.log" >&2; exit 1; }
 fi
-app="$dd/Build/Products/Release-iphonesimulator/RexDuo.app"
+app="$dd/Build/Products/Release-iphonesimulator/Pteron.app"
 [[ -d $app ]] || { echo "no app at $app" >&2; exit 1; }
 
 # The simulator boots after the build, never during it: a first boot takes the Mac's 1-minute
@@ -121,7 +121,7 @@ node "$here/gen.mjs" "$out/scenarios" --cols $cols --rows $rows >&2
 # snapshot, 80×24) and a typing session at a zsh prompt (scripts/record-echo-fixtures.py).
 cp "$root/Packages/RexKit/Tests/RexKitTests/Fixtures/stream-scroll.bin" "$out/scenarios/predict.bin"
 cp "$root/Packages/RexKit/Tests/RexKitTests/Fixtures/stream-scroll.bin.nonce" "$out/scenarios/predict.bin.nonce"
-cp "$root/RexDuoTests/Fixtures/echo/echo-zsh-typing.json" "$out/scenarios/predict.json"
+cp "$root/PteronTests/Fixtures/echo/echo-zsh-typing.json" "$out/scenarios/predict.json"
 
 # One run: launches with the given arguments and waits for the probe's file.
 missing=0

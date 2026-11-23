@@ -838,7 +838,7 @@ out by the other gates.
 **Measuring and testing.** `-predict never|always` (Debug only) forces the gate; `-echoTest`
 reports `predictedMs` and the counters; the benchmark's `predict` scenario plays a recorded
 typing session on a scripted link (docs/debug-args.md, docs/ghostty-engine.md, Measurements).
-Recorded sessions of a real shell (`RexDuoTests/Fixtures/echo`, from
+Recorded sessions of a real shell (`PteronTests/Fixtures/echo`, from
 `scripts/record-echo-fixtures.py`) run through the real core in `EchoScriptTests`.
 
 ## Find

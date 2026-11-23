@@ -20,9 +20,9 @@ limit=$(node -e "import('$here/budgets.mjs').then(b => console.log(b.flood.lagSe
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 # `TEST_RUNNER_` hands the variable to the test's process in the simulator.
-if TEST_RUNNER_REXDUO_BENCH_FLOOD_LAG=$limit xcodebuild -project "$root/RexDuo.xcodeproj" -scheme RexDuo \
+if TEST_RUNNER_PTERON_BENCH_FLOOD_LAG=$limit xcodebuild -project "$root/Pteron.xcodeproj" -scheme Pteron \
     -destination "id=$sim" -derivedDataPath "$dd" test \
-    -only-testing:RexDuoTests/AlertEventsTests/testATitleShowsAtItsUsualPaceDuringAProgressFlood >"$log" 2>&1; then
+    -only-testing:PteronTests/AlertEventsTests/testATitleShowsAtItsUsualPaceDuringAProgressFlood >"$log" 2>&1; then
   grep -E 'FLOOD title lags' "$log" || true
   echo "flood: within the budget ($limit s)"
 else

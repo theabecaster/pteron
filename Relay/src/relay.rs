@@ -3319,7 +3319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_test_is_sent_while_rex_duo_is_open_on_the_phone() {
+    async fn a_test_is_sent_while_pteron_is_open_on_the_phone() {
         let dir = temp("test-foreground");
         let (base, seen) = serve(vec![canned(200, "{}")]).await;
         let r = relay_with(&dir, false, Sender::Gateway, &[&base]);

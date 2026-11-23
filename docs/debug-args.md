@@ -340,7 +340,7 @@ builds.
 - `-echoScript <file> [-echoDelay <ms>] [-echoLoops <n>]`, with `-replay <rex capture>` (also in the `BENCH`
   build): the pane is a real stream on a scripted link that opens with the capture and answers
   every call after the delay (default 150 ms), and a recorded typing session
-  (`RexDuoTests/Fixtures/echo`) is typed into it at its own pace, `-echoLoops` times (default 1). No server. The benchmark's
+  (`PteronTests/Fixtures/echo`) is typed into it at its own pace, `-echoLoops` times (default 1). No server. The benchmark's
   `predict` scenario; a file name without a folder is looked for beside the capture. With
   `-predict never` the pane's stream gets no gate at all (`predict-off`).
 - `-selectionDemo <steps>`, `-selectionLoupe off`: docs/selection.md.

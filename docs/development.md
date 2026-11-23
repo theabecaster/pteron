@@ -6,7 +6,7 @@ coding agents and just as useful to people. This page is the short way in.
 
 The repository holds three programs:
 
-- `RexDuo/` and `Packages/RexKit/`: the iOS app (Swift, SwiftUI and UIKit).
+- `Pteron/` and `Packages/RexKit/`: the iOS app (Swift, SwiftUI and UIKit).
 - `Relay/`: Pteron Beacon, which sends push notifications from a computer (Rust).
 - `Gateway/`: the push gateway that passes them to Apple (TypeScript on Cloudflare Workers).
 
@@ -15,14 +15,13 @@ The repository holds three programs:
 - The product's name is said in two places: `Brand` in `Packages/RexGlance` (the app, the
   controls and every sentence they show) and `Relay/src/brand.rs` (Beacon). `APP_DISPLAY_NAME`
   in `project.yml` repeats it for the two Info.plists and `BEACON=` in `Relay/setup.sh` for the
-  installer; tests hold both to the constants. Code identifiers keep the earlier name
-  (`RexDuo`, `rexduo://`, the bundle ids, `rex-duo-helper`): they are compiled into shipped
-  apps and Beacons.
+  installer; tests hold both to the constants. Old spellings that must stay are listed under "The product name" in AGENTS.md
+  (bundle ids, `rexduo://`, `rex-duo-helper`): shipped apps and Beacons depend on them.
 - `Brand/` holds the art under neutral names: `AppIcon.icon` and `BeaconIcon.icon` (Icon
   Composer documents, compiled by actool), `launch-art.png` and `launch-outline.svg` (the
   launch screen's picture and its outline), `glyph.svg`.
 - After a change to the launch art run `swift -O Brand/make-launch-art.swift`. It writes the
-  `LaunchMark` image set and `RexDuo/App/LaunchArt.swift` (size, outline, zoom pivot, reach
+  `LaunchMark` image set and `Pteron/App/LaunchArt.swift` (size, outline, zoom pivot, reach
   table), and stops when the picture and the outline disagree. Then run the app tests:
   `LaunchArtTests` pins the numbers, so they change in the same commit as the art.
 - `scripts/check-brand.sh` fails when an earlier product name appears outside the places that
@@ -42,7 +41,7 @@ The repository holds three programs:
 scripts/build-ghostty.sh   # once: builds the terminal engine into Vendor/ (about 130 s, not committed)
 xcodegen generate          # the Xcode project is generated, not committed
 xcrun simctl list devices available
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<simulator id> \
+xcodebuild -project Pteron.xcodeproj -scheme Pteron -destination id=<simulator id> \
   -derivedDataPath build/dd build
 ```
 
@@ -59,7 +58,7 @@ xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<simulator i
 ## Test
 
 ```sh
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<simulator id> \
+xcodebuild -project Pteron.xcodeproj -scheme Pteron -destination id=<simulator id> \
   -derivedDataPath build/dd test                  # app tests in the simulator, about 1 minute
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS
 swift test --package-path Packages/RexGlance      # the links shared with the extension, on macOS

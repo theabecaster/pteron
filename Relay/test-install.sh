@@ -109,7 +109,7 @@ for line in \
 done
 [[ "$(committed_key primary)" != "$(committed_key recovery)" && "$(committed_key primary)$(committed_key recovery)" =~ ^[A-Za-z0-9+/=]{88}$ ]] || fail "update-key.pub must hold two keys"
 ok "setup.sh has the published address, the keys of update-key.pub, the system's tool folders and no values for a run by hand on a Mac"
-if grep -nE 'REXDUO_|REX_DUO_|sudo|eval|http://' "$setup"; then fail "setup.sh has a test switch, sudo, eval or a plain http address"; fi
+if grep -nE 'REXDUO_|PTERON_|REX_DUO_|sudo|eval|http://' "$setup"; then fail "setup.sh has a test switch, sudo, eval or a plain http address"; fi
 # What it takes from its environment: the Rex server of the tab and three systemd locations.
 python3 -I - "$setup" <<'PY' || fail "setup.sh reads a variable from its environment beyond REX_SERVER, XDG_STATE_HOME, XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS"
 import re, sys
@@ -206,7 +206,7 @@ release() { # release <key name> [options]: runs the copy of release.sh; other s
   # one: nothing is downloaded here. Before the first there is none.
   local list="$relay/dist/release/manifest.json"
   [[ -f "$list" ]] || list=none
-  (cd "$relay" && REXDUO_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" PUBLISHED_LIST="${PUBLISHED_LIST:-$list}" ./release.sh "$@")
+  (cd "$relay" && PTERON_TEST_HOME="$box/h/release" UPDATE_KEY="$box/$key.key" PUBLISHED_LIST="${PUBLISHED_LIST:-$list}" ./release.sh "$@")
 }
 sign_with() { # sign_with <key name> <file> <signature file>
   "$OPENSSL" pkeyutl -sign -inkey "$box/$1.key" -rawin -in "$2" | "$OPENSSL" base64 -A > "$3"
@@ -328,7 +328,7 @@ ok "release.sh: fixtures hold the list and a Linux signature, signed by a throwa
 if [[ "${SKIP_HELPER_CHECK:-}" == 1 ]]; then
   echo "skip  the helper's own check of the release (SKIP_HELPER_CHECK=1)"
 elif command -v cargo >/dev/null 2>&1; then
-  REXDUO_RELEASE_DIR="$out" REXDUO_RELEASE_KEY_FILE="$relay/update-key.pub" \
+  PTERON_RELEASE_DIR="$out" PTERON_RELEASE_KEY_FILE="$relay/update-key.pub" \
     cargo test --quiet --manifest-path "$here/Cargo.toml" release_sh_output -- --ignored > "$box/cargo.log" 2>&1 \
     || { cat "$box/cargo.log" >&2; fail "the helper does not accept what release.sh wrote"; }
   ok "the helper accepts the manifest and both Linux signatures release.sh wrote"
@@ -511,35 +511,35 @@ bundle_id="dev.abrahamgonzalez.rexduo.helper"
 # by the stand-in helper is written down as the helper's (`helper: launchctl …`).
 stand_in() {
   mkdir -p "$1"
-  printf '#!/bin/sh\nprintf "%%s%%s %%s\\n" "${REXDUO_TEST_BY:+$REXDUO_TEST_BY: }" "%s" "$*" >> "$REXDUO_TEST_HOME/tools.log"\n%s\n' "$2" "$3" > "$1/$2"
+  printf '#!/bin/sh\nprintf "%%s%%s %%s\\n" "${PTERON_TEST_BY:+$PTERON_TEST_BY: }" "%s" "$*" >> "$PTERON_TEST_HOME/tools.log"\n%s\n' "$2" "$3" > "$1/$2"
   chmod +x "$1/$2"
 }
 linux_tools() { # linux_tools <folder>: this Mac says it is a Linux computer
-  stand_in "$1" uname 'case "$1" in -s) echo "${REXDUO_TEST_OS:-Linux}" ;; -m) echo "${REXDUO_TEST_CPU:-x86_64}" ;; esac'
+  stand_in "$1" uname 'case "$1" in -s) echo "${PTERON_TEST_OS:-Linux}" ;; -m) echo "${PTERON_TEST_CPU:-x86_64}" ;; esac'
   # The service counts as stopped unless the test's home folder holds `still-running`.
-  stand_in "$1" systemctl 'if [ -f "$REXDUO_TEST_HOME/no-systemd" ]; then exit 1; fi
-case " $* " in *" is-active "*) [ -f "$REXDUO_TEST_HOME/still-running" ] || exit 3 ;; esac'
+  stand_in "$1" systemctl 'if [ -f "$PTERON_TEST_HOME/no-systemd" ]; then exit 1; fi
+case " $* " in *" is-active "*) [ -f "$PTERON_TEST_HOME/still-running" ] || exit 3 ;; esac'
   stand_in "$1" loginctl 'case "$1" in
-  show-user) cat "$REXDUO_TEST_HOME/linger" 2>/dev/null || echo yes ;;
-  enable-linger) echo yes > "$REXDUO_TEST_HOME/linger" ;;
+  show-user) cat "$PTERON_TEST_HOME/linger" 2>/dev/null || echo yes ;;
+  enable-linger) echo yes > "$PTERON_TEST_HOME/linger" ;;
 esac'
-  stand_in "$1" date 'if [ -n "${REXDUO_TEST_NOW:-}" ] && [ "$*" = "-u +%Y%m%d%H%M%S" ]; then echo "$REXDUO_TEST_NOW"; else exec /bin/date "$@"; fi'
+  stand_in "$1" date 'if [ -n "${PTERON_TEST_NOW:-}" ] && [ "$*" = "-u +%Y%m%d%H%M%S" ]; then echo "$PTERON_TEST_NOW"; else exec /bin/date "$@"; fi'
 }
 linux_tools "$box/tools-linux"
 ln -s "$OPENSSL" "$box/tools-linux/openssl"
 linux_tools "$box/tools-linux-plain" # without openssl 3: only the system's LibreSSL
 mac="$box/tools-mac"
-stand_in "$mac" date 'if [ -n "${REXDUO_TEST_NOW:-}" ] && [ "$*" = "-u +%Y%m%d%H%M%S" ]; then echo "$REXDUO_TEST_NOW"; else exec /bin/date "$@"; fi'
+stand_in "$mac" date 'if [ -n "${PTERON_TEST_NOW:-}" ] && [ "$*" = "-u +%Y%m%d%H%M%S" ]; then echo "$PTERON_TEST_NOW"; else exec /bin/date "$@"; fi'
 # mv, which a test can stop at one of the two renames that replace an installed app.
-stand_in "$mac" mv 'if [ -f "$REXDUO_TEST_HOME/no-rename" ]; then case "$*" in *".previous.app") exit 1 ;; esac; fi
-if [ -f "$REXDUO_TEST_HOME/no-place" ]; then case "$*" in *".new-"*) exit 1 ;; esac; fi
+stand_in "$mac" mv 'if [ -f "$PTERON_TEST_HOME/no-rename" ]; then case "$*" in *".previous.app") exit 1 ;; esac; fi
+if [ -f "$PTERON_TEST_HOME/no-place" ]; then case "$*" in *".new-"*) exit 1 ;; esac; fi
 exec /bin/mv "$@"'
 # launchctl. The jobs it has are the files of the folder `loaded`: bootstrap adds the job of a
 # file that is there, bootout removes one, and print finds one (or any, with `still-running`).
 # Each call is also written to launchd.log, with the files the LaunchAgents folder held then.
-stand_in "$mac" launchctl 'if [ -f "$REXDUO_TEST_HOME/no-gui" ]; then exit 1; fi
-printf "%s | %s\n" "$*" "$(ls "$REXDUO_TEST_HOME/Library/LaunchAgents" 2>/dev/null | tr "\n" " ")" >> "$REXDUO_TEST_HOME/launchd.log"
-loaded="$REXDUO_TEST_HOME/loaded"
+stand_in "$mac" launchctl 'if [ -f "$PTERON_TEST_HOME/no-gui" ]; then exit 1; fi
+printf "%s | %s\n" "$*" "$(ls "$PTERON_TEST_HOME/Library/LaunchAgents" 2>/dev/null | tr "\n" " ")" >> "$PTERON_TEST_HOME/launchd.log"
+loaded="$PTERON_TEST_HOME/loaded"
 case "$1 ${2:-}" in
   "bootstrap gui/"*)
     [ -f "${3:-}" ] || exit 5
@@ -547,13 +547,13 @@ case "$1 ${2:-}" in
     mkdir -p "$loaded" && : > "$loaded/${job%.plist}"
     ;;
   "bootout gui/"*/*) rm -f "$loaded/${2##*/}" ;;
-  "print gui/"*/*) [ -f "$REXDUO_TEST_HOME/still-running" ] || [ -e "$loaded/${2##*/}" ] || exit 113 ;;
+  "print gui/"*/*) [ -f "$PTERON_TEST_HOME/still-running" ] || [ -e "$loaded/${2##*/}" ] || exit 113 ;;
 esac'
 stand_in "$mac" open ':'
 stand_in "$mac" xattr ':'
 # codesign, which accepts every app but a folder that holds a file named `unsigned` (and none
 # at all with `bad-signature`).
-stand_in "$mac" codesign 'if [ -f "$REXDUO_TEST_HOME/bad-signature" ]; then exit 1; fi
+stand_in "$mac" codesign 'if [ -f "$PTERON_TEST_HOME/bad-signature" ]; then exit 1; fi
 for app in "$@"; do :; done
 if [ -e "$app/unsigned" ]; then exit 1; fi'
 # unsigned_folder <path>: a folder there that is not the app, with a file of its own in it.
@@ -569,9 +569,9 @@ stand_in "$mac" spctl 'echo "source=Notarized Developer ID" >&2'
 # lsregister, which is called by its own path and is in no tool folder. A call made while the
 # LaunchAgent's file under the service's name is there is also written to `lsregister-late`;
 # `no-lsregister` makes it fail.
-stand_in "$box/tools-ls" lsregister 'if [ -e "$REXDUO_TEST_HOME/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.agent.plist" ]; then echo "$*" >> "$REXDUO_TEST_HOME/lsregister-late"; fi
-if [ -f "$REXDUO_TEST_HOME/no-lsregister" ]; then exit 1; fi'
-stand_in "$mac" sw_vers 'if [ -f "$REXDUO_TEST_HOME/old-macos" ]; then echo 13.6.1; else exec /usr/bin/sw_vers "$@"; fi'
+stand_in "$box/tools-ls" lsregister 'if [ -e "$PTERON_TEST_HOME/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.agent.plist" ]; then echo "$*" >> "$PTERON_TEST_HOME/lsregister-late"; fi
+if [ -f "$PTERON_TEST_HOME/no-lsregister" ]; then exit 1; fi'
+stand_in "$mac" sw_vers 'if [ -f "$PTERON_TEST_HOME/old-macos" ]; then echo 13.6.1; else exec /usr/bin/sw_vers "$@"; fi'
 
 # copy <out> <tool folder, or "" for the system's alone> <more lines changed> [sed expressions]:
 # a copy of setup.sh for tests. Fails when a line it replaces is not there any more.
@@ -590,13 +590,13 @@ copy() {
     -e 's|^CURL_ONLY=.*|CURL_ONLY="--proto =http"|'
     -e "s|^PRIMARY_KEY=.*|PRIMARY_KEY=\"$PRIMARY\"|"
     -e "s|^RECOVERY_KEY=.*|RECOVERY_KEY=\"$RECOVERY\"|"
-    -e 's|^SYSTEM_APPS=.*|SYSTEM_APPS="$REXDUO_TEST_HOME/SystemApplications"|'
+    -e 's|^SYSTEM_APPS=.*|SYSTEM_APPS="$PTERON_TEST_HOME/SystemApplications"|'
     -e "s|^LSREGISTER=.*|LSREGISTER=\"$box/tools-ls/lsregister\"|"
     -e 's|^WAIT_SECONDS=.*|WAIT_SECONDS=2|'
     -e 's|^UPDATE_SECONDS=.*|UPDATE_SECONDS=2|'
     -e 's|^CODE_SECONDS=.*|CODE_SECONDS=3|'
-    -e 's#^  HOME="$(account_home)" || HOME=""$#  HOME="$REXDUO_TEST_HOME"#'
-    -e 's#^  STAGE_ROOT="$(stage_root)" || STAGE_ROOT=""$#  STAGE_ROOT="$REXDUO_TEST_HOME/tmp"#'
+    -e 's#^  HOME="$(account_home)" || HOME=""$#  HOME="$PTERON_TEST_HOME"#'
+    -e 's#^  STAGE_ROOT="$(stage_root)" || STAGE_ROOT=""$#  STAGE_ROOT="$PTERON_TEST_HOME/tmp"#'
   )
   if [[ -n "$tools" ]]; then
     edits+=(-e "s|^TOOL_DIRS=.*|TOOL_DIRS=\"$tools /usr/bin /bin /usr/sbin /sbin\"|" -e "s@^      0) ;; # root\$@      0 | $uid) ;;@")
@@ -660,7 +660,7 @@ as_app() {
   local script="$1"
   shift
   APP_CMD=(python3 -I "$here/tests-setup/pty-run.py" "$H.out" "$CODE_FILE"
-    /usr/bin/env -i PATH="$RUN_PATH" REXDUO_TEST_HOME="$H" REXDUO_TEST_PID="$$" REX_SERVER="$SERVER" ${RUN_ENV[@]+"${RUN_ENV[@]}"}
+    /usr/bin/env -i PATH="$RUN_PATH" PTERON_TEST_HOME="$H" PTERON_TEST_PID="$$" REX_SERVER="$SERVER" ${RUN_ENV[@]+"${RUN_ENV[@]}"}
     "${SHELL_CMD[@]}" -c "$(cat "$script")" rexduo-setup "$@")
 }
 # run <copy> [arguments]: with arguments, starts the copy as the app does. Without, runs it by
@@ -680,7 +680,7 @@ no_terminal() {
   local script="$1"
   shift
   RC=0
-  env -i PATH="$RUN_PATH" REXDUO_TEST_HOME="$H" REXDUO_TEST_PID="$$" REX_SERVER="$SERVER" ${RUN_ENV[@]+"${RUN_ENV[@]}"} \
+  env -i PATH="$RUN_PATH" PTERON_TEST_HOME="$H" PTERON_TEST_PID="$$" REX_SERVER="$SERVER" ${RUN_ENV[@]+"${RUN_ENV[@]}"} \
     "${SHELL_CMD[@]}" -c "$(cat "$script")" rexduo-setup "$@" < /dev/null > "$H.out" 2>&1 || RC=$?
 }
 # family <pid>: the process and everything it started.
@@ -1105,13 +1105,13 @@ EOF
 
   # Other computers.
   new_home
-  RUN_ENV=(REXDUO_TEST_CPU=aarch64)
+  RUN_ENV=(PTERON_TEST_CPU=aarch64)
   run "$box/linux.sh" "${good[@]}"
   RUN_ENV=()
   ends 0 "an aarch64 computer gets the aarch64 file"
   cmp -s "$(installed)" "$arm" || fail "aarch64: the wrong file was installed"
   before="$(wc -l < "$requests")"
-  for x in "REXDUO_TEST_CPU=riscv64" "REXDUO_TEST_CPU=armv7l" "REXDUO_TEST_OS=FreeBSD"; do
+  for x in "PTERON_TEST_CPU=riscv64" "PTERON_TEST_CPU=armv7l" "PTERON_TEST_OS=FreeBSD"; do
     new_home
     RUN_ENV=("$x")
     run "$box/linux.sh" "${good[@]}"
@@ -1164,9 +1164,9 @@ by_hand_tests() {
   ok "by hand: prints the SHA-256 of the two keys"
   new_home
   RC=0
-  env -i PATH="$RUN_PATH" REXDUO_TEST_HOME="$H" REXDUO_TEST_PID="$$" "${SHELL_CMD[@]}" < "$box/linux.sh" > "$H.out" 2>&1 || RC=$?
+  env -i PATH="$RUN_PATH" PTERON_TEST_HOME="$H" PTERON_TEST_PID="$$" "${SHELL_CMD[@]}" < "$box/linux.sh" > "$H.out" 2>&1 || RC=$?
   ends 0 "by hand: piped into the shell, as curl … | sh"
-  RUN_ENV=(REXDUO_TEST_CPU=aarch64)
+  RUN_ENV=(PTERON_TEST_CPU=aarch64)
   accepted "the aarch64 file" "$arm"
   RUN_ENV=()
 
@@ -1197,12 +1197,12 @@ by_hand_tests() {
   # Expired: at the second it expires and long after. One second before is still good.
   list "$saved/manifest.json" "$saved/manifest.json.sig"
   expires="$(sed -n 's/^  "expires_at": "\(.*\)",$/\1/p' "$saved/manifest.json")"
-  RUN_ENV=("REXDUO_TEST_NOW=$(printf '%s' "$expires" | tr -cd 0-9)")
+  RUN_ENV=("PTERON_TEST_NOW=$(printf '%s' "$expires" | tr -cd 0-9)")
   refused "a manifest at the second it expires" "out of date"
-  RUN_ENV=(REXDUO_TEST_NOW=20990101000000)
+  RUN_ENV=(PTERON_TEST_NOW=20990101000000)
   refused "a manifest long past its date" "out of date"
   later="$(python3 -c 'import datetime,sys; f="%Y-%m-%dT%H:%M:%SZ"; print((datetime.datetime.strptime(sys.argv[1], f) - datetime.timedelta(seconds=1)).strftime("%Y%m%d%H%M%S"))' "$expires")"
-  RUN_ENV=("REXDUO_TEST_NOW=$later")
+  RUN_ENV=("PTERON_TEST_NOW=$later")
   accepted "a manifest one second before it expires"
   RUN_ENV=()
 
@@ -1234,7 +1234,7 @@ m["assets"]["linux-x86_64"]["size"] = (64 << 20) + 1
 json.dump(m, open(big, "w"), indent=2)
 PY
   signed_list "$box/no-arm.json"
-  RUN_ENV=(REXDUO_TEST_CPU=aarch64)
+  RUN_ENV=(PTERON_TEST_CPU=aarch64)
   refused "a manifest with no entry for this architecture" "names no file for linux-aarch64"
   RUN_ENV=()
   signed_list "$box/no-size.json"
@@ -1604,14 +1604,14 @@ mac_tests() {
   says "Download $beacon from " "Mac, by hand: no values"
   mac_untouched "Mac, by hand: no values"
   new_home
-  RUN_ENV=("REXDUO_TEST_NOW=$expires")
+  RUN_ENV=("PTERON_TEST_NOW=$expires")
   run "$box/mac-baked.sh"
   ends 14 "Mac, by hand: at the second the installer expires it installs nothing"
   says "This installer is out of date" "Mac, by hand: expired"
   mac_untouched "Mac, by hand: expired"
   [[ "$(wc -l < "$requests")" == "$before" ]] || fail "Mac, by hand: a refused installer downloaded something"
   new_home
-  RUN_ENV=("REXDUO_TEST_NOW=$((expires - 1))")
+  RUN_ENV=("PTERON_TEST_NOW=$((expires - 1))")
   run "$box/mac-baked.sh"
   RUN_ENV=()
   ends 0 "Mac, by hand: one second before, it installs the version the release list names"

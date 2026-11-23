@@ -11,7 +11,7 @@ with its full source code. The licence gives no permission to use the names "Pte
 
 Third-party code keeps its own licence:
 - libghostty-vt (Ghostty), MIT. Built from source into the app; its notice ships in the app
-  under Settings, Acknowledgements (RexDuo/Resources/Acknowledgements.txt).
+  under Settings, Acknowledgements (Pteron/Resources/Acknowledgements.txt).
 - Beacon's Rust crates (Relay/Cargo.lock): MIT, Apache-2.0, ISC, BSD, CDLA-Permissive-2.0
   and Unicode-3.0. Their notices ship with every Beacon release as THIRD_PARTY_LICENSES.txt
   (also inside the Mac app), written by Relay/third-party-licenses.py.

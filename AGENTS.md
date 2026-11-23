@@ -1,7 +1,6 @@
 # Pteron
 
-An iOS remote for Rex, a terminal multiplexer (in code the app is still `RexDuo`, after its
-earlier name). The app connects to a Rex server's control API and
+An iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's control API and
 terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt and
 its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built
 for the iPhone Duo and works on any iPhone. `Relay/` holds Pteron Beacon, a Rust program for
@@ -45,17 +44,17 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `PaneLink`), and the snapshot of the agents that the app writes and the widgets read, with
   everything decided from it. Foundation only, so it tests on macOS. `GlanceUI` holds what the
   widgets draw with (colors, the ring, type): SwiftUI only.
-- `RexDuoWidgets`: the app extension with the agents widget (Home Screen sizes and Lock Screen
+- `PteronWidgets`: the app extension with the agents widget (Home Screen sizes and Lock Screen
   accessories), which only reads the snapshot, and the controls ("Open Pteron", "Jump to
   Waiting") for Control Center, the Lock Screen and the Action button, which only open the app
   with a link; `OpenLinkIntent.swift` there is compiled into the app as well, where the system
   runs it. `Views/` is compiled into the app's tests too, which draw every size and state.
-- `RexDuoWatch`: the watch app: the agents as the iPhone app last saw them, from the snapshot
+- `PteronWatch`: the watch app: the agents as the iPhone app last saw them, from the snapshot
   the phone sends (docs/glance.md, The watch). It connects to nothing, and sends the phone one
-  thing: Enter or Interrupt for a waiting agent, after a confirmation. `RexDuoWatchWidgets`: its complications and Smart Stack widget, which reuse the
-  Lock Screen views and the timeline of `RexDuoWidgets`. `RexDuoWatchTests`: their tests, run
-  on a watchOS simulator with the scheme `RexDuoWatch`.
-- `RexDuo/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
+  thing: Enter or Interrupt for a waiting agent, after a confirmation. `PteronWatchWidgets`: its complications and Smart Stack widget, which reuse the
+  Lock Screen views and the timeline of `PteronWidgets`. `PteronWatchTests`: their tests, run
+  on a watchOS simulator with the scheme `PteronWatch`.
+- `Pteron/State`: `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`,
   `PushRegistrar`, `Posture.swift` (arrangement, sidebar state), `ConnectionProblem`, `NetworkWatch`,
   `ConnectionDiagnostics` (the connection log's file and the file Send Diagnostics shares;
   docs/architecture.md, The connection log), `DiagnosticReports` (the system's crash and hang
@@ -67,7 +66,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `GlanceActions`), `ScenePhases` (what each scene phase asks; servers
   start at the first one that shows the app), `CloseNext` (what shows when the tab on screen
   closes; docs/architecture.md).
-- `RexDuo/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
+- `Pteron/Features/<Feature>`: Sidebar (machines, sessions and tabs, folding, and the Agents
   mode; docs/sidebar.md), Tab (window screen, title bar gestures, split math, floating windows, and tab mode's strip:
   `TabStrip`, its layout `StripLayout`, the chips, the session popover, `StripRoutes` and
   `DismissalWait`; docs/tab-mode.md),
@@ -81,17 +80,17 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   tunnel: the pane menu's row and tapped `localhost` links; docs/terminal.md, Ports), GoTo (Go to
   Anything, Change Session and the command palette, and the questions of actions the phone ran;
   docs/goto.md).
-- `RexDuo/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
+- `Pteron/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
-- `RexDuo/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass.
-- `RexDuoTests`: app tests, run in the simulator. Beacon tests live in `Relay/src`.
+- `Pteron/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass.
+- `PteronTests`: app tests, run in the simulator. Beacon tests live in `Relay/src`.
 - `Gateway/`: the push gateway. It holds the APNs key and the phones' APNs tokens; a Beacon holds
   only a per-phone secret (`Gateway/README.md`). `Relay/release.sh` publishes Beacon releases and
   `Relay/setup.sh` is the installer: the app runs it in a tab on the computer to install the
   Beacon from the phone, and it is published as `install.sh` for a manual install (docs/helper.md).
 - `Brand/`: the brand art under neutral names: the app's and Beacon's icons (Icon Composer
   documents), the launch art and its outline, the glyph, and `make-launch-art.swift`, which
-  writes the launch image and `RexDuo/App/LaunchArt.swift` from them.
+  writes the launch image and `Pteron/App/LaunchArt.swift` from them.
 - `scripts/`: `check-brand.sh` (no earlier product name outside the places that must keep
   one), the Ghostty build and checks, the benchmark (`bench/`), release through a build Mac.
 - Glossary: Rex's *window* is a tab in the UI, *block* is a pane. Code keeps Rex's names
@@ -99,7 +98,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
 
 ## Build, run, test
 
-`RexDuo.xcodeproj` is generated and untracked: edit `project.yml`, and run `xcodegen generate`
+`Pteron.xcodeproj` is generated and untracked: edit `project.yml`, and run `xcodegen generate`
 after cloning and after adding, moving or deleting a file. `Vendor/` (gitignored) holds
 libghostty-vt, which a fresh clone builds once before anything else (Apple silicon, about 130 s
 and 1.3 GB). An agent worktree can symlink another checkout's `Vendor` instead.
@@ -108,11 +107,11 @@ and 1.3 GB). An agent worktree can symlink another checkout's `Vendor` instead.
 scripts/build-ghostty.sh                  # builds Vendor/GhosttyVt.xcframework; no-op when current
 xcodegen generate
 xcrun simctl list devices available       # pick a simulator id
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=<sim-id> \
-  -derivedDataPath build/dd build         # `test` instead of `build` runs RexDuoTests (~1 min)
+xcodebuild -project Pteron.xcodeproj -scheme Pteron -destination id=<sim-id> \
+  -derivedDataPath build/dd build         # `test` instead of `build` runs PteronTests (~1 min)
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS, ~15 s
 swift test --package-path Packages/RexGlance      # links, the snapshot, the watch's rules and the widgets' colors, on macOS
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuoWatch -destination id=<watch-sim-id> \
+xcodebuild -project Pteron.xcodeproj -scheme PteronWatch -destination id=<watch-sim-id> \
   -derivedDataPath build/dd-watch test    # the watch app's tests; needs a watchOS simulator runtime
 cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payloads, gateway client, updates
 (cd Gateway && npm ci && npx vitest run)          # gateway: API, limits, the APNs call (mocked)
@@ -181,8 +180,20 @@ shell.
   `Prefs.shared` is the app's one instance, read directly only where SwiftUI doesn't reach (the
   UIKit key bar and terminal host, the replay screen).
 - Put pure logic (parsing, byte encoding, layout math) in its own type with tests, not in views.
-- The product name lives in GlanceModel's `Brand` and `Relay/src/brand.rs`, the brand art in `Brand/`;
-  code identifiers keep `rexduo`/`RexDuo` (compiled into shipped apps and Beacons).
+- The product name lives in GlanceModel's `Brand` and `Relay/src/brand.rs`, the brand art in `Brand/`.
+  Code and folders say Pteron. These keep the old spelling, because shipped apps, installed Beacons,
+  App Store Connect, Gateway data and release downloads hold them (never rename one):
+  - bundle ids (`dev.abrahamgonzalez.rexduo*`), the APNs topic, the App Group, the widget and control
+    kinds, the `rexduo:` URL scheme, the keychain services;
+  - hash and signature domains (`rexduo-*-v1`, `rex-duo-helper|…`), the setup marker `rexduo-setup`,
+    the test push thread `rexduo-test`;
+  - the gateway Worker, host and D1 database `rexduo-push`, and the GitHub release URL
+    `github.com/theabecaster/rexduo` with its asset names;
+  - the Beacon crate, binaries, launchd labels, `REXDUO_LABEL`, `REX_DUO_DRY_RUN`, state dirs and
+    `~/.config/rexduo/helper-update.key`;
+  - log subsystems and queue labels, the UTType, test fixtures, and the macdesk lock
+    `~/rexduo-build.lock` with the `~/rexduo-build*` folders;
+  - the CI runner label `rexduo`.
 - RexKit doesn't import UIKit or SwiftUI; the app passes in what it needs (`ClientInfo`).
 - UI and state types are `@MainActor`. Use `@unchecked Sendable` or `nonisolated(unsafe)` only with a
   comment that says why it is safe.

@@ -44,13 +44,13 @@ if (( build )); then
   mkdir -p "$root/build"
   (cd "$root" && xcodegen generate >/dev/null)
   # The same build as scripts/bench/run.sh makes: Release with the BENCH condition.
-  xcodebuild -project "$root/RexDuo.xcodeproj" -scheme RexDuo -configuration Release \
+  xcodebuild -project "$root/Pteron.xcodeproj" -scheme Pteron -configuration Release \
     -destination "id=$sim" -derivedDataPath "$dd" -jobs 4 ONLY_ACTIVE_ARCH=YES \
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) BENCH' \
     build > "$root/build/ports-loop-build.log" 2>&1 \
     || { tail -30 "$root/build/ports-loop-build.log" >&2; exit 1; }
 fi
-app="$dd/Build/Products/Release-iphonesimulator/RexDuo.app"
+app="$dd/Build/Products/Release-iphonesimulator/Pteron.app"
 [[ -d $app ]] || { echo "no app at $app" >&2; exit 1; }
 
 xcrun simctl bootstatus "$sim" -b >/dev/null

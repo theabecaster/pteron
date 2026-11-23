@@ -14,7 +14,7 @@ root=${here:h:h}
 ratio=$(node -e "import('$here/budgets.mjs').then(b => console.log(b.filter.ratioToBefore))")
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-if REXDUO_BENCH_FILTER_RATIO=$ratio swift test --package-path "$root/Packages/RexKit" \
+if PTERON_BENCH_FILTER_RATIO=$ratio swift test --package-path "$root/Packages/RexKit" \
     --filter 'StreamFilterBenchmarkTests/testCollectionOffIsAsFastAsBefore' >"$log" 2>&1; then
   grep -E 'APCFilter (throughput|ratio)' "$log"
   echo "filter: within the budget ($ratio)"

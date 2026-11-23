@@ -28,7 +28,7 @@
 # ends, so the phone stays awake from one run to the next and after the last one, with the app
 # open: end a session with --stop. The device build and install are the same as
 # scripts/install-duo.sh, plus BENCH; install the shipping build again with that script when done.
-# REXDUO_BUILD_HOST names the build Mac (default macdesk), REXDUO_DEVICE the phone's UDID.
+# PTERON_BUILD_HOST names the build Mac (default macdesk), PTERON_DEVICE the phone's UDID.
 set -euo pipefail
 
 usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -53,8 +53,8 @@ done
 
 here=${0:A:h}
 root=${here:h:h}
-device=${REXDUO_DEVICE:-00008160-000602EC0EF00036}
-host=${REXDUO_BUILD_HOST:-macdesk}
+device=${PTERON_DEVICE:-${REXDUO_DEVICE:-00008160-000602EC0EF00036}}
+host=${PTERON_BUILD_HOST:-${REXDUO_BUILD_HOST:-macdesk}}
 bundle=dev.abrahamgonzalez.rexduo
 out=${out:-$root/build/bench-device}
 cols=60; rows=50   # the simulator benchmark's grid, so the numbers compare
@@ -65,7 +65,7 @@ container=(--domain-type appDataContainer --domain-identifier $bundle)
 
 launch() { ssh $host "$devicectl device process launch --device $device --terminate-existing $bundle -- $*" >/dev/null; }
 terminate() {
-  ssh $host "pid=\$($devicectl device info processes --device $device 2>/dev/null | awk '/RexDuo.app\/RexDuo\$/ {print \$1; exit}'); [ -n \"\$pid\" ] && $devicectl device process terminate --device $device --pid \$pid >/dev/null 2>&1; true" || true
+  ssh $host "pid=\$($devicectl device info processes --device $device 2>/dev/null | awk '/Pteron.app\/Pteron\$/ {print \$1; exit}'); [ -n \"\$pid\" ] && $devicectl device process terminate --device $device --pid \$pid >/dev/null 2>&1; true" || true
 }
 
 if (( stop )); then terminate; exit 0; fi
@@ -77,10 +77,10 @@ fi
 
 if (( build )); then
   echo "Building Release (BENCH) on $host in ~/$remote …" >&2
-  (cd "$root" && REXDUO_BUILD_HOST=$host scripts/sync-macdesk.sh "$remote")
+  (cd "$root" && PTERON_BUILD_HOST=$host scripts/sync-macdesk.sh "$remote")
   # The same build as scripts/install-duo.sh, plus BENCH (`-replay`, `-perfLog`).
-  ssh $host "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
-$devicectl device install app --device $device ~/$remote/build/dd/Build/Products/Release-iphoneos/RexDuo.app | grep -E 'App installed'"
+  ssh $host "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc 'cd ~/$remote && xcodebuild -project Pteron.xcodeproj -scheme Pteron -configuration Release -destination id=$device -derivedDataPath build/dd -allowProvisioningUpdates -allowProvisioningDeviceRegistration \"SWIFT_ACTIVE_COMPILATION_CONDITIONS=\\\$(inherited) BENCH\" build > build.log 2>&1' || { grep -E 'error:' ~/$remote/build.log | head -20; exit 1; }
+$devicectl device install app --device $device ~/$remote/build/dd/Build/Products/Release-iphoneos/Pteron.app | grep -E 'App installed'"
 fi
 
 # Scenarios: generated here, sent to the phone through the build Mac.

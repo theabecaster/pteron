@@ -22,7 +22,7 @@ overrides (`AlertCopy`), so a program can't pose as the app. No haptic. Only ser
 terminal creator lists the event get notices (Compatibility in [rex-protocol.md](rex-protocol.md)).
 
 `Features/Notifications` turns alerts into a toast. `.agentToasts()` is applied once, in
-`RexDuoApp`. The rules are in `ToastPolicy` (tested):
+`PteronApp`. The rules are in `ToastPolicy` (tested):
 
 - Only while the app is active, and only for a pane that isn't on screen. `VisiblePanes` reads
   the visible panes from UIKit (`TerminalHost` views at least half inside the key window), so the
@@ -448,7 +448,7 @@ A helper reports when its release list expires (`manifest_expires_at`);
 `HelperRelease.renewalNotice` turns a date within 30 days into a line for whoever publishes
 releases. No screen shows it.
 
-Tests: `RexDuoTests/HelperReleaseTests.swift`, `HelperSetupTests.swift`,
+Tests: `PteronTests/HelperReleaseTests.swift`, `HelperSetupTests.swift`,
 `NotificationStatusTests.swift`, `PushReconcilerTests.swift`. `-simulateHelperSetup` and `-simulateNotifications`
 (docs/debug-args.md) show each state of the sheet and of the Notifications screen with no server.
 
@@ -492,7 +492,7 @@ below).
 Gateway/README.md, Desk presence, has the rules.
 
 The API, limits and deploy steps are in `Gateway/README.md`; `PushGateway`
-(`State/PushGateway.swift`) is the phone's side, tested in `RexDuoTests/PushGatewayTests.swift`.
+(`State/PushGateway.swift`) is the phone's side, tested in `PteronTests/PushGatewayTests.swift`.
 
 ## Signing the phone up
 
@@ -682,8 +682,8 @@ topic, the bundle id `dev.abrahamgonzalez.rexduo`.
 
 `PushRegistrar` (`State/`, owned by `AppModel`) and its `PushReconciler` implement the
 contract. Their pure parts are in `PushSupport.swift` (tested in
-`RexDuoTests/NotificationTests.swift`) and `HelperTrust.swift` (`HelperIdentity`,
-`HelperFailure`, `SecretLabel`; `RexDuoTests/HelperTrustTests.swift`).
+`PteronTests/NotificationTests.swift`) and `HelperTrust.swift` (`HelperIdentity`,
+`HelperFailure`, `SecretLabel`; `PteronTests/HelperTrustTests.swift`).
 
 - Device id: the first 8 hex digits of `identifierForVendor`. `PushIdentity.clientLabel` builds
   `"<device name> #<id>"`, shortening the name to fit Rex's 64 bytes.
@@ -705,10 +705,10 @@ contract. Their pure parts are in `PushSupport.swift` (tested in
   `becameActive()` starts the repeats, whether or not the registrar has started, and
   `enteredBackground()` ends them before it sends `false`; nothing is repeated in the
   background. `PresenceRenewal` (`State/PresenceRenewal.swift`) holds the timing, with the
-  clock passed in (`RexDuoTests/PresenceRenewalTests.swift`). A helper from before the claim
+  clock passed in (`PteronTests/PresenceRenewalTests.swift`). A helper from before the claim
   takes each repeat as the same news again.
 - **In front.** `PushRegistrar.inFront` starts false, and only `becameActive()` sets it, which
-  `RexDuoApp` calls at the `.active` scene phase. So a launch that never reaches the screen
+  `PteronApp` calls at the `.active` scene phase. So a launch that never reaches the screen
   tells no helper that the phone is in use, and the helper goes on sending its pushes. There
   is no gap either way: a registration that ends before the app is active is followed by the
   `push_presence true` that `becameActive()` sends, and one that ends after sends its own.
@@ -744,7 +744,7 @@ the same secret once more with the flag (`PushReconciler.flagOwnership`); the ga
 only the flag, or nothing when it holds it already. A change of the answer is sent once in the
 same way. This is no part of signing up: a request that fails changes nothing in Settings and
 is made again the next time the app comes to the front. A computer that is turned off is not
-flagged. `RexDuoTests/PushOwnershipTests.swift` counts the requests.
+flagged. `PteronTests/PushOwnershipTests.swift` counts the requests.
 
 **The presence key.** The helpers on the person's own computers name a desk to the gateway by
 a tag, and the tag is made with a key only those helpers and the phone hold, so the gateway
@@ -769,7 +769,7 @@ can match what two of them say without being told which desk it is. The phone ma
 - The key has one way out, `PresenceKey.wireValue`, used for that call. Every description of
   it and of the record that holds it reads `<redacted>`.
 
-`RexDuoTests/PresenceKeyTests.swift` covers all of this with stand-ins.
+`PteronTests/PresenceKeyTests.swift` covers all of this with stand-ins.
 
 ### Clearing notifications that no longer hold
 
@@ -793,7 +793,7 @@ and plays nothing.
 A pass runs when the app becomes active, when a server's agents have just been read, and when
 an agent changes state while they are known, at most once a second, and never in the
 background. Opening a pane starts no pass of its own: the rule reads only the agents' states,
-so the pass that follows a change of state already covers a pane the person opened and answered. `NotificationTidy.stale` is the rule (`RexDuoTests/NotificationTidyTests.swift`).
+so the pass that follows a change of state already covers a pane the person opened and answered. `NotificationTidy.stale` is the rule (`PteronTests/NotificationTidyTests.swift`).
 
 ### Tapping a push
 
@@ -850,7 +850,7 @@ them.
      from the same record has again.
 - **A launch with no view.** After the app was swiped away, the system starts it for an
   action in the background and builds no scene, so no view appears to hand the model over.
-  `RexDuoApp.init` leaves its model for the delegate (`AppDelegate.launching(with:)`), which
+  `PteronApp.init` leaves its model for the delegate (`AppDelegate.launching(with:)`), which
   takes it in `didFinishLaunching` and gives it to the actions only: no server starts and
   push registration does not begin, as in every launch in the background. Should the model
   still be missing, it is waited for, 5 s at most (`NotificationActions.Parts.modelLimit`).
@@ -902,12 +902,12 @@ them.
   of the new category from the list by itself (`NotificationTidy` there knows two
   categories); a "finished" from the same record still replaces it.
 
-Tests: `RexDuoTests/NotificationActionsTests.swift` (with a stand-in connection),
+Tests: `PteronTests/NotificationActionsTests.swift` (with a stand-in connection),
 `Packages/RexGlance` `FingerprintVectorTests`, `Relay/src/push.rs` and `policy.rs`.
 
 ### Testing
 
-- The loop: `RexDuoTests/PushReconcilerTests.swift` counts the requests at stand-ins for the
+- The loop: `PteronTests/PushReconcilerTests.swift` counts the requests at stand-ins for the
   gateway and the helpers, with time moved by hand (`PushStandIns.swift`).
 - Simulator registration: stop the installed helper (see `Relay/README.md`, "Verify by hand"), run
   `cargo run --manifest-path Relay/Cargo.toml -- run --dry-run --verbose` and launch the app with

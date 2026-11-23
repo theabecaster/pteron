@@ -16,7 +16,7 @@ Touch: "Go to Anything…" in the title bar's menu, right after Show All Tabs (w
 tab mode the session popover's first footer row, and a VoiceOver action "Go to Anything" on the
 title. No pull-down, no standing button.
 
-Code: `RexDuo/Features/GoTo/`.
+Code: `Pteron/Features/GoTo/`.
 
 - `GoToCenter`: opens, runs and closes; the keyboard hold and hand-back; the running notice;
   questions from the phone's own runs. Owned by `AppModel` (`palette`).

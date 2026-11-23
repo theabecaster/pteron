@@ -17,13 +17,13 @@ import Testing
 
     /// Everything that draws a widget, builds the snapshot or writes it.
     private static let path = [
-        "RexDuoWidgets", "Packages/RexGlance/Sources", "RexDuo/Features/Board/GlanceWatcher.swift",
-        "RexDuo/State/GlanceWriter.swift", "RexDuo/State/GlanceReload.swift", "RexDuo/State/OpenPaneLink.swift",
-        "RexDuo/State/GlanceBridge.swift", "RexDuo/State/GlanceActions.swift", "RexDuoWatch", "RexDuoWatchWidgets",
+        "PteronWidgets", "Packages/RexGlance/Sources", "Pteron/Features/Board/GlanceWatcher.swift",
+        "Pteron/State/GlanceWriter.swift", "Pteron/State/GlanceReload.swift", "Pteron/State/OpenPaneLink.swift",
+        "Pteron/State/GlanceBridge.swift", "Pteron/State/GlanceActions.swift", "PteronWatch", "PteronWatchWidgets",
     ]
 
     /// Everything that runs on the watch.
-    private static let watch = ["RexDuoWatch", "RexDuoWatchWidgets"]
+    private static let watch = ["PteronWatch", "PteronWatchWidgets"]
 
     private static func sources(_ paths: [String], ext: Set<String> = ["swift"]) throws -> [(name: String, text: String)] {
         var out: [(String, String)] = []
@@ -69,7 +69,7 @@ import Testing
     ]
 
     /// The watch app's one file that moves anything (docs/glance.md, The watch, Motion).
-    private static let watchMotion = "RexDuoWatch/Views/WatchMotion.swift"
+    private static let watchMotion = "PteronWatch/Views/WatchMotion.swift"
 
     /// What moves by itself or without end, or counts on screen: never in a widget, a
     /// complication or what they share, not even in `GlanceMotion`.
@@ -80,13 +80,13 @@ import Testing
     ]
 
     /// The iPhone widget's one file that moves anything (docs/glance.md, The agents widget, Calm).
-    private static let widgetMotion = "RexDuoWidgets/Views/GlanceMotion.swift"
+    private static let widgetMotion = "PteronWidgets/Views/GlanceMotion.swift"
 
     @Test func theWidgetsMoveOnlyOnceOnAChangeAndOnlyThroughGlanceMotion() throws {
         // The ring is still, and nothing repeats, pulses or counts by itself. What moves is the
         // system's change from one timeline entry to the next, and `GlanceMotion`'s three
         // motions tied to it. The watch's complications and the shared packages have none.
-        let files = try Self.sources(["RexDuoWidgets", "RexDuoWatchWidgets", "Packages/RexGlance/Sources"])
+        let files = try Self.sources(["PteronWidgets", "PteronWatchWidgets", "Packages/RexGlance/Sources"])
         #expect(files.count > 15)
         #expect(files.contains { $0.name == Self.widgetMotion })
         for f in files {
@@ -128,7 +128,7 @@ import Testing
     @Test func theWatchAppMovesOnlyThroughWatchMotion() throws {
         // Its views ask `WatchMotion`'s modifiers for every movement, so no animation can skip
         // Reduce Motion or the wrist.
-        let files = try Self.sources(["RexDuoWatch"])
+        let files = try Self.sources(["PteronWatch"])
         #expect(files.contains { $0.name == Self.watchMotion })
         for f in files where f.name != Self.watchMotion {
             for word in Self.motion { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
@@ -167,7 +167,7 @@ import Testing
     }
 
     @Test func noTargetDeclaresLiveActivities() throws {
-        let lists = ["RexDuo/Info.plist", "RexDuoWidgets/Info.plist", "RexDuoWatch/Info.plist", "RexDuoWatchWidgets/Info.plist", "project.yml"]
+        let lists = ["Pteron/Info.plist", "PteronWidgets/Info.plist", "PteronWatch/Info.plist", "PteronWatchWidgets/Info.plist", "project.yml"]
         for f in try Self.sources(lists, ext: ["plist", "yml"]) {
             #expect(!f.text.contains("NSSupportsLiveActivities"), "\(f.name)")
             // Nor a background mode: nothing of ours runs unless the system starts it for a delivery.
@@ -178,10 +178,10 @@ import Testing
     @Test func oneCallReloadsTheWidgetsAndOnlyTheirOwnKind() throws {
         // `GlanceReload`, which only `GlanceWriter` is given, and `WriteThrottle` says when.
         // On the watch: `WatchReload`, called only after a delivery replaced the file.
-        let files = try Self.sources(["RexDuo", "RexDuoWidgets", "Packages/RexGlance/Sources"] + Self.watch)
+        let files = try Self.sources(["Pteron", "PteronWidgets", "Packages/RexGlance/Sources"] + Self.watch)
         #expect(files.allSatisfy { !$0.text.contains("reloadAllTimelines") })
         let callers = files.filter { $0.text.contains("reloadTimelines(") }.map(\.name).sorted()
-        #expect(callers == ["RexDuo/State/GlanceReload.swift", "RexDuoWatch/WatchReload.swift"])
+        #expect(callers == ["Pteron/State/GlanceReload.swift", "PteronWatch/WatchReload.swift"])
     }
 
     @Test func theWatchSendsThePhoneOnlyAConfirmedAction() throws {
@@ -195,7 +195,7 @@ import Testing
             for word in never { #expect(!f.text.contains(word), "\(f.name) uses \(word)") }
         }
         let senders = files.filter { $0.text.contains("sendMessage") }
-        #expect(senders.map(\.name) == ["RexDuoWatch/WatchSession.swift"])
+        #expect(senders.map(\.name) == ["PteronWatch/WatchSession.swift"])
         // One call, with a reply handler, and nothing sent as data.
         let session = try #require(senders.first).text
         #expect(session.components(separatedBy: "sendMessage(").count == 2)
@@ -203,14 +203,14 @@ import Testing
         #expect(!session.contains("sendMessageData"))
         // Only the model calls it, and only from `confirmed`.
         let callers = files.filter { $0.text.contains(".send($0)") || $0.text.contains("session.send(") }.map(\.name)
-        #expect(callers == ["RexDuoWatch/RexDuoWatchApp.swift"])
+        #expect(callers == ["PteronWatch/PteronWatchApp.swift"])
     }
 
     @Test func nothingOnTheWatchSendsWithoutAConfirmation() throws {
         // The two buttons only ask. The question's own button is the one place that confirms,
         // and the model sends nothing a second time or by itself: no loop, no timer, no retry.
         let files = try Self.sources(Self.watch)
-        let views = "RexDuoWatch/Views/WatchDetailView.swift"
+        let views = "PteronWatch/Views/WatchDetailView.swift"
         let pressers = files.filter { $0.text.contains("Button(") }.map(\.name)
         #expect(pressers == [views])
         #expect(files.filter { $0.text.contains("confirmationDialog") }.map(\.name) == [views])
@@ -220,7 +220,7 @@ import Testing
         #expect(text.components(separatedBy: " Button(").count == 4)
         #expect(text.contains("ForEach(WatchAction.Kind.allCases") && text.contains("asking = kind") && text.contains("{ confirmed(kind) }") && text.contains("Button(\"Cancel\", role: .cancel) {}"))
         #expect(text.components(separatedBy: "confirmed(kind").count == 3)
-        let model = try #require(files.first { $0.name == "RexDuoWatch/WatchActions.swift" }).text
+        let model = try #require(files.first { $0.name == "PteronWatch/WatchActions.swift" }).text
         #expect(model.components(separatedBy: "await send(").count == 2)
         for word in ["while ", "for _", "for await", "repeat", "Timer", "Task.sleep", "retry"] { #expect(!model.contains(word), "WatchActions uses \(word)") }
         // No other control, and no shortcut that would fire an action without a look.
@@ -232,10 +232,10 @@ import Testing
     }
 
     @Test func thePhoneTakesOnlyAnActionFromTheWatchAndOnlyThroughTheBridge() throws {
-        let files = try Self.sources(["RexDuo", "RexDuoWidgets"])
+        let files = try Self.sources(["Pteron", "PteronWidgets"])
         let users = files.filter { $0.text.contains("WCSession.") || $0.text.contains("import WatchConnectivity") }.map(\.name)
-        #expect(users == ["RexDuo/State/GlanceBridge.swift"])
-        let bridge = try #require(files.first { $0.name == "RexDuo/State/GlanceBridge.swift" }).text
+        #expect(users == ["Pteron/State/GlanceBridge.swift"])
+        let bridge = try #require(files.first { $0.name == "Pteron/State/GlanceBridge.swift" }).text
         // One message is handled, with a reply. No other is, and none is sent that would open the watch app.
         #expect(bridge.components(separatedBy: "didReceiveMessage").count == 2)
         #expect(bridge.contains("didReceiveMessage message: [String: Any], replyHandler:"))
@@ -249,7 +249,7 @@ import Testing
         // answers the watch can't start a server, show a scene, ask for the server's events or
         // open a pane, and it has one place that types, called once. Its short connection
         // attaches to the one session of the pane, which Rex asks for, and to nothing else.
-        let text = try #require(try Self.sources(["RexDuo/State/GlanceActions.swift"]).first).text
+        let text = try #require(try Self.sources(["Pteron/State/GlanceActions.swift"]).first).text
         #expect(text.components(separatedBy: "control.call(\"session.attach\", [\"session_id\": session])").count == 2)
         for word in ["sceneVisible", "startServer", ".start()", "rebuildServers", "session.bootstrap", "attach_all", "event_scope", "own_block", "data.connect",
                      "focus_block", "openPane", "clientLabel", "deviceID", "AppModel(", "model.", "UNUserNotificationCenter", "Notice."] {
@@ -261,21 +261,21 @@ import Testing
         // Nothing loops over a write.
         for word in ["while !", "while true", "for _", "repeat {", "retry("] { #expect(!text.contains(word), "GlanceActions uses \(word)") }
         // The connection made for a wake is labelled without the device id.
-        let model = try #require(try Self.sources(["RexDuo/State/AppModel.swift"]).first).text
+        let model = try #require(try Self.sources(["Pteron/State/AppModel.swift"]).first).text
         let made = try #require(model.range(of: "OneShotActionChannel("))
         #expect(model[made.upperBound...].prefix(400).contains("PushIdentity.previewLabel("))
         // The root view of a launch made in the background starts no server either.
-        let app = try #require(try Self.sources(["RexDuo/App/RexDuoApp.swift"]).first).text
+        let app = try #require(try Self.sources(["Pteron/App/PteronApp.swift"]).first).text
         #expect(app.contains("if ScenePhases.appearedCounts(inBackground: UIApplication.shared.applicationState == .background) {\n                            model.sceneVisible()"))
         #expect(app.components(separatedBy: "model.sceneVisible()").count == 3)
         // Nor does it write a snapshot: nothing new is known.
-        let watcher = try #require(try Self.sources(["RexDuo/Features/Board/GlanceWatcher.swift"]).first).text
+        let watcher = try #require(try Self.sources(["Pteron/Features/Board/GlanceWatcher.swift"]).first).text
         #expect(watcher.contains("guard model.mayConnect else { return }"))
     }
 
     @Test func nothingInTheAppMentionsTheWatch() throws {
         // No prompt to install or open the watch app, and no Settings row: the iPhone app looks the same.
-        for f in try Self.sources(["RexDuo/Features", "RexDuo/App", "RexDuo/DesignSystem"]) {
+        for f in try Self.sources(["Pteron/Features", "Pteron/App", "Pteron/DesignSystem"]) {
             let text = f.text.lowercased()
             for phrase in ["apple watch", "watch app", "your watch", "on the watch", "complication"] {
                 #expect(!text.contains(phrase), "\(f.name) says \(phrase)")
@@ -311,7 +311,7 @@ import Testing
 
     @Test func nothingInTheAppAsksForAWidgetToBeAdded() throws {
         // The app only writes the file and answers the links: no banner, tip, sheet or Settings row.
-        for f in try Self.sources(["RexDuo/Features", "RexDuo/App", "RexDuo/DesignSystem"]) {
+        for f in try Self.sources(["Pteron/Features", "Pteron/App", "Pteron/DesignSystem"]) {
             let text = f.text.lowercased()
             for phrase in ["add widget", "add a widget", "add the widget", "widget gallery"] {
                 #expect(!text.contains(phrase), "\(f.name) says \(phrase)")

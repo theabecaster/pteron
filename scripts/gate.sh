@@ -35,14 +35,14 @@ xcodegen generate -q || FAILED+=(xcodegen)
 echo "load before tests: $(sysctl -n vm.loadavg)"
 # One test process, never parallel workers: with two the 1-minute load passes 400 on a 10-core
 # Mac and about 20 tests fail on their time limits, with one it stays near 140 and none does.
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -destination id=$SIM -derivedDataPath build/dd-gate \
+xcodebuild -project Pteron.xcodeproj -scheme Pteron -destination id=$SIM -derivedDataPath build/dd-gate \
   -parallel-testing-enabled NO test > build/gate-test.log 2>&1
 rc=$?; echo "tests: exit $rc"; (( rc == 0 )) || FAILED+=(tests)
 grep -E "Executed [0-9]+ tests|Test run with|\*\* TEST|error:" build/gate-test.log | tail -4
 grep -E "✘|failed|recorded an issue|Expectation failed|error:" build/gate-test.log | grep -v "0 failures" | head -20
 
 # ONLY_ACTIVE_ARCH: the framework's simulator slice is arm64 only.
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuo -configuration Release -destination id=$SIM \
+xcodebuild -project Pteron.xcodeproj -scheme Pteron -configuration Release -destination id=$SIM \
   -derivedDataPath build/dd-gate-rel ONLY_ACTIVE_ARCH=YES build > build/gate-rel.log 2>&1
 rc=$?; echo "release build: exit $rc"; (( rc == 0 )) || FAILED+=(release)
 grep -E "error:" build/gate-rel.log | sort -u | head -10
@@ -54,7 +54,7 @@ scripts/check-brand.sh || FAILED+=(brand)
 
 # The failure lines are printed above; the logs go somewhere safe before build/ goes.
 if (( $#FAILED )); then
-  KEEP=$(mktemp -d "${TMPDIR:-/tmp}/rexduo-gate.XXXXXX") && cp build/gate-test.log build/gate-rel.log $KEEP/ 2>/dev/null
+  KEEP=$(mktemp -d "${TMPDIR:-/tmp}/pteron-gate.XXXXXX") && cp build/gate-test.log build/gate-rel.log $KEEP/ 2>/dev/null
 fi
 cleanup
 if (( $#FAILED )); then

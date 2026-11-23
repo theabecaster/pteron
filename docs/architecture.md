@@ -8,20 +8,20 @@ The app and its extension both use `Packages/RexGlance`, which uses nothing of o
 | Layer | Owns | Doesn't |
 |---|---|---|
 | `Packages/RexKit` | sockets, RPC, JSON → models, terminal byte stream | import UIKit or SwiftUI, read settings |
-| `RexDuo/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` and its `PushReconciler` | build views |
-| `RexDuo/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
-| `RexDuo/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
+| `Pteron/State` | `AppModel`, one `ServerConnection` per server, `Prefs`, `AgentNotifier`, `PushRegistrar` and its `PushReconciler` | build views |
+| `Pteron/Features` | screens, and UIKit where the terminal needs it | talk to `RexControl` for session changes (go through `ServerConnection`) |
+| `Pteron/DesignSystem` | `TermTheme`, chrome colors, fonts | hold state |
 | `Packages/RexGlance` (`GlanceModel`) | what the app shares with its extensions: the links that open the app (`DeepLink`, `PaneLink`), the snapshot of the agents and everything decided from it (`GlanceSnapshot`, `GlanceSummary`, `GlanceSince`, `GlanceFreshness`, `GlanceDigest`, `WriteThrottle`, `GlanceStore`) | import anything but Foundation (no RexKit, no SwiftUI) |
 | `Packages/RexGlance` (`GlanceUI`) | what the widgets draw with: colors from a snapshot's palette, the ring, the type | import anything but SwiftUI and `GlanceModel` (no WidgetKit, no UIKit, so a watch target can use it) |
-| `RexDuoWatch`, `RexDuoWatchWidgets` (watch app and its extension) | the agents on the wrist: the snapshot the phone sent, the complications, and Enter or Interrupt for a waiting agent, sent to the phone after a confirmation ([glance.md](glance.md), The watch) | import RexKit, app code or the engine; connect to anything; send the phone anything but a confirmed action |
-| `RexDuoWidgets` (app extension) | the agents widget (Home Screen and Lock Screen), the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; connect to anything; write the snapshot (it only reads it) |
+| `PteronWatch`, `PteronWatchWidgets` (watch app and its extension) | the agents on the wrist: the snapshot the phone sent, the complications, and Enter or Interrupt for a waiting agent, sent to the phone after a confirmation ([glance.md](glance.md), The watch) | import RexKit, app code or the engine; connect to anything; send the phone anything but a confirmed action |
+| `PteronWidgets` (app extension) | the agents widget (Home Screen and Lock Screen), the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; connect to anything; write the snapshot (it only reads it) |
 
 `Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
 the app; it speaks the same control protocol over Rex's Unix socket.
 
 ## Data flow
 
-1. `RexDuoApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
+1. `PteronApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
 2. `AppModel` builds a `ServerConnection` per configured server (Settings → Computers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions). None connects until a scene shows (Launch, below).
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
    loads block metadata (program status, title, process), hosts and the keymap. The first
@@ -43,7 +43,7 @@ Three things from outside put a tab on screen, and all end in `AppModel.openRequ
 
 - a tapped push: `AppDelegate` → `AppModel.open(_ route:)` (docs/notifications.md);
 - a tapped toast: `AppModel.openPane`;
-- a link from a control: `OpenLinkIntent` (run in the app) opens the URL → `RexDuoApp`'s
+- a link from a control: `OpenLinkIntent` (run in the app) opens the URL → `PteronApp`'s
   `onOpenURL` → `AppModel.openLink` → `openWaiting()`,
   with the rules in `OpenWaiting` ([glance.md](glance.md)). `rexduo://open` only brings the app
   forward.
@@ -51,10 +51,10 @@ Three things from outside put a tab on screen, and all end in `AppModel.openRequ
 - a link from a widget's row: `onOpenURL` → `AppModel.openLink` → `openPane(link:)`, with the
   rules in `OpenPaneLink`.
 
-Targets (`project.yml`): `RexDuo` (the app; it embeds `RexDuoWidgets`, so every build and test
-of the app builds the extension, and `RexDuoWatch`, which embeds `RexDuoWatchWidgets`),
-`RexDuoWidgets`, `RexDuoTests` (which also compiles the widgets' views, `RexDuoWidgets/Views`,
-to draw them), and `RexDuoWatchTests` (the watch app's tests, in the scheme `RexDuoWatch`, on a
+Targets (`project.yml`): `Pteron` (the app; it embeds `PteronWidgets`, so every build and test
+of the app builds the extension, and `PteronWatch`, which embeds `PteronWatchWidgets`),
+`PteronWidgets`, `PteronTests` (which also compiles the widgets' views, `PteronWidgets/Views`,
+to draw them), and `PteronWatchTests` (the watch app's tests, in the scheme `PteronWatch`, on a
 watchOS simulator).
 
 ## Which tab a launch opens
@@ -112,7 +112,7 @@ Rex.app does. It moves the screen instead, by one rule (`CloseNext`, `State/Clos
 A launch opens no connection until the app is on its way to the screen.
 
 - `AppModel.init` builds every `ServerConnection` and starts none.
-- `RexDuoApp` reads one thing, the scene phase, and `ScenePhases` says what each phase asks:
+- `PteronApp` reads one thing, the scene phase, and `ScenePhases` says what each phase asks:
   `.inactive` → `AppModel.sceneVisible()`; `.active` → `sceneVisible()`, then the resync and the
   helpers' "in front" as before; `.background` → the background steps.
 - `sceneVisible()` starts every server, once (`mayConnect`). After it, `rebuildServers()`
@@ -566,11 +566,11 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - New server call: a method on `ServerConnection` using `control.call` or `blockCall`, then
   `refreshView`. Add it to [rex-protocol.md](rex-protocol.md).
 - New server event: `ServerConnection.handle(event:)` or `handle(sessionID:event:)`.
-- New screen: `RexDuo/Features/<Name>/`. Shared view pieces: `DesignSystem/`.
+- New screen: `Pteron/Features/<Name>/`. Shared view pieces: `DesignSystem/`.
 - New setting: only for a choice a user would understand and want to make; otherwise pick the best
   value and add it to "Fixed choices" in `Prefs`. A setting is a property on `Prefs` (saved in
   `didSet`), read with `@Environment(Prefs.self)`; clear a removed one's key in `Prefs.migrate`.
-- Pure logic: its own type, with tests in `RexDuoTests` or `Packages/RexKit/Tests`.
+- Pure logic: its own type, with tests in `PteronTests` or `Packages/RexKit/Tests`.
 - Something an extension needs too (a link, later the snapshot widgets read): `GlanceModel` in
   `Packages/RexGlance`, Foundation only, with tests in `Packages/RexGlance/Tests`.
 - A message the user reads: the words in `State/Messages.swift` where it says something the app

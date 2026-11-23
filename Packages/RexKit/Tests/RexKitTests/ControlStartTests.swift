@@ -163,9 +163,9 @@ final class ControlStartTests: XCTestCase {
     /// runs on a scripted link and leaves this out (docs/ghostty-engine.md, Measurements).
     ///
     /// A measurement, so the unit suite skips it. By hand, with the Mac otherwise idle:
-    /// `REXDUO_MEASURE_START=1 swift test --package-path Packages/RexKit --filter ControlStartTests/testWhatAStartCostsTheCallersTurn`
+    /// `PTERON_MEASURE_START=1 swift test --package-path Packages/RexKit --filter ControlStartTests/testWhatAStartCostsTheCallersTurn`
     func testWhatAStartCostsTheCallersTurn() async throws {
-        guard ProcessInfo.processInfo.environment["REXDUO_MEASURE_START"] != nil else {
+        guard ProcessInfo.processInfo.environment["PTERON_MEASURE_START"] != nil else {
             throw XCTSkip("a measurement: run by hand")
         }
         let server = try FakeRexServer(revision: 18)

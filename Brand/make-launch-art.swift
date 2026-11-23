@@ -1,8 +1,8 @@
 #!/usr/bin/env swift
 // Generates the launch art from Brand/launch-outline.svg and Brand/launch-art.png:
 //
-//   RexDuo/Resources/Assets.xcassets/LaunchMark.imageset/   the art at @2x and @3x
-//   RexDuo/App/LaunchArt.swift                              its size, outline, zoom pivot and reach
+//   Pteron/Resources/Assets.xcassets/LaunchMark.imageset/   the art at @2x and @3x
+//   Pteron/App/LaunchArt.swift                              its size, outline, zoom pivot and reach
 //
 // Run it by hand from anywhere after an art change, then run the app tests (LaunchArtTests pins
 // the numbers, so a wrong regeneration fails):
@@ -56,8 +56,8 @@ func fixed(_ v: Double, _ places: Int) -> String { String(format: "%.\(places)f"
 let root = URL(fileURLWithPath: #filePath).standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent()
 let outlineURL = root.appendingPathComponent("Brand/launch-outline.svg")
 let pictureURL = root.appendingPathComponent("Brand/launch-art.png")
-let imagesetURL = root.appendingPathComponent("RexDuo/Resources/Assets.xcassets/\(assetName).imageset")
-let swiftURL = root.appendingPathComponent("RexDuo/App/LaunchArt.swift")
+let imagesetURL = root.appendingPathComponent("Pteron/Resources/Assets.xcassets/\(assetName).imageset")
+let swiftURL = root.appendingPathComponent("Pteron/App/LaunchArt.swift")
 
 // MARK: - 1. The outline
 

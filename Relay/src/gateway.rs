@@ -248,15 +248,15 @@ mod tests {
     }
 
     /// Against a deployed gateway, by hand (it is skipped otherwise):
-    /// `REXDUO_GATEWAY=https://… REXDUO_PUSH_SECRET=… cargo test live_gateway -- --ignored`,
+    /// `PTERON_GATEWAY=https://… PTERON_PUSH_SECRET=… cargo test live_gateway -- --ignored`,
     /// with the secret of a registration whose token no device has. Apple refuses that token,
     /// so the gateway answers 410 and nothing is delivered. It proves this client against the
     /// real TLS endpoint, which the local server in the other tests can't.
     #[tokio::test]
     #[ignore]
     async fn live_gateway_refuses_a_dead_token() {
-        let base = std::env::var("REXDUO_GATEWAY").expect("REXDUO_GATEWAY");
-        let secret = std::env::var("REXDUO_PUSH_SECRET").expect("REXDUO_PUSH_SECRET");
+        let base = std::env::var("PTERON_GATEWAY").expect("PTERON_GATEWAY");
+        let secret = std::env::var("PTERON_PUSH_SECRET").expect("PTERON_PUSH_SECRET");
         let d = Device::new("a1b2c3d4", &base, &secret, "sandbox", "tailscale:12345");
         let first = Sender::Gateway.send(&message(PushCategory::Blocked), &d).await;
         assert!(matches!(first, SendResult::Gone(_)), "{first:?}");

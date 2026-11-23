@@ -1,6 +1,6 @@
-# Source of truth for RexDuo.xcodeproj, which is generated and not tracked.
+# Source of truth for Pteron.xcodeproj, which is generated and not tracked.
 # Run `xcodegen generate` after cloning and after adding, moving or deleting files.
-name: RexDuo
+name: Pteron
 options:
   bundleIdPrefix: dev.abrahamgonzalez
   deploymentTarget:
@@ -26,16 +26,16 @@ packages:
   RexGlance:
     path: Packages/RexGlance
 targets:
-  RexDuo:
+  Pteron:
     type: application
     platform: iOS
     sources:
-      - path: RexDuo
+      - path: Pteron
       # The app icon, an Icon Composer document. actool compiles it into the layered icon and
       # the flat ones older systems use.
       - path: Brand/AppIcon.icon
       # The intent the controls run. The system runs it in the app, so the app compiles it too.
-      - path: RexDuoWidgets/OpenLinkIntent.swift
+      - path: PteronWidgets/OpenLinkIntent.swift
       # The agents' marks (custom symbols), which identify each agent wherever it is drawn
       # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
       - path: Brand/agents/AgentMarks.xcassets
@@ -49,9 +49,9 @@ targets:
         product: GlanceUI
       # The widgets and the controls. Embedded in the app (PlugIns), so every build and test of
       # the app builds it.
-      - target: RexDuoWidgets
+      - target: PteronWidgets
       # The watch app. Embedded in the app (Watch), so every build of the app builds it too.
-      - target: RexDuoWatch
+      - target: PteronWatch
       # Built by scripts/build-ghostty.sh (static library, so nothing to embed).
       - framework: Vendor/GhosttyVt.xcframework
         embed: false
@@ -107,7 +107,7 @@ targets:
     # exporting for App Store Connect switches it to production. Blocked-agent pushes use the
     # time-sensitive interruption level, which needs its own entitlement.
     entitlements:
-      path: RexDuo/RexDuo.entitlements
+      path: Pteron/Pteron.entitlements
       properties:
         aps-environment: development
         com.apple.developer.usernotifications.time-sensitive: true
@@ -118,22 +118,22 @@ targets:
       base:
         # Keep the bundle id: App Store Connect and the APNs topic depend on it.
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo
-        PRODUCT_NAME: RexDuo
+        PRODUCT_NAME: Pteron
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_FILE: RexDuo/Info.plist
+        INFOPLIST_FILE: Pteron/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         # libghostty-vt's simdutf and highway are C++.
         OTHER_LDFLAGS: "-lc++"
   # The agents widget (Home Screen and Lock Screen) and the controls for Control Center, the Lock
   # Screen and the Action button. The widget reads the snapshot the app writes to the App Group;
-  # the controls only open the app with a link (RexDuoWidgets/OpenLinkIntent.swift). So the
+  # the controls only open the app with a link (PteronWidgets/OpenLinkIntent.swift). So the
   # extension links neither RexKit nor GhosttyVt, and the Ghostty check stays on the app.
-  RexDuoWidgets:
+  PteronWidgets:
     type: app-extension
     platform: iOS
     sources:
-      - path: RexDuoWidgets
+      - path: PteronWidgets
       # The agents' marks (custom symbols), which identify each agent wherever it is drawn
       # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
       - path: Brand/agents/AgentMarks.xcassets
@@ -154,7 +154,7 @@ targets:
     # (docs/glance.md, Privacy); a simulator has no passcode. This file's comments are the only
     # ones: XcodeGen writes the .entitlements file from the properties below.
     entitlements:
-      path: RexDuoWidgets/RexDuoWidgets.entitlements
+      path: PteronWidgets/PteronWidgets.entitlements
       properties:
         com.apple.security.application-groups:
           - group.dev.abrahamgonzalez.rexduo
@@ -162,23 +162,23 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.widgets
-        PRODUCT_NAME: RexDuoWidgets
+        PRODUCT_NAME: PteronWidgets
         TARGETED_DEVICE_FAMILY: "1"
-        INFOPLIST_FILE: RexDuoWidgets/Info.plist
+        INFOPLIST_FILE: PteronWidgets/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
   # The watch app: a view of the agents, as the iPhone app last saw them (docs/glance.md, The
   # watch). It shows the snapshot the phone sends over WatchConnectivity and connects to
   # nothing itself, so it links neither RexKit nor GhosttyVt. It can't run without the iPhone app.
-  RexDuoWatch:
+  PteronWatch:
     type: application
     platform: watchOS
     sources:
-      - path: RexDuoWatch
+      - path: PteronWatch
       # The same icon as the app's.
       - path: Brand/AppIcon.icon
       # The mark, for the screen that has nothing to list.
-      - path: RexDuoWidgets/Assets.xcassets
+      - path: PteronWidgets/Assets.xcassets
       # The agents' marks (custom symbols), which identify each agent wherever it is drawn
       # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
       - path: Brand/agents/AgentMarks.xcassets
@@ -187,36 +187,36 @@ targets:
         product: GlanceModel
       - package: RexGlance
         product: GlanceUI
-      - target: RexDuoWatchWidgets
+      - target: PteronWatchWidgets
     # The App Group on the watch: where the watch app writes the snapshot it was sent and its
     # complications read it. The same id as on the phone; a container is per device.
     entitlements:
-      path: RexDuoWatch/RexDuoWatch.entitlements
+      path: PteronWatch/PteronWatch.entitlements
       properties:
         com.apple.security.application-groups:
           - group.dev.abrahamgonzalez.rexduo
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.watchkitapp
-        PRODUCT_NAME: RexDuoWatch
+        PRODUCT_NAME: PteronWatch
         TARGETED_DEVICE_FAMILY: "4"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_FILE: RexDuoWatch/Info.plist
+        INFOPLIST_FILE: PteronWatch/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
   # The watch's complications and its Smart Stack widget. They read the snapshot from the
   # watch's App Group. The circular, rectangular and inline families are the iPhone Lock
   # Screen's views, and the timeline is the iPhone widget's: the same files, compiled here too.
-  RexDuoWatchWidgets:
+  PteronWatchWidgets:
     type: app-extension
     platform: watchOS
     sources:
-      - path: RexDuoWatchWidgets
-      - path: RexDuoWidgets/Views/AccessoryViews.swift
-      - path: RexDuoWidgets/Views/GlanceStyle.swift
-      - path: RexDuoWidgets/Provider.swift
-      - path: RexDuoWidgets/Demo.swift
-      - path: RexDuoWidgets/Assets.xcassets
+      - path: PteronWatchWidgets
+      - path: PteronWidgets/Views/AccessoryViews.swift
+      - path: PteronWidgets/Views/GlanceStyle.swift
+      - path: PteronWidgets/Provider.swift
+      - path: PteronWidgets/Demo.swift
+      - path: PteronWidgets/Assets.xcassets
       # The agents' marks (custom symbols), which identify each agent wherever it is drawn
       # (GlanceUI's AgentGlyph; Brand/agents/README.md). Every target that draws an agent has them.
       - path: Brand/agents/AgentMarks.xcassets
@@ -228,83 +228,83 @@ targets:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
     entitlements:
-      path: RexDuoWatchWidgets/RexDuoWatchWidgets.entitlements
+      path: PteronWatchWidgets/PteronWatchWidgets.entitlements
       properties:
         com.apple.security.application-groups:
           - group.dev.abrahamgonzalez.rexduo
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.watchkitapp.widgets
-        PRODUCT_NAME: RexDuoWatchWidgets
+        PRODUCT_NAME: PteronWatchWidgets
         TARGETED_DEVICE_FAMILY: "4"
-        INFOPLIST_FILE: RexDuoWatchWidgets/Info.plist
+        INFOPLIST_FILE: PteronWatchWidgets/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
   # The watch app's tests: its model, and every screen and complication drawn in every state.
-  # They run in the watch app on a watchOS simulator, through the scheme RexDuoWatch.
-  RexDuoWatchTests:
+  # They run in the watch app on a watchOS simulator, through the scheme PteronWatch.
+  PteronWatchTests:
     type: bundle.unit-test
     platform: watchOS
     sources:
-      - path: RexDuoWatchTests
+      - path: PteronWatchTests
       # The complications' views, which the tests draw.
-      - path: RexDuoWatchWidgets/WatchGlanceWidget.swift
-      - path: RexDuoWidgets/Views/AccessoryViews.swift
-      - path: RexDuoWidgets/Views/GlanceStyle.swift
-      - path: RexDuoWidgets/Provider.swift
-      - path: RexDuoWidgets/Demo.swift
+      - path: PteronWatchWidgets/WatchGlanceWidget.swift
+      - path: PteronWidgets/Views/AccessoryViews.swift
+      - path: PteronWidgets/Views/GlanceStyle.swift
+      - path: PteronWidgets/Provider.swift
+      - path: PteronWidgets/Demo.swift
     dependencies:
-      - target: RexDuoWatch
+      - target: PteronWatch
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.watchkitapp.tests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexDuoWatch.app/RexDuoWatch"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PteronWatch.app/PteronWatch"
         BUNDLE_LOADER: "$(TEST_HOST)"
   # Pure app logic (keymap, key encoding, layout math, prefs). Runs inside the app, which doesn't
   # connect while it hosts tests. Protocol tests live in Packages/RexKit (`swift test`).
-  RexDuoTests:
+  PteronTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: RexDuoTests
+      - path: PteronTests
       # The control server the protocol tests run against, shared with the app's tests.
       - path: Packages/RexKit/Tests/RexKitTests/FakeRexServer.swift
       # The widgets' views, which the tests draw in every size, state and rendering mode.
-      - path: RexDuoWidgets/Views
+      - path: PteronWidgets/Views
     dependencies:
-      - target: RexDuo
+      - target: Pteron
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.tests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RexDuo.app/RexDuo"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Pteron.app/Pteron"
         BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
-  RexDuo:
+  Pteron:
     build:
       targets:
-        RexDuo: all
-        RexDuoTests: [test]
+        Pteron: all
+        PteronTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - RexDuoTests
+        - PteronTests
     archive:
       config: Release
-  # The watch app by itself, for a watchOS simulator: `build` builds it, `test` runs RexDuoWatchTests.
-  RexDuoWatch:
+  # The watch app by itself, for a watchOS simulator: `build` builds it, `test` runs PteronWatchTests.
+  PteronWatch:
     build:
       targets:
-        RexDuoWatch: all
-        RexDuoWatchTests: [test]
+        PteronWatch: all
+        PteronWatchTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - RexDuoWatchTests
+        - PteronWatchTests
     archive:
       config: Release

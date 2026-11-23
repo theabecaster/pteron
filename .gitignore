@@ -23,4 +23,5 @@ Vendor
 
 # XcodeGen output: run `xcodegen generate` after cloning and after adding, moving or deleting
 # files. Nothing in it is tracked (the app has no remote Swift packages to pin).
+Pteron.xcodeproj/
 RexDuo.xcodeproj/

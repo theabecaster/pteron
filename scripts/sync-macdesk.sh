@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Copies the current tree to macdesk, ready for a device build or an archive there.
 # Usage: scripts/sync-macdesk.sh [-n] [remote-dir]
-#   REXDUO_BUILD_HOST  the ssh host to copy to (default macdesk, the developer's build Mac)
+#   PTERON_BUILD_HOST  the ssh host to copy to (default macdesk, the developer's build Mac)
 #   -n          dry run: list what would be copied or deleted, change nothing on macdesk
 #   remote-dir  a folder directly under macdesk's home whose name starts with
 #               rexduo-build; default rexduo-build
@@ -11,7 +11,7 @@
 # framework is only sent again after a rebuild.
 set -euo pipefail
 cd ${0:A:h:h}
-HOST=${REXDUO_BUILD_HOST:-macdesk}
+HOST=${PTERON_BUILD_HOST:-${REXDUO_BUILD_HOST:-macdesk}}
 
 DRY=()
 if [[ "${1:-}" == -n ]]; then DRY=(-n -v); shift; fi

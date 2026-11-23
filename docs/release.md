@@ -3,13 +3,13 @@
 Device builds and TestFlight uploads run on a build Mac over ssh, because signing needs its unlocked
 GUI keychain. Run these only when asked: they install on a real phone or upload to App Store Connect.
 
-The scripts default to the maintainer's setup. Point them at yours with `REXDUO_BUILD_HOST` (the
-build Mac's ssh host), `REXDUO_DEVICE` (the phone's UDID), and `ASC_KEY_ID` and `ASC_KEY` (the App
+The scripts default to the maintainer's setup. Point them at yours with `PTERON_BUILD_HOST` (the
+build Mac's ssh host), `PTERON_DEVICE` (the phone's UDID), and `ASC_KEY_ID` and `ASC_KEY` (the App
 Store Connect key). The scripts' file names still say `macdesk`; any build Mac works.
 
 - Bundle id `dev.abrahamgonzalez.rexduo` (fixed: App Store Connect and the APNs topic depend on
   it), team `R2PVQ496X7`, automatic signing. Display name "Pteron" (`CFBundleDisplayName`, from `APP_DISPLAY_NAME` in project.yml),
-  product `RexDuo.app`.
+  product `Pteron.app`.
 - The build number is passed as `CURRENT_PROJECT_VERSION`; it must be higher than the last upload.
 - The project is generated and the build Mac needs no XcodeGen, so every flow generates it
   locally and copies the result.
@@ -119,14 +119,14 @@ What the archive holds (checked 2026-11-16 on a `DEST=export` run):
 
 - libghostty-vt is linked statically: no `Frameworks/` folder, nothing embedded, arm64 only. It
   adds 1.48 MB to the app binary (6.46 MB stripped; the IPA is 13.4 MB).
-- Its objects carry DWARF, so `RexDuo.app.dSYM` covers it. Bitcode is not involved.
+- Its objects carry DWARF, so `Pteron.app.dSYM` covers it. Bitcode is not involved.
 - No private system symbols: Zig's standard library called `__ulock_wait` and `__ulock_wake`,
   and `scripts/ghostty-patches/0001-tinyio-public-darwin-futex.patch` replaces them with the
   public `os_sync_wait_on_address` calls (iOS 17.4). `check-symbols.sh` guards it. No build with
   the patch has been uploaded yet, so Apple's own check has not seen it.
 - Third-party licence notices ship in the bundle as `Acknowledgements.txt`.
 
-The app embeds one extension, `RexDuoWidgets.appex` (the widgets and the controls;
+The app embeds one extension, `PteronWidgets.appex` (the widgets and the controls;
 [glance.md](glance.md)), with its own App ID, `dev.abrahamgonzalez.rexduo.widgets`.
 Automatic signing with `-allowProvisioningUpdates` registers the App ID and makes its profile at
 the first device build or archive, if the signing account may; otherwise register the identifier
@@ -135,7 +135,7 @@ in the developer portal first.
 Both App IDs carry the App Group `group.dev.abrahamgonzalez.rexduo`, where the app writes the
 snapshot the widgets read, and the extension's also carries Data Protection (Complete), which
 hides what the widgets mark as private while the phone is locked. The entitlements files ask for
-them (`RexDuo/RexDuo.entitlements`, `RexDuoWidgets/RexDuoWidgets.entitlements`). With automatic
+them (`Pteron/Pteron.entitlements`, `PteronWidgets/PteronWidgets.entitlements`). With automatic
 signing and `-allowProvisioningUpdates`, Xcode registers the group, turns the capabilities on
 for both App IDs and makes new profiles at the next device build or archive, if the signing
 account may edit identifiers; a build that stops with "Provisioning profile doesn't include the
@@ -148,17 +148,17 @@ requires to match the app's.
 
 ### The watch app
 
-The app also embeds the watch app, `RexDuoWatch.app` (in `RexDuo.app/Watch`), which embeds its
-own extension, `RexDuoWatchWidgets.appex` ([glance.md](glance.md), The watch). They are
-dependencies of the `RexDuo` target, so every build, archive and upload of the app builds and
+The app also embeds the watch app, `PteronWatch.app` (in `Pteron.app/Watch`), which embeds its
+own extension, `PteronWatchWidgets.appex` ([glance.md](glance.md), The watch). They are
+dependencies of the `Pteron` target, so every build, archive and upload of the app builds and
 carries them: there is no separate step, scheme or upload, and the build number on the command
 line applies to both. The watch app ships inside the iPhone app's IPA and installs from the
 iPhone (Watch app → Available Apps, or by itself with Automatic App Install).
 
 - **Two more App IDs:** `dev.abrahamgonzalez.rexduo.watchkitapp` and
   `dev.abrahamgonzalez.rexduo.watchkitapp.widgets`, both with the App Group
-  `group.dev.abrahamgonzalez.rexduo` (`RexDuoWatch/RexDuoWatch.entitlements`,
-  `RexDuoWatchWidgets/RexDuoWatchWidgets.entitlements`). The group is the phone's; a watch has
+  `group.dev.abrahamgonzalez.rexduo` (`PteronWatch/PteronWatch.entitlements`,
+  `PteronWatchWidgets/PteronWatchWidgets.entitlements`). The group is the phone's; a watch has
   its own container of it. With automatic signing and `-allowProvisioningUpdates`, Xcode
   registers them at the next device build or archive, if the signing account may edit
   identifiers. If it may not, the build stops at the watch target with "No profiles for
@@ -171,7 +171,7 @@ iPhone (Watch app → Available Apps, or by itself with Automatic App Install).
   App Store build needs no registered watch.
 - **The build Mac** needs the watchOS platform of its Xcode (the SDK) to build the watch
   targets. It needs no watchOS simulator runtime: that is only for running the watch app and
-  `RexDuoWatchTests` on a simulator.
+  `PteronWatchTests` on a simulator.
 - **App Store Connect** shows the watch app under the same app record; it needs watch
   screenshots before a release to the store, not for TestFlight.
 - No device build, archive or upload with the watch app has been made yet, and whether

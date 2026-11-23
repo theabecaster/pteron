@@ -3991,12 +3991,12 @@ mod tests {
 
     /// The helper against what `release.sh` really writes. `Relay/test-install.sh` runs this
     /// with a release it made from keys of its own (it is skipped otherwise):
-    /// `REXDUO_RELEASE_DIR=<dist/release> REXDUO_RELEASE_KEY_FILE=<update-key.pub> cargo test release_sh -- --ignored`.
+    /// `PTERON_RELEASE_DIR=<dist/release> PTERON_RELEASE_KEY_FILE=<update-key.pub> cargo test release_sh -- --ignored`.
     #[test]
     #[ignore]
     fn release_sh_output_is_what_the_helper_accepts() {
-        let dir = PathBuf::from(std::env::var("REXDUO_RELEASE_DIR").expect("REXDUO_RELEASE_DIR"));
-        let keys = update_keys(&std::fs::read_to_string(std::env::var("REXDUO_RELEASE_KEY_FILE").expect("REXDUO_RELEASE_KEY_FILE")).unwrap()).unwrap();
+        let dir = PathBuf::from(std::env::var("PTERON_RELEASE_DIR").expect("PTERON_RELEASE_DIR"));
+        let keys = update_keys(&std::fs::read_to_string(std::env::var("PTERON_RELEASE_KEY_FILE").expect("PTERON_RELEASE_KEY_FILE")).unwrap()).unwrap();
         assert_eq!(keys.len(), 2);
         let read = |name: &str| std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
         let (data, sig) = (read("manifest.json"), read("manifest.json.sig"));

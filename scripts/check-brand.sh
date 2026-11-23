@@ -98,7 +98,7 @@ Relay/setup.sh:1:EARLIER_BEACON="Rex DUO Beacon"
 Relay/setup.sh:3:  readonly EARLIER_STATE="Rex DUO Helper"
 Relay/release.sh:1:OLD_ZIPS=("Rex-DUO-Beacon.zip")
 Relay/setup.sh:2:MAC_ASSETS="Beacon-macOS.zip Rex-DUO-Beacon.zip Rex-DUO-Helper.zip"
-RexDuo/State/HelperRelease.swift:1:        case .mac: "Rex-DUO-Helper.zip"
+Pteron/State/HelperRelease.swift:1:        case .mac: "Rex-DUO-Helper.zip"
 Relay/test-install.sh:1:fake_app "$box/app" 9.8.7 "" "Rex DUO Helper.app"
 Relay/fixtures/manifest.json:1:      "url": "https://example.com/Rex-DUO-Helper.zip",
 docs/helper.md:1:It had two names before: Rex DUO Helper and Rex DUO Beacon.
@@ -108,7 +108,7 @@ NOTICE:1:Rex is a separate product by Superlogical.
 Relay/src/update.rs:3:pub const EARLIER_APPS: [&str; 1] = ["Rex DUO Beacon.app"]; // the folder of 0.3
 Relay/setup.sh:4:OLD_ZIPS=("Rex-DUO-Beacon.zip" "Rex DUO Helper.app") # kept for installed Beacons
 Relay/setup.sh:5:EARLIER_STATE='Rex DUO Helper'
-RexDuo/State/Pairing.swift:1:        let client = RexDuoClient(name: "rexduo")
+Pteron/State/Pairing.swift:1:        let client = PteronClient(name: "rexduo")
 Relay/Cargo.toml:1:name = "rex-duo-helper"
 Relay/README.md:2:systemctl --user stop rex-duo-helper
 README.md:2:The app is an iOS remote for Rex. Duo owners get more room.
@@ -119,7 +119,7 @@ SAMPLES
 Relay/src/update.rs:1:    eprintln!("Rex DUO Beacon could not update");
 Relay/setup.sh:1:say "Installing Rex DUO Beacon"
 Relay/setup.sh:2:EARLIER="Rex DUO Beacon"
-RexDuo/State/Pairing.swift:1:        title: "Update Rex DUO",
+Pteron/State/Pairing.swift:1:        title: "Update Rex DUO",
 README.md:1:Rex DUO is a native iPhone app
 docs/helper.md:1:Rex DUO Beacon runs on the computer.
 docs/notifications.md:1:It had two names before: `Rex DUO Helper`.
@@ -129,7 +129,7 @@ README.md:4:Open REX-duo on the phone.
 docs/sidebar.md:1:Rex  DUO with two spaces, and Rex	DUO with a tab.
 NOTICE:2:Rex is a separate product by Super  Logical.
 NOTICE:3:Rex is a separate product by SuperLogical.
-RexDuo/App/RootView.swift:1:    // Made by SuperLogical, not by us.
+Pteron/App/RootView.swift:1:    // Made by SuperLogical, not by us.
 Relay/setup.sh:4:say "moving on from $OLD_NAME = Rex DUO Helper"
 Relay/setup.sh:5:# EARLIER_BEACON="Rex DUO Beacon" was the name
 Relay/src/update.rs:3:    if name == EARLIER_NAME { log("Rex DUO Beacon"); let x = 1; }
@@ -157,24 +157,24 @@ README.md:1:It is still called Rex
 README.md:2:DUO in this sentence.
 README.md:3:> a quote that ends with Rex
 README.md:4:> DUO too.
-RexDuo/App/RootView.swift:1:    /// The first screen of Rex
-RexDuo/App/RootView.swift:2:    /// DUO, as it was called.
-RexDuo/App/RootView.swift:3:    // lowercase rex
-RexDuo/App/RootView.swift:4:    // duo counts as well.
-RexDuo/App/RootView.swift:5:    /* A block comment about Rex
-RexDuo/App/RootView.swift:6:     * DUO in its second line. */
+Pteron/App/RootView.swift:1:    /// The first screen of Rex
+Pteron/App/RootView.swift:2:    /// DUO, as it was called.
+Pteron/App/RootView.swift:3:    // lowercase rex
+Pteron/App/RootView.swift:4:    // duo counts as well.
+Pteron/App/RootView.swift:5:    /* A block comment about Rex
+Pteron/App/RootView.swift:6:     * DUO in its second line. */
 Relay/src/main.rs:1://! The helper of Rex-
 Relay/src/main.rs:2://! DUO, hyphenated over the break.
 Relay/setup.sh:1:# Installs the helper of Rex
 Relay/setup.sh:2:# DUO on this computer.
 NOTICE:1:Rex is a product by Super
 NOTICE:2:Logical, misspelled over two lines.
-RexDuo/State/Posture.swift:1:    /// - Parameter name: what the app was called before, Rex
-RexDuo/State/Posture.swift:2:    /// - DUO, as a list item in a doc comment.
-RexDuo/State/Posture.swift:3:    /// > A quote in a doc comment that ends with REX
-RexDuo/State/Posture.swift:4:    /// > duo on the next line.
-RexDuo/State/Posture.swift:5:    // 1. The first item of Rex
-RexDuo/State/Posture.swift:6:    // 2. DUO in a numbered list.
+Pteron/State/Posture.swift:1:    /// - Parameter name: what the app was called before, Rex
+Pteron/State/Posture.swift:2:    /// - DUO, as a list item in a doc comment.
+Pteron/State/Posture.swift:3:    /// > A quote in a doc comment that ends with REX
+Pteron/State/Posture.swift:4:    /// > duo on the next line.
+Pteron/State/Posture.swift:5:    // 1. The first item of Rex
+Pteron/State/Posture.swift:6:    // 2. DUO in a numbered list.
 SAMPLES
 )"
   [[ "$(printf '%s\n' "$parted" | wc -l | tr -d ' ')" == 11 ]] || { echo "check-brand: 11 parted names must be caught, got:"; echo "$parted"; exit 1; }
@@ -183,11 +183,11 @@ README.md:1:An iOS remote for Rex
 README.md:2:Duolingo is something else, and so is a duo of panes after Rex.
 README.md:3:The last word of this file is Rex
 docs/sidebar.md:1:DUO starts another file, which is no wrapped name.
-RexDuo/App/RootView.swift:1:    /// Connects to Rex
-RexDuo/App/RootView.swift:2:    /// and to nothing else. Superlogical
-RexDuo/App/RootView.swift:3:    /// logical order follows.
-RexDuo/App/RootView.swift:4:    /// - Parameter host: the Rex
-RexDuo/App/RootView.swift:5:    /// - Duolingo-like list, which is no wrapped name.
+Pteron/App/RootView.swift:1:    /// Connects to Rex
+Pteron/App/RootView.swift:2:    /// and to nothing else. Superlogical
+Pteron/App/RootView.swift:3:    /// logical order follows.
+Pteron/App/RootView.swift:4:    /// - Parameter host: the Rex
+Pteron/App/RootView.swift:5:    /// - Duolingo-like list, which is no wrapped name.
 Relay/README.md:1:    systemctl --user stop rex-
 Relay/README.md:2:    duo-helper
 SAMPLES

@@ -13,11 +13,11 @@
 # Environment:
 #   TESTFLIGHT_APP_ID    the app's App Store Connect id
 #   TESTFLIGHT_GROUP_ID  the beta group the build is added to
-#   REXDUO_BUILD_HOST    the build Mac's ssh host (as for scripts/sync-macdesk.sh)
+#   PTERON_BUILD_HOST    the build Mac's ssh host (as for scripts/sync-macdesk.sh)
 #   ASC_ENV              the file that sets ASC_ISS (default: .asc.env in the main checkout)
 APP_ID=${TESTFLIGHT_APP_ID:-6835558559}
 GROUP_ID=${TESTFLIGHT_GROUP_ID:-8d106899-b4af-4db5-8f75-57aa55db263f}
-HOST=${REXDUO_BUILD_HOST:-macdesk}
+HOST=${PTERON_BUILD_HOST:-${REXDUO_BUILD_HOST:-macdesk}}
 
 # zsh reads a script as it runs it, so an edit to this file during a run (a pull, a branch switch)
 # would change the run. It runs from a copy instead, made before anything else is read.

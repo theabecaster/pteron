@@ -6,7 +6,7 @@ agents on the wrist.
 
 ## The agents widget
 
-One widget, "Agents" (kind `dev.abrahamgonzalez.rexduo.widget.agents`, `RexDuoWidgets/GlanceWidget.swift`),
+One widget, "Agents" (kind `dev.abrahamgonzalez.rexduo.widget.agents`, `PteronWidgets/GlanceWidget.swift`),
 in six families. It says how many agents need you, where, and for how long, as the app last
 saw them. It connects to nothing: it reads the snapshot the app wrote (below).
 
@@ -41,7 +41,7 @@ sources and fails on a line that breaks one of these:
 - **No Live Activity**: no ActivityKit, no `NSSupportsLiveActivities`.
 - **No sound, haptic or notification** from the widgets, the watcher or the writer.
 - **Motion only once, on a change, and only through `GlanceMotion`**
-  (`RexDuoWidgets/Views/GlanceMotion.swift`, the one file of the widget path that may hold
+  (`PteronWidgets/Views/GlanceMotion.swift`, the one file of the widget path that may hold
   any). A count's digits roll (`numericText`) when it changes; a tile whose agent's state
   changed, and the top row when the agent waiting longest changes, are pushed up from below.
   Each animation is tied to a value (`.animation(_, value:)`), 0.4 s at most. Nothing moves
@@ -226,7 +226,7 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
 
 ### Files
 
-`RexDuoWidgets/`: `GlanceWidget.swift` (the widget and the view that picks a family),
+`PteronWidgets/`: `GlanceWidget.swift` (the widget and the view that picks a family),
 `Provider.swift` (the timeline), `Demo.swift` (the gallery), `Views/` (the families,
 `GlanceStyle` and `GlanceMotion`; compiled into the app's tests too, which draw every size,
 state and mode, hold the Lock Screen's accessories to the same pixels with and without
@@ -235,8 +235,8 @@ Everything the views show is decided in `GlanceDigest`, which is pure (`GlanceTi
 
 ## The watch
 
-A watch app, `RexDuoWatch` (bundle id `dev.abrahamgonzalez.rexduo.watchkitapp`), and its
-complications, `RexDuoWatchWidgets` (`….watchkitapp.widgets`). From the wrist: who needs you,
+A watch app, `PteronWatch` (bundle id `dev.abrahamgonzalez.rexduo.watchkitapp`), and its
+complications, `PteronWatchWidgets` (`….watchkitapp.widgets`). From the wrist: who needs you,
 where, and for how long, as the iPhone app last saw it.
 
 - **It shows, and it can give two answers.** A row opens its detail screen. Under a waiting
@@ -260,7 +260,7 @@ watch:  WatchSession (delegate) ─▶ WatchInbox decides ─▶ the watch's gla
                                         └─ replaced ─▶ WatchReload (complications) and WatchModel (the app)
 ```
 
-- **`GlanceBridge`** (`RexDuo/State/GlanceBridge.swift`, owned by `AppModel`) is given each
+- **`GlanceBridge`** (`Pteron/State/GlanceBridge.swift`, owned by `AppModel`) is given each
   snapshot the writer writes, with the bytes that went to the file, and sends them on as
   `["s": <bytes>]`. It knows nothing of `AppModel` or the servers. The one message it takes
   from the watch is an action, which it hands to `GlanceActions` and answers.
@@ -346,7 +346,7 @@ counts, orders, dates and dims as they do.
   | `accessoryInline` | "2 need you · 3 working" |
 
   The circular, rectangular and inline families are the iPhone Lock Screen's views and the
-  timeline is the iPhone widget's (`RexDuoWidgets/Views`, `Provider.swift`), compiled into the
+  timeline is the iPhone widget's (`PteronWidgets/Views`, `Provider.swift`), compiled into the
   watch extension as they are. A tap opens the watch app.
 - **In the Smart Stack** an entry in which an agent waits on a connected machine, in a
   snapshot under an hour old, has a relevance score (the number waiting, 10 at most); every
@@ -375,7 +375,7 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
   hash of the record's state, kind and whole message, written by the phone from the record as
   the server gave it. A row offers actions only when it is current and has a record id and a
   fingerprint.
-- **On the phone, `GlanceActions`** (`RexDuo/State/GlanceActions.swift`) does three things, in
+- **On the phone, `GlanceActions`** (`Pteron/State/GlanceActions.swift`) does three things, in
   order:
   1. reads the pane's status records from the server, now;
   2. `ActionGuard.allows`: the pane's top record is still `blocked`, has the same id, and gives
@@ -434,10 +434,10 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
   Live Activity. (A push from Beacon still mirrors to the watch as iOS does it; this app adds
   nothing to that.)
 - **Complications have no motion of their own**, nor does anything they share with the
-  iPhone's widgets (`RexDuoWatchWidgets`, `Packages/RexGlance/Sources`, and the accessory views
-  and `GlanceStyle` they compile from `RexDuoWidgets`). The iPhone's Home Screen sizes move
+  iPhone's widgets (`PteronWatchWidgets`, `Packages/RexGlance/Sources`, and the accessory views
+  and `GlanceStyle` they compile from `PteronWidgets`). The iPhone's Home Screen sizes move
   only through `GlanceMotion`, which the watch doesn't compile.
-- **The watch app moves only through `WatchMotion`** (`RexDuoWatch/Views/WatchMotion.swift`):
+- **The watch app moves only through `WatchMotion`** (`PteronWatch/Views/WatchMotion.swift`):
   no other file of the app may hold an animation, and every modifier there that moves reads
   Reduce Motion and the wrist and asks `WatchMotion` what to do (Motion, below).
 - **Nothing to press** but a row and, on its screen, Enter and Interrupt with their question:
@@ -517,12 +517,12 @@ Short and soft, in the app only (`WatchMotion`). No haptic or sound goes with an
 
 ### Files and tests
 
-- `RexDuoWatch/`: `RexDuoWatchApp.swift`, `WatchSession.swift` (the delegate, the background
+- `PteronWatch/`: `PteronWatchApp.swift`, `WatchSession.swift` (the delegate, the background
   task and the one send), `WatchModel.swift`, `WatchActions.swift`, `WatchReload.swift`,
   `WatchDemo.swift`, `Views/`.
-- `RexDuoWatchWidgets/`: the bundle, the widget and the corner view.
-- `RexDuo/State/GlanceBridge.swift`: the bridge and `WCSessionLink`, the system's session.
-  `RexDuo/State/GlanceActions.swift`: the actions and their two channels.
+- `PteronWatchWidgets/`: the bundle, the widget and the corner view.
+- `Pteron/State/GlanceBridge.swift`: the bridge and `WCSessionLink`, the system's session.
+  `Pteron/State/GlanceActions.swift`: the actions and their two channels.
 - GlanceModel: `WatchDelivery`, `WatchInbox` (with `WatchPayload`, `WatchDrain`), `WatchScreen`
   (with `WatchText`), `WatchAction` (with `ActionGuard`, `WatchActionWire`, `WatchActionState`),
   each with tests that run on macOS.
@@ -530,16 +530,16 @@ Short and soft, in the app only (`WatchMotion`). No haptic or sound goes with an
   `GlanceActionsTests` runs the actions against a stand-in channel and a stand-in server: the
   order, the one write, each refusal, and that a wake starts no server. RexKit's
   `StreamInputTests` holds `sendOnce` to the queue's rules.
-- `RexDuoWatchTests` runs in the watch app on a watchOS simulator (scheme `RexDuoWatch`):
+- `PteronWatchTests` runs in the watch app on a watchOS simulator (scheme `PteronWatch`):
   the model, `WatchStyleTests` (what Reduce Motion and the wrist turn each motion into, the
   headline's colors and the contrast of every text color), and `WatchRenderTests`, which draws
   the list, the detail screen and every complication family in every state into the test
   host's `tmp/watch-renders`, each part where it lands (`watchLanded`).
 
 ```sh
-xcodebuild -project RexDuo.xcodeproj -scheme RexDuoWatch -destination id=<watch-sim-id> \
+xcodebuild -project Pteron.xcodeproj -scheme PteronWatch -destination id=<watch-sim-id> \
   -derivedDataPath build/dd-watch test
-xcrun simctl install <watch-sim-id> build/dd-watch/Build/Products/Debug-watchsimulator/RexDuoWatch.app
+xcrun simctl install <watch-sim-id> build/dd-watch/Build/Products/Debug-watchsimulator/PteronWatch.app
 xcrun simctl launch <watch-sim-id> dev.abrahamgonzalez.rexduo.watchkitapp -glanceDemo several
 ```
 
@@ -569,9 +569,9 @@ xcrun simctl launch <watch-sim-id> dev.abrahamgonzalez.rexduo.watchkitapp -glanc
 
 ## Controls
 
-The extension `RexDuoWidgets` (bundle id `dev.abrahamgonzalez.rexduo.widgets`) declares two
+The extension `PteronWidgets` (bundle id `dev.abrahamgonzalez.rexduo.widgets`) declares two
 controls for Control Center, the Lock Screen's bottom slots and the Action button
-(`RexDuoWidgets/Controls.swift`):
+(`PteronWidgets/Controls.swift`):
 
 | Control | Kind | Opens |
 |---|---|---|
@@ -579,11 +579,11 @@ controls for Control Center, the Lock Screen's bottom slots and the Action butto
 | Jump to Waiting | `dev.abrahamgonzalez.rexduo.control.waiting` | `rexduo://waiting` |
 
 - Each is a `ControlWidgetButton` whose action is `OpenLinkIntent`
-  (`RexDuoWidgets/OpenLinkIntent.swift`), an intent of our own with `openAppWhenRun`. The file
+  (`PteronWidgets/OpenLinkIntent.swift`), an intent of our own with `openAppWhenRun`. The file
   is compiled into the extension and into the app: the system finds the intent in the
   extension and runs it in the app, which it brings forward first.
 - In the app the intent does one thing: it opens the link's URL
-  (`RexDuo/App/OpenLinkIntent+App.swift`). So a control takes the same single path into the app
+  (`Pteron/App/OpenLinkIntent+App.swift`). So a control takes the same single path into the app
   as any other link, `onOpenURL`, and nothing is injected into the intent.
 - The intent is marked not discoverable, to stay out of Shortcuts and Spotlight.
 - The extension links `GlanceModel` (for `DeepLink`) and nothing else of ours: no RexKit, no
@@ -610,7 +610,7 @@ controls for Control Center, the Lock Screen's bottom slots and the Action butto
 
 `DeepLink` (`Packages/RexGlance`, `GlanceModel`) is the one list of links, and the one parser.
 The app registers the `rexduo` scheme (`CFBundleURLTypes`) and takes links in `onOpenURL`
-(`RexDuoApp` → `AppModel.openLink`).
+(`PteronApp` → `AppModel.openLink`).
 
 | URL | Effect |
 |---|---|
