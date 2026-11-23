@@ -339,6 +339,104 @@ final class FitClaimTests: XCTestCase {
         XCTAssertEqual(claimed, ["80x24", "80x24"])
     }
 
+    // MARK: A size the server already has (`FitResize`)
+
+    /// A claim at 60x30 that the server has answered, as a full-screen program's pane has with
+    /// the keyboard up.
+    private func claimInPlace() async -> FitClaim {
+        let claim = makeClaim()
+        claim.request(cols: 60, rows: 30)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30"])
+        return claim
+    }
+
+    func testAReturnAtTheSizeTheServerReportsTakesThePaneAndSendsNoResize() async {
+        // Every return to a fitted full-screen pane sent the size it had again: one resize per
+        // visit, and the pane's fence waited for it.
+        let claim = await claimInPlace()
+        claim.reported = { (60, 30) }
+        claim.request(cols: 60, rows: 30, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "own"], "the take, and no resize")
+        XCTAssertEqual(claimed, ["60x30", "60x30"], "the request is still answered")
+    }
+
+    func testASizeAnotherClientSetIsResizedBackOnTheReturn() async {
+        let claim = await claimInPlace()
+        claim.reported = { (211, 57) }  // the Mac resized the pane meanwhile
+        claim.request(cols: 60, rows: 30, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "own", "resize 60x30"])
+    }
+
+    func testAKeyboardThatChangedWhileThePaneWasAwayIsResizedFor() async {
+        // Left with the keyboard up (30 rows), back with it down: the grid that fits is another.
+        let claim = await claimInPlace()
+        claim.reported = { (60, 30) }
+        claim.request(cols: 60, rows: 53, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "own", "resize 60x53"])
+    }
+
+    func testAFoldOrARotationIsResizedFor() async {
+        let claim = await claimInPlace()
+        claim.reported = { (60, 30) }
+        claim.request(cols: 120, rows: 40)  // the pane stayed on screen and got another shape
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "resize 120x40"])
+    }
+
+    func testAnotherFontSizeIsResizedFor() async {
+        let claim = await claimInPlace()
+        claim.reported = { (60, 30) }
+        claim.request(cols: 50, rows: 25)  // bigger cells: fewer fit
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "resize 50x25"])
+    }
+
+    func testWithNoWordFromTheServerTheResizeIsSent() async {
+        // A parked pane's stream is down as it comes back: it may have missed a resize.
+        let claim = await claimInPlace()
+        claim.reported = { nil }
+        claim.request(cols: 60, rows: 30, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "own", "resize 60x30"])
+    }
+
+    func testAResizeLeftOutIsSentAfterAllWhenTheServerSaysAnotherSize() async {
+        let claim = await claimInPlace()
+        claim.reported = { (60, 30) }
+        claim.request(cols: 60, rows: 30, reassert: true)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "own"])
+        // The size it reports again changes nothing.
+        XCTAssertFalse(claim.serverReported(cols: 60, rows: 30))
+        // The take gave the pane a size the server had kept: the pane must end at the one wanted.
+        claim.reported = { (211, 57) }
+        XCTAssertTrue(claim.serverReported(cols: 211, rows: 57))
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 60x30", "own", "resize 60x30"])
+        XCTAssertEqual(claimed, ["60x30", "60x30", "60x30"])
+        // After a resize that was sent, a report is the host's to judge, not the claim's.
+        XCTAssertFalse(claim.serverReported(cols: 211, rows: 57))
+        await settleMainActor()
+        XCTAssertEqual(transport.calls.count, 4)
+    }
+
+    func testAResizeGoesOutUnlessTheServersLatestWordIsTheTarget() {
+        XCTAssertFalse(FitResize.sends(target: (60, 30), reported: (60, 30)))
+        XCTAssertTrue(FitResize.sends(target: (60, 30), reported: (60, 53)), "rows differ")
+        XCTAssertTrue(FitResize.sends(target: (60, 30), reported: (80, 30)), "columns differ")
+        XCTAssertTrue(FitResize.sends(target: (60, 30), reported: nil), "no word")
+        XCTAssertNil(FitResize.reported((60, 30), said: false, live: true), "a fresh stream has not said its size yet")
+        XCTAssertNil(FitResize.reported((60, 30), said: true, live: false), "a stream that is down may have missed a resize")
+        XCTAssertTrue(FitResize.reported((60, 30), said: true, live: true).map { $0 == (60, 30) } ?? false)
+        XCTAssertTrue(FitResize.sendsAfterAll(target: (60, 30), reported: (211, 57), leftOut: true))
+        XCTAssertFalse(FitResize.sendsAfterAll(target: (60, 30), reported: (60, 30), leftOut: true))
+        XCTAssertFalse(FitResize.sendsAfterAll(target: (60, 30), reported: (211, 57), leftOut: false))
+    }
+
     func testAPaneOffScreenStartsNothingNew() async {
         // A size in place stays while a fold moves the pane.
         let claim = makeClaim()

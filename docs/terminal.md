@@ -291,6 +291,16 @@ is not a cold start.
     nothing (`FitClaim.request(reassert:)`). Before, the phone took a pane once and from then
     on sent only resizes; once the Mac app had taken the pane, they were all kept for later
     and the pane never took the phone's size.
+  - A resize to the size the pane has is not sent (`FitResize`). After a take, the claim
+    compares its size with the one the server last reported in the pane's stream, never with
+    the size the phone last sent: a pane another client resized is resized back, and a pane
+    that is already at the size wanted gets the take alone. The server's word counts only
+    from a stream that is live and has said the size since its last fresh start; a parked
+    pane's stream is down as it comes back, so its resize is sent as before. If the server
+    then reports another size for a pane that is still ours, the resize goes after all
+    (`FitClaim.serverReported`), so the pane ends at the size wanted. Before, every return to
+    a pane whose claim was taken again sent the size in place once more: for a full-screen
+    program with the keyboard up that was one resize per visit, and the fence waited for it.
   - Nothing counts as claimed that the server didn't answer. A take or resize the connection
     lost (back from the background, the socket died while the app was away) is asked again,
     take first, once the control connection is back; until then the claim is on its way and

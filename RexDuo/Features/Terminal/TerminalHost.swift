@@ -129,6 +129,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private var started = false
     private var lastBounds: CGSize = .zero
     private var serverSize: (Int, Int) = (80, 24)
+    /// The stream has said the pane's size since its last fresh start (`reportedSize`).
+    private var serverSizeReported = false
     /// The grid the engine has now; reported by `engineGridChanged`.
     private var localGrid: (Int, Int) = (0, 0)
     #if DEBUG
@@ -362,6 +364,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         appActive = UIApplication.shared.applicationState == .active
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
         self.claim.onRefused = { [weak self] in self?.resizedElsewhere("refused") }
+        self.claim.reported = { [weak self] in self?.reportedSize }
         term.engineDelegate = self
         keyBar.terminal = term
         keyBar.onPaste = { [weak self] in self?.pasteFromClipboard() }
@@ -1928,6 +1931,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         stream.setClaimPending(false)
     }
 
+    /// The size the server last reported for the pane, while that is its latest word: the
+    /// stream is live and has reported since its last fresh start. Nil otherwise, and then a
+    /// claim's resize is always sent (`FitResize.sends`).
+    private var reportedSize: (cols: Int, rows: Int)? {
+        FitResize.reported(serverSize, said: serverSizeReported, live: stream.isLive)
+    }
+
     /// One cell's size in points at the current font.
     private func cellSize() -> CGSize { term.cellSize }
 
@@ -2085,6 +2095,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // RIS + clear scrollback, then match the server's grid.
         term.feed(text: "\u{1b}c\u{1b}[3J")
         serverSize = (cols, rows)
+        serverSizeReported = true
         applyLocalGrid(cols, rows)
         positionTerm()
     }
@@ -2146,6 +2157,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func streamResized(cols: Int, rows: Int, owner: String?) {
         // The terminal keeps stream order itself: output fed before this is parsed at the old size.
         serverSize = (cols, rows)
+        serverSizeReported = true
         let wasFitted = fitted
         let mine = owner == (ownClientID?() ?? stream.control.clientID)
         if mine { ownResizeSeen = true }
@@ -2178,6 +2190,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             // the stream is current and nothing is on its way (`checkFit`).
             scheduleFitCheck()
         }
+        // A resize left out because the server had the size (`FitResize`) goes after all when
+        // the server says another one. Not for a pane another client has: that is never fought over.
+        if sizing == .fit, !lostOwnership, claim.serverReported(cols: cols, rows: rows) { stream.setClaimPending(true) }
         // A pane that opens at the size it will keep has no reflow to hide: show it at once.
         if holdsForCatchUp, !stream.isClaimPending, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
@@ -2244,6 +2259,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func streamStatus(_ status: TerminalStream.Status) {
         PerfProbe.active?.status(status, host: self)  // PERF
+        // A fresh start says the size again, after its snapshot: until then none is known.
+        if status == .connecting { serverSizeReported = false }
         switch status {
         case .live:
             #if DEBUG || BENCH

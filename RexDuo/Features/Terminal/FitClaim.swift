@@ -32,6 +32,35 @@ protocol FitClaimTransport: AnyObject {
     func whenConnected(_ body: @escaping @MainActor () -> Void)
 }
 
+/// Whether fit mode's resize has to be sent. Pure: `FitClaim` asks.
+///
+/// A resize to the size the pane already has is not sent: the program would be told of a
+/// size it has, and the pane's fence would wait for the call. What counts is the size the
+/// server last reported in the pane's stream, never the size this client last sent: another
+/// client may have resized the pane since, and then the resize is needed.
+enum FitResize {
+    /// Whether a resize to `target` goes out. `reported`: the size the server last reported on
+    /// a stream that is live; nil when none is known (no report yet, or the stream is down and
+    /// the pane may have changed unseen), and then the resize always goes.
+    static func sends(target: (Int, Int), reported: (Int, Int)?) -> Bool {
+        guard let reported else { return true }
+        return reported != target
+    }
+
+    /// The server's latest word on the pane's size, if there is one: the size its stream last
+    /// reported, while the stream has reported since its last fresh start (`said`) and is up
+    /// (`live`). A stream that is down or parked may have missed a resize.
+    static func reported(_ size: (Int, Int), said: Bool, live: Bool) -> (cols: Int, rows: Int)? {
+        said && live ? (size.0, size.1) : nil
+    }
+
+    /// Whether a size the server reports calls for the resize that was left out: the pane was
+    /// taken to be at `target` on the server's word, and the server now says another size.
+    static func sendsAfterAll(target: (Int, Int), reported: (Int, Int), leftOut: Bool) -> Bool {
+        leftOut && reported != target
+    }
+}
+
 /// Fit mode's claim on one pane: own it, resize it, give it back.
 ///
 /// The calls are slow (a round trip each) and the reasons to make them change meanwhile: the
@@ -53,6 +82,10 @@ protocol FitClaimTransport: AnyObject {
 /// taken the pane meanwhile, and a resize from a client that isn't the owner only waits on the
 /// server. A refit of a pane that stayed on screen (the keyboard, a fold) resizes under the
 /// claim it has.
+///
+/// A resize to the size the server last reported is left out (`FitResize`): the take alone is
+/// the claim. If the server then reports another size, the resize goes after all
+/// (`serverReported`), so the pane always ends at the size wanted.
 ///
 /// Nothing is answered with `onClaimed` that the server didn't answer: a call the connection
 /// lost is asked again, `own` first, once it is back, and one the server refused ends the
@@ -79,8 +112,11 @@ final class FitClaim {
     private var goal = Goal.nothing
     /// `own` went out and no `disown` after it.
     private var owned = false
-    /// The size of the last resize that was sent while owned.
-    private var applied: (Int, Int)?
+    /// The size in place while owned: the last resize that was sent, or the size the server
+    /// reported when a resize to it was left out (`leftOut`).
+    private var applied: (Int, Int)? { didSet { if applied == nil { leftOut = false } } }
+    /// `applied` is the server's word, not a resize of ours.
+    private var leftOut = false
     private var working = false
     /// Counts requests and releases: a request that settled after a later one, or after a
     /// release, does nothing.
@@ -105,6 +141,9 @@ final class FitClaim {
     var onClaimed: ((_ cols: Int, _ rows: Int) -> Void)?
     /// The server refused the claim: the pane isn't this client's to size.
     var onRefused: (() -> Void)?
+    /// The size the server last reported for the pane on a stream that is live, nil when none
+    /// is known (`FitResize.sends`). Without it every resize is sent.
+    var reported: (() -> (cols: Int, rows: Int)?)?
 
     init(transport: any FitClaimTransport,
          settle: @escaping @MainActor () async -> Void = { try? await Task.sleep(nanoseconds: FitClaim.settleDelay) },
@@ -198,6 +237,19 @@ final class FitClaim {
         applied = (cols, rows)
     }
 
+    /// The server reported this size for the pane, and it is not another client's doing (the
+    /// host judges that first). If a resize was left out on the server's word and the server
+    /// now says another size, the resize is sent after all. Returns whether it will be.
+    @discardableResult
+    func serverReported(cols: Int, rows: Int) -> Bool {
+        guard case .size(let c, let r) = goal, let a = applied, a == (c, r),
+              FitResize.sendsAfterAll(target: (c, r), reported: (cols, rows), leftOut: leftOut) else { return false }
+        applied = nil
+        unanswered = true
+        work()
+        return true
+    }
+
     private func work() {
         guard !working, !waiting else { return }
         working = true
@@ -232,7 +284,15 @@ final class FitClaim {
                     }
                     return
                 }
+                if !FitResize.sends(target: (cols, rows), reported: reported?().map { ($0.cols, $0.rows) }) {
+                    // The pane has this size on the server: nothing to send. The request gets
+                    // its answer on the next turn of the loop.
+                    applied = (cols, rows)
+                    leftOut = true
+                    continue
+                }
                 applied = (cols, rows)
+                leftOut = false
                 let answer = await transport.resize(cols: cols, rows: rows)
                 guard proceeds(after: answer, own: false) else { return }
                 if answer == .done, goal == .size(cols, rows), owned, !needsOwn {

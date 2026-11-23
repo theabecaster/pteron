@@ -629,6 +629,21 @@ final class PaneParkTests: XCTestCase {
         host.removeFromSuperview()
     }
 
+    func testAMirrorPaneThatComesBackSendsNothingWhateverTheServersSize() {
+        let pool = warmPool()
+        let transport = FakeFitTransport()
+        let host = pooledHost(pool, key(1), transport: transport, sizing: .mirror)
+        showAndLeaveWarm(host)
+        host.streamResized(cols: 60, rows: 30, owner: "client:mac")
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        host.streamResized(cols: 211, rows: 57, owner: "client:mac")
+        pause(0.3)
+        XCTAssertEqual(transport.calls, [], "mirror never takes or resizes, on a return either")
+        XCTAssertFalse(host.stream.isClaimPending)
+        host.removeFromSuperview()
+    }
+
     func testAMemoryWarningLetsTheWarmPanesGoToo() {
         let pool = warmPool()
         for n in 1...2 { showAndLeaveWarm(pooledHost(pool, key(n))) }

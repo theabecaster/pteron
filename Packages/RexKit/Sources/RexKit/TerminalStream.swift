@@ -434,6 +434,9 @@ public final class TerminalStream {
     public private(set) var isParked = false
     /// True from a WELCOME until the socket drops or the stream is stopped or restarted.
     private var live = false
+    /// The data socket is up and has been welcomed: what the stream last said of the pane (its
+    /// size) is the server's latest word. False from a drop, a park or a restart on.
+    public var isLive: Bool { live }
     /// How long the server keeps a dropped stream for a RESUME (from the WELCOME).
     private var resumeWindow: Duration = .zero
     /// When the data socket dropped.
