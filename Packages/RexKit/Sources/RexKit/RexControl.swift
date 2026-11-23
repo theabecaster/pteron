@@ -1127,9 +1127,10 @@ public final class RexControl {
         handleDrop(gen: generation, failure: ConnectionFailure(URLError(.networkConnectionLost)))
     }
 
-    /// Testing (`-dropTest`): the host goes silent with the app in front, as when a phone loses
-    /// its network: the control socket and every data socket drop with no close frame, and
-    /// attempts fail for `seconds`. Then one attempt is asked for.
+    /// Testing (`-dropTest`): the connection is dropped with the app in front, as a missed
+    /// pong drops it: the control socket and every data socket go, and attempts fail for
+    /// `seconds`. Then one attempt is asked for. The server ends the client at once, so the
+    /// welcome that follows is a new client's.
     public func loseHostForTesting(for seconds: TimeInterval) {
         unreachableForTesting = true
         hostDied()

@@ -661,8 +661,8 @@ final class ServerConnection: Identifiable {
     }
 
     #if DEBUG
-    /// `-dropTest <after>,<away>` (testing): that many seconds after the first sync the computer
-    /// goes silent for `away` seconds with the app in front, as a phone's network does
+    /// `-dropTest <after>,<away>` (testing): that many seconds after the first sync the
+    /// connection is dropped with the app in front, and stays down for `away` seconds
     /// (docs/debug-args.md).
     private func dropForTesting() {
         guard let arg = UserDefaults.standard.string(forKey: "dropTest") else { return }

@@ -123,7 +123,21 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The program is on the alternate screen (`alternateScreenHook`).
     private(set) var alternateScreen = false
     /// The size the server confirmed for this pane in fit mode.
-    private var claimedSize: (Int, Int)?
+    private var claimedSize: (Int, Int)? {
+        // Given up or lost: the tenure ends with it, and the next answered claim starts one.
+        didSet { if claimedSize == nil { tenure.released() } }
+    }
+    /// What the pane knows about losing its size: to another client, or only to this phone's
+    /// own absence (`FitTenure`).
+    private var tenure = FitTenure()
+    /// The control connection's welcomes since this host was made (`controlCameBack`).
+    private var welcomes = 0
+    /// Whether the control connection is lost or being made again; nil: the control
+    /// connection's own state. Tests put their own here.
+    var controlDown: (() -> Bool)?
+    /// Which of its clients the control connection is on the server; nil: the control
+    /// connection's own count (`RexControl.clientGeneration`). Tests put their own here.
+    var clientGeneration: (() -> Int)?
     /// Own, resize, give back: every fit-mode call to the server goes through here, in order.
     private let claim: FitClaim
     private var started = false
@@ -368,6 +382,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }
         self.claim.onRefused = { [weak self] in self?.resizedElsewhere(.refused) }
         self.claim.reported = { [weak self] in self?.reportedSize }
+        // Each welcome is counted, for as long as the host lives: a pane that kept its claim
+        // through a drop looks at who has it once it is back (`FitTenure`).
+        stream.control.observeConnected { [weak self] in
+            guard let self else { return false }
+            self.controlCameBack()
+            return true
+        }
         term.engineDelegate = self
         keyBar.terminal = term
         keyBar.onPaste = { [weak self] in self?.pasteFromClipboard() }
@@ -2029,10 +2050,80 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The stream carries the resize and the program's redraw; nothing to reload.
     private func claimed(cols: Int, rows: Int) {
         claimedSize = (cols, rows)
+        tenure.claimed(as: generation, welcomes: welcomes)
+        // A resize that was left out has no echo to wait for: the take alone was the claim, and
+        // a size another client sets from here on is news, on a stream that catches up too.
+        if claim.resizeLeftOut { ownResizeSeen = true }
         stream.setClaimPending(false)
         // Answered is not applied: a resize the server keeps for later leaves the pane at
         // another client's size (`checkFit`).
         scheduleFitCheck()
+    }
+
+    /// This client's id on the control connection.
+    private var clientID: String? { ownClientID?() ?? stream.control.clientID }
+
+    /// Which of its clients the control connection is on the server: it goes up at a welcome
+    /// that started a new one.
+    private var generation: Int { clientGeneration?() ?? stream.control.clientGeneration }
+
+    /// The control connection since the claim was answered (`FitTenure.Link`).
+    private var link: FitTenure.Link {
+        let down: Bool
+        if let controlDown {
+            down = controlDown()
+        } else {
+            switch stream.control.state {
+            case .failed, .connecting: down = true
+            case .idle, .connected: down = false
+            }
+        }
+        return .now(welcomes: welcomes, heldAt: tenure.heldAt, down: down, client: generation, heldAs: tenure.heldAs)
+    }
+
+    /// The control connection has its welcome, after a drop or for the first time. A fitted
+    /// pane that held its claim through the drop looks at who has it now, once it has caught
+    /// up (`checkFit`). Nothing is asked of the computer here.
+    func controlCameBack() {
+        welcomes += 1
+        if sizing == .fit, tenure.holds { scheduleFitCheck() }
+    }
+
+    /// Another client's size or name is on a pane this phone sized. If that is only because
+    /// the phone's connection dropped (`FitTenure`), a pane on screen is taken again without a
+    /// word; if it can't be known yet, the pane looks again once it has caught up or the
+    /// connection is back. Otherwise the other client has it: the chip. `settled`: the pane has
+    /// caught up and nothing is on its way.
+    @discardableResult
+    private func foundElsewhere(_ why: ConnectionEvent.FitLoss, settled: Bool) -> FitTenure.Verdict {
+        // A pane nobody is looking at is never taken back: it goes by the rules for leaving.
+        let looked = FitTenure.mayTakeBack(inWindow: window != nil, background: backgroundedAt != nil, parked: isParked,
+                                           warm: isWarm, covered: covered)
+        let verdict = looked ? tenure.verdict(link: link, settled: settled) : .lost
+        switch verdict {
+        case .lost:
+            resizedElsewhere(why)
+        case .wait:
+            // With the connection down the welcome looks again (`controlCameBack`).
+            if !settled { scheduleFitCheck() }
+        case .takeBack:
+            takeBack()
+        }
+        return verdict
+    }
+
+    /// The pane passed to another client only because this phone was away: one claim that
+    /// takes it and sizes it, as at any claim moment. Its answer starts a new tenure, so if it
+    /// does not hold, the other client has the pane and the chip shows.
+    private func takeBack() {
+        #if DEBUG
+        NSLog("FIT_TAKE_BACK %@ server=%dx%d", stream.blockID, serverSize.0, serverSize.1)
+        #endif
+        note?(.fit(.takenBack))
+        fitCheckWork?.cancel()
+        fitCheckWork = nil
+        claimedSize = nil
+        requestClaim(fitGrid(), reassert: true)
     }
 
     /// Another client has the pane: the claim ends, the pane shows the server's grid scaled to
@@ -2058,7 +2149,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// heard it. For a pane on screen it goes into the connection log, so a diagnostics file
     /// says why a pane changed size: the reason, and who the two clients are to this phone.
     func ownerChanged(_ change: BlockOwnerChange) {
-        let me = ownClientID?() ?? stream.control.clientID
+        let me = clientID
+        // Whether another client asked for the pane: what tells a take from a handoff when a
+        // size turns up that is not this phone's.
+        tenure.ownerChanged(change, me: me)
+        // A take changes no size when the other client's is the same: the pane looks anyway.
+        if sizing == .fit, tenure.holds, change.isTake(from: me) { scheduleFitCheck() }
         #if DEBUG
         NSLog("OWNER_EVENT %@ reason=%@ previous=%@ owner=%@", stream.blockID, "\(change.reason)",
               "\(BlockOwnerChange.party(change.previous, me: me))", "\(BlockOwnerChange.party(change.owner, me: me))")
@@ -2086,15 +2182,24 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
               !covered, !isParked, !isWarm else { return }
         // Something is still on its way; its end looks again.
         guard !stream.isFenced, !stream.isClaimPending, !claim.isSettling else { return }
-        let me = ownClientID?() ?? stream.control.clientID
-        let foreign = blockOwner?().map { me != nil && $0 != me } ?? false
+        // With the control connection down nothing is known and nothing is asked: its welcome
+        // looks again (`controlCameBack`).
+        let link = self.link
+        guard link != .down else { return }
+        let me = clientID
+        // The session's view names another owner, or the last owner event did: the view is read
+        // again after such an event and may not be in yet.
+        let foreign = (blockOwner?().map { me != nil && $0 != me } ?? false) || tenure.taken
         let want = fitGrid()
         switch FitCheck.verdict(claimed: claimedSize, server: serverSize, fits: want, foreignOwner: foreign,
                                 claimedOnce: fitGuardUsed) {
         case .fine:
             if claimedSize != nil { fitGuardUsed = false }
+            // Ours, at our size, after whatever the connection went through: the tenure goes on
+            // from here, and a size that turns up later is another client's doing.
+            tenure.settled(as: generation, welcomes: welcomes)
         case .elsewhere:
-            resizedElsewhere(claimedSize == nil ? .guard : foreign ? .owner : .unapplied)
+            foundElsewhere(claimedSize == nil ? .guard : foreign ? .owner : .unapplied, settled: true)
         case .claim:
             fitGuardUsed = true
             #if DEBUG
@@ -2175,7 +2280,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         serverSize = (cols, rows)
         serverSizeReported = true
         let wasFitted = fitted
-        let mine = owner == (ownClientID?() ?? stream.control.clientID)
+        let mine = owner == clientID
         #if DEBUG
         // One line per size the stream reports, to see whose it is (docs/debug-args.md).
         NSLog("FIT_SIZE %@ %dx%d mine=%d", stream.blockID, cols, rows, mine ? 1 : 0)
@@ -2191,9 +2296,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // and the pane would be drawn at that grid, wider than the pane, until its width changed.
         let pending = claimedSize == nil && stream.isClaimPending && ownResizeSeen
             && (claim.wanted.map { $0 != (cols, rows) } ?? false)
+        var verdict: FitTenure.Verdict?
         if sizing == .fit, !mine, (claimedSize.map { $0 != (cols, rows) && later } ?? false) || pending {
-            // Another client (the Mac, or another phone) resized it. Don't fight over it; offer to take it back.
-            resizedElsewhere(.resize)
+            // Another client's size (the Mac's, or another phone's). If that client asked for the
+            // pane, it is not fought over and the chip offers to take it back; if the pane only
+            // passed on because this phone dropped, it is taken again (`foundElsewhere`).
+            verdict = foundElsewhere(.resize, settled: false)
         } else if sizing == .fit, lostOwnership, mine, owner != nil, window != nil, backgroundedAt == nil,
                   (cols, rows) == fitGrid() {
             // The server gave the pane back at the size that fits here: after a dropped
@@ -2206,14 +2314,19 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             hideStatus()
             claim.adopt(cols: cols, rows: rows)
             claimedSize = (cols, rows)
+            tenure.claimed(as: generation, welcomes: welcomes)
         } else if sizing == .fit, !mine {
             // Not news yet (a size from before our own, or nothing claimed): looked at again once
             // the stream is current and nothing is on its way (`checkFit`).
             scheduleFitCheck()
         }
         // A resize left out because the server had the size (`FitResize`) goes after all when
-        // the server says another one. Not for a pane another client has: that is never fought over.
-        if sizing == .fit, !lostOwnership, claim.serverReported(cols: cols, rows: rows) { stream.setClaimPending(true) }
+        // the server says another one. Not for a pane another client has: that is never fought
+        // over. Not for one whose owner is not known yet, nor while a take back is on its way:
+        // that resize follows its take.
+        if sizing == .fit, !lostOwnership, verdict == nil, claim.serverReported(cols: cols, rows: rows) {
+            stream.setClaimPending(true)
+        }
         // A pane that opens at the size it will keep has no reflow to hide: show it at once.
         if holdsForCatchUp, !stream.isClaimPending, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
@@ -2249,8 +2362,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             DispatchQueue.main.asyncAfter(deadline: .now() + fenceStatusDelay, execute: work)
         } else {
             if transientStatus == Self.reconnectingText { hideStatus() }
-            // A size that came while the stream caught up counts from here (`checkFit`).
-            if !stoppingStream, sizing == .fit, serverSize != (claimedSize ?? fitGrid()) { scheduleFitCheck() }
+            // A size that came while the stream caught up counts from here (`checkFit`), and so
+            // does a claim held through a drop of the control connection.
+            if !stoppingStream, sizing == .fit, serverSize != (claimedSize ?? fitGrid()) || (tenure.holds && link != .steady) {
+                scheduleFitCheck()
+            }
             if !stoppingStream {
                 // A focus report dropped behind the fence goes now, ahead of any held keys, and
                 // the pane says again where it is: a report made before may never have arrived.

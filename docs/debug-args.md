@@ -31,11 +31,11 @@ builds.
   iOS does a suspended app's sockets on a device (a simulator keeps them). `drop` reconnects on
   the return, inside the wake's grace: no offline screen. `unreachable` fails every attempt from
   then on, so the offline screen shows when the grace runs out (`ForegroundWake`).
-- `-dropTest <after>,<away>`: `after` seconds after a computer's first sync it goes silent for
-  `away` seconds with the app in front, as when the phone loses its network: the control
-  connection and every data socket drop with no close frame, and no attempt gets through until
-  the time is up (`RexControl.loseHostForTesting`). Under the server's 60 s the client is
-  continued at the return; over it a new client starts. Each owner event a pane hears logs
+- `-dropTest <after>,<away>`: `after` seconds after a computer's first sync the app drops its
+  control connection and every data socket to it with the app in front, and no attempt gets
+  through for `away` seconds (`RexControl.loseHostForTesting`). The server takes the dropped
+  control socket for a closed one and ends the client at once, so the return is a new client:
+  what a missed pong or a route change does on a device. Each owner event a pane hears logs
   `OWNER_EVENT <block> reason=<reason> previous=<none|me|other> owner=<none|me|other>`.
 - `-netDelay <ms>`: add a simulated round-trip time to every server's calls and terminal streams
   (`LinkDelay`, RexKit): half before each request leaves and half after its answer; three round
@@ -99,7 +99,9 @@ builds.
   pane that finds another client has it logs `FIT_LOST <block> <why> server=<cols>x<rows>`
   (`resize`, `unapplied`, `owner`, `refused`, `guard`), and the one claim a pane makes when it
   finds itself at another grid with nothing claimed logs `FIT_GUARD`. Each size the pane's
-  stream reports logs `FIT_SIZE <block> <cols>x<rows> mine=<0|1>`: 1 when this client set it.
+  stream reports logs `FIT_SIZE <block> <cols>x<rows> mine=<0|1>`: 1 when this client set it. A
+  pane that takes its size back after the phone's connection dropped logs
+  `FIT_TAKE_BACK <block> server=<cols>x<rows>`, and one the server gave back `FIT_BACK`.
 - `-simulateTent <degrees|off>[,<degrees|off>…]`: the hinge reports these angles instead of the
   real ones, one after the other every `-simulateTentEvery` seconds (default 10); `off` is no
   hinge. `-simulateTent 90` shows the agent board after the one-second hold;

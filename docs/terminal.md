@@ -246,6 +246,9 @@ from a program state the user has not seen.
 - A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
 - A `resize` from another client counts as "Resized on another screen" only on a current stream or after
   our own resize has come by: a size from before our resize can arrive after the claim's answer.
+  A claim whose resize was left out (the server had the size) has no echo to wait for, so its
+  answer counts as the echo. Before, such a pane took another client's size behind the fence
+  for an old one: it looked again a second later and sent one resize after all.
 
 ## Parking
 
@@ -338,12 +341,53 @@ is not a cold start.
     session's view, shows the chip, with the server's grid scaled. A pane at another grid with
     nothing claimed (no path should leave it so) claims once and logs `FIT_GUARD`; if that
     doesn't hold either, the chip. Never per frame.
-  - Not fought over: a pane another client has never takes it back by itself, not at a later
-    claim moment either; the chip's tap or a pinch does. It also leaves the line (`disown_block`, which changes
-    nothing for the owner), so the pane never passes back to a phone that isn't asking. One
-    exception: a pane the server gives back at the size that fits here (an owner whose
-    connection dropped gets its panes back when it reconnects) is the phone's again, with no
-    call (`FIT_BACK`). Mirror never takes, resizes or gives back.
+  - Not fought over: a pane another client asked for never takes it back by itself, not at a
+    later claim moment either; the chip's tap or a pinch does. It also leaves the line
+    (`disown_block`, which changes nothing for the owner), so the pane never passes back to a
+    phone that isn't asking. Mirror never takes, resizes or gives back.
+  - Lost to an absence, not to a client (`FitTenure`). When the phone's client drops or ends,
+    the server passes its panes to the next client in line, which is the Mac app when it shows
+    the pane, and the pane takes that client's size
+    ([rex-protocol.md](rex-protocol.md), Block ownership). Nobody asked for that, so a pane on
+    screen has its size back when the phone returns, with no chip. Events from the time away
+    are lost, so the pane goes by what it can know once it is back:
+    - The control connection never dropped since the claim's answer: another client's size
+      or name on the pane is that client's doing. The chip.
+    - Another client asked for the pane (`block_owner_changed` with `take` or `request`, heard
+      on the connection) and the phone has not taken it since: the chip, whatever else
+      happened. The same event shows the chip when the other client's size is the phone's own
+      and no resize comes.
+    - The connection dropped and the server started a new client. That is what happens when
+      the phone was away longer than the server keeps a client (60 s), and also whenever the
+      app itself closed the socket (a missed pong, a route change, a timeout): the close ends
+      the client at once. Its panes went to the next in line because it was gone
+      (`disconnect`), and no event can say whether anybody asked for one since. The return is
+      a claim moment, as the app coming back from the background is: the pane is taken again
+      at the size that fits (`FIT_TAKE_BACK`).
+    - The connection dropped and the server went on with the same client (lost with no close
+      frame, back inside the 60 s): the server gives that client its panes back at its size
+      unless their owner changed again meanwhile. The client is not told, but its stream
+      replays the time away: the other client's size, then its own. So the other client's
+      size is history until the pane has caught up, and nothing is sent. Still there once it
+      has (`checkFit`): the owner changed again while the phone was away, which only a
+      client's own call does. The chip.
+    - Which of the two it was is the control connection's word (`RexControl.clientGeneration`,
+      which goes up at a welcome that started a new client).
+    - The connection is down now: nothing is decided and nothing is sent. The welcome looks
+      again (`TerminalHost.controlCameBack`), and so does the fence coming down.
+
+    A take back is one reasserting claim: one take, and a resize unless the server has the
+    size. If the connection loses it, it is asked again once when the connection is back, as
+    any claim is; the pane never makes an attempt of its own. Its answer starts a new tenure,
+    so if another size turns up after it, that is another client: the chip, never a second
+    take back. Only a pane the user is looking at is taken back: not one that left the
+    screen (parked, warm, or past its grace), one under the agent board, or one of an app in
+    the background. Those go by the rules for leaving, as before. Before, the Mac's size
+    found after a drop counted as the Mac resizing the pane: the chip showed, the phone left
+    the line, and the pane stayed at the Mac's width. Only a continued client whose pane came
+    back at exactly the size that fits lost the chip again, a moment later.
+  - A pane that shows the chip and that the server then gives back at the size that fits here
+    is the phone's again, with no call (`FIT_BACK`).
 - The software keyboard covers a fitted pane; it doesn't resize it. The grid stays the one that
   fits the pane with the keyboard down (`TerminalLayout.fitSize`, from the tab's canvas as
   measured with the keyboard down, `PaneLayout`), so a program on the main screen gets no

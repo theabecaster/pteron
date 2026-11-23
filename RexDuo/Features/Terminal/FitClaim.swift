@@ -159,6 +159,10 @@ final class FitClaim {
     /// A request is waiting out the settle delay: a newer one would supersede it.
     var isSettling: Bool { settling != nil }
 
+    /// The size in place was not sent: the server had it already (`FitResize`). No echo of a
+    /// resize of ours will come for it.
+    var resizeLeftOut: Bool { leftOut }
+
     /// The newest size asked for: the one settling, else the goal. Nil when nothing is wanted.
     /// Find's fit hold keeps the grid at this size while the keyboard rises.
     var wanted: (cols: Int, rows: Int)? {

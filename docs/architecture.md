@@ -341,7 +341,8 @@ user shares.
   left out of backups. Application Support and not Caches, which the system may empty. The types
   are in RexKit: `ConnectionEvent` (one line), `ConnectionJournal` (the rings and the file's
   format), `ConnectionLog` (the queue and the file), `ConnectionReporter` (a `RexControl`'s states
-  as events).
+  as events). A pane's lines come from its host (`TerminalHost.note`), which hears the owner
+  events of its block from its computer's connection (`OwnerChanges`).
 - **What it holds:** per server the newest 200 events of its control connection: `connecting`
   (with what asked for the attempt: first, backoff, user, network, foreground, peer),
   `connected` (with the milliseconds the attempt took), `closed` (a kind such as timeout, lost,
@@ -351,7 +352,13 @@ user shares.
   (`client continued` or `client new`), and three lines of a pane's stream on the way back:
   `stream refused` (a RESUME or a HELLO, with the REJECT's reason byte), `ticket refused`
   (with `conflict` or anything else, and how many times in a row) and `resume skipped` (the
-  stream's client had left the server). And 200 events of the app: each launch with its build
+  stream's client had left the server). And, for a pane on screen, each change of
+  its owner (`pane owner reason=<create|take|request|disown|lost|disconnect|restore|unknown>
+  previous=<none|phone|other> owner=<none|phone|other>`: the server's reason, and whether each
+  client is nobody, this phone or another client) and what fit mode did about another
+  client's size (`pane fit lost how=<resize|unapplied|owner|refused|guard>` when the chip
+  shows, `pane fit taken back`, `pane fit given back`; [terminal.md](terminal.md), Fit and
+  mirror). So a diagnostics file says why a pane changed size. And 200 events of the app: each launch with its build
   number, each scene phase, the tunnel breaker opening and closing, the probe of Tailscale's own service that follows an opening, and each change of the network path as four yes-or-no facts
   (satisfied, expensive, constrained, a Tailscale address on an interface). At most 12 server
   rings; one server more pushes out the ring that was quiet longest.
@@ -362,8 +369,8 @@ user shares.
   Settings' order; a failure keeps its codes and never its message or the server's close reason.
   `ConnectionLogTests.testNoNameOrAddressReachesTheFileOrTheExport` holds the rule. A new kind of
   event keeps it: add a number, never a string.
-- **Cost:** only a change of connection state, of the network path or of the scene's phase
-  records; nothing per frame, per key or on the terminal's feed path. `record` reads the time and
+- **Cost:** only a change of connection state, of the network path, of the scene's phase or
+  of a pane's owner records; nothing per frame, per key or on the terminal's feed path. `record` reads the time and
   hands the event to a serial utility queue (under a microsecond on the caller). The file is
   written on that queue at most once per 0.5 s however many events came, and at once when the
   app goes to the background. A write appends 32 bytes per event; every 400 appended events the

@@ -70,11 +70,32 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   owner's size. `terminal.resize` from a client that doesn't own the block answers `{}` and is
   only kept for later: it applies when that client becomes the owner. `own_block` `take` makes
   the caller the owner at once (its answer lists each block's owner) and every attached client
-  gets `block_owner_changed {block_id, owner, previous, reason}`. When the owner gives a block up
-  or leaves, it passes to the connected client in line that claimed it most recently; a
+  gets `block_owner_changed {block_id, owner, previous, reason}`. When the owner gives a block up,
+  detaches or loses its connection, it passes to the connected client in line that claimed it
+  most recently, any `take` ahead of every `request`; a
   `disown_block` from a client that isn't the owner changes nothing for the owner and takes that
   client out of the line. `session.view` names each block's `owner`. Fit mode relies on all of
   it ([terminal.md](terminal.md), Fit and mirror).
+  - `reason` says why the owner changed (`BlockOwnerChange.Reason`): `create` (the new owner
+    made the block), `take` or `request` (the new owner called `own_block` with that mode),
+    `disown` (the previous owner called `disown_block`), `lost` (the previous owner's
+    connection dropped), `disconnect` (the previous owner detached, or its client ended) and
+    `restore` (the owner reconnected and got the block back). A value the app doesn't know is
+    no reason. Only `take` and `request` are a client asking for the pane.
+  - A client whose connection drops without a close frame is kept for 60 s. Its blocks pass on
+    at once (`lost`). If it reconnects with its token inside that time (the same client id
+    again), it gets each block back, at its own size, unless that block's owner changed again
+    meanwhile. After that time the client ends (`disconnect`), and a reconnect is a new client
+    that owns nothing.
+  - A client that closes its socket ends at once, with no 60 s: its blocks pass on with
+    `disconnect`, and the token it held is void. The app's own drop of its control socket
+    (`URLSessionWebSocketTask.cancel()`, as after a missed pong) was seen to end its client
+    this way: the welcome that followed was a new client's.
+  - Events from while a client has no connection are lost: the phone never hears the `lost`
+    or `disconnect` of its own drop. It does not hear the `restore` either, which the other
+    clients get as it reconnects. Its stream says it: the sizes of the time away come with a
+    RESUME, the other client's and then its own.
+  - Checked on a revision-18 server with two throwaway clients and with the app, 2026-11-22.
 
 ## Messages
 

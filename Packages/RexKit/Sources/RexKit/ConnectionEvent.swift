@@ -125,8 +125,6 @@ public struct ConnectionEvent: Equatable, Sendable {
         case refused
         /// Nothing was claimed, one claim was made, and it did not hold.
         case `guard`
-        /// Another client asked for the pane (`block_owner_changed`, a take or a request).
-        case taken
     }
 
     /// What the phone's network path looks like: four yes-or-no facts and nothing else.

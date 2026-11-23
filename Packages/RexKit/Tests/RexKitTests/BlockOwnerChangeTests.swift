@@ -91,7 +91,7 @@ final class BlockOwnerChangeTests: XCTestCase {
         var events = BlockOwnerChange.Reason.allCases.map {
             ConnectionEvent.owner(BlockOwnerChange(blockID: "b", owner: "me", previous: "you", reason: $0), me: "me")
         }
-        events += [.fit(.takenBack), .fit(.givenBack), .fit(.lost, loss: .taken)]
+        events += [.fit(.takenBack), .fit(.givenBack), .fit(.lost, loss: .owner)]
         for var e in events {
             e.time = 1_700_000_000_000
             e.server = 42
