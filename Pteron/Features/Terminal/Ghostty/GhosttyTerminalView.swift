@@ -274,6 +274,9 @@ final class GhosttyTerminalView: UIView {
         }
         // The restored terminal has the snapshot's grid.
         adoptCoreGrid()
+        // And the snapshot's screen. Said now, from the terminal as parsed: the first frame may
+        // be a hold away, and the grid that fits depends on the screen (`alternateScreenHook`).
+        scroller.screenRestored(alternate: core.input.modes.alternateScreen)
     }
 
     /// Takes over the grid a snapshot restore gave the terminal, unless a later `setGrid` is

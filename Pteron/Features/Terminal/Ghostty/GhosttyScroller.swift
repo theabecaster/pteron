@@ -199,11 +199,17 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         if pan.minimumNumberOfTouches != fingers { pan.minimumNumberOfTouches = fingers }
         if programPan.isEnabled != snapshot.programScroll { programPan.isEnabled = snapshot.programScroll }
         updateIndicator()
-        if snapshot.alternateScreen != alternateScreen {
-            alternateScreen = snapshot.alternateScreen
-            view?.alternateScreenHook?(alternateScreen)
-        }
+        noteScreen(alternate: snapshot.alternateScreen)
         tellPlace()
+    }
+
+    /// A snapshot replaced the terminal: the screen it is on is known before a frame is drawn.
+    func screenRestored(alternate: Bool) { noteScreen(alternate: alternate) }
+
+    private func noteScreen(alternate: Bool) {
+        guard alternate != alternateScreen else { return }
+        alternateScreen = alternate
+        view?.alternateScreenHook?(alternate)
     }
 
     /// The keyboard covers the bottom `points` of the view, whose grid keeps its rows. The scroll

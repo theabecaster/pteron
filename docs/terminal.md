@@ -273,7 +273,8 @@ from a program state the user has not seen.
   unfocused pane's. The engine holds the screen on show and draws what arrived as one frame when
   the fence comes down ([ghostty-engine.md](ghostty-engine.md), The catch-up hold), for 1 s at
   most; after that the screen follows the bytes while the fence stays up. A pane that opens at
-  the size it will keep draws its first screen at once.
+  the size it will keep draws its first screen at once. A scroll, a selection and find draw
+  through the hold; a new keyboard cover does not: it is taken by the frame that ends the hold.
 - A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
 - A `resize` from another client counts as "Resized on another screen" only on a current stream or after
   our own resize has come by: a size from before our resize can arrive after the claim's answer.
@@ -457,7 +458,13 @@ is not a cold start.
     keyboard) can't leave the shift short of the pin.
   - On the alternate screen (an editor, a pager) the grid fits above the keyboard, as its rows
     can't be scrolled: one resize when the program enters or leaves that screen with the
-    keyboard up, and one when the keyboard shows or hides while it is there.
+    keyboard up, and one when the keyboard shows or hides while it is there. The host hears of
+    the screen from each frame (`alternateScreenHook`), and of a snapshot's screen as soon as
+    it is restored, from the terminal as parsed (`GhosttyScroller.screenRestored`): a pane
+    that starts behind its fence draws no frame until the fence falls, and its first claim
+    would be for the keyboard-down grid, then a second one for the grid above the keyboard.
+    When the snapshot is in before the claim's settle time ends, the first claim is the right
+    one; on a slow link the claim can still go first.
   - The key bar alone (hardware keyboard) takes room from the layout and the grid fits above it.
   - The canvas with the keyboard down is worked out from each layout, never kept from an earlier
     one (`PaneLayout.restCanvas`): the canvas as it is, plus the room the keyboard takes from the
