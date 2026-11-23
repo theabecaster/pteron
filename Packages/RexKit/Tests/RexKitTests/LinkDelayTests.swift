@@ -8,22 +8,38 @@ final class LinkDelayTests: XCTestCase {
     /// The waits a delayed socket asked for, skipped.
     private final class Waits {
         var asked: [Duration] = []
+        /// The time the socket sees; it stands still unless a test moves it.
+        var time = ContinuousClock.now
     }
 
     private func socket(_ plan: FakeLink.SocketPlan = .welcome(), roundTrip: Duration = .milliseconds(100))
         -> (DelayedStreamSocket, FakeSocket, Waits) {
         let inner = FakeSocket(plan)
         let waits = Waits()
-        let s = DelayedStreamSocket(inner, delay: LinkDelay(roundTrip: roundTrip)) { d in
+        let s = DelayedStreamSocket(inner, delay: LinkDelay(roundTrip: roundTrip), sleep: { d in
             waits.asked.append(d)
             await Task.yield()
-        }
+        }, now: { waits.time })
         return (s, inner, waits)
     }
 
     func testNoDelayIsZero() {
         XCTAssertTrue(LinkDelay.none.isZero)
         XCTAssertFalse(LinkDelay(roundTrip: .milliseconds(1)).isZero)
+    }
+
+    /// A socket opened ahead of its first message (`EarlySocket`) has that much of its opening
+    /// behind it: the message waits for the rest, and never less than its own way there.
+    func testAFirstMessageThatComesLaterWaitsOnlyForTheRestOfTheOpening() async throws {
+        let (s, _, waits) = socket()
+        waits.time += .milliseconds(200)
+        try await s.send(Data([1]))
+        XCTAssertEqual(waits.asked, [.milliseconds(150)], "100 ms of the opening left, then one way")
+
+        let (late, _, lateWaits) = socket()
+        lateWaits.time += .seconds(2)
+        try await late.send(Data([1]))
+        XCTAssertEqual(lateWaits.asked, [.milliseconds(50)], "open long since: one way")
     }
 
     func testTheFirstMessageWaitsForTheConnectionAndOneWay() async throws {

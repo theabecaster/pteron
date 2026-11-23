@@ -39,10 +39,12 @@ builds.
   `OWNER_EVENT <block> reason=<reason> previous=<none|me|other> owner=<none|me|other>`.
 - `-netDelay <ms>`: add a simulated round-trip time to every server's calls and terminal streams
   (`LinkDelay`, RexKit): half before each request leaves and half after its answer; three round
-  trips before a new terminal data socket carries its first message (TCP, TLS 1.3 and the
-  WebSocket upgrade, which is how the server's data sockets connect), then half per message
-  either way. It delays without limiting: a burst stays a burst. Events, file transfers and
-  tunnels are not delayed. Also in the benchmark's `BENCH` build.
+  trips from the moment a new terminal data socket is opened before it carries its first message
+  (TCP, TLS 1.3 and the WebSocket upgrade, which is how the server's data sockets connect; a
+  socket opened ahead of its HELLO has that time behind it), then half per message
+  either way. It is a model: a socket's opening is charged from the moment it is opened, and it
+  has not been checked against a real slow link. It delays without limiting: a burst stays a
+  burst. Events, file transfers and tunnels are not delayed. Also in the benchmark's `BENCH` build.
 - No argument: a Debug build logs one `CONTROL_API negotiated=<n> server=<n>` line for each
   control connection it makes, the API revision the server gave it and the newest the server
   speaks, and one `CONTROL_SYNC creators=read|kept` line for each full sync, which says whether

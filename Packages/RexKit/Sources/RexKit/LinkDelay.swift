@@ -8,9 +8,11 @@ import Foundation
 /// trip later. What it models:
 ///
 /// - a call: one way before the request leaves, one way after the answer arrives;
-/// - a new data socket: `socketOpenRoundTrips` before its first message can leave (the server's
-///   data sockets are HTTP/1.1 over TLS 1.3 on a connection of their own: TCP, TLS and the
-///   WebSocket upgrade, one round trip each), then one way per message in either direction;
+/// - a new data socket: `socketOpenRoundTrips` from the moment it is opened before its first
+///   message can leave (the server's data sockets are HTTP/1.1 over TLS 1.3 on a connection of
+///   their own: TCP, TLS and the WebSocket upgrade, one round trip each), then one way per
+///   message in either direction. A socket opened ahead of its first message has that much of
+///   its opening behind it (`EarlySocket`);
 /// - a ping: one round trip.
 public struct LinkDelay: Sendable, Equatable {
     public var roundTrip: Duration
@@ -41,6 +43,8 @@ final class DelayedStreamSocket: StreamSocket {
     /// The time; a test moves its own.
     private let now: @MainActor () -> ContinuousClock.Instant
     private var opened = false
+    /// When the socket was made: its opening runs from here, whenever its first message comes.
+    private let made: ContinuousClock.Instant
     private var arrived: [(Result<Data?, Error>, due: ContinuousClock.Instant)] = []
     private var waiter: CheckedContinuation<Void, Never>?
     private var pumping = false
@@ -55,12 +59,15 @@ final class DelayedStreamSocket: StreamSocket {
         self.delay = delay
         self.now = now
         self.sleep = sleep
+        made = now()
     }
 
     func send(_ data: Data) async throws {
         let first = !opened
         opened = true
-        await sleep(first ? delay.socketOpen + delay.oneWay : delay.oneWay)
+        // What is left of the opening, for the first message, then its own way there.
+        let opening = first ? max(.zero, delay.socketOpen - (now() - made)) : .zero
+        await sleep(opening + delay.oneWay)
         try await inner.send(data)
     }
 
