@@ -47,7 +47,10 @@ final class CatchUpFitHostTests: XCTestCase {
     private final class Gate {
         private var waiting: [CheckedContinuation<Void, Never>] = []
         private var open = false
+        /// How often a request began to settle.
+        private(set) var asked = 0
         func wait() async {
+            asked += 1
             if open { return }
             await withCheckedContinuation { waiting.append($0) }
         }
@@ -67,7 +70,7 @@ final class CatchUpFitHostTests: XCTestCase {
 
     /// The pane as it is with the software keyboard up: 250 points tall of the 500 it has with
     /// the keyboard down. Its stream has started and is behind its fence.
-    private func pane(sizing: SizingMode = .fit) -> Pane {
+    private func pane(sizing: SizingMode = .fit, height: CGFloat = 250) -> Pane {
         let transport = FakeFitTransport()
         let gate = Gate()
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
@@ -77,7 +80,7 @@ final class CatchUpFitHostTests: XCTestCase {
         host.hardwareKeyboard = { false }
         host.ownClientID = { [phone] in phone }
         host.clientGeneration = { 0 }
-        host.frame = CGRect(x: 0, y: 0, width: 360, height: 250)
+        host.frame = CGRect(x: 0, y: 0, width: 360, height: height)
         host.setRestSize(CGSize(width: 360, height: 500))
         window.addSubview(host)
         host.layoutIfNeeded()
@@ -132,6 +135,25 @@ final class CatchUpFitHostTests: XCTestCase {
         await pause(0.3)
         XCTAssertTrue(p.host.alternateScreen, "no layout takes the screen back")
         XCTAssertEqual(resizes(p), ["resize \(visible.cols)x\(visible.rows)"], "the first claim is the visible grid, and the only one")
+    }
+
+    func testWithTheKeyboardDownASnapshotOnTheAlternateScreenDoesNotStartTheSettleOver() async throws {
+        // Both screens fit the same grid here: the news of the screen asks for nothing again,
+        // so the claim on its way lands when it would have.
+        let p = pane(height: 500)
+        let rest = grid(p.host, height: 500)
+        XCTAssertEqual(p.gate.asked, 1)
+        deliver(try snapshot(alternate: true), to: p.host)
+        let known = await eventually { p.host.alternateScreen }
+        XCTAssertTrue(known)
+        p.host.layoutIfNeeded()
+        await pause(0.2)
+        XCTAssertEqual(p.gate.asked, 1, "no second request, no new settle time")
+        p.gate.lift()
+        let sent = await eventually { !self.resizes(p).isEmpty }
+        XCTAssertTrue(sent)
+        await pause(0.3)
+        XCTAssertEqual(resizes(p), ["resize \(rest.cols)x\(rest.rows)"])
     }
 
     func testASnapshotOnTheMainScreenStillClaimsTheRestHeightGrid() async throws {

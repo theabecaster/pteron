@@ -1560,8 +1560,17 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The grid that fits depends on the screen the program is on (`fitSize`).
     private func alternateScreenChanged(_ alternate: Bool) {
         guard alternate != alternateScreen else { return }
+        let fitted = fitGrid()
         alternateScreen = alternate
         if let f = finder { f.edge = alternate ? .top : .bottom }
+        // With the keyboard down both screens fit the same grid, and there is nothing to lay
+        // out again: a layout would ask for the size that is already on its way and start its
+        // settle time over, so a pane that opens on the alternate screen had its fence up that
+        // much longer. Find's hold covers by the screen, whatever the grid.
+        guard fitGrid() != fitted else {
+            if findHold != nil { positionTerm() }
+            return
+        }
         lastBounds = .zero
         setNeedsLayout()
     }
