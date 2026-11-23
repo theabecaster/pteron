@@ -123,7 +123,14 @@ final class CatchUpFitHostTests: XCTestCase {
         p.gate.lift()
         let sent = await eventually { !self.resizes(p).isEmpty }
         XCTAssertTrue(sent)
+        // The resize comes back in the stream and the pane is laid out for it, still behind the
+        // fence: the last frame's state is of the terminal before the snapshot, and says nothing
+        // about the screen now.
+        p.host.streamResized(cols: visible.cols, rows: visible.rows, owner: phone)
+        p.host.setNeedsLayout()
+        p.host.layoutIfNeeded()
         await pause(0.3)
+        XCTAssertTrue(p.host.alternateScreen, "no layout takes the screen back")
         XCTAssertEqual(resizes(p), ["resize \(visible.cols)x\(visible.rows)"], "the first claim is the visible grid, and the only one")
     }
 

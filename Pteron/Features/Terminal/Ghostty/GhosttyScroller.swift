@@ -204,7 +204,12 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     }
 
     /// A snapshot replaced the terminal: the screen it is on is known before a frame is drawn.
-    func screenRestored(alternate: Bool) { noteScreen(alternate: alternate) }
+    /// The last frame's state is of the terminal before, and a layout reads it again
+    /// (`layoutChanged`): it says the new screen too, until the next frame says its own.
+    func screenRestored(alternate: Bool) {
+        state.alternateScreen = alternate
+        noteScreen(alternate: alternate)
+    }
 
     private func noteScreen(alternate: Bool) {
         guard alternate != alternateScreen else { return }
