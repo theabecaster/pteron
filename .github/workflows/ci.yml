@@ -29,7 +29,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           for i in $(seq 1 90); do
-            N=$(cat ~/rexduo-build.next 2>/dev/null)
+            N=$(cat ~/rexduo-build.next 2>/dev/null || true)
             if [ -z "$N" ] || [ "$N" = ci ]; then
               if mkdir ~/rexduo-build.lock 2>/dev/null; then
                 echo ci > ~/rexduo-build.lock/lane
