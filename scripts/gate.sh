@@ -31,6 +31,20 @@ FAILED=()
 
 xcodegen generate -q || FAILED+=(xcodegen)
 
+# The package tests, one package after the other. gate-branch runs this script under
+# `taskpolicy -b`, and the children inherit that background priority; a wall-time test
+# (EarlySocketStreamTests) can pass there when it should fail, so the script puts itself back
+# to normal priority first. Either package failing fails the gate and names the package.
+taskpolicy -B -p $$ 2>/dev/null
+for pkg in RexKit RexGlance; do
+  swift test --package-path "Packages/$pkg" > "build/gate-$pkg.log" 2>&1
+  rc=$?; echo "$pkg tests: exit $rc"
+  if (( rc != 0 )); then
+    FAILED+=(${(L)pkg})
+    grep -E "error: -\[|✘ |failed \(|Test run with .* failed" "build/gate-$pkg.log" | head -10
+  fi
+done
+
 # The Mac's load when the tests begin, for reading a failure afterwards.
 echo "load before tests: $(sysctl -n vm.loadavg)"
 # One test process, never parallel workers: with two the 1-minute load passes 400 on a 10-core
@@ -54,7 +68,7 @@ scripts/check-brand.sh || FAILED+=(brand)
 
 # The failure lines are printed above; the logs go somewhere safe before build/ goes.
 if (( $#FAILED )); then
-  KEEP=$(mktemp -d "${TMPDIR:-/tmp}/pteron-gate.XXXXXX") && cp build/gate-test.log build/gate-rel.log $KEEP/ 2>/dev/null
+  KEEP=$(mktemp -d "${TMPDIR:-/tmp}/pteron-gate.XXXXXX") && cp build/gate-test.log build/gate-rel.log build/gate-RexKit.log build/gate-RexGlance.log $KEEP/ 2>/dev/null
 fi
 cleanup
 if (( $#FAILED )); then
