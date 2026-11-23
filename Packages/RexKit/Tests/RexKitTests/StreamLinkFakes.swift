@@ -378,7 +378,23 @@ final class SleepLog {
         for (_, c) in due { c.resume() }
     }
 
+    /// The waits for a kept early socket's age limit (`TerminalStream.earlySleep`). None passes
+    /// until the test says so (`releaseEarly`).
+    private(set) var earlyAsked: [Duration] = []
+    private var earlyParked: [CheckedContinuation<Void, Never>] = []
+
+    /// Every kept early socket reaches its age limit now.
+    func releaseEarly() {
+        let due = earlyParked
+        earlyParked = []
+        for c in due { c.resume() }
+    }
+
     func attach(to stream: TerminalStream) {
+        stream.earlySleep = { d in
+            self.earlyAsked.append(d)
+            await withCheckedContinuation { self.earlyParked.append($0) }
+        }
         // The stream keeps the log alive.
         stream.sleep = { d in
             self.asked.append(d)
@@ -402,6 +418,9 @@ func makeStream(link: FakeLink, sink: TerminalSink) -> (TerminalStream, SleepLog
     let control = RexControl(address: "http://127.0.0.1:9", client: ClientInfo(name: "test", version: "0", label: "test"))
     let s = TerminalStream(control: control, link: link, sessionID: "session:test", blockID: "block:test")
     s.sink = sink
+    // Time stands still unless a test moves it: an early socket is as old as the test says.
+    let start = ContinuousClock.now
+    s.now = { start }
     let log = SleepLog()
     log.attach(to: s)
     return (s, log)

@@ -217,10 +217,12 @@ final class StreamReconnectTests: XCTestCase {
         let (_, sink, log) = await waitingForAttach(link)
         await settle()
         XCTAssertEqual(link.count("data.connect"), 2, "it asks nothing while it waits")
-        XCTAssertEqual(link.sockets.count, 1)
+        XCTAssertEqual(link.sockets.count, 2, "the socket opened beside the refused ticket, kept (`EarlySocket`)")
+        XCTAssertEqual(link.sockets[1].sent.count, 0)
         link.attachWaits.attach(["session:test"])
         let live = await eventually { sink.statuses.last == .live }
         XCTAssertTrue(live)
+        XCTAssertEqual(link.sockets.count, 2, "and used: no other opens")
         XCTAssertEqual(link.count("data.connect"), 3)
         XCTAssertFalse(log.asked.contains(TerminalStream.attachRetryDelay), "no timer was waited out")
         XCTAssertEqual(link.attachWaits.waiting, 0)
@@ -280,7 +282,9 @@ final class StreamReconnectTests: XCTestCase {
                 XCTAssertEqual(link.count("data.connect"), asked + 1, "the restart's own start, once")
             } else {
                 XCTAssertEqual(link.count("data.connect"), asked, leave)
-                XCTAssertEqual(link.sockets.count, 1, leave)
+                XCTAssertEqual(link.sockets.count, 2, leave)
+                XCTAssertTrue(link.sockets[1].closed, "the socket kept for the wait is closed: \(leave)")
+                XCTAssertEqual(link.sockets[1].sent.count, 0, leave)
             }
             stream.stop()
         }
@@ -299,7 +303,8 @@ final class StreamReconnectTests: XCTestCase {
         await settle()
         XCTAssertEqual(link.attachWaits.waiting, 0)
         XCTAssertEqual(link.count("data.connect"), asked, "no ticket is asked of a connection that is gone")
-        XCTAssertEqual(link.sockets.count, 1, "and no socket is opened")
+        XCTAssertEqual(link.sockets.count, 2, "and no socket is opened: the one kept for the wait is all")
+        XCTAssertTrue(link.sockets[1].closed, "and it is closed")
         XCTAssertEqual(log.backoffs, [])
         // Back: exactly one start.
         link.connect()
@@ -307,7 +312,7 @@ final class StreamReconnectTests: XCTestCase {
         XCTAssertTrue(live)
         await settle()
         XCTAssertEqual(link.count("data.connect"), asked + 1)
-        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertEqual(link.sockets.count, 3)
     }
 
     func testWakeDoesNothingForAStoppedStream() async {
@@ -496,7 +501,11 @@ final class StreamReconnectTests: XCTestCase {
         XCTAssertTrue(live)
         await settle()
         XCTAssertEqual(link.count("data.connect"), 2)
-        XCTAssertEqual(link.sockets.count, 1)
+        // The first start's socket, opened beside its ticket request, went with that request.
+        XCTAssertEqual(link.sockets.count, 2)
+        XCTAssertTrue(link.sockets[0].closed)
+        XCTAssertEqual(link.sockets[0].sent.count, 0)
+        XCTAssertTrue(link.sockets[1].isHello)
         XCTAssertEqual(log.backoffs, [])
     }
 

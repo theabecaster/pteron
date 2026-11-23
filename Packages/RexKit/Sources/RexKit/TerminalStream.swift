@@ -858,12 +858,100 @@ public final class TerminalStream {
     /// The deadline of the handshake under way. One scheduled wait, ended with the handshake.
     private var handshakeClock: HandshakeClock?
 
+    /// A data socket that is open and has sent no HELLO or RESUME yet, with its deadline.
+    @MainActor
+    private final class OpenedSocket {
+        let socket: any StreamSocket
+        let openedAt: ContinuousClock.Instant
+        var clock: HandshakeClock?
+        /// An early socket listens from the start, so that it knows when the server ends it:
+        /// its first message, or its failure. After the HELLO that message is the answer.
+        var first: Task<Result<Data?, Error>, Never>?
+        /// The first message came. Before a HELLO it can only be the socket's end.
+        var answered = false
+        var closed = false
+
+        init(_ socket: any StreamSocket, at: ContinuousClock.Instant) {
+            self.socket = socket
+            openedAt = at
+        }
+
+        func listen() {
+            let socket = self.socket
+            first = Task { [weak self] in
+                let r: Result<Data?, Error>
+                do { r = .success(try await socket.receive()) } catch { r = .failure(error) }
+                self?.answered = true
+                return r
+            }
+        }
+
+        func close() {
+            guard !closed else { return }
+            closed = true
+            clock?.end()
+            socket.close()
+        }
+    }
+
+    /// The socket a fresh start opened beside its ticket request, until its HELLO goes
+    /// (`EarlySocket`). One at a time; whatever moves the stream on closes it (`dropEarly`).
+    private var early: OpenedSocket?
+    /// Counts the early sockets kept through a wait, so that one's age limit does nothing
+    /// for a later one.
+    private var earlySerial = 0
+    /// The time, for an early socket's age. Tests set it.
+    var now: @MainActor () -> ContinuousClock.Instant = { .now }
+    /// The wait for a kept early socket's age limit. Apart from `sleep`, which tests skip:
+    /// skipping this one would close every kept socket at once.
+    var earlySleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+
+    /// Closes the early socket, if there is one: the stream stopped, parked, restarted or
+    /// started again, the wait for the attach ended without one, or the app left the front.
+    private func dropEarly() {
+        earlySerial += 1
+        early?.close()
+        early = nil
+    }
+
+    /// Opens the early socket of a fresh start, through the same gate as every data socket
+    /// (`mayOpen`, `RexControl.openDataSocket`). Nil when it can't be opened: the start goes on
+    /// in the order it had without one, and fails where that would.
+    private func openEarly() -> OpenedSocket? {
+        dropEarly()
+        guard mayOpen, let socket = try? link.openDataSocket(subprotocol: "rex.data.terminal.v1") else { return nil }
+        let opened = OpenedSocket(socket, at: now())
+        // The handshake's one deadline starts here and covers the wait for the ticket too.
+        opened.clock = HandshakeClock(seconds: control.dataHandshakeDeadline, sleep: handshakeSleep) { [weak opened] in
+            guard let opened, !opened.closed else { return }
+            opened.closed = true
+            opened.socket.close()
+        }
+        opened.listen()
+        early = opened
+        return opened
+    }
+
+    /// Keeps the early socket through the wait for the session's attach, for `limit` at most.
+    private func keepEarly(_ opened: OpenedSocket, for limit: Duration) {
+        guard early === opened else { return }
+        let serial = earlySerial
+        let sleep = earlySleep
+        Task { [weak self] in
+            await sleep(limit)
+            guard let self, serial == self.earlySerial, self.early === opened else { return }
+            // Too old for a HELLO: the server would end it in a moment.
+            self.dropEarly()
+        }
+    }
+
     /// The app went to the background (`RexControl.enteredBackground`): a handshake that is
     /// under way is given up now, as its deadline would give it up, so nothing waits or fires
     /// there. A RESUME keeps its token, and the stream waits for the control connection's
     /// verdict after the return; the handshake it makes then has a deadline of its own.
     func enteredBackground() {
         handshakeClock?.expireNow()
+        dropEarly()
         endSnapshotTurn()
     }
 
@@ -1194,12 +1282,20 @@ public final class TerminalStream {
         }
     }
 
-    private func fullStart() async {
+    /// - Parameter kept: the early socket of the start that waited for its session's attach,
+    ///   still open (`awaitAttach`): this start's ticket goes on it while it is young enough.
+    private func fullStart(keeping kept: OpenedSocket? = nil) async {
         // `stop()` may have run between the call that asked for this start and the start itself.
-        guard !stopped else { return }
+        guard !stopped else {
+            kept?.close()
+            return
+        }
         gen += 1
         retrySerial += 1
+        if let kept, early === kept { early = nil }
         endAttachWait()
+        var carried = kept
+        defer { carried?.close() }
         endSnapshotTurn()
         wakeReader()
         resyncing = false
@@ -1251,18 +1347,58 @@ public final class TerminalStream {
             // 2. Ticket, then the data WebSocket.
             var busyRetries = 0
             while true {
-                let t = try await link.call("data.connect", [
-                    "session_id": sessionID, "block_id": blockID,
-                    "data_ref_id": "terminal", "subprotocol": "rex.data.terminal.v1",
-                ])
+                // The socket opens in the turn the ticket is asked for, and the HELLO goes when
+                // both are there (`EarlySocket`). Only the first try: a busy terminal's retries
+                // keep their order.
+                var opened: OpenedSocket?
+                if busyRetries == 0 {
+                    if let kept = carried, mayOpen {
+                        carried = nil
+                        early = kept
+                        opened = kept
+                    } else {
+                        opened = openEarly()
+                    }
+                }
+                let t: JSONObject
+                do {
+                    t = try await link.call("data.connect", [
+                        "session_id": sessionID, "block_id": blockID,
+                        "data_ref_id": "terminal", "subprotocol": "rex.data.terminal.v1",
+                    ])
+                } catch {
+                    if let opened, myGen == gen, !stopped, early === opened {
+                        let conflict = (error as? RexError)?.code == "conflict"
+                        switch EarlySocket.step(ticket: conflict ? .conflict : .failed, ended: opened.answered || opened.closed,
+                                                age: now() - opened.openedAt) {
+                        case .keep(let limit): keepEarly(opened, for: limit)
+                        case .hello, .freshSocket, .close: dropEarly()
+                        }
+                    }
+                    throw error
+                }
                 guard let ticketStr = t.str("ticket"), let hello = DataFrame.ticketHello(ticketStr) else {
+                    if early === opened { dropEarly() }
                     throw RexError.local("bad ticket")
                 }
-                guard myGen == gen, !stopped else { return }
+                guard myGen == gen, !stopped else {
+                    if early === opened { dropEarly() } else { opened?.close() }
+                    return
+                }
                 // A HELLO ends the stream the server may still keep for a RESUME.
                 token = nil
                 do {
-                    try await openData(hello: hello, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
+                    if let opened, early === opened,
+                       EarlySocket.step(ticket: .arrived, ended: opened.answered || opened.closed, age: now() - opened.openedAt) == .hello {
+                        early = nil
+                        earlySerial += 1
+                        try await handshake(opened, hello: hello, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
+                    } else {
+                        // No early socket, or one that ended or grew too old before the ticket
+                        // came: a new socket for this ticket, as a start without one opens it.
+                        if early === opened { dropEarly() }
+                        try await openData(hello: hello, gen: myGen, fresh: true, collectSnapshot: fromSnapshot)
+                    }
                     break
                 } catch let refused as Refused
                             where failedStarts == 0 && Self.retriesHello(reason: refused.reason, attempt: busyRetries) {
@@ -1292,6 +1428,7 @@ public final class TerminalStream {
     private func startFailed(_ error: Error, gen myGen: Int, epoch: Int) {
         guard myGen == gen, !stopped else { return }
         if link.isConnected, epoch != connectEpoch {
+            dropEarly()
             // The control connection came back while this start was failing on the old one.
             // Nothing was waiting for that, so this is the one start it is owed.
             Task {
@@ -1300,7 +1437,11 @@ public final class TerminalStream {
             }
             return
         }
-        guard mayOpen else { waitForControl(); return }
+        guard mayOpen else {
+            dropEarly()
+            waitForControl()
+            return
+        }
         let conflict = (error as? RexError)?.code == "conflict"
         // The server's own no to the ticket, for the connection log.
         if let e = error as? RexError, e.status != 0, !e.neverSent {
@@ -1311,6 +1452,7 @@ public final class TerminalStream {
             awaitAttach(gen: myGen)
             return
         }
+        dropEarly()
         failedStarts += 1
         sink?.streamStatus(.failed(error.localizedDescription))
         let delay = Self.retryDelay(afterFailures: failedStarts)
@@ -1341,7 +1483,12 @@ public final class TerminalStream {
     /// then finds no connection and waits for it, as every start does. It only waits: no
     /// socket is opened and nothing is asked until the ticket.
     private func awaitAttach(gen myGen: Int) {
+        // The early socket of the start that was refused stays open through this wait
+        // (`EarlySocket`); `endAttachWait` would close it.
+        let kept = early
+        early = nil
         endAttachWait()
+        early = kept
         attachWaitSerial += 1
         let serial = attachWaitSerial
         let sleep = self.sleep
@@ -1351,14 +1498,26 @@ public final class TerminalStream {
             let id = self.attachWait
             self.attachWait = nil
             if !attached, let id { self.link.cancelAttachWait(id) }
-            guard myGen == self.gen, !self.stopped else { return }
+            // Attached: the ticket that follows goes on the early socket, if it is still there.
+            // The cap passed or the wait was cancelled: no socket stays open.
+            let kept = attached ? self.early : nil
+            if !attached { self.dropEarly() }
+            guard myGen == self.gen, !self.stopped else {
+                self.dropEarly()
+                return
+            }
             Task { [weak self] in
                 if !attached { await sleep(Self.attachRetryDelay) }
-                guard let self, myGen == self.gen, !self.stopped else { return }
-                await self.fullStart()
+                guard let self, myGen == self.gen, !self.stopped else {
+                    kept?.close()
+                    return
+                }
+                await self.fullStart(keeping: kept)
             }
         }
         guard let id = link.whenAttached(sessionID, goOn) else {
+            // Nothing to wait for: no socket stays open over the pause.
+            dropEarly()
             Task { [weak self] in
                 await sleep(Self.attachRetryDelay)
                 guard let self, myGen == self.gen, !self.stopped else { return }
@@ -1376,6 +1535,7 @@ public final class TerminalStream {
     /// Ends a wait for the session's attach without going on: the stream has moved on.
     private func endAttachWait() {
         attachWaitSerial += 1
+        dropEarly()
         guard let id = attachWait else { return }
         attachWait = nil
         link.cancelAttachWait(id)
@@ -1437,9 +1597,24 @@ public final class TerminalStream {
         // off, dormant or held is asked by the control connection alone.
         guard mayOpen else { throw RexError.unsent("not connected") }
         let socket = try link.openDataSocket(subprotocol: "rex.data.terminal.v1")
+        try await handshake(OpenedSocket(socket, at: now()), hello: hello, gen: myGen, fresh: fresh, collectSnapshot: collectSnapshot)
+    }
+
+    /// Sends `hello` on an open socket and takes the answer. The socket is one opened for it
+    /// just now, or a fresh start's early socket, whose deadline has been running since it
+    /// opened and whose first message is already being waited for.
+    private func handshake(_ opened: OpenedSocket, hello: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool) async throws {
+        let socket = opened.socket
         ws = socket
         // The handshake does not wait for ever: one deadline, ended with the first answer.
-        let clock = beginHandshake(socket, fresh: fresh, gen: myGen)
+        let clock: HandshakeClock
+        if let running = opened.clock {
+            handshakeClock?.end()
+            handshakeClock = running
+            clock = running
+        } else {
+            clock = beginHandshake(socket, fresh: fresh, gen: myGen)
+        }
         func over() {
             clock.end()
             if handshakeClock === clock { handshakeClock = nil }
@@ -1449,7 +1624,9 @@ public final class TerminalStream {
             // after that must change nothing.
             try await socket.send(Data(hello))
             guard myGen == gen, !stopped else { throw CancellationError() }
-            guard let d = try await socket.receive() else { throw RexError.local("bad handshake") }
+            let answer: Data?
+            if let first = opened.first { answer = try await first.value.get() } else { answer = try await socket.receive() }
+            guard let d = answer else { throw RexError.local("bad handshake") }
             over()
             try acceptWelcome([UInt8](d), gen: myGen, fresh: fresh, collectSnapshot: collectSnapshot)
         } catch {

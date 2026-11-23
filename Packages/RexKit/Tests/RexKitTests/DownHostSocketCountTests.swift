@@ -162,6 +162,10 @@ final class DownHostSocketCountTests: XCTestCase {
         let waits = await eventually { self.control.attachWaits.waiting == 1 }
         XCTAssertTrue(waits, "the pane waits for its session's attach")
         XCTAssertEqual(attachLink.callsReached, 1)
+        // The socket it opened beside that ticket is kept for the wait (`EarlySocket`): the
+        // computer was up then.
+        XCTAssertEqual(attachLink.opened, 1)
+        XCTAssertEqual(attachLink.sockets.last?.closed, false)
         // A page's request while the computer is up dials, so the count below means something.
         await pageRequest(tunnelLink)
         XCTAssertEqual(tunnelLink.opened, 1)
@@ -176,6 +180,7 @@ final class DownHostSocketCountTests: XCTestCase {
         XCTAssertEqual(up.parked, 3)
         XCTAssertEqual(control.attachWaits.waiting, 0, "the wait for the attach ended with the connection")
         let attachCalls = attachLink.callsReached
+        XCTAssertEqual(attachLink.sockets.last?.closed, true, "and its socket was closed with it")
         XCTAssertEqual(up.warm, 1, "the warm pane's RESUME waits for the control connection")
 
         /// What the app does with the host, once a minute: each parked pane is shown, woken,
@@ -212,7 +217,7 @@ final class DownHostSocketCountTests: XCTestCase {
             XCTAssertEqual(portsLink.opened, 0, "the Ports list, \(when)", file: file, line: line)
             XCTAssertEqual(dirLink.opened, 0, "the folder listing, \(when)", file: file, line: line)
             XCTAssertEqual(filesLink.opened, 0, "the file transfer, \(when)", file: file, line: line)
-            XCTAssertEqual(attachLink.opened, 0, "the pane that waited for its attach, \(when)", file: file, line: line)
+            XCTAssertEqual(attachLink.opened - 1, 0, "the pane that waited for its attach, \(when)", file: file, line: line)
             XCTAssertEqual(attachLink.callsReached - attachCalls, 0, "and its ticket, \(when)", file: file, line: line)
             XCTAssertEqual(control.attachWaits.waiting, 0, "nothing waits for an attach, \(when)", file: file, line: line)
             XCTAssertEqual(control.dataSocketsOpened, 0, "the real `openDataSocket`, \(when)", file: file, line: line)

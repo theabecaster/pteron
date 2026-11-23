@@ -481,6 +481,46 @@ final class StreamFenceTests: XCTestCase {
         XCTAssertTrue(sent)
     }
 
+    /// The same return with the ticket refused once: the socket opened beside that ticket is
+    /// kept through the wait for the attach and takes the HELLO (`EarlySocket`). The fence
+    /// holds all the way, and nothing typed or sent before goes out.
+    func testAFreshStartOnItsEarlySocketKeepsTheFenceUpAndSendsNothingAgain() async {
+        let link = FakeLink()
+        let (s, sink, log) = await current(link)
+        log.held = [s.fence.timing.heldLife, TerminalStream.attachWaitCap]
+        defer {
+            log.release(s.fence.timing.heldLife)
+            log.release(TerminalStream.attachWaitCap)
+            log.releaseEarly()
+        }
+        link.held = [Self.write]
+        s.send(text: "left before")
+        _ = await eventually { link.waitingCount == 1 }
+        link.disconnect()
+        link.sockets[0].drop()
+        _ = await eventually { s.waitingForControl }
+        link.held = []
+        XCTAssertTrue(s.send(text: "typed at the old screen"))
+        link.clientGeneration += 1
+        link.failures["data.connect"] = [RexError(code: "conflict", message: "stream is not attached to session", status: 409)]
+        link.connect()
+        let waits = await eventually { link.attachWaits.waiting == 1 }
+        XCTAssertTrue(waits)
+        XCTAssertEqual(link.sockets.count, 2, "the early socket, kept")
+        XCTAssertTrue(s.isFenced)
+        link.attachWaits.attach(["session:test"])
+        let fresh = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(fresh)
+        XCTAssertEqual(link.sockets.count, 2, "no other socket")
+        XCTAssertTrue(link.sockets[1].isHello)
+        await settle()
+        XCTAssertTrue(s.isFenced, "up until the new snapshot has arrived")
+        XCTAssertEqual(sink.fence, [true, false, true], "one fence, never down in between")
+        await catchUp(s, link)
+        await settle()
+        XCTAssertEqual(link.written, ["left before"], "once, as it left; what was typed at the old screen is never sent")
+    }
+
     func testInputThatLeftBeforeTheClientWasLostIsNeverSentAgain() async {
         let link = FakeLink()
         let (s, _, _) = await current(link)

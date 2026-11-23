@@ -21,7 +21,8 @@ selected range and key encoding. What must keep working, and the manual script f
 ## Start
 
 1. `data.connect` → a base64url ticket (16 bytes, good once, for 60 s).
-2. `wss://<server>/api/data`, subprotocol `rex.data.terminal.v1`. Handshake in `DataFrame`:
+2. `wss://<server>/api/data`, subprotocol `rex.data.terminal.v1`, opened in the turn the ticket
+   is asked for (The early socket, below). Handshake in `DataFrame`:
    send `0x01 + ticket` (HELLO); the first frame is `0x82 <reason>` (REJECT) or a 32-byte `0x81`
    WELCOME with the resume token (bytes 1–16), how long the server keeps a dropped stream for a
    resume (UInt32 LE milliseconds, bytes 20–23; 60 s today) and the nonce (UInt64 LE, bytes 24–31).
@@ -41,6 +42,34 @@ about 44 pt, with a soft stroke gliding along it in a 1.2 s loop while the body 
 fades in over 180 ms only after 400 ms, and out over 150 ms, so a pane that opens fast shows
 nothing. "Connecting…" sits under it and waits 2.5 s. Core Animation runs all of it: no
 main-thread work per frame. A pane that has a screen never shows it.
+
+### The early socket
+
+A fresh start opens its data socket in the same turn it asks for the ticket, and sends the HELLO
+when both are there (`EarlySocket`, `TerminalStream.openEarly`): the socket's connect and
+upgrade no longer wait for the ticket's round trip. The server takes a HELLO on a socket that has
+been open for a while, and it ends a socket that has sent none 5 s after its upgrade (REJECT
+`0x05`, close 1002), whether or not it was pinged. So:
+
+- The HELLO goes on the early socket only while the socket is younger than 4 s
+  (`EarlySocket.ageLimit`, 1 s under the server's 5 s) and has not ended. The stream listens on
+  it from the start, so it knows when the server ended it.
+- A ticket that comes for a socket that ended or grew too old goes on a new socket, opened then,
+  as a start without an early socket opens it. That is not a failed start and counts toward no
+  backoff.
+- A ticket refused with `conflict` keeps the socket open through the wait for the session's
+  attach (Reconnect), for what is left of the 4 s. The ticket asked after the attach goes on it.
+  At the age limit, at the wait's cap, and when the wait is cancelled, the socket is closed.
+- Any other failure of the ticket closes the socket at once, and the start fails as before.
+- `stop()`, `park()`, `restart()`, a newer start and the background close it. No socket is left
+  open by a start that is over.
+- It is opened through the same gate as every data socket (`mayOpen`,
+  `RexControl.openDataSocket`): none toward a computer whose control connection has no welcome,
+  none in the background. It is one of the connection's data sockets, so a computer that is
+  dropped takes it along.
+- The handshake's one deadline starts when the socket opens and covers the wait for the ticket.
+- A RESUME needs no ticket and opens its socket as before. A busy terminal's retries (REJECT
+  `0x02`) ask for the ticket first and open the socket after it, as before.
 
 REJECT `0x02` means this client still has a connection to the terminal. Right after a `restart()`
 that is the old socket, whose close the server hasn't handled yet, so the first start asks again
@@ -140,7 +169,9 @@ socket to a host whose control connection has no welcome; it asks to be told
   250 ms. `RexControl` learns of an attach from the answer to its own `session.attach` or
   `session.bootstrap` call; a new client is attached to nothing.
   - The wait only waits: no socket is opened and nothing is asked until the ticket, which goes
-    through the same gate as every start.
+    through the same gate as every start. The socket the refused start opened beside its ticket
+    stays open for the wait while it is young enough, and takes the HELLO after the attach
+    (Start, The early socket).
   - It has a hard cap of 2 s. At the cap, and when there is nothing to wait for (the session is
     attached, so the refusal has another reason), the start is tried again after 250 ms as
     before, up to 8 times, then the backoff.
