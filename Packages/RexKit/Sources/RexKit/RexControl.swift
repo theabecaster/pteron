@@ -1283,7 +1283,33 @@ public final class RexControl {
         return reply.value
     }
 
-    /// `StreamLink.start`: the request is with the socket when this returns true. Anything
+    /// Whether a call that the server refuses until `session` is attached on this connection
+    /// may leave now. Right after a reconnect that started a new client the app attaches its
+    /// sessions again, and a call that leaves in between is refused; one that left after
+    /// `session.bootstrap` and before the attach is refused with a plain `bad_request`, which
+    /// is not told apart from a real no. So the caller waits here for the attach's answer.
+    ///
+    /// True at once when the session is attached, when there is no connection (the call then
+    /// fails unsent, and its caller waits for the connection as before), and when an earlier
+    /// wait for the session ran to `cap`: an attach this connection's calls don't show must not
+    /// hold a call back twice. False when the wait ended without the attach: it was cancelled
+    /// (the connection dropped, the app went to the background) or `cap` passed. The caller
+    /// asks again later.
+    public func mayCall(attachedTo session: String, cap: Duration = TerminalStream.attachWaitCap,
+                        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) async -> Bool {
+        guard state == .connected, !attachWaits.mayCall(session) else { return true }
+        return await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            guard let id = attachWaits.wait(for: session, { c.resume(returning: $0) }) else {
+                c.resume(returning: true)
+                return
+            }
+            Task { @MainActor [attachWaits] in
+                await sleep(cap)
+                attachWaits.giveUp(id)
+            }
+        }
+    }
+
     /// `callAny` would wait for or refuse before the send is left to it.
     func start(_ method: String, _ payload: JSONObject?, answer: @escaping @MainActor (Result<JSONObject, Error>) -> Void) -> Bool {
         guard linkDelay.isZero, let t = task, state == .connected, Self.tooNew(method, for: negotiatedRevision) == nil else { return false }

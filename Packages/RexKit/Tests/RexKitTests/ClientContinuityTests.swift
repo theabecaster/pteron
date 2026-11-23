@@ -77,6 +77,35 @@ final class ClientContinuityTests: XCTestCase {
         XCTAssertEqual(waits.waiting, 0)
     }
 
+    func testAWaitThatRanToItsCapLetsTheNextCallGoUntilANewClient() {
+        let waits = AttachWaits()
+        XCTAssertFalse(waits.mayCall("session:a"))
+        var heard: [Bool] = []
+        let id = waits.wait(for: "session:a") { heard.append($0) }
+        waits.giveUp(id!)
+        XCTAssertEqual(heard, [false], "the wait ended without the attach")
+        XCTAssertTrue(waits.mayCall("session:a"), "an attach nobody saw must not hold a call back twice")
+        XCTAssertFalse(waits.mayCall("session:b"))
+        waits.giveUp(id!)
+        XCTAssertEqual(heard, [false], "a wait that has ended is left alone")
+        XCTAssertNotNil(waits.wait(for: "session:a") { heard.append($0) }, "a stream's own wait is as before: not attached")
+        waits.newClient()
+        XCTAssertFalse(waits.mayCall("session:a"), "a new client: its attach is waited for again")
+        waits.attach(["session:a"])
+        XCTAssertTrue(waits.mayCall("session:a"))
+        XCTAssertEqual(waits.unseen, [])
+    }
+
+    func testACancelledWaitIsNotACap() {
+        let waits = AttachWaits()
+        let id = waits.wait(for: "session:a") { _ in }
+        waits.cancel(id!)
+        XCTAssertFalse(waits.mayCall("session:a"), "cancelled, not given up: the next call waits again")
+        _ = waits.wait(for: "session:a") { _ in }
+        waits.cancelAll()
+        XCTAssertFalse(waits.mayCall("session:a"))
+    }
+
     func testOnlyAnAttachCallsAnswerSaysASessionIsAttached() {
         XCTAssertEqual(AttachWaits.attaches(method: "session.attach", payload: ["session_id": "session:a"]), ["session:a"])
         XCTAssertEqual(AttachWaits.attaches(method: "session.bootstrap", payload: ["attach_session_ids": ["session:a", "session:b"]]),
@@ -183,6 +212,131 @@ final class ControlClientTests: XCTestCase {
         await pump()
         XCTAssertEqual(heard, [true, false])
         XCTAssertEqual(control.attachWaits.waiting, 0)
+    }
+
+    // MARK: A call that waits for its session's attach
+
+    /// The cap's wait, ended by the test.
+    @MainActor
+    private final class Cap {
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        var asked: [Duration] = []
+        func sleep(_ d: Duration) async {
+            asked.append(d)
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        func pass() {
+            let all = waiting
+            waiting = []
+            for w in all { w.resume() }
+        }
+    }
+
+    private func connect(id: String = "client:1") async {
+        let control = control!
+        Task { @MainActor in try? await control.connect() }
+        await pump()
+        welcome(id: id, resumed: false)
+        await pump()
+    }
+
+    /// Answers the newest request on the socket.
+    private func answerLast() throws {
+        let request = try XCTUnwrap(sockets.last.sent.last.flatMap { JSONCodec.decode($0) })
+        let id = try XCTUnwrap(request.str("id"))
+        sockets.last.deliver(#"{"type":"response","id":"\#(id)","payload":{}}"#)
+    }
+
+    func testACallWaitsForItsSessionsAttachAndGoesAtOnceWhenItIsAttached() async throws {
+        let control = control!
+        let cap = Cap()
+        await connect()
+        var said: [Bool] = []
+        Task { @MainActor in said.append(await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })) }
+        await pump()
+        XCTAssertEqual(said, [], "not attached: the call waits")
+        XCTAssertEqual(cap.asked, [.seconds(2)])
+        // The app's bootstrap attaches nothing: still waiting.
+        Task { @MainActor in _ = try? await control.call("session.bootstrap", ["event_scope": "all", "attach_session_ids": [String]()]) }
+        await pump()
+        try answerLast()
+        await pump()
+        XCTAssertEqual(said, [])
+        Task { @MainActor in _ = try? await control.call("session.attach", ["session_id": "session:a"]) }
+        await pump()
+        XCTAssertEqual(said, [], "asked is not attached")
+        try answerLast()
+        await pump()
+        XCTAssertEqual(said, [true], "the attach is answered: the call goes")
+        // Attached: no wait, and no cap asked for.
+        let again = await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })
+        XCTAssertTrue(again)
+        XCTAssertEqual(cap.asked, [.seconds(2)])
+        // The first wait's cap passes later: nothing is given up, the session is attached.
+        cap.pass()
+        await pump()
+        XCTAssertEqual(control.attachWaits.unseen, [])
+        XCTAssertEqual(said, [true])
+    }
+
+    func testAWaitThatReachesItsCapSaysNoOnceAndThenLetsTheCallGo() async {
+        let control = control!
+        let cap = Cap()
+        await connect()
+        var said: [Bool] = []
+        Task { @MainActor in said.append(await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })) }
+        await pump()
+        cap.pass()
+        await pump()
+        XCTAssertEqual(said, [false], "the attach never came")
+        XCTAssertEqual(control.attachWaits.waiting, 0)
+        // An older server, or an attach this connection's calls don't show: the next call is
+        // not held back, so the server's own answer decides.
+        let next = await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })
+        XCTAssertTrue(next)
+        XCTAssertEqual(cap.asked.count, 1, "no second wait")
+    }
+
+    func testTheBackgroundEndsACallsWait() async {
+        let control = control!
+        let cap = Cap()
+        await connect()
+        var said: [Bool] = []
+        Task { @MainActor in said.append(await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })) }
+        await pump()
+        control.enteredBackground()
+        await pump()
+        XCTAssertEqual(said, [false], "nothing waits in the background")
+        // The cancelled wait's cap passes: nothing is given up by it.
+        cap.pass()
+        await pump()
+        XCTAssertEqual(control.attachWaits.unseen, [])
+    }
+
+    func testADropEndsACallsWaitAndANewClientsAttachIsWaitedForAgain() async {
+        let control = control!
+        let cap = Cap()
+        await connect()
+        var said: [Bool] = []
+        Task { @MainActor in said.append(await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })) }
+        await pump()
+        await dropAndDial()
+        XCTAssertEqual(said, [false], "the connection dropped")
+        // No connection: the call is not held here. It fails unsent, and its caller waits for
+        // the connection as before.
+        let offline = await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })
+        XCTAssertTrue(offline)
+        cap.pass()
+        await pump()
+        XCTAssertEqual(control.attachWaits.unseen, [], "a cancelled wait's cap gives nothing up")
+        // Back as a new client: its attach is waited for.
+        welcome(id: "client:2", resumed: false)
+        await pump()
+        XCTAssertEqual(control.state, .connected)
+        Task { @MainActor in said.append(await control.mayCall(attachedTo: "session:a", cap: .seconds(2), sleep: { await cap.sleep($0) })) }
+        await pump()
+        XCTAssertEqual(said, [false], "waiting for the new client's attach")
+        XCTAssertEqual(control.attachWaits.waiting, 1)
     }
 
     func testTheBackgroundAndAStopEndEveryWait() async {

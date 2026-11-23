@@ -517,7 +517,7 @@ public final class TerminalStream {
     static let attachRetryLimit = 8
     /// The longest a refused start waits for its session's attach before it goes back to asking
     /// every `attachRetryDelay` (`awaitAttach`): what those retries took together.
-    static let attachWaitCap: Duration = .seconds(2)
+    public static let attachWaitCap: Duration = .seconds(2)
     private var attachRetries = 0
     /// Every wait goes through here, so tests can see the waits and skip them.
     var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) } {

@@ -43,6 +43,10 @@ public enum ClientContinuity {
 @MainActor
 final class AttachWaits {
     private(set) var attached: Set<String> = []
+    /// Sessions a call waited for until its cap and never saw attached (`giveUp`): an attach
+    /// this connection's calls don't show (an older server, an attach by another call). A call
+    /// for one of them is not held back again, so the server's own answer decides.
+    private(set) var unseen: Set<String> = []
     private var waiters: [Int: (session: String, done: @MainActor (Bool) -> Void)] = [:]
     private var nextID = 0
 
@@ -51,6 +55,7 @@ final class AttachWaits {
     /// The server answered an attach of these sessions: their waiters go on.
     func attach(_ sessions: [String]) {
         attached.formUnion(sessions)
+        unseen.subtract(sessions)
         for (id, w) in waiters where attached.contains(w.session) {
             waiters[id] = nil
             w.done(true)
@@ -58,7 +63,22 @@ final class AttachWaits {
     }
 
     /// A new client: it is attached to nothing yet. Those who wait keep waiting for its attach.
-    func newClient() { attached = [] }
+    func newClient() {
+        attached = []
+        unseen = []
+    }
+
+    /// Whether a call that needs `session` attached may leave now: the session is attached, or
+    /// a wait for it has run to its cap before (`giveUp`).
+    func mayCall(_ session: String) -> Bool { attached.contains(session) || unseen.contains(session) }
+
+    /// A wait reached its cap. Ends it with `done(false)` and remembers the session, so the
+    /// next call for it goes out (`mayCall`). A wait that has ended already is left alone.
+    func giveUp(_ id: Int) {
+        guard let w = waiters.removeValue(forKey: id) else { return }
+        unseen.insert(w.session)
+        w.done(false)
+    }
 
     /// Calls `done(true)` once `session` is attached, or `done(false)` when the wait is
     /// cancelled. Returns nil, having called nothing, when the session is attached already: the

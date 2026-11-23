@@ -76,6 +76,11 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   `disown_block` from a client that isn't the owner changes nothing for the owner and takes that
   client out of the line. `session.view` names each block's `owner`. Fit mode relies on all of
   it ([terminal.md](terminal.md), Fit and mirror).
+- `own_block` and `disown_block` need the caller attached to the session (seen 2026-11-23 on a
+  new client after a reconnect). Before the client's `session.bootstrap` the answer is
+  `conflict` (409, "stream is not attached to session …"); after it and before `session.attach`
+  is answered it is `bad_request` (400, "the caller must be a client attached to the session").
+  The app sends neither before the attach is answered.
   - `reason` says why the owner changed (`BlockOwnerChange.Reason`): `create` (the new owner
     made the block), `take` or `request` (the new owner called `own_block` with that mode),
     `disown` (the previous owner called `disown_block`), `lost` (the previous owner's
