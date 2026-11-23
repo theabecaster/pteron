@@ -314,6 +314,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane holds its screen while its stream catches up, until the server's size is known
     /// to be the one it shows (`streamFence`, `streamResized`).
     private var holdsForCatchUp = false
+    /// Under this hold a resize of ours was answered, and the stream said a size that does not
+    /// fit: the two together mean the reflow and the program's redraw are still to come in the
+    /// stream, so a size report that fits is the resize's echo and not a pane that opens at the
+    /// size it will keep (`streamResized`). Of one hold: cleared when a hold begins or ends.
+    private var resizedUnderHold = false
+    private var otherSizeUnderHold = false
     /// Glide, while the pane has nothing to draw yet (`GlideLoader`). Nil once it has a screen.
     private(set) var loader: GlideLoader?
     /// The pane has been given a screen: a restored snapshot or a screen read.
@@ -2062,7 +2068,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         tenure.claimed(as: generation, welcomes: welcomes)
         // A resize that was left out has no echo to wait for: the take alone was the claim, and
         // a size another client sets from here on is news, on a stream that catches up too.
-        if claim.resizeLeftOut { ownResizeSeen = true }
+        if claim.resizeLeftOut { ownResizeSeen = true } else if holdsForCatchUp { resizedUnderHold = true }
         stream.setClaimPending(false)
         // Answered is not applied: a resize the server keeps for later leaves the pane at
         // another client's size (`checkFit`).
@@ -2337,7 +2343,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             stream.setClaimPending(true)
         }
         // A pane that opens at the size it will keep has no reflow to hide: show it at once.
-        if holdsForCatchUp, !stream.isClaimPending, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
+        // Not after a resize of ours under this hold from another size: its answer can come
+        // before its echo, and the echo is then this report, with the redraw still behind it.
+        // The fence's fall ends that hold, or the engine's limit, after which the screen
+        // follows the stream anyway.
+        if holdsForCatchUp, fitted, fitGrid() != (cols, rows) { otherSizeUnderHold = true }
+        let reflowing = resizedUnderHold && otherSizeUnderHold && term.core.isCatchUpHeld
+        if holdsForCatchUp, !stream.isClaimPending, !reflowing, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
         applyLocalGrid(cols, rows)
         // A pane off screen takes the size in its terminal, in stream order, and nothing else:
@@ -2357,6 +2369,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         fenceStatusWork?.cancel()
         fenceStatusWork = nil
         holdsForCatchUp = up
+        resizedUnderHold = false
+        otherSizeUnderHold = false
         term.setCatchingUp(up, hold: up)
         if !up, hasScreen { endLoader() }
         if up {
@@ -2388,6 +2402,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The screen follows the stream again while the fence stays up for input.
     private func endCatchUpHold() {
         holdsForCatchUp = false
+        resizedUnderHold = false
+        otherSizeUnderHold = false
         term.setCatchingUp(stream.isFenced, hold: false)
         if hasScreen { endLoader() }
     }

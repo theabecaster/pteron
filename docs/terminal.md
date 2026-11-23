@@ -273,9 +273,12 @@ from a program state the user has not seen.
   unfocused pane's. The engine holds the screen on show and draws what arrived as one frame when
   the fence comes down ([ghostty-engine.md](ghostty-engine.md), The catch-up hold), for 1 s at
   most; after that the screen follows the bytes while the fence stays up. A pane that opens at
-  the size it will keep draws its first screen at once. A scroll, a selection and find draw
-  through the hold, and a new keyboard cover too while the pane keeps its grid; once the grid
-  changed under the hold, the cover is taken by the frame that ends it.
+  the size it will keep draws its first screen at once, at the size report that follows its
+  snapshot; after a resize of its own from another size under the hold it does not, since that
+  report may be the resize's echo with the redraw still to come, and it waits for the fence.
+  A scroll, a selection and find draw through the hold, and a new keyboard cover too while the
+  pane keeps its grid; once the grid changed under the hold, the cover is taken by the frame
+  that ends it.
 - A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
 - A `resize` from another client counts as "Resized on another screen" only on a current stream or after
   our own resize has come by: a size from before our resize can arrive after the claim's answer.

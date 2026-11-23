@@ -95,19 +95,19 @@ final class CatchUpFitHostTests: XCTestCase {
     }
 
     /// A snapshot of a terminal 80 columns wide, on the alternate screen or not.
-    private func snapshot(alternate: Bool, rows: Int = 24) throws -> [UInt8] {
-        let source = GhosttyCore(cols: 80, rows: rows)
+    private func snapshot(alternate: Bool, cols: Int = 80, rows: Int = 24) throws -> [UInt8] {
+        let source = GhosttyCore(cols: cols, rows: rows)
         source.feed(Array(((alternate ? "\u{1b}[?1049h" : "") + "a program's screen\r\n").utf8))
         source.sync()
         return try XCTUnwrap(source.encodeSnapshot())
     }
 
     /// The stream's snapshot and the size that follows it.
-    private func deliver(_ bytes: [UInt8], to host: TerminalHost, owner: String? = nil, rows: Int = 24) {
+    private func deliver(_ bytes: [UInt8], to host: TerminalHost, owner: String? = nil, cols: Int = 80, rows: Int = 24) {
         _ = host.streamGhosttySnapshot(.begin)
         bytes.withUnsafeBufferPointer { _ = host.streamGhosttySnapshot(.bytes($0)) }
         _ = host.streamGhosttySnapshot(.end(complete: true))
-        host.streamResized(cols: 80, rows: rows, owner: owner)
+        host.streamResized(cols: cols, rows: rows, owner: owner)
     }
 
     private func resizes(_ p: Pane) -> [String] { p.transport.calls.filter { $0.hasPrefix("resize") } }
@@ -261,5 +261,121 @@ final class CatchUpFitHostTests: XCTestCase {
         p.host.stream.stop()
         let drawn = await eventually { core.scroll.snapshot.covered > before && !core.scroll.hasPending }
         XCTAssertTrue(drawn, "the hold's last frame took the cover")
+    }
+
+    // MARK: The size report that ends the hold
+
+    /// A pane behind its fence whose claim was answered: the snapshot said 80x24, the resize to
+    /// the grid that fits went out and came back answered. Its echo is still to come.
+    private func answeredPane() async throws -> (pane: Pane, fit: (cols: Int, rows: Int)) {
+        let p = pane()
+        let fit = grid(p.host, height: 500)
+        deliver(try snapshot(alternate: false), to: p.host)
+        p.host.layoutIfNeeded()
+        p.gate.lift()
+        let answered = await eventually { !self.resizes(p).isEmpty && !p.host.stream.isClaimPending }
+        XCTAssertTrue(answered)
+        XCTAssertEqual(resizes(p), ["resize \(fit.cols)x\(fit.rows)"])
+        XCTAssertTrue(p.host.term.core.isCatchUpHeld)
+        return (p, fit)
+    }
+
+    func testAResizeAnsweredBeforeItsEchoKeepsTheHoldUntilTheFenceFalls() async throws {
+        let (p, fit) = try await answeredPane()
+        let core = p.host.term.core
+        let before = core.scroll.snapshot.covered
+        // The echo, after the answer: the size that fits, from this client, nothing pending.
+        p.host.streamResized(cols: fit.cols, rows: fit.rows, owner: phone)
+        p.host.setNeedsLayout()
+        p.host.layoutIfNeeded()
+        XCTAssertTrue(core.scroll.hasPending, "a cover to take")
+        await pause(0.15)
+        XCTAssertTrue(core.isCatchUpHeld, "the redraw is still to come")
+        XCTAssertEqual(core.scroll.snapshot.covered, before, "no frame was built on the way")
+        p.host.stream.stop()
+        let drawn = await eventually { core.scroll.snapshot.covered > before && !core.scroll.hasPending }
+        XCTAssertTrue(drawn, "the fence's fall draws the final grid")
+        XCTAssertFalse(core.isCatchUpHeld)
+    }
+
+    func testAnEchoBeforeItsAnswerKeepsTheHoldAsBefore() async throws {
+        let p = pane()
+        let fit = grid(p.host, height: 500)
+        let core = p.host.term.core
+        p.transport.held = ["resize"]
+        deliver(try snapshot(alternate: false), to: p.host)
+        p.host.layoutIfNeeded()
+        p.gate.lift()
+        let sent = await eventually { !self.resizes(p).isEmpty }
+        XCTAssertTrue(sent)
+        p.host.streamResized(cols: fit.cols, rows: fit.rows, owner: phone)
+        XCTAssertTrue(core.isCatchUpHeld, "the claim is still on its way")
+        p.transport.finish("resize")
+        let answered = await eventually { !p.host.stream.isClaimPending }
+        XCTAssertTrue(answered)
+        XCTAssertTrue(core.isCatchUpHeld, "the answer ends no hold")
+        p.host.stream.stop()
+        XCTAssertFalse(core.isCatchUpHeld)
+    }
+
+    func testAHoldAfterOneThatSentAResizeEndsAtItsFirstReport() async throws {
+        let (p, fit) = try await answeredPane()
+        let core = p.host.term.core
+        p.host.streamResized(cols: fit.cols, rows: fit.rows, owner: phone)
+        XCTAssertTrue(core.isCatchUpHeld)
+        p.host.streamFence(false, screen: true)
+        XCTAssertFalse(core.isCatchUpHeld)
+        // The pane comes back at the grid it has: nothing to reflow, nothing asked.
+        p.host.streamFence(true, screen: true)
+        XCTAssertTrue(core.isCatchUpHeld)
+        p.host.streamResized(cols: fit.cols, rows: fit.rows, owner: phone)
+        XCTAssertFalse(core.isCatchUpHeld, "the same grid: shown at once")
+        XCTAssertEqual(resizes(p).count, 1, "and no resize went out for it")
+    }
+
+    func testARefusedResizeLeavesAHoldThatTheFenceEnds() async throws {
+        let p = pane()
+        let core = p.host.term.core
+        p.transport.answers["resize"] = [.refused]
+        deliver(try snapshot(alternate: false), to: p.host)
+        p.host.layoutIfNeeded()
+        p.gate.lift()
+        let refused = await eventually { !self.resizes(p).isEmpty && !p.host.stream.isClaimPending }
+        XCTAssertTrue(refused)
+        XCTAssertFalse(p.host.fitted, "the pane is another client's")
+        p.host.stream.stop()
+        XCTAssertFalse(core.isCatchUpHeld, "the fence's fall ends the hold")
+    }
+
+    func testAHoldKeptForAnEchoEndsAtTheLimit() async throws {
+        let (p, fit) = try await answeredPane()
+        let core = p.host.term.core
+        p.host.streamResized(cols: fit.cols, rows: fit.rows, owner: phone)
+        XCTAssertTrue(core.isCatchUpHeld)
+        // The fence never falls: the engine's limit ends the hold.
+        await pause(GhosttyCore.renderHoldTimeout + 0.1)
+        XCTAssertFalse(core.isCatchUpHeld)
+        XCTAssertTrue(p.host.isCatchingUp, "while input still waits")
+    }
+
+    func testAColdMirrorPaneAtAnotherSizeThanTheHostsOwnShowsItsFirstPictureAtTheFirstReport() throws {
+        let p = pane(sizing: .mirror)
+        XCTAssertTrue(p.host.term.core.isCatchUpHeld)
+        deliver(try snapshot(alternate: false, cols: 60, rows: 30), to: p.host, cols: 60, rows: 30)
+        XCTAssertFalse(p.host.term.core.isCatchUpHeld, "no reflow to hide")
+        XCTAssertTrue(p.host.isCatchingUp)
+    }
+
+    func testAColdFitPaneAlreadyAtTheSizeThatFitsShowsItsFirstPictureAtTheFirstReport() async throws {
+        // The keyboard is down and the claim is answered before the snapshot arrives. The
+        // server's size was not known, so the resize went out; the snapshot is of that size.
+        let p = pane(height: 500)
+        let fit = grid(p.host, height: 500)
+        p.gate.lift()
+        let answered = await eventually { !self.resizes(p).isEmpty && !p.host.stream.isClaimPending }
+        XCTAssertTrue(answered)
+        XCTAssertTrue(p.host.term.core.isCatchUpHeld)
+        deliver(try snapshot(alternate: false, cols: fit.cols, rows: fit.rows), to: p.host, owner: phone, cols: fit.cols, rows: fit.rows)
+        XCTAssertFalse(p.host.term.core.isCatchUpHeld, "the size it will keep: shown at once")
     }
 }
