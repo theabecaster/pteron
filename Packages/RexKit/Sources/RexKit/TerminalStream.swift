@@ -909,8 +909,12 @@ public final class TerminalStream {
     /// Closes the early socket, if there is one: the stream stopped, parked, restarted or
     /// started again, the wait for the attach ended without one, or the app left the front.
     private func dropEarly() {
+        // Only when there is one: the wait for the attach sets the socket aside while it ends
+        // the wait before (`awaitAttach`), and that must not count as the socket's end, or the
+        // age limit it was just kept under (`keepEarly`) would never close it.
+        guard let dropped = early else { return }
         earlySerial += 1
-        early?.close()
+        dropped.close()
         early = nil
     }
 

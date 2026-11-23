@@ -98,6 +98,11 @@ final class EarlySocketStreamTests: XCTestCase {
         stream.start()
         let waits = await eventually { link.attachWaits.waiting == 1 }
         XCTAssertTrue(waits)
+        // The kept socket's age limit is a task of its own: it has to be waiting before a test
+        // lets it pass (`releaseEarly`), or nothing is released and the socket is only closed
+        // by its handshake deadline, ten real seconds later.
+        let kept = await eventually { log.earlyAsked.count == 1 }
+        XCTAssertTrue(kept)
         return (stream, sink, log, pass)
     }
 
