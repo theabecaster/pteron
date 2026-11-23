@@ -93,8 +93,10 @@ socket to a host whose control connection has no welcome; it asks to be told
 - **No RESUME for a stream whose client has left the server** (`ClientContinuity`). A control
   connection that drops without a close frame leaves its client on the server for a while, and
   the next connection continues it with the last welcome's reconnect token: the welcome says
-  `resumed: true`, and the client's streams are still there. A welcome that says `resumed:
-  false` to a hello that carried the token started a new client: the old one has left, and the
+  `resumed: true`, and the client's streams are still there. A welcome that gives
+  the client another ID, or says `resumed: false`, to a hello that carried the token started a
+  new client (a server at API revision 18 leaves `resumed` out then, so the ID is what says
+  it): the old one has left, and the
   server stops the streams a client opened when it leaves. A RESUME for such a stream is certain
   to be refused, so it is left out and the fresh start follows at once: one socket's handshake
   less on the way back. `RexControl.clientGeneration` counts the clients; a stream notes the

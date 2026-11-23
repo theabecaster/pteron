@@ -13,8 +13,8 @@ app relies on; update it when you use a new method or event.
   answers `welcome` with `client.id`, `client.reconnect_token`, `limits.max_message_bytes` and
   the revisions. No welcome in 8 s fails the connect. A welcome that answers a hello with a
   token also says `resumed`: true when the server continued the client (it kept its ID, its
-  attachments and its streams), false when it started a new one, because the token was unknown
-  or had expired. The app counts the new clients (`RexControl.clientGeneration`): a pane's
+  attachments and its streams), false or left out when it started a new one with a new ID, because the
+  token was unknown or had expired. The app counts the new clients (`RexControl.clientGeneration`): a pane's
   stream that was opened under an earlier client is not resumed (docs/terminal.md, Reconnect).
 - The app pings every 30 s, and on each return to the foreground (no pong in 2.5 s is a drop). On a drop, or a failed first connect, it backs off 1 s → 15 s,
   reconnects with the token, then resyncs, since events may have been missed. A refused upgrade's

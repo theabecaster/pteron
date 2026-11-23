@@ -5,9 +5,10 @@ import Foundation
 /// A control connection that drops without a close frame leaves its client on the server for a
 /// while: the client keeps its ID, its attachments and the streams it opened, and the next
 /// connection continues it by sending the last welcome's reconnect token. The welcome then says
-/// `resumed: true`. A token the server no longer knows starts a new client instead, and
-/// `resumed` is false: the old client has left the server, and the server stops the streams a
-/// client opened when that client leaves. A RESUME for one of them is refused, with certainty.
+/// `resumed: true`. A token the server no longer knows starts a new client instead, with a new
+/// ID and `resumed` false or left out: the old client has left the server, and the server
+/// stops the streams a client opened when that client leaves. A RESUME for one of them is
+/// refused, with certainty.
 ///
 /// Pure: `RexControl` asks at each welcome, and a stream asks before it spends a RESUME.
 public enum ClientContinuity {
