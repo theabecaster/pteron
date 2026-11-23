@@ -41,19 +41,19 @@ struct BrandTests {
     /// The name is written out in a string literal in two Swift files, the constant and the test
     /// that pins it. Every other file, the tests' expectations included, reads the constant.
     /// Identifiers, module names and paths may carry the name (`PteronWidgets`, `PteronTests.`,
-    /// `Pteron/State/…`), so only a quoted run of prose with the name as a whole word counts. This
+    /// `Pteron/State/…`), so only a quoted run with the name as a whole word counts, outside comments. This
     /// file holds the rule and its folder list, and CalmRuleTests lists folders, so both are skipped.
     @Test(.enabled(if: FileManager.default.fileExists(atPath: sourceTree.appendingPathComponent("project.yml").path),
                    "the source tree is not on this machine"))
     func theNameIsWrittenInTwoSwiftStringLiterals() throws {
-        let literal = try NSRegularExpression(pattern: "\"[^\"\\n]*\\b\(Brand.appName)(?![./\\w])[^\"\\n]*\"")
+        let literal = try NSRegularExpression(pattern: "\"[^\"\\n]*(?<![/.\\w])\(Brand.appName)(?![./\\w])[^\"\\n]*\"")
         var found: [String] = []
         for folder in ["Pteron", "PteronWidgets", "PteronTests", "Packages"] {
             let files = try #require(FileManager.default.enumerator(at: Self.sourceTree.appendingPathComponent(folder), includingPropertiesForKeys: nil))
             for case let file as URL in files where file.pathExtension == "swift" && !file.path.contains("/.build/") && file.path != #filePath && file.lastPathComponent != "CalmRuleTests.swift" {
                 let text = try String(contentsOf: file, encoding: .utf8)
-                let prose = text.split(separator: "\n").filter { !$0.contains("/") }.joined(separator: "\n")
-                if literal.firstMatch(in: prose, range: NSRange(prose.startIndex..., in: prose)) != nil { found.append(file.lastPathComponent) }
+                let code = text.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+                if literal.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil { found.append(file.lastPathComponent) }
             }
         }
         #expect(found.sorted() == ["Brand.swift", "BrandTests.swift"])
