@@ -466,6 +466,7 @@ final class ServerConnection: Identifiable {
         control.onRetryScheduled = { reporter?.retryScheduled(after: $0) }
         control.onAttempt = { reporter?.attempt($0) }
         control.onDormant = { reporter?.wentDormant() }
+        control.onNote = { reporter?.note($0) }
         control.onReconnected = { [weak self] _ in
             // Events that happened while disconnected are lost: start over from the server's state.
             self?.scheduleResync(after: 0)

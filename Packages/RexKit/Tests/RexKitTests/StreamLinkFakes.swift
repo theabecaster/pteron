@@ -25,6 +25,21 @@ final class FakeLink: StreamLink {
 
     private(set) var isConnected: Bool
     var clientID: String? = "client:test"
+    /// The welcome started a new client where the old one was to be continued: set by a test.
+    var clientGeneration = 0
+    /// As `RexControl`'s: the sessions attached on this connection and who waits for one.
+    let attachWaits = AttachWaits()
+    /// False: the link knows nothing of attaches (`whenAttached` answers nil), as a link that
+    /// leaves the protocol's default in place.
+    var tracksAttaches = true
+    private(set) var notes: [ConnectionEvent] = []
+
+    func whenAttached(_ session: String, _ done: @escaping @MainActor (Bool) -> Void) -> Int? {
+        tracksAttaches ? attachWaits.wait(for: session, done) : nil
+    }
+
+    func cancelAttachWait(_ id: Int) { attachWaits.cancel(id) }
+    func note(_ event: ConnectionEvent) { notes.append(event) }
     private var observers: [@MainActor () -> Bool] = []
     /// Every call that reached the "server", in order.
     private(set) var calls: [Call] = []
@@ -53,6 +68,7 @@ final class FakeLink: StreamLink {
     /// The control connection is lost: calls still waiting fail the way `RexControl.failAll` does.
     func disconnect() {
         isConnected = false
+        attachWaits.cancelAll()
         let w = waiting
         waiting = []
         for (_, c) in w { c.resume(throwing: RexError.local("connection lost")) }

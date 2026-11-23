@@ -515,6 +515,9 @@ public final class TerminalStream {
     /// tried again after `attachRetryDelay`, up to `attachRetryLimit` times, before the backoff.
     static let attachRetryDelay: Duration = .milliseconds(250)
     static let attachRetryLimit = 8
+    /// The longest a refused start waits for its session's attach before it goes back to asking
+    /// every `attachRetryDelay` (`awaitAttach`): what those retries took together.
+    static let attachWaitCap: Duration = .seconds(2)
     private var attachRetries = 0
     /// Every wait goes through here, so tests can see the waits and skip them.
     var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) } {
@@ -737,6 +740,7 @@ public final class TerminalStream {
         stopped = true
         isParked = false
         gen += 1
+        endAttachWait()
         live = false
         waitingForControl = false
         token = nil
@@ -767,6 +771,7 @@ public final class TerminalStream {
         stopped = true
         isParked = true
         gen += 1
+        endAttachWait()
         waitingForControl = false
         failedStarts = 0
         attachRetries = 0
@@ -798,7 +803,7 @@ public final class TerminalStream {
         let myGen = gen
         Task {
             guard myGen == self.gen, !self.stopped else { return }
-            if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+            await self.resumeOrStart(gen: myGen)
         }
     }
 
@@ -824,6 +829,7 @@ public final class TerminalStream {
     public func restart() {
         fence.raise(exact: hasScreen)
         gen += 1
+        endAttachWait()
         live = false
         waitingForControl = false
         // The old stream is over: a status 1000 close ends it on the server.
@@ -910,7 +916,7 @@ public final class TerminalStream {
                   epoch == self.connectEpoch, self.mayOpen else { return }
             self.retrySerial += 1
             self.waitingForControl = false
-            if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+            await self.resumeOrStart(gen: myGen)
         }
     }
 
@@ -1007,7 +1013,7 @@ public final class TerminalStream {
             let myGen = gen
             Task {
                 guard myGen == self.gen, !self.stopped else { return }
-                if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+                await self.resumeOrStart(gen: myGen)
             }
         }
         pump()
@@ -1034,7 +1040,7 @@ public final class TerminalStream {
         let myGen = gen
         Task {
             guard myGen == self.gen, !self.stopped else { return }
-            if self.canResume { await self.resume(gen: myGen) } else { await self.fullStart() }
+            await self.resumeOrStart(gen: myGen)
         }
     }
 
@@ -1055,6 +1061,33 @@ public final class TerminalStream {
     private var canResume: Bool {
         guard token != nil, let droppedAt else { return false }
         return ContinuousClock.now - droppedAt < resumeWindow
+    }
+
+    /// The control connection's client count when this stream was last welcomed
+    /// (`StreamLink.clientGeneration`).
+    private var welcomedGeneration: Int?
+
+    /// Whether the stream's own client is still on the server. A welcome that started a new
+    /// client says the old one has left, and the server stops a client's streams when it
+    /// leaves: a RESUME would be refused, with certainty (`ClientContinuity`).
+    private var clientSurvives: Bool {
+        ClientContinuity.streamSurvives(welcomedUnder: welcomedGeneration, now: link.clientGeneration)
+    }
+
+    /// Whether the next start is a RESUME: the server can still have the stream, and the
+    /// client that opened it is still there. A RESUME that is certain to be refused is left
+    /// out and said in the connection log; the fresh start it would have ended in follows at once.
+    private var resumes: Bool {
+        guard canResume else { return false }
+        if clientSurvives { return true }
+        link.note(.resumeSkipped)
+        return false
+    }
+
+    /// The one start a stream makes when it may go on: a RESUME where it can succeed, a fresh
+    /// start otherwise.
+    private func resumeOrStart(gen myGen: Int) async {
+        if resumes { await resume(gen: myGen) } else { await fullStart() }
     }
 
     /// Re-read the screen (and scrollback) and redraw it, keeping the data stream open.
@@ -1166,6 +1199,7 @@ public final class TerminalStream {
         guard !stopped else { return }
         gen += 1
         retrySerial += 1
+        endAttachWait()
         endSnapshotTurn()
         wakeReader()
         resyncing = false
@@ -1267,14 +1301,14 @@ public final class TerminalStream {
             return
         }
         guard mayOpen else { waitForControl(); return }
-        if (error as? RexError)?.code == "conflict", failedStarts == 0, attachRetries < Self.attachRetryLimit {
+        let conflict = (error as? RexError)?.code == "conflict"
+        // The server's own no to the ticket, for the connection log.
+        if let e = error as? RexError, e.status != 0, !e.neverSent {
+            link.note(.ticketRefused(conflict: conflict, inARow: conflict ? attachRetries + 1 : failedStarts + 1))
+        }
+        if conflict, failedStarts == 0, attachRetries < Self.attachRetryLimit {
             attachRetries += 1
-            let sleep = self.sleep
-            Task { [weak self] in
-                await sleep(Self.attachRetryDelay)
-                guard let self, myGen == self.gen, !self.stopped else { return }
-                await self.fullStart()
-            }
+            awaitAttach(gen: myGen)
             return
         }
         failedStarts += 1
@@ -1287,6 +1321,64 @@ public final class TerminalStream {
             // Still not connected by now: `fullStart` waits for the control connection.
             await self.fullStart()
         }
+    }
+
+    /// The wait for the session's attach that is under way (`StreamLink.whenAttached`).
+    private var attachWait: Int?
+    /// Counts the waits, so that a wait's cap does nothing for a later one.
+    private var attachWaitSerial = 0
+
+    /// A ticket was refused because the pane's session is not attached on this connection yet
+    /// (`conflict`, right after a reconnect that started a new client). The app attaches its
+    /// sessions again in a moment, so the stream waits for that call's answer and asks for its
+    /// ticket at once then, instead of asking again on a timer.
+    ///
+    /// The wait has a hard cap, `attachWaitCap`. When it passes, and when there is nothing to
+    /// wait for (the session is attached, so the refusal has another reason; a server the
+    /// connection can't tell that of), the start is tried again after `attachRetryDelay`, as
+    /// before. `stop()`, `park()` and `restart()` end the wait, and so do a lost or stopped
+    /// control connection and the background (`AttachWaits.cancelAll`): the start that follows
+    /// then finds no connection and waits for it, as every start does. It only waits: no
+    /// socket is opened and nothing is asked until the ticket.
+    private func awaitAttach(gen myGen: Int) {
+        endAttachWait()
+        attachWaitSerial += 1
+        let serial = attachWaitSerial
+        let sleep = self.sleep
+        // Once: the attach, the cap and a cancel may all come.
+        let goOn: @MainActor (Bool) -> Void = { [weak self] attached in
+            guard let self, serial == self.attachWaitSerial, self.attachWait != nil else { return }
+            let id = self.attachWait
+            self.attachWait = nil
+            if !attached, let id { self.link.cancelAttachWait(id) }
+            guard myGen == self.gen, !self.stopped else { return }
+            Task { [weak self] in
+                if !attached { await sleep(Self.attachRetryDelay) }
+                guard let self, myGen == self.gen, !self.stopped else { return }
+                await self.fullStart()
+            }
+        }
+        guard let id = link.whenAttached(sessionID, goOn) else {
+            Task { [weak self] in
+                await sleep(Self.attachRetryDelay)
+                guard let self, myGen == self.gen, !self.stopped else { return }
+                await self.fullStart()
+            }
+            return
+        }
+        attachWait = id
+        Task {
+            await sleep(Self.attachWaitCap)
+            goOn(false)
+        }
+    }
+
+    /// Ends a wait for the session's attach without going on: the stream has moved on.
+    private func endAttachWait() {
+        attachWaitSerial += 1
+        guard let id = attachWait else { return }
+        attachWait = nil
+        link.cancelAttachWait(id)
     }
 
     private func blockCall(_ method: String, args: JSONObject = [:]) async throws -> JSONObject {
@@ -1379,9 +1471,14 @@ public final class TerminalStream {
     func acceptWelcome(_ b: [UInt8], gen myGen: Int, fresh: Bool, collectSnapshot: Bool) throws {
         guard myGen == gen, !stopped else { throw CancellationError() }
         // A REJECT gets its own error (a busy terminal is retried); `DataFrame` checks the rest.
-        if b.first == 0x82 { throw Refused(reason: b.count > 1 ? b[1] : 0) }
+        if b.first == 0x82 {
+            let reason = b.count > 1 ? b[1] : 0
+            link.note(.streamRefused(resume: !fresh, reason: reason))
+            throw Refused(reason: reason)
+        }
         let welcome = try DataFrame.welcome(b)
         token = welcome.token
+        welcomedGeneration = link.clientGeneration
         resumeWindow = .milliseconds(Int64(welcome.resumeWindowMs))
         droppedAt = nil
         // A resume keeps its filter: it may be partway through the snapshot or a message.
@@ -1498,10 +1595,12 @@ public final class TerminalStream {
         if code == 1013 { token = nil }
         let sleep = self.sleep, delay = resumeDelay
         Task {
-            if self.canResume {
+            if self.resumes {
                 await sleep(delay)
                 guard myGen == self.gen, !self.stopped else { return }
-                await self.resume(gen: myGen)
+                // Asked again after the pause: a welcome may have said meanwhile that the
+                // client, and its streams with it, left the server.
+                await self.resumeOrStart(gen: myGen)
             } else {
                 guard myGen == self.gen, !self.stopped else { return }
                 await self.fullStart()

@@ -29,6 +29,14 @@ final class DownHostSocketCountTests: XCTestCase {
         var opened: Int { sockets.count }
         var isConnected: Bool { control.isConnected }
         var clientID: String? { control.clientID }
+        // The real connection's count and waits, so that what a stream does with them is counted.
+        var clientGeneration: Int { control.clientGeneration }
+        func whenAttached(_ session: String, _ done: @escaping @MainActor (Bool) -> Void) -> Int? {
+            control.whenAttached(session, done)
+        }
+        func cancelAttachWait(_ id: Int) { control.cancelAttachWait(id) }
+        /// The next tickets are refused: the pane's session is not attached on this connection.
+        var conflicts = 0
         func observeConnected(_ body: @escaping @MainActor () -> Bool) { control.observeConnected(body) }
 
         func call(_ method: String, _ payload: JSONObject?) async throws -> JSONObject {
@@ -38,6 +46,10 @@ final class DownHostSocketCountTests: XCTestCase {
                 throw RexError.unsent("not connected")
             }
             callsReached += 1
+            if method == "data.connect", conflicts > 0 {
+                conflicts -= 1
+                throw RexError(code: "conflict", message: "stream is not attached to session", status: 409)
+            }
             return ["ticket": "AAECAwQFBgcICQoLDA0ODw", "size": 1]
         }
 
@@ -134,6 +146,22 @@ final class DownHostSocketCountTests: XCTestCase {
         let warm = await livePane(warmLink, block: "block:warm")
         for s in parked { s.park() }
         XCTAssertTrue(parked.allSatisfy(\.isParked))
+        // A pane whose ticket was refused until its session is attached: it waits for the attach.
+        let attachLink = PathLink(control)
+        attachLink.conflicts = 1
+        let waiting = TerminalStream(control: control, link: attachLink, sessionID: "session:2", blockID: "block:waiting")
+        let waitingSink = Sink()
+        sinks.append(waitingSink)
+        waiting.sink = waitingSink
+        let waitingLog = SleepLog()
+        waitingLog.attach(to: waiting)
+        // Its cap does not pass by itself: the wait ends by what happens to the connection.
+        waitingLog.held = [TerminalStream.attachWaitCap]
+        logs.append(waitingLog)
+        waiting.start()
+        let waits = await eventually { self.control.attachWaits.waiting == 1 }
+        XCTAssertTrue(waits, "the pane waits for its session's attach")
+        XCTAssertEqual(attachLink.callsReached, 1)
         // A page's request while the computer is up dials, so the count below means something.
         await pageRequest(tunnelLink)
         XCTAssertEqual(tunnelLink.opened, 1)
@@ -146,6 +174,8 @@ final class DownHostSocketCountTests: XCTestCase {
                   tunnel: tunnelLink.opened, tunnelCalls: tunnelLink.callsReached,
                   paneCalls: parkedLink.callsReached + warmLink.callsReached)
         XCTAssertEqual(up.parked, 3)
+        XCTAssertEqual(control.attachWaits.waiting, 0, "the wait for the attach ended with the connection")
+        let attachCalls = attachLink.callsReached
         XCTAssertEqual(up.warm, 1, "the warm pane's RESUME waits for the control connection")
 
         /// What the app does with the host, once a minute: each parked pane is shown, woken,
@@ -182,6 +212,9 @@ final class DownHostSocketCountTests: XCTestCase {
             XCTAssertEqual(portsLink.opened, 0, "the Ports list, \(when)", file: file, line: line)
             XCTAssertEqual(dirLink.opened, 0, "the folder listing, \(when)", file: file, line: line)
             XCTAssertEqual(filesLink.opened, 0, "the file transfer, \(when)", file: file, line: line)
+            XCTAssertEqual(attachLink.opened, 0, "the pane that waited for its attach, \(when)", file: file, line: line)
+            XCTAssertEqual(attachLink.callsReached - attachCalls, 0, "and its ticket, \(when)", file: file, line: line)
+            XCTAssertEqual(control.attachWaits.waiting, 0, "nothing waits for an attach, \(when)", file: file, line: line)
             XCTAssertEqual(control.dataSocketsOpened, 0, "the real `openDataSocket`, \(when)", file: file, line: line)
             // And no request got as far as a socket either.
             XCTAssertEqual(parkedLink.callsReached + warmLink.callsReached - up.paneCalls, 0, file: file, line: line)
@@ -212,7 +245,8 @@ final class DownHostSocketCountTests: XCTestCase {
         XCTAssertEqual(controlSockets.count - front, 0, "no control attempt in the background")
         XCTAssertEqual(clock.waiting, 0, "and nothing waits to make one")
         assertNoDataPathOpened("in the background")
-        for s in parked + [warm] { s.stop() }
+        for s in parked + [warm, waiting] { s.stop() }
+        waitingLog.release(TerminalStream.attachWaitCap)
     }
 
     /// The computer is up, and the app comes back from the background with sockets that died

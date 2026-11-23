@@ -90,6 +90,18 @@ socket to a host whose control connection has no welcome; it asks to be told
   for the control connection: with no welcome, in the background, or back from it before that
   connection has answered, the stream keeps its token and resumes when it may. It is not tried
   after close code 1013 (the server dropped the stream) or once the server's keep time has passed.
+- **No RESUME for a stream whose client has left the server** (`ClientContinuity`). A control
+  connection that drops without a close frame leaves its client on the server for a while, and
+  the next connection continues it with the last welcome's reconnect token: the welcome says
+  `resumed: true`, and the client's streams are still there. A welcome that says `resumed:
+  false` to a hello that carried the token started a new client: the old one has left, and the
+  server stops the streams a client opened when it leaves. A RESUME for such a stream is certain
+  to be refused, so it is left out and the fresh start follows at once: one socket's handshake
+  less on the way back. `RexControl.clientGeneration` counts the clients; a stream notes the
+  count at its WELCOME and resumes only under the same one. A server that doesn't say whether
+  the client was continued changes nothing: the RESUME is tried as before. A fresh start reads
+  the whole screen again and keeps the fence up throughout, so nothing typed at the old screen
+  is sent, and input that had left is never sent again.
 - If the RESUME fails or can't be tried: a fresh start (ticket, HELLO, snapshot). That needs the
   control connection. Without one the stream does nothing and shows "Reconnecting…"; when
   `RexControl` is connected again it makes exactly one start: a RESUME if the server can still
@@ -121,8 +133,18 @@ socket to a host whose control connection has no welcome; it asks to be told
 - `stop()`, `park()`, `restart()` and a newer start end whatever was waiting.
 - `resync()` (a fresh stream, for its snapshot) does nothing while a start is under way or owed.
 - A fresh start whose ticket is refused with `conflict` right after a reconnect (the app's resync
-  hasn't attached the session again yet) is tried again after 250 ms, up to 8 times, before the
-  backoff.
+  hasn't attached the session again yet) waits for that attach and asks again the moment the
+  server has answered it (`TerminalStream.awaitAttach`, `AttachWaits`), instead of asking every
+  250 ms. `RexControl` learns of an attach from the answer to its own `session.attach` or
+  `session.bootstrap` call; a new client is attached to nothing.
+  - The wait only waits: no socket is opened and nothing is asked until the ticket, which goes
+    through the same gate as every start.
+  - It has a hard cap of 2 s. At the cap, and when there is nothing to wait for (the session is
+    attached, so the refusal has another reason), the start is tried again after 250 ms as
+    before, up to 8 times, then the backoff.
+  - `stop()`, `park()` and `restart()` end the wait. So do a lost control connection, the
+    background and a removed computer: the start that follows finds no connection and waits
+    for it, as every start does.
 - Back from the background, the host calls `wake()`: the stream pings its data socket. A socket
   that fails is dropped without a status 1000 close and the stream goes on with a RESUME, as
   after any drop. One that doesn't answer (half open after a suspension) has no deadline of its

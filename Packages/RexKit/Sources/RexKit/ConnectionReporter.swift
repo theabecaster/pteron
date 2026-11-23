@@ -52,6 +52,9 @@ public final class ConnectionReporter {
     /// `RexControl.onAttempt`: comes right before the `connecting` state it belongs to.
     public func attempt(_ trigger: AttemptTrigger) { self.trigger = trigger }
 
+    /// `RexControl.onNote`.
+    public func note(_ event: ConnectionEvent) { log.record(event, server: server) }
+
     /// `RexControl.onDormant`.
     public func wentDormant() { log.record(.dormant, server: server) }
 

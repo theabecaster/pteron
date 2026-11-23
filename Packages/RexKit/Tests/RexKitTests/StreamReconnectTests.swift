@@ -144,6 +144,172 @@ final class StreamReconnectTests: XCTestCase {
         XCTAssertEqual(log.asked.filter { $0 == TerminalStream.attachRetryDelay }.count, TerminalStream.attachRetryLimit)
     }
 
+    // MARK: A client the server no longer has
+
+    func testAfterANewClientTheStreamStartsFreshAndSpendsNoResume() async {
+        let link = FakeLink()
+        let (stream, sink, _) = await liveStream(link)
+        link.sockets[0].push([1, 2, 3, 4, 5])
+        await settle()
+        await loseNetwork(link, stream)
+        // The welcome of the new connection started a new client: the old one left the server,
+        // and the server stopped the streams it had opened. A RESUME is certain to be refused.
+        link.clientGeneration += 1
+        link.connect()
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        await settle()
+        XCTAssertEqual(link.sockets.map(\.isHello), [true, true], "no socket was spent on a RESUME")
+        XCTAssertEqual(link.count("data.connect"), 2, "one ticket for the one fresh start")
+        XCTAssertEqual(link.notes, [.resumeSkipped])
+    }
+
+    func testAStreamWelcomedUnderTheNewClientIsResumedAsBefore() async {
+        let link = FakeLink()
+        link.clientGeneration = 4
+        let (stream, sink, _) = await liveStream(link)
+        await loseNetwork(link, stream)
+        link.connect()
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        await settle()
+        XCTAssertEqual(link.sockets.map(\.isResume), [false, true], "the client went on: its stream is still there")
+        XCTAssertEqual(link.count("data.connect"), 1)
+        XCTAssertEqual(link.notes, [])
+    }
+
+    func testADataSocketDropUnderANewClientStartsFreshOnceItIsKnown() async {
+        // The server closes a client's data sockets as the client leaves. That drop can come
+        // before the new welcome: the RESUME it plans then waits its pause, and by then the
+        // welcome has said the client is gone.
+        let link = FakeLink()
+        let (_, sink, log) = await liveStream(link)
+        log.held = [.milliseconds(400)]
+        link.sockets[0].drop()
+        _ = await eventually { log.asked.contains(.milliseconds(400)) }
+        link.clientGeneration += 1
+        log.release(.milliseconds(400))
+        let live = await eventually { sink.statuses.last == .live && link.sockets.count == 2 }
+        XCTAssertTrue(live)
+        XCTAssertEqual(link.sockets.map(\.isHello), [true, true])
+    }
+
+    // MARK: Waiting for the session's attach
+
+    private var conflict: RexError { RexError(code: "conflict", message: "stream is not attached to session", status: 409) }
+
+    /// Back on a new client, with the ticket refused once: the stream waits for the attach.
+    private func waitingForAttach(_ link: FakeLink) async -> (TerminalStream, Sink, SleepLog) {
+        let (stream, sink, log) = await liveStream(link)
+        await loseNetwork(link, stream)
+        // The cap does not pass by itself here, however slow the machine.
+        log.held = [TerminalStream.attachWaitCap]
+        link.clientGeneration += 1
+        link.failures["data.connect"] = [conflict]
+        link.connect()
+        let waits = await eventually { link.attachWaits.waiting == 1 }
+        XCTAssertTrue(waits)
+        return (stream, sink, log)
+    }
+
+    func testARefusedTicketIsAskedAgainTheMomentTheSessionIsAttached() async {
+        let link = FakeLink()
+        let (_, sink, log) = await waitingForAttach(link)
+        await settle()
+        XCTAssertEqual(link.count("data.connect"), 2, "it asks nothing while it waits")
+        XCTAssertEqual(link.sockets.count, 1)
+        link.attachWaits.attach(["session:test"])
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        XCTAssertEqual(link.count("data.connect"), 3)
+        XCTAssertFalse(log.asked.contains(TerminalStream.attachRetryDelay), "no timer was waited out")
+        XCTAssertEqual(link.attachWaits.waiting, 0)
+        XCTAssertEqual(link.notes, [.resumeSkipped, .ticketRefused(conflict: true, inARow: 1)])
+        log.release(TerminalStream.attachWaitCap)
+    }
+
+    func testAnAttachThatNeverComesFallsBackToTheRetryAtTheCap() async {
+        let link = FakeLink()
+        let (_, sink, log) = await waitingForAttach(link)
+        log.release(TerminalStream.attachWaitCap)
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        XCTAssertEqual(log.asked.filter { $0 == TerminalStream.attachRetryDelay }.count, 1, "today's retry")
+        XCTAssertEqual(link.attachWaits.waiting, 0, "the wait is over, not left behind")
+        XCTAssertEqual(link.count("data.connect"), 3)
+    }
+
+    func testARefusalWithTheSessionAttachedIsRetriedOnTheTimerAsBefore() async {
+        for tracks in [true, false] {
+            let link = FakeLink()
+            link.tracksAttaches = tracks
+            let (stream, sink, log) = await liveStream(link)
+            await loseNetwork(link, stream)
+            link.clientGeneration += 1
+            // Attached, and refused all the same: there is nothing to wait for.
+            link.attachWaits.attach(["session:test"])
+            link.failures["data.connect"] = [conflict, conflict]
+            link.connect()
+            let live = await eventually { sink.statuses.last == .live }
+            XCTAssertTrue(live, "\(tracks)")
+            XCTAssertEqual(log.asked.filter { $0 == TerminalStream.attachRetryDelay }.count, 2, "\(tracks)")
+            XCTAssertFalse(log.asked.contains(TerminalStream.attachWaitCap), "\(tracks)")
+            XCTAssertEqual(link.attachWaits.waiting, 0)
+        }
+    }
+
+    func testParkStopAndRestartEndTheWaitForTheAttach() async {
+        for leave in ["park", "stop", "restart"] {
+            let link = FakeLink()
+            let (stream, sink, log) = await waitingForAttach(link)
+            let asked = link.count("data.connect")
+            switch leave {
+            case "park": stream.park()
+            case "stop": stream.stop()
+            default: stream.restart()
+            }
+            XCTAssertEqual(link.attachWaits.waiting, 0, leave)
+            // The attach and the cap come afterwards: neither starts anything for a stream
+            // that has moved on.
+            link.attachWaits.attach(["session:test"])
+            log.release(TerminalStream.attachWaitCap)
+            await settle()
+            if leave == "restart" {
+                let live = await eventually { sink.statuses.last == .live }
+                XCTAssertTrue(live)
+                XCTAssertEqual(link.count("data.connect"), asked + 1, "the restart's own start, once")
+            } else {
+                XCTAssertEqual(link.count("data.connect"), asked, leave)
+                XCTAssertEqual(link.sockets.count, 1, leave)
+            }
+            stream.stop()
+        }
+    }
+
+    func testALostConnectionEndsTheWaitAndNothingIsAskedUntilItIsBack() async {
+        let link = FakeLink()
+        let (stream, sink, log) = await waitingForAttach(link)
+        let asked = link.count("data.connect")
+        // The control connection goes again (or the app goes to the background: both end the
+        // waits the same way, `AttachWaits.cancelAll`).
+        link.disconnect()
+        let waiting = await eventually { stream.waitingForControl }
+        XCTAssertTrue(waiting)
+        log.release(TerminalStream.attachWaitCap)
+        await settle()
+        XCTAssertEqual(link.attachWaits.waiting, 0)
+        XCTAssertEqual(link.count("data.connect"), asked, "no ticket is asked of a connection that is gone")
+        XCTAssertEqual(link.sockets.count, 1, "and no socket is opened")
+        XCTAssertEqual(log.backoffs, [])
+        // Back: exactly one start.
+        link.connect()
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        await settle()
+        XCTAssertEqual(link.count("data.connect"), asked + 1)
+        XCTAssertEqual(link.sockets.count, 2)
+    }
+
     func testWakeDoesNothingForAStoppedStream() async {
         let link = FakeLink()
         let (stream, _, _) = await liveStream(link)

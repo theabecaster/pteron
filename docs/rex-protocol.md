@@ -11,7 +11,11 @@ app relies on; update it when you use a new method or event.
   (`kind`, `platform`, `name` "Pteron", `version`, `label` = device name) and
   `reconnect_token` when resuming, and no `api_min_revision` (see API revisions). The server
   answers `welcome` with `client.id`, `client.reconnect_token`, `limits.max_message_bytes` and
-  the revisions. No welcome in 8 s fails the connect.
+  the revisions. No welcome in 8 s fails the connect. A welcome that answers a hello with a
+  token also says `resumed`: true when the server continued the client (it kept its ID, its
+  attachments and its streams), false when it started a new one, because the token was unknown
+  or had expired. The app counts the new clients (`RexControl.clientGeneration`): a pane's
+  stream that was opened under an earlier client is not resumed (docs/terminal.md, Reconnect).
 - The app pings every 30 s, and on each return to the foreground (no pong in 2.5 s is a drop). On a drop, or a failed first connect, it backs off 1 s → 15 s,
   reconnects with the token, then resyncs, since events may have been missed. A refused upgrade's
   HTTP status (401/403: not allowed; 404/5xx: not Rex), the close code and its reason are kept for

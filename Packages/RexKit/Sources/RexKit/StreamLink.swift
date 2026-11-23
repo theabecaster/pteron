@@ -28,6 +28,16 @@ protocol StreamLink: AnyObject {
     func ping() async throws
     /// How long a data socket may wait for the answer to its handshake, in seconds.
     var dataHandshakeDeadline: Double { get }
+    /// See `RexControl.clientGeneration`: what was welcomed under an earlier count is gone.
+    var clientGeneration: Int { get }
+    /// Calls `done(true)` once the server has answered an attach of `session` on this connection,
+    /// or `done(false)` when the wait is cancelled (`cancelAttachWait`, a lost or stopped
+    /// connection, the background). Returns nil, having called nothing, when there is nothing to
+    /// wait for: the session is attached already. It only waits: it asks the server nothing.
+    func whenAttached(_ session: String, _ done: @escaping @MainActor (Bool) -> Void) -> Int?
+    func cancelAttachWait(_ id: Int)
+    /// A line for the connection log (`RexControl.onNote`).
+    func note(_ event: ConnectionEvent)
     /// One ping of the control connection for an upload to pace itself by (`UploadPacer`). It
     /// only measures: whatever comes of it, the host is not dropped for it. The wait always
     /// ends.
@@ -46,6 +56,11 @@ enum PaceSample: Equatable, Sendable {
 
 extension StreamLink {
     var dataHandshakeDeadline: Double { ReconnectPolicy.standard.connectDeadline }
+
+    var clientGeneration: Int { 0 }
+    func whenAttached(_ session: String, _ done: @escaping @MainActor (Bool) -> Void) -> Int? { nil }
+    func cancelAttachWait(_ id: Int) {}
+    func note(_ event: ConnectionEvent) {}
 
     func paceProbe() async -> PaceSample {
         (try? await ping()) != nil ? .answered : .none
@@ -132,6 +147,14 @@ protocol StreamSocket: AnyObject {
 
 extension RexControl: StreamLink {
     var isConnected: Bool { state == .connected }
+
+    func whenAttached(_ session: String, _ done: @escaping @MainActor (Bool) -> Void) -> Int? {
+        attachWaits.wait(for: session, done)
+    }
+
+    func cancelAttachWait(_ id: Int) { attachWaits.cancel(id) }
+
+    func note(_ event: ConnectionEvent) { onNote?(event) }
 
     func openDataSocket(subprotocol: String) throws -> any StreamSocket {
         guard let base = wsBase else { throw RexError.local("invalid server address") }

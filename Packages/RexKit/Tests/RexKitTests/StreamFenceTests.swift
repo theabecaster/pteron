@@ -450,6 +450,57 @@ final class StreamFenceTests: XCTestCase {
         XCTAssertEqual(notices, [message])
     }
 
+    func testALeftOutResumeStartsFreshKeepsTheFenceUpAndSendsNoKeyTypedAtTheOldScreen() async {
+        let link = FakeLink()
+        let (s, sink, log) = await current(link)
+        // The held keys' life does not run out here, however slow the machine.
+        log.held = [s.fence.timing.heldLife]
+        defer { log.release(s.fence.timing.heldLife) }
+        link.disconnect()
+        link.sockets[0].drop()
+        _ = await eventually { s.waitingForControl }
+        XCTAssertTrue(s.isFenced)
+        XCTAssertTrue(s.send(text: "typed at the old screen"))
+        // The new welcome started a new client: no RESUME, a fresh start at once.
+        link.clientGeneration += 1
+        link.connect()
+        let fresh = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
+        XCTAssertTrue(fresh)
+        XCTAssertTrue(link.sockets[1].isHello)
+        await settle()
+        XCTAssertTrue(s.isFenced, "up from the drop until the new snapshot has arrived")
+        XCTAssertEqual(link.written, [], "held, not sent")
+        XCTAssertEqual(sink.fence, [true, false, true], "one fence, never down in between")
+        // The whole screen comes again, as a snapshot, and only then is the pane current.
+        await catchUp(s, link)
+        await settle()
+        XCTAssertEqual(link.written, [], "keys typed at the old screen never reach the new one")
+        XCTAssertEqual(notices, [message])
+        XCTAssertTrue(s.send(text: "after"))
+        let sent = await eventually { link.written == ["after"] }
+        XCTAssertTrue(sent)
+    }
+
+    func testInputThatLeftBeforeTheClientWasLostIsNeverSentAgain() async {
+        let link = FakeLink()
+        let (s, _, _) = await current(link)
+        // A write is out when the connection goes: nobody knows whether the server ran it.
+        link.held = [Self.write]
+        s.send(text: "rm x\r")
+        _ = await eventually { link.waitingCount == 1 }
+        link.disconnect()
+        link.sockets[0].drop()
+        _ = await eventually { s.waitingForControl }
+        link.held = []
+        link.clientGeneration += 1
+        link.connect()
+        let fresh = await eventually { link.sockets.count == 2 && link.sockets[1].isHello }
+        XCTAssertTrue(fresh)
+        await catchUp(s, link)
+        await settle()
+        XCTAssertEqual(link.written, ["rm x\r"], "once, as it left: the fresh start resends nothing")
+    }
+
     // MARK: Hazard 10: the fence can't stick
 
     func testABusyPaneComesDownAtTheCap() async {

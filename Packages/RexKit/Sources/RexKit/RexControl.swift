@@ -63,6 +63,15 @@ public final class RexControl {
         }
     }
     public private(set) var clientID: String?
+    /// Counts the clients this connection has been on the server: it goes up at a welcome that
+    /// says the client that was to be continued is gone (`ClientContinuity.ended`). What was
+    /// opened under an earlier count (a pane's stream) left the server with that client.
+    public private(set) var clientGeneration = 0
+    /// The sessions this client is attached to, and the streams that wait for one (`AttachWaits`).
+    let attachWaits = AttachWaits()
+    /// Something for the connection log that is not a change of state: the welcome's word on the
+    /// client, a stream's refused handshake or ticket. The owner writes it (`ConnectionReporter.note`).
+    public var onNote: ((ConnectionEvent) -> Void)?
     public private(set) var maxMessageBytes = 65536
     /// The API revision this connection uses, from the latest welcome (`api_revision`; a server
     /// that leaves it out speaks revision 0). 0 before the first welcome.
@@ -308,6 +317,7 @@ public final class RexControl {
         pingOut = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+        attachWaits.cancelAll()
         failAll(RexError.local("disconnected"))
         resumeWelcome(throwing: RexError.local("disconnected"))
         state = .idle
@@ -599,6 +609,7 @@ public final class RexControl {
         welcomeDeadline = nil
         task?.cancel()
         task = nil
+        attachWaits.cancelAll()
         failAll(RexError.local("connection lost"))
         resumeWelcome(throwing: failure)
         // The state first, since the facts below and the governor read it; its observer is
@@ -842,6 +853,8 @@ public final class RexControl {
     public func enteredBackground() {
         suspended = true
         guard !policy.worksInBackground else { return }
+        // Nothing waits in the background: a stream that waited for its session's attach is told.
+        attachWaits.cancelAll()
         awaitsVerdict = true
         queuedTrigger = nil
         // A dormant host's wait counts time in the foreground: what is left of it is kept. An
@@ -1160,6 +1173,19 @@ public final class RexControl {
         guard let type = m.str("type") else { return }
         switch type {
         case "welcome":
+            // Before the new token and ID are taken: was a client to be continued, and is it gone?
+            let sentToken = reconnectToken != nil
+            let resumed = m["resumed"] as? Bool
+            if ClientContinuity.ended(sentToken: sentToken, resumed: resumed, previousID: clientID, id: m.obj("client")?.str("id")) {
+                clientGeneration += 1
+                attachWaits.newClient()
+                onNote?(.client(continued: false))
+            } else if sentToken, resumed == true {
+                onNote?(.client(continued: true))
+            } else {
+                // A first welcome, or a server that doesn't say: what was attached is not known.
+                attachWaits.newClient()
+            }
             if let c = m.obj("client") {
                 clientID = c.str("id")
                 reconnectToken = c.str("reconnect_token")
@@ -1230,9 +1256,13 @@ public final class RexControl {
         guard let t = task, state == .connected else { throw RexError.unsent("not connected") }
         // A method newer than this connection's revision: the answer is known, so don't ask.
         if let e = Self.tooNew(method, for: negotiatedRevision) { throw e }
+        let generation = self.generation
         let reply = try await withCheckedThrowingContinuation { (c: CheckedContinuation<DecodedJSON, Error>) in
             send(method, payload, on: t) { c.resume(with: $0) }
         }
+        // The server attached a session on this connection: a stream that waited for it goes on.
+        let attached = AttachWaits.attaches(method: method, payload: payload)
+        if !attached.isEmpty, generation == self.generation { attachWaits.attach(attached) }
         if !delay.isZero { try? await Task.sleep(for: delay.oneWay) }
         return reply.value
     }

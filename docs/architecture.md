@@ -347,7 +347,11 @@ user shares.
   `connected` (with the milliseconds the attempt took), `closed` (a kind such as timeout, lost,
   reset, refused, unreachable, dns, tls, http, auth, closed, policy, revision, plus the error
   code, the HTTP status or close code, and the POSIX or TLS code under it), `retry` (the wait
-  before the next attempt), `dormant` and `stopped`. And 200 events of the app: each launch with its build
+  before the next attempt), `dormant` and `stopped`. Also what a welcome said of the client
+  (`client continued` or `client new`), and three lines of a pane's stream on the way back:
+  `stream refused` (a RESUME or a HELLO, with the REJECT's reason byte), `ticket refused`
+  (with `conflict` or anything else, and how many times in a row) and `resume skipped` (the
+  stream's client had left the server). And 200 events of the app: each launch with its build
   number, each scene phase, the tunnel breaker opening and closing, the probe of Tailscale's own service that follows an opening, and each change of the network path as four yes-or-no facts
   (satisfied, expensive, constrained, a Tailscale address on an interface). At most 12 server
   rings; one server more pushes out the ring that was quiet longest.

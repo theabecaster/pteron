@@ -35,6 +35,19 @@ public struct ConnectionEvent: Equatable, Sendable {
         /// opened (an event of the app). `flags`: 1 it connected, 0 it did not. `value`:
         /// milliseconds it took. For the log only: nothing on screen depends on it.
         case probe
+        /// A welcome said what became of the client that was to be continued. `flags`: 1 it
+        /// goes on (its sessions stay attached, its streams stay), 0 a new client took its place.
+        case client
+        /// The server refused a pane's data handshake. `flags`: 1 a RESUME, 0 a HELLO. `code`:
+        /// the REJECT's reason byte.
+        case streamRefused
+        /// The server refused the ticket for a pane's stream. `flags`: 1 with `conflict` (the
+        /// pane's session is not attached on this connection yet), 0 with anything else.
+        /// `value`: how many times in a row.
+        case ticketRefused
+        /// A pane's stream left its RESUME out: the client it was welcomed under is gone, so the
+        /// server has stopped it.
+        case resumeSkipped
     }
 
     /// Why a connection ended, as far as the error's codes say.
@@ -179,6 +192,28 @@ public struct ConnectionEvent: Equatable, Sendable {
         return e
     }
 
+    public static func client(continued: Bool) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .client)
+        e.flags = continued ? 1 : 0
+        return e
+    }
+
+    public static func streamRefused(resume: Bool, reason: UInt8) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .streamRefused)
+        e.flags = resume ? 1 : 0
+        e.code = Int32(reason)
+        return e
+    }
+
+    public static func ticketRefused(conflict: Bool, inARow: Int) -> ConnectionEvent {
+        var e = ConnectionEvent(kind: .ticketRefused)
+        e.flags = conflict ? 1 : 0
+        e.value = Int64(inARow)
+        return e
+    }
+
+    public static let resumeSkipped = ConnectionEvent(kind: .resumeSkipped)
+
     public static func retry(after seconds: Double) -> ConnectionEvent {
         var e = ConnectionEvent(kind: .retry)
         e.value = Int64((max(0, min(seconds, 86400)) * 1000).rounded())
@@ -273,6 +308,10 @@ public struct ConnectionEvent: Equatable, Sendable {
         case .dormant: return "dormant"
         case .breaker: return flags == 1 ? "breaker open" : "breaker closed"
         case .probe: return "probe tailscale reachable=\(flags == 1 ? "yes" : "no") after=\(value)ms"
+        case .client: return flags == 1 ? "client continued" : "client new"
+        case .streamRefused: return "stream refused \(flags == 1 ? "resume" : "hello") reason=\(code)"
+        case .ticketRefused: return "ticket refused \(flags == 1 ? "conflict" : "other") times=\(value)"
+        case .resumeSkipped: return "resume skipped"
         }
     }
 }
