@@ -22,6 +22,29 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      # Trusted runs share macdesk with the lanes. Take ~/rexduo-build.lock as lane `ci`, with the
+      # rule tools/gate-branch.sh uses, and give it back in the last step (always, but only when
+      # the lane file still reads `ci`).
+      - name: Take the build lock
+        if: github.event_name != 'pull_request'
+        run: |
+          for i in $(seq 1 90); do
+            N=$(cat ~/rexduo-build.next 2>/dev/null)
+            if [ -z "$N" ] || [ "$N" = ci ]; then
+              if mkdir ~/rexduo-build.lock 2>/dev/null; then
+                echo ci > ~/rexduo-build.lock/lane
+                rm -f ~/rexduo-build.next
+                echo "lock taken as ci"
+                exit 0
+              fi
+            fi
+            [ $((i % 10)) -eq 1 ] && echo "waiting: lock held by $(cat ~/rexduo-build.lock/lane 2>/dev/null || echo unknown)"
+            sleep 30
+          done
+          echo "lock timeout"
+          exit 1
+      # Packages run at normal priority: a wall-time test passes at background priority when it
+      # should fail (F0 H-F0c).
       - name: RexKit tests
         run: swift test --package-path Packages/RexKit
       - name: RexGlance tests
@@ -40,8 +63,16 @@ jobs:
           /opt/homebrew/bin/xcodegen generate --quiet
           SIM=$(xcrun simctl create "ci-pteron-$GITHUB_RUN_ID" "iPhone 17")
           trap 'xcrun simctl delete "$SIM" >/dev/null 2>&1' EXIT
-          xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
+          taskpolicy -b xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
             -derivedDataPath "$HOME/actions-runner/pteron-dd" -quiet
+      - name: Give the build lock back
+        if: always() && github.event_name != 'pull_request'
+        run: |
+          if [ "$(cat ~/rexduo-build.lock/lane 2>/dev/null)" = ci ]; then
+            rm -rf ~/rexduo-build.lock && echo "lock released"
+          else
+            echo "lock is not ours; left alone"
+          fi
 
   helper:
     runs-on: ubuntu-latest
