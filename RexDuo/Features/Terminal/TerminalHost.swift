@@ -376,7 +376,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         self.theme = theme
         term = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240), fontSize: fontSize)
         keyBar = KeyBar()
-        self.claim = claim ?? FitClaim(transport: StreamFitTransport(stream: stream))
+        self.claim = claim ?? FitClaim(transport: AttachGatedFitTransport(stream: stream))
         super.init(frame: .zero)
         appActive = UIApplication.shared.applicationState == .active
         self.claim.onClaimed = { [weak self] cols, rows in self?.claimed(cols: cols, rows: rows) }

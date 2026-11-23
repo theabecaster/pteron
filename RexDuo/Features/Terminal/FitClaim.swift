@@ -391,6 +391,56 @@ enum FitCheck: Equatable {
     }
 }
 
+/// Fit mode's calls, held back until the pane's session is attached on the control connection.
+///
+/// The server refuses them until then. Right after a reconnect that started a new client the
+/// app attaches its sessions again, and a take that left in between was answered `conflict`
+/// when it came before the app's `session.bootstrap`, and a plain `bad_request` when it came
+/// between that and the attach. The second reads as a real no: the claim ended, and the pane
+/// stayed at another client's size with the chip up, its last rows under the keyboard. So no
+/// call leaves before the attach is answered (`RexControl.mayCall`).
+///
+/// A wait that ends without the attach (the connection dropped, the app went to the
+/// background, or the cap passed) answers `notYet`: the claim asks again after its pause and
+/// gives up at its limit, as for a `conflict`. A disown that can't leave is not sent: the
+/// server has nothing of this client's to give back until it takes the pane again.
+@MainActor
+final class AttachGatedFitTransport: FitClaimTransport {
+    private let inner: any FitClaimTransport
+    /// Whether a call may leave now; waits for the session's attach when it may not yet.
+    private let mayCall: @MainActor () async -> Bool
+
+    init(_ inner: any FitClaimTransport, mayCall: @escaping @MainActor () async -> Bool) {
+        self.inner = inner
+        self.mayCall = mayCall
+    }
+
+    /// The gate of a pane's stream: its session on its control connection.
+    convenience init(stream: TerminalStream) {
+        self.init(StreamFitTransport(stream: stream)) { [weak stream] in
+            guard let stream else { return false }
+            return await stream.control.mayCall(attachedTo: stream.sessionID)
+        }
+    }
+
+    func own() async -> FitClaimAnswer {
+        guard await mayCall() else { return .notYet }
+        return await inner.own()
+    }
+
+    func resize(cols: Int, rows: Int) async -> FitClaimAnswer {
+        guard await mayCall() else { return .notYet }
+        return await inner.resize(cols: cols, rows: rows)
+    }
+
+    func disown() async {
+        guard await mayCall() else { return }
+        await inner.disown()
+    }
+
+    func whenConnected(_ body: @escaping @MainActor () -> Void) { inner.whenConnected(body) }
+}
+
 /// The real calls, over the pane's stream.
 @MainActor
 final class StreamFitTransport: FitClaimTransport {

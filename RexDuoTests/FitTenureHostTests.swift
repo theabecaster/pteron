@@ -51,14 +51,15 @@ final class FitTenureHostTests: XCTestCase {
 
     /// A fitted pane on screen that has claimed its size as `client:phone`, with the resize's
     /// echo seen. `current`: its stream has caught up; otherwise it is still behind its fence.
-    private func pane(current: Bool = true) throws -> Pane {
+    private func pane(current: Bool = true, gate: FakeAttachGate? = nil) throws -> Pane {
         // Every pane that leaves the screen parks, and keeps its claim for the grace.
         let pool = TerminalHostPool()
         pool.power = { (lowPower: true, hot: false) }
         let transport = FakeFitTransport()
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b1")
-        let claim = FitClaim(transport: transport, settle: {})
+        // With a gate the calls wait for the session's attach, as the pane's own transport does.
+        let claim = FitClaim(transport: gate.map { g in AttachGatedFitTransport(transport) { await g.mayCall() } } ?? transport, settle: {})
         let host = TerminalHost(stream: stream, sizing: .fit, fontSize: 12, theme: ThemeStore.fallback, claim: claim)
         host.leaveTiming = TerminalHost.LeaveTiming(settle: 0.02, claimGrace: 5)
         host.hardwareKeyboard = { false }
@@ -133,6 +134,35 @@ final class FitTenureHostTests: XCTestCase {
         XCTAssertEqual(disowns(p), 0, "the phone never left the line")
         XCTAssertEqual(p.transport.calls.count, 4, "and nothing more")
         XCTAssertTrue(p.host.term.frame.width <= p.host.bounds.width + 1, "drawn at the size that fits")
+        XCTAssertTrue(p.lines.all.contains("pane fit taken back"))
+        XCTAssertFalse(p.lines.all.contains { $0.hasPrefix("pane fit lost") })
+        p.host.removeFromSuperview()
+    }
+
+    func testATakeBackAskedBeforeTheNewClientsAttachWaitsAndKeepsThePane() throws {
+        // Back as a new client. The app's bootstrap is answered and its attach is on its way:
+        // a take that left now was answered with a plain bad request, read as a no, and the
+        // pane stayed at the Mac's size with the chip up and its last rows under the keyboard.
+        let gate = FakeAttachGate(attached: true)
+        let p = try pane(gate: gate)
+        let mine = try XCTUnwrap(p.host.claimWanted)
+        gate.newClient()
+        dropAndReturnAsANewClient(p)
+        p.host.streamResized(cols: 211, rows: 57, owner: mac)
+        pause(0.4)
+        XCTAssertEqual(p.transport.calls.count, 2, "nothing leaves before the attach: \(p.transport.calls)")
+        XCTAssertEqual(gate.waiting, 1)
+        XCTAssertNil(p.host.statusChipText, "no chip while it waits")
+        gate.attach()
+        XCTAssertTrue(eventually { self.takes(p) == 2 && self.resizes(p) == 2 }, "one take, one resize")
+        XCTAssertEqual(p.transport.calls.last, "resize \(mine.cols)x\(mine.rows)")
+        try echo(p, as: "client:phone-2")
+        XCTAssertTrue(eventually { !p.host.stream.isClaimPending })
+        pause(0.3)
+        XCTAssertNil(p.host.statusChipText, "the pane is the phone's again, without a word")
+        XCTAssertTrue(p.host.fitted)
+        XCTAssertEqual(disowns(p), 0)
+        XCTAssertEqual(p.transport.calls.count, 4, "and nothing more")
         XCTAssertTrue(p.lines.all.contains("pane fit taken back"))
         XCTAssertFalse(p.lines.all.contains { $0.hasPrefix("pane fit lost") })
         p.host.removeFromSuperview()

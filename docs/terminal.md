@@ -366,6 +366,19 @@ is not a cold start.
     the Mac's grid 1:1, cut at the right edge. `conflict` (the session not attached again yet
     after a reconnect) is asked again 250 ms later, up to 8 times; a server's no ends the claim
     with the chip; a server from before ownership (`method_not_found`) is resized only.
+  - No take, resize or disown leaves before the pane's session is attached on the connection
+    (`AttachGatedFitTransport`, `RexControl.mayCall`, `AttachWaits`). After a reconnect that
+    started a new client the app attaches its sessions again, and the server answers a take
+    that comes before that in two ways: `conflict` before the app's `session.bootstrap`, and a
+    plain `bad_request` between the bootstrap and the attach. The second is not told apart
+    from a real no, so it ended the claim: the pane stayed at the Mac's size with the chip up
+    and its last rows under the keyboard, 2 of 10 returns on a 150 ms link and now and then on
+    a fast one. The call waits for the attach's answer, 2 s at most (`TerminalStream.attachWaitCap`).
+    A wait that ends without the attach (the connection dropped, the app went to the
+    background, the cap) counts as `conflict` does: asked again, up to the limit. After a wait
+    that ran to its cap the next call for that session is not held back, so an attach the
+    connection's calls don't show (an older server) still ends in a take, and the server's own
+    answer decides. With no connection nothing waits: the call fails unsent, as before.
   - Answered is not applied. 1 s after a claim's answer, a size from another client, or the
     fence coming down (`checkFit`, `FitCheck`), a pane on screen with nothing on its way looks
     at its grid: a claimed size the server doesn't have, or another owner named in the
