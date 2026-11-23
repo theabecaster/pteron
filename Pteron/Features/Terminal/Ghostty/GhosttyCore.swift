@@ -120,6 +120,10 @@ final class GhosttyCore: @unchecked Sendable {
     /// Guarded by `stateLock`. True while the host holds the screen for a stream that is
     /// catching up (`setCatchUpHold`), and when that began. `catchUpSerial` counts the holds.
     private var catchUpHeld = false
+    /// The grid when the catch-up hold went up, and whether another one was asked for or
+    /// restored since (`CatchUpCover`). Guarded by `stateLock`.
+    private var catchUpGrid = (cols: 0, rows: 0)
+    private var catchUpGridChanged = false
     private var catchUpStarted: CFTimeInterval = 0
     private var catchUpSerial = 0
     /// Bumped (under `stateLock`) when the render state is replaced, so a renderer drops its cache.
@@ -556,6 +560,9 @@ final class GhosttyCore: @unchecked Sendable {
 
     /// Resizes the grid. Reflows the primary screen the way the server's Ghostty does.
     func resize(cols: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int) {
+        // Noted as it is asked, not when the feed queue gets to it: the caller sets the cover
+        // for the new grid in the same turn, and that must not draw the old one.
+        noteCatchUpGrid(cols: max(1, cols), rows: max(1, rows))
         enqueue { [self] in
             termLock.lock()
             self.cols = max(1, cols)
@@ -687,6 +694,7 @@ final class GhosttyCore: @unchecked Sendable {
             // alternate screen, and the server's `resize` message follows the snapshot anyway.
             cols = max(1, Int(c))
             rows = max(1, Int(r))
+            noteCatchUpGrid(cols: cols, rows: rows)
             // The snapshot carries mode 2026 (the program was inside a synchronized update), but
             // the decoder made the terminal before our callback existed, so no "hold began" call
             // arrives. Read the mode first: the resize below always turns it off.
@@ -800,8 +808,10 @@ final class GhosttyCore: @unchecked Sendable {
     /// the output it missed or through a resize. The same limit as a program's own hold
     /// (`renderHoldTimeout`): after that the screen follows the bytes again.
     ///
-    /// Parsing goes on as always. Scrolling, a selection and find still draw (`lockFrame`); a
-    /// new cover (the keyboard's, find's bar) waits for the hold's last frame.
+    /// Parsing goes on as always. Scrolling, a selection and find still draw (`lockFrame`), and
+    /// so does a new cover (the keyboard's, find's bar) while the grid is the one the hold
+    /// began with; once the grid changed under the hold, a new cover waits for the hold's last
+    /// frame (`CatchUpCover`).
     /// Called on the main thread; it waits for `termLock` like a selection does.
     func setCatchUpHold(_ on: Bool) {
         if on {
@@ -812,6 +822,10 @@ final class GhosttyCore: @unchecked Sendable {
             // The screen may be behind the program while the stream catches up: no guess is
             // drawn over it, whatever the last frame showed.
             frameEcho = nil
+            if !catchUpHeld {
+                catchUpGrid = (cols, rows)
+                catchUpGridChanged = false
+            }
             catchUpHeld = true
             catchUpStarted = CACurrentMediaTime()
             catchUpSerial += 1
@@ -833,6 +847,16 @@ final class GhosttyCore: @unchecked Sendable {
             stateLock.unlock()
             if was { onDirty?() }
         }
+    }
+
+    /// A grid was asked for or restored: under the catch-up hold, a cover that changes from
+    /// here on is the new grid's (`CatchUpCover`). Any thread.
+    private func noteCatchUpGrid(cols: Int, rows: Int) {
+        stateLock.lock()
+        if catchUpHeld {
+            catchUpGridChanged = CatchUpCover.waits(changed: catchUpGridChanged, held: catchUpGrid, now: (cols, rows))
+        }
+        stateLock.unlock()
     }
 
     /// The pane leaves the screen (parked or kept warm): the frame it shows when it comes back
@@ -892,11 +916,12 @@ final class GhosttyCore: @unchecked Sendable {
         // too; a refresh caused by output waits for the program's frame.
         let selectionChanged = selectionDirty.exchange(false, ordering: .relaxed)
         let findChanged = findDirty.exchange(false, ordering: .relaxed)
-        // A cover or an inset to take draws through the program's hold, so the prompt comes
-        // above the keyboard at once. Not through the catch-up hold: there the cover changes
-        // with the grid the stream is catching up to, and a frame built for it would show the
-        // screen half caught up. It stays wanted, and the hold's last frame takes it.
-        let scrolled = catchUpHeld ? scroll.hasRequest : scroll.hasPending
+        // A cover or an inset to take draws through a hold, so the prompt comes above the
+        // keyboard at once. Not through the catch-up hold once the grid changed under it: then
+        // the cover changes with the grid the stream is catching up to, and a frame built for
+        // it would show the screen half caught up, at a size on the way. It stays wanted, and
+        // the hold's last frame takes it (`CatchUpCover`).
+        let scrolled = catchUpHeld && catchUpGridChanged ? scroll.hasRequest : scroll.hasPending
         if !(held || catchUpHeld) || scrolled || selectionChanged || findChanged {
             scroll.prepareFrame(terminal: t, renderState: rs, cellHeightPx: Int(cellHeightPx), generation: stateGeneration)
             ghostty_render_state_begin_update(rs, t)

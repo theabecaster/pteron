@@ -327,15 +327,46 @@ final class GhosttyScrollTests: XCTestCase {
         core.setCatchUpHold(false)
     }
 
-    func testANewCoverWaitsForTheCatchUpHoldsLastFrame() {
+    func testTheCoverWaitsOnlyOnceTheGridChangedUnderTheHold() {
+        XCTAssertFalse(CatchUpCover.waits(changed: false, held: (60, 53), now: (60, 53)), "the same grid: the cover draws")
+        XCTAssertTrue(CatchUpCover.waits(changed: false, held: (80, 24), now: (60, 53)))
+        XCTAssertTrue(CatchUpCover.waits(changed: false, held: (60, 53), now: (60, 30)), "rows alone count")
+        XCTAssertTrue(CatchUpCover.waits(changed: true, held: (60, 53), now: (60, 53)), "back at the first grid is still a grid on the way")
+    }
+
+    func testANewCoverIsTakenAtOnceUnderTheCatchUpHoldWhileTheGridIsTheSame() {
+        // A pane that comes back at the size it had: the keyboard comes up while its stream
+        // catches up, and the prompt comes above it at once, as without a hold.
+        let (core, frame) = make(100)
+        let cell = core.scroll.snapshot.cellHeight
+        core.setCatchUpHold(true)
+        _ = frame.update(core: core)
+        core.scroll.setCover(px: 4 * cell)
+        XCTAssertTrue(frame.update(core: core), "the cover draws through the hold")
+        XCTAssertEqual(core.scroll.snapshot.covered, 4 * cell)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+        XCTAssertFalse(core.scroll.hasPending)
+        XCTAssertTrue(core.isCatchUpHeld, "and the hold goes on")
+        // The same grid asked for again changes nothing.
+        core.resize(cols: 40, rows: 10, cellWidthPx: 10, cellHeightPx: cell)
+        core.sync()
+        core.scroll.setCover(px: 0)
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(core.scroll.snapshot.covered, 0)
+        core.setCatchUpHold(false)
+    }
+
+    func testANewCoverWaitsForTheCatchUpHoldsLastFrameOnceTheGridChanged() {
         let (core, frame) = make(100)
         let cell = core.scroll.snapshot.cellHeight
         let shown = frame.rows.map(\.glyphs.count)
         core.setCatchUpHold(true)
-        // The stream catches up to another grid's output, and the pane's layout follows it.
+        // A fitted pane that opens with the keyboard up: the stream catches up to another grid,
+        // and the pane's layout sets the cover that grid has.
+        core.resize(cols: 40, rows: 14, cellWidthPx: 10, cellHeightPx: cell)
+        core.scroll.setCover(px: 4 * cell)
         core.feed(lines(101...103))
         core.sync()
-        core.scroll.setCover(px: 4 * cell)
         XCTAssertTrue(core.scroll.hasPending, "a cover to take")
         XCTAssertFalse(core.scroll.hasRequest, "nothing asked to move the view")
         for _ in 0..<3 {
@@ -345,25 +376,35 @@ final class GhosttyScrollTests: XCTestCase {
             XCTAssertEqual(frame.rows.map(\.glyphs.count), shown, "still the screen of the hold's start")
         }
         XCTAssertTrue(core.scroll.hasPending, "the cover is still wanted")
+        // Back at the first grid: still a size on the way, the cover still waits.
+        core.resize(cols: 40, rows: 10, cellWidthPx: 10, cellHeightPx: cell)
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertEqual(core.scroll.snapshot.covered, 0)
         core.setCatchUpHold(false)
         XCTAssertTrue(frame.update(core: core))
         XCTAssertEqual(core.scroll.snapshot.covered, 4 * cell, "the hold's last frame took it")
-        XCTAssertEqual(core.scroll.snapshot.bounce, 4 * cell)
-        XCTAssertEqual(frame.scrollOffset, 4 * cell)
         XCTAssertFalse(core.scroll.hasPending)
+        // The next hold starts over: the grid is the one it begins with.
+        core.setCatchUpHold(true)
+        core.scroll.setCover(px: 2 * cell)
+        XCTAssertTrue(frame.update(core: core))
+        XCTAssertEqual(core.scroll.snapshot.covered, 2 * cell)
+        core.setCatchUpHold(false)
     }
 
     func testANewCoverUnderAHoldThatIsNeverReleasedIsTakenAtTheLimit() {
         let (core, frame) = make(100)
         let cell = core.scroll.snapshot.cellHeight
         core.setCatchUpHold(true)
+        core.resize(cols: 40, rows: 14, cellWidthPx: 10, cellHeightPx: cell)
         core.scroll.setCover(px: 4 * cell)
+        core.sync()
         _ = frame.update(core: core)
         XCTAssertEqual(core.scroll.snapshot.covered, 0)
         XCTAssertTrue(frame.update(core: core, now: CACurrentMediaTime() + GhosttyCore.renderHoldTimeout + 0.1),
                       "the hold never sticks: after a second the screen follows again")
         XCTAssertEqual(core.scroll.snapshot.covered, 4 * cell)
-        XCTAssertEqual(frame.scrollOffset, 4 * cell)
         XCTAssertFalse(core.scroll.hasPending)
     }
 

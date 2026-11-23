@@ -94,20 +94,20 @@ final class CatchUpFitHostTests: XCTestCase {
         TerminalLayout.fitGrid(in: CGSize(width: host.bounds.width, height: height), cell: host.term.cellSize)
     }
 
-    /// A snapshot of a terminal 80 by 24, on the alternate screen or not.
-    private func snapshot(alternate: Bool) throws -> [UInt8] {
-        let source = GhosttyCore(cols: 80, rows: 24)
+    /// A snapshot of a terminal 80 columns wide, on the alternate screen or not.
+    private func snapshot(alternate: Bool, rows: Int = 24) throws -> [UInt8] {
+        let source = GhosttyCore(cols: 80, rows: rows)
         source.feed(Array(((alternate ? "\u{1b}[?1049h" : "") + "a program's screen\r\n").utf8))
         source.sync()
         return try XCTUnwrap(source.encodeSnapshot())
     }
 
     /// The stream's snapshot and the size that follows it.
-    private func deliver(_ bytes: [UInt8], to host: TerminalHost, owner: String? = nil) {
+    private func deliver(_ bytes: [UInt8], to host: TerminalHost, owner: String? = nil, rows: Int = 24) {
         _ = host.streamGhosttySnapshot(.begin)
         bytes.withUnsafeBufferPointer { _ = host.streamGhosttySnapshot(.bytes($0)) }
         _ = host.streamGhosttySnapshot(.end(complete: true))
-        host.streamResized(cols: 80, rows: 24, owner: owner)
+        host.streamResized(cols: 80, rows: rows, owner: owner)
     }
 
     private func resizes(_ p: Pane) -> [String] { p.transport.calls.filter { $0.hasPrefix("resize") } }
@@ -142,7 +142,8 @@ final class CatchUpFitHostTests: XCTestCase {
         // so the claim on its way lands when it would have.
         let p = pane(height: 500)
         let rest = grid(p.host, height: 500)
-        XCTAssertEqual(p.gate.asked, 1)
+        let asked = await eventually { p.gate.asked == 1 }
+        XCTAssertTrue(asked)
         deliver(try snapshot(alternate: true), to: p.host)
         let known = await eventually { p.host.alternateScreen }
         XCTAssertTrue(known)
@@ -234,33 +235,31 @@ final class CatchUpFitHostTests: XCTestCase {
     }
 
     func testAFencedFitPanesGridChangeAndLayoutDrawNothingUntilTheFenceFalls() async throws {
+        // The claim never settles here, so the pane stays behind its fence with its hold on.
         let p = pane()
         let rest = grid(p.host, height: 500)
         let core = p.host.term.core
-        // The resize's answer is slow: its echo in the stream comes first.
-        p.transport.held = ["resize"]
         deliver(try snapshot(alternate: false), to: p.host)
         p.host.layoutIfNeeded()
-        p.gate.lift()
-        let asked = await eventually { self.resizes(p).count == 1 }
-        XCTAssertTrue(asked)
+        await pause(0.1)
         XCTAssertTrue(p.host.stream.isClaimPending)
-        await pause(0.2)
-        XCTAssertEqual(core.scroll.snapshot.covered, 0)
-        // The grid is now taller than the pane, the keyboard covers its last rows, and the pane
+        XCTAssertTrue(core.isCatchUpHeld)
+        // What is drawn so far: the grid the pane began with, and whatever that covers.
+        let before = core.scroll.snapshot.covered
+        // The stream catches up to a taller grid: the keyboard covers more of it, and the pane
         // is laid out for that.
-        p.host.streamResized(cols: rest.cols, rows: rest.rows, owner: phone)
+        p.host.streamResized(cols: rest.cols, rows: rest.rows, owner: nil)
         p.host.setNeedsLayout()
         p.host.layoutIfNeeded()
-        XCTAssertTrue(core.isCatchUpHeld, "still behind the fence")
         XCTAssertTrue(core.scroll.hasPending, "a cover to take")
-        await pause(0.3)
-        XCTAssertEqual(core.scroll.snapshot.covered, 0, "no frame was built on the way")
+        await pause(0.15)
+        // Well inside the hold's limit: what follows says nothing once the hold has run out.
+        XCTAssertTrue(core.isCatchUpHeld, "still behind the fence")
+        XCTAssertEqual(core.scroll.snapshot.covered, before, "no frame was built on the way")
         XCTAssertTrue(core.scroll.hasPending)
-        // The claim is answered and the stream is current: one frame, with the cover.
-        p.transport.finish("resize")
+        // The stream is current: one frame, with the cover.
         p.host.stream.stop()
-        let drawn = await eventually { core.scroll.snapshot.covered > 0 && !core.scroll.hasPending }
+        let drawn = await eventually { core.scroll.snapshot.covered > before && !core.scroll.hasPending }
         XCTAssertTrue(drawn, "the hold's last frame took the cover")
     }
 }

@@ -274,7 +274,8 @@ from a program state the user has not seen.
   the fence comes down ([ghostty-engine.md](ghostty-engine.md), The catch-up hold), for 1 s at
   most; after that the screen follows the bytes while the fence stays up. A pane that opens at
   the size it will keep draws its first screen at once. A scroll, a selection and find draw
-  through the hold; a new keyboard cover does not: it is taken by the frame that ends the hold.
+  through the hold, and a new keyboard cover too while the pane keeps its grid; once the grid
+  changed under the hold, the cover is taken by the frame that ends it.
 - A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
 - A `resize` from another client counts as "Resized on another screen" only on a current stream or after
   our own resize has come by: a size from before our resize can arrive after the claim's answer.
