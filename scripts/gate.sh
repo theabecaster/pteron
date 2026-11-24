@@ -20,7 +20,7 @@ mkdir -p build
 SIM=""
 cleanup() {
   [[ -n $SIM ]] && xcrun simctl delete $SIM
-  if (( HAD_BUILD )); then rm -rf build/dd-gate build/dd-gate-rel build/gate-test.log build/gate-rel.log
+  if (( HAD_BUILD )); then rm -rf build/dd-gate build/dd-gate-rel build/gate-test.log build/gate-rel.log build/gate-RexKit.log build/gate-RexGlance.log
   else rm -rf build; fi
 }
 trap 'cleanup; exit 130' INT TERM
