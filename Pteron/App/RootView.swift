@@ -23,6 +23,8 @@ struct RootView: View {
     /// The room the docked keyboard takes at the bottom (`KeyboardInset`). The root pads itself by
     /// this instead of following SwiftUI's keyboard safe area.
     @State private var keyboardPad: CGFloat = 0
+    /// The window's bottom inset under the root, as UIKit reports it (`KeyboardInset.home`).
+    @State private var homeInset: CGFloat = 0
     /// Where the system puts its vertical bar, if it has one here.
     @State private var barEdge: HorizontalEdge?
     /// That bar's column, in screen coordinates, for the key bar beside the keyboard.
@@ -59,7 +61,9 @@ struct RootView: View {
         let theme = prefs.theme(for: scheme)
         rootContent(theme)
             .ignoresSafeArea(.keyboard)
-            .background(KeyboardInsetReader(padHold: model.palette.padHold) { setKeyboardPad($0) }.ignoresSafeArea())
+            .background(KeyboardInsetReader(padHold: model.palette.padHold, onHome: { h in if homeInset != h { homeInset = h } }) {
+                setKeyboardPad($0)
+            }.ignoresSafeArea())
             .environment(hostPool)
             .environment(\.handleStrips, handleStrips)
             .overlay(alignment: .top) { NoticeBanner(theme: theme) }
@@ -167,8 +171,10 @@ struct RootView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
+                // The panes reach under the posture's inset and the simulator's own, which the
+                // simulated window sits on.
                 layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen, insets: sim.insets(keyboard: simKeyboard),
-                       room: sim.keyboardRoom(simKeyboard))
+                       room: sim.keyboardRoom(simKeyboard), home: sim.safeArea.bottom + homeInset)
                     .safeAreaPadding(sim.safeArea)
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
@@ -220,7 +226,7 @@ struct RootView: View {
     /// (debug simulation), which then also says whether its window `fills` its screen, gives the
     /// safe area's `insets` and the `room` its keyboard takes.
     private func layout(_ theme: TermTheme, fake: Division??, fills: Bool? = nil, insets: EdgeInsets = EdgeInsets(),
-                        room: CGFloat? = nil) -> some View {
+                        room: CGFloat? = nil, home: CGFloat? = nil) -> some View {
         GeometryReader { geo in
             let division = fake ?? Self.division(geo)
             // The root ignores the keyboard, so the arrangement doesn't change when it shows.
@@ -290,6 +296,7 @@ struct RootView: View {
             .environment(\.verticalBarEdge, barEdge)
             .environment(\.verticalBarColumn, barColumn)
             .environment(\.keyboardRoom, room ?? keyboardPad)
+            .environment(\.homeInset, home ?? homeInset)
             .onChange(of: arr.inline, initial: true) { _, new in
                 // Wide: the launch's hold on the drawer ends, and the sidebar shows as it is.
                 if new { sidebar.resolve(inline: true) }

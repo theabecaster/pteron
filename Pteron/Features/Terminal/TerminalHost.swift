@@ -1880,7 +1880,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         let radius = JumpToBottomButton.diameter / 2
         let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
         let x = rightToLeft ? bounds.minX + 12 + radius : bounds.maxX - 12 - radius
-        var y = bounds.maxY - max(12, safeAreaInsets.bottom + 4) - radius
+        var y = JumpToBottomButton.centerY(bottom: bounds.maxY, safeBottom: safeAreaInsets.bottom)
         // Above the find bar while it floats at the bottom.
         if let bar = findBottomBarFrame { y = min(y, FindBarPlacement.jumpCenterY(bar: bar, radius: radius)) }
         let center = CGPoint(x: x, y: y)

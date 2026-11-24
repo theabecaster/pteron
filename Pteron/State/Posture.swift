@@ -213,6 +213,10 @@ extension EnvironmentValues {
     /// (`KeyboardInset`): measured from the frames on every keyboard change and layout, so it is
     /// never older than the layout it goes with. 0 with neither.
     @Entry var keyboardRoom: CGFloat = 0
+    /// The window's own bottom inset under the root (the home indicator), as UIKit reports it,
+    /// keyboard up or down (`KeyboardInset.home`). The panes run on into it with the keyboard
+    /// down (`PaneBottom`).
+    @Entry var homeInset: CGFloat = 0
 }
 
 #if DEBUG

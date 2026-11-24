@@ -26,9 +26,15 @@ enum KeyboardInset {
         guard keyboard.maxY >= window.maxY - 1 else { return 0 }
         guard keyboard.minX < view.maxX, keyboard.maxX > view.minX else { return 0 }
         let covered = min(max(view.maxY - keyboard.minY, 0), view.height)
-        // The part of the window's bottom inset that reaches the root, which its safe area has already.
-        let container = max(windowSafeBottom - max(window.maxY - view.maxY, 0), 0)
-        return max(covered - container, 0).rounded(.up)
+        return max(covered - home(view: view, window: window, windowSafeBottom: windowSafeBottom), 0).rounded(.up)
+    }
+
+    /// The part of the window's bottom inset (the home indicator) that reaches the root, which its
+    /// safe area has already. UIKit's inset stays the same while the keyboard is up, where
+    /// SwiftUI's turns into the keyboard's region.
+    static func home(view: CGRect, window: CGRect, windowSafeBottom: CGFloat) -> CGFloat {
+        guard !view.isEmpty else { return 0 }
+        return max(windowSafeBottom - max(window.maxY - view.maxY, 0), 0)
     }
 
     /// The padding with the key bar's own frame as a floor. The keyboard reports its frame with
@@ -67,17 +73,21 @@ enum KeyboardInset {
 struct KeyboardInsetReader: UIViewRepresentable {
     /// The palette's hold, which ends with a fresh measure instead of the value it kept.
     var padHold: PadHold?
+    /// The window's bottom inset under the view (`KeyboardInset.home`), when it changes.
+    var onHome: (CGFloat) -> Void = { _ in }
     let onChange: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> Probe {
         let p = Probe()
         p.onChange = onChange
+        p.onHome = onHome
         connect(p)
         return p
     }
 
     func updateUIView(_ p: Probe, context: Context) {
         p.onChange = onChange
+        p.onHome = onHome
         connect(p)
     }
 
@@ -87,6 +97,8 @@ struct KeyboardInsetReader: UIViewRepresentable {
 
     final class Probe: UIView {
         var onChange: ((CGFloat) -> Void)?
+        var onHome: ((CGFloat) -> Void)?
+        private var reportedHome: CGFloat?
         /// The keyboard's last reported end frame, in screen coordinates.
         private var keyboard: CGRect = .null
         /// The last report was a hide.
@@ -217,6 +229,14 @@ struct KeyboardInsetReader: UIViewRepresentable {
         }
 
         private func update() {
+            if let window {
+                let home = KeyboardInset.home(view: convert(bounds, to: window), window: window.bounds,
+                                              windowSafeBottom: window.safeAreaInsets.bottom)
+                if home != reportedHome {
+                    reportedHome = home
+                    onHome?(home)
+                }
+            }
             guard let pad = padding(), pad != reported else { return }
             reported = pad
             reports += 1

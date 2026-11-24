@@ -393,8 +393,11 @@ final class TerminalSelectionController: NSObject {
     private func showHandles(_ ends: TerminalSelectionEnds?) {
         shownEnds = ends
         guard let ends else { handles.hide(); return }
+        // A knob keeps out of the home indicator under a pane that reaches the window's edge: on
+        // the last rows the end's knob goes above its row.
         handles.show(SelectionHandleLayout(start: ends.start.map { handles.convert($0, from: term) },
-                                           end: ends.end.map { handles.convert($0, from: term) }, in: handles.bounds))
+                                           end: ends.end.map { handles.convert($0, from: term) },
+                                           in: PaneBottom.clear(handles.bounds, safeBottom: handles.safeAreaInsets.bottom)))
     }
 
     // MARK: Display link

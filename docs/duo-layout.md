@@ -305,10 +305,23 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   The panes' frames follow that room, but a fitted terminal's grid doesn't: the keyboard covers
   it ([terminal.md](terminal.md), Fit and mirror).
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.
-  The panes stay inside the safe area, so no terminal text sits under system UI. Below the panes
-  the terminal's color runs on to the window's bottom: under the home indicator with the keyboard
-  down, and behind the key bar and the keyboard's corners with it up. No band of chrome shows
-  under the terminal.
+  The panes stay inside the safe area at the top and the sides, so no terminal text sits under the
+  status bar, the notch, the Dynamic Island or the vertical bar. No band of chrome shows under the
+  terminal.
+- **Bottom edge** (`PaneBottom`). With the keyboard down the panes run to the window's bottom
+  edge, on every device and in every posture, sidebar mode and tab mode alike: the last row may
+  sit under the home indicator, a thin line over text instead of an empty band. Their area then
+  ignores the bottom safe area (and the keyboard's region, which SwiftUI keeps for a layout or two
+  as the keyboard goes). The inset itself comes from UIKit's window (`KeyboardInset.home`): with
+  the keyboard up SwiftUI counts it as the keyboard's. With the software keyboard up,
+  or a hardware keyboard's key bar alone, they end where they always did, at its top, and the
+  terminal's color runs on behind the key bar and the keyboard's corners. The canvas with the
+  keyboard down is the one to the edge either way (`PaneLayout.restCanvas`), so showing or hiding
+  the keyboard resizes nothing more than before. Splits divide the safe area as before; only the
+  panes on its bottom edge run on. What is chrome stays clear of the home indicator: floating
+  windows keep inside the safe area, and the jump-to-bottom button, the floating find bar and the
+  selection handles' knobs keep above the pane's bottom safe area. Without a home indicator
+  (iPhone SE) nothing changes.
 - **Title bar** (`TitleLine`). One line, like the Mac's title bar: the tab's title (semibold),
   its status, then the session's name in the secondary color (with the computer's name when
   more than one is set up), then the menu chevron. When both don't fit, the session's name

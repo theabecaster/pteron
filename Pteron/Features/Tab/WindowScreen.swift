@@ -50,6 +50,8 @@ struct WindowScreen: View {
     @Environment(\.bookCrease) private var bookCrease
     /// The room the keyboard takes from the root's bottom, for the panes' size with it down.
     @Environment(\.keyboardRoom) private var keyboardRoom
+    /// The window's bottom inset under the root, which the panes run on into with the keyboard down.
+    @Environment(\.homeInset) private var homeInset
     @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
 
     let server: ServerConnection
@@ -87,6 +89,9 @@ struct WindowScreen: View {
     /// from an earlier one: a fold or a rotation with the keyboard up gives the new posture's
     /// panes at once (`PaneLayout.restCanvas`).
     @State private var canvasSize: CGSize = .zero
+    /// How far `canvasSize` runs past the safe area, under the home indicator (`PaneBottom.restReach`):
+    /// what the floating windows' rest sizes leave out. Measured with it.
+    @State private var restReach: CGFloat = 0
     /// Where the panes' area ends, in global coordinates. The sidebar doesn't move it.
     @State private var canvasMaxX: CGFloat?
     /// A floating window a tap raised, drawn in front until the server's view puts it there, for
@@ -141,7 +146,8 @@ struct WindowScreen: View {
             }
         }
         // Edge to edge, under the status bar and the Duo's vertical bar, so system UI sits on the
-        // app's chrome. The panes themselves stay inside the safe area.
+        // app's chrome. The panes themselves stay inside the safe area, but for its bottom, which
+        // they run on into with the keyboard down (`PaneBottom`).
         .background(theme.chrome.canvas.ignoresSafeArea())
         .toolbar { barItems(theme, p) }
         .background(CommandListener { handle($0) })
@@ -205,25 +211,40 @@ struct WindowScreen: View {
     }
 
     private func panes(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
-        canvas(w, theme, p)
+        // With the keyboard down the panes' area ignores the bottom safe area and runs on to the
+        // window's edge, under the home indicator; with it up it keeps to the safe area and ends
+        // at the keyboard's top as before (`PaneBottom`).
+        let bottom = PaneBottom(home: homeInset, keyboardRoom: keyboardRoom, reaches: reachesBottom)
+        return canvas(w, theme, p, bottom: bottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // The floating windows sit above the tiled panes, a sibling of them, so one coming or
-            // going never rebuilds the panes below. Empty in a tab without one.
-            .overlay(alignment: .topLeading) { floatWindows(w, theme, p) }
+            // going never rebuilds the panes below. Empty in a tab without one. They are chrome:
+            // they keep out of the home indicator.
+            .overlay(alignment: .topLeading) { floatWindows(w, theme, p).padding(.bottom, bottom.reach) }
             .clipped()
             // Narrow: the float sheet, unclipped so its backing runs on under the home indicator.
             .overlay(alignment: .topLeading) { sheet(w, theme, p) }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
-                // The room and the header as this layout had them: read with the size they made.
-                let rest = PaneLayout.restCanvas(now: s, room: keyboardRoom, header: showsHeader ? 0 : headerHeight,
-                                                 limit: restLimit)
+                // The room, the inset and the header as this layout had them: read with the size
+                // they made.
+                let rest = PaneLayout.restCanvas(now: s, room: keyboardRoom, home: bottom.restReach,
+                                                 header: showsHeader ? 0 : headerHeight, limit: restLimit)
                 if rest != canvasSize { canvasSize = rest }
+                if bottom.restReach != restReach { restReach = bottom.restReach }
             }
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { canvasMaxX = $0 }
-            // The rows stay above the home indicator, but the terminal's color runs on to the
-            // window's bottom: no band of chrome under the panes with the keyboard down, and the
-            // key bar's glass floats on the terminal with it up.
+            // The keyboard's region too: as it goes, SwiftUI keeps it for a layout or two.
+            .ignoresSafeArea([.container, .keyboard], edges: bottom.reachesEdge ? .bottom : [])
+            // The terminal's color runs on to the window's bottom: no band of chrome under the
+            // panes, and the key bar's glass floats on the terminal with the keyboard up.
             .background(theme.bg.ignoresSafeArea(.all, edges: .bottom))
+    }
+
+    /// The panes' area is at the bottom of the tab: everywhere but tabletop, where it stays above
+    /// the crease.
+    private var reachesBottom: Bool {
+        if case .wide(_?) = mode { return false }
+        return true
     }
 
     /// Under compact height (landscape iPhone, folded Duo on its side) the title bar steps aside while
@@ -1152,7 +1173,7 @@ struct WindowScreen: View {
     }
 
     @ViewBuilder
-    private func canvas(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
+    private func canvas(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?, bottom: PaneBottom) -> some View {
         let look = canvasLook(w, p)
         if !look.splits {
             if let b = look.block {
@@ -1179,13 +1200,16 @@ struct WindowScreen: View {
                 let book = BookSplit.decide(leaves: layout.leaves.map(\.rect), splits: layout.splits, areaWidth: size.width,
                                             areaMinX: geo.frame(in: .global).minX - rootOrigin.x,
                                             crease: bookCrease, canvas: canvasSize, fontSize: prefs.fontSize)
+                // The splits divide the safe area as before; only panes on its bottom edge run on
+                // under the home indicator.
+                let area = CGSize(width: size.width, height: max(size.height - bottom.reach, 0))
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.leaves, id: \.id) { leaf in
                         let r = book?.rect(leaf.rect) ?? leaf.rect
-                        let frame = PaneLayout.split(r, in: size)
+                        let frame = PaneLayout.split(r, in: area, reach: bottom.reach)
                         PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
                                  onFocus: { focusTiled(w, leaf.id, p) },
-                                 restSize: PaneLayout.splitRest(r, canvas: canvasSize))
+                                 restSize: PaneLayout.splitRest(r, canvas: canvasSize, reach: restReach))
                         .id(leaf.id)
                         .padding(PaneLayout.clearance(radius: PaneLayout.splitRadius))
                         .background(theme.bg)
@@ -1197,7 +1221,7 @@ struct WindowScreen: View {
                     }
                     ForEach(layout.splits, id: \.id) { sp in
                         if let handle = book.map({ $0.handle(sp) }) ?? sp {
-                            SplitHandle(split: handle, canvas: size, theme: theme) { shown in
+                            SplitHandle(split: handle, canvas: area, theme: theme) { shown in
                                 let ratio = book?.ratio(sp, shown: shown) ?? shown
                                 Task { await server.resizePane(sessionID, direction: sp.direction, before: sp.beforeFirst, after: sp.afterFirst, ratio: ratio) }
                             }
@@ -1215,6 +1239,8 @@ struct WindowScreen: View {
     @ViewBuilder
     private func floatWindows(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         if case .floating(_, let floats)? = p {
+            // Their area keeps out of the home indicator, with the keyboard down as well.
+            let rest = CGSize(width: canvasSize.width, height: max(canvasSize.height - restReach, 0))
             let active = activeBlock(w)
             let radius = PaneLayout.splitRadius
             GeometryReader { geo in
@@ -1234,7 +1260,7 @@ struct WindowScreen: View {
                                 let frame = PaneLayout.split(leaf.rect, in: size)
                                 PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
                                          onFocus: { tapFloat(leaf.id) },
-                                         restSize: PaneLayout.splitRest(leaf.rect, canvas: canvasSize))
+                                         restSize: PaneLayout.splitRest(leaf.rect, canvas: rest))
                                 .id(leaf.id)
                                 .padding(PaneLayout.clearance(radius: radius))
                                 .background(theme.bg)
@@ -1272,12 +1298,18 @@ enum PaneLayout {
         (radius * (1 - 0.5.squareRoot())).rounded(.up)
     }
 
-    /// A split pane's frame inside the splits' area `size`, from its normalized rect.
-    static func split(_ r: CGRect, in size: CGSize) -> CGRect {
+    /// A split pane's frame inside the splits' area `size`, from its normalized rect. A pane on
+    /// the area's bottom edge runs `reach` further, under the home indicator (`PaneBottom`); the
+    /// splits themselves stay proportional to the area.
+    static func split(_ r: CGRect, in size: CGSize, reach: CGFloat = 0) -> CGRect {
         let frame = CGRect(x: r.minX * size.width, y: r.minY * size.height, width: r.width * size.width, height: r.height * size.height)
             .insetBy(dx: splitPadding, dy: splitPadding)
-        return CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, 10), height: max(frame.height, 10))
+        let below = onBottomEdge(r) ? max(reach, 0) : 0
+        return CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, 10), height: max(frame.height, 10) + below)
     }
+
+    /// The normalized rect reaches the bottom of its area.
+    static func onBottomEdge(_ r: CGRect) -> Bool { r.maxY > 0.999 }
 
     /// The canvas the panes' rest sizes come from: the tab's canvas `now` as it would be with the
     /// software keyboard down. The keyboard's cover leaves the grid alone, so with it up that is
@@ -1289,9 +1321,13 @@ enum PaneLayout {
     /// whichever comes first as the keyboard shows or hides, so no layout in between gives
     /// another size. The key bar alone takes its room: the grid fits above it. Nothing measured
     /// yet stays unmeasured.
-    static func restCanvas(now: CGSize, room: CGFloat, header: CGFloat = 0, limit: CGFloat = .infinity) -> CGSize {
+    ///
+    /// `home` is the home indicator's inset under the keyboard (`PaneBottom.restReach`), given back
+    /// with its room, since with the keyboard down the panes run on to the window's edge.
+    static func restCanvas(now: CGSize, room: CGFloat, home: CGFloat = 0, header: CGFloat = 0,
+                           limit: CGFloat = .infinity) -> CGSize {
         guard now.width > 0, now.height > 0 else { return now }
-        let keyboard = room > TentBoard.tallestKeyBar ? room : 0
+        let keyboard = PaneBottom.softwareKeyboard(room) ? room + home : 0
         return CGSize(width: now.width, height: max(min(now.height + keyboard - header, limit), 1))
     }
 
@@ -1303,10 +1339,13 @@ enum PaneLayout {
     }
 
     /// A split pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.
-    static func splitRest(_ r: CGRect, canvas: CGSize) -> CGSize? {
+    /// The canvas runs `reach` past the safe area (`PaneBottom.restReach`): the splits divide the
+    /// rest, and a pane on the bottom edge takes it.
+    static func splitRest(_ r: CGRect, canvas: CGSize, reach: CGFloat = 0) -> CGSize? {
         guard canvas.width > 0, canvas.height > 0 else { return nil }
-        let area = CGSize(width: max(canvas.width - splitPadding * 2, 0), height: max(canvas.height - splitPadding * 2, 0))
-        let pane = split(r, in: area).size, inset = clearance(radius: splitRadius) * 2
+        let reach = min(max(reach, 0), canvas.height)
+        let area = CGSize(width: max(canvas.width - splitPadding * 2, 0), height: max(canvas.height - reach - splitPadding * 2, 0))
+        let pane = split(r, in: area, reach: reach).size, inset = clearance(radius: splitRadius) * 2
         return CGSize(width: max(pane.width - inset, 0), height: max(pane.height - inset, 0))
     }
 }

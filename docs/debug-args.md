@@ -74,7 +74,8 @@ builds.
   - **The insets reach the sidebar and the tab.** The root is laid out inside them, so they
     pick the inline sidebar or the drawer (the outer screen on its side is 594 pt inside its
     bar: a drawer), and the sidebar and the tab get them as their safe area: panes, title bar
-    and sidebar rows stay inside, backgrounds run under them to the window's edge. With the
+    and sidebar rows stay inside, except the panes' bottom with the keyboard down, which runs
+    on to the window's edge as on a device; backgrounds run under them to the window's edge. With the
     simulated keyboard up the bottom inset is gone, as under a real keyboard.
   - **Where the numbers come from.** Measured in the iOS 27.2 simulators as the window's
     `safeAreaInsets`: the outer screen (`folded`, `foldedLandscape`, `foldedLandscapeBarLeft`)

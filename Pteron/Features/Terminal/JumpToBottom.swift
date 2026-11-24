@@ -68,7 +68,14 @@ struct JumpToBottomRule: Equatable {
 final class JumpToBottomButton: UIControl, UIPointerInteractionDelegate {
     /// The touch target.
     static let side: CGFloat = 44
-    static let diameter: CGFloat = 34
+    nonisolated static let diameter: CGFloat = 34
+
+    /// The circle's center y in a pane whose bottom is `bottom`: 12 pt up from it, or 4 pt above
+    /// the pane's bottom safe area (the home indicator under a pane that reaches the window's
+    /// edge), whichever is higher.
+    nonisolated static func centerY(bottom: CGFloat, safeBottom: CGFloat) -> CGFloat {
+        bottom - max(12, safeBottom + 4) - diameter / 2
+    }
 
     var onFire: (() -> Void)?
     private(set) var shown = false
