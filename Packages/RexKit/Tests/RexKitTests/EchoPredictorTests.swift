@@ -677,6 +677,42 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertNotNil(s.p.takeInputModeRequest())
     }
 
+    /// H-F2a: a proof the local shell earned does not carry over to a remote shell with no OSC 133.
+    func testAProofFromTheLocalShellDoesNotCarryOverAForegroundChange() {
+        let s = ready()
+        s.type("b")
+        XCTAssertEqual(s.guesses, "b")
+        s.echo("b")
+        s.answerAll()
+        // `ssh` in front: the program changed, and the old reading says nothing about it.
+        s.p.foregroundChanged(lastB: s.grid.marks.lastB)
+        let k = s.key(char("c"))
+        XCTAssertNil(s.overlay, "no guess before a new proof")
+        s.echo("c")
+        s.answer(k)
+        XCTAssertNotNil(s.p.takeInputModeRequest(), "the new program is asked, not trusted")
+    }
+
+    /// H-F2b: a foreground change mid-typing ends the epoch silently, with no mispredict drawn.
+    func testForegroundChangeMidTypingEndsTheEpochSilently() {
+        let s = ready(markers: true)
+        s.type("bc")
+        XCTAssertEqual(s.guesses, "bc")
+        let mismatched = s.p.counters.mismatched
+        s.p.foregroundChanged(lastB: s.grid.marks.lastB)
+        XCTAssertNil(s.overlay)
+        XCTAssertEqual(s.p.counters.mismatched, mismatched)
+    }
+
+    /// H-F2c: where a proof already exists (here an OSC 133 `B` after the change), no extra
+    /// reading is asked for.
+    func testNoExtraReadingWhenMarkersProveAfterTheChange() {
+        let s = ready(markers: true)
+        s.p.foregroundChanged(lastB: s.grid.marks.lastB)
+        s.prompt(markers: true)
+        XCTAssertNil(s.p.takeInputModeRequest(), "OSC 133 needs no reading")
+    }
+
     // MARK: The screen
 
     func testRightPrompt() {
