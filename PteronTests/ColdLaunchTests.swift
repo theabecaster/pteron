@@ -62,6 +62,20 @@ struct LaunchTabTests {
         #expect(LaunchTab(last: last, machines: [machine(desk, [session("a", ["a1", "a2"])])]).pick() == .show(first))
     }
 
+    /// A test launch given real servers with `-servers` opens nothing by itself: only the session
+    /// `-autoOpen` names. Once a test opened a real session's tab this way and resized its pane.
+    @Test func aTestLaunchWithServersButNoAutoOpenPicksNothing() {
+        let servers = "macdesk=https://macdesk-rex.tail1234.ts.net"
+        #expect(!LaunchTab.picksOnItsOwn(autoOpen: nil, arguments: ["servers": servers]))
+        // The binary form a Release benchmark passes counts too.
+        #expect(!LaunchTab.picksOnItsOwn(autoOpen: nil, arguments: ["servers": Data([0x5b])]))
+        #expect(!LaunchTab.picksOnItsOwn(autoOpen: "zz-test", arguments: ["servers": servers, "autoOpen": "zz-test"]))
+        #expect(!LaunchTab.picksOnItsOwn(autoOpen: "zz-test", arguments: [:]))
+        // A user's launch passes neither: the tab viewed last opens, as before.
+        #expect(LaunchTab.picksOnItsOwn(autoOpen: nil, arguments: [:]))
+        #expect(LaunchTab.picksOnItsOwn(autoOpen: nil, arguments: ["sidebar": "closed"]))
+    }
+
     @Test func aMachineWithNoTabsShowsWhatALaunchShowedBefore() {
         let last = Selection(serverID: mini, sessionID: "work", windowID: "w1")
         let rule = LaunchTab(last: last, machines: [machine(desk, [session("a", ["a1", "a2"])]), machine(mini, [session("work", [])])])

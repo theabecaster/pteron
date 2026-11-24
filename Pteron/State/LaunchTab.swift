@@ -38,6 +38,15 @@ struct LaunchTab {
         case none
     }
 
+    /// Whether a launch picks a tab by itself, by the rules above. Not with `-autoOpen`, which
+    /// names the one session a test launch opens, and not in a test launch given servers with
+    /// `-servers` but no `-autoOpen`: those are real computers, and their tab viewed last or top
+    /// tab is a real session, which a test must never open, take or resize. Both are launch
+    /// arguments (`arguments`, the argument domain); users never pass them.
+    static func picksOnItsOwn(autoOpen: String?, arguments: [String: Any]) -> Bool {
+        autoOpen == nil && arguments["autoOpen"] == nil && arguments["servers"] == nil
+    }
+
     /// The tab viewed last.
     var last: Selection?
     /// In the app's order.

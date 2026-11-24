@@ -9,7 +9,10 @@ builds.
   "Which ports show"), so it makes no tunnel in another session; the others' ports show unasked.
 - `-sizing mirror`: keep the Mac's pane sizes instead of fitting panes to the phone.
 - `-servers 'Name=https://…,Other=http://127.0.0.1:8765'`: use these servers instead of the saved
-  ones. A missing `.ts.net` host, a closed port or a 403 shows the real offline screens.
+  ones. A missing `.ts.net` host, a closed port or a 403 shows the real offline screens. Such a
+  launch opens no tab by itself (`LaunchTab.picksOnItsOwn`): only the session `-autoOpen` names.
+  Without `-autoOpen` it would open the tab viewed last or the top one, a real session, and fit
+  mode would take and resize its pane. So every launch with `-servers` carries `-autoOpen zz-…`.
 - The first-run guide (architecture.md, First run) shows on a fresh install by itself; none of
   the test launches above shows it. `-onboardingDone NO` brings it back for one run on an install
   with no server that left it (Release too: it is the saved flag's key). `-guideStep

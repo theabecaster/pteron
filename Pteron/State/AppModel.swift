@@ -1263,7 +1263,10 @@ final class AppModel {
             if selection != t { selection = t }
             return
         }
-        guard UserDefaults.standard.string(forKey: "autoOpen") == nil else { return }
+        // A test launch opens only the session `-autoOpen` names, never a real one by itself.
+        guard LaunchTab.picksOnItsOwn(autoOpen: UserDefaults.standard.string(forKey: "autoOpen"),
+                                      arguments: UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain))
+        else { return }
         guard selection == nil else { return }
         // The tab viewed last, else the top tab nearest it (`LaunchTab`).
         guard case .show(let sel) = launchTab.pick() else { return }
