@@ -403,6 +403,94 @@ final class PaneParkTests: XCTestCase {
         XCTAssertNil(pool.host(for: key(1)))
     }
 
+    // MARK: What holds a pane that left
+
+    func testAPaneEvictedWhileParkedIsGoneAtOnce() {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        weak var pane: TerminalHost?
+        weak var terminal: GhosttyTerminalView?
+        autoreleasepool {
+            let host = claimedHost(pool, transport)
+            // Far longer than the test waits: only letting go of the pane can free it.
+            host.leaveTiming.claimGrace = 60
+            pane = host
+            terminal = host.term
+            host.removeFromSuperview()
+            XCTAssertTrue(eventually { host.isParked })
+            pool.evictParked()
+            XCTAssertNil(pool.host(for: key(1)))
+        }
+        XCTAssertTrue(eventually(2) { pane == nil }, "nothing holds an evicted pane, its grace least of all")
+        XCTAssertTrue(eventually(2) { terminal == nil }, "and its terminal left the render thread with it")
+        XCTAssertTrue(eventually(1) { transport.calls.contains("disown") }, "the Mac got its size back")
+    }
+
+    func testAPaneEvictedRightAfterItLeftIsGoneAtOnce() {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        weak var pane: TerminalHost?
+        weak var terminal: GhosttyTerminalView?
+        autoreleasepool {
+            let host = claimedHost(pool, transport)
+            // Neither delay runs out in this test: the pane is let go before it has settled.
+            host.leaveTiming = TerminalHost.LeaveTiming(settle: 60, claimGrace: 60)
+            pane = host
+            terminal = host.term
+            host.removeFromSuperview()
+            host.evict()
+            XCTAssertNil(pool.host(for: key(1)))
+        }
+        XCTAssertTrue(eventually(2) { pane == nil }, "neither the settle time nor the grace holds it")
+        XCTAssertTrue(eventually(2) { terminal == nil })
+        XCTAssertTrue(eventually(1) { transport.calls.contains("disown") })
+    }
+
+    func testAPaneNobodyStopsIsHeldUntilItsGraceGaveItsClaimBack() {
+        let transport = FakeFitTransport()
+        weak var pane: TerminalHost?
+        autoreleasepool {
+            // The pool goes with the pane still parked in it, and nobody stops the pane.
+            let pool = parkingPool()
+            let host = claimedHost(pool, transport)
+            host.leaveTiming.claimGrace = 2
+            pane = host
+            host.removeFromSuperview()
+            XCTAssertTrue(eventually { host.isParked })
+        }
+        XCTAssertNotNil(pane, "its grace holds it")
+        XCTAssertFalse(transport.calls.contains("disown"), "inside the grace the claim stays")
+        XCTAssertTrue(eventually(5) { transport.calls.contains("disown") }, "the Mac gets its size back all the same")
+        XCTAssertTrue(eventually(2) { pane == nil }, "and then the pane goes")
+        XCTAssertEqual(transport.calls.filter { $0 == "disown" }.count, 1)
+    }
+
+    func testLeavingAgainInsideTheGraceGivesTheClaimBackOnceAndCountsFromTheSecondLeave() {
+        let pool = parkingPool()
+        let transport = FakeFitTransport()
+        let host = claimedHost(pool, transport)
+        host.leaveTiming.claimGrace = 1.2
+        // The stream echoes the size the claim asked for, so a return asks for nothing.
+        let size = try? XCTUnwrap(host.claimWanted)
+        host.streamResized(cols: size?.cols ?? 0, rows: size?.rows ?? 0, owner: nil)
+        host.removeFromSuperview()
+        XCTAssertTrue(eventually { host.isParked })
+        pause(0.5)
+        // Back on screen inside the grace: that grace is over, with the claim kept.
+        window.addSubview(host)
+        host.layoutIfNeeded()
+        pause(0.3)
+        let leftAgain = Date()
+        host.removeFromSuperview()
+        // Past the end of the first leave's grace, well inside the second's.
+        pause(0.7)
+        XCTAssertFalse(transport.calls.contains("disown"), "the first leave's grace ended with the return")
+        XCTAssertTrue(eventually(5) { transport.calls.contains("disown") })
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(leftAgain), 1.1, "a whole grace after the second leave")
+        pause(0.3)
+        XCTAssertEqual(transport.calls.filter { $0 == "disown" }.count, 1, "given back once")
+    }
+
     // MARK: A warm fitted pane's return
 
     func testOnlyAClaimThatWillFollowFencesAWarmReturn() {

@@ -13,6 +13,21 @@ final class ZoomScrollView: UIScrollView {
     }
 }
 
+/// What a delayed item of `TerminalHost.scheduleStop` holds its pane by. A cancelled item stays
+/// in the main queue until its time, with all it captured: it captures this, and cancelling
+/// takes the pane out, so a pane that was stopped is not kept for the rest of the delay.
+@MainActor
+private final class LeaveHold {
+    private var host: TerminalHost?
+    init(_ host: TerminalHost) { self.host = host }
+    /// The pane, once: the item has run.
+    func take() -> TerminalHost? {
+        defer { host = nil }
+        return host
+    }
+    func clear() { host = nil }
+}
+
 /// A UIKit view that shows one Rex terminal block in a `GhosttyTerminalView`.
 /// Fit mode: claims the block and resizes it to this view. Mirror mode: keeps the server's size, scaled and panned.
 ///
@@ -197,6 +212,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var anotherIsFront: (() -> Bool)?
     private var moveRetakes = KeyboardFocusPolicy.RetakeLimiter()
     private var stopWork: DispatchWorkItem?
+    private var stopHold: LeaveHold?
     /// How long a pane off screen waits before it lets go, and how long it keeps its fit claim.
     struct LeaveTiming {
         /// Off screen this long, the pane stops or parks (`scheduleStop`). A fold is back sooner.
@@ -233,6 +249,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var onParked: (() -> Void)?
     var onUnparked: (() -> Void)?
     private var graceWork: DispatchWorkItem?
+    private var graceHold: LeaveHold?
     /// The agent board lies over the pane (`setCovered`).
     private(set) var covered = false
     /// A sheet, an alert or a menu lies over the pane, as UIKit's dimmed tint last said
@@ -1612,10 +1629,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             if anotherIsFront?() == true { leftForAnother() }
             scheduleStop()
         } else {
-            stopWork?.cancel()
-            stopWork = nil
-            graceWork?.cancel()
-            graceWork = nil
+            cancelStopWork()
+            cancelGraceWork()
             if !started { PerfProbe.active?.mounted(self, kind: .cold) }  // PERF
             cameBackOnScreen()
             // Claim again what was paused, if the size still isn't the one that fits, and take
@@ -1637,34 +1652,66 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// A pane the pool keeps (`canPark`) parks instead of stopping, and keeps its fit claim for
     /// `claimGrace` from now.
     func scheduleStop() {
-        stopWork?.cancel()
-        // Strong capture: the pool may be the only owner, and the stream must be stopped either way.
-        let work = DispatchWorkItem { [self] in
-            stopWork = nil
-            guard window == nil else { return }
-            // Gone for good, not moved by a fold: the program loses the focus, said while the
-            // stream can still carry it.
-            leftScreen = true
-            refreshProgramFocus()
-            if canPark, started {
-                if let onLeft { onLeft() } else { park() }
-            } else {
-                stop()
-                onStopped?()
-            }
-        }
+        cancelStopWork()
+        // The item holds the pane until it has run: the pool may be the only owner, and the
+        // stream must be stopped either way. Through `LeaveHold`, so that an item cancelled
+        // before its time lets the pane go at once.
+        let hold = LeaveHold(self)
+        let work = DispatchWorkItem { hold.take()?.settledOffScreen() }
         stopWork = work
+        stopHold = hold
         DispatchQueue.main.asyncAfter(deadline: .now() + leaveTiming.settle, execute: work)
         guard canPark, graceWork == nil else { return }
-        let grace = DispatchWorkItem { [self] in
-            graceWork = nil
-            guard window == nil else { return }
-            // The Mac gets its size back; the pane claims again if it returns.
-            claimedSize = nil
-            releaseClaim()
-        }
+        // Held the same way: a pane that nobody stops is kept until its grace has run, so the
+        // Mac gets its size back whatever became of the pane.
+        let graceHold = LeaveHold(self)
+        let grace = DispatchWorkItem { graceHold.take()?.claimGraceEnded() }
         graceWork = grace
+        self.graceHold = graceHold
         DispatchQueue.main.asyncAfter(deadline: .now() + leaveTiming.claimGrace, execute: grace)
+    }
+
+    /// Off screen for `leaveTiming.settle` (`scheduleStop`).
+    private func settledOffScreen() {
+        stopWork = nil
+        stopHold = nil
+        guard window == nil else { return }
+        // Gone for good, not moved by a fold: the program loses the focus, said while the
+        // stream can still carry it.
+        leftScreen = true
+        refreshProgramFocus()
+        if canPark, started {
+            if let onLeft { onLeft() } else { park() }
+        } else {
+            stop()
+            onStopped?()
+        }
+    }
+
+    /// Off screen for `leaveTiming.claimGrace` (`scheduleStop`).
+    private func claimGraceEnded() {
+        graceWork = nil
+        graceHold = nil
+        guard window == nil else { return }
+        // The Mac gets its size back; the pane claims again if it returns.
+        claimedSize = nil
+        releaseClaim()
+    }
+
+    /// Cancels the settle item and takes the pane out of its hold.
+    private func cancelStopWork() {
+        stopWork?.cancel()
+        stopWork = nil
+        stopHold?.clear()
+        stopHold = nil
+    }
+
+    /// Cancels the grace item and takes the pane out of its hold.
+    private func cancelGraceWork() {
+        graceWork?.cancel()
+        graceWork = nil
+        graceHold?.clear()
+        graceHold = nil
     }
 
     /// Sets the pane aside for a quick return: the screen, the scrollback and the stream's place
@@ -1755,8 +1802,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     /// The pool lets the pane go for good.
     func evict() {
-        stopWork?.cancel()
-        stopWork = nil
+        cancelStopWork()
         stop()
         onStopped?()
     }
@@ -1788,8 +1834,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         loader?.removeFromSuperview()
         loader = nil
         hasScreen = false
-        graceWork?.cancel()
-        graceWork = nil
+        cancelGraceWork()
         stopKeyRepeats()
         // Find closes with the pane: its handle and tints go, and any hold.
         closeFind(giveBack: false)
