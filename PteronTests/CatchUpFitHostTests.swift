@@ -70,13 +70,15 @@ final class CatchUpFitHostTests: XCTestCase {
 
     /// The pane as it is with the software keyboard up: 250 points tall of the 500 it has with
     /// the keyboard down. Its stream has started and is behind its fence.
-    private func pane(sizing: SizingMode = .fit, height: CGFloat = 250) -> Pane {
+    private func pane(sizing: SizingMode = .fit, height: CGFloat = 250,
+                      notYetPause: (@MainActor () async -> Void)? = nil) -> Pane {
         let transport = FakeFitTransport()
         let gate = Gate()
         let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
         let stream = TerminalStream(control: control, sessionID: "s", blockID: "b1")
-        let host = TerminalHost(stream: stream, sizing: sizing, fontSize: 12, theme: ThemeStore.fallback,
-                                claim: FitClaim(transport: transport, settle: { await gate.wait() }))
+        let claim = notYetPause.map { FitClaim(transport: transport, settle: { await gate.wait() }, notYetPause: $0) }
+            ?? FitClaim(transport: transport, settle: { await gate.wait() })
+        let host = TerminalHost(stream: stream, sizing: sizing, fontSize: 12, theme: ThemeStore.fallback, claim: claim)
         host.hardwareKeyboard = { false }
         host.ownClientID = { [phone] in phone }
         host.clientGeneration = { 0 }
@@ -345,6 +347,47 @@ final class CatchUpFitHostTests: XCTestCase {
         XCTAssertFalse(p.host.fitted, "the pane is another client's")
         p.host.stream.stop()
         XCTAssertFalse(core.isCatchUpHeld, "the fence's fall ends the hold")
+    }
+
+    /// A pane behind its fence whose resize got an answer that has it asked again later: after
+    /// the connection is back (`offline`) or after a pause (`notYet`). Neither comes here, so
+    /// the claim stays on its way.
+    private func paneWhoseResizeIsAskedAgain(after answer: FitClaimAnswer) async throws -> Pane {
+        let again = Gate()
+        let p = pane(notYetPause: { await again.wait() })
+        p.transport.answers["resize"] = [answer]
+        deliver(try snapshot(alternate: false), to: p.host)
+        p.host.layoutIfNeeded()
+        p.gate.lift()
+        let waits = await eventually {
+            !self.resizes(p).isEmpty && (answer == .offline ? p.transport.waitsForConnection : again.asked == 1)
+        }
+        XCTAssertTrue(waits)
+        XCTAssertTrue(p.host.stream.isClaimPending, "the claim is still on its way")
+        XCTAssertTrue(p.host.term.core.isCatchUpHeld)
+        return p
+    }
+
+    /// The two ways such a hold ends: the fence falls, or it stays up and the engine's limit
+    /// passes with the claim still waiting.
+    private func assertTheFenceOrTheLimitEndsTheHold(after answer: FitClaimAnswer) async throws {
+        let fallen = try await paneWhoseResizeIsAskedAgain(after: answer)
+        fallen.host.stream.stop()
+        XCTAssertFalse(fallen.host.term.core.isCatchUpHeld, "the fence's fall ends the hold")
+
+        let kept = try await paneWhoseResizeIsAskedAgain(after: answer)
+        await pause(GhosttyCore.renderHoldTimeout + 0.1)
+        XCTAssertFalse(kept.host.term.core.isCatchUpHeld, "the limit ends the hold")
+        XCTAssertTrue(kept.host.isCatchingUp, "while input still waits")
+        XCTAssertTrue(kept.host.stream.isClaimPending, "and the claim is still on its way")
+    }
+
+    func testAResizeThatNeverReachedTheServerLeavesAHoldThatTheFenceOrTheLimitEnds() async throws {
+        try await assertTheFenceOrTheLimitEndsTheHold(after: .offline)
+    }
+
+    func testAResizeAnsweredNotYetLeavesAHoldThatTheFenceOrTheLimitEnds() async throws {
+        try await assertTheFenceOrTheLimitEndsTheHold(after: .notYet)
     }
 
     func testAHoldKeptForAnEchoEndsAtTheLimit() async throws {
