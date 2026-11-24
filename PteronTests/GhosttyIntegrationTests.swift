@@ -398,10 +398,17 @@ final class GhosttyIntegrationTests: XCTestCase {
     func testAClosedPaneLeavesNoTerminalAndNoRenderThreadPane() {
         let window = makeWindow()
         defer { window.isHidden = true }
-        // Panes of earlier tests may still be on their way out.
-        wait(0.3)
-        let before = GhosttyCore.liveTerminals.load(ordering: .relaxed)
+        // The render thread counts the panes of the whole process, and panes of earlier tests
+        // can still be on their way out (seen: eight, leaving one by one over 5 s). The test
+        // begins once none is left; if some still are after 30 s it fails with the count and
+        // goes no further, since a pane that left while it ran would count against it.
+        let deadline = Date().addingTimeInterval(30)
+        while GhosttyRenderThread.shared.paneCount > 0, Date() < deadline { wait(0.05) }
         let panesBefore = GhosttyRenderThread.shared.paneCount
+        guard panesBefore == 0 else {
+            return XCTFail("\(panesBefore) panes of earlier tests are still there after 30 s")
+        }
+        let before = GhosttyCore.liveTerminals.load(ordering: .relaxed)
         autoreleasepool {
             let view = GhosttyTerminalView(frame: CGRect(x: 0, y: 0, width: 300, height: 200), fontSize: 12, cols: 40, rows: 12)
             window.addSubview(view)
