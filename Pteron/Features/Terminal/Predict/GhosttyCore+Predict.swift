@@ -108,6 +108,9 @@ extension GhosttyCore {
             promptWatch.foregroundChanged()
             termLock.unlock()
         }
+        // The predictor's own proof goes too, or a remote shell without OSC 133 inherits the
+        // local shell's prompt (predictive-echo.md, the foreground rule).
+        echoOp { p, grid, _ in p.foregroundChanged(lastB: grid.marks.lastB) }
     }
 
     /// Runs `body` on the feed queue with the predictor and the grid, then publishes.

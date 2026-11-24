@@ -509,6 +509,14 @@ public final class EchoPredictor {
         if unproven { unprove(lastB: lastB) }
     }
 
+    /// The program in front changed (`ssh` in, or out of, a remote shell). Nothing earned before
+    /// it carries over: the epoch ends silently and the next line is drawn only after a new
+    /// proof. `lastB` is the newest `133;B` at that moment; the markers up to it prove nothing
+    /// after the change.
+    public func foregroundChanged(lastB: Int) {
+        reset(unproven: true, lastB: lastB)
+    }
+
     /// Nothing seen so far proves that the program echoes: no earlier `input_mode` reading,
     /// and no `133;B` up to `lastB` (or, when that is not known, up to the newest one at the
     /// next look at the marks). The next line is drawn only after a new proof.
