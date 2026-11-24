@@ -79,12 +79,102 @@ final class FitClaimTests: XCTestCase {
     private let transport = FakeFitTransport()
     private var claimed: [String] = []
     private var refused = 0
+    /// Settle times a test ends itself (`settleLater`).
+    private var settles: [CheckedContinuation<Void, Never>] = []
 
     private func makeClaim(settle: @escaping @MainActor () async -> Void = {}) -> FitClaim {
         let claim = FitClaim(transport: transport, settle: settle, notYetPause: {})
         claim.onClaimed = { [unowned self] cols, rows in self.claimed.append("\(cols)x\(rows)") }
         claim.onRefused = { [unowned self] in self.refused += 1 }
         return claim
+    }
+
+    // MARK: A claim whose pane is gone
+
+    func testAClaimLetGoRightAfterItsReleaseStillDisowns() async {
+        var claim: FitClaim? = makeClaim()
+        claim?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"])
+        weak let gone = claim
+        // As a pane that is stopped and freed in one turn: nothing ran in between.
+        claim?.release()
+        claim = nil
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24", "disown"], "the Mac gets its size back")
+        XCTAssertNil(gone, "and the worker lets the claim go when it is done")
+    }
+
+    func testAClaimLetGoWithATakeInFlightOnlyDisowns() async {
+        transport.held = ["own"]
+        var claim: FitClaim? = makeClaim()
+        claim?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own"])
+        weak let gone = claim
+        claim?.release()
+        claim = nil
+        transport.finish("own")
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "disown"], "no resize for a pane nobody shows")
+        XCTAssertEqual(claimed, [])
+        XCTAssertNil(gone)
+    }
+
+    func testAClaimLetGoWhileItSettlesSendsNothing() async {
+        var claim: FitClaim? = makeClaim(settle: { [unowned self] in
+            await withCheckedContinuation { self.settles.append($0) }
+        })
+        claim?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(settles.count, 1)
+        weak let gone = claim
+        claim?.release()
+        claim = nil
+        await settleMainActor()
+        XCTAssertNil(gone, "nothing was taken, so nothing is owed and nothing holds the claim")
+        settles.removeAll { $0.resume(); return true }
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, [], "a take that had not left is never sent")
+    }
+
+    func testAClaimLetGoWhileItWaitsForTheConnectionIsFreedAndSendsNothingWhenItIsBack() async {
+        transport.answers = ["resize": [.offline]]
+        var claim: FitClaim? = makeClaim()
+        claim?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"])
+        XCTAssertTrue(transport.waitsForConnection)
+        weak let gone = claim
+        claim?.release()
+        claim = nil
+        await settleMainActor()
+        XCTAssertNil(gone, "the wait for the connection does not hold it")
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"], "nothing on a connection that is gone")
+        // Back, perhaps hours later: the server let this client's panes go with the connection,
+        // and another client may have the pane by now. Not a take, not a resize, not a disown.
+        transport.connect()
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"])
+    }
+
+    func testAClaimLetGoWhileItWaitsToAskAgainIsFreedAndSendsNothing() async {
+        transport.answers = ["resize": [.notYet]]
+        var claim: FitClaim? = FitClaim(transport: transport, settle: {}, notYetPause: { [unowned self] in
+            await withCheckedContinuation { self.settles.append($0) }
+        })
+        claim?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"])
+        XCTAssertEqual(settles.count, 1, "the pause before it asks again")
+        weak let gone = claim
+        claim?.release()
+        claim = nil
+        await settleMainActor()
+        XCTAssertNil(gone, "the pause does not hold it")
+        settles.removeAll { $0.resume(); return true }
+        await settleMainActor()
+        XCTAssertEqual(transport.calls, ["own", "resize 80x24"], "and nothing is asked again")
     }
 
     // MARK: Answers: nothing counts as claimed that the server didn't answer

@@ -191,6 +191,48 @@ final class AttachGatedFitTests: XCTestCase {
         XCTAssertEqual(refused, 0)
     }
 
+    func testAClaimLetGoBeforeTheAttachIsHeldUntilTheWaitEndsAndDisownsOnlyIfAttached() async {
+        // Connected, the session not attached yet: the disown waits at the gate, and the wait
+        // (which has its cap) is all that holds a claim whose pane is gone.
+        let gate = FakeAttachGate(attached: true)
+        var claim: FitClaim? = makeClaim(gate)
+        claim?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        XCTAssertEqual(inner.calls, ["own", "resize 80x24"])
+        gate.newClient()
+        weak let gone = claim
+        claim?.release()
+        claim = nil
+        await settleMainActor()
+        XCTAssertEqual(gate.waiting, 1, "the disown waits for the attach")
+        XCTAssertNotNil(gone, "held while it waits")
+        gate.attach()
+        await settleMainActor()
+        XCTAssertEqual(inner.calls, ["own", "resize 80x24", "disown"])
+        XCTAssertNil(gone)
+
+        // The wait ends without the attach (the connection dropped, or the cap): nothing is
+        // sent, then or later, and the claim goes.
+        let other = FakeFitTransport()
+        let closed = FakeAttachGate(attached: true)
+        var second: FitClaim? = FitClaim(transport: AttachGatedFitTransport(other) { await closed.mayCall() }, settle: {}, notYetPause: {})
+        second?.request(cols: 80, rows: 24)
+        await settleMainActor()
+        closed.newClient()
+        weak let secondGone = second
+        second?.release()
+        second = nil
+        await settleMainActor()
+        XCTAssertNotNil(secondGone)
+        closed.cancel()
+        await settleMainActor()
+        XCTAssertNil(secondGone)
+        closed.attach()
+        other.connect()
+        await settleMainActor()
+        XCTAssertEqual(other.calls, ["own", "resize 80x24"], "no disown, no take and no resize afterwards")
+    }
+
     func testADisownWaitsForTheAttachAndIsNotSentWhenTheWaitEndsWithoutIt() async {
         let gate = FakeAttachGate(attached: true)
         let claim = makeClaim(gate)

@@ -257,11 +257,10 @@ final class FitClaim {
     private func work() {
         guard !working, !waiting else { return }
         working = true
-        Task { [weak self] in
-            // Strong while it runs: a pane that goes away mid-call still disowns.
-            guard let self else { return }
-            await self.run()
-        }
+        // Strong from here until the worker is done: a pane that goes away still disowns,
+        // whether a call was in flight or the worker had not begun. The pane is freed as soon
+        // as it is stopped, which can be before this task first runs.
+        Task { await self.run() }
     }
 
     private func run() async {
