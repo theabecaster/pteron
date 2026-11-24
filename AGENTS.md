@@ -134,11 +134,11 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
   `scripts/bench/run.sh <sim-id>` (about 5 minutes, no server). It fails when a number passes its
   budget (docs/ghostty-engine.md, Measurements).
 - Releases (device installs, TestFlight, Beacon's packaging): [docs/release.md](docs/release.md).
-- CI (`.github/workflows/ci.yml`): job `build` runs RexKit, RexGlance and app tests on a self-hosted Mac
-  runner on the latest Xcode, for pushes to main and manual runs (pull requests get RexKit and RexGlance tests on
-  GitHub's macOS runner and never touch the self-hosted one); job `helper` runs
-  `scripts/check-brand.sh` and `cargo test` on
-  GitHub's Linux runners. `build` is required for merging into main for outside contributors;
+- CI (`.github/workflows/ci.yml`) runs on GitHub's own machines; the owner's Macs are not used.
+  Job `build` runs RexKit, RexGlance and app tests on GitHub's `xcode-27` macOS runner (Xcode 27.2),
+  for pushes to main, pull requests and manual runs. It builds the Ghostty framework there and
+  caches it, keyed on the pins and patches. Job `helper` runs `scripts/check-brand.sh` and
+  `cargo test` on GitHub's Linux runners. `build` is required for merging into main for outside contributors;
   their fork pull requests only run after the owner approves them. The owner and their agents may merge straight to main (admin bypass)
   after building and testing locally; don't wait on CI.
 
@@ -192,8 +192,7 @@ shell.
   - the Beacon crate, binaries, launchd labels, `REXDUO_LABEL`, `REX_DUO_DRY_RUN`, state dirs and
     `~/.config/rexduo/helper-update.key`;
   - log subsystems and queue labels, the UTType, test fixtures, and the macdesk lock
-    `~/rexduo-build.lock` with the `~/rexduo-build*` folders;
-  - the CI runner label `rexduo`.
+    `~/rexduo-build.lock` with the `~/rexduo-build*` folders.
 - RexKit doesn't import UIKit or SwiftUI; the app passes in what it needs (`ClientInfo`).
 - UI and state types are `@MainActor`. Use `@unchecked Sendable` or `nonisolated(unsafe)` only with a
   comment that says why it is safe.

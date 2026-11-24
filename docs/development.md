@@ -97,11 +97,13 @@ covers the layers, the data flow and where new code goes. The other documents:
 
 ## CI
 
-`.github/workflows/ci.yml` runs two jobs:
+`.github/workflows/ci.yml` runs two jobs, both on GitHub's own machines. The owner's Macs are not
+used.
 
-- `build`: RexKit and RexGlance tests on every pull request, on GitHub's macOS runner. Pushes to main and
-  manual runs also build the engine and run the app tests, on a self-hosted Mac runner.
-- `helper`: `cargo test` on GitHub's Linux runner.
+- `build`: RexKit and RexGlance tests, the engine build and the app tests, on GitHub's `xcode-27`
+  macOS runner (Xcode 27.2), for every push to main, pull request and manual run. The built engine
+  is cached, keyed on its pins and patches, so it builds again only when they change.
+- `helper`: the brand check and `cargo test` on GitHub's Linux runner.
 
 Pull requests from forks run only after the owner approves them.
 

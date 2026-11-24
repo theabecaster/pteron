@@ -14,65 +14,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Pull requests never run on macdesk: they build on GitHub's own machines. Pushes to main and
-  # manual runs build on macdesk (self-hosted, latest Xcode). Fork pull requests also need the
-  # owner's approval before anything runs; read the workflow diff before approving one.
+  # Everything runs on GitHub's own machines; the owner's Macs are not used. The repository is
+  # public, so these runners cost nothing. Fork pull requests run only after the owner approves
+  # them; read the workflow diff before approving one. No step uses a secret.
   build:
-    runs-on: ${{ github.event_name == 'pull_request' && 'macos-15' || fromJSON('["self-hosted","macOS","ARM64","macdesk","rexduo"]') }}
-    timeout-minutes: 60
+    # GitHub's macOS 27 image with Xcode 27 (arm64, which the Ghostty build needs).
+    runs-on: xcode-27
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      # Trusted runs share macdesk with the lanes. Take ~/rexduo-build.lock as lane `ci`, with the
-      # rule tools/gate-branch.sh uses, and give it back in the last step (always, but only when
-      # the lane file still reads `ci`).
-      - name: Take the build lock
-        if: github.event_name != 'pull_request'
+      # The image's default Xcode is 27.1; the app is built with 27.2.
+      - name: Xcode 27.2
         run: |
-          for i in $(seq 1 90); do
-            N=$(cat ~/rexduo-build.next 2>/dev/null || true)
-            if [ -z "$N" ] || [ "$N" = ci ]; then
-              if mkdir ~/rexduo-build.lock 2>/dev/null; then
-                echo ci > ~/rexduo-build.lock/lane
-                rm -f ~/rexduo-build.next
-                echo "lock taken as ci"
-                exit 0
-              fi
-            fi
-            [ $((i % 10)) -eq 1 ] && echo "waiting: lock held by $(cat ~/rexduo-build.lock/lane 2>/dev/null || echo unknown)"
-            sleep 30
-          done
-          echo "lock timeout"
-          exit 1
+          sudo xcode-select -s /Applications/Xcode_27.2.app
+          xcodebuild -version
+          xcrun simctl list runtimes
       # Packages run at normal priority: a wall-time test passes at background priority when it
       # should fail (F0 H-F0c).
       - name: RexKit tests
         run: swift test --package-path Packages/RexKit
       - name: RexGlance tests
         run: swift test --package-path Packages/RexGlance
+      # Only the built framework and its stamp are cached, not Zig or the Ghostty checkout. The
+      # key covers what the stamp is made from (the pins and the patches) and the script that
+      # writes it, so a hit has a matching stamp and build-ghostty.sh does nothing.
+      - name: Restore the Ghostty framework
+        uses: actions/cache@v4
+        with:
+          path: |
+            Vendor/GhosttyVt.xcframework
+            Vendor/GhosttyVt.stamp
+          key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ghostty.version', 'scripts/ghostty-patches/*.patch', 'scripts/check-ghostty.sh') }}
       - name: Ghostty framework
-        if: github.event_name != 'pull_request'
+        run: scripts/build-ghostty.sh
+      - name: XcodeGen
         run: |
-          # Trusted runs only: the cache lives outside the workspace and persists between runs.
-          CACHE="$HOME/actions-runner/pteron-vendor"
-          mkdir -p "$CACHE"
-          ln -sfn "$CACHE" Vendor
-          scripts/build-ghostty.sh
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          xcodegen generate --quiet
+      # A simulator made for this run, on the iOS 27.2 runtime, by its id: the framework's
+      # simulator slice is arm64 only, so a generic destination would fail. One test process
+      # (the scheme marks nothing parallelizable), as in the gate.
       - name: App tests
-        if: github.event_name != 'pull_request'
         run: |
-          /opt/homebrew/bin/xcodegen generate --quiet
-          SIM=$(xcrun simctl create "ci-pteron-$GITHUB_RUN_ID" "iPhone 17")
+          RUNTIMES=$(xcrun simctl list runtimes -j)
+          RUNTIME=$(echo "$RUNTIMES" | jq -r '[.runtimes[] | select(.platform == "iOS" and (.version == "27.2" or (.version | startswith("27.2."))) and .isAvailable)] | first | .identifier // empty')
+          [ -n "$RUNTIME" ] || { echo "no iOS 27.2 simulator runtime on this image"; exit 1; }
+          DEVICE=$(echo "$RUNTIMES" | jq -r --arg r "$RUNTIME" '[.runtimes[] | select(.identifier == $r) | .supportedDeviceTypes[] | select(.productFamily == "iPhone")] | (map(select(.name == "iPhone 17")) + .) | first | .identifier // empty')
+          [ -n "$DEVICE" ] || { echo "no iPhone device type for $RUNTIME"; exit 1; }
+          SIM=$(xcrun simctl create "ci-pteron-$GITHUB_RUN_ID" "$DEVICE" "$RUNTIME")
+          echo "simulator $SIM: $DEVICE on $RUNTIME"
           trap 'xcrun simctl delete "$SIM" >/dev/null 2>&1' EXIT
-          taskpolicy -b xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
-            -derivedDataPath "$HOME/actions-runner/pteron-dd" -quiet
-      - name: Give the build lock back
-        if: always() && github.event_name != 'pull_request'
-        run: |
-          if [ "$(cat ~/rexduo-build.lock/lane 2>/dev/null)" = ci ]; then
-            rm -rf ~/rexduo-build.lock && echo "lock released"
-          else
-            echo "lock is not ours; left alone"
-          fi
+          xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
+            -derivedDataPath build/dd -quiet
 
   helper:
     runs-on: ubuntu-latest
