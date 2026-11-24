@@ -45,6 +45,10 @@ for pkg in RexKit RexGlance; do
   fi
 done
 
+# Back to the background priority gate-branch.sh gave this script, for the app suite and the
+# Release build; only the packages above ran at normal priority.
+taskpolicy -b -p $$ 2>/dev/null
+
 # The Mac's load when the tests begin, for reading a failure afterwards.
 echo "load before tests: $(sysctl -n vm.loadavg)"
 # One test process, never parallel workers: with two the 1-minute load passes 400 on a 10-core
