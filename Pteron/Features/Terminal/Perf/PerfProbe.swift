@@ -77,6 +77,10 @@ struct PerfReplayInfo: Sendable {
 /// hold the medians over that phase's mounts. With `-perfSwitchType <text>` the text is typed
 /// into each pane as it comes back from the park, and `keyAnsweredMs` is the time from there to
 /// the server's answer to its write: one way less than that is when the key reached the server.
+/// A mount of that phase also has the switch that caused it as its start: `sinceSwitchFirstFrameMs`
+/// and `sinceSwitchCurrentMs` are the same two frames timed from the call that switched panes
+/// (the tap), and `switchLongestSliceMs` and `switchBusyMs` the longest and the sum of the main
+/// run loop's slices in the 400 ms from that call, each cut to those 400 ms.
 ///
 /// ## A frame that shows a state
 ///
@@ -167,6 +171,8 @@ final class PerfProbe: Sendable {
         var at: Double
         /// Made during the switch phase (`-perfSwitch`).
         var switched: Bool
+        /// When that phase made the switch that brought the pane.
+        var switchedAt: Double?
         var frame: Target?
         var current: Target?
         /// `-perfSwitchType`: when the text was typed, and when the server had answered its write.
@@ -217,6 +223,8 @@ final class PerfProbe: Sendable {
         var launchPeelHitchesAt = ""
         var mounts: [Mount] = []
         var switching = false
+        /// When the switch phase last switched panes.
+        var switchedAt: Double?
 
         func sample(_ now: Double) -> Sample {
             Sample(at: now, cpu: PerfSystem.processCPUSeconds(), mainCPU: PerfSystem.threadCPUSeconds(mainThread),
@@ -383,7 +391,7 @@ final class PerfProbe: Sendable {
         let now = Self.clock()
         let core = ObjectIdentifier(host.term.core)
         state.withLock { s in
-            var m = Mount(kind: kind, core: core, at: now, switched: s.switching)
+            var m = Mount(kind: kind, core: core, at: now, switched: s.switching, switchedAt: s.switching ? s.switchedAt : nil)
             // A host that has a screen shows it in its next frame.
             if kind != .cold { m.frame = Target(at: now) }
             if current { m.current = Target(at: now) }
@@ -842,10 +850,15 @@ final class PerfProbe: Sendable {
         // on the last pane with every other one visited, whichever pane the tab opened on.
         let walk = UserDefaults.standard.bool(forKey: "perfSwitchWalk")
         for i in 0..<count {
+            let now = Self.clock()
+            state.withLock { $0.switchedAt = now }
             switcher(walk ? (i < count / 2 ? -1 : 1) : (i % 2 == 0 ? 1 : -1))
             try? await Task.sleep(nanoseconds: pause)
         }
-        state.withLock { $0.switching = false }
+        state.withLock {
+            $0.switching = false
+            $0.switchedAt = nil
+        }
     }
 
     /// One step of the fling: up and back down, the speed a smooth cosine, so it starts and
@@ -969,7 +982,7 @@ final class PerfProbe: Sendable {
             out["launch"] = launch
         }
 
-        if !s.mounts.isEmpty { out["mounts"] = mountsJSON(s.mounts, switched: s.mounts.contains { $0.switched }) }
+        if !s.mounts.isEmpty { out["mounts"] = mountsJSON(s.mounts, switched: s.mounts.contains { $0.switched }, busy: busy) }
 
         // The window: the flow when output was fed, else pane open to the first frame.
         let start = s.flowSample ?? s.openSample
@@ -1044,21 +1057,43 @@ final class PerfProbe: Sendable {
 
     /// Every mount, and per kind the medians over the switch phase's mounts (over all of them
     /// when the run had no such phase).
-    private static func mountsJSON(_ mounts: [Mount], switched: Bool) -> JSONObject {
+    /// How long after a switch the main thread's slices count as that switch's.
+    private static let switchSpan = 0.4
+
+    private static func mountsJSON(_ mounts: [Mount], switched: Bool, busy: [PerfWindow]) -> JSONObject {
         func ms(_ seconds: Double) -> Double { (seconds * 1e6).rounded() / 1e3 }
         func since(_ m: Mount, _ t: Target?) -> Double? { t?.shown.map { ms($0 - m.at) } }
-        var out: JSONObject = ["list": mounts.map { m -> JSONObject in
+        func sinceSwitch(_ m: Mount, _ t: Target?) -> Double? {
+            guard let from = m.switchedAt, let shown = t?.shown else { return nil }
+            return ms(shown - from)
+        }
+        // The main run loop's slices in the 400 ms from each switch: the longest and their sum.
+        let slices = mounts.map { m in m.switchedAt.map { PerfBusyStats.measure(busy, in: PerfWindow(from: $0, to: $0 + switchSpan)) } }
+        var out: JSONObject = ["list": zip(mounts, slices).map { m, slice -> JSONObject in
             var one: JSONObject = ["kind": m.kind.rawValue, "switched": m.switched, "firstFrameMs": since(m, m.frame) ?? NSNull() as Any,
                                    "currentMs": since(m, m.current) ?? NSNull() as Any]
+            if let slice {
+                one["sinceSwitchFirstFrameMs"] = sinceSwitch(m, m.frame) ?? NSNull() as Any
+                one["sinceSwitchCurrentMs"] = sinceSwitch(m, m.current) ?? NSNull() as Any
+                one["switchLongestSliceMs"] = ms(slice.worstSeconds)
+                one["switchBusyMs"] = ms(slice.totalSeconds)
+            }
             if let typed = m.typed { one["keyAnsweredMs"] = m.written.map { ms($0 - typed) } ?? NSNull() as Any }
             return one
         }]
         for kind in MountKind.allCases {
-            let mine = mounts.filter { $0.kind == kind && $0.switched == switched }
+            let picked = zip(mounts, slices).filter { $0.0.kind == kind && $0.0.switched == switched }
+            let mine = picked.map(\.0)
             guard !mine.isEmpty else { continue }
             var stats: JSONObject = ["count": mine.count]
-            for (name, pick) in [("firstFrameMs", { (m: Mount) in since(m, m.frame) }), ("currentMs", { (m: Mount) in since(m, m.current) })] {
-                let values = mine.compactMap(pick)
+            var series: [(String, [Double])] = [
+                ("firstFrameMs", mine.compactMap { since($0, $0.frame) }), ("currentMs", mine.compactMap { since($0, $0.current) }),
+                ("sinceSwitchFirstFrameMs", mine.compactMap { sinceSwitch($0, $0.frame) }),
+                ("sinceSwitchCurrentMs", mine.compactMap { sinceSwitch($0, $0.current) }),
+            ]
+            series.append(("switchLongestSliceMs", picked.compactMap { $0.1.map { ms($0.worstSeconds) } }))
+            series.append(("switchBusyMs", picked.compactMap { $0.1.map { ms($0.totalSeconds) } }))
+            for (name, values) in series {
                 guard !values.isEmpty else { continue }
                 stats[name] = PerfMedian.of(values)
                 stats[name.replacingOccurrences(of: "Ms", with: "WorstMs")] = values.max() ?? 0

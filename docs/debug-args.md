@@ -309,7 +309,9 @@ builds.
   screen n times, forward and back, as a swipe does, `-perfSwitchEvery <seconds>` apart (default
   1.5), and the result's `mounts` holds every pane mount (cold, parked or resumed) with its time
   to the first frame and to the current screen; with `-autoOpen zz-…` only, since fit mode
-  claims the panes. `-perfSwitchType <text>` types the text into each pane as it comes back from
+  claims the panes. A mount of the switch phase also has both times from the switch itself
+  (`sinceSwitchFirstFrameMs`, `sinceSwitchCurrentMs`) and the main thread's longest slice and
+  busy time in the 400 ms from it (`switchLongestSliceMs`, `switchBusyMs`). `-perfSwitchType <text>` types the text into each pane as it comes back from
   the park and records when the server answered the write; `-perfSwitchWalk YES` goes back for
   the first half of the switches and forward for the second, which in a tab of n / 2 + 1 panes
   ends on the last one with all the others visited. `-findTest <needle>` opens find on the replay's pane before the
