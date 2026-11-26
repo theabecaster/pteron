@@ -65,7 +65,7 @@ struct LaunchTabTests {
     /// A test launch given real servers with `-servers` opens nothing by itself: only the session
     /// `-autoOpen` names. Once a test opened a real session's tab this way and resized its pane.
     @Test func aTestLaunchWithServersButNoAutoOpenPicksNothing() {
-        let servers = "macdesk=https://macdesk-rex.tail1234.ts.net"
+        let servers = "computer-a=https://computer-a.tail1234.ts.net"
         #expect(!LaunchTab.picksOnItsOwn(autoOpen: nil, arguments: ["servers": servers]))
         // The binary form a Release benchmark passes counts too.
         #expect(!LaunchTab.picksOnItsOwn(autoOpen: nil, arguments: ["servers": Data([0x5b])]))
