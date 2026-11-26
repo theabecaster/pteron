@@ -93,15 +93,20 @@ final class ServerEventsTests: XCTestCase {
         /// The server process the next bootstrap names (`instance_id`).
         func setInstance(_ id: String) { listed.instance = id }
 
-        /// Connects and waits until the sync has made its last call.
+        /// Connects and waits until the sync has made its last call. The 90 s only guard a hang:
+        /// on a busy machine the first connection to the fake has gone unanswered, and the app's
+        /// retry was in more than 15 s later. A test that went on without it sent its events to
+        /// no one.
         func connect() async {
             server.start()
-            await settle()
+            await settle(seconds: 90)
         }
 
         /// Waits for a sync to finish (the keymap is its last read) and the creator list to land.
-        func settle(keymapLoads: Int = 1) async {
-            _ = await eventually { self.fake.count("client.keymap") >= keymapLoads && self.server.synced && self.server.creatorsTask == nil }
+        func settle(keymapLoads: Int = 1, seconds: Double = 15) async {
+            _ = await eventually(seconds: seconds) {
+                self.fake.count("client.keymap") >= keymapLoads && self.server.synced && self.server.creatorsTask == nil
+            }
         }
 
         func stop() {
