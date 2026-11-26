@@ -125,9 +125,10 @@ struct PaneBottomTests {
     }
 
     @Test func theEndHandleOnTheLastRowKeepsItsKnobOutOfTheIndicator() {
-        // H-3: the last row ends 10 pt above the pane's bottom, inside the indicator's 34 pt.
+        // H-3: the last row ends 13 pt above the pane's bottom, inside the indicator's 34 pt and
+        // with room for the 12 pt knob below it.
         let pane = CGRect(x: 0, y: 0, width: 382, height: 600)
-        let last = CGRect(x: 100, y: 573, width: 7, height: 17)
+        let last = CGRect(x: 100, y: 570, width: 7, height: 17)
         let under = SelectionHandleLayout(start: nil, end: last, in: PaneBottom.clear(pane, safeBottom: indicator))
         #expect(under.end?.knob.maxY == last.minY, "above its row")
         // Without an indicator there is room below the row, as before.

@@ -37,10 +37,12 @@ final class FoldLayoutTests: XCTestCase {
     }
 
     /// The root's part that matters here: the tab, in the mode the window's width gives it, with
-    /// the keyboard's room padded off its bottom and handed down, as `RootView` does.
+    /// the keyboard's room padded off its bottom and handed down, and the window's bottom inset
+    /// read by the same probe and handed down, as `RootView` does.
     private struct Root: View {
         let server: ServerConnection
         let keyboard: FoldKeyboard
+        @State private var home: CGFloat = 0
         var body: some View {
             GeometryReader { geo in
                 let arr = Arrangement.decide(size: geo.size, division: nil)
@@ -48,7 +50,9 @@ final class FoldLayoutTests: XCTestCase {
                              sidebarVisible: .constant(false))
                     .safeAreaPadding(.bottom, keyboard.room)
                     .environment(\.keyboardRoom, keyboard.room)
+                    .environment(\.homeInset, home)
             }
+            .background(KeyboardInsetReader(onHome: { if home != $0 { home = $0 } }) { _ in }.ignoresSafeArea())
         }
     }
 
