@@ -180,6 +180,11 @@ final class GhosttyTerminalView: UIView {
             DispatchQueue.main.async { self?.sayFocus(.asked) }
         }
         core.resize(cols: cols, rows: rows, cellWidthPx: atlas.metrics.cellWidth, cellHeightPx: atlas.metrics.cellHeight)
+        // No shortcut row above an iPad's keyboard (undo, redo, paste): they would edit the
+        // keyboard's shadow line, not the program's, and the key bar has paste. With a hardware
+        // keyboard the same groups would fill its floating bar. An iPhone shows none anyway.
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
 
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
