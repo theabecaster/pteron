@@ -953,7 +953,9 @@ quotes and dashes are off, so a command or a path stays as typed. Only a tap on 
   window. Longer text scrolls inside it, so writing never resizes anything. The key bar grows by
   the card and 8 pt, so the keyboard's frame includes the card: the root keeps clear of it
   (Keyboard room) and a fitted pane's last rows sit above it, as above the key bar. Opening or
-  closing compose changes that height once.
+  closing compose changes that height once: the bar's height is flexible, not pinned to its
+  first frame, and the responder that shows it reloads its input views so the keyboard reads
+  the new one (`KeyBar.onHeightChange`).
 - **Postures.** The card spans the width the key bar's capsules may use: inside the safe area and
   short of the Duo's vertical bar's column. With a hardware keyboard the card and the bar show
   on their own at the bottom, as the bar does.
