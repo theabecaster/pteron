@@ -179,7 +179,8 @@ struct KeyBarColumnTests {
             defer { w.isHidden = true }
             bar.crease = p.division!.frame
             settle(bar, caps: bar.allCaps)
-            let fold = p.division!.frame.insetBy(dx: -KeyBarPlacement.creaseClearance, dy: 0)
+            // Within half a point: the stack lays keys out on the screen's pixels.
+            let fold = p.division!.frame.insetBy(dx: -KeyBarPlacement.creaseClearance + 0.5, dy: 0)
             #expect(bar.pinnedCaps.map(\.key) == ["enter"])
             for cap in bar.allCaps where !cap.isHidden {
                 let f = cap.convert(cap.bounds, to: nil)

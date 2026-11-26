@@ -23,10 +23,12 @@ extension TerminalHost {
             nc.addObserver(self, selector: #selector(composeFocusChanged), name: name, object: card.field)
         }
         // A message dropped by the fence soon after it was sent comes back into an empty field.
+        // A stream with no notice of its own for the fence says it as any other (`onActionFailed`).
         let say = stream.onFenceNotice
         stream.onFenceNotice = { [weak self] notice in
-            self?.composeInputDropped()
-            say?(notice)
+            guard let self else { return }
+            self.composeInputDropped()
+            if let say { say(notice) } else { self.stream.onActionFailed?(notice) }
         }
     }
 
@@ -38,6 +40,7 @@ extension TerminalHost {
         keyBar.compose.show(text: composeSlot.text)
         if composeSlot.open { keyBar.compose.placeholder = composePlaceholder() }
         keyBar.composeOpen = composeSlot.open
+        term.composeOpen = composeSlot.open
     }
 
     /// ✎.
@@ -62,6 +65,7 @@ extension TerminalHost {
         keyBar.cancelWhenInWindow()
         yieldComposeToTerminal()
         keyBar.composeOpen = false
+        term.composeOpen = false
         keyBar.compose.field.inputAccessoryView = nil
     }
 

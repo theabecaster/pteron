@@ -258,12 +258,16 @@ extension GhosttyTerminalView {
     }
 
     /// This view is about to become first responder. From another pane's terminal, whose
-    /// keyboard is up, it keeps that keyboard's aids, so a switch between an agent and a shell
+    /// keyboard is up, or from compose's field, it keeps that keyboard's aids, so a switch between an agent and a shell
     /// neither moves the keyboard nor resizes a pane; otherwise the keyboard comes up and reads
     /// this pane's own.
     private func typingAidsAsKeyboardArrives() {
         if let other = window.flatMap(Self.keyboardHolder(in:)), other !== self, other.inputView == nil {
             typingAids = other.typingAids
+        } else if composeOpen || UIResponder.rexCurrentFirstResponder() is ComposeField {
+            // Compose's field, a plain text field with its suggestion bar, has the keyboard or
+            // takes it next: the terminal brings up that keyboard, so it never changes height.
+            typingAids = .prose
         } else {
             takeTypingAids()
         }

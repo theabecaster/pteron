@@ -927,6 +927,12 @@ quotes and dashes are off, so a command or a path stays as typed. Only a tap on 
   the terminal (`yieldComposeToTerminal`) and then does what it always did. Another pane takes
   the keyboard from a compose field as from a terminal (`KeyboardFocusPolicy.Holder.composeField`);
   app shortcuts don't run from it, as from any text field.
+- **One keyboard height.** The field is a plain text field, so its keyboard has the suggestion bar
+  (27 pt). While compose is open the terminal brings the keyboard up with the same aids
+  (`TypingAids.prose`, `GhosttyTerminalView.composeOpen`), and a terminal that takes the keyboard
+  from the field keeps them until the keyboard next comes up, as from another pane's terminal
+  (Typing aids): handing the keyboard between the two never changes its height. Corrections in
+  the terminal still follow its own program.
 - **The bar's keys while the field has the keyboard.** A key that types text (a character, a text
   shortcut, with shift its capital), Backspace, and Paste with text on the pasteboard edit the
   message. Every other key goes to the pane as always: esc, tab, the arrows, Return, a control

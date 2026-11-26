@@ -63,6 +63,9 @@ final class GhosttyTerminalView: UIView {
     /// pane's program asks for. The first follows the second only as the keyboard comes up
     /// (`wantTypingAids`).
     var typingAids = TypingAids.raw
+    /// Compose is open for this pane (`TerminalHost.composeSlot`): its field takes the keyboard
+    /// whenever this view does, so this view brings it up with the field's aids.
+    var composeOpen = false
     var wantedTypingAids = TypingAids.raw
     let inputState = GhosttyInputState()
     weak var inputDelegate: (any UITextInputDelegate)?

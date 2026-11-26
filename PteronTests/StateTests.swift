@@ -110,6 +110,8 @@ struct PrefsTests {
         d.set("whitby-bay", forKey: "themeID")
         d.set(false, forKey: "followSystem")
         d.set(KeyBarLayout.shell.keys, forKey: "keyBar")
+        // As an install from before the setup: `fresh()` already saved one.
+        d.removeObject(forKey: "keyBarSetup")
         d.set(["studio": "https://studio.tail.ts.net"], forKey: "hostURLs")
         for key in ["sizing", "wideLayout", "haptics", "showAgentStatus", "notifyOnBlocked", "sidebarTextSize"] {
             d.set("x", forKey: key)

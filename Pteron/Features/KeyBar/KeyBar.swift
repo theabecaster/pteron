@@ -369,8 +369,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
             if returnSpan.overlaps(fold.minX...fold.maxX) { middleW = available }
         }
         let rtl = effectiveUserInterfaceLayoutDirection == .rightToLeft
+        // Right to left, the same within the span: the column and the safe area are where they are.
         func place(_ x: CGFloat, _ w: CGFloat) -> CGRect {
-            CGRect(x: rtl ? bounds.width - x - w : x, y: y, width: w, height: h)
+            CGRect(x: rtl ? span.lowerBound + span.upperBound - x - w : x, y: y, width: w, height: h)
         }
         leftCapsule.isHidden = leftW == 0
         rightCapsule.isHidden = rightW == 0
