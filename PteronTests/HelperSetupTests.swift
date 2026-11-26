@@ -642,7 +642,7 @@ struct HelperSetupTests {
         failed.handle(.helperRegistered)
         failed.handle(.exited(code: 14))
         #expect(failed.phase == .failed(.verify))
-        #expect(SetupState.connectedMessage(name: "studio") == "studio will notify this iPhone when an agent finishes or needs you.")
+        #expect(SetupState.connectedMessage(name: "studio") == "studio will notify this \(DeviceWord.current) when an agent finishes or needs you.")
     }
 
     /// The proof is asked for once the installer's `start` step is over, and not before.
@@ -954,7 +954,7 @@ struct HelperSetupTests {
     @Test func theOfferSaysWhatThePlanSays() {
         #expect(HelperOfferCard.title("studio") == "Get notifications from studio?")
         #expect(HelperOfferCard.message("studio")
-            == "\(Brand.beaconName) runs on studio and notifies this iPhone when an agent finishes or needs you, even while \(Brand.appName) is closed.")
+            == "\(Brand.beaconName) runs on studio and notifies this \(DeviceWord.current) when an agent finishes or needs you, even while \(Brand.appName) is closed.")
         #expect(HelperOfferCard.footnote("studio") == "\(Brand.appName) opens a tab on studio to install Beacon. Nothing runs as an administrator.")
         #expect(HelperOfferCard.skippedLine("studio")
             == "You won't get notifications from studio while \(Brand.appName) is closed. You can install \(Brand.beaconName) anytime in Settings → Notifications.")
@@ -962,7 +962,7 @@ struct HelperSetupTests {
         #expect(PasswordCard.message(name: "studio", account: "sam")
             == "studio stops \(Brand.beaconName) when you log out, unless you allow Beacon to keep running. Allowing that takes the password for sam on studio.")
         #expect(PasswordCard.wrongLine == "That password didn't work. Try again, or choose Not Now.")
-        #expect(PasswordCard.aside("studio") == "Your password goes straight to studio and isn't saved on this iPhone.")
+        #expect(PasswordCard.aside("studio") == "Your password goes straight to studio and isn't saved on this \(DeviceWord.current).")
     }
 
     @Test func skippingTheOfferIsRemembered() {

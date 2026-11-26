@@ -107,7 +107,7 @@ final class PortsBeaconLogicTests: XCTestCase {
         XCTAssertEqual(PortRestartCopy.confirm(RestartCommand(text: "npm run dev", shellPID: 60, leaderPID: 70)), "Restart: npm run dev")
         XCTAssertEqual(PortRestartCopy.detail, "Runs this command again in its pane.")
         XCTAssertEqual(PortBrowser.notice(.refused(code: "not_registered", unknownAction: false), name: "localhost:3000", computer: "Desk"),
-                       "Couldn't open localhost:3000 in the browser: \(Brand.beaconName) on Desk doesn't know this iPhone yet. Set it up in Settings → Notifications.")
+                       "Couldn't open localhost:3000 in the browser: \(Brand.beaconName) on Desk doesn't know this \(DeviceWord.current) yet. Set it up in Settings → Notifications.")
         XCTAssertEqual(PortBrowser.rowWords, "In browser")
         XCTAssertEqual(PortBrowser.notice(.refused(code: "not_listening", unknownAction: false), name: "localhost:3000", computer: "Desk"),
                        "Nothing is running on localhost:3000 now.")
@@ -445,7 +445,7 @@ final class PortsBeaconServerTests: XCTestCase {
         let outcome = await ports.openInBrowserNow(r.server, row)
         XCTAssertEqual(outcome, .problem(.refused(code: "not_available", unknownAction: false)))
         XCTAssertEqual(w.said.count, 1)
-        XCTAssertEqual(w.said.first?.hasSuffix(" can't open pages in this iPhone's browser right now. localhost:5173 still opens here."), true)
+        XCTAssertEqual(w.said.first?.hasSuffix(" can't open pages in this \(DeviceWord.current)'s browser right now. localhost:5173 still opens here."), true)
         XCTAssertFalse(ports.offersBrowser(r.server, row))
         w.statuses += 1
         XCTAssertTrue(ports.offersBrowser(r.server, row), "a new status that still says yes brings it back")

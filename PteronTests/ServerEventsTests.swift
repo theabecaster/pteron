@@ -671,7 +671,7 @@ final class ServerEventsTests: XCTestCase {
         let cases: [(String, ConnectionProblem.Kind, String)] = [
             ("no common API revision: server speaks 0 to 5, client needs 13 to 18; update the server", .updateServer, "Update Rex on Desk"),
             ("no common API revision: server speaks 19 to 24, client needs 0 to 18; update the client", .updateApp, "Update \(Brand.appName)"),
-            ("no common API revision: nothing in common", .notAllowed, "Desk didn't let this iPhone in"),
+            ("no common API revision: nothing in common", .notAllowed, "Desk didn't let this \(DeviceWord.current) in"),
         ]
         for (reason, kind, title) in cases {
             let rig = try await Rig(revision: 18)

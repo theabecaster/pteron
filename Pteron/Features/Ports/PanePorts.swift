@@ -109,7 +109,7 @@ final class PanePorts {
                 if !opened { self?.notify("Couldn't open \(name).") }
             }
         case .refuse:
-            notify("Debugger ports don't open on this iPhone.")
+            notify("Debugger ports don't open on this \(DeviceWord.current).")
         case .offline:
             notify("Couldn't open \(LocalhostLink(url)?.name ?? "this page"). \(Messages.offline(server.config.name))")
         case .open(let link):
@@ -175,7 +175,7 @@ final class PanePorts {
             }
             let target = PortForward.Target(sessionID: sessionID, port: link.port, dialHost: link.dialHost)
             guard let local = try? await forward.open(target, on: server), let url = link.url(localPort: local) else {
-                notify("Couldn't open \(link.name) on this iPhone. Try again in a moment.")
+                notify("Couldn't open \(link.name) on this \(DeviceWord.current). Try again in a moment.")
                 return
             }
             #if DEBUG

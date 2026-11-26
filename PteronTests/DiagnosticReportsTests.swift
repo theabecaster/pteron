@@ -177,7 +177,7 @@ final class DiagnosticReportsTests: XCTestCase {
     func testTheRowsFooterSaysWhatIsSharedAndThatNothingLeavesByItself() {
         let footer = AboutPage.diagnosticsFooter
         XCTAssertTrue(footer.contains("no computer names or addresses"))
-        XCTAssertTrue(footer.contains("stays on this iPhone unless you share it"))
+        XCTAssertTrue(footer.contains("stays on this \(DeviceWord.current) unless you share it"))
         XCTAssertFalse(footer.lowercased().contains("server"))
     }
 }

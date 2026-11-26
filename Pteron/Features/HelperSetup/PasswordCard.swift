@@ -26,7 +26,7 @@ struct PasswordCard: View {
     }
     static let wrongLine = "That password didn't work. Try again, or choose Not Now."
     static func aside(_ name: String) -> String {
-        "Your password goes straight to \(name) and isn't saved on this iPhone."
+        "Your password goes straight to \(name) and isn't saved on this \(DeviceWord.current)."
     }
     static func onComputerLine(_ name: String) -> String {
         "Type the password on \(name). \(Brand.appName) continues once \(name) accepts the password."

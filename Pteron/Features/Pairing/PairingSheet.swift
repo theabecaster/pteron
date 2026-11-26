@@ -120,7 +120,7 @@ struct PairingSheet: View {
         .onChange(of: onTailnet) { _, on in
             // A card that waits on the tailnet now offers Try Again.
             guard on, case .problem(_, let problem)? = pairing?.step, problem.needsTailnet else { return }
-            UIAccessibility.post(notification: .announcement, argument: "Tailscale is connected on this iPhone.")
+            UIAccessibility.post(notification: .announcement, argument: "Tailscale is connected on this \(DeviceWord.current).")
         }
         .onChange(of: pairing?.rejection) { _, text in
             if let text { UIAccessibility.post(notification: .announcement, argument: text) }
@@ -189,7 +189,7 @@ struct PairingSheet: View {
                 }
             case .restricted:
                 PairingCard(theme: theme, glyph: .symbol("camera"), title: "Camera is restricted",
-                            message: "This iPhone doesn't allow apps to use the camera, so \(Brand.appName) can't scan a pairing code.") {
+                            message: "This \(DeviceWord.current) doesn't allow apps to use the camera, so \(Brand.appName) can't scan a pairing code.") {
                     PrimaryButton(title: "Enter Address Instead", busy: false, theme: theme, action: enterAddress)
                 }
             case .unavailable:

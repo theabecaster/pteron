@@ -423,7 +423,7 @@ final class PortsTests: XCTestCase {
         r.server.forward = failing
         pane().open(URL(string: "http://localhost:5173/")!, asked: false)
         _ = await eventually { !notes.isEmpty }
-        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173 on this iPhone. Try again in a moment.")
+        XCTAssertEqual(notes.popLast(), "Couldn't open localhost:5173 on this \(DeviceWord.current). Try again in a moment.")
 
         // No window to show the page in: the forward closes too.
         let forward = PortForward(tag: { "a1b2c3d4" }, ledger: TunnelLedger(defaults: UserDefaults(suiteName: UUID().uuidString)!),
@@ -439,7 +439,7 @@ final class PortsTests: XCTestCase {
 
         // Offline and debugger ports, as before, through the same notice.
         pane().open(URL(string: "http://localhost:9229/")!, asked: false)
-        XCTAssertEqual(notes.popLast(), "Debugger ports don't open on this iPhone.")
+        XCTAssertEqual(notes.popLast(), "Debugger ports don't open on this \(DeviceWord.current).")
         r.fake.close(code: 1001, reason: "bye")
         _ = await eventually { r.server.control.state != .connected }
         pane().open(URL(string: "http://localhost:5173/")!, asked: false)

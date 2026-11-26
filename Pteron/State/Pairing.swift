@@ -145,7 +145,7 @@ struct PairingProblem: Equatable {
     /// saved servers for `isForeignTailnet` to compare with, so this doesn't depend on them.
     static let offTailnet = PairingProblem(
         symbol: "antenna.radiowaves.left.and.right.slash", title: nil,
-        message: "This computer is on a private network this iPhone isn't part of yet. Connect this iPhone with Tailscale, then try again.",
+        message: "This computer is on a private network this \(DeviceWord.current) isn't part of yet. Connect this \(DeviceWord.current) with Tailscale, then try again.",
         actions: [.getTailscale, .tryAgain], needsTailnet: true)
 
     /// Whether a failed check is `offTailnet`'s case: a tailnet name, a failure that means it
@@ -170,7 +170,7 @@ struct PairingProblem: Equatable {
         switch problem.kind {
         case .noInternet:
             return PairingProblem(symbol: "wifi.slash", title: "No connection",
-                                  message: "This iPhone is offline right now. Connect it to a network, then try again.",
+                                  message: "This \(DeviceWord.current) is offline right now. Connect it to a network, then try again.",
                                   actions: [.tryAgain])
         case .offPrivateNetwork:
             return offNetwork
@@ -184,7 +184,7 @@ struct PairingProblem: Equatable {
         case .notAllowed:
             return PairingProblem(symbol: "lock", title: "Not allowed in",
                                   message: tailnetName.map { "Rex on \($0) only lets in devices on its Tailscale account." }
-                                      ?? "That computer didn't let this iPhone in. It may belong to a different account.",
+                                      ?? "That computer didn't let this \(DeviceWord.current) in. It may belong to a different account.",
                                   actions: [.scanCode])
         case .updateServer:
             return PairingProblem(symbol: "arrow.down.circle", title: "Update Rex on that computer",
@@ -201,7 +201,7 @@ struct PairingProblem: Equatable {
         // A check of one address never finds `tunnelDown`.
         case .badAddress, .unknown, .tunnelDown:
             return PairingProblem(symbol: "antenna.radiowaves.left.and.right.slash", title: "Can't connect",
-                                  message: "Something stopped this iPhone from reaching that computer.",
+                                  message: "Something stopped this \(DeviceWord.current) from reaching that computer.",
                                   detail: problem.detail, actions: [.tryAgain, .addAnyway])
         }
     }

@@ -204,7 +204,7 @@ struct AboutPage: View {
     @State private var writing: Task<Void, Never>?
 
     static let diagnosticsFooter = "Shares a text file of connection events and crash reports. "
-        + "It has no computer names or addresses, and it stays on this iPhone unless you share it."
+        + "It has no computer names or addresses, and it stays on this \(DeviceWord.current) unless you share it."
 
     var body: some View {
         SettingsList(theme: theme) {

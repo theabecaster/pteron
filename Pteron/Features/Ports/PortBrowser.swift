@@ -48,7 +48,7 @@ enum PortBrowser {
         case .offline:
             return "\(computer) is offline. Try again when it's back."
         case .noAddress:
-            return "Couldn't open \(name) in the browser: Tailscale is off on this iPhone."
+            return "Couldn't open \(name) in the browser: Tailscale is off on this \(DeviceWord.current)."
         case .unanswered:
             return "Couldn't open \(name) in the browser: \(computer) didn't answer."
         case .badAnswer:
@@ -58,11 +58,11 @@ enum PortBrowser {
             switch code {
             case "not_available":
                 // Only when the computer's status said it could and that changed since.
-                return "\(computer) can't open pages in this iPhone's browser right now. \(name) still opens here."
+                return "\(computer) can't open pages in this \(DeviceWord.current)'s browser right now. \(name) still opens here."
             case "not_registered":
-                return "Couldn't open \(name) in the browser: \(Brand.beaconName) on \(computer) doesn't know this iPhone yet. Set it up in Settings → Notifications."
+                return "Couldn't open \(name) in the browser: \(Brand.beaconName) on \(computer) doesn't know this \(DeviceWord.current) yet. Set it up in Settings → Notifications."
             case "not_your_phone":
-                return "Couldn't open \(name) in the browser: this iPhone and \(computer) aren't on the same Tailscale account."
+                return "Couldn't open \(name) in the browser: this \(DeviceWord.current) and \(computer) aren't on the same Tailscale account."
             case "not_listening":
                 return "Nothing is running on \(name) now."
             case "busy":

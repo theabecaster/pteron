@@ -143,7 +143,7 @@ final class FileSender {
         case .refused:
             Notice.shared.show("\(Messages.capitalized(computer())) refused \(what).", action: retry)
         case .unreadable(let name):
-            Notice.shared.show("Couldn't read \(name) on this iPhone.", action: retry)
+            Notice.shared.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
         case .lost:
             Notice.shared.show("Couldn't send \(what). \(Messages.notSent(computer()))", action: retry)
         }

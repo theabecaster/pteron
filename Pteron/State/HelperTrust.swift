@@ -107,7 +107,7 @@ struct HelperFailure: Error, Equatable {
         switch code {
         case "not_your_device": "\(Brand.beaconName) on \(name) belongs to another account."
         case "", "client", "timeout": "\(Brand.beaconName) on \(name) didn't answer."
-        default: "\(Brand.beaconName) on \(name) refused this iPhone."
+        default: "\(Brand.beaconName) on \(name) refused this \(DeviceWord.current)."
         }
     }
 }

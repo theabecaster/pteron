@@ -292,7 +292,7 @@ struct ComputerStatus: Equatable, Sendable {
 
     /// The line of a computer the notification service took no secret for, because the phone
     /// has as many computers there as the service holds for one phone.
-    static let fullLine = "Too many computers for this iPhone"
+    static let fullLine = "Too many computers for this \(DeviceWord.current)"
 
     /// The first state that applies decides the row: Removing, Turns off when the computer is
     /// back, Offline, a failed removal, off, Helper changed, an install, Helper too old, Helper
@@ -712,12 +712,12 @@ enum NotificationCopy {
     static func removeConfirm(name: String, devices: Int?, otherPhones: Int? = nil) -> Confirm {
         let others: String
         if let n = otherPhones ?? devices.map({ $0 - 1 }) {
-            others = n > 0 ? " and to \(n) other iPhone\(n == 1 ? "" : "s")" : ""
+            others = n > 0 ? " and to \(n) other \(DeviceWord.current)\(n == 1 ? "" : "s")" : ""
         } else {
-            others = " and to any other iPhone that uses Beacon"
+            others = " and to any other \(DeviceWord.current) that uses Beacon"
         }
         return Confirm(title: "Remove \(Brand.beaconName) from \(name)?",
-                       message: "\(name) will stop sending notifications to this iPhone\(others).", confirm: "Remove")
+                       message: "\(name) will stop sending notifications to this \(DeviceWord.current)\(others).", confirm: "Remove")
     }
 
     /// "Trust…" on a helper that has changed.

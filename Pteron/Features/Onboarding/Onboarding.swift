@@ -33,16 +33,16 @@ enum ChecklistCopy {
 
     static let header = "\(Brand.appName) reaches your computer through Tailscale, a free private network for your own devices."
     /// The header for someone who came from "I Have a Pairing Code" off the tailnet.
-    static let tailscaleFirst = "First connect this iPhone with Tailscale, a free private network for your own devices. The camera opens once it's on."
+    static let tailscaleFirst = "First connect this \(DeviceWord.current) with Tailscale, a free private network for your own devices. The camera opens once it's on."
 
     static let rex = "Rex on your computer"
     static let rexDetail = "\(Brand.appName) shows your Rex sessions. Rex is a terminal app for Mac and Linux."
-    static let tailscale = "Connect this iPhone with Tailscale"
+    static let tailscale = "Connect this \(DeviceWord.current) with Tailscale"
     static let rexTailscale = "Turn on Tailscale in Rex"
     /// Markdown: commands in code type. Flags from `rex server tailscale on --help`.
     static let linuxSignIn = "If it asks you to sign in, run `rex server tailscale login` and open the link on any device. Tailscale stays on until Rex restarts; start the server with `--tailscale` to keep it on."
     static let rexJoins = "Rex joins Tailscale by itself; the computer's Tailscale app isn't needed."
-    static let sameAccount = "Sign in with the same account as on this iPhone."
+    static let sameAccount = "Sign in with the same account as on this \(DeviceWord.current)."
     static let pairCode = "Show the pairing code"
     static let noPair = "No Pair option? Update Rex."
 

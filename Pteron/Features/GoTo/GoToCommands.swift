@@ -22,7 +22,7 @@ enum GoToCommands {
     ]
 
     static let copyModeNote = "Copy mode works only in the Rex app."
-    static let argumentsNote = "Needs arguments this iPhone can't fill in."
+    static let argumentsNote = "Needs arguments this \(DeviceWord.current) can't fill in."
 
     /// The key of an app command's row.
     static func appKey(_ action: String) -> String { "app:" + action }

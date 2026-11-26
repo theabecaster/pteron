@@ -271,7 +271,7 @@ struct AddServerView: View {
             } header: {
                 SettingsHeader("Or Enter Its Address", theme)
             } footer: {
-                SettingsFooter("This iPhone needs to be on the same private network as the computer.", theme)
+                SettingsFooter("This \(DeviceWord.current) needs to be on the same private network as the computer.", theme)
             }
             .settingsRows(theme)
 

@@ -402,7 +402,7 @@ final class PushReconciler {
         link.held = nil
         link.lost += 1
         guard link.lost <= Self.lossesPerConnection else {
-            set(id, .failed("\(Brand.beaconName) on \(channel.name(id)) keeps losing this iPhone."))
+            set(id, .failed("\(Brand.beaconName) on \(channel.name(id)) keeps losing this \(DeviceWord.current)."))
             if !stopped.contains(id) { stopped.insert(id) }
             mending.remove(id)
             return
@@ -423,7 +423,7 @@ final class PushReconciler {
         if who != .person, disagrees {
             link.lost += 1
             guard link.lost <= Self.lossesPerConnection else {
-                set(id, .failed("\(Brand.beaconName) on \(channel.name(id)) keeps pausing this iPhone."))
+                set(id, .failed("\(Brand.beaconName) on \(channel.name(id)) keeps pausing this \(DeviceWord.current)."))
                 if !stopped.contains(id) { stopped.insert(id) }
                 return
             }

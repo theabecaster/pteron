@@ -16,7 +16,7 @@ struct HelperOfferCard: View {
 
     static func title(_ name: String) -> String { "Get notifications from \(name)?" }
     static func message(_ name: String) -> String {
-        "\(Brand.beaconName) runs on \(name) and notifies this iPhone when an agent finishes or needs you, even while \(Brand.appName) is closed."
+        "\(Brand.beaconName) runs on \(name) and notifies this \(DeviceWord.current) when an agent finishes or needs you, even while \(Brand.appName) is closed."
     }
     static func footnote(_ name: String) -> String {
         "\(Brand.appName) opens a tab on \(name) to install Beacon. Nothing runs as an administrator."

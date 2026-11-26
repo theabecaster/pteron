@@ -20,16 +20,16 @@ struct OfflineCopy: Equatable {
         switch kind {
         case .noInternet:
             return OfflineCopy(symbol: "wifi.slash", title: "No connection",
-                               message: "This iPhone is offline right now. \(Brand.appName) reconnects as soon as a network is back.")
+                               message: "This \(DeviceWord.current) is offline right now. \(Brand.appName) reconnects as soon as a network is back.")
         case .offPrivateNetwork where tailnet:
             // A Tailscale address and no Tailscale here: the one thing to fix is on this iPhone.
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: Messages.outOfRangeShort,
-                               message: "Tailscale isn't connected on this iPhone.",
+                               message: "Tailscale isn't connected on this \(DeviceWord.current).",
                                hint: "Turn it on in the Tailscale app, signed in to the same Tailscale account as \(server).")
         case .offPrivateNetwork:
             return OfflineCopy(symbol: "antenna.radiowaves.left.and.right.slash", title: Messages.outOfRangeShort,
                                message: "Can't reach \(server) from this network.",
-                               hint: "Connect this iPhone to the same network or VPN as \(server), then try again.")
+                               hint: "Connect this \(DeviceWord.current) to the same network or VPN as \(server), then try again.")
         case .hostNotFound where tailnet:
             // On a tailnet, but not the computer's: another Tailscale account.
             return OfflineCopy(symbol: "network.slash", title: "Can't find \(server)",
@@ -37,7 +37,7 @@ struct OfflineCopy: Equatable {
                                hint: Messages.otherTailscaleAccountFix)
         case .hostNotFound:
             return OfflineCopy(symbol: "network.slash", title: "Can't find \(server)",
-                               message: "This iPhone is on a private network, but \(server) isn't on it.",
+                               message: "This \(DeviceWord.current) is on a private network, but \(server) isn't on it.",
                                hint: "Check that \(server) is on the same network, and that its address in Settings is right.")
         case .notAnswering:
             // On Tailscale a computer that is awake can still not answer while Tailscale is stuck
@@ -47,9 +47,9 @@ struct OfflineCopy: Equatable {
                                hint: "Check that \(server) is awake and Rex is running."
                                    + (tailnet ? " If no computer connects, turn Tailscale off and on." : ""))
         case .notAllowed:
-            return OfflineCopy(symbol: "lock", title: "\(Server) didn't let this iPhone in",
+            return OfflineCopy(symbol: "lock", title: "\(Server) didn't let this \(DeviceWord.current) in",
                                message: "Rex on \(server) only lets in devices on its \(tailnet ? "Tailscale " : "")account.",
-                               hint: "Sign this iPhone in to that account, then try again.")
+                               hint: "Sign this \(DeviceWord.current) in to that account, then try again.")
         case .insecure:
             return OfflineCopy(symbol: "lock.trianglebadge.exclamationmark", title: "Can't verify \(server)",
                                message: "The secure connection failed, so \(Brand.appName) stopped there.",

@@ -74,7 +74,7 @@ enum PathGuess {
         case .tooBig(let size): return "\(name) is too big to open here (\(SendTarget.size(size)); up to \(SendTarget.size(FileOpener.limit)))."
         case .unsupported: return Messages.updateRex(machine, to: "open files")
         case .refused: return "\(Messages.capitalized(machine)) refused \(name)."
-        case .saveFailed: return "Couldn't save \(name) on this iPhone. Free up space, then try again."
+        case .saveFailed: return "Couldn't save \(name) on this \(DeviceWord.current). Free up space, then try again."
         case .lost: return "Couldn't open \(name). \(Messages.notSent(machine))"
         case .cancelled: return "Didn't open \(name)."
         }

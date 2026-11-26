@@ -128,7 +128,7 @@ struct HelperTrustTests {
         #expect(HelperFailure(code: "", message: "timed out ").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio didn't answer.")
         #expect(HelperFailure(code: "", message: "").sentence(helper: "Studio") == "\(Brand.beaconName) on Studio didn't answer.")
         let odd = HelperFailure(code: "bad_request", message: "presence_key must be a key")
-        #expect(odd.sentence(helper: "Studio") == "\(Brand.beaconName) on Studio refused this iPhone.")
+        #expect(odd.sentence(helper: "Studio") == "\(Brand.beaconName) on Studio refused this \(DeviceWord.current).")
         #expect(!odd.sentence(helper: "Studio").contains("presence_key"))
     }
 

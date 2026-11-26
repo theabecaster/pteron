@@ -628,7 +628,7 @@ struct FloatSheetView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 4)
                 .accessibilityLabel("Back to the Tab")
-                .accessibilityHint("Hides the floating window on this iPhone. It stays open on \(server.config.name).")
+                .accessibilityHint("Hides the floating window on this \(DeviceWord.current). It stays open on \(server.config.name).")
             }
         }
         .foregroundStyle(theme.fg)

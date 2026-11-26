@@ -64,7 +64,7 @@ struct ConnectPage: View {
             }
         }
         .onChange(of: tailscaleOn) { _, on in
-            if on { UIAccessibility.post(notification: .announcement, argument: "Tailscale is connected on this iPhone.") }
+            if on { UIAccessibility.post(notification: .announcement, argument: "Tailscale is connected on this \(DeviceWord.current).") }
         }
         // A beat to see the tick, then the scanner. Cancelled when anything it needs changes.
         .task(id: scanDue) {

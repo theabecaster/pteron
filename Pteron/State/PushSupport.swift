@@ -32,7 +32,7 @@ enum PushIdentity {
         var name = deviceName.trimmingCharacters(in: .whitespaces)
         while name.utf8.count > bytes { name.removeLast() }
         name = name.trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? "iPhone" : name
+        return name.isEmpty ? DeviceWord.current : name
     }
 
     static func hex(_ token: Data) -> String {

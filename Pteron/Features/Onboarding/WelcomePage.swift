@@ -36,7 +36,7 @@ struct WelcomePage: View {
 
     private var card: some View {
         VStack(spacing: 0) {
-            Text("Your Rex sessions, on your iPhone.")
+            Text("Your Rex sessions, on your \(DeviceWord.current).")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(theme.fg)
                 .multilineTextAlignment(.center)
@@ -55,7 +55,7 @@ struct WelcomePage: View {
                 }
                 GuideLink(title: "I Have a Pairing Code", theme: theme) { flow.havePairingCode() }
                     .accessibilityHint(onTailnet ? "Opens the camera, to scan the code Rex shows on your computer."
-                                                 : "Shows how to connect this iPhone with Tailscale, then opens the camera.")
+                                                 : "Shows how to connect this \(DeviceWord.current) with Tailscale, then opens the camera.")
             }
             .padding(.top, 24)
         }

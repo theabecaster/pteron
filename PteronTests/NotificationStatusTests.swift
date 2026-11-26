@@ -186,7 +186,7 @@ struct NotificationStatusTests {
 
     @Test func noRoomForAnotherComputerAtTheNotificationService() {
         let s = row { $0.full = true; $0.link = .pending }
-        #expect(s == ComputerStatus(switchOn: true, line: line("Too many computers for this iPhone", .warning), fix: .retry,
+        #expect(s == ComputerStatus(switchOn: true, line: line("Too many computers for this \(DeviceWord.current)", .warning), fix: .retry,
                                     menu: [.reinstall, .remove]))
     }
 
@@ -275,7 +275,7 @@ struct NotificationStatusTests {
         let order: [(String, (inout ComputerFacts) -> Void)] = [
             ("Too many tries. Try again in an hour.", { $0.limit = RateLimit(retryAt: Self.noon.addingTimeInterval(3600), now: Self.noon) }),
             ("Couldn't reconnect", { $0.link = .failed }),
-            ("Too many computers for this iPhone", { $0.full = true }),
+            ("Too many computers for this \(DeviceWord.current)", { $0.full = true }),
             ("Beacon isn't running", { $0.helper = .notRunning }),
             ("Beacon needs an update", { $0.tooOld = true }),
             ("Installing…", { $0.setup = .working(.installing) }),
@@ -411,8 +411,8 @@ struct NotificationStatusTests {
 
     @Test func theInstallSheetSaysWhereToTurnNotificationsOn() {
         #expect(SetupState.connectedMessage(name: "Studio", notificationsAllowed: false)
-                == "Studio will notify this iPhone when an agent finishes or needs you. Turn on notifications in iOS Settings to be notified.")
-        #expect(SetupState.connectedMessage(name: "Studio") == "Studio will notify this iPhone when an agent finishes or needs you.")
+                == "Studio will notify this \(DeviceWord.current) when an agent finishes or needs you. Turn on notifications in iOS Settings to be notified.")
+        #expect(SetupState.connectedMessage(name: "Studio") == "Studio will notify this \(DeviceWord.current) when an agent finishes or needs you.")
     }
 
     // MARK: Send Test Notification
@@ -494,16 +494,16 @@ struct NotificationStatusTests {
     @Test func theConfirmCountsTheOtherPhones() {
         let one = NotificationCopy.removeConfirm(name: "Studio", devices: 1)
         #expect(one.title == "Remove \(Brand.beaconName) from Studio?")
-        #expect(one.message == "Studio will stop sending notifications to this iPhone.")
+        #expect(one.message == "Studio will stop sending notifications to this \(DeviceWord.current).")
         #expect(one.confirm == "Remove" && one.cancel == "Cancel")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 2).message
-                == "Studio will stop sending notifications to this iPhone and to 1 other iPhone.")
+                == "Studio will stop sending notifications to this \(DeviceWord.current) and to 1 other \(DeviceWord.current).")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 4).message
-                == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
+                == "Studio will stop sending notifications to this \(DeviceWord.current) and to 3 other iPhones.")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: 0).message
-                == "Studio will stop sending notifications to this iPhone.")
+                == "Studio will stop sending notifications to this \(DeviceWord.current).")
         #expect(NotificationCopy.removeConfirm(name: "Studio", devices: nil).message
-                == "Studio will stop sending notifications to this iPhone and to any other iPhone that uses Beacon.")
+                == "Studio will stop sending notifications to this \(DeviceWord.current) and to any other \(DeviceWord.current) that uses Beacon.")
     }
 
     @Test func theConfirmUsesTheHelpersCountOfOtherPhonesWhenItGivesOne() throws {
@@ -512,15 +512,15 @@ struct NotificationStatusTests {
             return NotificationCopy.removeConfirm(name: "Studio", devices: d.devices, otherPhones: d.otherPhones).message
         }
         // Four phones, three of them this user's own: one other iPhone.
-        #expect(try message(#"{"devices":4,"other_phones":1}"#) == "Studio will stop sending notifications to this iPhone and to 1 other iPhone.")
-        #expect(try message(#"{"devices":4,"other_phones":2}"#) == "Studio will stop sending notifications to this iPhone and to 2 other iPhones.")
-        #expect(try message(#"{"devices":4,"other_phones":0}"#) == "Studio will stop sending notifications to this iPhone.")
-        #expect(try message(#"{"other_phones":3}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":1}"#) == "Studio will stop sending notifications to this \(DeviceWord.current) and to 1 other \(DeviceWord.current).")
+        #expect(try message(#"{"devices":4,"other_phones":2}"#) == "Studio will stop sending notifications to this \(DeviceWord.current) and to 2 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":0}"#) == "Studio will stop sending notifications to this \(DeviceWord.current).")
+        #expect(try message(#"{"other_phones":3}"#) == "Studio will stop sending notifications to this \(DeviceWord.current) and to 3 other iPhones.")
         // A helper that does not give the count: one fewer than its phones, as before.
-        #expect(try message(#"{"devices":4}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
-        #expect(try message(#"{"devices":4,"other_phones":true}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
-        #expect(try message(#"{"devices":4,"other_phones":-1}"#) == "Studio will stop sending notifications to this iPhone and to 3 other iPhones.")
-        #expect(try message("{}") == "Studio will stop sending notifications to this iPhone and to any other iPhone that uses Beacon.")
+        #expect(try message(#"{"devices":4}"#) == "Studio will stop sending notifications to this \(DeviceWord.current) and to 3 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":true}"#) == "Studio will stop sending notifications to this \(DeviceWord.current) and to 3 other iPhones.")
+        #expect(try message(#"{"devices":4,"other_phones":-1}"#) == "Studio will stop sending notifications to this \(DeviceWord.current) and to 3 other iPhones.")
+        #expect(try message("{}") == "Studio will stop sending notifications to this \(DeviceWord.current) and to any other \(DeviceWord.current) that uses Beacon.")
         #expect(HelperDetails(status: try status(#"{"other_phones":2}"#)).otherPhones == 2)
     }
 

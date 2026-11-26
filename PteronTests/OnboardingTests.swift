@@ -195,10 +195,10 @@ import Testing
         #expect(ChecklistCopy.steps == 4)
         #expect(ChecklistCopy.header == "\(Brand.appName) reaches your computer through Tailscale, a free private network for your own devices.")
         #expect(ChecklistCopy.tailscaleFirst
-            == "First connect this iPhone with Tailscale, a free private network for your own devices. The camera opens once it's on.")
+            == "First connect this \(DeviceWord.current) with Tailscale, a free private network for your own devices. The camera opens once it's on.")
         #expect(ChecklistCopy.rex == "Rex on your computer")
         #expect(ChecklistCopy.rexDetail == "\(Brand.appName) shows your Rex sessions. Rex is a terminal app for Mac and Linux.")
-        #expect(ChecklistCopy.tailscale == "Connect this iPhone with Tailscale")
+        #expect(ChecklistCopy.tailscale == "Connect this \(DeviceWord.current) with Tailscale")
         #expect(ChecklistCopy.rexTailscale == "Turn on Tailscale in Rex")
         #expect(ChecklistCopy.rexJoins == "Rex joins Tailscale by itself; the computer's Tailscale app isn't needed.")
         #expect(ChecklistCopy.linuxSignIn.contains("`rex server tailscale login`") && ChecklistCopy.linuxSignIn.contains("`--tailscale`"))
@@ -209,9 +209,9 @@ import Testing
     /// VoiceOver: where the step is, and done or not only where the app can tell.
     @Test func voiceOverReadsEachStepWithItsPlace() {
         #expect(ChecklistCopy.spoken(step: 2, title: ChecklistCopy.tailscale, done: true)
-            == "Step 2 of 4, Connect this iPhone with Tailscale, done")
+            == "Step 2 of 4, Connect this \(DeviceWord.current) with Tailscale, done")
         #expect(ChecklistCopy.spoken(step: 2, title: ChecklistCopy.tailscale, done: false)
-            == "Step 2 of 4, Connect this iPhone with Tailscale, not done")
+            == "Step 2 of 4, Connect this \(DeviceWord.current) with Tailscale, not done")
         #expect(ChecklistCopy.spoken(step: 1, title: ChecklistCopy.rex, done: nil) == "Step 1 of 4, Rex on your computer")
     }
 

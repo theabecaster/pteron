@@ -752,7 +752,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         switch e.code {
         case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost: return "Nothing answered there. Is it still running?"
         case NSURLErrorTimedOut: return "It took too long to answer."
-        case NSURLErrorNotConnectedToInternet: return "This iPhone is offline."
+        case NSURLErrorNotConnectedToInternet: return "This \(DeviceWord.current) is offline."
         case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasBadDate,
              NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid:
             return "Its secure connection couldn't be trusted."

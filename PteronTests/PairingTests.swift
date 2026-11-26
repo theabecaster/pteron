@@ -87,7 +87,7 @@ struct PairingTests {
         // Saved there, the computer could never connect: no Add Anyway.
         for kind in [ConnectionProblem.Kind.offPrivateNetwork, .hostNotFound] {
             let p = problem(kind)
-            #expect(p.message == "Can't reach that computer from this network. Connect this iPhone to the same network or VPN as that computer, then try again.")
+            #expect(p.message == "Can't reach that computer from this network. Connect this \(DeviceWord.current) to the same network or VPN as that computer, then try again.")
             #expect(p.actions == [.tryAgain])
             #expect(p.detail == nil)
         }
@@ -109,7 +109,7 @@ struct PairingTests {
     @Test func aTailnetComputerNotFoundIsAnotherAccount() {
         let p = problem(.hostNotFound, tailnet: "studio")
         #expect(p.title == "Can't find studio")
-        #expect(p.message == "Tailscale on this iPhone is signed in to a different account than studio. Sign in with the account you used in Rex.")
+        #expect(p.message == "Tailscale on this \(DeviceWord.current) is signed in to a different account than studio. Sign in with the account you used in Rex.")
         #expect(p.actions == [.tryAgain])
         #expect(problem(.notAnswering, foreign: true, tailnet: "studio") == p)
         // On its own tailnet, a silent computer is asleep, as before.
@@ -126,7 +126,7 @@ struct PairingTests {
 
     @Test func notAllowedLeadsToAScan() {
         let p = problem(.notAllowed, foreign: true)
-        #expect(p.message == "That computer didn't let this iPhone in. It may belong to a different account.")
+        #expect(p.message == "That computer didn't let this \(DeviceWord.current) in. It may belong to a different account.")
         #expect(p.actions == [.scanCode])
     }
 
@@ -296,7 +296,7 @@ struct PairingTests {
         #expect(rig.model.step == .problem(url, .offTailnet))
         #expect(PairingProblem.offTailnet.title == nil)
         #expect(PairingProblem.offTailnet.message
-            == "This computer is on a private network this iPhone isn't part of yet. Connect this iPhone with Tailscale, then try again.")
+            == "This computer is on a private network this \(DeviceWord.current) isn't part of yet. Connect this \(DeviceWord.current) with Tailscale, then try again.")
         #expect(PairingProblem.offTailnet.offered(onTailnet: false) == [.getTailscale])
         // No tailnet yet: Try Again does nothing.
         rig.model.tryAgain()
@@ -729,7 +729,7 @@ struct PairingTests {
 
     @Test func thePreviewLabelFitsRexsLimitInBytes() {
         #expect(PushIdentity.previewLabel(deviceName: "Alex's iPhone") == "Alex's iPhone")
-        #expect(PushIdentity.previewLabel(deviceName: "   ") == "iPhone")
+        #expect(PushIdentity.previewLabel(deviceName: "   ") == DeviceWord.current)
         // 40 characters of four bytes each would be 160 bytes.
         let emoji = PushIdentity.previewLabel(deviceName: String(repeating: "🦖", count: 40))
         #expect(emoji == String(repeating: "🦖", count: 16))

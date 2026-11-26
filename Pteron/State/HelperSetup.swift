@@ -866,7 +866,7 @@ struct SetupState: Equatable {
     /// `notificationsAllowed` is false while iOS has notifications turned off for the app: the
     /// helper is installed all the same, and the screen says what is left to do.
     static func connectedMessage(name: String, notificationsAllowed: Bool = true) -> String {
-        let done = "\(name) will notify this iPhone when an agent finishes or needs you."
+        let done = "\(name) will notify this \(DeviceWord.current) when an agent finishes or needs you."
         return notificationsAllowed ? done : done + " " + NotificationCopy.turnOnInSettings
     }
 }

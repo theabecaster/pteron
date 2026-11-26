@@ -139,7 +139,7 @@ struct PushSupportTests {
         let long = PushIdentity.clientLabel(deviceName: String(repeating: "ñ", count: 60), deviceID: "a1b2c3d4")
         #expect(long.utf8.count <= PushIdentity.maxLabelBytes)
         #expect(long.hasSuffix(" #a1b2c3d4"))
-        #expect(PushIdentity.clientLabel(deviceName: "  ", deviceID: "a1b2c3d4") == "iPhone #a1b2c3d4")
+        #expect(PushIdentity.clientLabel(deviceName: "  ", deviceID: "a1b2c3d4") == "\(DeviceWord.current) #a1b2c3d4")
     }
 
     @Test func tokenIsHex() {

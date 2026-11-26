@@ -128,7 +128,7 @@ struct TourPage: View {
 
     private func text(_ card: OnboardingModel.Card) -> some View {
         let (title, line) = switch card {
-        case .sessions: ("Your real sessions", "The tabs and panes on your computer, live on your iPhone.")
+        case .sessions: ("Your real sessions", "The tabs and panes on your computer, live on your \(DeviceWord.current).")
         case .agents: ("Answer agents anywhere", "See which agent is waiting, and answer it from a notification.")
         }
         return VStack(spacing: 8) {

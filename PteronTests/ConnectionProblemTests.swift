@@ -150,7 +150,7 @@ struct ConnectionProblemTests {
         }
         #expect(OfflineCopy.of(.notAnswering, server: "Studio", address: "").hint == "Check that Studio is awake and Rex is running.")
         #expect(OfflineCopy.of(.offPrivateNetwork, server: "Studio", address: "x").hint
-            == "Connect this iPhone to the same network or VPN as Studio, then try again.")
+            == "Connect this \(DeviceWord.current) to the same network or VPN as Studio, then try again.")
         #expect(OfflineAction.serverSettings.title == "Computer Settings")
         #expect(OfflineCopy.short(.offPrivateNetwork) == "Out of range" && OfflineCopy.short(.hostNotFound) == "Not found")
         let asleep = OfflineCopy.of(.notAnswering, server: "Studio", address: "")
@@ -186,7 +186,7 @@ struct ConnectionProblemTests {
             let tailnet = "https://studio-rex.tail1234.ts.net"
             let c = OfflineCopy.of(kind, server: "Studio", address: tailnet)
             if kind == .offPrivateNetwork {
-                #expect(c.message == "Tailscale isn't connected on this iPhone.")
+                #expect(c.message == "Tailscale isn't connected on this \(DeviceWord.current).")
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == .getTailscale)
             } else if kind == .notAnswering {
                 #expect(c.hint == "Check that Studio is awake and Rex is running. If no computer connects, turn Tailscale off and on.")
@@ -195,7 +195,7 @@ struct ConnectionProblemTests {
                 #expect(c.message == "Rex on Studio only lets in devices on its Tailscale account.")
                 #expect(OfflineAction.secondary(for: kind, address: tailnet) == nil)
             } else if kind == .hostNotFound {
-                #expect(c.message == "Tailscale on this iPhone is signed in to a different account than Studio.")
+                #expect(c.message == "Tailscale on this \(DeviceWord.current) is signed in to a different account than Studio.")
                 #expect(c.hint == "Sign in with the account you used in Rex.")
             } else {
                 // A bad address quotes the address, so only its title stays the same.

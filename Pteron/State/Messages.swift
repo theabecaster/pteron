@@ -15,13 +15,13 @@ enum Messages {
 
     /// This iPhone's network can't reach the computer.
     static func outOfRange(_ name: String) -> String {
-        "Can't reach \(name) from this network. Connect this iPhone to the same network or VPN as \(name), then try again."
+        "Can't reach \(name) from this network. Connect this \(DeviceWord.current) to the same network or VPN as \(name), then try again."
     }
     static let outOfRangeShort = "Out of range"
 
     /// This iPhone is on a tailnet, but not the one the computer's Tailscale name is on.
     static func otherTailscaleAccount(_ name: String) -> String {
-        "Tailscale on this iPhone is signed in to a different account than \(name)."
+        "Tailscale on this \(DeviceWord.current) is signed in to a different account than \(name)."
     }
     static let otherTailscaleAccountFix = "Sign in with the account you used in Rex."
 
