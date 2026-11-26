@@ -97,6 +97,9 @@ enum GoToRun {
     case command(RexCommand)
     /// The target pane's file browser, Insert Path, or a picker that sends a file or a photo.
     case files(FilesCommand)
+    /// What a key does in the target pane (`AppAction`: paste, a bound Send Key, a prompt jump):
+    /// run by the pane's host, as the key would be.
+    case pane(PaneKeyAction)
     /// A Lua or block action. With `onTarget`, on the target pane; else on the server alone.
     case server(serverID: UUID, name: String, args: JSONObject?, title: String, onTarget: Bool)
     /// A port of a machine's ports list (`PortRow.id`): its page opens in the app.

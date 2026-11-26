@@ -1144,6 +1144,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         return skipped
     }
 
+    /// A pane action from the palette (Paste into Pane, a bound Send Key, …): exactly what its key
+    /// runs, so typed bytes take the same input queue.
+    func performFromPalette(_ action: AppAction) { perform(action, press: nil) }
+
+    /// Text is selected in the terminal: Copy from Pane has something to copy.
+    var hasSelection: Bool { term.hasActiveSelection }
+
     /// Runs a Lua or block action on this pane from the palette (`origin: palette`): behind the
     /// keys typed before it, never later than now (`TerminalStream.perform`). `ended` hears how
     /// its `client.action` ended; `skipped` how many of the client actions it asked for this app

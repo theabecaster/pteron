@@ -463,14 +463,14 @@ struct WindowScreen: View {
     }
 
     /// Splits `anchor` (default: the active pane), then shows the new pane.
-    private func split(vertical: Bool, anchor a: String? = nil) {
+    private func split(vertical: Bool, before: Bool = false, anchor a: String? = nil) {
         guard let w = window, let anchor = a ?? activeBlock(w) else { return }
-        let before = Set(w.orderedBlockIDs)
+        let existing = Set(w.orderedBlockIDs)
         let server = server, sid = sessionID, wid = windowID
         Haptic.tap()
         Task {
-            await server.split(sid, anchor: anchor, vertical: vertical)
-            guard let new = await Poll.until({ server.views[sid]?.window(wid)?.orderedBlockIDs.first { !before.contains($0) } }),
+            await server.split(sid, anchor: anchor, vertical: vertical, before: before)
+            guard let new = await Poll.until({ server.views[sid]?.window(wid)?.orderedBlockIDs.first { !existing.contains($0) } }),
                   let w = window else { return }
             pick(w, new, forward: true)
         }
@@ -957,6 +957,8 @@ struct WindowScreen: View {
         case .newTab: newTab()
         case .splitRight: split(vertical: false)
         case .splitDown: split(vertical: true)
+        case .splitLeft: split(vertical: false, before: true)
+        case .splitUp: split(vertical: true, before: true)
         case .closePane: if let b = activeBlock(w) { requestClose(b) }
         case .closeTab: requestCloseTab()
         case .renameTab: rename()
@@ -977,7 +979,8 @@ struct WindowScreen: View {
         case .minimizeFloat: minimizeFloat()
         case .minimizeAllFloats: minimizeAllFloats()
         case .goTo(let scope): openGoTo(scope, w)
-        case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: break
+        case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings,
+             .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer: break
         }
     }
 

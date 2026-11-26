@@ -268,6 +268,17 @@ final class GoToCenter {
                 else { return }
                 host.files?.run(c)
             }
+        case .pane(let action):
+            remember(id)
+            let target = s.target
+            close()
+            // Once the pane has the keyboard back, as a key in it would run.
+            DispatchQueue.main.async { [weak self] in
+                guard let t = target, let b = t.blockID,
+                      let host = self?.pool?.host(for: TerminalHostPool.Key(server: t.serverID, session: t.sessionID, block: b))
+                else { return }
+                host.performFromPalette(action.action)
+            }
         case .port(let serverID, let rowID):
             guard let server = model.server(serverID), let row = model.ports.row(server, id: rowID) else {
                 remember(nil, removing: id)

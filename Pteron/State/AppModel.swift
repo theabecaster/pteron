@@ -228,6 +228,17 @@ final class Notice {
 /// Senders call `AppModel.perform(_:)`; the visible WindowScreen/RootView executes them.
 enum RexCommand: Equatable {
     case newTab, newSession, splitRight, splitDown, closePane, closeTab, renameTab
+    /// Splits with the new pane before the active one (`pane.split.left`, `pane.split.up`).
+    case splitLeft, splitUp
+    /// The session beside the one on screen, in sidebar order (`session.next`, `session.previous`).
+    case nextSession, previousSession
+    /// The session on screen: the rename alert, or the close question (`session.rename`,
+    /// `session.close`).
+    case renameSession, closeSession
+    /// Asks before closing the session's other tabs (`client.tab.close_others`).
+    case closeOtherTabs
+    /// Settings → Add Computer (`client.host.add`).
+    case addComputer
     case nextTab, previousTab, goToTab(Int), nextPane, previousPane
     case toggleZoom, clear, toggleSidebar, toggleAgents, tabOverview, jumpToWaiting
     case fontBigger, fontSmaller, fontReset, settings

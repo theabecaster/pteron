@@ -129,7 +129,10 @@ final class GoToModelTests: XCTestCase {
         XCTAssertTrue(titles.contains("Settings…"))
         XCTAssertFalse(titles.contains("Close Pane"))
         XCTAssertFalse(titles.contains("Split Pane Right"))
-        XCTAssertFalse(titles.contains { $0 == "Go to Anything…" || $0 == "Change Session…" || $0 == "Command Palette…" })
+        // The other two ways into the palette switch its scope; the palette itself is no row.
+        XCTAssertTrue(titles.contains("Go to Anything…") && titles.contains("Change Session…"))
+        XCTAssertFalse(titles.contains("Command Palette…"))
+        XCTAssertFalse(titles.contains { ["Rename Session…", "Close Session", "Next Session", "Close Other Tabs"].contains($0) })
     }
 
     func testCommandRowsFollowThePaneMenusGate() {
@@ -242,10 +245,122 @@ final class GoToModelTests: XCTestCase {
         let m = model()
         let s = server(m)
         load(s, [("api", [("w1", ["b1"])])])
-        XCTAssertFalse(copy(m).items.contains { $0.title.hasPrefix("Copy Mode") })
+        XCTAssertFalse(copy(m).items.contains { $0.title.contains("Copy Mode") })
         s.keymap.apply([KeyBinding(chord: KeyChord(spelling: "shift+cmd+c")!, action: "pane.copy_mode.enter", args: nil)] + KeyDefaults.resolved)
-        let row = try XCTUnwrap(copy(m).items.first { $0.title == "Copy Mode" })
+        let row = try XCTUnwrap(copy(m).items.first { $0.title == "Enter Copy Mode" })
         XCTAssertEqual(row.dimmed, GoToCommands.copyModeNote)
+    }
+
+    // MARK: The Mac's palette
+
+    private func commands(_ m: AppModel, target: GoToTarget?, pane: GoToPaneState = .init(),
+                          navigation: NavigationStyle = .sidebar) -> GoToSource.Copy {
+        var c = GoToSource.Copy()
+        GoToCommands.add(m.servers, target: target, waitingCount: 0, navigation: navigation, pane: pane, into: &c)
+        return c
+    }
+
+    /// The empty commands list keeps the Mac's groups in the Mac's order, and each group's rows
+    /// in the Mac's order.
+    func testCommandsFollowTheMacsGroupsAndOrder() throws {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1", "b2"]), ("w2", ["b3"])]), ("web", [("w3", ["b4"])])])
+        s.capabilities.connected(serial: 1, revision: 18, serverRevision: 18, features: [])
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1", canZoom: true)
+        let items = commands(m, target: t).items
+        let sections = GoToRanker.empty(items, scope: .commands, waiting: [], recents: [])
+        let headers = sections.compactMap(\.header)
+        let mac = MacPalette.groups.map(\.category)
+        XCTAssertEqual(headers, ["App", "Session", "Host", "Tab", "Pane", "Find", "View"])
+        XCTAssertEqual(headers.map { mac.firstIndex(of: $0)! }, headers.map { mac.firstIndex(of: $0)! }.sorted())
+        let session = try XCTUnwrap(sections.first { $0.header == "Session" }).indices.map { items[$0].title }
+        XCTAssertEqual(session, ["New Session", "Change Session…", "Next Session", "Rename Session…", "Close Session"],
+                       "no Previous Session from the first session")
+        let pane = try XCTUnwrap(sections.first { $0.header == "Pane" }).indices.map { items[$0].title }
+        XCTAssertEqual(Array(pane.prefix(5)), ["Split Pane Left", "Split Pane Right", "Split Pane Up", "Split Pane Down",
+                                               "Split Pane Best Fit"])
+        let ranks = pane.compactMap { title in KeyActions.all.first { $0.title == title }.flatMap { MacPalette.rank($0.name) } }
+        XCTAssertEqual(ranks, ranks.sorted())
+    }
+
+    /// Each row shows the key that runs it, from the keymap; a binding with fixed arguments is a
+    /// row of its own with its key.
+    func testRowsShowTheirKeysAndBindingsWithArgumentsGetRows() throws {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1"]), ("w2", ["b2"])])])
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        let items = commands(m, target: t).items
+        func row(_ title: String) throws -> GoToItem { try XCTUnwrap(items.first { $0.title == title }, title) }
+        XCTAssertEqual(try row("New Session").keyLabel, "⌘N")
+        XCTAssertEqual(try row("Split Pane Left").keyLabel, "⇧⌘←")
+        XCTAssertEqual(try row("Split Pane Best Fit").keyLabel, "⌘↩")
+        XCTAssertEqual(try row("Jump to Previous Prompt").keyLabel, "⌘↑")
+        XCTAssertEqual(try row("Go to Anything…").keyLabel, "⌘P")
+        XCTAssertNil(try row("Rename Session…").keyLabel, "the Mac binds no key to it")
+        // ⌘1 and ⌘2 for the two tabs, ⌘9 for the last; no row for a tab that isn't there.
+        XCTAssertEqual(try row("Go to Tab 1").keyLabel, "⌘1")
+        XCTAssertEqual(try row("Go to Last Tab").keyLabel, "⌘9")
+        XCTAssertFalse(items.contains { $0.title == "Go to Tab 3" })
+        let tabs = items.filter { $0.title.hasPrefix("Go to") && $0.title.hasSuffix("Tab") || $0.title.hasPrefix("Go to Tab") }
+            .sorted { $0.order < $1.order }.map(\.title)
+        XCTAssertEqual(tabs, ["Go to Tab 1", "Go to Tab 2", "Go to Last Tab"])
+        let shell = items.filter { $0.title.hasPrefix("Move") && $0.title.contains("Line") || $0.title == "Delete to Line Start" }
+            .sorted { $0.order < $1.order }.map(\.title)
+        XCTAssertEqual(shell, ["Delete to Line Start", "Move to Line Start", "Move to Line End"])
+        // The keys the Mac sends to the shell.
+        let line = try row("Delete to Line Start")
+        XCTAssertEqual(line.keyLabel, "⌘⌫")
+        guard case .pane(.sendKey(let chord))? = commands(m, target: t).runs[line.id] else { return XCTFail("runs in the pane") }
+        XCTAssertEqual(chord.spelling, "ctrl+u")
+        // A key the user's init.lua binds to the same thing shows on the row too.
+        s.keymap.apply([KeyBinding(chord: KeyChord(spelling: "ctrl+cmd+d")!, action: "pane.split", args: ["direction": "right"])]
+                       + KeyDefaults.resolved)
+        XCTAssertEqual(commands(m, target: t).items.first { $0.title == "Split Pane Right" }?.keyLabel, "⌘D")
+        XCTAssertEqual(commands(m, target: t).items.filter { $0.title == "Split Pane Right" }.count, 1)
+    }
+
+    /// The pane's own actions show only where they'd do something: Copy from Pane with text
+    /// selected, Find Next with find open.
+    func testPaneActionsFollowThePanesState() {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1"])])])
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        func titles(_ p: GoToPaneState) -> [String] { commands(m, target: t, pane: p).items.map(\.title) }
+        let plain = titles(.init())
+        for title in ["Paste into Pane", "Select All in Pane", "Scroll Page Up", "Jump to Next Prompt", "Find…"] {
+            XCTAssertTrue(plain.contains(title), title)
+        }
+        XCTAssertFalse(plain.contains("Copy from Pane"))
+        XCTAssertFalse(plain.contains("Find Next"))
+        XCTAssertTrue(titles(.init(hasSelection: true)).contains("Copy from Pane"))
+        XCTAssertTrue(titles(.init(findOpen: true)).contains("Find Next"))
+        XCTAssertTrue(titles(.init(findOpen: true)).contains("Find Previous"))
+        XCTAssertFalse(commands(m, target: nil).items.contains { $0.title == "Paste into Pane" }, "no pane, no row")
+    }
+
+    /// Next and Previous Session go through the sessions as the sidebar lists them, across
+    /// computers, and stop at either end.
+    func testSessionRowsAndTheirNeighbors() {
+        let m = model()
+        let a = server(m, "studio"), b = server(m, "laptop")
+        load(a, [("api", [("w1", ["b1"])]), ("web", [("w2", ["b2"]), ("w3", ["b3"])])])
+        load(b, [("ops", [("w9", ["b9"])])])
+        let web = Selection(serverID: a.id, sessionID: "web", windowID: "w2")
+        XCTAssertEqual(SessionNav.neighbor(m.servers, from: web, by: 1), Selection(serverID: b.id, sessionID: "ops", windowID: "w9"))
+        XCTAssertEqual(SessionNav.neighbor(m.servers, from: web, by: -1), Selection(serverID: a.id, sessionID: "api", windowID: "w1"))
+        XCTAssertNil(SessionNav.neighbor(m.servers, from: Selection(serverID: b.id, sessionID: "ops", windowID: "w9"), by: 1))
+        let t = GoToTarget(serverID: a.id, sessionID: "web", windowID: "w2", blockID: "b2")
+        let titles = commands(m, target: t).items.map(\.title)
+        XCTAssertTrue(titles.contains("Next Session") && titles.contains("Previous Session"))
+        XCTAssertTrue(titles.contains("Close Other Tabs"))
+        XCTAssertEqual(commands(m, target: t).items.first { $0.title == "Close Session" }?.destructive, true)
+        let one = GoToTarget(serverID: a.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        XCTAssertFalse(commands(m, target: one).items.contains { $0.title == "Close Other Tabs" }, "one tab: nothing else to close")
+        // Tab mode has no sidebar: no Show/Hide Sidebar row.
+        XCTAssertFalse(commands(m, target: t, navigation: .tabs).items.contains { $0.title == "Show/Hide Sidebar" })
     }
 
     // MARK: Open, select, rebuild

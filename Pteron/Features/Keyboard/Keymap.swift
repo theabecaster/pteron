@@ -133,15 +133,25 @@ enum AppAction {
         case "client.palette.toggle": return .command(.goTo(.commands))
         case "client.close", "pane.close": return .command(.closePane)
         case "session.new": return .command(.newSession)
+        case "session.next": return .command(.nextSession)
+        case "session.previous": return .command(.previousSession)
+        case "session.rename": return .command(.renameSession)
+        case "session.close": return .command(.closeSession)
+        case "client.host.add": return .command(.addComputer)
+        case "client.tab.close_others": return .command(.closeOtherTabs)
+        case "pane.split.left": return .command(.splitLeft)
         case "pane.split.right": return .command(.splitRight)
+        case "pane.split.up": return .command(.splitUp)
         case "pane.split.down": return .command(.splitDown)
         case "pane.split.auto": return .splitAuto
         case "pane.split":
             switch a.str("direction") {
+            case "left": return .command(.splitLeft)
             case "right": return .command(.splitRight)
+            case "up": return .command(.splitUp)
             case "down": return .command(.splitDown)
             case "auto": return .splitAuto
-            default: return nil  // left/up: no RexCommand yet
+            default: return nil
             }
         case "pane.focus_next", "pane.focus.right", "pane.focus.down": return .command(.nextPane)
         case "pane.focus_previous", "pane.focus.left", "pane.focus.up": return .command(.previousPane)
@@ -192,17 +202,23 @@ enum KeyActions {
         let repeats: Bool
     }
 
+    /// In the Rex Mac app's palette order and groups (`MacPalette`), with the Mac's titles. Where
+    /// the app's wording rules differ, the app's title: "…" where a question follows (Rename Tab…),
+    /// Show/Hide in place of Toggle, Rex in place of Server.
     static let all: [Info] = [
-        Info(name: "client.close", title: "Close Pane", category: "Tab", repeats: false),
-        Info(name: "client.settings", title: "Settings…", category: "App", repeats: false),
+        Info(name: "client.close", title: "Close Pane", category: "Window", repeats: false),
         Info(name: "client.palette.toggle", title: "Command Palette…", category: "App", repeats: false),
-        Info(name: "client.sidebar.toggle", title: "Show/Hide Sidebar", category: "View", repeats: false),
-        Info(name: "client.sidebar.activity.toggle", title: "Show/Hide Agents", category: "View", repeats: false),
-        Info(name: "client.agents.jump_to_waiting", title: "Jump to Waiting", category: "View", repeats: false),
+        Info(name: "client.settings", title: "Settings…", category: "App", repeats: false),
         Info(name: "session.new", title: "New Session", category: "Session", repeats: false),
         Info(name: "session.switch", title: "Change Session…", category: "Session", repeats: false),
+        Info(name: "session.next", title: "Next Session", category: "Session", repeats: true),
+        Info(name: "session.previous", title: "Previous Session", category: "Session", repeats: true),
+        Info(name: "session.rename", title: "Rename Session…", category: "Session", repeats: false),
+        Info(name: "session.close", title: "Close Session", category: "Session", repeats: false),
+        Info(name: "client.host.add", title: "Add Computer…", category: "Host", repeats: false),
         Info(name: "client.tab.new", title: "New Tab", category: "Tab", repeats: false),
         Info(name: "client.tab.close", title: "Close Tab", category: "Tab", repeats: false),
+        Info(name: "client.tab.close_others", title: "Close Other Tabs", category: "Tab", repeats: false),
         Info(name: "client.tab.rename", title: "Rename Tab…", category: "Tab", repeats: false),
         Info(name: "client.tab.next", title: "Show Next Tab", category: "Tab", repeats: true),
         Info(name: "client.tab.previous", title: "Show Previous Tab", category: "Tab", repeats: true),
@@ -211,7 +227,9 @@ enum KeyActions {
         Info(name: "client.tab.move.backward", title: "Move Tab Backward", category: "Tab", repeats: true),
         Info(name: "client.tab.move.forward", title: "Move Tab Forward", category: "Tab", repeats: true),
         Info(name: "pane.split", title: "Split Pane", category: "Pane", repeats: false),
+        Info(name: "pane.split.left", title: "Split Pane Left", category: "Pane", repeats: false),
         Info(name: "pane.split.right", title: "Split Pane Right", category: "Pane", repeats: false),
+        Info(name: "pane.split.up", title: "Split Pane Up", category: "Pane", repeats: false),
         Info(name: "pane.split.down", title: "Split Pane Down", category: "Pane", repeats: false),
         Info(name: "pane.split.auto", title: "Split Pane Best Fit", category: "Pane", repeats: false),
         Info(name: "pane.focus", title: "Focus Pane", category: "Pane", repeats: true),
@@ -221,34 +239,37 @@ enum KeyActions {
         Info(name: "pane.focus.down", title: "Focus Pane Down", category: "Pane", repeats: true),
         Info(name: "pane.focus_next", title: "Focus Next Pane", category: "Pane", repeats: true),
         Info(name: "pane.focus_previous", title: "Focus Previous Pane", category: "Pane", repeats: true),
-        Info(name: "pane.zoom", title: "Zoom Pane", category: "Pane", repeats: false),
         Info(name: "pane.minimize_floating", title: "Minimize Floating Window", category: "Pane", repeats: false),
-        Info(name: "pane.minimize_all_floating", title: "Minimize Floating Windows", category: "Pane", repeats: false),
+        Info(name: "pane.minimize_all_floating", title: "Minimize All Floating Windows", category: "Pane", repeats: false),
+        Info(name: "pane.zoom", title: "Zoom Pane", category: "Pane", repeats: false),
         Info(name: "pane.close", title: "Close Pane", category: "Pane", repeats: false),
         Info(name: "pane.close_others", title: "Close Other Panes", category: "Pane", repeats: false),
         Info(name: "pane.balance", title: "Balance Splits", category: "Pane", repeats: false),
-        Info(name: "pane.move_to_tab", title: "Move Pane to Tab…", category: "Pane", repeats: false),
         Info(name: "pane.move_to_new_tab", title: "Move Pane to New Tab", category: "Pane", repeats: false),
-        Info(name: "pane.go_to", title: "Go to Anything…", category: "Pane", repeats: false),
+        Info(name: "pane.move_to_tab", title: "Move Pane to Tab…", category: "Pane", repeats: false),
         Info(name: "pane.go_to_directory", title: "Go to Directory…", category: "Pane", repeats: false),
+        Info(name: "pane.go_to", title: "Go to Anything…", category: "Pane", repeats: false),
         Info(name: "pane.insert_path", title: "Insert Path…", category: "Pane", repeats: false),
-        Info(name: "pane.insert_file", title: "Insert File…", category: "Pane", repeats: false),
         Info(name: "pane.insert_photo", title: "Insert Photo…", category: "Pane", repeats: false),
+        Info(name: "pane.insert_file", title: "Insert File…", category: "Pane", repeats: false),
+        Info(name: "pane.paste", title: "Paste into Pane", category: "Pane", repeats: false),
+        Info(name: "pane.copy", title: "Copy from Pane", category: "Pane", repeats: false),
+        Info(name: "pane.select_all", title: "Select All in Pane", category: "Pane", repeats: false),
         Info(name: "pane.send_key", title: "Send Key", category: "Pane", repeats: true),
-        Info(name: "pane.copy", title: "Copy", category: "Pane", repeats: false),
-        Info(name: "pane.paste", title: "Paste", category: "Pane", repeats: false),
-        Info(name: "pane.select_all", title: "Select All", category: "Pane", repeats: false),
         Info(name: "client.key.forward", title: "Send Key to Rex", category: "Pane", repeats: true),
         Info(name: "client.prompt.previous", title: "Jump to Previous Prompt", category: "Pane", repeats: true),
         Info(name: "client.prompt.next", title: "Jump to Next Prompt", category: "Pane", repeats: true),
         Info(name: "client.scroll.page_up", title: "Scroll Page Up", category: "Pane", repeats: true),
         Info(name: "client.scroll.page_down", title: "Scroll Page Down", category: "Pane", repeats: true),
-        Info(name: "client.find.open", title: "Find…", category: "Pane", repeats: false),
-        Info(name: "client.find.next", title: "Find Next", category: "Pane", repeats: true),
-        Info(name: "client.find.previous", title: "Find Previous", category: "Pane", repeats: true),
+        Info(name: "client.find.open", title: "Find…", category: "Find", repeats: false),
+        Info(name: "client.find.next", title: "Find Next", category: "Find", repeats: true),
+        Info(name: "client.find.previous", title: "Find Previous", category: "Find", repeats: true),
         Info(name: "client.font.increase", title: "Increase Font Size", category: "View", repeats: true),
         Info(name: "client.font.decrease", title: "Decrease Font Size", category: "View", repeats: true),
         Info(name: "client.font.reset", title: "Reset Font Size", category: "View", repeats: false),
+        Info(name: "client.sidebar.toggle", title: "Show/Hide Sidebar", category: "View", repeats: false),
+        Info(name: "client.sidebar.activity.toggle", title: "Show/Hide Agents", category: "View", repeats: false),
+        Info(name: "client.agents.jump_to_waiting", title: "Jump to Waiting", category: "View", repeats: false),
     ]
 
     static let byName: [String: Info] = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
@@ -280,7 +301,7 @@ enum KeyActions {
             case "alt+f": return "Move Forward One Word"
             case "ctrl+j": return "New Line"
             case "alt+backspace": return "Delete Word"
-            case let k?: return "Send \(k)"
+            case let k?: return KeyChord(spelling: k).map { "Send \(KeyLabel.text($0))" } ?? "Send \(k)"
             default: return "Send Key"
             }
         default:
@@ -303,16 +324,20 @@ enum KeyDefaults {
         }
         bind(["cmd+w"], "client.close")
         bind(["cmd+,"], "client.settings")
-        bind(["shift+cmd+n"], "session.new")
+        bind(["cmd+n"], "session.new")
         bind(["cmd+k"], "session.switch")
         bind(["cmd+t"], "client.tab.new")
         bind(["alt+cmd+w"], "client.tab.close")
+        bind(["ctrl+shift+pageup"], "client.tab.move.backward")
+        bind(["ctrl+shift+pagedown"], "client.tab.move.forward")
         bind(["ctrl+tab", "shift+cmd+]"], "client.tab.next")
         bind(["ctrl+shift+tab", "shift+cmd+["], "client.tab.previous")
         for i in 1...8 { bind(["cmd+[Digit\(i)]"], "client.tab.goto", ["index": i]) }
         bind(["cmd+[Digit9]"], "client.tab.goto", ["index": -1])
         bind(["cmd+d", "shift+cmd+right"], "pane.split.right")
         bind(["shift+cmd+d", "shift+cmd+down"], "pane.split.down")
+        bind(["shift+cmd+left"], "pane.split.left")
+        bind(["shift+cmd+up"], "pane.split.up")
         bind(["cmd+enter"], "pane.split.auto")
         bind(["alt+cmd+left"], "pane.focus.left")
         bind(["alt+cmd+right"], "pane.focus.right")
@@ -320,10 +345,13 @@ enum KeyDefaults {
         bind(["alt+cmd+down"], "pane.focus.down")
         bind(["cmd+]"], "pane.focus_next")
         bind(["cmd+["], "pane.focus_previous")
+        bind(["alt+cmd+m"], "pane.minimize_floating")
+        bind(["alt+shift+cmd+enter"], "pane.minimize_all_floating")
         bind(["shift+cmd+enter"], "pane.zoom")
         bind(["cmd+w"], "pane.close")
         bind(["cmd+p"], "pane.go_to")
         bind(["shift+cmd+p"], "client.palette.toggle")
+        bind(["ctrl+cmd+i"], "pane.insert_path")
         bind(["cmd+backspace"], "pane.send_key", ["key": "ctrl+u"])
         bind(["cmd+left"], "pane.send_key", ["key": "ctrl+a"])
         bind(["cmd+right"], "pane.send_key", ["key": "ctrl+e"])
@@ -331,6 +359,8 @@ enum KeyDefaults {
         bind(["alt+right"], "pane.send_key", ["key": "alt+f"])
         bind(["cmd+f"], "client.find.open")
         bind(["cmd+g"], "client.find.next")
+        // The Mac also gives ⇧⌘G to Go to Directory…, which it runs while find is closed. Here a
+        // key runs one binding, so it stays Find Previous; Browse Files… has no key of its own.
         bind(["shift+cmd+g"], "client.find.previous")
         bind(["cmd+up"], "client.prompt.previous")
         bind(["cmd+down"], "client.prompt.next")

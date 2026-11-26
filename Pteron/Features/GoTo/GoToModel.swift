@@ -103,8 +103,13 @@ final class GoToModel {
         var copy = GoToSource.Copy()
         let waitingItems = Waiting.all(model.servers)
         GoToSource.places(model.servers, target: target, waiting: Set(waitingItems.map(\.id)), into: &copy, scope: .anything)
+        var pane = GoToPaneState()
+        if let t = target, let b = t.blockID,
+           let host = model.palette.pool?.host(for: TerminalHostPool.Key(server: t.serverID, session: t.sessionID, block: b)) {
+            pane = GoToPaneState(hasSelection: host.hasSelection, findOpen: host.findOpen)
+        }
         GoToCommands.add(model.servers, target: target, waitingCount: waitingItems.count,
-                         navigation: model.prefs.navigation, into: &copy)
+                         navigation: model.prefs.navigation, pane: pane, into: &copy)
         items = copy.items
         runs = copy.runs
         // A waiting agent's row: its pane's, where its tab lists panes, else its tab's.

@@ -48,7 +48,8 @@ extension RexCommand {
     /// Commands that act on the tab on screen. The visible WindowScreen runs these; RootView runs the rest.
     var isWindowCommand: Bool {
         switch self {
-        case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings: return false
+        case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings,
+             .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer: return false
         default: return true
         }
     }
@@ -104,6 +105,42 @@ enum TabNav {
             if let w = server.views[s.id]?.windows.first { return Selection(serverID: server.id, sessionID: s.id, windowID: w.id) }
         }
         return nil
+    }
+}
+
+/// Next Session and Previous Session (`session.next`, `session.previous`): the session beside
+/// the one on screen, in the sidebar's order across the computers, with its active tab.
+enum SessionNav {
+    /// A session by its computer and ID.
+    struct Place: Equatable {
+        var serverID: UUID
+        var sessionID: String
+    }
+
+    /// The place `by` steps from `current` in `order`, or nil past either end (no wrap, as the
+    /// tabs' steps) or when `current` isn't in it.
+    static func step(_ order: [Place], from current: Place, by d: Int) -> Place? {
+        guard let i = order.firstIndex(of: current), order.indices.contains(i + d) else { return nil }
+        return order[i + d]
+    }
+
+    /// Every session the sidebar lists that has a tab to show, in its order: the computers in
+    /// their order, each one's sessions as the sidebar orders them, without the hidden ones.
+    @MainActor
+    static func order(_ servers: [ServerConnection]) -> [Place] {
+        servers.flatMap { s in
+            let hidden = s.hiddenSessions()
+            return s.orderedSessions.filter { !hidden.contains($0.id) && s.views[$0.id]?.activeWindow != nil }
+                .map { Place(serverID: s.id, sessionID: $0.id) }
+        }
+    }
+
+    /// The tab to show for the session `by` steps from the one in `sel`.
+    @MainActor
+    static func neighbor(_ servers: [ServerConnection], from sel: Selection, by d: Int) -> Selection? {
+        guard let p = step(order(servers), from: Place(serverID: sel.serverID, sessionID: sel.sessionID), by: d),
+              let s = servers.first(where: { $0.id == p.serverID }), let w = s.views[p.sessionID]?.activeWindow else { return nil }
+        return Selection(serverID: p.serverID, sessionID: p.sessionID, windowID: w.id)
     }
 }
 

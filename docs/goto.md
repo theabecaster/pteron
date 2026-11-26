@@ -9,6 +9,10 @@ server's keymap (the user's init.lua wins), never fixed:
 | `session.switch` (Change Session…) | sessions | ⌘K | Change session |
 | `client.palette.toggle` (Command Palette…) | commands | ⇧⌘P | Run a command |
 
+The key bar's ⌘ key and anything else that opens the commands palette call
+`model.perform(.goTo(.commands))`: the tab on screen opens it on its active pane, and with no tab
+the root opens it with no target.
+
 `client.tab.overview` keeps its own key (⇧⌘\, Show All Tabs). On a setup whose init.lua binds
 ⌘K to Clear and ⇧⌘K to `session.switch`, ⌘K clears and ⇧⌘K opens Change Session.
 
@@ -41,8 +45,14 @@ from the field too (its ⌘ and ⌃ keys arrive as menu items, `AppShortcutComma
   more than one tiled pane; a pane's name is the one its menu uses (`PaneName`). An offline
   server stays listed, ranked lower, "offline" in the subtitle; opening it shows the offline
   screen, as a sidebar tap does. A server on its first connect gets a footer line.
-- The app's commands that apply now. Pane and tab commands need a tab on screen; Zoom only when
-  the tab can zoom; Arrange's commands follow `PaneArrange.isAvailable`, the pane menu's gate.
+- The app's commands that apply now, as the Rex Mac app's palette names, groups and orders them
+  (below, "The commands"). Pane and tab commands need a tab on screen; Zoom only when the tab can
+  zoom; Arrange's commands follow `PaneArrange.isAvailable`, the pane menu's gate.
+- Every binding with fixed arguments that the app runs and no other row does is a row of its
+  own, with its key: Go to Tab 1 to 8 and Go to Last Tab (only tabs that exist), and each key the
+  Mac sends to the shell (Delete to Line Start, Move to Line End, a `pane.send_key` the user's
+  init.lua binds, as "Send ⌃D"). A binding that does what a row already does (`pane.split` with
+  `direction = "right"`) adds no row; its key shows on that row when no key is bound by name.
 - The server's Lua actions (`kind: "lua"` from `client.keymap`): the target's server, or with no
   tab every online one. One that needs arguments shows dimmed ("Needs arguments the phone can't
   fill in."). A key bound with fixed arguments is a row of its own, with that key.
@@ -61,8 +71,8 @@ from the field too (its ⌘ and ⌃ keys arrive as menu items, `AppShortcutComma
   dimmed row says "Nothing is running on localhost:3000 on your computers." A bare number is
   not an address. The rows come from the port lists the app holds (`PortAddress`), on the main
   actor, with no call: about 7 µs a keystroke with ten machines of ten ports in a debug build.
-- Copy mode, dimmed ("Copy mode is only on the Mac."), only where the keymap binds one of its
-  actions.
+- Copy mode, dimmed ("Copy mode works only in the Rex app."), under the Mac's titles (Enter Copy
+  Mode, …), only where the keymap binds one of its actions.
 
 Empty field: Go to Anything shows Waiting (three at most, oldest first) and Recent (eight,
 without the tab on screen); with neither, every place. Change Session lists sessions; the
@@ -74,11 +84,92 @@ pane name and program 0.7, directory 0.7, machine 0.6, the last six hex digits o
 (only for a query of four hex digits or more). Boosts: recent use up to +30% (halving every three
 days), a waiting agent +15%, the tab on screen −30%, an offline server −40%. Ties keep sidebar
 order. A digit query puts that tab of the current session first. In Go to Anything, Close Pane,
-Close Tab, Clear and Reset are never row 1; if every row is one, nothing is selected.
+Close Tab, Close Other Tabs, Close Session, Clear and Reset are never row 1; if every row is
+one, nothing is selected.
 
 The selection is an item, not a row number: a rebuild landing between ↓ and Return runs what
 was selected. While open, the list is rebuilt at most every 250 ms when servers, sessions, tabs
 or agents change; a title or directory change doesn't rebuild it.
+
+## The commands
+
+The Rex Mac app's palette ("Mac Actions" in Rex's docs) as far as the phone runs it: its groups in
+its order (Window, App, Session, Host, Tab, Pane, Keys, Find, View), and its order inside each
+(`MacPalette`). The empty commands list shows them so, after Recent; ports, then the server's
+Lua actions, come after. Each row shows the key the keymap runs it with (the user's init.lua
+wins); the keys below are the defaults the app sends, which are the Mac's.
+
+| Group | Command | Key | Shows when |
+|---|---|---|---|
+| App | Settings… | ⌘, | always |
+| Session | New Session | ⌘N | always |
+| Session | Change Session… | ⌘K | always (switches the palette to sessions) |
+| Session | Next Session, Previous Session | | a session lies that way, in sidebar order across computers; no wrap |
+| Session | Rename Session…, Close Session | | a tab is on screen (the sidebar's alert and question) |
+| Host | Add Computer… | | always (Settings → Add Computer) |
+| Tab | New Tab | ⌘T | always |
+| Tab | Close Tab | ⌥⌘W | a tab |
+| Tab | Close Other Tabs | | the session has another tab (always asks) |
+| Tab | Rename Tab… | | a tab |
+| Tab | Show Next Tab, Show Previous Tab | ⌃⇥ ⌃⇧⇥ | a tab that way |
+| Tab | Go to Tab 1–8, Go to Last Tab | ⌘1–⌘9 | that tab exists |
+| Tab | Show All Tabs (the app's own) | ⇧⌘\ | a tab |
+| Tab | Move Tab Backward, Move Tab Forward | ⌃⇧⇞ ⌃⇧⇟ | the server can, another tab |
+| Pane | Split Pane Left, Right, Up, Down | ⇧⌘← ⌘D ⇧⌘↑ ⇧⌘D | a pane |
+| Pane | Split Pane Best Fit | ⌘↩ | a terminal pane |
+| Pane | Focus Next Pane, Focus Previous Pane | ⌘] ⌘[ | another pane to show |
+| Pane | Minimize Floating Window | ⌥⌘M | Arrange's gate |
+| Pane | Minimize All Floating Windows | ⌥⇧⌘↩ | Arrange's gate |
+| Pane | Zoom Pane | ⇧⌘↩ | the tab can zoom |
+| Pane | Close Pane, Close Other Panes, Balance Splits | ⌘W | a pane; Arrange's gate |
+| Pane | Move Pane to New Tab, Move Pane to Tab… | | Arrange's gate |
+| Pane | Browse Files… (the Mac's Go to Directory…) | | the pane's host lists folders |
+| Pane | Go to Anything… | ⌘P | always (switches the palette to places) |
+| Pane | Insert Path…, Insert Photo…, Insert File… | ⌃⌘I | as the attach menu |
+| Pane | Paste into Pane, Select All in Pane | | a terminal pane |
+| Pane | Copy from Pane | | text is selected in it |
+| Pane | Delete to Line Start, Move to Line Start, Move to Line End, Move Back One Word, Move Forward One Word | ⌘⌫ ⌘← ⌘→ ⌥← ⌥→ | a terminal pane |
+| Pane | Jump to Previous Prompt, Jump to Next Prompt | ⌘↑ ⌘↓ | a terminal pane |
+| Pane | Scroll Page Up, Scroll Page Down | | a terminal pane |
+| Pane | Clear Terminal, Reset Terminal (the terminal's own) | | its creator lists the method |
+| Find | Find… | ⌘F | a terminal pane |
+| Find | Find Next, Find Previous | ⌘G ⇧⌘G | find is open in the pane |
+| View | Increase, Decrease, Reset Font Size | ⌘= ⌘- ⌘0 | always |
+| View | Show/Hide Sidebar | ⌘/ | sidebar mode |
+| View | Show/Hide Agents | ⌘. | always |
+| View | Jump to Waiting (the app's own) | ⌥⌘. | an agent waits |
+
+The app's wording wins where the Mac's breaks it: "…" where a question follows (Rename Tab…,
+Rename Session…), Show/Hide for the Mac's Toggle (Toggle Sidebar, Toggle Activity), Send Key to
+Rex for Send Key to Server, Add Computer… for Add Remote Host…. Pane commands run in the target
+pane exactly as their keys do (`TerminalHost.performFromPalette`), behind the keys typed before.
+
+The Mac's ⇧⌘G also opens Go to Directory… while find is closed; here a key runs one binding, so
+⇧⌘G stays Find Previous. The Mac's ⇧⌘N is New Window; here ⌘N is New Session and ⇧⌘N nothing.
+
+Not here, with the reason:
+
+- Run only on the Mac, about the Mac app or its window: New Window, Close Window, Toggle Full
+  Screen, Rex Diagnostics, Open Onboarding Session…, Grant System Permissions…, Toggle
+  Visibility, the updates (Install Update, Relaunch when Idle, Check, Report, Install and
+  Relaunch, Set Update Automation, Set Update Channel), Change Shortcut… (keys come from
+  init.lua), Install Rex for Agents, Restart Server…, Move Tab to New Window, Quick Look, Toggle
+  Toolbar Layout, Reveal Toolbar, Reveal Pane Header, Copy Config File Path, Import Theme File,
+  Switch Appearance Mode, every Settings action (`client.setting.*`).
+- The Mac's own view state the phone doesn't have: Collapse, Expand and Collapse Other Sessions
+  (the sidebar folds by tap), Show Activity by Session or Priority, Focus Tab Filter, Mute Tab,
+  Mark as Unread, Dismiss Notice, Switch Host, Change Theme… (Settings → Appearance).
+- No server method the phone can call: Undo Close (the Mac keeps what it closed),
+  Reload Config (`server.config_reload` answers only on the computer itself), Refresh Sessions
+  (the list is live).
+- Needs arguments: Go to Session, Split Pane, Focus Pane, Move Tab, Resize Pane, Send Key, Enter
+  Mode. Their bound keys run, and bound ones with fixed arguments have rows (above).
+- Duplicates: Close (`client.close`, Close Pane here), Focus Pane Left, Right, Up and Down (Focus
+  Next and Previous Pane on the phone), Send Key to Rex (needs the key that ran it).
+- Copy mode and key modes: only in the Rex app.
+- Not yet: Navigate Back and Forward, Move Pane Left, Right, Up and Down, Float Pane, New Floating
+  Pane, Rename Pane, View Activity…, Pair Device with QR Code…, Copy Block ID, Copy Version Info,
+  Copy Debug Info, Forward Port… (Ports covers it), New Session on Host….
 
 ## Running
 

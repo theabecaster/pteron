@@ -1172,11 +1172,12 @@ final class ServerConnection: Identifiable {
         await act("open a tab", session: sid) { try await self.control.call("session.new_window", p) }
     }
 
-    func split(_ sid: String, anchor: String, vertical: Bool) async {
+    /// `before`: the new pane goes left of or above the anchor (Split Pane Left and Up).
+    func split(_ sid: String, anchor: String, vertical: Bool, before: Bool = false) async {
         await act("split the pane", session: sid) {
             try await self.control.call("session.new_split", [
                 "session_id": sid, "anchor_id": anchor, "direction": vertical ? "vertical" : "horizontal",
-                "side": "after", "ratio": 0.5, "focus": true,
+                "side": before ? "before" : "after", "ratio": 0.5, "focus": true,
                 "layout": ["block": ["flavor": "com.superlogical.terminal.shell"]],
             ])
         }

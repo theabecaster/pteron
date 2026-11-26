@@ -44,6 +44,9 @@ struct RootView: View {
     /// The root shows the alert; the strip shows each confirmation by the control that was
     /// tapped (`StripDialogs`).
     @State private var stripDialogs = SidebarActions()
+    /// The close questions of the keymap's and the palette's Close Session and Close Other Tabs,
+    /// for the session on screen. Their own, so a strip's or a list's question never shows twice.
+    @State private var commandDialogs = SidebarActions()
     /// What a row of the ports sheet opens, held until the sheet has gone.
     @State private var portsWait = DismissalWait()
     #if DEBUG
@@ -77,6 +80,7 @@ struct RootView: View {
             })
             .background(ParkWatcher(pool: hostPool))
             .modifier(SidebarDialogs(actions: stripDialogs, shows: [.rename]))
+            .background { Color.clear.modifier(SidebarDialogs(actions: commandDialogs, shows: [.closeSession, .closeOthers])) }
             .accessibilityAction(.magicTap) { model.perform(.jumpToWaiting) }
             .tint(theme.accent)
             .preferredColorScheme(theme.isDark ? .dark : .light)
@@ -486,10 +490,43 @@ struct RootView: View {
             _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()
         case .settings: model.showSettings = true
+        case .addComputer: model.openSettings(at: .addServer)
+        case .nextSession, .previousSession:
+            guard let sel = model.selection,
+                  let next = SessionNav.neighbor(model.servers, from: sel, by: r.command == .nextSession ? 1 : -1) else {
+                Haptic.bump()
+                return
+            }
+            Haptic.selection()
+            show(next)
+        case .renameSession, .closeSession, .closeOtherTabs:
+            sessionQuestion(r.command)
         case .fontBigger: setFont(prefs.fontSize + 1)
         case .fontSmaller: setFont(prefs.fontSize - 1)
         case .fontReset: setFont(Prefs.defaultFontSize)
         default: break
+        }
+    }
+
+    /// Rename Session…, Close Session and Close Other Tabs on the tab on screen: the same alert
+    /// and questions as the sidebar's and the strip's menus. While one question is up, another
+    /// asks nothing.
+    private func sessionQuestion(_ c: RexCommand) {
+        guard let cur = model.current, !stripDialogs.asking, !commandDialogs.asking else { Haptic.bump(); return }
+        let server = cur.server, sid = cur.view.sessionID
+        let label = server.sessions.first { $0.id == sid }?.label ?? ""
+        switch c {
+        case .renameSession:
+            stripDialogs.rename(.init(server: server, sessionID: sid, label: label), current: label)
+        case .closeSession:
+            commandDialogs.closing = .init(server: server, sessionID: sid, label: label)
+        default:
+            let others = server.orderedWindowIDs(sid).filter { $0 != cur.window.id }
+            guard !others.isEmpty else { Haptic.bump(); return }
+            let agent = others.contains { id in cur.view.window(id).map { server.windowAgent($0) != nil } ?? false }
+            commandDialogs.closingOthers = .init(target: .init(server: server, sessionID: sid, windowID: cur.window.id,
+                                                               label: cur.window.label),
+                                                 tabs: others, agent: agent)
         }
     }
 
