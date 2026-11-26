@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import GhosttyVt
+import RexKit
 
 /// Where a vertical drag or a wheel goes.
 enum GhosttyScrollRoute: Equatable {
@@ -107,6 +108,9 @@ struct GhosttyWheelBudget {
 /// (X10, UTF-8, SGR, URxvt and SGR-Pixels; X10, normal, button and any-event tracking), and
 /// scroll keys with its key encoder (so DECCKM and the Kitty protocol are honored).
 ///
+/// SGR-Pixels reports are in the pane's pixels on the server (`PanePixelMap`), not the phone's;
+/// while the pane's cell size is unknown they are SGR cell reports instead.
+///
 /// Used from one thread (the main thread in the app). Every call that reads the terminal takes
 /// its lock through `GhosttyCore.withTerminal`.
 final class GhosttyMouseReporter {
@@ -143,6 +147,11 @@ final class GhosttyMouseReporter {
     private var keyEvent: GhosttyKeyEvent?
     private var geometry = Geometry(width: 0, height: 0, cellWidth: 0, cellHeight: 0)
     private var modes: UInt32 = .max
+    /// The program asked for SGR-Pixels reports (mode 1016 was the last format it set), as of
+    /// the last `sync`.
+    private var pixelFormat = false
+    /// Finds the format the terminal's modes give (`sync`): the mouse encoder can't be asked.
+    private var probe: GhosttyMouseEncoder?
     private let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 128)
     private static let bufferSize = 128
 
@@ -154,11 +163,20 @@ final class GhosttyMouseReporter {
         // Upstream: the encoder drops motion that stays in one cell (never for SGR-Pixels).
         var dedupe = true
         ghostty_mouse_encoder_set(encoder, GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &dedupe)
+        ghostty_mouse_encoder_new(nil, &probe)
+        var size = GhosttyMouseEncoderSize()
+        size.size = MemoryLayout<GhosttyMouseEncoderSize>.size
+        size.screen_width = 64
+        size.screen_height = 64
+        size.cell_width = 2
+        size.cell_height = 2
+        ghostty_mouse_encoder_set(probe, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size)
     }
 
     deinit {
         if let event { ghostty_mouse_event_free(event) }
         if let encoder { ghostty_mouse_encoder_free(encoder) }
+        if let probe { ghostty_mouse_encoder_free(probe) }
         if let keyEvent { ghostty_key_event_free(keyEvent) }
         if let keyEncoder { ghostty_key_encoder_free(keyEncoder) }
         buffer.deallocate()
@@ -169,11 +187,28 @@ final class GhosttyMouseReporter {
     /// `position` is in pixels from the terminal's top-left corner. `buttonHeld` says whether a
     /// button is down while the event happens (the encoder needs it for motion and for events
     /// outside the grid). `count` repeats the report, for a wheel that moved several lines.
+    /// `pane` is the pane's cell size on the server, for SGR-Pixels reports; nil when unknown.
     func mouse(_ action: Action, button: Button, at position: CGPoint, modifiers: Modifiers = [],
-               buttonHeld: Bool, geometry g: Geometry, count: Int = 1, core: GhosttyCore) -> [UInt8] {
-        guard let encoder, let event, g.cellWidth > 0, g.cellHeight > 0, count > 0 else { return [] }
+               buttonHeld: Bool, geometry device: Geometry, pane: CellPixels? = nil, count: Int = 1,
+               core: GhosttyCore) -> [UInt8] {
+        guard let encoder, let event, device.cellWidth > 0, device.cellHeight > 0, count > 0 else { return [] }
         return core.withTerminal { t -> [UInt8] in
             sync(t, force: action != .motion)
+            var g = device, position = position
+            if pixelFormat {
+                // Only here: every other format is made from the phone's own cells, as before.
+                var c: UInt16 = 0, r: UInt16 = 0
+                ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_COLS, &c)
+                ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_ROWS, &r)
+                let mapped = PanePixelMap.map(position, device: device, pane: pane, cols: Int(c), rows: Int(r))
+                if let mapped {
+                    g = mapped.geometry
+                    position = mapped.position
+                }
+                // Setting the format it already has changes nothing, the motion dedupe included.
+                var format = mapped == nil ? GHOSTTY_MOUSE_FORMAT_SGR : GHOSTTY_MOUSE_FORMAT_SGR_PIXELS
+                ghostty_mouse_encoder_set(encoder, GHOSTTY_MOUSE_ENCODER_OPT_FORMAT, &format)
+            }
             if g != geometry {
                 var size = GhosttyMouseEncoderSize()
                 size.size = MemoryLayout<GhosttyMouseEncoderSize>.size
@@ -250,7 +285,29 @@ final class GhosttyMouseReporter {
         guard force || bits != modes else { return }
         modes = bits
         ghostty_mouse_encoder_set_from_terminal(encoder, t)
+        // The format is the one the program set last, so mode 1016 can be on under another
+        // (1016, then 1006). Without 1016 it is never SGR-Pixels.
+        pixelFormat = bits & (1 << 7) != 0 && probesAsPixels(t)
     }
+
+    /// Whether the terminal's format is SGR-Pixels: a left press at (10, 10) in 2 x 2 pixel cells
+    /// reads 10;10 in pixels and 6;6 in cells. Uses the probe encoder only: the real one keeps
+    /// its size and its motion dedupe. The caller sets every field of `event` again after this.
+    private func probesAsPixels(_ t: GhosttyTerminal) -> Bool {
+        guard let probe, let event else { return false }
+        ghostty_mouse_encoder_set_from_terminal(probe, t)
+        var held = true
+        ghostty_mouse_encoder_set(probe, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &held)
+        ghostty_mouse_event_set_action(event, GHOSTTY_MOUSE_ACTION_PRESS)
+        ghostty_mouse_event_set_button(event, GHOSTTY_MOUSE_BUTTON_LEFT)
+        ghostty_mouse_event_set_mods(event, 0)
+        ghostty_mouse_event_set_position(event, GhosttyMousePosition(x: 10, y: 10))
+        var written = 0
+        guard ghostty_mouse_encoder_encode(probe, event, buffer, Self.bufferSize, &written) == GHOSTTY_SUCCESS else { return false }
+        return Array(UnsafeBufferPointer(start: buffer, count: written)) == Self.pixelProbe
+    }
+
+    private static let pixelProbe = Array("\u{1b}[<0;10;10M".utf8)
 
     private static func mods(_ m: Modifiers) -> GhosttyMods {
         var out: Int32 = 0

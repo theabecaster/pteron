@@ -1,3 +1,4 @@
+import RexKit
 import XCTest
 @testable import Pteron
 
@@ -84,13 +85,20 @@ final class GhosttyMouseTests: XCTestCase {
         XCTAssertEqual(text(press(r, c, .wheelDown)), "ESC[97;3;2M")
     }
 
+    /// In the pane's pixels on the server (`PanePixelMapTests`); here its cells are the
+    /// phone's size, 10 x 20. Without them, SGR cells.
     func testSGRPixelsFormatReportsPixels() {
         let r = GhosttyMouseReporter(), c = core("\u{1b}[?1003h\u{1b}[?1016h")
-        XCTAssertEqual(text(press(r, c)), "ESC[<0;25;30M")
-        XCTAssertEqual(text(release(r, c)), "ESC[<0;25;30m")
+        let pane = CellPixels(width: 10, height: 20)
+        func send(_ a: GhosttyMouseReporter.Action, _ b: GhosttyMouseReporter.Button, _ p: CGPoint, held: Bool) -> String {
+            text(r.mouse(a, button: b, at: p, buttonHeld: held, geometry: geometry, pane: pane, core: c))
+        }
+        XCTAssertEqual(send(.press, .left, point, held: true), "ESC[<0;25;30M")
+        XCTAssertEqual(send(.release, .left, point, held: false), "ESC[<0;25;30m")
         // Never deduplicated: every pixel of motion counts.
-        XCTAssertEqual(text(motion(r, c, at: CGPoint(x: 26, y: 30), held: false)), "ESC[<35;26;30M")
-        XCTAssertEqual(text(motion(r, c, at: CGPoint(x: 27, y: 30), held: false)), "ESC[<35;27;30M")
+        XCTAssertEqual(send(.motion, .none, CGPoint(x: 26.5, y: 30.5), held: false), "ESC[<35;26;30M")
+        XCTAssertEqual(send(.motion, .none, CGPoint(x: 27.5, y: 30.5), held: false), "ESC[<35;27;30M")
+        XCTAssertEqual(text(press(r, c)), "ESC[<0;3;2M", "no cell size from the server")
     }
 
     func testRepeatedReports() {

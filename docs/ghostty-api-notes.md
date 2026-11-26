@@ -121,6 +121,9 @@ git: `git show 447a94a:docs/ghostty-api-notes.md`.
   before Ctrl or Meta, never C0 controls or the U+F700 function-key code points `UIKey` returns.
 - The mouse encoder's default size is 1×1 pixel: always set `OPT_SIZE`. Its sync clears motion
   dedupe state, so sync when the modes may have changed, not before every motion event.
+- SGR-Pixels reports the event's position converted by `OPT_SIZE`, rounded, never deduplicated.
+  The format is the last of 1005, 1006, 1015 and 1016 set (a reset gives X10), and neither the
+  encoder nor the terminal says which: only the mode bits.
   Alternate scroll (mode 1007) is not in the library: send arrow keys through the key encoder.
 
 ## Selection and copy

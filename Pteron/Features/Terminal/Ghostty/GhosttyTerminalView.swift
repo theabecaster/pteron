@@ -1,5 +1,6 @@
 import UIKit
 import GhosttyVt
+import RexKit
 
 /// The terminal view: libghostty-vt for terminal state, drawn by our Metal renderer.
 /// `TerminalHost` lays it out, zooms it and makes it first responder.
@@ -31,6 +32,10 @@ final class GhosttyTerminalView: UIView {
     private(set) var rows: Int
     private(set) var theme: TermTheme?
     private(set) var displayScale: CGFloat
+    /// The pane's cell size on the server, as its program is told it (`TerminalStream.cellPixels`):
+    /// SGR-Pixels reports (mode 1016) are made in it. Nil while unknown. The host sets it with
+    /// every size the stream says.
+    var paneCellPixels: CellPixels?
 
     // Input: stored state for GhosttyTerminalView+Input.swift and GhosttyInputText.swift, which
     // hold the first-responder overrides and the UIKeyInput / UITextInput conformance.

@@ -369,7 +369,10 @@ enough), and the next build stops with that instruction when it cannot read one.
 - **The mouse encoder copies its format from the terminal** (`ghostty_mouse_encoder_set_from_terminal`,
   modes 9, 1000, 1002, 1003, 1005, 1006, 1015, 1016), on every press, release and wheel, and on
   motion only when the modes changed: the copy clears the encoder's motion dedupe. So a program
-  that asked for SGR reports gets them. An X10 report beyond column 95 is not valid UTF-8 and
+  that asked for SGR reports gets them. The encoder can't be asked its format, and 1016 can be
+  on under another (1016, then 1006), so with 1016 on a second encoder reads it from a probe
+  press. SGR-Pixels reports are made in the pane's pixels on the server ([terminal.md](terminal.md),
+  Input). An X10 report beyond column 95 is not valid UTF-8 and
   can't be sent at all (`TerminalStream.send`, [terminal.md](terminal.md)).
 - **The atlas can be reset in the middle of a row build** (overflow). The build retries up to
   three times, and encoding gives up on a frame built against an older atlas.

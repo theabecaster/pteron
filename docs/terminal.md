@@ -619,6 +619,14 @@ the first call's response before you send the second").
   practice that is a legacy X10 mouse report beyond column 95, where the column is one raw byte
   of 128 or more. The mouse encoder uses the format the program asked for, and programs that
   track the mouse on wide screens ask for SGR (mode 1006) or UTF-8 (1005), both plain UTF-8.
+- **Pixel reports are in the pane's pixels on the server.** A program that asked for SGR-Pixels
+  (mode 1016, the last format it set) divides a report by the cell size it was told, which is
+  the pane's on the server (8 x 16 on a Rex pane), not the phone's. The stream keeps the newest
+  one Rex sends (`TerminalStream.cellPixels`, from `terminal.size` and each `resize`), and the
+  touch's place in cells, fractions included, is scaled to it (`PanePixelMap`), so the program
+  finds the cell the finger is on, at any zoom and in any split. While the server doesn't say
+  (an older server, or 0), the report is an SGR cell report. The phone never sends a cell size
+  in `terminal.resize`: that would change how the program sizes images, on the Mac too.
 
 Before the stream, on the phone's main thread, the engine view keeps a shadow of the line being
 typed for the keyboard (`GhosttyInputDocument`), and tells the keyboard about every change to

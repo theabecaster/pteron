@@ -442,7 +442,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
             if view.controlModifier { modifiers.insert(.control) }
             let count = budget.grant(GhosttyWheelBudget.requested(lines: lines, precise: precise))
             bytes = mouse.mouse(.press, button: lines > 0 ? .wheelUp : .wheelDown, at: position, modifiers: modifiers,
-                                buttonHeld: false, geometry: geometry, count: count, core: core)
+                                buttonHeld: false, geometry: geometry, pane: view.paneCellPixels, count: count, core: core)
             sendReport(bytes)
         case .cursorKeys:
             let count = budget.grant(GhosttyWheelBudget.requested(lines: lines))
@@ -486,9 +486,9 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
         var modifiers: GhosttyMouseReporter.Modifiers = []
         if view.controlModifier { modifiers.insert(.control) }
         var bytes = mouse.mouse(.press, button: .left, at: position, modifiers: modifiers, buttonHeld: true,
-                                geometry: geometry, core: core)
+                                geometry: geometry, pane: view.paneCellPixels, core: core)
         bytes += mouse.mouse(.release, button: .left, at: position, modifiers: modifiers, buttonHeld: false,
-                             geometry: geometry, core: core)
+                             geometry: geometry, pane: view.paneCellPixels, core: core)
         if view.controlModifier {
             view.controlModifier = false
             NotificationCenter.default.post(name: .terminalEngineControlModifierReset, object: view)
@@ -516,7 +516,7 @@ final class GhosttyScroller: NSObject, UIScrollViewDelegate {
     func forwardMotion(at point: CGPoint, flags: UIKeyModifierFlags = [], buttonHeld: Bool) -> [UInt8] {
         guard let view, view.bounds.contains(point), !flags.contains(.shift), let position = mousePosition(point) else { return [] }
         let bytes = mouse.mouse(.motion, button: buttonHeld ? .left : .none, at: position, modifiers: Self.modifiers(flags),
-                                buttonHeld: buttonHeld, geometry: geometry, core: core)
+                                buttonHeld: buttonHeld, geometry: geometry, pane: view.paneCellPixels, core: core)
         sendReport(bytes)
         return bytes
     }

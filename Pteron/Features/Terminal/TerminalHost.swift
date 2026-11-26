@@ -2339,6 +2339,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // The terminal keeps stream order itself: output fed before this is parsed at the old size.
         serverSize = (cols, rows)
         serverSizeReported = true
+        // The newest, so a size or font change on the server leaves no old one behind.
+        term.paneCellPixels = stream.cellPixels
         let wasFitted = fitted
         let mine = owner == clientID
         #if DEBUG
