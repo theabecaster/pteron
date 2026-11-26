@@ -655,25 +655,30 @@ final class StreamEchoTests: XCTestCase {
         let gate = EchoGate(forced: nil)
         let (s, r, _) = stream(link, gate: gate)
         link.held = [Self.write]
+        // The observer's start and each answer are followed by a settle op, which comes in a
+        // task of its own: the script waits for each, so that it falls in the same place in both
+        // runs, and is never replaced by the next answer's.
+        var settles = 1
+        func settled() async { _ = await eventually { r.events.filter { $0 == .settled }.count == settles } }
+        func answer() async {
+            _ = await eventually { link.waitingCount == 1 }
+            clock.now += 0.2
+            link.release()
+            settles += 1
+            await settled()
+        }
+        await settled()
         s.send(text: "l")
         s.send(text: "s")
         s.send([0x7f])
-        _ = await eventually { link.waitingCount == 1 }
-        clock.now += 0.2
-        link.release()
+        await answer()
         _ = await eventually { link.waitingCount == 1 && link.written.count == 2 }
         s.sendOnce(text: "y") { _ in }
         s.send(text: "\r")
-        for _ in 0..<3 {
-            clock.now += 0.2
-            link.release()
-            await settle()
-        }
+        for _ in 0..<3 { await answer() }
         _ = await eventually { !s.hasPendingInput }
         s.send(text: "x")
-        _ = await eventually { link.waitingCount == 1 }
-        clock.now += 0.2
-        link.release()
+        await answer()
         _ = await eventually { !s.hasPendingInput }
         await settle()
         return (r.events, link.written, gate.roundTrip.samples)
