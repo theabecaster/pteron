@@ -214,6 +214,10 @@ final class AlertEventsTests: XCTestCase {
                                                "block_event_name": "progress_report", "size": 2_000_000])
         let cleared = await eventually { self.bar(rig) == nil }
         XCTAssertTrue(cleared)
+        // The block's metadata is read once: waited for, then as long again for a second read
+        // or a full sync that must not come.
+        let read = await eventually { rig.fake.count("\(Self.terminal).program_status") >= 1 }
+        XCTAssertTrue(read)
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(rig.fake.count("session.bootstrap"), 0, "never a full sync")
         XCTAssertEqual(rig.fake.count("\(Self.terminal).program_status"), 1, "the block's metadata, once")
@@ -411,8 +415,10 @@ final class VisiblePanesTests: XCTestCase {
     }
 }
 
+/// Waits until `condition` holds. The 15 s only guard a hang: the fake server's events and a
+/// reconnect take seconds on a busy machine.
 @MainActor
-private func eventually(seconds: Double = 5, _ condition: @MainActor () -> Bool) async -> Bool {
+private func eventually(seconds: Double = 15, _ condition: @MainActor () -> Bool) async -> Bool {
     let end = Date().addingTimeInterval(seconds)
     while !condition(), Date() < end { try? await Task.sleep(for: .milliseconds(10)) }
     return condition()
