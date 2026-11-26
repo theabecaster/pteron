@@ -419,6 +419,9 @@ public final class TerminalStream {
     public private(set) var serverCols = 80
     public private(set) var serverRows = 24
     public private(set) var owner: String?
+    /// The pane's cell size as its program is told it, from the newest size the server sent;
+    /// nil when the server didn't say.
+    public private(set) var cellPixels: CellPixels?
     private var ws: (any StreamSocket)?
     /// Counts starts and stops. Work begun under an older value is stale and must do nothing.
     private(set) var gen = 0
@@ -1273,6 +1276,7 @@ public final class TerminalStream {
                 serverCols = max(size.int("columns") ?? serverCols, 2)
                 serverRows = max(size.int("rows") ?? serverRows, 2)
                 owner = size.str("owner")
+                cellPixels = CellPixels(size)
                 fence.changed()
                 sink?.streamReset(cols: serverCols, rows: serverRows)
                 sink?.streamResized(cols: serverCols, rows: serverRows, owner: owner)
@@ -1323,6 +1327,7 @@ public final class TerminalStream {
                 serverCols = max(size.int("columns") ?? 80, 2)
                 serverRows = max(size.int("rows") ?? 24, 2)
                 owner = size.str("owner")
+                cellPixels = CellPixels(size)
                 let initial = try await readScreen()
                 guard myGen == gen, !stopped else { return }
                 fence.changed()
@@ -1745,6 +1750,7 @@ public final class TerminalStream {
                 let c = m.int("cols") ?? self.serverCols, r = m.int("rows") ?? self.serverRows
                 self.owner = m["owner"] as? String
                 self.serverCols = max(c, 2); self.serverRows = max(r, 2)
+                self.cellPixels = CellPixels(m)
                 sink?.streamResized(cols: self.serverCols, rows: self.serverRows, owner: self.owner)
             case "theme":
                 sink?.streamTheme(m)
