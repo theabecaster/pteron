@@ -308,15 +308,26 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   The panes stay inside the safe area at the top and the sides, so no terminal text sits under the
   status bar, the notch, the Dynamic Island or the vertical bar. No band of chrome shows under the
   terminal.
-- **Bottom edge** (`PaneBottom`). With the keyboard down the panes run to the window's bottom
-  edge, on every device and in every posture, sidebar mode and tab mode alike: the last row may
-  sit under the home indicator, a thin line over text instead of an empty band. Their area then
-  ignores the bottom safe area (and the keyboard's region, which SwiftUI keeps for a layout or two
-  as the keyboard goes). The inset itself comes from UIKit's window (`KeyboardInset.home`): with
-  the keyboard up SwiftUI counts it as the keyboard's. With the software keyboard up,
+- **Bottom edge** (`PaneBottom`). With the keyboard down the panes run on past the bottom safe
+  area as far as the window's rounded corners allow, sidebar mode and tab mode alike: down to the
+  height where a bottom corner would reach further in than the first or last column (its side
+  inset and the pane's padding, `PaneLayout.bottomPadding`) plus half a cell, and never short of
+  the safe area. So a window with square corners, a phone on its side (the corners stay outside
+  the side insets), the folded Duo (its large corner is on the bar's side) and an iPad run to or
+  near the edge, under the home indicator, and an iPhone held upright keeps its rows where they
+  always were: its corners would take cells off the last rows. No cell loses more of its glyph to
+  a corner than before. The corners come from the window (iOS 26: the root's probe takes
+  `containerConcentric` corners and reads `effectiveRadius(corner:)`), modelled as a circle a
+  little larger than that radius, which stays outside the measured display masks
+  (`PaneBottom.clearHeight`); before iOS 26 nothing gives them, and the panes keep to the safe
+  area. The area ignores the bottom safe area (and the keyboard's region, which SwiftUI keeps for
+  a layout or two as the keyboard goes) and gives back what the corners don't allow as padding;
+  the terminal's color runs on to the edge in every case. The inset, the side insets and the
+  corners come from UIKit's window in one pass (`KeyboardInsetReader`): with the keyboard up
+  SwiftUI counts the inset as the keyboard's. With the software keyboard up,
   or a hardware keyboard's key bar alone, they end where they always did, at its top, and the
   terminal's color runs on behind the key bar and the keyboard's corners. The canvas with the
-  keyboard down is the one to the edge either way (`PaneLayout.restCanvas`), so showing or hiding
+  keyboard down is the one the corners allow either way (`PaneLayout.restCanvas`), so showing or hiding
   the keyboard resizes nothing more than before. Splits divide the safe area as before; only the
   panes on its bottom edge run on. Whether a tab shows splits or pages, book mode and where floats
   go are decided from the canvas inside the safe area, as before (`PaneBottom.inside`), so no tab

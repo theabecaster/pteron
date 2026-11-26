@@ -42,7 +42,7 @@ final class FoldLayoutTests: XCTestCase {
     private struct Root: View {
         let server: ServerConnection
         let keyboard: FoldKeyboard
-        @State private var home: CGFloat = 0
+        @State private var bottom = WindowBottom()
         var body: some View {
             GeometryReader { geo in
                 let arr = Arrangement.decide(size: geo.size, division: nil)
@@ -50,9 +50,9 @@ final class FoldLayoutTests: XCTestCase {
                              sidebarVisible: .constant(false))
                     .safeAreaPadding(.bottom, keyboard.room)
                     .environment(\.keyboardRoom, keyboard.room)
-                    .environment(\.homeInset, home)
+                    .environment(\.windowBottom, bottom)
             }
-            .background(KeyboardInsetReader(onHome: { if home != $0 { home = $0 } }) { _ in }.ignoresSafeArea())
+            .background(KeyboardInsetReader(onBottom: { if bottom != $0 { bottom = $0 } }) { _ in }.ignoresSafeArea())
         }
     }
 

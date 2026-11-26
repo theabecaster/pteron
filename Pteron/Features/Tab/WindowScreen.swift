@@ -50,8 +50,9 @@ struct WindowScreen: View {
     @Environment(\.bookCrease) private var bookCrease
     /// The room the keyboard takes from the root's bottom, for the panes' size with it down.
     @Environment(\.keyboardRoom) private var keyboardRoom
-    /// The window's bottom inset under the root, which the panes run on into with the keyboard down.
-    @Environment(\.homeInset) private var homeInset
+    /// The window's bottom inset, side insets and corners, which say how far the panes run on
+    /// past the safe area with the keyboard down (`PaneBottom`).
+    @Environment(\.windowBottom) private var windowBottom
     @Environment(TerminalHostPool.self) private var pool: TerminalHostPool?
 
     let server: ServerConnection
@@ -211,10 +212,13 @@ struct WindowScreen: View {
     }
 
     private func panes(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
-        // With the keyboard down the panes' area ignores the bottom safe area and runs on to the
-        // window's edge, under the home indicator; with it up it keeps to the safe area and ends
-        // at the keyboard's top as before (`PaneBottom`).
-        let bottom = PaneBottom(home: homeInset, keyboardRoom: keyboardRoom, reaches: reachesBottom)
+        // With the keyboard down the panes' area ignores the bottom safe area and runs on past it
+        // as far as the window's corners allow, to the edge where they allow it; with it up it
+        // keeps to the safe area and ends at the keyboard's top as before (`PaneBottom`).
+        let look = canvasLook(w, p)
+        let bottom = PaneBottom(window: windowBottom, keyboardRoom: keyboardRoom,
+                                padding: PaneLayout.bottomPadding(splits: look.splits, rounded: mode != .narrow),
+                                tolerance: PaneBottom.tolerance(fontSize: prefs.fontSize), reaches: reachesBottom)
         return canvas(w, theme, p, bottom: bottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // The floating windows sit above the tiled panes, a sibling of them, so one coming or
@@ -238,6 +242,8 @@ struct WindowScreen: View {
                 if m.restReach != restReach { restReach = m.restReach }
             }
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { canvasMaxX = $0 }
+            // The part of the bottom inset the corners don't allow, given back.
+            .padding(.bottom, bottom.trim)
             // The keyboard's region too: as it goes, SwiftUI keeps it for a layout or two.
             .ignoresSafeArea([.container, .keyboard], edges: bottom.reachesEdge ? .bottom : [])
             // The terminal's color runs on to the window's bottom: no band of chrome under the
@@ -1294,6 +1300,15 @@ enum PaneLayout {
     static let roundedPadding: CGFloat = 6
     /// Around the splits, and around each pane inside its share.
     static let splitPadding: CGFloat = 3
+    /// How far in from the panes' area the first and last columns of the panes on its bottom
+    /// edge sit: the padding around the splits and each split pane's share, or a rounded single
+    /// pane's, and the clearance of the corners they are clipped to; nothing for a narrow single
+    /// pane. What the window's corners have to keep clear of (`PaneBottom.cornerReach`).
+    static func bottomPadding(splits: Bool, rounded: Bool) -> CGFloat {
+        if splits { return splitPadding * 2 + clearance(radius: splitRadius) }
+        return rounded ? roundedPadding + clearance(radius: singleRadius) : 0
+    }
+
     /// The corners a single rounded pane and a split pane are clipped to.
     static let singleRadius: CGFloat = 10
     static let splitRadius: CGFloat = 8

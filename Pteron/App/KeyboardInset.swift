@@ -73,21 +73,22 @@ enum KeyboardInset {
 struct KeyboardInsetReader: UIViewRepresentable {
     /// The palette's hold, which ends with a fresh measure instead of the value it kept.
     var padHold: PadHold?
-    /// The window's bottom inset under the view (`KeyboardInset.home`), when it changes.
-    var onHome: (CGFloat) -> Void = { _ in }
+    /// The window's bottom inset under the view (`KeyboardInset.home`), its side insets and its
+    /// bottom corners (`WindowBottom`), when they change.
+    var onBottom: (WindowBottom) -> Void = { _ in }
     let onChange: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> Probe {
         let p = Probe()
         p.onChange = onChange
-        p.onHome = onHome
+        p.onBottom = onBottom
         connect(p)
         return p
     }
 
     func updateUIView(_ p: Probe, context: Context) {
         p.onChange = onChange
-        p.onHome = onHome
+        p.onBottom = onBottom
         connect(p)
     }
 
@@ -97,8 +98,8 @@ struct KeyboardInsetReader: UIViewRepresentable {
 
     final class Probe: UIView {
         var onChange: ((CGFloat) -> Void)?
-        var onHome: ((CGFloat) -> Void)?
-        private var reportedHome: CGFloat?
+        var onBottom: ((WindowBottom) -> Void)?
+        private var reportedBottom: WindowBottom?
         /// The keyboard's last reported end frame, in screen coordinates.
         private var keyboard: CGRect = .null
         /// The last report was a hide.
@@ -117,6 +118,10 @@ struct KeyboardInsetReader: UIViewRepresentable {
         override init(frame: CGRect) {
             super.init(frame: frame)
             isUserInteractionEnabled = false
+            // The window's corners, read as this view's own: it has the root's frame, flush with
+            // the window, so its concentric corners are the window's. It draws nothing, so its
+            // corners change nothing on screen.
+            if #available(iOS 26.0, *) { cornerConfiguration = .corners(radius: .containerConcentric()) }
             let names: [Notification.Name] = [UIResponder.keyboardWillChangeFrameNotification,
                                               UIResponder.keyboardDidChangeFrameNotification,
                                               UIResponder.keyboardWillHideNotification,
@@ -228,13 +233,32 @@ struct KeyboardInsetReader: UIViewRepresentable {
             return window.convert(bar.convert(bar.bounds, to: screen), from: screen)
         }
 
+        /// The window's bottom inset under this view, its side insets and, from iOS 26, its bottom
+        /// corners' radii. Read in `layoutSubviews` too, where UIKit lays the view out again when
+        /// a corner's radius changes.
+        private func windowBottom(in window: UIWindow) -> WindowBottom {
+            let insets = window.safeAreaInsets
+            var b = WindowBottom(home: KeyboardInset.home(view: convert(bounds, to: window), window: window.bounds,
+                                                          windowSafeBottom: insets.bottom),
+                                 left: insets.left, right: insets.right)
+            if #available(iOS 26.0, *) {
+                b.corners = .init(left: effectiveRadius(corner: .bottomLeft), right: effectiveRadius(corner: .bottomRight))
+            }
+            return b
+        }
+
         private func update() {
             if let window {
-                let home = KeyboardInset.home(view: convert(bounds, to: window), window: window.bounds,
-                                              windowSafeBottom: window.safeAreaInsets.bottom)
-                if home != reportedHome {
-                    reportedHome = home
-                    onHome?(home)
+                // In the same pass as the padding: a turn, a fold or Split View changes them
+                // together, and the panes' bottom takes them in one layout.
+                let bottom = windowBottom(in: window)
+                if bottom != reportedBottom {
+                    reportedBottom = bottom
+                    #if DEBUG
+                    NSLog("WINDOW_BOTTOM home=%.1f sides=%.1f/%.1f corners=%@", bottom.home, bottom.left, bottom.right,
+                          bottom.corners.map { String(format: "%.1f/%.1f", $0.left, $0.right) } ?? "unknown")
+                    #endif
+                    onBottom?(bottom)
                 }
             }
             guard let pad = padding(), pad != reported else { return }

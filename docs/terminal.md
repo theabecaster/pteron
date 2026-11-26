@@ -472,8 +472,8 @@ is not a cold start.
   - The key bar alone (hardware keyboard) takes room from the layout and the grid fits above it.
   - The canvas with the keyboard down is worked out from each layout, never kept from an earlier
     one (`PaneLayout.restCanvas`): the canvas as it is, plus the room the keyboard takes from the
-    root's bottom (`KeyboardInset`, handed down as `keyboardRoom`) and the home indicator under it,
-    since with the keyboard down the panes run on to the window's edge (`PaneBottom`,
+    root's bottom (`KeyboardInset`, handed down as `keyboardRoom`) and as much of the home
+    indicator under it as the window's corners allow the panes with the keyboard down (`PaneBottom`,
     [duo-layout.md](duo-layout.md), Bottom edge), less a title bar or strip that
     stepped aside for it, and in tabletop no taller than the region above the crease. Both are
     read with the size they made, and each counts whichever comes first as the keyboard moves,
