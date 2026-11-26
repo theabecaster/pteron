@@ -87,6 +87,7 @@ struct TabStrip<PaneMenu: View>: View {
             }
         }
         .frame(height: height)
+        .clearsWindowControls()
         .font(.system(size: 17))
         .foregroundStyle(theme.fg)
         .background(theme.chrome.canvas)

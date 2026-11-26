@@ -1062,6 +1062,7 @@ struct WindowScreen: View {
         .frame(height: height)
         .padding(.leading, bar ? 12 : 4)
         .padding(.trailing, 4)
+        .clearsWindowControls()
         .background(theme.chrome.canvas)
         .animation(.snappy(duration: 0.2), value: zoomedHere)
     }

@@ -300,6 +300,7 @@ struct RootView: View {
             .onChange(of: geo.size.width) { _, _ in model.palette.padHold.endNow() }
             .environment(\.division, division)
             .environment(\.rootOrigin, geo.frame(in: .global).origin)
+            .environment(\.windowControls, geo.windowControls(verticalBar: barEdge != nil))
             .environment(\.bookCrease, creaseSettle.crease(division))
             .environment(\.verticalBarEdge, barEdge)
             .environment(\.verticalBarColumn, barColumn)

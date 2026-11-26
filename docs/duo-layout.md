@@ -42,6 +42,19 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   inline at 260 pt. Narrower (folded Duo, iPhone portrait, half the inner screen, and the folded
   Duo on its side, which is 594 pt inside its vertical bar) the same sidebar is a drawer over the
   tab.
+- **iPad.** No iPad-only layout: a window is laid out by its size as everywhere else. Full screen
+  it is the unfolded Duo (sidebar inline); a narrow window (half or a third of the screen, Slide
+  Over) is the folded Duo (drawer). Resizing a window by its corner, tiling it or making it full
+  screen is a window resize: fit mode sends one resize once it settles, as for a fold. One scene
+  only (`UIApplicationSupportsMultipleScenes` is false): one connection per computer and one claim
+  per pane.
+- **Window controls** (`WindowControls`). A window smaller than the screen has close, minimize
+  and full screen in its top leading corner. iOS 26 reports them in the root's container corner
+  insets, together with the rounded corners of the window and the screen; only a top leading
+  region that differs from the top trailing one is the controls, and with the Duo's vertical bar
+  there are none. The sidebar's mode switch, and the title bar or the strip while one reaches that
+  corner, move their content right by the controls' width; backgrounds still run to the edge. Full
+  screen, on an iPhone and on the Duo nothing moves.
 - **Tab mode** (`NavigationStyle`, `Prefs.navigation`). The other way around the app, like the
   Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at 44 pt (34 pt in a short window),
   the tab strip (`TabStrip`). The choice is Settings → Appearance → Navigation; sidebar mode

@@ -7,6 +7,7 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
     @Environment(Prefs.self) private var prefs
+    @Environment(\.windowControls) private var windowControls
     @Binding var mode: SidebarMode
     var onSelect: (Selection) -> Void
     /// Where Sessions mode was scrolled to, so a trip to Agents mode and back keeps it.
@@ -17,6 +18,8 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             SidebarModeSwitch(mode: $mode, theme: theme)
                 .padding(.horizontal, 10)
+                // Clear of the window controls in a window's corner (`WindowControls`).
+                .padding(.leading, windowControls.width)
                 .padding(.top, 6)
                 .padding(.bottom, 2)
             switch mode {
