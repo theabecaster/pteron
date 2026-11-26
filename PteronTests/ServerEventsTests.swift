@@ -102,10 +102,14 @@ final class ServerEventsTests: XCTestCase {
             await settle(seconds: 90)
         }
 
-        /// Waits for a sync to finish (the keymap is its last read) and the creator list to land.
+        /// Waits for a sync to finish (the keymap is its last read, and the sync ends once its
+        /// answer is in) and the creator list to land. The fake counts the keymap read when it
+        /// is asked: a sync still waiting for that answer takes a sync asked of it meanwhile for
+        /// one more after it, not one of its own.
         func settle(keymapLoads: Int = 1, seconds: Double = 15) async {
             _ = await eventually(seconds: seconds) {
-                self.fake.count("client.keymap") >= keymapLoads && self.server.synced && self.server.creatorsTask == nil
+                self.fake.count("client.keymap") >= keymapLoads && self.server.synced && !self.server.syncing
+                    && self.server.creatorsTask == nil
             }
         }
 
