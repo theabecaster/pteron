@@ -281,6 +281,9 @@ final class PaneParkTests: XCTestCase {
         window.addSubview(host)
         host.layoutIfNeeded()
         XCTAssertTrue(eventually { transport.calls.count == 2 }, "own and resize")
+        // And both answered, so the claim is the host's: a call that started has not returned
+        // yet on a busy machine, and a host taken away before its answer holds no claim.
+        XCTAssertTrue(eventually { transport.log.filter { $0.hasSuffix(" done") }.count == 2 }, "both answered")
         return host
     }
 
