@@ -442,7 +442,7 @@ final class PortForwardTests: XCTestCase {
         let a = StubLocal(), b = StubLocal()
         listener.accept?(a)
         listener.accept?(b)
-        try? await Task.sleep(for: .milliseconds(50))
+        await settle { f.forward?.syncWaiters.count == 2 }
         XCTAssertEqual(f.forward?.syncWaiters.count, 2)
         XCTAssertTrue(server.calls.isEmpty)
         server.synced = true
@@ -453,7 +453,7 @@ final class PortForwardTests: XCTestCase {
         server.synced = false
         let late = StubLocal()
         listener.accept?(late)
-        await settle(2) { late.resets == 1 }
+        await settle { late.resets == 1 }
         XCTAssertEqual(late.resets, 1, "past the cap the browser's connection is reset")
         XCTAssertEqual(f.forward?.syncWaiters.count, 0)
     }
@@ -746,8 +746,9 @@ final class PortForwardTests: XCTestCase {
         return await task.value
     }
 
-    /// Waits until `condition` holds, and fails the test if it still doesn't after `seconds`.
-    private func settle(_ seconds: Double = 3, file: StaticString = #filePath, line: UInt = #line,
+    /// Waits until `condition` holds, and fails the test if it still doesn't after `seconds`,
+    /// which only guard a hang: a busy machine took more than 3 s over a browser's first block.
+    private func settle(_ seconds: Double = 10, file: StaticString = #filePath, line: UInt = #line,
                         _ condition: @MainActor () -> Bool) async {
         let end = Date().addingTimeInterval(seconds)
         while !condition() {
