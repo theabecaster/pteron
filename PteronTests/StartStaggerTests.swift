@@ -71,7 +71,15 @@ import Testing
         return (m, waits, { record.names })
     }
 
+    /// A few turns of the main actor, for a check that nothing (more) happened.
     private func turn() async { for _ in 0..<20 { await Task.yield() } }
+
+    /// Lets the model's tasks run until `done` holds. The 10 s only guard a hang: on a busy
+    /// machine a task the model started can take longer than a few turns to run.
+    private func until(_ done: () -> Bool) async {
+        let end = ContinuousClock.now.advanced(by: .seconds(10))
+        while !done(), ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(5)) }
+    }
 
     /// The computer of the launch's tab starts inside `sceneVisible`, before any wait is asked for.
     @Test func theLaunchsComputerStartsAtOnceWithNoWaitBeforeIt() async throws {
@@ -94,15 +102,16 @@ import Testing
         for s in m.servers { s.linkChanged = nil }
         // The launch's first `.active` phase resumes the servers: those that wait keep waiting.
         m.foregroundResumed()
+        await until { !waits.asked.isEmpty }
         await turn()
         #expect(started() == ["laptop"])
         #expect(waits.asked == [1], "one wait, a second at most")
         waits.pass()
-        await turn()
+        await until { started().count == 2 && waits.asked.count == 2 }
         #expect(started() == ["laptop", "desk"], "the first of the others with no pause")
-        #expect(waits.asked.count == 2 && (0.25...0.5).contains(waits.asked[1]))
+        #expect(waits.asked.count == 2 && (0.25...0.5).contains(waits.asked[1]), "\(waits.asked)")
         waits.pass()
-        await turn()
+        await until { started().count == 3 }
         #expect(started() == ["laptop", "desk", "mini"])
         #expect(m.waitingToStart.isEmpty)
         // Nothing starts twice.
@@ -118,7 +127,8 @@ import Testing
     func theOthersStartAsSoonAsTheFirstHasSettled(_ how: String) async throws {
         let (m, waits, started) = try model()
         m.sceneVisible()
-        await turn()
+        // The second's wait has begun.
+        await until { waits.asked == [1] }
         let laptop = m.servers[1].id, desk = m.servers[0].id
         // Another computer's news changes nothing, nor does the first one still connecting.
         m.leadReported(desk, synced: true, failed: false, dormant: false)
@@ -126,14 +136,15 @@ import Testing
         await turn()
         #expect(started() == ["laptop"])
         m.leadReported(laptop, synced: how == "synced", failed: how == "failed", dormant: how == "dormant")
-        await turn()
+        // The first of the others starts, and the pause before the next one begins.
+        await until { started().count == 2 && waits.asked.count == 2 }
         #expect(started() == ["laptop", "desk"], "\(how): at once, the second not over")
-        // The pause between the others; the first one's second is given up.
+        #expect(waits.asked.count == 2, "\(how): \(waits.asked)")
+        // The first one's second, given up, and the pause between the others.
         waits.pass()
-        await turn()
         waits.pass()
-        await turn()
-        #expect(started() == ["laptop", "desk", "mini"])
+        await until { started().count == 3 }
+        #expect(started() == ["laptop", "desk", "mini"], "\(how)")
         // Its news a second time starts nobody again.
         m.leadReported(laptop, synced: true, failed: false, dormant: false)
         waits.pass()
@@ -148,9 +159,10 @@ import Testing
         let mini = try #require(m.servers.last)
         m.select(mini, session: "s", window: "w")
         #expect(started() == ["laptop", "mini"])
-        await turn()
+        // The second ends: the others' turns come, and the one that started is not started again.
+        await until { waits.asked.count == 1 }
         waits.pass()
-        await turn()
+        await until { started().count == 3 && waits.asked.count == 2 }
         waits.pass()
         await turn()
         #expect(started() == ["laptop", "mini", "desk"])
@@ -227,7 +239,7 @@ import Testing
         let (m, mini, started) = try waiting()
         let link = PaneLink(server: mini.id.uuidString, session: "s", window: "w", block: "b")
         let opening = Task { @MainActor in await m.openPane(link: link) }
-        await turn()
+        await until { started().count == 2 }
         #expect(started() == ["laptop", "mini"])
         opening.cancel()
         _ = await opening.value
@@ -268,7 +280,7 @@ import Testing
         case "refresh": Task { @MainActor in await mini.refresh() }
         default: Task { @MainActor in _ = await mini.createSession(label: nil) }
         }
-        await turn()
+        await until { started().count == 2 }
         #expect(started() == ["laptop", "mini"], "\(what)")
         for s in m.servers { s.stop() }
     }
@@ -282,7 +294,7 @@ import Testing
             case "refresh": task = Task { @MainActor in await m.refresh() }
             default: task = Task { @MainActor in _ = await m.openWaiting() }
             }
-            await turn()
+            await until { started().count == 3 }
             #expect(Set(started()) == ["laptop", "desk", "mini"], "\(what)")
             #expect(m.waitingToStart.isEmpty)
             task?.cancel()
