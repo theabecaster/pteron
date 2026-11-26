@@ -343,7 +343,12 @@ final class AlertEventsTests: XCTestCase {
         for _ in 0..<50 { blockEvent(rig, "desktop_notification", ["title": "", "body": "zz same"]) }
         for i in 0..<40 { blockEvent(rig, "desktop_notification", ["title": "", "body": "zz \(i)"]) }
         blockEvent(rig, "desktop_notification", ["title": "", "body": "zz other pane"], block: "block:1b")
-        try await Task.sleep(for: .milliseconds(1600))
+        // The server sends in order, so every event has come in once the other pane's has, and
+        // every notice has been judged once none waits (`noticeWait`). 15 s guards a hang.
+        let judged = await eventually(seconds: 15) {
+            rig.server.noticeTexts["block:1b"] != nil && rig.server.noticesInWait.isEmpty
+        }
+        XCTAssertTrue(judged)
         let posted = rig.server.notifier.takeNotices()
         let noisy = posted.filter { $0.blockID == "block:1a" }
         XCTAssertLessThanOrEqual(noisy.count, AgentNotifier.perPaneLimit, "\(noisy.map(\.body))")

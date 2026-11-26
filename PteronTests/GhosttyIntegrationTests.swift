@@ -419,7 +419,16 @@ final class GhosttyIntegrationTests: XCTestCase {
             view.removeFromSuperview()
             XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore + 1, "still registered: it may come back")
         }
-        wait(0.5)
+        // The render thread lets the pane go on its own turn, the feed queue frees the terminal
+        // on its own, and the thread ends after that: each in its own time on a busy machine.
+        // Waited for, with 10 s as the hang guard.
+        func gone() -> Bool {
+            GhosttyRenderThread.shared.paneCount == panesBefore
+                && GhosttyCore.liveTerminals.load(ordering: .relaxed) == before
+                && (panesBefore > 0 || !GhosttyRenderThread.shared.alive.load(ordering: .relaxed))
+        }
+        let end = Date().addingTimeInterval(10)
+        while !gone(), Date() < end { wait(0.05) }
         XCTAssertEqual(GhosttyRenderThread.shared.paneCount, panesBefore)
         XCTAssertEqual(GhosttyCore.liveTerminals.load(ordering: .relaxed), before)
         if panesBefore == 0 { XCTAssertFalse(GhosttyRenderThread.shared.alive.load(ordering: .relaxed)) }

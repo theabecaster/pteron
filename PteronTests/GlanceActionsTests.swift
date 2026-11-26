@@ -203,20 +203,23 @@ import Testing
     @Test func twoActionsForOneWaitAtTheSameTimeTypeOnce() async {
         // The second arrives while the first still reads the status: it waits for the
         // first's answer and never types.
+        // Both start on the main actor, in this order: the second's first turn comes before
+        // the first's read answers. (`async let` starts each off the main actor, and on a busy
+        // machine the second could reach it only after the first had finished.)
         let channel = FakeChannel()
         let a = actions(channel, clock: TestClock())
-        async let first = a.take(Self.action(.enter))
-        async let second = a.take(Self.action(.enter))
-        let both = await [first, second]
-        #expect(both.sorted { "\($0)" < "\($1)" } == [.answered, .fresh(.sent)])
+        let first = Task { @MainActor in await a.take(Self.action(.enter)) }
+        let second = Task { @MainActor in await a.take(Self.action(.enter)) }
+        #expect(await first.value == .fresh(.sent))
+        #expect(await second.value == .answered)
         #expect(channel.calls == ["status", "write", "close"])
         // When the first could not type, the second failed as it did, and still did not try.
         let down = FakeChannel()
         down.records = nil
         let b = actions(down, clock: TestClock())
-        async let one = b.take(Self.action())
-        async let two = b.take(Self.action())
-        #expect(await [one, two] == [.fresh(.unreachable), .fresh(.unreachable)])
+        let one = Task { @MainActor in await b.take(Self.action()) }
+        let two = Task { @MainActor in await b.take(Self.action()) }
+        #expect(await [one.value, two.value] == [.fresh(.unreachable), .fresh(.unreachable)])
         #expect(down.calls == ["status", "close"])
     }
 
