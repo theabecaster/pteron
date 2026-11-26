@@ -181,23 +181,30 @@ final class ControlReconnectTests: XCTestCase {
     }
 
     func testADropRightAfterWakeRetriesAtOnce() async throws {
-        let server = try Server()
+        // A socket that died while the app was suspended answers no ping. One that answers
+        // would be a live connection, and a pong that beat the drop to the phone (the server
+        // replies to pings by itself, and on a busy machine it can do so before `dropAll`)
+        // rightly sends the drop that follows it through the backoff.
+        let server = try Server(answersPings: false)
         let port = await server.start()
         defer { server.stop() }
         let control = RexControl(address: "http://127.0.0.1:\(port)", client: ClientInfo(name: "test", version: "0", label: "test"),
                                  governor: Self.steady())
         defer { control.disconnect() }
         var connects = 0
+        var waits: [Double] = []
         control.observeConnected { connects += 1; return true }
+        control.onRetryScheduled = { waits.append($0) }
         try await control.connect()
 
         // The socket died while the app was suspended and fails as the app wakes.
         control.wake()
         server.dropAll()
-        let dropped = Date()
+        // 3 s only guards against a hang: the wait the drop was given is what tells "at once"
+        // from "after the 1 s backoff", however long the machine takes to connect again.
         let back = await waitFor({ connects == 2 }, seconds: 3)
         XCTAssertTrue(back)
-        XCTAssertLessThan(Date().timeIntervalSince(dropped), 0.8, "not after the 1 s backoff")
+        XCTAssertEqual(waits.first, 0, "not after the 1 s backoff")
     }
 
     func testWakeDropsAConnectionThatDoesNotAnswer() async throws {
@@ -208,13 +215,14 @@ final class ControlReconnectTests: XCTestCase {
                                  governor: Self.steady())
         defer { control.disconnect() }
         var connects = 0
+        var waits: [Double] = []
         control.observeConnected { connects += 1; return true }
+        control.onRetryScheduled = { waits.append($0) }
         try await control.connect()
 
         control.wake()
-        let woke = Date()
         let back = await waitFor({ connects == 2 }, seconds: RexControl.wakeTimeout + 3)
         XCTAssertTrue(back, "no pong: the connection is made again")
-        XCTAssertLessThan(Date().timeIntervalSince(woke), RexControl.wakeTimeout + 0.8, "at once, not after a backoff")
+        XCTAssertEqual(waits.first, 0, "at once, not after a backoff")
     }
 }
