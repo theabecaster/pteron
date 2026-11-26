@@ -42,6 +42,13 @@ struct PaneBottom: Equatable {
         restReach = room == 0 || Self.softwareKeyboard(room) ? home : 0
     }
 
+    /// The panes' area as measured: its size and the `restReach` it was laid out with. Either
+    /// changing measures the rest canvas again.
+    struct Measure: Equatable {
+        var size: CGSize
+        var restReach: CGFloat
+    }
+
     /// The room is the software keyboard's, not the key bar's alone (a hardware keyboard), whose
     /// room the grid fits above.
     static func softwareKeyboard(_ room: CGFloat) -> Bool { room > TentBoard.tallestKeyBar }

@@ -224,13 +224,17 @@ struct WindowScreen: View {
             .clipped()
             // Narrow: the float sheet, unclipped so its backing runs on under the home indicator.
             .overlay(alignment: .topLeading) { sheet(w, theme, p) }
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
+            // Measured again when the inset changes as well: with the keyboard up the area keeps
+            // to the safe area, so a fold or a turn that changes only the home indicator's inset
+            // leaves its size as it was.
+            .onGeometryChange(for: PaneBottom.Measure.self) { PaneBottom.Measure(size: $0.size, restReach: bottom.restReach) }
+            action: { m in
                 // The room, the inset and the header as this layout had them: read with the size
                 // they made.
-                let rest = PaneLayout.restCanvas(now: s, room: keyboardRoom, home: bottom.restReach,
+                let rest = PaneLayout.restCanvas(now: m.size, room: keyboardRoom, home: m.restReach,
                                                  header: showsHeader ? 0 : headerHeight, limit: restLimit)
                 if rest != canvasSize { canvasSize = rest }
-                if bottom.restReach != restReach { restReach = bottom.restReach }
+                if m.restReach != restReach { restReach = m.restReach }
             }
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { canvasMaxX = $0 }
             // The keyboard's region too: as it goes, SwiftUI keeps it for a layout or two.
