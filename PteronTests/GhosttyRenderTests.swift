@@ -600,28 +600,40 @@ final class GhosttyRenderTests: XCTestCase {
         // Output for the covered pane until its layer has no drawable left.
         var i = 0
         let deadline = Date().addingTimeInterval(4)
+        // Polled often, so the wait below starts close to the miss its backoff counts from.
+        var feeds = 0
         while stuck.drawableMisses == 0 && Date() < deadline {
-            covered!.feed(text: "\r\ncovered \(i)")
-            i += 1
-            try await Task.sleep(nanoseconds: 20_000_000)
+            if feeds % 4 == 0 {
+                covered!.feed(text: "\r\ncovered \(i)")
+                i += 1
+            }
+            feeds += 1
+            try await Task.sleep(nanoseconds: 5_000_000)
         }
         if stuck.drawableMisses > 0 {
-            // It has more to draw, and is not asked to for the time being.
+            // It has more to draw, and is not asked to for the time being. The window ends
+            // inside that time on any machine, so a slow one doesn't run it into the retry,
+            // which waits on the layer again and holds every pane's drawing meanwhile.
             covered!.feed(text: "\r\nmore")
             let before = free.framesDrawn, stuckFrames = stuck.framesDrawn, misses = stuck.drawableMisses
             let start = CACurrentMediaTime()
-            for n in 0..<10 {
+            let window = GhosttyRenderer.drawableBackoffStart - 0.05
+            var last = start, longest = 0.0, n = 0
+            while CACurrentMediaTime() - start < window {
                 shown!.feed(text: "\r\nshown \(n)")
                 covered!.feed(text: "\r\nstill covered \(n)")
-                try await Task.sleep(nanoseconds: 18_000_000)
+                n += 1
+                try await Task.sleep(nanoseconds: 10_000_000)
+                let now = CACurrentMediaTime()
+                longest = max(longest, now - last)
+                last = now
             }
-            let took = CACurrentMediaTime() - start
-            XCTAssertLessThan(took, GhosttyRenderer.drawableBackoffStart + 0.15, "the main thread was not held up either")
+            // A main thread held up shows as a long turn between two of its feeds; a wait on the
+            // dry layer would hold it for as long as the layer takes to give up (about 1 s).
+            XCTAssertLessThan(longest, GhosttyRenderer.drawableBackoffStart, "the main thread was not held up either")
             XCTAssertGreaterThanOrEqual(free.framesDrawn - before, 5, "the visible pane kept drawing")
-            if took < GhosttyRenderer.drawableBackoffStart {
-                XCTAssertEqual(stuck.drawableMisses, misses, "no drawable asked for during the wait")
-                XCTAssertLessThanOrEqual(stuck.framesDrawn - stuckFrames, 1)
-            }
+            XCTAssertEqual(stuck.drawableMisses, misses, "no drawable asked for during the wait")
+            XCTAssertLessThanOrEqual(stuck.framesDrawn - stuckFrames, 1)
         }
         // (A simulator or device whose layer never runs dry has nothing to show here.)
         covered!.removeFromSuperview()
