@@ -442,8 +442,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_system_names_the_process_that_listens_on_a_port() {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = l.local_addr().unwrap().port();
+        // A server of this process on 127.0.0.1. It holds its number on ::1 as well, and
+        // still holds it on both once stopped, so that no other test's listener has it.
+        let l = crate::share::testing::Dev::start().await;
+        let port = l.port();
         // The tool is the system's own; a system without it names nothing.
         let (tool, _) = crate::platform::listener_query(port);
         if crate::tools::program(std::path::Path::new(tool)).is_none() {
@@ -458,11 +460,12 @@ mod tests {
         if found.is_some() {
             // On 127.0.0.1 alone: an IPv4 socket, and nothing on ::1.
             assert_eq!(mine(port).await, Mine { v4: true, v6: false });
-            if let Ok(six) = tokio::net::TcpListener::bind(("::1", 0)).await {
+            // On ::1 alone, at a number held on 127.0.0.1.
+            if let Some((six, _v4)) = crate::share::testing::on_v6_alone() {
                 assert_eq!(mine(six.local_addr().unwrap().port()).await, Mine { v4: false, v6: true });
             }
         }
-        drop(l);
+        let _held = l.stop().await;
         assert_eq!(listener(port).await, None);
         assert_eq!(mine(port).await, Mine::NONE);
     }

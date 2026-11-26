@@ -330,7 +330,17 @@ mod tests {
         // Found and running with an address.
         let program = stand_in(&dir, &status());
         let places = ["/nowhere/tailscale", program.as_str()];
-        let found = status_of(&places).await;
+        // A program just written can't be started while a program that a test running
+        // beside this one starts still has a copy of the open file (Linux says it is
+        // busy), so it is asked until it starts, for at most `STEP`. A start that failed
+        // ran nothing, and noted no run.
+        let limit = std::time::Instant::now() + crate::share::testing::STEP;
+        let found = loop {
+            match status_of(&places).await {
+                None if std::time::Instant::now() < limit => tokio::time::sleep(Duration::from_millis(5)).await,
+                found => break found,
+            }
+        };
         assert_eq!(found.map(|t| t.machine), Some("Desk".into()));
         assert_eq!(runs(), "status --json --peers=false\n", "asked once, for itself alone");
         // Found, and not running or without an address: nothing.

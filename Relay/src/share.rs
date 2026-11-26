@@ -680,12 +680,12 @@ async fn serve(shares: Weak<Shares>, id: u64, listener: TcpListener, target: Arc
 pub mod testing {
     use crate::proxy::{Chunked, Framing};
     use crate::waiting;
-    use std::net::SocketAddr;
+    use std::net::{Ipv6Addr, SocketAddr};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
+    use tokio::net::{TcpListener, TcpSocket, TcpStream};
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
 
@@ -726,11 +726,99 @@ pub mod testing {
         pub addr: SocketAddr,
         pub seen: Arc<Seen>,
         task: JoinHandle<()>,
+        /// The same number on ::1, held (see `Held`).
+        v6: Option<TcpSocket>,
+    }
+
+    /// A dev server's port number while nothing listens on it. On Linux it stays held on
+    /// 127.0.0.1 and ::1: a connection there is refused, and no other listener, a parallel
+    /// test's included, can take the number meanwhile. (Tests run side by side in one
+    /// process, and the system may hand a number that was just let go to the next listener
+    /// that asks for any.)
+    pub struct Held {
+        addr: SocketAddr,
+        /// Bound with port reuse like the dev server's listener, and not listening.
+        v4: Option<TcpSocket>,
+        v6: Option<TcpSocket>,
+    }
+
+    impl Held {
+        pub fn port(&self) -> u16 {
+            self.addr.port()
+        }
+
+        /// A dev server on the same number again.
+        pub fn listen(self) -> Dev {
+            let socket = self.v4.unwrap_or_else(|| {
+                let socket = socket(self.addr);
+                socket.set_reuseaddr(true).unwrap();
+                socket.bind(self.addr).unwrap();
+                socket
+            });
+            Dev { v6: self.v6, ..Dev::on(socket.listen(1024).unwrap()) }
+        }
+    }
+
+    /// Whether a socket that is bound and does not listen holds a port number here. Linux
+    /// refuses a connection to it, as to a number nobody has. macOS drops it unanswered,
+    /// so that a connection there would wait out its whole time limit: there nothing is
+    /// held (and macOS gives out numbers at random, so one let go is seldom taken soon).
+    const HOLDS: bool = cfg!(target_os = "linux");
+
+    fn socket(addr: SocketAddr) -> TcpSocket {
+        if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() }.unwrap()
+    }
+
+    /// A socket bound to `addr` that does not listen (yet). With `reuse` it shares the
+    /// number with a listener that also asked for port reuse, and with no other.
+    fn bound(addr: SocketAddr, reuse: bool) -> std::io::Result<TcpSocket> {
+        let socket = socket(addr);
+        if reuse {
+            socket.set_reuseport(true)?;
+        }
+        socket.bind(addr)?;
+        Ok(socket)
+    }
+
+    /// `port` held on ::1, where a socket holds a number (`HOLDS`). Err when another
+    /// socket has it there.
+    fn hold_v6(port: u16) -> Result<Option<TcpSocket>, ()> {
+        if !HOLDS {
+            return Ok(None);
+        }
+        match bound(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port), false) {
+            Ok(socket) => Ok(Some(socket)),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => Err(()),
+            // The computer has no IPv6 loopback: nothing can listen there.
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// A listener on ::1 alone, at a number that no listener has on 127.0.0.1, and that
+    /// the socket that comes with it holds there (`HOLDS`). None when the computer has no
+    /// IPv6 loopback.
+    pub fn on_v6_alone() -> Option<(TcpListener, Option<TcpSocket>)> {
+        loop {
+            let v4 = bound("127.0.0.1:0".parse().unwrap(), false).unwrap();
+            let port = v4.local_addr().unwrap().port();
+            match bound(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port), false) {
+                Ok(v6) => return Some((v6.listen(1024).unwrap(), HOLDS.then_some(v4))),
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(_) => return None,
+            }
+        }
     }
 
     impl Dev {
+        /// On 127.0.0.1, at a number this dev server also holds on ::1 (`HOLDS`), so that
+        /// whatever a share connects to on that number is this server.
         pub async fn start() -> Dev {
-            Dev::on(TcpListener::bind("127.0.0.1:0").await.unwrap())
+            loop {
+                let v4 = bound("127.0.0.1:0".parse().unwrap(), HOLDS).unwrap();
+                // Another socket has the number on ::1: another number.
+                let Ok(v6) = hold_v6(v4.local_addr().unwrap().port()) else { continue };
+                return Dev { v6, ..Dev::on(v4.listen(1024).unwrap()) };
+            }
         }
 
         pub fn on(listener: TcpListener) -> Dev {
@@ -745,17 +833,36 @@ pub mod testing {
                     connections.spawn(connection(stream, addr.port(), state.clone()));
                 }
             });
-            Dev { addr, seen, task }
+            Dev { addr, seen, task, v6: None }
         }
 
         pub fn port(&self) -> u16 {
             self.addr.port()
         }
 
-        /// Stops the server: its listener and every connection close.
-        pub async fn stop(self) {
+        /// Stops the server: its listener and every connection close, and it returns once
+        /// a connection to the port is refused. On Linux its number stays held (only that
+        /// of a server made by `start`) until the answer is dropped.
+        pub async fn stop(self) -> Held {
+            // Taken before the listener goes, so the number is never free.
+            let v4 = if HOLDS { bound(self.addr, true).ok() } else { None };
             self.task.abort();
             let _ = self.task.await;
+            // The listener is dropped, but it may still listen: a program that a test
+            // running beside this one starts gets a copy of every open socket of the
+            // process, until it has started. A connection to it until then would be reset.
+            let to = match self.addr.ip() {
+                ip if !ip.is_unspecified() => self.addr,
+                ip if ip.is_ipv4() => SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), self.addr.port()),
+                _ => SocketAddr::new(Ipv6Addr::LOCALHOST.into(), self.addr.port()),
+            };
+            soon(async {
+                while TcpStream::connect(to).await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await;
+            Held { addr: self.addr, v4, v6: self.v6 }
         }
     }
 
@@ -962,9 +1069,20 @@ mod tests {
         opened.url.strip_prefix("http://").unwrap().to_string()
     }
 
-    /// Lets every task that can run do so, without the clock moving.
+    /// Lets every task that can run do so, without the clock moving. Only for a check that
+    /// nothing happened: what a test waits for, it waits for with `until_now`.
     async fn settle() {
         for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Waits, without the clock moving, until `what` holds: lets every task that can run
+    /// do so, and looks again, for at most `STEP` of real time.
+    async fn until_now(what: impl Fn() -> bool) {
+        let limit = std::time::Instant::now() + STEP;
+        while !what() {
+            assert!(std::time::Instant::now() < limit, "a step of the test took too long");
             tokio::task::yield_now().await;
         }
     }
@@ -1059,8 +1177,14 @@ mod tests {
         // Free: the dev server listens on ::1 alone, so 127.0.0.1 has the same number free.
         // Where the system lets a share take it (macOS), it does; elsewhere (Linux) the
         // share's port is always one the system picks.
-        if has_v6().await {
-            let dev = Dev::on(tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await.unwrap());
+        if let Some((listener, v4)) = on_v6_alone() {
+            // The number is held on 127.0.0.1, so that no other test's listener has it. On a
+            // Mac it is let go just before the share asks for it; on Linux it stays held, so
+            // that the port the system picks for the share can't be this number by chance.
+            let dev = Dev::on(listener);
+            if crate::platform::SAME_PORT {
+                drop(v4);
+            }
             let opened = all.open(ask(dev.port())).await.unwrap();
             assert_eq!(opened.same_port, crate::platform::SAME_PORT);
             assert_eq!(opened.port == dev.port(), crate::platform::SAME_PORT);
@@ -1082,11 +1206,9 @@ mod tests {
             dev.stop().await;
         }
         // Nothing listens: there is nothing to share, and no listener is left behind.
-        let gone = Dev::start().await;
-        let port = gone.port();
-        gone.stop().await;
+        let gone = Dev::start().await.stop().await;
         let before = all.count();
-        assert_eq!(all.open(ask(port)).await, Err(Refusal::NotListening));
+        assert_eq!(all.open(ask(gone.port())).await, Err(Refusal::NotListening));
         assert_eq!(all.count(), before);
     }
 
@@ -1317,7 +1439,6 @@ mod tests {
         // A phone that asks again from another address gets a new share in the old one's place.
         let moved = all.open(Ask { phone: OTHER_PHONE, ..ask(devs[3].port()) }).await.unwrap();
         assert_eq!(all.count(), 8);
-        settle().await;
         assert!(moved.port != opened[3].port || shut(at(&opened[3])).await);
         // One ends: there is room for the ninth.
         assert_eq!(all.device_gone("ffff0000"), 1);
@@ -1422,16 +1543,14 @@ mod tests {
         settle().await;
         assert_eq!(all.count(), 1);
         tokio::time::advance(Duration::from_secs(2)).await;
-        settle().await;
-        assert_eq!(all.count(), 0, "half an hour without a connection ends it");
+        until_now(|| all.count() == 0).await;
         tokio::time::resume();
         assert!(shut(at(&opened)).await, "its listener is closed");
         // A share nobody ever connected to ends the same way.
         let opened = all.open(ask(dev.port())).await.unwrap();
         tokio::time::pause();
         tokio::time::advance(IDLE + Duration::from_secs(1)).await;
-        settle().await;
-        assert_eq!(all.count(), 0);
+        until_now(|| all.count() == 0).await;
         tokio::time::resume();
         assert!(shut(at(&opened)).await);
     }
@@ -1439,14 +1558,14 @@ mod tests {
     #[tokio::test]
     async fn when_the_dev_server_stops_the_share_answers_with_the_waiting_page() {
         let dev = Dev::start().await;
-        let (addr, port) = (dev.addr, dev.port());
+        let port = dev.port();
         let all = shares();
         let opened = all.open(ask(port)).await.unwrap();
         let name = host(&opened);
         let (head, _) = exchange(at(&opened), &get("/", &name)).await;
         assert!(head.starts_with("HTTP/1.1 200 OK") && line(&head, waiting::HEADER).is_none(), "{head}");
         assert_eq!(all.waiting(), 0);
-        dev.stop().await;
+        let held = dev.stop().await;
         // A page load gets the page.
         let (head, body) = exchange(at(&opened), &get("/some/page?x=1", &name)).await;
         assert!(head.starts_with("HTTP/1.1 503 Service Unavailable\r\n"), "{head}");
@@ -1469,7 +1588,7 @@ mod tests {
         // The dev server is started again on its port: the next request that may look up
         // whose the port is (lookups are spaced) is piped, and the answer no longer
         // carries the header, which is what the page's script looks for.
-        let dev = Dev::on(tokio::net::TcpListener::bind(addr).await.unwrap());
+        let dev = held.listen();
         tokio::time::pause();
         tokio::time::advance(proxy::LOOKUP_EVERY).await;
         tokio::time::resume();
@@ -1487,7 +1606,7 @@ mod tests {
         net.fixed.as_mut().unwrap().machine = "<img src=x onerror=alert(1)>\"'&".into();
         let all = Shares::new(net);
         let opened = all.open(ask(dev.port())).await.unwrap();
-        dev.stop().await;
+        let _held = dev.stop().await;
         let (_, body) = exchange(at(&opened), &get("/", &host(&opened))).await;
         let page = String::from_utf8(body).unwrap();
         assert!(page.contains(" on &lt;img src=x onerror=alert(1)&gt;&quot;&#39;&amp; right now."), "{page}");
@@ -1497,11 +1616,10 @@ mod tests {
     #[tokio::test]
     async fn a_share_whose_port_stays_silent_ends_after_ten_minutes() {
         let dev = Dev::start().await;
-        let addr = dev.addr;
         let all = shares();
         let opened = all.open(ask(dev.port())).await.unwrap();
         let name = host(&opened);
-        dev.stop().await;
+        let held = dev.stop().await;
         let (head, _) = exchange(at(&opened), &get("/", &name)).await;
         assert!(head.starts_with("HTTP/1.1 503 "), "{head}");
         until(|| all.connections() == 0).await;
@@ -1512,7 +1630,7 @@ mod tests {
         settle().await;
         assert_eq!((all.count(), all.waiting()), (1, 1));
         tokio::time::resume();
-        let dev = Dev::on(tokio::net::TcpListener::bind(addr).await.unwrap());
+        let dev = held.listen();
         let (head, _) = exchange(at(&opened), &get("/", &name)).await;
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         until(|| all.connections() == 0).await;
@@ -1523,7 +1641,7 @@ mod tests {
         tokio::time::resume();
         // It stops for good. A page that stays open keeps asking, and each answer is the
         // waiting page; the ten minutes run from the first of them all the same.
-        dev.stop().await;
+        let _held = dev.stop().await;
         let (head, _) = exchange(at(&opened), &get("/", &name)).await;
         assert!(head.starts_with("HTTP/1.1 503 "), "{head}");
         until(|| all.connections() == 0).await;
@@ -1538,8 +1656,7 @@ mod tests {
         settle().await;
         assert_eq!(all.count(), 1);
         tokio::time::advance(Duration::from_secs(4)).await;
-        settle().await;
-        assert_eq!(all.count(), 0, "ten minutes of nothing on the port end the share");
+        until_now(|| all.count() == 0).await;
         tokio::time::resume();
         assert!(shut(at(&opened)).await);
     }
@@ -1582,8 +1699,7 @@ mod tests {
         settle().await;
         assert_eq!(all.count(), 1);
         tokio::time::advance(Duration::from_secs(2)).await;
-        settle().await;
-        assert_eq!(all.count(), 0);
+        until_now(|| all.count() == 0).await;
     }
 
     #[tokio::test]
@@ -1657,8 +1773,7 @@ mod tests {
         settle().await;
         assert_eq!(all.connections(), 5, "a second short of the wait they are all there");
         tokio::time::advance(Duration::from_secs(2)).await;
-        settle().await;
-        assert_eq!(all.connections(), 2, "the three that ask for nothing are closed");
+        until_now(|| all.connections() == 2).await;
         tokio::time::advance(proxy::HEAD_WAIT * 20).await;
         settle().await;
         assert_eq!(all.connections(), 2);
@@ -1680,8 +1795,7 @@ mod tests {
         until(|| all.connections() == 0).await;
         tokio::time::pause();
         tokio::time::advance(IDLE + Duration::from_secs(1)).await;
-        settle().await;
-        assert_eq!(all.count(), 0);
+        until_now(|| all.count() == 0).await;
     }
 
     #[tokio::test]
@@ -1762,8 +1876,10 @@ mod tests {
             let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), opened.port);
             let (head, body) = exchange(v6, &get("/", &format!("[::1]:{}", opened.port))).await;
             assert!(head.starts_with("HTTP/1.1 200 OK") && body.starts_with(b"host=localhost:"), "{head}");
-            // (On IPv4 that number is nobody's, or the dev server's own.)
-            assert!(opened.port == dev.port() || soon(TcpStream::connect(at(&opened))).await.is_err());
+            // Its listener is on ::1 alone, which takes no IPv4 connection. (Whether the number
+            // is free on 127.0.0.1 is not the share's to say: a parallel test may hold it.)
+            let addrs: Vec<SocketAddr> = all.list.lock().unwrap().iter().filter(|s| s.ask.device == "ffff0000").map(|s| s.addr).collect();
+            assert_eq!(addrs, [v6]);
         }
     }
 
@@ -1816,9 +1932,8 @@ mod tests {
         let others = Shares::new(Net::held(Mine::NONE).0);
         assert_eq!(others.open(ask(dev.port())).await, Err(Refusal::NotYourPort));
         // Nothing listens there at all.
-        let gone = Dev::start().await;
-        let silent = gone.port();
-        gone.stop().await;
+        let held = Dev::start().await.stop().await;
+        let silent = held.port();
         assert_eq!(others.open(ask(silent)).await, Err(Refusal::NotListening));
         assert_eq!((all.count(), others.count()), (0, 0));
         // Asked of the system itself: this test's own dev server is this user's.
@@ -1861,7 +1976,7 @@ mod tests {
     #[tokio::test]
     async fn a_port_that_changed_hands_is_never_piped_to_its_new_holder() {
         let dev = Dev::start().await;
-        let (addr, port) = (dev.addr, dev.port());
+        let port = dev.port();
         let (net, holder) = Net::held(Mine::BOTH);
         let all = Shares::new(net);
         let opened = all.open(ask(port)).await.unwrap();
@@ -1870,11 +1985,11 @@ mod tests {
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         // The user's server stops: the next request finds nothing, and the share looks up
         // whose the port is now. Then a process of someone else takes the port.
-        dev.stop().await;
+        let held = dev.stop().await;
         *holder.lock().unwrap() = Mine::NONE;
         let (head, _) = exchange(at(&opened), &get("/", &name)).await;
         assert!(head.starts_with("HTTP/1.1 503 "), "{head}");
-        let theirs = Dev::on(tokio::net::TcpListener::bind(addr).await.unwrap());
+        let theirs = held.listen();
         // It listens, and answers anyone who connects; the share connects to nothing
         // there. Every request gets the waiting page, however many come and however
         // long it goes on.
@@ -1931,9 +2046,11 @@ mod tests {
         let taken = four.seen.connections.load(Ordering::SeqCst);
         assert_eq!(wrong.open(ask(four.port())).await, Err(Refusal::NotListening));
         assert_eq!(four.seen.connections.load(Ordering::SeqCst), taken);
-        if has_v6().await {
+        // (A server on ::1 here is at a number held on 127.0.0.1, so that no other test's
+        // server is there.)
+        if let Some((listener, _v4)) = on_v6_alone() {
             // On ::1 only.
-            let six = Dev::on(tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await.unwrap());
+            let six = Dev::on(listener);
             assert_eq!(all.open(Ask { device: "ffff0000".into(), ..ask(six.port()) }).await, Err(Refusal::NotListening));
             let opened = wrong.open(ask(six.port())).await.unwrap();
             let (head, body) = exchange(at(&opened), &get("/", &host(&opened))).await;
@@ -1941,7 +2058,8 @@ mod tests {
             // Asked of the system itself, each is found where it is. (Another server on
             // ::1: in this test the shares listen on the loopback too, and the system
             // would name the share above as a listener of this user on 127.0.0.1.)
-            let six = Dev::on(tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await.unwrap());
+            let (listener, _v4) = on_v6_alone().unwrap();
+            let six = Dev::on(listener);
             let real = Shares::new(Net { holder: Asked::System, ..Net::testing() });
             let (tool, _) = crate::platform::listener_query(six.port());
             if crate::tools::program(std::path::Path::new(tool)).is_some() {
@@ -2048,8 +2166,7 @@ mod tests {
         until(|| all.connections() == 2).await;
         tokio::time::pause();
         tokio::time::advance(proxy::HEAD_WAIT + Duration::from_secs(1)).await;
-        settle().await;
-        assert_eq!(all.connections(), 0);
+        until_now(|| all.connections() == 0).await;
         tokio::time::resume();
         for ended in [&mut events, &mut socket] {
             let mut rest = vec![];
