@@ -69,7 +69,8 @@ A chip shows up to three pane icons, the tab's title and its status (`TabChip`, 
   mark and a close button. The close button goes where the chips have less than 144 pt; Close
   Tab stays in the pane menu.
 - Any other chip shows its tab's status as its sidebar row does, and cuts its title at 120 pt.
-- A tap shows the tab. The row scrolls to keep the tab on screen in view.
+- A tap shows the tab. The row scrolls to keep the tab on screen in view, also when a swipe on
+  the terminal goes on to another tab ([terminal.md](terminal.md), Gestures).
 - Touch and hold: Rename Tab…, Move Tab Backward, Move Tab Forward, Close Tab, Close Other
   Tabs. They run what the sidebar's tab rows run (`StripRoutes`). A tab with an agent, or with
   two panes or more, asks before it closes; Close Other Tabs always asks.
@@ -115,7 +116,7 @@ tall enough.
 | Thing | Sidebar mode | Tab mode |
 | --- | --- | --- |
 | Sessions | sidebar | session chip → popover; Change Session (⌘K by default) |
-| Tabs | sidebar rows, title menu, title swipe | tab chips; All Tabs |
+| Tabs | sidebar rows, title menu, title swipe, terminal swipe | tab chips; All Tabs; terminal swipe |
 | Computers, status, Reconnect | sidebar headers | popover headings |
 | Computers not added | sidebar | popover; Settings → Computers |
 | Ports | sidebar header's globe | popover heading's globe |

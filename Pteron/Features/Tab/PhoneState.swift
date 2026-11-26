@@ -60,10 +60,42 @@ extension RexCommand {
 enum TabNav {
     /// The tab `by` steps from `windowID` within its session, or nil past either end (no wrap).
     /// Like Safari's tab bar swipe, it never leaves the session: other sessions are other work.
+    /// The terminal's swipe wraps instead (`wrapped`), and stays in the session as well.
     static func neighbor(_ server: ServerConnection, _ sessionID: String, _ windowID: String, by d: Int) -> Selection? {
         let ws = server.views[sessionID]?.windows ?? []
         guard let i = ws.firstIndex(where: { $0.id == windowID }), ws.indices.contains(i + d) else { return nil }
         return Selection(serverID: server.id, sessionID: sessionID, windowID: ws[i + d].id)
+    }
+
+    /// What a sideways swipe on the terminal does next.
+    enum SwipeStep: Equatable {
+        /// Shows this pane of the tab.
+        case pane(String)
+        /// Goes on to the next or previous tab (`wrapped`).
+        case tab
+    }
+
+    /// A swipe `by` steps from `block` among the panes a tab pages through: the next or previous
+    /// pane, and past either end the tab beside it. A tab that doesn't page its panes (one pane,
+    /// splits) passes none, so every swipe goes on to the tab beside it.
+    nonisolated static func step(pages: [String], from block: String, by d: Int) -> SwipeStep {
+        guard let i = pages.firstIndex(of: block), pages.indices.contains(i + d) else { return .tab }
+        return .pane(pages[i + d])
+    }
+
+    /// The tab a terminal swipe goes to from `windowID`: `by` steps in the session's order, round
+    /// from the last tab to the first and back. Nil with no other tab, or when `windowID` isn't in
+    /// `order` any more (it closed). The title bar's swipe and the tab commands don't wrap (`neighbor`).
+    nonisolated static func wrapped(_ order: [String], from windowID: String, by d: Int) -> String? {
+        guard order.count > 1, let i = order.firstIndex(of: windowID) else { return nil }
+        let n = order.count
+        return order[((i + d) % n + n) % n]
+    }
+
+    /// The pane a swipe into a tab that pages its panes shows, so the panes run on from the tab
+    /// left: going forward its first, going back its last.
+    nonisolated static func landing(pages: [String], forward: Bool) -> String? {
+        forward ? pages.first : pages.last
     }
 
     /// The first tab on a server, in sidebar order.

@@ -549,8 +549,15 @@ is not a cold start.
   cursor's color once output has arrived below. No button during a selection or a pinch, or
   while the program takes the drags (mouse tracking, the alternate screen).
 - Horizontal swipe: next or previous pane, only when the drag is at least twice as sideways as up or
-  down and doesn't catch moving scrollback; anything less scrolls. Swipe on the title bar: next or
-  previous tab.
+  down and doesn't catch moving scrollback; anything less scrolls. Past the last pane it goes on to
+  the next tab of the session and before the first to the previous one, round from the last tab to
+  the first and back (`TabNav.step`, `TabNav.wrapped`). A tab with one pane, or with its splits laid
+  out, goes straight to the tab beside. A session with one tab bumps. The panes' area slides in the
+  swipe's direction, as between panes (a crossfade with Reduce Motion), with the pane swipe's
+  haptic. A tab that pages its panes shows its first pane going forward and its last going back,
+  on the phone only: the Mac hears the tab change alone, as for any tab change. A tab with a float
+  on screen keeps to its own panes, with a bump at either end, and so does the float sheet. Swipe
+  on the title bar: next or previous tab, no wrap, as Next and Previous Tab.
 - Two-finger tap: zoom the pane (phone-only zoom, see `PhoneState`).
 - Long press: select a word (haptic, loupe), drag to extend; on release copy (copy-on-select, with a
   shimmer and a confirming haptic), show handles to adjust with, and Copy / Paste / Select All.
@@ -570,7 +577,7 @@ is not a cold start.
   the strip is the pane's, as anywhere else.
 - A tab shows its splits as the Mac lays them out while every pane keeps 40×8 cells
   (`SplitGeometry.legible`); otherwise one pane shows at a time, with dots in the title bar and a
-  sideways swipe on the terminal to move between panes.
+  sideways swipe on the terminal to move between panes, and on to the tab beside at either end.
 - Resizing or toggling the sidebar changes the tab's frame once (on release, or after the slide),
   never per frame, so fit mode claims one new size ([duo-layout.md](duo-layout.md)).
 - A width change (fold, unfold, rotation, resize) claims the new size and nothing else: the

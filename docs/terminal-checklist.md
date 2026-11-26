@@ -296,7 +296,9 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
    moving slightly. Expected: the view scrolls a line per move and the selection grows; nothing
    else scrolls or swipes. Release: the shimmer covers the visible part.
 5. **Gestures (26).** Flick horizontally: the pane swipes (with two panes) and the terminal doesn't
-   scroll. Two-finger tap: the pane zooms. Pinch: the text scales, and on release the font and
+   scroll. In a `zz-` session with three tabs, flick past the last pane: the next tab slides in on
+   its first pane; past the last tab, the first; back from the first, the last tab on its last
+   pane. A one-pane tab and a split tab go straight to the tab beside. Two-finger tap: the pane zooms. Pinch: the text scales, and on release the font and
    grid change without the screen being reloaded (18).
 6. **Keyboard (45, 45a, 45b, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
    stays at the bottom both times, and `stty size` says the same before and after. With the

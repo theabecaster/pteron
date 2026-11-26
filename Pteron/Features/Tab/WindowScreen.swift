@@ -71,6 +71,11 @@ struct WindowScreen: View {
     @State private var renameText = ""
     /// Direction of the last pane switch, for the slide transition.
     @State private var forward = true
+    /// Counts the tab changes a terminal swipe made: each one slides the panes' area out and the
+    /// new tab's in (`panes`). Any other tab change leaves it, and cuts as before.
+    @State private var tabSlides = 0
+    /// The tab change a terminal swipe asked for, until the update after (`crossTab`).
+    @State private var tabStep: TabStep?
     @State private var keyboardUp = false
     /// Whether the keyboard is up now, also while the palette holds `keyboardUp`. Not drawn.
     @State private var liveKeyboard = LiveKeyboard()
@@ -98,6 +103,15 @@ struct WindowScreen: View {
     /// A floating window a tap raised, drawn in front until the server's view puts it there, for
     /// at most `FloatRaise.hold`, and only on the connection that sent the raise.
     @State private var raised: FloatRaise?
+
+    struct TabStep: Equatable {
+        var session: String
+        var from: String
+        var to: String
+        var forward: Bool
+        /// Two swipes to the same tab are two steps.
+        var token = UUID()
+    }
 
     struct FloatRaise: Equatable {
         static let hold: UInt64 = 1_000_000_000
@@ -199,6 +213,8 @@ struct WindowScreen: View {
         .onChange(of: window?.visibleFloating.last?.id) { _, front in
             if let r = raised, r.layer == front { raised = nil }
         }
+        // After the update that gave the slide its direction, so the tab left slides out that way.
+        .onChange(of: tabStep) { _, s in if let s { finishTab(s) } }
         #if DEBUG || BENCH
         // `-perfSwitch <n>` (testing): the probe switches panes as a swipe does.
         .onAppear { PerfProbe.active?.setSwitcher { dir in if let w = window { switchPane(w, by: dir) } } }
@@ -219,12 +235,19 @@ struct WindowScreen: View {
         let bottom = PaneBottom(window: windowBottom, keyboardRoom: keyboardRoom,
                                 padding: PaneLayout.bottomPadding(splits: look.splits, rounded: mode != .narrow),
                                 tolerance: PaneBottom.tolerance(fontSize: prefs.fontSize), reaches: reachesBottom)
-        return canvas(w, theme, p, bottom: bottom)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // The floating windows sit above the tiled panes, a sibling of them, so one coming or
-            // going never rebuilds the panes below. Empty in a tab without one. They are chrome:
-            // they keep out of the home indicator.
-            .overlay(alignment: .topLeading) { floatWindows(w, theme, p).padding(.bottom, bottom.reach) }
+        return ZStack {
+            canvas(w, theme, p, bottom: bottom)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The floating windows sit above the tiled panes, a sibling of them, so one coming or
+                // going never rebuilds the panes below. Empty in a tab without one. They are chrome:
+                // they keep out of the home indicator.
+                .overlay(alignment: .topLeading) { floatWindows(w, theme, p).padding(.bottom, bottom.reach) }
+                // A terminal swipe into another tab: the tab left slides out as the new one slides
+                // in, in the swipe's direction, as a pane swipe does. Nothing else changes it.
+                .id(tabSlides)
+                .transition(reduceMotion ? .opacity : slide)
+        }
+            .animation(reduceMotion ? .easeOut(duration: 0.2) : .snappy(duration: 0.24), value: tabSlides)
             .clipped()
             // Narrow: the float sheet, unclipped so its backing runs on under the home indicator.
             // Its floats are chrome as well: their panes keep out of it, as before.
@@ -488,6 +511,52 @@ struct WindowScreen: View {
             guard await server.closeWindow(sid, wid) else { return }
             model.closedTab(Selection(serverID: server.id, sessionID: sid, windowID: wid))
         }
+    }
+
+    /// A sideways swipe on tiled pane `b` of a tab without a float on screen: the next or previous
+    /// pane while the tab pages its panes (`paged`), and past either end, or in a tab that doesn't
+    /// page (one pane, splits), the next or previous tab of the session, round from the last to
+    /// the first (`TabNav.step`). Read from the model, not from this screen's values: a pane
+    /// still sliding out belongs to a tab no longer on screen, and its swipe does nothing.
+    private func swipe(from b: String, by dir: Int, paged: Bool) {
+        guard model.selection?.serverID == server.id, let sel = model.selection,
+              let w = server.views[sel.sessionID]?.window(sel.windowID), w.block(b) != nil,
+              w.visibleFloating.isEmpty else { return }
+        switch TabNav.step(pages: paged ? w.pageBlockIDs : [], from: b, by: dir) {
+        case .pane(let id): pick(w, id, forward: dir > 0)
+        case .tab: crossTab(from: w, in: sel.sessionID, by: dir)
+        }
+    }
+
+    /// The tab a swipe goes on to, round from the last to the first, with the same haptic as a
+    /// pane swipe; a bump in a session with one tab. The slide takes the swipe's direction first,
+    /// and the tab changes in the update after (`finishTab`), so the tab left slides out that way.
+    private func crossTab(from w: WindowInfo, in sid: String, by dir: Int) {
+        let order = server.views[sid]?.windows.map(\.id) ?? []
+        guard let next = TabNav.wrapped(order, from: w.id, by: dir) else { Haptic.bump(); return }
+        Haptic.selection()
+        forward = dir > 0
+        tabStep = TabStep(session: sid, from: w.id, to: next, forward: dir > 0)
+    }
+
+    /// Opens the tab a swipe asked for, if nothing moved on meanwhile. A tab that pages its panes
+    /// shows its first pane going forward and its last going back, on the phone only: the Mac
+    /// hears the tab change alone, as for any tab change, and its focus stays where it was.
+    private func finishTab(_ s: TabStep) {
+        tabStep = nil
+        guard model.selection == Selection(serverID: server.id, sessionID: s.session, windowID: s.from),
+              let tw = server.views[s.session]?.window(s.to) else { return }
+        if pagesPanes(tw), let land = TabNav.landing(pages: tw.pageBlockIDs, forward: s.forward), land != activeBlock(tw) {
+            model.focusedPane[tw.id] = land
+        }
+        tabSlides += 1
+        onOpen(Selection(serverID: server.id, sessionID: s.session, windowID: s.to))
+    }
+
+    /// Whether tab `w` shows one pane at a time with a swipe between them, as this screen would
+    /// show it: no float on screen, and splits that don't fit or a tab zoomed on the phone.
+    private func pagesPanes(_ w: WindowInfo) -> Bool {
+        w.visibleFloating.isEmpty && w.pageBlockIDs.count > 1 && !(splitsFit(w) && !PhoneState.shared.zoomed.contains(w.id))
     }
 
     /// Previous / next tab in this session. No wrap.
@@ -1188,6 +1257,14 @@ struct WindowScreen: View {
         Task { await server.focus(sessionID, block: b) }
     }
 
+    /// A sideways swipe on the one pane shown. In a tab without a float on screen it walks the
+    /// panes and goes on to the tab beside past either end (`swipe`); under floats it walks the
+    /// panes alone, with a bump at either end, or does nothing where the tab doesn't page.
+    private func swipeAction(_ w: WindowInfo, _ b: String, _ p: TabPresentation?, pages: Bool) -> ((Int) -> Void)? {
+        if p == nil { return { dir in swipe(from: b, by: dir, paged: true) } }
+        return pages ? { dir in switchPane(w, by: dir, from: b) } : nil
+    }
+
     @ViewBuilder
     private func canvas(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?, bottom: PaneBottom) -> some View {
         let look = canvasLook(w, p)
@@ -1198,7 +1275,7 @@ struct WindowScreen: View {
                 ZStack {
                     PaneView(server: server, sessionID: sessionID, blockID: b, active: look.active,
                              onFocus: look.active ? {} : { focusTiled(w, b, p) },
-                             onSwipe: look.pages ? { dir in switchPane(w, by: dir, from: b) } : nil,
+                             onSwipe: swipeAction(w, b, p, pages: look.pages),
                              restSize: PaneLayout.single(canvas: canvasSize, rounded: rounded))
                         .id(b)
                         .padding(PaneLayout.clearance(radius: radius))
@@ -1225,6 +1302,8 @@ struct WindowScreen: View {
                         let frame = PaneLayout.split(r, in: area, reach: bottom.reach)
                         PaneView(server: server, sessionID: sessionID, blockID: leaf.id, active: leaf.id == active,
                                  onFocus: { focusTiled(w, leaf.id, p) },
+                                 // Splits as the Mac lays them out: a swipe goes to the tab beside.
+                                 onSwipe: p == nil ? { dir in swipe(from: leaf.id, by: dir, paged: false) } : nil,
                                  restSize: PaneLayout.splitRest(r, canvas: canvasSize, reach: restReach))
                         .id(leaf.id)
                         .padding(PaneLayout.clearance(radius: PaneLayout.splitRadius))
