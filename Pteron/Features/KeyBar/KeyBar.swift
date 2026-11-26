@@ -246,14 +246,25 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
 
     private var pinnedStack = UIStackView()
 
+    /// The bar's height changed while it is on screen (compose opened or closed): the keyboard
+    /// reads it again only when its responder reloads its input views (`TerminalHost`).
+    var onHeightChange: (() -> Void)?
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: Self.height(compact: compact, composeOpen: composeOpen))
+    }
+
     /// Thinner bar and keys under a short window; taller by the card while compose is open.
     private func applySize() {
-        barHeightConstraint?.constant = Self.height(compact: compact, composeOpen: composeOpen)
+        let height = Self.height(compact: compact, composeOpen: composeOpen)
+        let changed = barHeightConstraint?.constant != height
+        barHeightConstraint?.constant = height
         compose.compact = compact
         for cap in leftCaps + caps + pinnedCaps + rightCaps { cap.heightConstraint?.constant = keyHeight }
         dividerWidth?.constant = 1 / max(traitCollection.displayScale, 1)
         invalidateIntrinsicContentSize()
         setNeedsLayout()
+        if changed, window != nil { onHeightChange?() }
     }
 
     required init?(coder: NSCoder) { fatalError() }

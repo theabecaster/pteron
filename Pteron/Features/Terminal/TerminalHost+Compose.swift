@@ -17,6 +17,15 @@ extension TerminalHost {
         card.takesModifiedKey = { [weak self] text in self?.keyBar.typedInCompose(text) ?? false }
         card.attachMenu = { [weak self] in self?.files?.menu() ?? UIMenu() }
         keyBar.onCompose = { [weak self] in self?.toggleCompose() }
+        // The keyboard takes the bar's new height (compose's card) from a reload of its responder.
+        keyBar.onHeightChange = { [weak self] in
+            guard let self else { return }
+            if self.composeHoldsKeyboard {
+                self.keyBar.compose.field.reloadInputViews()
+            } else if self.term.isFirstResponder, self.term.inputAccessoryView === self.keyBar {
+                self.term.reloadInputViews()
+            }
+        }
         keyBar.onPalette = { [weak self] in self?.onCommand?(.goTo(.commands)) }
         let nc = NotificationCenter.default
         for name in [UITextView.textDidBeginEditingNotification, UITextView.textDidEndEditingNotification] {

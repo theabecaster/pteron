@@ -56,7 +56,8 @@ final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         grab.onActivate = { [weak self] in self?.onClose?() }
         addSubview(grab)
         field.backgroundColor = .clear
-        field.font = RexFont.ui(16)
+        // The system's text font, as any iOS text field: a message is prose, not a terminal line.
+        field.font = UIFont.systemFont(ofSize: 17)
         field.textContainerInset = UIEdgeInsets(top: 8, left: 2, bottom: 8, right: 2)
         field.smartQuotesType = .no
         field.smartDashesType = .no
