@@ -4517,18 +4517,23 @@ mod tests {
     // Loopback stands in for the tailnet: the computer is desk.example.ts.net at 127.0.0.1,
     // and a phone may have any loopback address.
 
-    use crate::share::testing::{exchange, get, soon, Dev};
+    use crate::share::testing::{exchange, get, Dev};
 
     async fn code(r: &Relay, s: &Server, action: &str, who: &Requester, args: &Value) -> String {
         r.act(s, action, args, who).await.0.unwrap_err()["code"].as_str().unwrap().to_string()
     }
 
-    /// Lets the tasks of shares that were closed end.
+    /// Whether the share's port stops taking connections. A closed share's task drops its
+    /// listener when the runtime next runs it, which on a busy machine can be a while, so
+    /// this asks again until the port refuses or `STEP` has passed.
     async fn closed(to: std::net::SocketAddr) -> bool {
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
-        soon(tokio::net::TcpStream::connect(to)).await.is_err()
+        tokio::time::timeout(crate::share::testing::STEP, async {
+            while tokio::net::TcpStream::connect(to).await.is_ok() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
     }
 
     #[tokio::test]
