@@ -53,11 +53,14 @@ jobs:
           xcodegen generate --quiet
       # A simulator made for this run, on the iOS 27.2 runtime, by its id: the framework's
       # simulator slice is arm64 only, so a generic destination would fail. One test process
-      # (the scheme marks nothing parallelizable), as in the gate.
+      # (the scheme marks nothing parallelizable), as in the gate. The plain runtime only, as
+      # in the gate: the image also has a 27.2 runtime for one model (…iOS-27-2-iPhone19-4,
+      # the iPhone Duo), listed first on some runs, and the suite is not written for that
+      # model's screen.
       - name: App tests
         run: |
           RUNTIMES=$(xcrun simctl list runtimes -j)
-          RUNTIME=$(echo "$RUNTIMES" | jq -r '[.runtimes[] | select(.platform == "iOS" and (.version == "27.2" or (.version | startswith("27.2."))) and .isAvailable)] | first | .identifier // empty')
+          RUNTIME=$(echo "$RUNTIMES" | jq -r '[.runtimes[] | select(.platform == "iOS" and (.version == "27.2" or (.version | startswith("27.2."))) and .isAvailable and (.identifier | test("SimRuntime\\.iOS-[0-9]+(-[0-9]+)*$")))] | first | .identifier // empty')
           [ -n "$RUNTIME" ] || { echo "no iOS 27.2 simulator runtime on this image"; exit 1; }
           DEVICE=$(echo "$RUNTIMES" | jq -r --arg r "$RUNTIME" '[.runtimes[] | select(.identifier == $r) | .supportedDeviceTypes[] | select(.productFamily == "iPhone")] | (map(select(.name == "iPhone 17")) + .) | first | .identifier // empty')
           [ -n "$DEVICE" ] || { echo "no iPhone device type for $RUNTIME"; exit 1; }
