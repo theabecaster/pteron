@@ -35,6 +35,11 @@ final class FakeRexServer: @unchecked Sendable {
     private var helloBytes: [Int] = []
     private var received: [Request] = []
     private var seq = 0
+    /// Every message read from a client, the undecodable ones too; whether a read is waiting;
+    /// the error that ended the reads of a connection.
+    private var frames = 0
+    private var reading = 0
+    private var readError: String?
     private var clients = 0
 
     /// `revision` is the welcome's `api_revision`; nil leaves the field out, as servers from
@@ -141,6 +146,11 @@ final class FakeRexServer: @unchecked Sendable {
     var lastHello: JSONObject? { queue.sync { hellos.last } }
     var lastHelloBytes: Int { queue.sync { helloBytes.last ?? 0 } }
     var requests: [Request] { queue.sync { received } }
+    /// The `seq` of the last event sent on the current connections.
+    var eventSeq: Int { queue.sync { seq } }
+    var connectionCount: Int { queue.sync { connections.count } }
+    /// What the reads saw, for a failure's message.
+    var reads: String { queue.sync { "frames \(frames) waiting \(reading) error \(readError ?? "-")" } }
     func count(_ method: String) -> Int { queue.sync { received.filter { $0.method == method }.count } }
     func calls(_ method: String) -> [JSONObject] { queue.sync { received.filter { $0.method == method }.map(\.payload) } }
     func forget() { queue.sync { received = [] } }
@@ -148,8 +158,15 @@ final class FakeRexServer: @unchecked Sendable {
     // MARK: Socket
 
     private func receive(_ c: NWConnection) {
+        reading += 1
         c.receiveMessage { [weak self] data, _, _, error in
-            guard let self, error == nil, let data else { return }
+            guard let self else { return }
+            self.reading -= 1
+            self.frames += 1
+            guard error == nil, let data else {
+                self.readError = error.map { "\($0)" } ?? "no data"
+                return
+            }
             guard let m = JSONCodec.decode(data) else { self.receive(c); return }
             switch m.str("type") {
             case "hello":

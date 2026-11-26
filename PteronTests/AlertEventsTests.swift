@@ -28,6 +28,7 @@ final class AlertEventsTests: XCTestCase {
         let rig = try await Rig(revision: revision, creators: creators ?? .result(Self.creators(events: Self.both)))
         rig.fake.reply("\(Self.terminal).program_status", ["records": [JSONObject]()])
         await rig.connect()
+        XCTAssertTrue(rig.server.synced && rig.server.creatorsTask == nil, "connected and synced: \(situation(rig))")
         return rig
     }
 
@@ -44,6 +45,16 @@ final class AlertEventsTests: XCTestCase {
     }
 
     private func bar(_ rig: Rig, _ block: String = "block:1a") -> TermProgress? { rig.server.progress.value(block) }
+
+    /// Where the connection and the fake are, for a failure's message.
+    private func situation(_ rig: Rig) -> String {
+        let s = rig.server
+        return "state \(s.control.state) serial \(s.connectionSerial) synced \(s.synced) syncing \(s.syncing) "
+            + "error \(s.lastError ?? "-") gated \(s.gatesSync) reads \(rig.fake.reads) "
+            + "seq app \(s.lastSeq) fake \(rig.fake.eventSeq) sockets \(rig.fake.connectionCount) hellos \(rig.fake.helloCount) "
+            + "bar \(String(describing: bar(rig))) dropped \(s.droppedBlocks) task \(s.droppedBlocksTask != nil) "
+            + "asked \(rig.fake.requests.map(\.method))"
+    }
 
     // MARK: Progress
 
@@ -72,12 +83,12 @@ final class AlertEventsTests: XCTestCase {
         progress(rig, "set", 7)
         // 30 s only guards a hang: the pace is checked against the time it took.
         let drained = await eventually(seconds: 30) { self.bar(rig)?.percent == 7 }
-        XCTAssertTrue(drained)
+        XCTAssertTrue(drained, situation(rig))
         let elapsed = Date().timeIntervalSince(start)
         let n = RenderCount.value(.progressWrites) - writes
         XCTAssertGreaterThan(n, 0)
         XCTAssertLessThanOrEqual(Double(n), 3 * elapsed.rounded(.up),
-                                 "\(n) writes in \(elapsed) s: at most 3 a second for one block")
+                                 "\(n) writes in \(elapsed) s: at most 3 a second for one block; \(situation(rig))")
         print("FLOOD writes=\(n) elapsed=\(elapsed)")
         XCTAssertTrue(rig.server.pendingMeta.isEmpty, "progress never goes through the meta flush")
         XCTAssertNil(rig.server.flushTask)
@@ -207,7 +218,8 @@ final class AlertEventsTests: XCTestCase {
         let rig = try await shells()
         defer { rig.stop() }
         progress(rig, "set", 70)
-        _ = await eventually { self.bar(rig) != nil }
+        let shown = await eventually { self.bar(rig) != nil }
+        XCTAssertTrue(shown, "the bar shows before its report is dropped: \(situation(rig))")
         rig.fake.forget()
         rig.fake.send(event: "event_dropped", ["event_type": "block_event", "session_id": "session:1",
                                                "block_id": "block:1a", "creator_name": Self.terminal,
@@ -217,7 +229,7 @@ final class AlertEventsTests: XCTestCase {
         // The block's metadata is read once: waited for, then as long again for a second read
         // or a full sync that must not come.
         let read = await eventually { rig.fake.count("\(Self.terminal).program_status") >= 1 }
-        XCTAssertTrue(read)
+        XCTAssertTrue(read, situation(rig))
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(rig.fake.count("session.bootstrap"), 0, "never a full sync")
         XCTAssertEqual(rig.fake.count("\(Self.terminal).program_status"), 1, "the block's metadata, once")
