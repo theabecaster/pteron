@@ -92,6 +92,10 @@ final class TapClickHostTests: XCTestCase {
         let stream = link.stream(control: control, sessionID: "s", blockID: "b", echoGate: nil)
         let host = TerminalHost(stream: stream, sizing: .mirror, fontSize: 12, theme: ThemeStore.fallback)
         host.hardwareKeyboard = { [unowned self] in self.hardware }
+        // The keyboard that waits for a click comes only if the answer took at most 2 s, and a
+        // busy machine can take longer: here it waits as long as the test does. The limit has
+        // its own test, with a limit of its own.
+        host.clickKeyboardLimit = 60
         host.frame = CGRect(x: 0, y: 0, width: 10, height: 10)
         window.rootViewController?.view.addSubview(host)
         host.appActiveChanged(true)
