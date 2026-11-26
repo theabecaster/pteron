@@ -68,7 +68,16 @@ jobs:
           echo "simulator $SIM: $DEVICE on $RUNTIME"
           trap 'xcrun simctl delete "$SIM" >/dev/null 2>&1' EXIT
           xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
-            -derivedDataPath build/dd -quiet
+            -derivedDataPath build/dd -quiet -resultBundlePath build/tests.xcresult
+      # -quiet names a failing test but not what failed in it: each failure's message, from the
+      # result bundle.
+      - name: What failed
+        if: failure()
+        run: |
+          [ -d build/tests.xcresult ] || exit 0
+          xcrun xcresulttool get test-results tests --path build/tests.xcresult | jq -r '.. | objects
+            | select(.nodeType? == "Test Case" and .result == "Failed") | .name as $n
+            | (.children // [])[] | select(.nodeType == "Failure Message") | "\($n): \(.name)"'
 
   helper:
     runs-on: ubuntu-latest
