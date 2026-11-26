@@ -318,8 +318,10 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   terminal's color runs on behind the key bar and the keyboard's corners. The canvas with the
   keyboard down is the one to the edge either way (`PaneLayout.restCanvas`), so showing or hiding
   the keyboard resizes nothing more than before. Splits divide the safe area as before; only the
-  panes on its bottom edge run on. What is chrome stays clear of the home indicator: floating
-  windows keep inside the safe area, and the jump-to-bottom button, the floating find bar and the
+  panes on its bottom edge run on. Whether a tab shows splits or pages, book mode and where floats
+  go are decided from the canvas inside the safe area, as before (`PaneBottom.inside`), so no tab
+  shows differently. What is chrome stays clear of the home indicator: floating windows and the
+  narrow float sheet keep inside the safe area, and the jump-to-bottom button, the floating find bar and the
   selection handles' knobs keep above the pane's bottom safe area. Without a home indicator
   (iPhone SE) nothing changes.
 - **Title bar** (`TitleLine`). One line, like the Mac's title bar: the tab's title (semibold),

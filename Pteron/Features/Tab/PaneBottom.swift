@@ -42,6 +42,16 @@ struct PaneBottom: Equatable {
         restReach = room == 0 || Self.softwareKeyboard(room) ? home : 0
     }
 
+    /// The canvas with the keyboard down kept inside the bottom safe area: `canvas` less the
+    /// `restReach` it runs past it. What main's layout measured, and what every legibility
+    /// decision reads (splits or pages, book mode, the floats and their sheet), so no tab shows
+    /// differently because the drawn panes now run on to the edge. Floating windows' rest sizes
+    /// come from it too. Nothing measured yet stays unmeasured.
+    static func inside(_ canvas: CGSize, restReach: CGFloat) -> CGSize {
+        guard canvas.width > 0, canvas.height > 0 else { return canvas }
+        return CGSize(width: canvas.width, height: max(canvas.height - max(restReach, 0), 0))
+    }
+
     /// The panes' area as measured: its size and the `restReach` it was laid out with. Either
     /// changing measures the rest canvas again.
     struct Measure: Equatable {

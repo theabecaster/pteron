@@ -223,7 +223,8 @@ struct WindowScreen: View {
             .overlay(alignment: .topLeading) { floatWindows(w, theme, p).padding(.bottom, bottom.reach) }
             .clipped()
             // Narrow: the float sheet, unclipped so its backing runs on under the home indicator.
-            .overlay(alignment: .topLeading) { sheet(w, theme, p) }
+            // Its floats are chrome as well: their panes keep out of it, as before.
+            .overlay(alignment: .topLeading) { sheet(w, theme, p).padding(.bottom, bottom.reach) }
             // Measured again when the inset changes as well: with the keyboard up the area keeps
             // to the safe area, so a fold or a turn that changes only the home indicator's inset
             // leaves its size as it was.
@@ -315,8 +316,12 @@ struct WindowScreen: View {
     private func splitsFit(_ w: WindowInfo) -> Bool {
         guard let layout = w.layout, w.pageBlockIDs.count > 1 else { return false }
         guard w.zoomedBlockID == nil else { return false }
-        return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: canvasSize, fontSize: prefs.fontSize)
+        return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: legibleCanvas, fontSize: prefs.fontSize)
     }
+
+    /// The keyboard-down canvas inside the bottom safe area, as main measured it: what the
+    /// legibility decisions read (`PaneBottom.inside`). Only the drawn panes run on to the edge.
+    private var legibleCanvas: CGSize { PaneBottom.inside(canvasSize, restReach: restReach) }
 
     private func useSplits(_ w: WindowInfo) -> Bool { splitsFit(w) && !zoomedHere }
 
@@ -325,7 +330,7 @@ struct WindowScreen: View {
     private func presentation(_ w: WindowInfo) -> TabPresentation? {
         guard !w.visibleFloating.isEmpty else { return nil }
         return TabPresentation.decide(.init(window: w, narrow: mode == .narrow, zoomed: w.zoomedBlockID != nil || zoomedHere,
-                                            active: activeBlock(w), canvas: canvasSize, fontSize: prefs.fontSize,
+                                            active: activeBlock(w), canvas: legibleCanvas, fontSize: prefs.fontSize,
                                             crease: floatCrease, front: frontOverride,
                                             tiledShown: PhoneState.shared.sheets[windowID]?.tiled))
     }
@@ -357,7 +362,7 @@ struct WindowScreen: View {
         guard let layout = w.layout else { return nil }
         // Collapsed, the panes' area runs from the root's leading edge to where it ends now.
         return BookSplit.fitsCollapsed(leaves: layout.leaves.map(\.rect), splits: layout.splits,
-                                       canvas: CGSize(width: canvasMaxX - rootOrigin.x, height: canvasSize.height),
+                                       canvas: CGSize(width: canvasMaxX - rootOrigin.x, height: legibleCanvas.height),
                                        crease: CreaseSettle.live(division), fontSize: prefs.fontSize)
     }
 
@@ -817,7 +822,7 @@ struct WindowScreen: View {
 
     private func floatSheet(_ w: WindowInfo, _ s: FloatSheet.Layout, _ shown: FloatSheet.Shown, _ theme: TermTheme) -> some View {
         FloatSheetView(server: server, sessionID: sessionID, window: w, layout: s, shown: shown, active: activeBlock(w),
-                       theme: theme, canvas: canvasSize, keyboardUp: keyboardUp,
+                       theme: theme, canvas: legibleCanvas, keyboardUp: keyboardUp,
                        mediumAllowed: vSize != .compact && s.hasTiled,
                        stored: PhoneState.shared.sheets[windowID]?.detent ?? .large, slide: slide,
                        actions: FloatSheetView.Actions(
@@ -1203,7 +1208,7 @@ struct WindowScreen: View {
                 // Partly folded with a split across the crease: that divider is drawn on the crease.
                 let book = BookSplit.decide(leaves: layout.leaves.map(\.rect), splits: layout.splits, areaWidth: size.width,
                                             areaMinX: geo.frame(in: .global).minX - rootOrigin.x,
-                                            crease: bookCrease, canvas: canvasSize, fontSize: prefs.fontSize)
+                                            crease: bookCrease, canvas: legibleCanvas, fontSize: prefs.fontSize)
                 // The splits divide the safe area as before; only panes on its bottom edge run on
                 // under the home indicator.
                 let area = CGSize(width: size.width, height: max(size.height - bottom.reach, 0))
@@ -1244,7 +1249,7 @@ struct WindowScreen: View {
     private func floatWindows(_ w: WindowInfo, _ theme: TermTheme, _ p: TabPresentation?) -> some View {
         if case .floating(_, let floats)? = p {
             // Their area keeps out of the home indicator, with the keyboard down as well.
-            let rest = CGSize(width: canvasSize.width, height: max(canvasSize.height - restReach, 0))
+            let rest = legibleCanvas
             let active = activeBlock(w)
             let radius = PaneLayout.splitRadius
             GeometryReader { geo in

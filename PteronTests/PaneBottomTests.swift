@@ -118,6 +118,27 @@ struct PaneBottomTests {
         #expect(PaneLayout.split(left, in: area, reach: indicator).height == PaneLayout.split(left, in: area).height + indicator)
     }
 
+    @Test func legibilityReadsTheCanvasInsideTheSafeArea() {
+        // A two-row split just short of legible inside the safe area: 8 rows of 13.75 pt each
+        // need 220 pt of canvas, and it has 214. The 34 pt under the indicator would make it
+        // legible, so a tab would flip from pages to splits; the canvas the decision reads is
+        // the one inside the safe area, as before.
+        let rows = [CGRect(x: 0, y: 0, width: 1, height: 0.5), CGRect(x: 0, y: 0.5, width: 1, height: 0.5)]
+        let before = CGSize(width: 402, height: 214)
+        let measured = CGSize(width: 402, height: 214 + indicator)
+        #expect(!SplitGeometry.legible(rows, canvas: before, fontSize: 11))
+        #expect(SplitGeometry.legible(rows, canvas: measured, fontSize: 11), "the edge alone would flip it")
+        let read = PaneBottom.inside(measured, restReach: PaneBottom(home: indicator, keyboardRoom: 0).restReach)
+        #expect(read == before)
+        #expect(SplitGeometry.legible(rows, canvas: read, fontSize: 11) == SplitGeometry.legible(rows, canvas: before, fontSize: 11))
+        // With the keyboard up the rest canvas runs past the safe area just the same.
+        #expect(PaneBottom.inside(measured, restReach: PaneBottom(home: indicator, keyboardRoom: room).restReach) == before)
+        // The key bar alone and devices without an indicator: nothing to take off.
+        #expect(PaneBottom.inside(before, restReach: PaneBottom(home: indicator, keyboardRoom: 42).restReach) == before)
+        #expect(PaneBottom.inside(before, restReach: PaneBottom(home: 0, keyboardRoom: 0).restReach) == before)
+        #expect(PaneBottom.inside(.zero, restReach: indicator) == .zero)
+    }
+
     @Test func aControlKeepsClearOfThePanesBottomSafeArea() {
         let pane = CGRect(x: 0, y: 0, width: 382, height: 600)
         #expect(PaneBottom.clear(pane, safeBottom: indicator) == CGRect(x: 0, y: 0, width: 382, height: 566))
