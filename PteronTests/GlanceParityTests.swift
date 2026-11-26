@@ -256,7 +256,7 @@ import Testing
         let flag = Flag()
         let before = withObservationTracking { GlanceWatcher.key(m, m.prefs) } onChange: { flag.fired = true }
 
-        var worst: TimeInterval = 0
+        var costs: [TimeInterval] = []
         for tick in 0..<50 {
             for s in m.servers {
                 for key in s.agentKeys {
@@ -276,14 +276,17 @@ import Testing
             let rows = GlanceSource.machines(m.servers, since: [:])
             let snapshot = GlanceSummary.snapshot(machines: rows, palette: GlanceSource.palette(m.prefs), previous: nil, seq: tick, now: Date())
             let data = try snapshot.encoded()
-            worst = max(worst, ProcessInfo.processInfo.systemUptime - start)
+            costs.append(ProcessInfo.processInfo.systemUptime - start)
             #expect(data.count < 32_000)
             #expect(snapshot.machines.allSatisfy { $0.waiting.count == 5 && $0.waiting[0].msg == "Question \(tick)?" })
         }
         #expect(!flag.fired, "the watcher's body would have run again for a title, a progress or a message")
         #expect(GlanceWatcher.key(m, m.prefs) == before)
-        // An unoptimized build in a simulator; the budget is a frame at 60 Hz.
-        #expect(worst < 0.016, "building a snapshot took \(worst * 1000) ms")
+        // An unoptimized build in a simulator; the budget is a frame at 60 Hz. The median, not the
+        // worst: a shared machine can stop the test for longer than a frame at any moment, and a
+        // snapshot that costs too much costs it every time.
+        let median = costs.sorted()[costs.count / 2]
+        #expect(median < 0.016, "building a snapshot took \(median * 1000) ms (median of \(costs.count))")
 
         // And it does run again for what the widgets show: an agent that starts to wait.
         let s = m.servers[0]
