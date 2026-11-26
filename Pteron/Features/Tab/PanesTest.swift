@@ -17,6 +17,8 @@ import RexKit
 /// - `sheet:<verb>`, a narrow window's float sheet: `large`, `medium`, `hide` (back to the tab),
 ///   `next`, `prev` (a sideways swipe on the grabber), `show<n>` (the n-th float from the front in
 ///   the floats' menu).
+/// - `swipe:+1`, `swipe:-1`: a sideways swipe on the terminal's pane shown, next or previous:
+///   the pane beside, or past either end the tab beside (`WindowScreen.swipe`).
 /// - `wait:<seconds>`: pause.
 ///
 /// After each step it logs `PANES_STATE` with the session's tabs and each tab's panes and split
@@ -40,6 +42,8 @@ enum PanesTest {
         var restore: () -> Void = {}
         /// The narrow float sheet: `large`, `medium`, `hide`, `next`, `prev`, `show<n>`.
         var sheet: (String) -> Void = { _ in }
+        /// A sideways swipe on the pane shown: +1 to the left (next), -1 to the right (previous).
+        var swipe: (Int) -> Void = { _ in }
         var state: () -> String
     }
 
@@ -70,6 +74,7 @@ enum PanesTest {
                 case "minimizeAll": a.minimizeAll()
                 case "restore": a.restore()
                 case "sheet": a.sheet(arg)
+                case "swipe": a.swipe(n)
                 case "wait": try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
                 default: NSLog("PANES_TEST unknown step %@", step)
                 }

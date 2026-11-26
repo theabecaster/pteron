@@ -621,9 +621,17 @@ struct WindowScreen: View {
                 if let l = window?.minimizedFloating.first { restoreFloat(l.id) }
             },
             sheet: { verb in sheetTest(verb) },
+            // The tab on screen now, which may be another than this screen's first.
+            swipe: { [model] d in
+                guard let sel = model.selection, let w = server.views[sel.sessionID]?.window(sel.windowID),
+                      let b = activeBlock(w) else { return }
+                swipe(from: b, by: d, paged: pagesPanes(w))
+            },
             state: { [model] in
-                PanesTest.describe(server.views[sid], current: model.selection?.windowID ?? "")
-                    + " shown=" + (model.selection.flatMap { model.focusedPane[$0.windowID] }.map { String($0.suffix(4)) } ?? "-")
+                let shownTab = model.selection.flatMap { server.views[$0.sessionID]?.window($0.windowID) }
+                return PanesTest.describe(server.views[sid], current: model.selection?.windowID ?? "")
+                    + " shown=" + (shownTab.flatMap { activeBlock($0) }.map { String($0.suffix(4)) } ?? "-")
+                    + " macFocus=" + (shownTab?.focusedBlockID.map { String($0.suffix(4)) } ?? "-")
                     + " sheet=" + (window.flatMap { sheetLayer(presentation($0)) }.map { String($0.suffix(4)) } ?? "-")
                     + "/" + (PhoneState.shared.sheets[wid]?.detent == .medium ? "medium" : "large")
                     + " sessions=" + server.orderedSessions.map { $0.label }.joined(separator: ",")
