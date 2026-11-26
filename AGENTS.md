@@ -72,7 +72,7 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   `DismissalWait`; docs/tab-mode.md),
   Terminal (`PaneView` → UIKit `TerminalHost` → `GhosttyTerminalView`; `TerminalHostPool` keeps the panes on screen and parks the ones that left it last (docs/terminal.md, Parking); `Ghostty/` is the engine,
   `Selection/` the touch selection UI, `Predict/` predicted echo on a slow link (docs/terminal.md, Predicted echo), `Find/` find in history (docs/terminal.md, Find), `Perf/` the benchmark's replay and probe), KeyBar, Keyboard
-  (hardware keys, Rex's keymap), Settings, Notifications (toasts), Offline, Onboarding (the
+  (hardware keys, Rex's keymap, `TypingAids`: the system keyboard's corrections in an agent's prompt), Settings, Notifications (toasts), Offline, Onboarding (the
   first-run guide and Setup Guide's checklist; docs/architecture.md, First run),
   Pairing ("Pair via QR Code": the scanner and the check before a server is added; its logic is
   `State/Pairing.swift`), Board (the agent board of tent mode; docs/duo-layout.md, Tent mode), Files (sending photos and files to a pane, drops, Open from a selection, the file

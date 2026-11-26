@@ -45,6 +45,7 @@ struct MetaTable {
             let old = box.value
             box.value = newValue
             server.paneNames.set(id, PaneNameParts(newValue))
+            server.typingAids.metaChanged(id, from: old, to: newValue)
             if old?.agentKind != newValue?.agentKind || old?.topStatus?.state != newValue?.topStatus?.state {
                 server.agentsMayHaveChanged()
             }
@@ -145,6 +146,8 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored private(set) var connectionSerial = 0
     /// The panes that are told when their owner changes (`block_owner_changed`).
     @ObservationIgnored let ownerChanges = OwnerChanges()
+    /// The panes that are told when the keyboard aids of their program change (`TypingAids`).
+    @ObservationIgnored let typingAids = TypingAidsWatch()
     /// What this server can do: its API revision, its creators, and what probes found.
     @ObservationIgnored let capabilities = ServerCapabilities()
     /// What to read again when the server drops an oversized event (`recover(dropped:)`).

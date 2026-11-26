@@ -82,6 +82,13 @@ struct PaneHostView: UIViewRepresentable {
             host.ownerChanged(change)
             return true
         }
+        // The keyboard's aids follow the program in front (`TypingAids`), told only when they change.
+        host.term.wantTypingAids(TypingAids.for(server.currentMeta(blockID)))
+        server.typingAids.observe(block: blockID) { [weak host] aids in
+            guard let host else { return false }
+            host.term.wantTypingAids(aids)
+            return true
+        }
         // Read for each key while predicted echo is on (a slow link), never otherwise.
         host.echoContext = { [weak server, blockID] in
             let meta = server?.meta[blockID]

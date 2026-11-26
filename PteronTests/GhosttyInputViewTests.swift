@@ -484,4 +484,148 @@ final class GhosttyInputViewTests: XCTestCase {
         XCTAssertTrue(view.inputAccessoryView === bar)
         XCTAssertTrue(view.inputView === keys)
     }
+
+    // MARK: Typing aids
+
+    /// A pane without the keyboard takes its program's aids at once; one with the keyboard up
+    /// keeps what the keyboard read until it comes up again.
+    func testTypingAidsReachTheKeyboardOnlyAsItComesUp() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let (view, spy) = makeGhostty()
+        window.addSubview(view)
+        defer { view.removeFromSuperview() }
+
+        view.wantTypingAids(.prose)
+        XCTAssertEqual(view.typingAids, .prose, "no keyboard: at once")
+        XCTAssertEqual(view.autocorrectionType, .yes)
+        XCTAssertEqual(view.spellCheckingType, .yes)
+        XCTAssertEqual(view.autocapitalizationType, UITextAutocapitalizationType.none, "no capital for every line's first letter")
+        XCTAssertEqual(view.smartQuotesType, .no, "a prompt holds code")
+        XCTAssertEqual(view.smartDashesType, .no)
+        XCTAssertEqual(view.smartInsertDeleteType, .no)
+        XCTAssertEqual(view.inlinePredictionType, .no)
+
+        try XCTSkipUnless(view.becomeFirstResponder(), "the test host gave no first responder")
+        defer { _ = view.resignFirstResponder() }
+        view.insertText("fix teh")
+        view.wantTypingAids(.raw)
+        XCTAssertEqual(view.typingAids, .prose, "the agent left mid-sentence: the keyboard keeps what it read")
+        XCTAssertEqual(view.autocorrectionType, .yes)
+        // The host shows the keyboard after a quiet hold, or it comes up again.
+        // Until then the keyboard may still offer a correction: none is made.
+        spy.sent = []
+        let word = view.textRange(from: view.position(from: view.beginningOfDocument, offset: 4)!, to: view.endOfDocument)!
+        view.replace(word, withText: "the")
+        XCTAssertEqual(spy.sent, [], "the agent left: nothing is corrected")
+        XCTAssertEqual(view.inputState.document.text, "fix teh")
+        view.takeTypingAids()
+        XCTAssertEqual(view.typingAids, .raw)
+        view.wantTypingAids(.prose)
+        XCTAssertTrue(view.resignFirstResponder())
+        XCTAssertEqual(view.typingAids, .raw, "taken when it comes up, not when it goes")
+        XCTAssertTrue(view.becomeFirstResponder())
+        XCTAssertEqual(view.typingAids, .prose)
+    }
+
+    /// A correction the keyboard picked replaces the word it read: Backspaces for the old word,
+    /// then the new one, in one write. Text the shadow no longer holds is never replaced.
+    func testCorrectionsReplaceOnlyWhatTheShadowHolds() {
+        let (view, spy) = makeGhostty()
+        view.insertText("fix teh")
+        spy.sent = []
+        let word = view.textRange(from: view.position(from: view.beginningOfDocument, offset: 4)!, to: view.endOfDocument)!
+        view.replace(word, withText: "the")
+        XCTAssertEqual(spy.sent, [[0x7f, 0x7f, 0x7f] + P.bytes("the")])
+        XCTAssertEqual(view.inputState.document.text, "fix the")
+
+        // The revert: the keyboard puts the typed word back.
+        let back = view.textRange(from: view.position(from: view.beginningOfDocument, offset: 4)!, to: view.endOfDocument)!
+        view.replace(back, withText: "teh")
+        XCTAssertEqual(spy.sent.last, [0x7f, 0x7f, 0x7f] + P.bytes("teh"))
+
+        // Return reset the shadow; a correction of the old line arrives late: nothing is sent.
+        view.insertText("\n")
+        spy.sent = []
+        let stale = GhosttyTextRange(NSRange(location: 4, length: 3))
+        view.replace(stale, withText: "the")
+        XCTAssertEqual(spy.sent, [], "nothing replaced outside the shadow")
+        XCTAssertFalse(view.hasText)
+        // Partly outside, after a new word: refused as a whole.
+        view.insertText("ok")
+        spy.sent = []
+        view.replace(GhosttyTextRange(NSRange(location: 0, length: 5)), withText: "okay")
+        XCTAssertEqual(spy.sent, [])
+        XCTAssertEqual(view.inputState.document.text, "ok")
+    }
+
+    /// A printable key of the key bar is text the shadow keeps, so the keyboard reads what stands
+    /// before the next word; its bytes are what they were.
+    func testKeyBarPrintableKeysStayInTheShadow() {
+        let (view, spy) = makeGhostty()
+        view.wantTypingAids(.prose)
+        view.insertText("src")
+        view.send(data: [0x2f][...])
+        XCTAssertEqual(spy.sent.last, [0x2f])
+        XCTAssertEqual(view.inputState.document.text, "src/")
+        view.insertText("compnent")
+        spy.sent = []
+        let word = view.textRange(from: view.position(from: view.beginningOfDocument, offset: 4)!, to: view.endOfDocument)!
+        view.replace(word, withText: "component")
+        XCTAssertEqual(spy.sent, [], "a path is left as typed")
+        XCTAssertEqual(view.inputState.document.text, "src/compnent")
+        // Control bytes and sequences still reset it.
+        view.send(data: [0x1b][...])
+        XCTAssertFalse(view.hasText)
+        // A raw pane makes every correction the keyboard asks for, as before.
+        view.wantTypingAids(.raw)
+        view.insertText("src/compnent")
+        spy.sent = []
+        view.replace(word, withText: "component")
+        XCTAssertEqual(spy.sent, [[0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f] + P.bytes("component")])
+    }
+
+    /// A pane that takes the keyboard from another pane keeps that keyboard's aids: no
+    /// suggestion bar comes or goes, so nothing moves and no pane is resized. A shell pane that
+    /// got an agent's keyboard makes no correction.
+    func testAPaneSwitchKeepsTheKeyboardsAids() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first { window.windowScene = scene }
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let (agent, _) = makeGhostty()
+        let (shell, shellSpy) = makeGhostty()
+        window.addSubview(agent)
+        window.addSubview(shell)
+        defer {
+            agent.removeFromSuperview()
+            shell.removeFromSuperview()
+        }
+        agent.wantTypingAids(.prose)
+        shell.wantTypingAids(.raw)
+        try XCTSkipUnless(agent.becomeFirstResponder(), "the test host gave no first responder")
+        XCTAssertTrue(shell.becomeFirstResponder())
+        defer { _ = shell.resignFirstResponder() }
+        XCTAssertEqual(shell.typingAids, .prose, "the keyboard stays as it is")
+        shell.insertText("ls teh")
+        shellSpy.sent = []
+        let word = shell.textRange(from: shell.position(from: shell.beginningOfDocument, offset: 3)!, to: shell.endOfDocument)!
+        shell.replace(word, withText: "the")
+        XCTAssertEqual(shellSpy.sent, [], "a shell takes no correction")
+        // Back to the agent: still the same keyboard.
+        XCTAssertTrue(agent.becomeFirstResponder())
+        XCTAssertEqual(agent.typingAids, .prose)
+        // The keyboard goes and comes back for the shell: its own aids.
+        XCTAssertTrue(shell.becomeFirstResponder())
+        XCTAssertTrue(shell.resignFirstResponder())
+        XCTAssertTrue(shell.becomeFirstResponder())
+        XCTAssertEqual(shell.typingAids, .raw)
+        // A quiet pane (a hardware keyboard, no software keyboard shown) hands nothing on.
+        shell.inputView = UIView()
+        agent.wantTypingAids(.prose)
+        XCTAssertTrue(agent.becomeFirstResponder())
+        XCTAssertEqual(agent.typingAids, .prose)
+    }
 }

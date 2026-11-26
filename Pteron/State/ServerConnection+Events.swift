@@ -109,6 +109,7 @@ extension ServerConnection {
             if type == "block_owner_changed", let change = BlockOwnerChange(p) { ownerChanges.send(change) }
             if type == "block_closed", let bid = p.str("block_id") {
                 ownerChanges.forget(block: bid)
+                typingAids.forget(block: bid)
                 forgetBlockAlerts(bid)
                 paneNames.remove(bid)
                 forgetPorts(bid)

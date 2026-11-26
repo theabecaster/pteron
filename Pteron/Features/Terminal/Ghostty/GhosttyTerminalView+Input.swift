@@ -91,6 +91,15 @@ extension GhosttyTerminalView {
 
     /// Bytes someone else encoded (the key bar's keys, key bindings).
     func send(data: ArraySlice<UInt8>) {
+        if data.count == 1, let byte = data.first, (0x21...0x7e).contains(byte), !inputState.document.isComposing {
+            // One printable key of the bar (`/`, `-`, `~`, `|`) is text, as the keyboard's own
+            // would be: the shadow keeps it, so the keyboard reads `src/` before the next word
+            // rather than a line that starts there (`TypingAids.keepsTyped`).
+            let typed = String(UnicodeScalar(byte))
+            let edit = editInputDocument { $0.insert(typed) }
+            if edit == GhosttyInputEdit(text: typed) { return sendInput(Array(data)) }
+            return sendEdit(edit)
+        }
         resetInputDocument()
         sendInput(Array(data))
     }
@@ -123,6 +132,7 @@ extension GhosttyTerminalView {
 
     override func becomeFirstResponder() -> Bool {
         let was = isFirstResponder
+        if !was { typingAidsAsKeyboardArrives() }
         let ok = super.becomeFirstResponder()
         if ok, !was {
             inputState.modeLanguage = nil
@@ -190,10 +200,10 @@ extension GhosttyTerminalView {
         if newWindow == nil { stopKeyRepeat() }
     }
 
-    // A terminal takes what is typed as is.
+    // A terminal takes what is typed as is, except for corrections in an agent's prompt (`TypingAids`).
     var autocapitalizationType: UITextAutocapitalizationType { get { .none } set {} }
-    var autocorrectionType: UITextAutocorrectionType { get { .no } set {} }
-    var spellCheckingType: UITextSpellCheckingType { get { .no } set {} }
+    var autocorrectionType: UITextAutocorrectionType { get { typingAids.autocorrection } set {} }
+    var spellCheckingType: UITextSpellCheckingType { get { typingAids.spellChecking } set {} }
     var smartQuotesType: UITextSmartQuotesType { get { .no } set {} }
     var smartDashesType: UITextSmartDashesType { get { .no } set {} }
     var smartInsertDeleteType: UITextSmartInsertDeleteType { get { .no } set {} }
@@ -202,6 +212,61 @@ extension GhosttyTerminalView {
     var returnKeyType: UIReturnKeyType { get { .default } set {} }
     var enablesReturnKeyAutomatically: Bool { get { false } set {} }
     var isSecureTextEntry: Bool { get { false } set {} }
+}
+
+// MARK: Typing aids
+
+extension GhosttyTerminalView {
+    #if DEBUG
+    /// `-typingAids prose|raw` (Debug builds, testing): every pane's aids, whatever its program.
+    static let forcedTypingAids: TypingAids? = switch UserDefaults.standard.string(forKey: "typingAids") {
+    case "prose": .prose
+    case "raw": .raw
+    default: nil
+    }
+    #endif
+
+    /// The aids the pane's program asks for now (`TypingAids`). The keyboard reads the traits
+    /// only as it comes up: from no keyboard, or from the host's quiet hold (`takeTypingAids`).
+    /// So a change never reaches it while someone types, and the suggestion bar the aids bring
+    /// never comes or goes under a pane on screen: it is 27 pt tall on an iPhone, and the
+    /// keyboard snaps to its new height without animation, which would move the key bar and
+    /// resize the panes on the computer. Until then the pane's want only holds corrections back
+    /// (`replace(_:withText:)`).
+    func wantTypingAids(_ aids: TypingAids) {
+        #if DEBUG
+        let aids = Self.forcedTypingAids ?? aids
+        #endif
+        wantedTypingAids = aids
+        if !isFirstResponder { typingAids = aids }
+    }
+
+    /// The keyboard is coming up for this view: it gets the aids asked for. The host calls this
+    /// before it shows the system keyboard after a quiet hold.
+    func takeTypingAids() {
+        typingAids = wantedTypingAids
+    }
+
+    /// This view is about to become first responder. From another pane's terminal, whose
+    /// keyboard is up, it keeps that keyboard's aids, so a switch between an agent and a shell
+    /// neither moves the keyboard nor resizes a pane; otherwise the keyboard comes up and reads
+    /// this pane's own.
+    private func typingAidsAsKeyboardArrives() {
+        if let other = window.flatMap(Self.keyboardHolder(in:)), other !== self, other.inputView == nil {
+            typingAids = other.typingAids
+        } else {
+            takeTypingAids()
+        }
+    }
+
+    /// The terminal in `view` that has the keyboard. Asked only as a terminal takes the keyboard.
+    private static func keyboardHolder(in view: UIView) -> GhosttyTerminalView? {
+        if let terminal = view as? GhosttyTerminalView, terminal.isFirstResponder { return terminal }
+        for sub in view.subviews {
+            if let found = keyboardHolder(in: sub) { return found }
+        }
+        return nil
+    }
 }
 
 // MARK: System keyboard
@@ -246,7 +311,7 @@ extension GhosttyTerminalView {
     }
 
     /// Dictation is putting text in: its own call, or the keyboard is in its dictation mode.
-    private var isDictating: Bool {
+    var isDictating: Bool {
         inputState.dictating || (inputState.layoutLanguage ?? modeLanguage) == "dictation"
     }
 

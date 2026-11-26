@@ -680,8 +680,9 @@ stands among these calls decides how long a key waits:
 - **Everything else tells the keyboard first, then sends**, as before: an input method's
   updates and its commit, dictation (below), a replacement (`replace(_:withText:)`, text over
   a selection or away from the program's cursor), more than one character at once (a
-  suggestion, a swipe, a paste from the keyboard), Backspace, Return, and the keys that reset
-  the shadow (the key bar's keys, raw sends, a paste, hardware keys encoded here).
+  suggestion, a swipe, a paste from the keyboard), Backspace, Return, the key bar's printable
+  keys (kept in the shadow; Typing aids, below), and the keys that reset the shadow (the key
+  bar's other keys, raw sends, a paste, hardware keys encoded here).
 - **What counts as dictated.** Text that comes through `insertDictationResult` always does.
   Text that comes through `insertText` does when the language of the keyboard's input mode
   (`textInputMode?.primaryLanguage`) is the string `dictation`. The view reads that once per
@@ -700,6 +701,63 @@ stands among these calls decides how long a key waits:
   Measured in a simulator against a local server (Debug, median, key to socket): 21.9 ms before,
   21.6 ms with the send first alone, 19.9 ms with the hand-off alone, 0.5 ms with both at typing
   pace; 10.1, 10.1, 9.5 and 0.10 ms in a burst.
+
+**Typing aids: corrections in an agent's prompt.** A terminal takes what is typed as is, so the
+system keyboard's aids are off, except while an agent is the program in front, where people
+type prose (`TypingAids`). Nothing to set.
+
+| Trait | Agent | Everything else |
+| --- | --- | --- |
+| Autocorrection, spell checking | on | off |
+| Capitals at a sentence's start | off | off |
+| Smart quotes, smart dashes, smart insert and delete, inline predictions | off | off |
+
+- **Which panes.** An agent is in front when the foreground program is one (`AgentKind.fromProgram`),
+  or, while `ssh`, `mosh` or a program the server can't name is in front, when the agent's own
+  OSC 7501 record says so. A shell in front is never one, whatever an agent left behind, and a
+  title never counts: an agent's title outlives it in a shell or an editor that sets none, and
+  over `ssh` before its record arrives the pane types raw. A shell command the agent runs (`!ls`
+  in Claude Code) runs under the agent, so the agent stays in front. The rule runs only when the
+  program in front or the agent's record changes (`TypingAidsWatch`), never per key.
+- **Why only agents.** In a shell, an editor or a pager a correction is a different command:
+  `ls` became `last`, `npm` `mom`, `src` `sec` in a simulator.
+- **Why no capitals.** The shadow is empty after every Return, so the keyboard capitalizes every
+  line's first letter: `y` at an agent's question became `Y`, `ls` became `Ls`, and a `j` in an
+  agent's vim mode would be `J`. Autocorrection still capitalizes `i` and names.
+- **When the keyboard changes.** Either aid brings the keyboard's suggestion bar: 382 pt with
+  it, 355 pt without (iPhone 17 Pro simulator, iOS 27.2, the key bar's 54 pt included). Changed
+  under a keyboard that is up (`reloadInputViews`), the keyboard snaps 27 pt with no animation,
+  through a frame without the key bar, which would move the bar and resize the panes on the
+  computer. So the keyboard reads a pane's aids only as it comes up: from no keyboard, or from
+  the quiet hold of a hardware keyboard. A pane that takes the keyboard from another pane keeps
+  that keyboard's aids, so a switch between an agent and a shell moves nothing.
+- **Until then the pane's own want holds corrections back.** A shell pane under an agent's
+  keyboard (the agent exited mid-sentence, or the keyboard came from an agent pane) makes no
+  correction; the bar may still show one. An agent pane under a shell's keyboard (the agent
+  started with the keyboard up) corrects nothing until the keyboard next comes up.
+- **How a correction is sent.** The keyboard replaces the word with `replace(_:withText:)` as
+  the space, the punctuation or Return after it comes, before that key's own `insertText`: the
+  word's Backspaces and the new word go as one write through the one queue, then the key. A
+  tapped suggestion and the keyboard's period shortcut (a double space) come the same way.
+  After a correction there is no revert bubble (the view draws no underline); the bar shows the
+  typed word in quotes before the space, and a Backspace into the word offers it back.
+- **What is not corrected** (`TypingAids.keepsTyped`), whatever the keyboard offered: a word
+  that touches a code mark (`/`, `\`, `.`, `@`, `-`, `_`, `~`, `:`, `=`, `$`, `#`, a backtick, `*`, `<`, `>`, `|`: the keyboard made the `tsx` of
+  `src/compnent.tsx` `tax`), a word with digits or symbols, a line that starts with `!` (a
+  command for the agent to run), and text the shadow no longer holds (it was reset since the
+  keyboard read it), whose place on the program's line is unknown. Nothing is sent and the
+  keyboard is told the text changed, so it reads it again. Dictation's revisions are made, as
+  before. A plain word in a prompt is the keyboard's call (`npm`, `ls` alone): the bar shows the
+  correction first, and a tap on the typed word keeps it and teaches the keyboard. The key
+  bar's printable keys (`/`, `-`, `~`, `|`) are text the shadow keeps, not a reset, so the
+  keyboard sees `src/` before the next word.
+- **The other gates are unchanged.** A correction is a write of more than one character, so
+  predicted echo takes it as a boundary (no guess is drawn in an agent's pane anyway), and the
+  catch-up fence holds or drops it whole, as any other write.
+- **Hardware keyboards** type through the same text system. In the simulator, keys from a
+  hardware keyboard got no correction under an agent's aids. On a device iOS corrects them only
+  under its own Hardware Keyboard setting (Settings, General, Keyboard), which the user
+  controls; such a correction comes through `replace(_:withText:)` and the same rules.
 
 Around that:
 

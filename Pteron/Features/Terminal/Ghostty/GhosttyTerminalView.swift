@@ -59,6 +59,11 @@ final class GhosttyTerminalView: UIView {
     var commandModifier = false
     var commandKeyHook: ((String) -> Void)?
     var keyboardAppearance: UIKeyboardAppearance = .dark
+    /// What the keyboard may do to typed text, as it reads it now (`TypingAids`), and what the
+    /// pane's program asks for. The first follows the second only as the keyboard comes up
+    /// (`wantTypingAids`).
+    var typingAids = TypingAids.raw
+    var wantedTypingAids = TypingAids.raw
     let inputState = GhosttyInputState()
     weak var inputDelegate: (any UITextInputDelegate)?
     var markedTextStyle: [NSAttributedString.Key: Any]?

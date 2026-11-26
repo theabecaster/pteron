@@ -210,6 +210,8 @@ builds.
   `-findScriptEvery <s>` spaces the steps. `-findHandover spacer` tries the fallback hand-over,
   `-findHandover nil` spike S1's rejected variant, `-findCarriesCommands YES` the field carrying
   app commands itself. Use a `zz-` session.
+- `-typingAids prose|raw`: every pane's keyboard aids, whatever its program (docs/terminal.md, Input):
+  `prose` to look at an agent's keyboard (the suggestion bar, corrections) in a `-replay` pane or a `zz-` session.
 - `-typeTest 'text\n'`: type into the active pane once it is live. With `-scrollBackTest <seconds>`,
   scroll two pages back first and type that much later.
 - `-keyboardTest '<step>;<step>…'`: show and hide the software keyboard over the active pane once

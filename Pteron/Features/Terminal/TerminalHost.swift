@@ -1305,6 +1305,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyboardQuiet = quiet
         term.inputView = quiet ? quietInputView : nil
         term.inputAccessoryView = quiet ? nil : keyBar
+        // The system keyboard comes up: it reads the pane's aids now (`TypingAids`).
+        if !quiet { term.takeTypingAids() }
         if term.isFirstResponder { term.reloadInputViews() }
     }
 

@@ -299,6 +299,18 @@ extension GhosttyTerminalView: UITextInput {
 
     func replace(_ range: UITextRange, withText text: String) {
         guard let r = nsRange(range), !document.isComposing else { return }
+        // Not made: a replacement of text the shadow no longer holds (it was reset since the
+        // keyboard read it), where what stands on the program's line is unknown; and, while the
+        // keyboard corrects, a correction of a path, a flag or a shell command
+        // (`TypingAids.keepsTyped`), or any correction once the agent has left the pane and the
+        // keyboard still has the agent's aids (they change when it next comes up). Nothing is
+        // sent, and the keyboard is told the text changed, so it reads it again.
+        let outside = NSMaxRange(r) > document.length
+        let correcting = typingAids.corrects && !isDictating
+        if outside || (correcting && (!wantedTypingAids.corrects || TypingAids.keepsTyped(document.text, replacing: r))) {
+            editInputDocument { _ in }
+            return
+        }
         sendEdit(editInputDocument { $0.replace(r, with: text) })
     }
 

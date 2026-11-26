@@ -125,6 +125,8 @@ final class ReplayView: UIView {
         host.frame = area
         addSubview(host)
         self.host = host
+        // No program: a raw keyboard, unless `-typingAids` says otherwise.
+        host.term.wantTypingAids(.raw)
         // `-findTest <needle>`: find is open with this needle before the first byte arrives.
         if let needle = UserDefaults.standard.string(forKey: "findTest"), !needle.isEmpty {
             host.openFind(text: needle, focus: false)
