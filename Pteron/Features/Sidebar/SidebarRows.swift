@@ -555,10 +555,20 @@ struct TabRowLabel: View {
 enum WindowTitle {
     @MainActor
     static func of(_ w: WindowInfo, server: ServerConnection) -> String {
-        let generic = w.label.isEmpty || w.label.hasPrefix("Window ")
-        if !generic { return w.label }
-        if let f = w.focusedBlockID ?? w.orderedBlockIDs.first, let t = server.meta[f]?.title, !t.isEmpty { return condense(t) }
-        return w.block(w.focusedBlockID ?? "")?.label ?? "shell"
+        if !(w.label.isEmpty || w.label.hasPrefix("Window ")) { return w.label }
+        let m = (w.focusedBlockID ?? w.orderedBlockIDs.first).flatMap { server.meta[$0] }
+        return pick(label: w.label, title: m?.title, program: m?.foreground,
+                    blockLabel: w.block(w.focusedBlockID ?? "")?.label)
+    }
+
+    /// A tab's title: its name, else its pane's title, else the pane's program unless that is a
+    /// shell (an agent that sets no title, such as a Claude Code session with no name, is called
+    /// `claude`, not "shell"), else the pane's label. A name Rex made up ("Window 3fa2…") is no name.
+    static func pick(label: String, title: String?, program: String?, blockLabel: String?) -> String {
+        if !(label.isEmpty || label.hasPrefix("Window ")) { return label }
+        if let t = title, !t.isEmpty { return condense(t) }
+        if let p = program, !p.isEmpty, !ProcessNames.isShell(p) { return p }
+        return blockLabel ?? "shell"
     }
 
     /// Shell titles like "user@host:~/code/project" become "project": the part that tells tabs apart.

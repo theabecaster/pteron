@@ -459,3 +459,26 @@ struct SidebarTileShapeTests {
         #expect(TabRowLabel.tile(nil).cornerSize == CGSize(width: 5, height: 5))
     }
 }
+
+/// A tab's title when its name, title or program is missing.
+struct WindowTitleTests {
+    @Test func aNamedTabKeepsItsName() {
+        #expect(WindowTitle.pick(label: "pteronDevTeam", title: "✳ Fix it", program: "claude", blockLabel: "shell") == "pteronDevTeam")
+    }
+
+    @Test func aTabRexNamedShowsItsPanesTitle() {
+        #expect(WindowTitle.pick(label: "Window b8292348", title: "abe@mac:~/code/pteron", program: "zsh", blockLabel: "shell") == "pteron")
+    }
+
+    /// A Claude Code session with no name sets an empty title; its tab is named for the program.
+    @Test func anUntitledProgramNamesItsTab() {
+        #expect(WindowTitle.pick(label: "Window b8292348", title: "", program: "claude", blockLabel: "shell") == "claude")
+        #expect(WindowTitle.pick(label: "", title: nil, program: "htop", blockLabel: "shell") == "htop")
+    }
+
+    @Test func aShellAtItsPromptIsStillShell() {
+        #expect(WindowTitle.pick(label: "Window 1", title: "", program: "zsh", blockLabel: "shell") == "shell")
+        #expect(WindowTitle.pick(label: "Window 1", title: nil, program: "", blockLabel: nil) == "shell")
+        #expect(WindowTitle.pick(label: "Window 1", title: nil, program: nil, blockLabel: "logs") == "logs")
+    }
+}

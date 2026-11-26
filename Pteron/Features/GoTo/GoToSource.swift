@@ -168,10 +168,9 @@ enum GoToSource {
 
     /// A tab's title as the sidebar shows it (`WindowTitle.of`), from metadata read without
     /// making a box for every block.
-    static func windowTitle(_ w: WindowInfo, focusedTitle: String?) -> String {
-        if !(w.label.isEmpty || w.label.hasPrefix("Window ")) { return w.label }
-        if let t = focusedTitle, !t.isEmpty { return WindowTitle.condense(t) }
-        return w.block(w.focusedBlockID ?? "")?.label ?? "shell"
+    static func windowTitle(_ w: WindowInfo, focused: BlockMeta?) -> String {
+        WindowTitle.pick(label: w.label, title: focused?.title, program: focused?.foreground,
+                         blockLabel: w.block(w.focusedBlockID ?? "")?.label)
     }
 
     /// Every session, tab and pane (panes only in tabs with more than one) on every saved server.
@@ -207,7 +206,7 @@ enum GoToSource {
                 for (i, w) in windows.enumerated() {
                     let focused = w.focusedBlockID ?? w.orderedBlockIDs.first
                     let focusedMeta = focused.flatMap(s.currentMeta)
-                    let title = windowTitle(w, focusedTitle: focusedMeta?.title)
+                    let title = windowTitle(w, focused: focusedMeta)
                     let pwd = shortPath(focusedMeta?.pwd)
                     let tid = GoToItemID.tab(s.id, e.id, w.id)
                     order += 1
