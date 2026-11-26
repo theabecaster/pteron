@@ -352,7 +352,7 @@ struct FloatsTests {
             }
         }
         #expect(KeyActions.byName["pane.minimize_floating"]?.title == "Minimize Floating Window")
-        #expect(KeyActions.byName["pane.minimize_all_floating"]?.title == "Minimize Floating Windows")
+        #expect(KeyActions.byName["pane.minimize_all_floating"]?.title == "Minimize All Floating Windows")
     }
 
     @Test func swapMoveCloseOthersAndNewTabSeeFloats() {

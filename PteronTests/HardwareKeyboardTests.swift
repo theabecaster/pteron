@@ -69,6 +69,8 @@ struct ToggleSidebarKeyTests {
 
     @Test func everyDefaultKeyRunsSomethingAfterTheServerLayersItsOwn() {
         let s = store([("cmd+k", "session.switch", nil)])
+        // The tab moves and the floating-window minimizes run where the server can.
+        s.panes = PaneSupport(revision: 18)
         for (spelling, _, _) in KeyDefaults.layer {
             guard let chord = KeyChord(spelling: spelling) else {
                 Issue.record("\(spelling) doesn't parse")

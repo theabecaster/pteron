@@ -43,7 +43,7 @@ struct AppActionTests {
     @Test func unsupportedClientActionsFallThrough() {
         // Rex's own client actions the app doesn't have; the key goes to the next binding or the terminal.
         #expect(AppAction.resolve("client.find", nil) == nil)
-        #expect(AppAction.resolve("pane.split", ["direction": "left"]) == nil)
+        #expect(AppAction.resolve("pane.move", ["direction": "left"]) == nil)
         #expect(AppAction.resolve("client.tab.goto", nil) == nil)
     }
 
@@ -65,8 +65,9 @@ struct AppActionTests {
 
     @Test func everyDefaultBindingParsesAndResolves() {
         #expect(KeyDefaults.resolved.count == KeyDefaults.layer.count)
+        // The tab moves and the floating-window minimizes resolve where the server can.
         for b in KeyDefaults.resolved {
-            #expect(AppAction.resolve(b.action, b.args) != nil, "\(b.chord.spelling) → \(b.action)")
+            #expect(AppAction.resolve(b.action, b.args, panes: PaneSupport(revision: 18)) != nil, "\(b.chord.spelling) → \(b.action)")
         }
     }
 }

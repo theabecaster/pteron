@@ -484,7 +484,7 @@ final class PaneFilesTests: XCTestCase {
 
     // MARK: Commands and keys
 
-    func testTheFourActionsResolveToThePanesFilesWithTheMacsTitlesAndNoDefaultKeys() {
+    func testTheFourActionsResolveToThePanesFilesWithTheMacsTitlesAndTheMacsDefaultKeys() {
         let expect: [(String, FilesCommand, String)] = [
             ("pane.go_to_directory", .browse, "Go to Directory…"), ("pane.insert_path", .insertPath, "Insert Path…"),
             ("pane.insert_file", .insertFile, "Insert File…"), ("pane.insert_photo", .insertPhoto, "Insert Photo…"),
@@ -495,8 +495,9 @@ final class PaneFilesTests: XCTestCase {
             XCTAssertEqual(command.action, name)
             XCTAssertEqual(KeyActions.byName[name]?.title, title)
             XCTAssertEqual(KeyActions.byName[name]?.repeats, false)
-            XCTAssertNil(KeyLabel.for(action: name, in: KeyDefaults.resolved), "no key unless the user binds one")
-            XCTAssertFalse(KeyDefaults.layer.contains { $0.1 == name })
+            // The Mac binds ⌃⌘I to Insert Path and no key to the others.
+            XCTAssertEqual(KeyLabel.for(action: name, in: KeyDefaults.resolved), name == "pane.insert_path" ? "⌃⌘I" : nil)
+            XCTAssertEqual(KeyDefaults.layer.contains { $0.1 == name }, name == "pane.insert_path")
             // Bound in the user's keymap, it has a label and shows in the shortcut list of the pane.
             let bound = [KeyBinding(chord: KeyChord(spelling: "ctrl+cmd+i")!, action: name, args: nil)] + KeyDefaults.resolved
             XCTAssertEqual(KeyLabel.for(action: name, in: bound), "⌃⌘I")

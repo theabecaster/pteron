@@ -178,7 +178,7 @@ final class GoToModelTests: XCTestCase {
         let four = rows(t)
         XCTAssertEqual(four.map(\.title), ["Browse Files…", "Insert Path…", "Insert File…", "Insert Photo…"])
         XCTAssertTrue(four.allSatisfy { $0.kind == .command && $0.category == "Pane" && $0.dimmed == nil && !$0.destructive })
-        XCTAssertTrue(four.allSatisfy { $0.keyLabel == nil }, "no key unless the keymap binds one")
+        XCTAssertEqual(four.map(\.keyLabel), [nil, "⌃⌘I", nil, nil], "the Mac's one default key")
         let c = copy(m, target: t)
         for (item, command) in zip(four, FilesCommand.allCases) {
             XCTAssertEqual(item.id, .command(GoToCommands.appKey(command.action)))
@@ -280,7 +280,7 @@ final class GoToModelTests: XCTestCase {
         let pane = try XCTUnwrap(sections.first { $0.header == "Pane" }).indices.map { items[$0].title }
         XCTAssertEqual(Array(pane.prefix(5)), ["Split Pane Left", "Split Pane Right", "Split Pane Up", "Split Pane Down",
                                                "Split Pane Best Fit"])
-        let ranks = pane.compactMap { title in KeyActions.all.first { $0.title == title }.flatMap { MacPalette.rank($0.name) } }
+        let ranks = pane.compactMap { title in KeyActions.all.last { $0.title == title }.flatMap { MacPalette.rank($0.name) } }
         XCTAssertEqual(ranks, ranks.sorted())
     }
 
@@ -317,7 +317,8 @@ final class GoToModelTests: XCTestCase {
         // A key the user's init.lua binds to the same thing shows on the row too.
         s.keymap.apply([KeyBinding(chord: KeyChord(spelling: "ctrl+cmd+d")!, action: "pane.split", args: ["direction": "right"])]
                        + KeyDefaults.resolved)
-        XCTAssertEqual(commands(m, target: t).items.first { $0.title == "Split Pane Right" }?.keyLabel, "⌘D")
+        XCTAssertEqual(commands(m, target: t).items.first { $0.title == "Split Pane Right" }?.keyLabel,
+                       KeyLabel.for(action: "pane.split.right", in: s.keymap), "the key bound by name, as the pane menu shows it")
         XCTAssertEqual(commands(m, target: t).items.filter { $0.title == "Split Pane Right" }.count, 1)
     }
 

@@ -1164,7 +1164,8 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
     -s`, `~/` means root's home.
 - **Keys.** The Mac's `pane.go_to_directory` (browse), `pane.insert_path`, `pane.insert_file`
   (the Files picker) and `pane.insert_photo` (the Photos picker) are
-  declared with the Mac's titles and no default key, so a key bound in init.lua does on the
+  declared with the Mac's titles and its default keys (⌃⌘I for Insert Path; the others have
+  none, and the Mac's ⇧⌘G stays Find Previous here), so a key bound in init.lua does on the
   phone what it does on the Mac, where the pane's host has the method; elsewhere the key does
   nothing. They are pane actions (`AppAction.files`, `FilesCommand`): they run while a terminal
   has the keyboard, and not from the find field.
