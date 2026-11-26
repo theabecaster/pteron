@@ -163,6 +163,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 400, height: Self.barHeight), inputViewStyle: .default)
         allowsSelfSizing = true
+        // The height follows the bar's own (compose's card comes and goes on screen): a frame
+        // with a fixed height would pin it to the first one.
+        autoresizingMask = .flexibleHeight
         backgroundColor = .clear
         for capsule in [leftCapsule, middleCapsule, rightCapsule] {
             Glass.makeGlass(capsule)
@@ -205,6 +208,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         content.addSubview(pinned)
         pinnedStack = pinned
         let barHeight = heightAnchor.constraint(equalToConstant: Self.barHeight)
+        barHeight.priority = .required - 1
         barHeightConstraint = barHeight
         let leading = stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: Self.ring)
         stackLeading = leading
