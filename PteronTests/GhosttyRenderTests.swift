@@ -612,14 +612,14 @@ final class GhosttyRenderTests: XCTestCase {
         }
         if stuck.drawableMisses > 0 {
             // It has more to draw, and is not asked to for the time being. The window ends
-            // inside that time on any machine, so a slow one doesn't run it into the retry,
-            // which waits on the layer again and holds every pane's drawing meanwhile.
+            // well inside that time on any machine, its last step included, so a slow one
+            // doesn't run it into the retry, which may draw.
             covered!.feed(text: "\r\nmore")
             let before = free.framesDrawn, stuckFrames = stuck.framesDrawn, misses = stuck.drawableMisses
             let start = CACurrentMediaTime()
-            let window = GhosttyRenderer.drawableBackoffStart - 0.05
+            let window = GhosttyRenderer.drawableBackoffStart - 0.1
             var last = start, longest = 0.0, n = 0
-            while CACurrentMediaTime() - start < window {
+            while CACurrentMediaTime() - start + 0.03 < window {
                 shown!.feed(text: "\r\nshown \(n)")
                 covered!.feed(text: "\r\nstill covered \(n)")
                 n += 1
@@ -631,7 +631,10 @@ final class GhosttyRenderTests: XCTestCase {
             // A main thread held up shows as a long turn between two of its feeds; a wait on the
             // dry layer would hold it for as long as the layer takes to give up (about 1 s).
             XCTAssertLessThan(longest, GhosttyRenderer.drawableBackoffStart, "the main thread was not held up either")
-            XCTAssertGreaterThanOrEqual(free.framesDrawn - before, 5, "the visible pane kept drawing")
+            // How many frames fit in the window is the machine's: a shared one drew 2 to 13 of
+            // them with the stuck pane left alone all the while. What the pane must not do is
+            // stop drawing.
+            XCTAssertGreaterThan(free.framesDrawn - before, 0, "the visible pane kept drawing")
             XCTAssertEqual(stuck.drawableMisses, misses, "no drawable asked for during the wait")
             XCTAssertLessThanOrEqual(stuck.framesDrawn - stuckFrames, 1)
         }
