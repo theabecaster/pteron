@@ -762,17 +762,70 @@ type prose (`TypingAids`). Nothing to set.
 Around that:
 
 - Paste goes through the engine's `pasteText`, so programs that asked for bracketed paste get it.
-- Key bar (`KeyBar`): keys from the layout picked in Settings (`KeyBarLayout`); ctrl/alt/cmd tap for one key, double-tap to lock; the
-  "arrows" key is a trackpad. Bytes are in `KeyBar.bytes(for:appCursor:)`. Keys send on release, and
-  a sideways drag scrolls the bar and cancels the key under it.
+- Key bar (`KeyBar`): three glass capsules above the keyboard.
+  - **Left, fixed:** ⌘ opens the command palette (`RexCommand.goTo(.commands)`, as
+    `client.palette.toggle`); ✎ opens or closes Compose (below), with a pill while it is open;
+    the attach key (paperclip) opens the attach menu where the pane's computer takes files
+    (Files).
+  - **Middle:** the keys arranged in Settings → Keyboard (`KeyBarSetup`, below), then Return,
+    pinned past a hairline. They scroll sideways when they don't fit, and fade over 18 pt at an
+    edge with more keys past it; the fade's mask changes only when which edges fade changes. On
+    a wide window (the Duo unfolded, an iPad) the capsule shows more keys and, when all of them
+    fit, hugs them.
+  - **Right, fixed:** the arrows key (✥, a trackpad) and the hide key. Beside the Duo's vertical
+    bar the hide key is that bar's Hide Keyboard ([duo-layout.md](duo-layout.md), Key bar).
+  - ctrl, option, shift and cmd: tap for one key, double-tap to lock. Shift applies to the bar's
+    keys: ⇧ then ⇥ is Shift-Tab, ⇧ with an arrow, Home, End, PgUp, PgDn, Delete or a function key
+    is that key's shift chord (`KeyInput.bytes`), ⇧ then Return is Shift-Return, and a letter is
+    its capital; the system keyboard has its own shift, and a one-shot shift ends with any key.
+  - Bytes are in `KeyBar.bytes(for:appCursor:)`: Backspace sends DEL (0x7f) and Delete `CSI 3 ~`.
+    Keys send on release, and a sideways drag scrolls the middle capsule and cancels the key
+    under it.
+  - Keys are at least 40 pt wide, 2 pt apart, in capsules 6 pt apart and 6 pt from the sides.
+- Key bar setup (`KeyBarSetup`, Settings → Keyboard): the middle capsule in three sections, left
+  to right in an order the user drags: **Primary** (esc, ctrl, option, shift, tab, then Shift-Tab
+  and Command, hidden at first), **Shortcut Groups** and **Editing** (Backspace and Paste, then
+  Delete, Home, End, Page Up, Page Down and the four arrows, hidden at first). Each key is shown or
+  hidden with a tap and moved within its section with a drag; Reset Layout puts them back.
+  - Three built-in groups: **Characters** (`~ | / - \ _ $ * . .. ? & :` and `1 2 3`, for an
+    agent's numbered menus), **Shortcuts** (^C ^D ^Z ^L ^R ^A ^E ^U ^W ^K, each named for what it
+    does) and **Function Keys** (F1–F12). A group shown in the bar is one key that opens a menu
+    of its turned-on shortcuts; expanded, each of them is a key. Inside a group a tap turns a
+    shortcut on or off and a drag reorders. Add Shortcut makes one: a label, and either text,
+    sent exactly as written (a new line in it is the user's choice), or a key with ctrl,
+    option and shift. Reset restores one group, Reset Shortcut Groups all of them.
+  - The first setup is for agents: esc, ctrl, option, shift, tab, Characters expanded with
+    `~ | / -`, Backspace, Paste.
+  - A shortcut a bar key also sends (a character, a control letter, a function key, a plain
+    named key) goes through that key's path, with the bar's modifiers and cmd; other text is
+    written as it is, and another key as its chord with the bar's ctrl, option and shift added
+    (`KeyStroke.bytes`, which is `pane.send_key`'s encoding). All of it through
+    `TerminalStream.send` and the catch-up fence, as any key.
+  - Stored in `Prefs` as JSON with a version (`keyBarSetup`). Read back, it is normalized: a key,
+    section or group it lacks is added hidden, one this version doesn't know is dropped.
+  - From the layouts before it (`KeyBarLayout`, `Prefs.migrateKeyBar`), once: the layout picked
+    (Agents, Shell or Vim), a key list the removed editor saved (matched to its layout, or taken
+    as it is), or on an install that already ran with no choice saved, the Agents layout it had,
+    becomes a setup with the same keys (`KeyBarSetup.migrating`). Each key goes to its section,
+    in its order within it, and the sections come in the order they first appear; characters and
+    control keys become their group's shortcuts, the group shown and expanded, the ones the
+    layout had turned on and first; a key no group has becomes a shortcut of its own. ✥, attach
+    and Return have their own places now. Only a fresh install starts on the first setup.
+
+    | Layout | Primary | Shortcut Groups (expanded) | Editing |
+    |---|---|---|---|
+    | Agents | esc ⇧⇥ ⇥ ctrl cmd | Characters `/ 1 2 3`, Shortcuts ^C | ↑ ↓ Paste |
+    | Shell | esc ⇥ ⇧⇥ ctrl option cmd | Shortcuts ^R ^C, Characters `\| ~ / -` | ↑ ↓ ← → Paste |
+    | Vim | esc ctrl cmd | Characters `: / $ ~`, Shortcuts ^D ^U ^R ^W | PgUp PgDn Paste |
+
+    Agents and Vim list their sections Primary, Shortcut Groups, Editing; Shell, whose arrows came
+    before its control keys, Primary, Editing, Shortcut Groups.
 - Key bar trackpad (✥): it takes a drag as the space bar's trackpad does on the iOS keyboard
-  (`TrackpadEngage`). It engages after a still hold of 0.3 s (within 10 pt), or at once when the
-  first 10 pt of travel is mostly up or down (more than 1.5 times as far as sideways). Engaging
-  plays the tick its steps play and draws its cursor-colored ring; one arrow per 14 pt across or
-  18 pt up or down, counted from where the finger rested at the hold, or from the touch-down for a
-  vertical drag. A quick sideways swipe that starts on it scrolls the bar and sends nothing: an
-  immediate sideways drag no longer moves the cursor, so hold first. A tap sends nothing, as
-  before.
+  (`TrackpadEngage`). In its own capsule nothing scrolls under it, so the first 10 pt of travel in
+  any direction engages it, as does a still hold of 0.3 s (within 10 pt). Engaging plays the tick
+  its steps play and draws its cursor-colored ring; one arrow per 14 pt across or 18 pt up or
+  down, counted from where the finger rested at the hold, or from the touch-down for a drag. A tap
+  sends nothing, as before.
 - Key bar repeat: arrows and PgUp/PgDn repeat while held, and stop once the finger moves more
   than 10 pt from where it went down or off the key (`RepeatSlop`). The release then sends what a
   tap does if nothing repeated yet.
@@ -792,10 +845,8 @@ Around that:
   measured again 0.3 s after the keyboard's last frame change and on each input-mode change,
   without animation and only if it changed, and the palette's hold (`PadHold`) ends with a fresh
   measure rather than the value it kept.
-- Key bar Return: pinned in every layout (`KeyBarLayout.pinned`), at the end of the keys' capsule
-  past a hairline, next to the hide key (or, beside the Duo's vertical bar, 6 pt short of the
-  bar's column, which has Hide Keyboard; [duo-layout.md](duo-layout.md), Key bar), so it never
-  scrolls away. A tap sends what the bar's
+- Key bar Return: pinned at the end of the middle capsule, past a hairline, in every setup (it is
+  not part of it), so it never scrolls away. A tap sends what the bar's
   Enter always sent: CR, ESC CR with alt, CR with ctrl (as Ctrl-M), and with cmd the
   `cmd+enter` binding. It never repeats. Held for half a second (`KeyCap.holdDelay`, with a
   medium haptic) it sends Shift-Return through the engine's encoder, as a hardware Shift-Return:
@@ -836,6 +887,70 @@ Around that:
 - The keymap's app commands are also menu shortcuts (`AppShortcutCommands`), so ⌘/ and the rest
   work when no terminal is first responder (no tab open, keyboard put away). The menu replaces
   the system's Settings item, whose ⌘, would open the Settings app before the keymap sees it.
+
+## Compose
+
+The key bar's ✎ opens Compose for the pane: a glass card above the bar's capsules, with a grab
+handle, a plain iOS text field, + at its bottom left and ↑ (Send) at its bottom right
+(`ComposeCard`, `TerminalHost+Compose.swift`). It is for writing a whole message the way iOS
+writes text: autocorrect, capitals, selection, dictation and editing are the system's own. Smart
+quotes and dashes are off, so a command or a path stays as typed. Only a tap on ✎ opens it.
+
+- **The field's empty text** says where the message goes: "Message", the agent in the pane (by
+  the name it goes by, "Claude Code") or else the program in front, and the pane's folder with the
+  home folder as ~ (`ComposePlaceholder`): "Message Claude Code ~/pteron". Read when compose
+  opens and when the field takes the keyboard.
+- **Send** (↑, or ⌘Return on a hardware keyboard) is enabled while the field has text. It writes
+  the whole message through the pane's one input queue (`TerminalStream.send`), as the program
+  takes a paste: bracketed (`ESC [200~ … ESC [201~`) when it asked for bracketed paste, which
+  agents and modern shells do, so the message arrives whole, new lines and all, and the Return
+  after it is a Return; plain text otherwise. Then Return (CR, 0x0d) goes as a write of its own,
+  after the message's write was answered (`TerminalStream.send(_:thenAlone:)`), so a program that
+  reads a quick burst as a paste can't swallow it. Single-line text to a shell without bracketed
+  paste is the text and CR. A message with a line end to a program without bracketed paste would
+  run each line, so it is asked about first, as such a paste is (`PasteConfirmation`). An input
+  method's composition is committed first. Emoji, CJK and long text (10,000 characters) go as
+  one write of their UTF-8 bytes. The text is the user's, sent as typed whatever the program
+  shows (a permission prompt, a menu).
+- **The catch-up fence** applies as to any typed key: behind it the message and its Return are
+  held together and go as one write only over an exact screen. If the fence drops them, the
+  message comes back into the field, if it is empty, so it is never lost (`composeInputDropped`).
+- **After a send** the field is empty and keeps the keyboard. Nothing else changes.
+- **Keyboard focus.** Opening compose gives the field the keyboard inside the key bar on screen,
+  as find's accessory field takes it: the field gets the terminal's input view and the key bar as
+  its own accessory, so the keyboard doesn't go down or come up. Closing it gives the keyboard
+  back to the terminal the same way. While compose is open, whenever the pane's terminal takes the
+  keyboard (a tap on the pane, the pane becoming active, a cover going), the field takes it from
+  the terminal once the bar is shown (`refocusComposeSoon`). Every path that puts the keyboard
+  away or hands it on (the hide key, Hide Keyboard in the vertical bar, a sheet, a menu or the
+  agent board over the pane, another pane becoming active, find opening) first hands it back to
+  the terminal (`yieldComposeToTerminal`) and then does what it always did. Another pane takes
+  the keyboard from a compose field as from a terminal (`KeyboardFocusPolicy.Holder.composeField`);
+  app shortcuts don't run from it, as from any text field.
+- **The bar's keys while the field has the keyboard.** A key that types text (a character, a text
+  shortcut, with shift its capital), Backspace, and Paste with text on the pasteboard edit the
+  message. Every other key goes to the pane as always: esc, tab, the arrows, Return, a control
+  shortcut. A key typed on the keyboard while the bar's ctrl, option or cmd is on goes to the
+  pane too (ctrl then c interrupts), not into the message.
+- **+** opens the attach menu (Files). The server types the files' paths into the pane, as for
+  the attach key, so they arrive before the message that follows them.
+- **Open until closed.** Compose stays open for its pane, across tab and pane switches, until ✎
+  or the handle closes it. Each pane has its own (`ComposeSlot`), open or not, with its draft:
+  kept in memory while the app runs, in `TerminalHostPool`, so a parked or evicted pane keeps it.
+  A draft goes with its pane's session or computer, never anywhere else; a pane that closes or a
+  connection that drops does nothing to it.
+- **Closing.** ✎ again, or the handle dragged down 32 pt (or flicked). The card follows the
+  finger at 60 % and settles back in 0.18 s when let go short of that; with Reduce Motion it
+  stays put. VoiceOver: the handle is "Close Compose", then the field (its label is the empty
+  text), "Attach" and "Send".
+- **Size.** The card's height is fixed: 112 pt, or one 52 pt row (+, the field, ↑) under a short
+  window. Longer text scrolls inside it, so writing never resizes anything. The key bar grows by
+  the card and 8 pt, so the keyboard's frame includes the card: the root keeps clear of it
+  (Keyboard room) and a fitted pane's last rows sit above it, as above the key bar. Opening or
+  closing compose changes that height once.
+- **Postures.** The card spans the width the key bar's capsules may use: inside the safe area and
+  short of the Duo's vertical bar's column. With a hardware keyboard the card and the bar show
+  on their own at the bottom, as the bar does.
 
 ## Predicted echo
 
@@ -1022,8 +1137,8 @@ so it works in a shell and in an agent alike. The reverse, Open, brings a file t
 to the phone, and the file browser lists the folders of the pane's computer. The wire rules are
 in [rex-protocol.md](rex-protocol.md), Folders and Files.
 
-- **Sending.** The key bar's attach key (paperclip) is pinned before Return in every layout, so it
-  never scrolls out of sight. A tap opens one short list with no titles, subtitles or switches:
+- **Sending.** The key bar's attach key (paperclip) is in its left capsule, after ⌘ and ✎, so it
+  never scrolls out of sight; Compose's + opens the same menu. A tap opens one short list with no titles, subtitles or switches:
   Paste Image or Paste File (when the clipboard has one), Photos, Camera (where the device has
   one) and Files, then, after a divider, "Files on <computer>" with Browse Files… and Insert
   Path… (see Browse). Where the files go, the agent working in the pane (OSC 7501) or else the

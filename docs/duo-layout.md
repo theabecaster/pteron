@@ -298,17 +298,21 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   hide key, its keys' capsule ends 6 pt short of the column, as at a screen edge, and it takes no
   touch in the column, which belongs to the bar's items. The find bar in the keyboard's accessory
   slot ends short of it the same way and keeps Done, which closes find. Without a vertical bar
-  (iPhones, the inner screen in portrait, tabletop) the hide key stays at the bar's end as
-  before. Either way the pinned Return closes the keys' capsule on the trailing side, so it sits
-  next to the keyboard's own return, with the pinned attach key before it; both stay clear of a
-  vertical crease in every posture (`PinnedAttachKeyTests`, `KeyBarColumnTests`). With a vertical
-  crease, the key that would sit on it moves 12 pt past it, with the bar scrolled to its start.
+  (iPhones, the inner screen in portrait, tabletop) the hide key is the right capsule's last key.
+  The left capsule (⌘, ✎, attach) starts 6 pt from the leading side, the right one (✥, the hide
+  key) ends 6 pt from the trailing side or from the column, and the middle one, its keys then
+  the pinned Return, runs between them. The compose card, while it is open, spans the same width
+  above them. With a vertical crease, the scrolling key that would sit on it moves 12 pt past it,
+  with the bar scrolled to its start, and a middle capsule whose Return would land on the crease
+  runs on to the right capsule instead; no key of the bar sits on a crease in any posture
+  (`FixedKeysTests`, `KeyBarColumnTests`).
 - **Key bar look.** The iOS 26 keyboard is a glass panel with rounded top corners, so the bar has no
-  background of its own. The keys sit bare in a glass capsule tinted with the keyboard's color, 6 pt
-  from the sides like the keyboard's keys, with 4 pt of air above and below. At the bar's end the
-  hide key is a matching glass circle. A pressed key or an active ctrl/alt shows a pill. With a
-  hardware keyboard the bar still shows on its own at the bottom, for esc, ctrl and the arrows;
-  its hide key, or Hide Keyboard in the vertical bar, puts it away.
+  background of its own. The keys sit bare in three glass capsules tinted with the keyboard's
+  color, 6 pt from the sides like the keyboard's keys and 6 pt from each other, with 4 pt of air
+  above and below. A pressed key, an active ctrl, option or shift, and ✎ while compose is open
+  show a pill. The middle capsule's keys fade at an edge with more keys past it. With a hardware
+  keyboard the bar (and compose's card, while it is open) still shows on its own at the bottom,
+  for esc, ctrl and the arrows; its hide key, or Hide Keyboard in the vertical bar, puts it away.
 - **Keyboard room.** The root ignores SwiftUI's keyboard safe area and pads its bottom by
   `KeyboardInset`, computed from the keyboard's last reported frame and the root's frame on every
   keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment

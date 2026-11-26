@@ -313,7 +313,9 @@ builds.
   `-tapTestType <text>` types after the last tap.
 - `-ghosttyDemo <path>`: no server; replay a capture in a bare terminal view (`GhosttyDemoScreen`).
   `-replay <file>`: no server; feed a capture to a real pane (`ReplayScreen`, more arguments
-  there). `-perfLog <name>`: measure the pane into `Documents/perf/<name>.json` (`PerfProbe`);
+  there). `-replayKeys bar|compose[:draft]`: the replay's pane takes the keyboard a second in,
+  and with `compose` opens Compose with that draft, to look at the key bar and the compose card
+  without a computer. `-perfLog <name>`: measure the pane into `Documents/perf/<name>.json` (`PerfProbe`);
   with it, `-perfIdle <seconds>` and `-perfScroll <seconds>` add an idle phase and a scripted
   fling through the scrollback. `-perfSwitch <n>` switches between the panes of the tab on
   screen n times, forward and back, as a swipe does, `-perfSwitchEvery <seconds>` apart (default
