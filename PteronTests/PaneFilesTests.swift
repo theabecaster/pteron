@@ -601,7 +601,9 @@ final class BrowserKeyboardTests: XCTestCase {
         XCTAssertTrue(freed, "LEAKCHECK \(name): \(GhosttyCore.liveTerminals.load(ordering: .relaxed) - before) terminals left")
     }
 
-    private func eventually(_ seconds: Double = 3, _ condition: () -> Bool) async -> Bool {
+    /// Waits until `condition` holds. The 10 s only guard a hang: the keyboard and a sheet take
+    /// seconds to come and go on a busy machine.
+    private func eventually(_ seconds: Double = 10, _ condition: () -> Bool) async -> Bool {
         let end = Date().addingTimeInterval(seconds)
         while Date() < end {
             if condition() { return true }
@@ -638,11 +640,16 @@ final class BrowserKeyboardTests: XCTestCase {
     /// Opens the browser, lets the sheet settle, closes it as Done does, and waits until it is gone.
     private func openAndClose(_ files: PaneFiles, _ mode: BrowserModel.Mode = .browse, insert: String? = nil) async throws {
         XCTAssertTrue(files.browse(mode))
-        let up = await eventually { self.window.rootViewController?.presentedViewController != nil && files.browserModel != nil }
+        // Up once its presentation has finished, which a busy machine takes seconds over. The
+        // waits only guard a hang.
+        let up = await eventually(15) {
+            guard let sheet = self.window.rootViewController?.presentedViewController, files.browserModel != nil else { return false }
+            return !sheet.isBeingPresented && sheet.transitionCoordinator == nil
+        }
         XCTAssertTrue(up)
-        try? await Task.sleep(nanoseconds: 700_000_000)
+        try? await Task.sleep(nanoseconds: 300_000_000)
         if let insert { files.browserModel?.onInsert(insert) } else { files.browserModel?.onClose() }
-        let gone = await eventually(5) { files.browser == nil && self.window.rootViewController?.presentedViewController == nil }
+        let gone = await eventually(20) { files.browser == nil && self.window.rootViewController?.presentedViewController == nil }
         XCTAssertTrue(gone, "the sheet went")
         try? await Task.sleep(nanoseconds: 300_000_000)
     }
