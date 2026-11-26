@@ -19,8 +19,8 @@ enum DeviceWord {
         if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] { return simulated }
         var size = 0
         guard sysctlbyname("hw.machine", nil, &size, nil, 0) == 0, size > 0 else { return "" }
-        var buffer = [CChar](repeating: 0, count: size)
+        var buffer = [UInt8](repeating: 0, count: size)
         guard sysctlbyname("hw.machine", &buffer, &size, nil, 0) == 0 else { return "" }
-        return String(cString: buffer)
+        return String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
     }
 }
