@@ -559,15 +559,16 @@ final class GhosttyRenderTests: XCTestCase {
         view!.layoutIfNeeded()
         try await Task.sleep(nanoseconds: 100_000_000)
         let frames = renderer.framesDrawn
-        let start = CACurrentMediaTime()
         for i in 0..<12 {
             view!.feed(text: "\r\nwritten while there is nothing to draw on \(i)")
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         view!.core.sync()
         XCTAssertEqual(renderer.framesDrawn, frames, "no frame for a layer without area")
-        XCTAssertEqual(renderer.drawableMisses, 0)
-        XCTAssertLessThan(CACurrentMediaTime() - start, 0.9)
+        // A request for a drawable that blocked the thread, or came back with none, counts as a
+        // miss. (Not the wall time of the loop: a busy machine took 1.5 s over its 0.24 s of
+        // sleeps with no request at all.)
+        XCTAssertEqual(renderer.drawableMisses, 0, "no request for a drawable")
 
         // With area again, it draws what was written meanwhile.
         view!.frame = window.bounds
