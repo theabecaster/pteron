@@ -272,6 +272,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
     override func layoutSubviews() {
         placement = KeyBarPlacement.hideKey(column: barColumn)
         hideCap?.isHidden = placement == .verticalBar
+        // The capsules' keys run in the bar's direction, also where only the bar was told it.
+        let direction: UISemanticContentAttribute =
+            effectiveUserInterfaceLayoutDirection == .rightToLeft ? .forceRightToLeft : .forceLeftToRight
+        for s in [leftStack, stack, pinnedStack, rightStack] where s.semanticContentAttribute != direction {
+            s.semanticContentAttribute = direction
+        }
         layoutGlass()
         super.layoutSubviews()
         keepKeysOffCrease()
