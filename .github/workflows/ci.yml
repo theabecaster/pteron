@@ -70,14 +70,15 @@ jobs:
           xcodebuild test -project Pteron.xcodeproj -scheme Pteron -destination "id=$SIM" \
             -derivedDataPath build/dd -quiet -resultBundlePath build/tests.xcresult
       # -quiet names a failing test but not what failed in it: each failure's message, from the
-      # result bundle.
+      # result bundle, with the test's time. A Swift Testing test with arguments keeps its
+      # messages a level down, under each argument.
       - name: What failed
         if: failure()
         run: |
           [ -d build/tests.xcresult ] || exit 0
           xcrun xcresulttool get test-results tests --path build/tests.xcresult | jq -r '.. | objects
-            | select(.nodeType? == "Test Case" and .result == "Failed") | .name as $n
-            | (.children // [])[] | select(.nodeType == "Failure Message") | "\($n): \(.name)"'
+            | select(.nodeType? == "Test Case" and .result == "Failed") | .name as $n | (.duration // "?") as $d
+            | [.. | objects | select(.nodeType? == "Failure Message") | .name] | unique[] | "\($n) (\($d)): \(.)"'
 
   helper:
     runs-on: ubuntu-latest
