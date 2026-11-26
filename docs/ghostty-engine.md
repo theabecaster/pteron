@@ -205,10 +205,18 @@ What it is and when it runs: [terminal.md](terminal.md), Predicted echo. In the 
   once on the main thread, as a selection does, to capture the frame to keep; it is set only
   when a fence goes up, never at rest. A fenced pane's cursor is drawn hollow
   (`GhosttyRenderer.setFenced`); nothing else in the frame changes.
+  As the app leaves the front the host sets the same hold without its time limit
+  (`setCatchUpHold(_:limited: false)`, `GhosttyTerminalView.holdWhileAway`), and ends it once the
+  return has caught up ([terminal.md](terminal.md), Back from the background): the frame on show
+  is the one the user left, however long the app was away. A snapshot restored under a hold
+  makes a new render state that has read nothing (`renderStateBlank`); the frame builder keeps
+  the rows it has until the hold ends instead of building an empty frame from it.
 - **A parked pane** has no drawables: `releaseDrawables` shrinks the layer's drawable size to one
   pixel and the renderer draws nothing; `restoreDrawables` puts the size back and the first frame
   makes them again.
-- **Renderer.** `CAMetalLayer`, bgra8Unorm, premultiplied blending. Three instanced passes:
+- **Renderer.** `CAMetalLayer`, bgra8Unorm, premultiplied blending. The layer shows a frame at
+  its own pixels, anchored top-left (`contentMode = .topLeft`), never scaled to the layer: between
+  a change of the view's size and the first frame drawn for it, the last frame keeps its scale. Three instanced passes:
   background rects (adjacent cells of one color merged), glyph quads (an r8 mask atlas and a
   bgra atlas for color emoji), decoration rects (underline, strike, cursor). Inverse and bold
   are applied here; the library's resolved colors don't include them.

@@ -796,6 +796,8 @@ final class GhosttyFrameBuilder {
         guard let state = core.lockFrame(now: now) else { return false }
         defer { core.unlockFrame() }
         guard let iterator = core.rowIterator, let cells = core.rowCells else { return false }
+        // A snapshot restored under a hold: nothing read yet, so the held rows stay as built.
+        guard !core.renderStateBlank else { return false }
         rowsBuilt = 0
         rowsReused = 0
         // The atlas is ours for the whole build, so the lookups don't lock. Its worker thread

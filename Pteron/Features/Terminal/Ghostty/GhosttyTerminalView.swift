@@ -152,6 +152,11 @@ final class GhosttyTerminalView: UIView {
 
         isOpaque = true
         metalView.isUserInteractionEnabled = false
+        // A frame is never scaled to the layer. Between a change of the view's size and the
+        // first frame drawn for it, the layer still shows the last one: anchored top-left at its
+        // own pixels it keeps its scale, where the default stretched it to the new bounds (a
+        // pane back from the background showed its text several times too large).
+        metalView.contentMode = .topLeft
         let layer = metalView.metalLayer
         layer.device = GhosttyMetal.systemDevice
         layer.pixelFormat = GhosttyMetal.pixelFormat
@@ -238,8 +243,30 @@ final class GhosttyTerminalView: UIView {
     /// meanwhile, and `hold` keeps the screen on show until then (`GhosttyCore.setCatchUpHold`).
     func setCatchingUp(_ on: Bool, hold: Bool) {
         renderer.setFenced(on)
+        // The hold of an app that is away keeps its frame until the host ends it.
+        guard !awayHold else { return }
         core.setCatchUpHold(on && hold)
     }
+
+    /// The app leaves the front with this screen on show: it stays on show, as it was drawn,
+    /// until `endAwayHold()`, with no time limit (`AwayFrame`). Output, a restore and a resize
+    /// are parsed meanwhile as always.
+    func holdWhileAway() {
+        guard !awayHold else { return }
+        awayHold = true
+        core.setCatchUpHold(true, limited: false)
+    }
+
+    /// The return has caught up, or had nothing to catch up: the screen follows the terminal
+    /// again, drawn as one frame.
+    func endAwayHold() {
+        guard awayHold else { return }
+        awayHold = false
+        core.setCatchUpHold(false)
+    }
+
+    /// The app's away hold is on (`holdWhileAway`).
+    private(set) var awayHold = false
 
     func feed(text: String) {
         var t = text

@@ -331,6 +331,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// The pane holds its screen while its stream catches up, until the server's size is known
     /// to be the one it shows (`streamFence`, `streamResized`).
     private var holdsForCatchUp = false
+    /// The frame on show as the app left, kept at its grid until the return has caught up.
+    private var away = AwayFrame()
     /// Under this hold a resize of ours was answered, and the stream said a size that does not
     /// fit: the two together mean the reflow and the program's redraw are still to come in the
     /// stream, so a size report that fits is the resize's echo and not a pane that opens at the
@@ -1473,6 +1475,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // Also when nothing is claimed yet: a claim on its way must not resize the pane now.
         claimedSize = nil
         releaseClaim()
+        // The Mac's size can come while the app still runs here: the screen the user saw stays
+        // on show at its own grid, never stretched to another (`AwayFrame`).
+        if away.left(showing: localGrid, hasScreen: hasScreen, inWindow: window != nil) { term.holdWhileAway() }
     }
 
     @objc private func willForeground() {
@@ -1485,6 +1490,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         } else {
             quietUntil = 0
         }
+        // The kept frame stays while the stream catches up behind its fence, and goes now if
+        // there is nothing to catch up.
+        if away.returned(catchingUp: holdsForCatchUp) { endAway() }
         // A "Reconnecting…" from while the app was away waits out the grace like a new one.
         if let s = transientStatus {
             statusWork?.cancel()
@@ -1721,6 +1729,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         guard !isParked else { return }
         isParked = true
         isWarm = false
+        if away.end() { endAway() }
         loader?.removeFromSuperview()
         loader = nil
         stopKeyRepeats()
@@ -1749,6 +1758,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func warm() {
         guard !isWarm, !isParked else { return }
         isWarm = true
+        if away.end() { endAway() }
         term.core.dropFrameEcho()
         keptBytes = term.core.memoryBytes
         stopKeyRepeats()
@@ -1831,6 +1841,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func stop() {
         isParked = false
         isWarm = false
+        if away.end() { endAway() }
         loader?.removeFromSuperview()
         loader = nil
         hasScreen = false
@@ -2073,8 +2084,11 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func positionTerm() {
         guard bounds.width > 1, bounds.height > 1 else { return }
         let cell = cellSize()
-        let size = CGSize(width: ceil(CGFloat(localGrid.0) * cell.width) + 0.5,
-                          height: ceil(CGFloat(localGrid.1) * cell.height) + 0.5)
+        // While the app is away and until its return has caught up, the frame on show keeps
+        // its own grid (`AwayFrame`).
+        let grid = away.layoutGrid(engine: (localGrid.0, localGrid.1))
+        let size = CGSize(width: ceil(CGFloat(grid.cols) * cell.width) + 0.5,
+                          height: ceil(CGFloat(grid.rows) * cell.height) + 0.5)
         if fitted {
             zoomer.minimumZoomScale = 1
             zoomer.maximumZoomScale = 1
@@ -2417,9 +2431,12 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         fenceStatusWork = nil
         holdsForCatchUp = up
         resizedUnderHold = false
-        otherSizeUnderHold = false
+        // Back from the background with another client's size in place, taken while the app was
+        // away: a report that fits is our resize's echo, with the program's redraw behind it.
+        otherSizeUnderHold = up && fitted && away.grid.map { localGrid != ($0.cols, $0.rows) } ?? false
         term.setCatchingUp(up, hold: up)
         if !up, hasScreen { endLoader() }
+        if !up, away.caughtUp(inBackground: backgroundedAt != nil) { endAway() }
         if up {
             // A pane with nothing to show says so itself ("Connecting…").
             guard screen else { return }
@@ -2453,6 +2470,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         otherSizeUnderHold = false
         term.setCatchingUp(stream.isFenced, hold: false)
         if hasScreen { endLoader() }
+        if away.caughtUp(inBackground: backgroundedAt != nil) { endAway() }
+    }
+
+    /// The kept frame goes: the screen and the view follow the terminal again, as one frame.
+    private func endAway() {
+        term.endAwayHold()
+        positionTerm()
     }
 
     func streamWhenParsed(_ done: @escaping @MainActor () -> Void) { term.whenParsed(done) }

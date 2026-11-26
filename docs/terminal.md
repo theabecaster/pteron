@@ -286,6 +286,32 @@ from a program state the user has not seen.
   answer counts as the echo. Before, such a pane took another client's size behind the fence
   for an old one: it looked again a second later and sent one resize after all.
 
+### Back from the background
+
+The screen the user left is the one on show when the app comes back, at its own size, until the
+return has caught up (`AwayFrame`, `GhosttyTerminalView.holdWhileAway`).
+
+- **Why.** A fitted pane is handed back to the Mac as the app leaves (Fit and mirror), and the
+  Mac's size and redraw can reach the phone while the app still runs in the background, a few
+  seconds. The pane was laid out at that grid there, but nothing draws in the background, so its
+  layer grew around the last frame it had presented, the phone's. Back in front, iOS showed that
+  frame stretched to the Mac's grid (on the folded Duo about 7 times as wide and 2.6 times as
+  tall, blurry), then the Mac's grid for a frame or two, then the pane at its size. A return
+  within a second or so had nothing from the Mac yet and showed nothing wrong.
+- **What it does.** As the app leaves, a pane in a window that shows a screen keeps the grid of
+  that screen for its view, and the engine holds that frame: the catch-up hold, with no time
+  limit ([ghostty-engine.md](ghostty-engine.md), The catch-up hold). The terminal parses
+  everything that comes meanwhile, resizes included, in stream order. Back in front, the wake
+  raises the fence and the claim takes the pane again, as before; the frame stays until the
+  stream's own hold ends or its fence comes down, and the screen it caught up to shows as one
+  frame. A return with nothing to catch up (no stream running) shows the terminal at once.
+- A snapshot restored under it (a fresh start after a long absence) keeps the held rows on show
+  until the hold ends: never an empty frame in between.
+- With the control connection down the frame stays, with "Reconnecting…" after 2.5 s, until the
+  stream is back. Scrolling, a selection and find draw through it, as through any hold.
+- Nothing more is sent: the hand-back, the one claim on the return and its resize are as before.
+- A pane that parks, warms, stops or leaves the screen drops it.
+
 ## Parking
 
 A pane that leaves the screen (a pane or tab switch) parks instead of stopping, so coming back
