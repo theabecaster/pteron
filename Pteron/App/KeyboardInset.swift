@@ -47,10 +47,20 @@ enum KeyboardInset {
     ///     palette's field, find, a quiet pane).
     ///   - hiding: the last report was a hide. The keyboard's frame rules then, so a bar frame
     ///     left from before can't hold the pane short on the way down.
+    /// With a floating keyboard (an iPad's), the bar alone takes room, where it is docked at the
+    /// window's bottom.
     static func padding(keyboard: CGRect, keyBar: CGRect?, hiding: Bool, view: CGRect, window: CGRect,
                         windowSafeBottom: CGFloat) -> CGFloat {
         let pad = padding(keyboard: keyboard, view: view, window: window, windowSafeBottom: windowSafeBottom)
-        guard let bar = keyBar, !hiding, isUp(keyboard, window: window), !bar.isEmpty else { return pad }
+        guard let bar = keyBar, !hiding, !bar.isEmpty else { return pad }
+        if floats(keyboard, window: window) {
+            // An iPad's floating keyboard leaves its key bar docked at the window's bottom, on its
+            // own: the keys take no room, the bar does.
+            guard bar.maxY >= window.maxY - 1, bar.maxY <= window.maxY + 1, bar.minY < view.maxY,
+                  bar.minX < view.maxX, bar.maxX > view.minX else { return pad }
+            return max(pad, padding(keyboard: bar, view: view, window: window, windowSafeBottom: windowSafeBottom))
+        }
+        guard isUp(keyboard, window: window) else { return pad }
         // A bar the keyboard's top doesn't reach (one laid out before the keyboard placed it,
         // or beside the root), or below the root, isn't the one above these keys.
         guard bar.maxY >= keyboard.minY - 1, bar.minY < view.maxY, bar.maxY <= window.maxY + 1,
@@ -58,6 +68,13 @@ enum KeyboardInset {
         // The bar's top to the window's bottom, as if the keyboard reached that high.
         let floor = CGRect(x: bar.minX, y: bar.minY, width: bar.width, height: window.maxY - bar.minY)
         return max(pad, padding(keyboard: floor, view: view, window: window, windowSafeBottom: windowSafeBottom))
+    }
+
+    /// Floating or undocked: a frame of its own that ends above the window's bottom and shows in
+    /// the window. Not an empty frame, which says nothing about where the keys are.
+    static func floats(_ keyboard: CGRect, window: CGRect) -> Bool {
+        !keyboard.isNull && !keyboard.isEmpty && keyboard.maxY < window.maxY - 1 && keyboard.minY < window.maxY
+            && keyboard.maxY > window.minY
     }
 
     /// Docked at the window's bottom with some of it on screen: shown or showing.

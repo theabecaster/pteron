@@ -694,8 +694,10 @@ Around that:
   and `KeyboardInsetReader` reads its frame live and pads by the larger of the two
   (`KeyboardInset.padding(…keyBar:…)`). Only while the keyboard is shown or showing, and only a bar
   in a window of this scene that the keyboard's top reaches and that sits above the root's bottom:
-  hiding, the palette's or find's keyboard (no key bar), a floating keyboard and a bar beside the
-  root (Split View, the Duo's other side) leave the keyboard's frame in charge. The padding is
+  hiding, the palette's or find's keyboard (no key bar) and a bar beside the
+  root (Split View, the Duo's other side) leave the keyboard's frame in charge. An iPad's
+  floating keyboard takes no room, but its key bar stays docked at the window's bottom, and the
+  root keeps clear of that bar (`KeyboardInset.floats`). The padding is
   measured again 0.3 s after the keyboard's last frame change and on each input-mode change,
   without animation and only if it changed, and the palette's hold (`PadHold`) ends with a fresh
   measure rather than the value it kept.

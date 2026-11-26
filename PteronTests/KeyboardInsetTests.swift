@@ -135,6 +135,24 @@ struct KeyBarFloorTests {
         #expect(pad(CGRect(x: 0, y: 417, width: 466, height: 261), bar: CGRect(x: 0, y: 363, width: 466, height: 54),
                     view: w, window: w) == 281)
     }
+
+    /// An iPad's floating keyboard, as the iPad Pro 13-inch simulator reports it: the keys float
+    /// mid-window and the key bar stays docked at the window's bottom. The bug: the pane ran to
+    /// the window's bottom, its last rows behind the bar.
+    @Test func aFloatingKeyboardsBarStillTakesItsRoom() {
+        let iPad = CGRect(x: 0, y: 0, width: 1032, height: 1376)
+        let keys = CGRect(x: 698, y: 162, width: 334, height: 345)
+        let docked = CGRect(x: 0, y: 1322, width: 1032, height: 54)
+        // The window's bottom inset is 20 pt there.
+        #expect(pad(keys, bar: docked, view: iPad, window: iPad, safe: 20) == 34)
+        #expect(pad(keys, bar: nil, view: iPad, window: iPad, safe: 20) == 0, "the palette's field: nothing")
+        #expect(pad(keys, bar: docked, hiding: true, view: iPad, window: iPad, safe: 20) == 0, "hiding: nothing")
+        // A bar that isn't at the window's bottom isn't this keyboard's.
+        #expect(pad(keys, bar: CGRect(x: 0, y: 900, width: 1032, height: 54), view: iPad, window: iPad, safe: 20) == 0)
+        // Beside the root: nothing.
+        let left = CGRect(x: 0, y: 0, width: 500, height: 1376)
+        #expect(pad(keys, bar: CGRect(x: 520, y: 1322, width: 512, height: 54), view: left, window: iPad, safe: 20) == 0)
+    }
 }
 
 /// The probe: a sequence of reports, the key bar coming and going, the settle and the palette's
