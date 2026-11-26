@@ -1042,6 +1042,31 @@ final class ControlTimingTests: XCTestCase {
         XCTAssertEqual(sockets.count, 2)
     }
 
+    /// `ServerPreview`'s timeout or cancel: the attempt waiting for its welcome closes with a close
+    /// frame, its `connect()` fails, and nothing is tried again.
+    func testADisconnectBeforeTheWelcomeClosesAndNeverTriesAgain() async {
+        let t = await beginConnect()
+        let s = sockets.last
+        control.disconnect()
+        let ok = await t.value
+        XCTAssertFalse(ok)
+        XCTAssertEqual(s.closedWith, .normalClosure)
+        XCTAssertFalse(s.cancelled, "not dropped with no close frame")
+        await clock.advance(by: 3600)
+        XCTAssertEqual(sockets.count, 1)
+    }
+
+    /// `invalidate()`, the end of a `ServerPreview` fetch, closes as `disconnect()` does.
+    func testInvalidateClosesWithACloseFrameAndNeverTriesAgain() async {
+        await connect()
+        let s = sockets.last
+        control.invalidate()
+        XCTAssertEqual(s.closedWith, .normalClosure)
+        XCTAssertFalse(s.cancelled, "not dropped with no close frame")
+        await clock.advance(by: 3600)
+        XCTAssertEqual(sockets.count, 1)
+    }
+
     // MARK: TLS
 
     private let untrusted = URLError(.serverCertificateUntrusted)
