@@ -1,9 +1,9 @@
 # Pteron
 
-Pteron is a native iPhone app for Rex, [Superlogical](https://superlogical.com)'s terminal
+Pteron is a native iPhone and iPad app for Rex, [Superlogical](https://superlogical.com)'s terminal
 multiplexer. It lets you see and drive the sessions, tabs and panes running on your computers,
 and tells you when an agent needs you. It is built for the iPhone Duo's folded and unfolded
-screens and works on any iPhone with iOS 18 or later.
+screens and works on any iPhone or iPad with iOS 18 or later.
 
 Pteron is an independent app. It is not affiliated with or endorsed by Superlogical. Rex is a
 separate product: install it on each computer you want to reach from your phone.

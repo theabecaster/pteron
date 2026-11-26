@@ -119,7 +119,7 @@ targets:
         # Keep the bundle id: App Store Connect and the APNs topic depend on it.
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo
         PRODUCT_NAME: Pteron
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Pteron/Info.plist
         GENERATE_INFOPLIST_FILE: NO
@@ -163,7 +163,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.abrahamgonzalez.rexduo.widgets
         PRODUCT_NAME: PteronWidgets
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: PteronWidgets/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES

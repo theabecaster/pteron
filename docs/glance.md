@@ -27,8 +27,8 @@ saw them. It connects to nothing: it reads the snapshot the app wrote (below).
   several, and nothing scrolls: what doesn't fit is "+N more". A snapshot keeps at most 8
   waiting agents per machine.
 - **The gallery and the placeholder** show made-up agents (`GlanceDemo`), never the person's.
-- The app is iPhone-only, so there is no iPad widget. On a Mac, the iPhone's widget can sit on
-  the desktop, and a click there hands off to the phone.
+- The widget and the controls run on an iPad too, from the same snapshot. On a Mac, the
+  iPhone's widget can sit on the desktop, and a click there hands off to the phone.
 - **No Live Activity**, by decision.
 
 ### Calm

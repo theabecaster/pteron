@@ -3,7 +3,7 @@
 An iOS remote for Rex, a terminal multiplexer. The app connects to a Rex server's control API and
 terminal data stream over the server's Tailscale HTTPS address, draws panes with libghostty-vt and
 its own Metal renderer, and creates, splits, resizes and types into real Rex sessions. It is built
-for the iPhone Duo and works on any iPhone. `Relay/` holds Pteron Beacon, a Rust program for
+for the iPhone Duo and works on any iPhone and iPad. `Relay/` holds Pteron Beacon, a Rust program for
 macOS and Linux that sends push notifications for Rex events, and `Gateway/` the Cloudflare Worker
 that passes them to Apple.
 
@@ -82,7 +82,8 @@ stays fixed: App Store Connect and the APNs topic depend on it.
   docs/goto.md).
 - `Pteron/App`: entry point, `RootView` (sidebar and tab for the window and the fold), launch
   transition.
-- `Pteron/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass.
+- `Pteron/DesignSystem`: terminal themes, chrome colors derived from them, fonts, glass, the
+  window controls' room (`WindowControls`).
 - `PteronTests`: app tests, run in the simulator. Beacon tests live in `Relay/src`.
 - `Gateway/`: the push gateway. It holds the APNs key and the phones' APNs tokens; a Beacon holds
   only a per-phone secret (`Gateway/README.md`). `Relay/release.sh` publishes Beacon releases and
@@ -128,8 +129,9 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
 - The app builds with zero warnings from our code. Keep it that way.
 - After a change, run the tests for the layer you touched. For UI, run the app and look at a
   screenshot (`xcrun simctl io <id> screenshot --display=LCD out.png` on the Duo simulator shows the
-  folded screen only). For other postures use `-simulateDuo` on an iPad simulator, built with
-  `TARGETED_DEVICE_FAMILY=1,2` on the command line so the app runs full size there.
+  folded screen only). For other postures use `-simulateDuo` on an iPad simulator. An iPad
+  window is laid out as the Duo's open screen when wide and as its folded screen when narrow;
+  check a small window too (window controls, docs/duo-layout.md, iPad).
 - After a change to the feed path, the renderer or the host's main-thread work, run
   `scripts/bench/run.sh <sim-id>` (about 5 minutes, no server). It fails when a number passes its
   budget (docs/ghostty-engine.md, Measurements).
