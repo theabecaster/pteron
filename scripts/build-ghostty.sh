@@ -50,7 +50,15 @@ ZIG=$ZIG_DIR/zig
 # 2. Ghostty at the pinned commit, plus our patches (scripts/ghostty-patches/*.patch).
 SRC=$VENDOR/ghostty
 if [[ ! -d $SRC/.git ]]; then
-  git clone --filter=blob:none $GHOSTTY_REPO $SRC
+  # GitHub sometimes refuses a CI runner's clone for a moment ("could not read Username"):
+  # tried four times, a little longer apart each time.
+  for wait in 15 30 60 0; do
+    git clone --filter=blob:none $GHOSTTY_REPO $SRC && break
+    rm -rf $SRC
+    (( wait )) || { echo "build-ghostty.sh: could not clone $GHOSTTY_REPO" >&2; exit 1; }
+    echo "clone failed; trying again in ${wait}s"
+    sleep $wait
+  done
 fi
 if ! git -C $SRC cat-file -e "$GHOSTTY_COMMIT^{commit}" 2>/dev/null; then
   git -C $SRC fetch --quiet origin
