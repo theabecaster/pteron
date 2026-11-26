@@ -1059,8 +1059,10 @@ private func holdTheMainActor(seconds: Double, until done: () -> Bool) {
     while !done(), Date() < end { usleep(5000) }
 }
 
+/// Waits until `condition` holds. The 15 s only guard a hang: a reconnect and its sync take
+/// seconds on a busy machine.
 @MainActor
-private func eventually(seconds: Double = 5, _ condition: @MainActor () -> Bool) async -> Bool {
+private func eventually(seconds: Double = 15, _ condition: @MainActor () -> Bool) async -> Bool {
     let end = Date().addingTimeInterval(seconds)
     while !condition(), Date() < end { try? await Task.sleep(for: .milliseconds(10)) }
     return condition()

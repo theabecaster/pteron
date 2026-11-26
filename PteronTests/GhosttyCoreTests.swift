@@ -444,8 +444,9 @@ final class GhosttyCoreTests: XCTestCase {
             core.sync()
             XCTAssertEqual(GhosttyCore.liveTerminals.load(ordering: .relaxed), before + 1)
         }
-        // The feed queue may still hold the last block for a moment.
-        let deadline = Date().addingTimeInterval(2)
+        // The feed queue may still hold the last block for a moment, longer on a busy machine:
+        // 10 s only guards a hang.
+        let deadline = Date().addingTimeInterval(10)
         while (weakCore != nil || GhosttyCore.liveTerminals.load(ordering: .relaxed) != before) && Date() < deadline { usleep(10_000) }
         XCTAssertNil(weakCore)
         XCTAssertEqual(GhosttyCore.liveTerminals.load(ordering: .relaxed), before)
