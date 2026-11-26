@@ -1175,7 +1175,12 @@ struct NotificationChoiceTests {
             $0.helpers[self.other].registrationSaysVersion = false
         }
         await s.push.refresh()
-        await s.world.eventually { s.push.registeredVersions[self.server] != nil && s.push.versions[self.other] != nil }
+        // The registration's version shows at once; its status is asked for afterwards, in a
+        // task of its own.
+        await s.world.eventually {
+            s.push.registeredVersions[self.server] != nil && s.push.versions[self.other] != nil
+                && s.helpers[self.server].count("helper_status") >= 1
+        }
         #expect(s.push.registeredVersions[server] == "0.3.1" && s.push.versions[server] == nil)
         #expect(s.push.versions[other]?.version == "0.3.0" && s.push.registeredVersions[other] == nil)
         // Asked once where it answered; asked again where it did not, and no more than the tries allow.
