@@ -70,7 +70,8 @@ final class AlertEventsTests: XCTestCase {
         for i in 0..<10_000 { progress(rig, "set", i % 101) }
         // Every report is in when the last value shows.
         progress(rig, "set", 7)
-        let drained = await eventually(seconds: 10) { self.bar(rig)?.percent == 7 }
+        // 30 s only guards a hang: the pace is checked against the time it took.
+        let drained = await eventually(seconds: 30) { self.bar(rig)?.percent == 7 }
         XCTAssertTrue(drained)
         let elapsed = Date().timeIntervalSince(start)
         let n = RenderCount.value(.progressWrites) - writes
@@ -88,7 +89,7 @@ final class AlertEventsTests: XCTestCase {
     /// How fast they show (the meta flush's pace is 0.15 s) is a measurement: it failed on a busy
     /// machine, so the limit is checked only by the benchmark (`scripts/bench/flood.sh`, with
     /// the budget from `scripts/bench/budgets.mjs`, `flood.lagSeconds`). Here the lags are
-    /// printed and each title has 3 s to show.
+    /// printed, and each title has 15 s to show, which only guards a hang.
     func testATitleShowsAtItsUsualPaceDuringAProgressFlood() async throws {
         let rig = try await shells()
         defer { rig.stop() }
@@ -107,7 +108,7 @@ final class AlertEventsTests: XCTestCase {
             let title = "zz title \(k)"
             let sent = Date()
             blockEvent(rig, "title_changed", ["title": title])
-            let shown = await eventually(seconds: 3) { rig.server.meta["block:1a"]?.title == title }
+            let shown = await eventually(seconds: 15) { rig.server.meta["block:1a"]?.title == title }
             XCTAssertTrue(shown)
             lags.append(Date().timeIntervalSince(sent))
         }
@@ -115,7 +116,7 @@ final class AlertEventsTests: XCTestCase {
         let sent = Date()
         blockEvent(rig, "program_status_changed", ["id": "s", "record": ["id": "s", "app": "claude", "state": "blocked"] as JSONObject],
                    block: "block:1b")
-        let blocked = await eventually(seconds: 3) { rig.server.meta["block:1b"]?.topStatus?.state == "blocked" }
+        let blocked = await eventually(seconds: 15) { rig.server.meta["block:1b"]?.topStatus?.state == "blocked" }
         XCTAssertTrue(blocked)
         let blockedLag = Date().timeIntervalSince(sent)
         await flood.value

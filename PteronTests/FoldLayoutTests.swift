@@ -103,10 +103,17 @@ final class FoldLayoutTests: XCTestCase {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
-    private func resize(to size: CGSize) async {
+    private func resize(to size: CGSize) {
         window.frame = CGRect(origin: .zero, size: size)
         window.layoutIfNeeded()
-        // The layout settles and the claim's 120 ms settle runs out, with room to spare.
+    }
+
+    /// Waits for the `n`th resize (10 s guards a hang), then for as long again as the layout
+    /// and the claim's 120 ms settle take, so a resize sent twice would be there too. A slow
+    /// machine takes longer to send the first; how long is no part of the test.
+    private func settled(_ n: Int, _ transport: Transport) async {
+        let end = Date().addingTimeInterval(10)
+        while transport.resizes.count < n, Date() < end { await wait(0.02) }
         await wait(0.6)
     }
 
@@ -139,11 +146,19 @@ final class FoldLayoutTests: XCTestCase {
         let host = TerminalHost(stream: TerminalStream(control: s.control, sessionID: "work", blockID: "b0"), sizing: .fit,
                                 fontSize: CGFloat(prefs.fontSize), theme: ThemeStore.fallback, claim: FitClaim(transport: transport))
         pool.add(host, for: TerminalHostPool.Key(server: s.id, session: "work", block: "b0"))
+        // The terminal goes, so no pane is left on the render thread for the next test: also
+        // when a check below throws and ends the test early.
+        addTeardownBlock { @MainActor [weak w = window] in
+            w?.rootViewController = nil
+            host.stop()
+            host.removeFromSuperview()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
         let keyboard = FoldKeyboard()
         window.rootViewController = UIHostingController(rootView: Root(server: s, keyboard: keyboard)
             .environment(model).environment(prefs).environment(pool))
         window.makeKeyAndVisible()
-        await wait(0.6)
+        await settled(1, transport)
 
         // Folded: one resize, to the pane.
         XCTAssertEqual(transport.resizes.count, 1)
@@ -153,7 +168,8 @@ final class FoldLayoutTests: XCTestCase {
         assertFills(host, "folded")
 
         // Unfold: one resize, to the wide pane.
-        await resize(to: unfolded)
+        resize(to: unfolded)
+        await settled(2, transport)
         XCTAssertEqual(transport.resizes.count, 2, "one resize for the unfold")
         let unfoldedGrid = try XCTUnwrap(transport.resizes.last)
         XCTAssertTrue(unfoldedGrid == fits(host))
@@ -168,7 +184,8 @@ final class FoldLayoutTests: XCTestCase {
 
         // Folded with the keyboard up: one resize, to the folded pane with the keyboard down, not
         // to the unfolded height kept from before the keyboard showed.
-        await resize(to: folded)
+        resize(to: folded)
+        await settled(3, transport)
         XCTAssertEqual(transport.resizes.count, 3, "one resize for the fold")
         let foldedAgain = try XCTUnwrap(transport.resizes.last)
         XCTAssertTrue(foldedAgain == foldedGrid, "the folded pane's grid, keyboard or not")
@@ -183,9 +200,9 @@ final class FoldLayoutTests: XCTestCase {
         // Unfold with the keyboard up, then down: one resize in all.
         keyboard.room = 250
         await wait(0.6)
-        await resize(to: unfolded)
+        resize(to: unfolded)
         keyboard.room = 0
-        await wait(0.6)
+        await settled(4, transport)
         XCTAssertEqual(transport.resizes.count, 4)
         XCTAssertTrue(try XCTUnwrap(transport.resizes.last) == unfoldedGrid)
         try echo(host, transport)
@@ -195,12 +212,6 @@ final class FoldLayoutTests: XCTestCase {
         let w = try XCTUnwrap(s.views["work"]?.window("w0"))
         let chip = TabChip.of(w, position: 1, count: 1, server: s, active: true, block: "b0", strip: nil)
         XCTAssertEqual(chip.icons, [TabChip.Icon(id: "b0", agent: .claude)])
-
-        // The terminal goes, so no pane is left on the render thread for the next test.
-        window.rootViewController = nil
-        host.stop()
-        host.removeFromSuperview()
-        await wait(0.2)
     }
 
     func testAFoldResizesThePaneOnceInTabMode() async throws {
