@@ -171,10 +171,10 @@ struct RootView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
-                // The panes reach under the posture's inset and the simulator's own, which the
-                // simulated window sits on.
+                // The panes reach under the posture's bottom inset. The simulator's own stays
+                // outside: the window sits on the screen's edge and ignores it (below).
                 layout(theme, fake: .some(sim.rootDivision), fills: sim.fillsScreen, insets: sim.insets(keyboard: simKeyboard),
-                       room: sim.keyboardRoom(simKeyboard), home: sim.safeArea.bottom + homeInset)
+                       room: sim.keyboardRoom(simKeyboard), home: sim.safeArea.bottom)
                     .safeAreaPadding(sim.safeArea)
                     .frame(width: sim.size.width, height: max(sim.size.height - simKeyboard, 100))
                     .frame(width: sim.size.width, height: sim.size.height, alignment: .top)
@@ -201,7 +201,7 @@ struct RootView: View {
         }
         // On the screen's bottom edge, as a device's window is, so panes that run to the window's
         // edge end at the simulated window's bottom and not under it. The screen's own bottom
-        // inset then lies inside the simulated window, which `home` counts.
+        // inset is ignored there: the posture's is the one the simulated window has.
         .ignoresSafeArea(.container, edges: .bottom)
         .background(Color(white: 0.45).ignoresSafeArea())
         .ignoresSafeArea(.keyboard)
