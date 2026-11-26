@@ -199,6 +199,10 @@ struct RootView: View {
                 Spacer(minLength: 0)
             }
         }
+        // On the screen's bottom edge, as a device's window is, so panes that run to the window's
+        // edge end at the simulated window's bottom and not under it. The screen's own bottom
+        // inset then lies inside the simulated window, which `home` counts.
+        .ignoresSafeArea(.container, edges: .bottom)
         .background(Color(white: 0.45).ignoresSafeArea())
         .ignoresSafeArea(.keyboard)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
