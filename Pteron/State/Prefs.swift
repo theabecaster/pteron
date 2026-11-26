@@ -6,62 +6,6 @@ enum SizingMode: String {
     case mirror  // keep the Mac's size; zoom and pan
 }
 
-/// The key bar's layouts. "arrows" is the drag-to-move trackpad key.
-enum KeyBarLayout: String, CaseIterable, Identifiable {
-    case agents, shell, vim
-
-    /// Keys that never scroll, in every layout: they sit at the end of the keys' capsule, next to
-    /// the hide key. Return runs a shell's line and sends an agent's message, so it never scrolls
-    /// out of reach, and stays last. Attach sits before it, so sending a photo or a file is always
-    /// in sight; it shows only where the pane's host takes files, as it always has. No layout's
-    /// `keys` lists them.
-    static let pinned = ["attach", "enter"]
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .agents: return "Agents"
-        case .shell: return "Shell"
-        case .vim: return "Vim"
-        }
-    }
-    var keys: [String] {
-        switch self {
-        case .agents:
-            return ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "ctrl-c", "1", "2", "3", "ctrl", "cmd",
-                    "paste"]
-        case .shell:
-            return ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left", "right", "ctrl-r",
-                    "ctrl-c", "|", "~", "/", "-", "paste"]
-        case .vim:
-            return ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
-                    "$", "~", "paste"]
-        }
-    }
-
-    /// The keys the removed key bar editor saved for this layout (before the attach and cmd keys).
-    /// `Prefs.migrate` matches a stored key list against them.
-    var storedKeys: [String] {
-        switch self {
-        case .agents:
-            return ["esc", "shift-tab", "tab", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl", "paste"]
-        case .shell:
-            return ["esc", "tab", "ctrl", "alt", "arrows", "up", "down", "left", "right", "ctrl-r", "ctrl-c",
-                    "|", "~", "/", "-", "paste"]
-        case .vim:
-            return ["esc", ":", "ctrl", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
-                    "$", "~", "paste"]
-        }
-    }
-
-    /// The layout a key list saved by the removed editor stands for, nil for an edited one. A list
-    /// saved as `keys` were before Return and attach were pinned has them among it: they are left out.
-    static func matching(stored keys: [String]) -> KeyBarLayout? {
-        let scrolling = keys.filter { !pinned.contains($0) }
-        return allCases.first { $0.storedKeys == keys || $0.keys == scrolling }
-    }
-}
-
 /// How the app moves between sessions and tabs: the sidebar beside or over the tab, or the tabs
 /// in a strip above it, as the Rex Mac app's horizontal tabs.
 enum NavigationStyle: String, CaseIterable, Identifiable {
@@ -125,9 +69,11 @@ final class Prefs {
     var darkThemeID: String { didSet { d.set(darkThemeID, forKey: "themeID") } }
     var lightThemeID: String { didSet { d.set(lightThemeID, forKey: "lightThemeID") } }
     var fontSize: Double { didSet { d.set(fontSize, forKey: "fontSize") } }
-    var keyBarLayout: KeyBarLayout {
+    /// The key bar's middle capsule: its sections, keys and shortcut groups (`KeyBarSetup`).
+    var keyBarSetup: KeyBarSetup {
         didSet {
-            d.set(keyBarLayout.rawValue, forKey: "keyBarLayout")
+            guard keyBarSetup != oldValue else { return }
+            if let data = try? JSONEncoder().encode(keyBarSetup) { d.set(data, forKey: "keyBarSetup") }
             NotificationCenter.default.post(name: .keyBarChanged, object: nil)
         }
     }
@@ -271,9 +217,9 @@ final class Prefs {
     static func fontSize(_ s: Double) -> Double {
         min(max((s * 2).rounded() / 2, fontSizes.lowerBound), fontSizes.upperBound)
     }
-    static let defaultKeyBar = KeyBarLayout.agents
-    // Every layout pins Return, with the attach key before it where the pane's host takes files
-    // (`KeyBarLayout.pinned`); no setting moves them.
+    // The key bar's left capsule (⌘ for the palette, compose, attach where the pane's computer
+    // takes files), its right one (the arrows, the hide key) and Return, pinned at the end of the
+    // middle capsule, are always there; Settings arranges only the middle (`KeyBarSetup`).
     // Also decided for the user, where they're used: a tab shows its splits whenever every pane stays
     // legible (`WindowScreen.splitsFit`); agent status always shows in the sidebar; haptics follow
     // iOS's System Haptics; in-app banners for waiting agents are always on; sidebar text follows
@@ -287,8 +233,6 @@ final class Prefs {
     // drop repeats within 30 s and stay quiet 2 s after the app comes back (`ToastPolicy`); at
     // most 5 notices per pane and 50 in all queue (`AgentNotifier.perPaneLimit`, `noticeLimit`).
 
-    /// The key bar's keys.
-    var keyBar: [String] { keyBarLayout.keys }
 
     /// Tests pass `UserDefaults(suiteName:)` to stay isolated.
     init(defaults: UserDefaults = .standard) {
@@ -298,7 +242,8 @@ final class Prefs {
         darkThemeID = d.string(forKey: "themeID") ?? Self.defaultDarkTheme
         lightThemeID = d.string(forKey: "lightThemeID") ?? Self.defaultLightTheme
         fontSize = d.object(forKey: "fontSize") as? Double ?? Self.defaultFontSize
-        keyBarLayout = KeyBarLayout(rawValue: d.string(forKey: "keyBarLayout") ?? "") ?? Self.defaultKeyBar
+        keyBarSetup = d.data(forKey: "keyBarSetup").flatMap { try? JSONDecoder().decode(KeyBarSetup.self, from: $0) }?
+            .normalized() ?? .standard
         navigation = d.string(forKey: "navigation").flatMap(NavigationStyle.init(rawValue:)) ?? .sidebar
         pushEnabled = d.bool(forKey: "pushEnabled")
         helperOfferSkipped = Set((d.stringArray(forKey: "helperOfferSkipped") ?? []).compactMap(UUID.init(uuidString:)))
@@ -333,10 +278,7 @@ final class Prefs {
         if d.object(forKey: "followSystem") as? Bool == false, let dark = d.string(forKey: "themeID") {
             d.set(dark, forKey: "lightThemeID")
         }
-        // An edited key bar becomes the layout it matches, or the default.
-        if let keys = d.stringArray(forKey: "keyBar"), d.string(forKey: "keyBarLayout") == nil {
-            d.set((KeyBarLayout.matching(stored: keys) ?? defaultKeyBar).rawValue, forKey: "keyBarLayout")
-        }
+        migrateKeyBar(d)
         // Servers saved by host name join the server list, under the ids they had.
         if let hosts = d.dictionary(forKey: "hostURLs") as? [String: String], !hosts.isEmpty {
             var list = d.data(forKey: "servers").flatMap { try? JSONDecoder().decode([ServerConfig].self, from: $0) } ?? []
@@ -350,6 +292,33 @@ final class Prefs {
                     "notifyOnBlocked", "sidebarTextSize"] {
             d.removeObject(forKey: key)
         }
+    }
+
+    /// The key bar's layouts become a setup with the same keys (`KeyBarSetup.migrating`): a
+    /// layout picked in Settings, a key list the removed editor saved, and on an install that
+    /// already ran, the Agents layout it had by default. Only a fresh install starts on
+    /// `KeyBarSetup.standard`. Runs once: the setup is saved and the old keys cleared.
+    static func migrateKeyBar(_ d: UserDefaults) {
+        defer {
+            d.removeObject(forKey: "keyBarLayout")
+            d.removeObject(forKey: "keyBar")
+        }
+        guard d.object(forKey: "keyBarSetup") == nil else { return }
+        let keys: [String]?
+        if let raw = d.string(forKey: "keyBarLayout") {
+            keys = (KeyBarLayout(rawValue: raw) ?? .agents).keys
+        } else if let saved = d.stringArray(forKey: "keyBar") {
+            keys = KeyBarLayout.matching(stored: saved)?.keys ?? saved
+        } else if ["servers", "hostURLs", "onboardingDone", "themeID", "fontSize"].contains(where: { d.object(forKey: $0) != nil }) {
+            keys = KeyBarLayout.agents.keys
+        } else {
+            keys = nil
+        }
+        // A fresh install saves the standard setup too, so a later launch, which finds servers
+        // by then, never takes it for an install from before the setup.
+        let setup: KeyBarSetup = keys.map { KeyBarSetup.migrating($0) } ?? .standard
+        guard let data = try? JSONEncoder().encode(setup) else { return }
+        d.set(data, forKey: "keyBarSetup")
     }
 
     /// The terminal theme for the system's Light or Dark Mode.

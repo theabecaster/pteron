@@ -94,6 +94,12 @@ struct PaneHostView: UIViewRepresentable {
             let meta = server?.meta[blockID]
             return (agent: meta?.agentKind != nil, foreground: meta?.foreground)
         }
+        // Read when compose opens: what its empty field says.
+        host.composeContext = { [weak server, blockID] in
+            let meta = server?.meta[blockID]
+            return (agent: meta?.agentKind, program: meta?.foreground, pwd: meta?.pwd)
+        }
+        if let pool { host.composeSlot = pool.composeSlots.slot(for: key) }
         host.files = PaneFiles(server: server, sessionID: sessionID, blockID: blockID)
         host.share = PaneShare(server: server, sessionID: sessionID, blockID: blockID)
         host.ports = PanePorts(server: server, sessionID: sessionID, blockID: blockID)
@@ -232,6 +238,9 @@ final class TerminalHostPool {
     }
 
     @ObservationIgnored private var hosts: [Key: TerminalHost] = [:]
+    /// Each pane's compose, open or not, and its draft: kept while the app runs, whether or not
+    /// the pane's host is (`ComposeSlot`).
+    @ObservationIgnored let composeSlots = ComposeSlots()
     @ObservationIgnored private var containers: [Key: [Weak]] = [:]
     /// The parked panes, oldest first.
     @ObservationIgnored private(set) var parked: [Key] = []
@@ -316,6 +325,10 @@ final class TerminalHostPool {
     func keep(selected: UUID?, servers: Set<UUID>, sessions: [UUID: Set<String>]) {
         evictParked { key in
             ParkPolicy.isStale(server: key.server, session: key.session, selected: selected, servers: servers, sessions: sessions)
+        }
+        // A draft goes with its computer or its session; leaving one for another keeps it.
+        composeSlots.drop { key in
+            ParkPolicy.isStale(server: key.server, session: key.session, selected: nil, servers: servers, sessions: sessions)
         }
     }
 

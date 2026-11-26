@@ -1920,6 +1920,25 @@ public final class TerminalStream {
         return true
     }
 
+    /// Types `bytes`, then `after` as a write of its own: it leaves once the write before it has
+    /// been answered, and is never joined with it or with what is typed later. Compose's
+    /// message and its Return, so a program reads the two apart. Behind the fence both are held
+    /// together, as typed keys are, and go as one write only if the screen was exact. Returns
+    /// false when they were dropped.
+    @discardableResult
+    public func send(_ bytes: [UInt8], thenAlone after: [UInt8]) -> Bool {
+        guard !after.isEmpty else { return send(bytes) }
+        guard !fence.isUp else { return send(bytes + after) }
+        guard !stopped, let tail = String(bytes: after, encoding: .utf8), send(bytes) else { return false }
+        var work = Work(action: nil) { [sessionID, blockID, link] in
+            _ = try await link.call("com.superlogical.terminal.write", ["session_id": sessionID, "block_id": blockID, "args": ["data": tail]])
+        }
+        // Like a key: never sent twice, and no notice of its own.
+        work.once = { _ in }
+        enqueue(work, kind: EchoInputClassifier.boundary(after))
+        return true
+    }
+
     /// Bytes for the program that describe a place or a state of the screen, not a key: a
     /// mouse or wheel report, a focus report, a tap that moves the cursor. They are right only
     /// for the screen they were made on, so behind the fence they are dropped, never held.

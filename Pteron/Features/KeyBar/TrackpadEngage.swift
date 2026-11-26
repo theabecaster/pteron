@@ -2,9 +2,10 @@ import CoreGraphics
 import Foundation
 
 /// When the key bar's trackpad key (✥) takes a drag, as the space bar's trackpad does on the iOS
-/// keyboard. A swipe that starts on it scrolls the bar like a swipe that starts on any other key;
-/// the key takes the drag after a still hold, or at once when the drag starts up or down, which
-/// the bar never scrolls.
+/// keyboard. In the bar's own capsule, where nothing scrolls, it takes a drag in any direction at
+/// once (`anyDirection`). Among scrolling keys a swipe that starts on it scrolls the bar like a
+/// swipe that starts on any other key: it takes the drag after a still hold, or at once when the
+/// drag starts up or down, which the bar never scrolls.
 ///
 /// Points and times in, a decision out: `KeyCap` feeds it the touch.
 struct TrackpadEngage: Equatable {
@@ -27,13 +28,16 @@ struct TrackpadEngage: Equatable {
 
     let start: CGPoint
     let startTime: TimeInterval
+    /// Nothing scrolls under the key: the first travel past the slop engages, whatever its direction.
+    let anyDirection: Bool
     private(set) var state: State = .waiting
     /// Where the finger was last seen.
     private(set) var last: CGPoint
 
-    init(start: CGPoint, at time: TimeInterval) {
+    init(start: CGPoint, at time: TimeInterval, anyDirection: Bool = false) {
         self.start = start
         startTime = time
+        self.anyDirection = anyDirection
         last = start
     }
 
@@ -51,7 +55,7 @@ struct TrackpadEngage: Equatable {
             // A hold whose timer hasn't run yet.
             return hold(at: time)
         }
-        if abs(dy) > Self.verticalBias * abs(dx) {
+        if anyDirection || abs(dy) > Self.verticalBias * abs(dx) {
             // Up or down from the start: steps count from where the finger went down, so the
             // first arrow comes after the same travel as it always did.
             state = .engaged(anchor: start)

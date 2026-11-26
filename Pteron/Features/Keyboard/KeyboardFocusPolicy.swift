@@ -27,6 +27,9 @@ enum KeyboardFocusPolicy {
         /// A field the app owns for one of its own surfaces (`AppFieldKind`), each with its own
         /// answer to `runsAppShortcut`.
         case appField(AppFieldKind)
+        /// Another pane's compose field (`ComposeField`). A pane takes the keyboard from it as from
+        /// a terminal; app shortcuts don't run from it, as from any text field.
+        case composeField
         /// A text field or text view (Settings, a rename field).
         case textInput
         /// Something that types nothing (a SwiftUI hosting view, a view controller).
@@ -66,7 +69,7 @@ enum KeyboardFocusPolicy {
         case .appField(let kind): switch kind { case .palette: return false }
         // The keyboard follows the active pane, hardware or not: no other pane may keep it,
         // in its terminal or in its find field.
-        case .terminal, .findField: return true
+        case .terminal, .findField, .composeField: return true
         // Free: a hardware keyboard always types into the active pane. Without one there is
         // only a software keyboard to bring back, and not after the user put it away.
         case .nobody, .other: return s.hardwareKeyboard || (s.hadKeyboard && !s.userHidKeyboard)
@@ -87,7 +90,7 @@ enum KeyboardFocusPolicy {
     static func runsAppShortcut(holder: Holder, sheetUp: Bool) -> Bool {
         guard !sheetUp else { return false }
         switch holder {
-        case .textInput: return false
+        case .textInput, .composeField: return false
         case .appField(let kind): switch kind { case .palette: return false }
         case .nobody, .terminal, .findField, .other: return true
         }
@@ -120,6 +123,7 @@ enum KeyboardFocusPolicy {
         if responder === own || ownFields.contains(where: { $0 === responder }) { return .nobody }
         if responder is FindField { return .findField }
         if responder is PaletteField { return .appField(.palette) }
+        if responder is ComposeField { return .composeField }
         // The terminal view may decline unknown actions, so a focused terminal can report its host.
         if responder is GhosttyTerminalView || responder is TerminalHost { return .terminal }
         if responder is any UIKeyInput { return .textInput }

@@ -132,28 +132,33 @@ struct AppearancePage: View {
     static let navigationLabel = "Navigation"
 }
 
-/// Settings → Keyboard: the key bar's layout, with its keys and how they work under it.
+/// Settings → Keyboard: the key bar's Layout and Shortcut Groups, and how the bar works.
 struct KeyboardPage: View {
     @Environment(Prefs.self) private var prefs
     let theme: TermTheme
 
+    static let footer = "⌘ opens the command palette. ✎ opens Compose, a text field for writing to the pane. "
+        + "Tap ctrl, option or shift, then a key; double-tap to lock it. "
+        + "⏎ stays at the end of the bar; hold it for a new line in an agent. "
+        + "Drag ✥ to move through menus and history. Swipe the bar for more keys, "
+        + "and tap a group's button to pick one of its shortcuts."
+
     var body: some View {
-        @Bindable var p = prefs
+        let shown = prefs.keyBarSetup.groups.filter(\.shown).map(\.title)
         SettingsList(theme: theme) {
             Section {
-                Picker("Layout", selection: $p.keyBarLayout) {
-                    ForEach(KeyBarLayout.allCases) { Text($0.title).tag($0) }
+                NavigationLink(value: SettingsPage.keyBarLayout) {
+                    KeyBarPageRow(title: "Layout", subtitle: "Arrange and hide the built-in keys",
+                                  symbol: "rectangle.on.rectangle", theme: theme)
+                }
+                NavigationLink(value: SettingsPage.shortcutGroups) {
+                    KeyBarPageRow(title: "Shortcut Groups", subtitle: shown.isEmpty ? "None" : shown.joined(separator: ", "),
+                                  symbol: "square.stack", theme: theme)
                 }
             } header: {
                 SettingsHeader("Key Bar", theme)
             } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text((p.keyBar + KeyBarLayout.pinned).map(SettingsView.keyLabel).joined(separator: "  "))
-                        .font(Font(RexFont.ui(12)))
-                        .foregroundStyle(theme.chrome.secondary)
-                        .accessibilityHidden(true)
-                    SettingsFooter("⏎ stays at the end of the bar; hold it for a new line in an agent. Hold an arrow to repeat it. Drag ✥ to move through menus and history. Tap ctrl, alt or cmd for the next key; double-tap to lock it. cmd runs Rex's shortcuts: cmd then t opens a tab.", theme)
-                }
+                SettingsFooter(Self.footer, theme)
             }
             .settingsRows(theme)
         }

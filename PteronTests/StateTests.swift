@@ -17,7 +17,7 @@ struct PrefsTests {
         let (p, _) = fresh()
         #expect(p.sizing == .fit)
         #expect(p.fontSize == 11)
-        #expect(p.keyBarLayout == .agents)
+        #expect(p.keyBarSetup == .standard)
         #expect(p.darkThemeID == "github-dark-dimmed")
         #expect(p.lightThemeID == "github-light-default")
         #expect(!p.pushEnabled)
@@ -36,11 +36,11 @@ struct PrefsTests {
     @Test func persistsToItsOwnDefaults() {
         let (p, d) = fresh()
         p.fontSize = 14
-        p.keyBarLayout = .vim
+        p.keyBarSetup = .migrating(KeyBarLayout.vim.keys)
         p.servers = [ServerConfig(name: "Mac", url: "https://mac.tail.ts.net")]
         let again = Prefs(defaults: d)
         #expect(again.fontSize == 14)
-        #expect(again.keyBar == KeyBarLayout.vim.keys)
+        #expect(again.keyBarSetup == .migrating(KeyBarLayout.vim.keys))
         #expect(again.servers.map(\.url) == ["https://mac.tail.ts.net"])
     }
 
@@ -117,85 +117,13 @@ struct PrefsTests {
         let p = Prefs(defaults: d)
         // One theme everywhere stays one theme everywhere.
         #expect(p.lightThemeID == "whitby-bay")
-        #expect(p.keyBarLayout == .shell)
+        #expect(p.keyBarSetup == .migrating(KeyBarLayout.shell.keys))
         #expect(p.servers.contains { $0.name == "studio" && $0.id == AppModel.stableID("studio") })
         #expect(p.sizing == .fit)
         for key in ["followSystem", "keyBar", "hostURLs", "sizing", "wideLayout", "haptics", "showAgentStatus",
                     "notifyOnBlocked", "sidebarTextSize"] {
             #expect(d.object(forKey: key) == nil, "\(key)")
         }
-    }
-
-    @Test func editedKeyBarFallsBackToTheDefaultLayout() {
-        let (_, d) = fresh()
-        d.set(["esc", "f1"], forKey: "keyBar")
-        #expect(Prefs(defaults: d).keyBarLayout == .agents)
-    }
-
-    @Test(arguments: KeyBarLayout.allCases)
-    func aSavedKeyBarKeepsItsLayoutAfterKeysWereAdded(layout: KeyBarLayout) {
-        // The removed editor saved the layout's keys as they were then (no attach, no cmd), as
-        // they were before Return was pinned, or as they are now.
-        for saved in [layout.storedKeys, Self.beforeReturnWasPinned[layout]!, layout.keys] {
-            let (_, d) = fresh()
-            d.set(saved, forKey: "keyBar")
-            #expect(Prefs(defaults: d).keyBarLayout == layout, "\(saved)")
-        }
-    }
-
-    /// Each layout's keys before Return was pinned, as they were.
-    private static let beforeReturnWasPinned: [KeyBarLayout: [String]] = [
-        .agents: ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "enter", "ctrl-c", "1", "2", "3", "ctrl",
-                  "cmd", "paste", "attach"],
-        .shell: ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left", "right", "ctrl-r",
-                 "ctrl-c", "|", "~", "/", "-", "paste", "attach"],
-        .vim: ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w", "pgup", "pgdn",
-               "$", "~", "paste", "attach"],
-    ]
-
-    /// Return and attach are pinned in every layout, attach first and Return last, so no layout
-    /// scrolls them too, and every other key keeps its place: only attach left the scrolling end.
-    @Test(arguments: KeyBarLayout.allCases)
-    func pinnedKeysLeftTheScrollingKeysInOrder(layout: KeyBarLayout) {
-        #expect(KeyBarLayout.pinned == ["attach", "enter"])
-        #expect(layout.keys.allSatisfy { !KeyBarLayout.pinned.contains($0) })
-        #expect(layout.keys == Self.beforeReturnWasPinned[layout]!.filter { $0 != "enter" && $0 != "attach" })
-        #expect(Self.beforeReturnWasPinned[layout]!.last == "attach", "attach was the last scrolling key")
-        #expect(Set(layout.keys).count == layout.keys.count)
-    }
-
-    @Test func aListSavedWithAttachStillMatchesItsLayout() {
-        // As the keys were before attach was pinned: attach last.
-        #expect(KeyBarLayout.matching(stored: KeyBarLayout.shell.keys + ["attach"]) == .shell)
-        #expect(KeyBarLayout.matching(stored: KeyBarLayout.agents.keys + ["attach", "enter"]) == .agents)
-    }
-
-    @Test func aListWithReturnAddedStillMatchesItsLayout() {
-        // Return anywhere in a saved list is the pinned one now.
-        #expect(KeyBarLayout.matching(stored: ["enter"] + KeyBarLayout.shell.keys) == .shell)
-        #expect(KeyBarLayout.matching(stored: KeyBarLayout.vim.keys + ["enter"]) == .vim)
-        // Anything else edited is still edited.
-        #expect(KeyBarLayout.matching(stored: ["enter", "esc"]) == nil)
-        #expect(KeyBarLayout.matching(stored: KeyBarLayout.agents.keys.reversed()) == nil)
-    }
-
-    @Test func layoutsHaveCmdAndShiftTab() {
-        #expect(KeyBarLayout.agents.keys == ["esc", "shift-tab", "tab", "/", "arrows", "up", "down", "ctrl-c",
-                                             "1", "2", "3", "ctrl", "cmd", "paste"])
-        #expect(KeyBarLayout.shell.keys == ["esc", "tab", "shift-tab", "ctrl", "alt", "cmd", "arrows", "up", "down", "left",
-                                            "right", "ctrl-r", "ctrl-c", "|", "~", "/", "-", "paste"])
-        #expect(KeyBarLayout.vim.keys == ["esc", ":", "ctrl", "cmd", "arrows", "/", "ctrl-d", "ctrl-u", "ctrl-r", "ctrl-w",
-                                          "pgup", "pgdn", "$", "~", "paste"])
-        // Every key has a cap: a symbol, a pair of symbols or a title, and the Settings preview spells it.
-        for layout in KeyBarLayout.allCases {
-            for key in layout.keys + KeyBarLayout.pinned where key.count > 1 {
-                #expect(KeyBar.symbolImage(key, pointSize: 16) != nil || KeyBar.titles[key] != nil, "\(key)")
-            }
-        }
-        #expect(SettingsView.keyLabel("shift-tab") == "⇧⇥")
-        #expect(SettingsView.keyLabel("cmd") == "cmd")
-        #expect(SettingsView.keyLabel("enter") == "⏎")
-        #expect(KeyBar.names["shift-tab"] == "Shift-Tab")
     }
 
     @Test func serverAddresses() {

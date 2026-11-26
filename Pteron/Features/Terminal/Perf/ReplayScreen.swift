@@ -131,6 +131,23 @@ final class ReplayView: UIView {
         if let needle = UserDefaults.standard.string(forKey: "findTest"), !needle.isEmpty {
             host.openFind(text: needle, focus: false)
         }
+        // `-replayKeys bar|compose[:draft]`: the pane takes the keyboard a second in (the key bar
+        // over the software keyboard, or alone for a hardware one), and with `compose` opens
+        // Compose with that draft, to look at the bar without a computer.
+        if let keys = UserDefaults.standard.string(forKey: "replayKeys"), !keys.isEmpty {
+            // As a pane with Claude Code in ~/pteron says it.
+            host.composeContext = { (agent: .claude, program: nil, pwd: "/Users/you/pteron") }
+            Task { @MainActor [weak host] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let host else { return }
+                host.isActive = true
+                _ = host.term.becomeFirstResponder()
+                guard keys.hasPrefix("compose") else { return }
+                try? await Task.sleep(for: .seconds(0.5))
+                host.composeSlot.text = keys.hasPrefix("compose:") ? String(keys.dropFirst(8)) : ""
+                host.openCompose()
+            }
+        }
 
         let cell = host.term.cellSize
         let fit = TerminalLayout.fitGrid(in: area.size, cell: cell)

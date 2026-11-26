@@ -37,7 +37,7 @@ struct KeyBarColumnTests {
         bar.attachAvailable = attach
         bar.barColumn = column
         w.addSubview(bar)
-        settle(bar, caps: bar.caps + bar.pinnedCaps)
+        settle(bar, caps: bar.allCaps)
         return (bar, w)
     }
 
@@ -92,11 +92,16 @@ struct KeyBarColumnTests {
     }
 
     @Test func theKeysEndSixPointsShortOfTheColumn() throws {
-        // Return closes the capsule, its ring inside the capsule's end, 6 pt short of the column.
+        // The right capsule ends 6 pt short of the column, its last key (✥: the hide key is the
+        // vertical bar's) inside the capsule's ring.
         let (bar, w) = try keyBar(width: 466, column: trailingColumn)
         defer { w.isHidden = true }
-        let ret = try returnKey(bar)
-        #expect(abs(ret.maxX - (trailingColumn.minX - KeyBar.sideInset - KeyBar.ring)) < 0.5, "\(ret)")
+        let last = try #require(bar.rightCaps.last { !$0.isHidden })
+        #expect(last.key == "arrows")
+        let f = last.convert(last.bounds, to: nil)
+        #expect(abs(f.maxX - (trailingColumn.minX - KeyBar.sideInset - KeyBar.ring)) < 0.5, "\(f)")
+        // Return closes the middle capsule, short of the right one.
+        #expect(try returnKey(bar).maxX < f.minX)
     }
 
     @Test func oneHideKeyboardForVoiceOver() throws {
@@ -117,19 +122,16 @@ struct KeyBarColumnTests {
     func withoutAVerticalBarTheHideKeyIsWhereItAlwaysWas(width: CGFloat, rtl: Bool) throws {
         let (bar, w) = try keyBar(width: width, column: nil, rtl: rtl)
         defer { w.isHidden = true }
-        let h = KeyBar.keyHeight + 2 * KeyBar.ring
         let hide = try #require(shown(under: bar).first { $0.view.accessibilityLabel == "Hide Keyboard" }).frame
+        let ret = try returnKey(bar)
         if rtl {
-            // At the leading (left) end, its touch running to the bar's edge.
-            #expect(hide.minX == 0)
-            #expect(hide.maxX == KeyBar.sideInset + h + KeyBar.hideGap / 2)
+            // The right capsule's last key, mirrored to the leading (left) end.
+            #expect(abs(hide.minX - (KeyBar.sideInset + KeyBar.ring)) < 0.5, "\(hide)")
+            #expect(ret.minX > hide.maxX)
         } else {
-            // At the trailing end from half the gap past the capsule to the bar's edge, with
-            // Return closing the capsule before it.
-            #expect(hide.maxX == width)
-            #expect(hide.minX == width - KeyBar.sideInset - h - KeyBar.hideGap / 2)
-            let ret = try returnKey(bar)
-            #expect(abs(ret.maxX - (width - KeyBar.sideInset - h - KeyBar.hideGap - KeyBar.ring)) < 0.5, "\(ret)")
+            // The last key of the right capsule, at the bar's trailing end; Return before it.
+            #expect(abs(hide.maxX - (width - KeyBar.sideInset - KeyBar.ring)) < 0.5, "\(hide)")
+            #expect(ret.maxX < hide.minX)
         }
     }
 
@@ -139,10 +141,10 @@ struct KeyBarColumnTests {
         defer { w.isHidden = true }
         #expect(hideKeyboardElements(bar) == 0)
         bar.barColumn = nil
-        settle(bar, caps: bar.caps + bar.pinnedCaps)
+        settle(bar, caps: bar.allCaps)
         #expect(hideKeyboardElements(bar) == 1)
         bar.barColumn = trailingColumn
-        settle(bar, caps: bar.caps + bar.pinnedCaps)
+        settle(bar, caps: bar.allCaps)
         #expect(hideKeyboardElements(bar) == 0)
     }
 
@@ -175,9 +177,11 @@ struct KeyBarColumnTests {
             let column = CGRect(x: p.size.width - p.safeArea.trailing, y: 0, width: p.safeArea.trailing, height: 600)
             let (bar, w) = try keyBar(width: p.size.width, column: column, attach: true)
             defer { w.isHidden = true }
+            bar.crease = p.division!.frame
+            settle(bar, caps: bar.allCaps)
             let fold = p.division!.frame.insetBy(dx: -KeyBarPlacement.creaseClearance, dy: 0)
-            #expect(bar.pinnedCaps.count == 2)
-            for cap in bar.pinnedCaps {
+            #expect(bar.pinnedCaps.map(\.key) == ["enter"])
+            for cap in bar.allCaps where !cap.isHidden {
                 let f = cap.convert(cap.bounds, to: nil)
                 #expect(f.maxX <= fold.minX || f.minX >= fold.maxX, "\(p.name): \(f) on \(fold)")
                 #expect(f.maxX <= column.minX - KeyBar.sideInset, "\(p.name): \(f) in \(column)")

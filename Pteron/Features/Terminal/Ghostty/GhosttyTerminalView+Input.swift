@@ -115,6 +115,16 @@ extension GhosttyTerminalView {
         sendInput(core.input.paste(s))
     }
 
+    /// Compose's message as the program takes a paste: bracketed when it asked for bracketed
+    /// paste, so an agent takes it whole and the Return after it as Return. The view returns to
+    /// the newest line, as for any input; the caller writes the bytes (`TerminalHost.sendCompose`).
+    func messageBytes(_ s: String) -> [UInt8] {
+        resetInputDocument()
+        let bytes = core.input.paste(s)
+        if !bytes.isEmpty { scrollToBottomForInput() }
+        return bytes
+    }
+
     /// True when pasting `s` now could run a command (a line end, outside bracketed paste): the
     /// host asks the user first.
     func pasteNeedsConfirmation(_ s: String) -> Bool { core.input.pasteNeedsConfirmation(s) }

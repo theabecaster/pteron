@@ -134,7 +134,7 @@ final class HideKeyboardItemHostTests: XCTestCase {
         bar.setNeedsLayout()
         bar.layoutIfNeeded()
         let keyBarShows = host.term.isFirstResponder && host.term.inputAccessoryView === bar
-        let own = keyBarShows ? bar.subviews.filter { !$0.isHidden && $0.isAccessibilityElement && $0.accessibilityLabel == "Hide Keyboard" }.count : 0
+        let own = keyBarShows ? bar.allCaps.filter { !$0.isHidden && $0.isAccessibilityElement && $0.accessibilityLabel == "Hide Keyboard" }.count : 0
         return own + (pool.hideKeyboard.pane == key ? 1 : 0)
     }
 

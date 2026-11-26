@@ -41,6 +41,29 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(link.written, ["a", "bc"])
     }
 
+    func testThenAloneIsAWriteOfItsOwnAfterTheFirstWasAnswered() async {
+        let link = FakeLink()
+        let (s, _) = stream(link)
+        link.held = [Self.write]
+        s.send(text: "a")
+        _ = await eventually { link.waitingCount == 1 }
+        // Compose's message and its Return, sent while a key's write is out, and a key after.
+        XCTAssertTrue(s.send(Array("message".utf8), thenAlone: [0x0d]))
+        s.send(text: "x")
+        var expected = ["a"]
+        for next in ["message", "\r", "x"] {
+            await settle()
+            XCTAssertEqual(link.written, expected, "one write at a time, never joined with the Return")
+            link.release()
+            expected.append(next)
+            let sent = await eventually { link.written.count == expected.count }
+            XCTAssertTrue(sent)
+        }
+        XCTAssertEqual(link.written, ["a", "message", "\r", "x"])
+        link.release()
+        XCTAssertEqual(notices, [])
+    }
+
     func testTextActionTextKeepTheirOrderWithAWriteInFlight() async {
         let link = FakeLink()
         let (s, _) = stream(link)

@@ -253,6 +253,8 @@ extension TerminalHost: FindBarOwner {
     ///   fit hold taken first so no layout during the rise asks for a smaller grid.
     func focusFindField() {
         guard let f = finder, f.open, findFieldHoldingKeyboard == nil, !covered else { return }
+        // Compose's field hands the keyboard to the terminal first: find takes it from there.
+        yieldComposeToTerminal()
         f.record = KeyboardRecord.capture(self)
         let responder = UIResponder.rexCurrentFirstResponder()
         let quiet: Bool

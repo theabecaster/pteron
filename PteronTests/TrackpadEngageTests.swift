@@ -107,10 +107,35 @@ struct TrackpadScrollTests {
         }
     }
 
-    @Test func keysKeepTheirOrder() {
+    @Test func theBarsKeysAreTheSetupsItemsAndTheArrowsHaveTheirOwnCapsule() {
         let bar = KeyBar()
-        #expect(bar.caps.map(\.key) == Prefs.shared.keyBar.filter { $0 != "attach" })
-        #expect(KeyBarLayout.agents.keys.firstIndex(of: "arrows") == 4, "✥ is still the fifth key")
-        #expect(KeyBarLayout.pinned == ["attach", "enter"])
+        let items = Prefs.shared.keyBarSetup.items
+        #expect(bar.caps.count == items.count)
+        for (cap, item) in zip(bar.caps, items) {
+            switch item {
+            case .key(let k): #expect(cap.key == k)
+            case .shortcut: #expect(cap.key == "shortcut")
+            case .group: #expect(cap.key == "group")
+            }
+        }
+        #expect(bar.rightCaps.first?.key == "arrows", "✥ is the right capsule's first key")
+        #expect(!bar.caps.contains { $0.key == "arrows" || $0.key == "enter" || $0.key == "attach" })
+    }
+
+    @Test func inItsOwnCapsuleTheTrackpadTakesADragInAnyDirection() {
+        var e = TrackpadEngage(start: .zero, at: 0, anyDirection: true)
+        let still = e.move(to: CGPoint(x: 6, y: 0), at: 0.02)
+        #expect(!still, "within the slop: still waiting")
+        let sideways = e.move(to: CGPoint(x: 14, y: 0), at: 0.05)
+        #expect(sideways, "sideways engages at once")
+        #expect(e.engaged)
+        var held = TrackpadEngage(start: .zero, at: 0, anyDirection: true)
+        let hold = held.hold(at: TrackpadEngage.holdDelay)
+        #expect(hold, "a still hold still engages")
+        // Among scrolling keys a sideways swipe still passes to the scroll.
+        var scrolling = TrackpadEngage(start: .zero, at: 0)
+        let swiped = scrolling.move(to: CGPoint(x: 14, y: 0), at: 0.05)
+        #expect(!swiped)
+        #expect(scrolling.state == .passed)
     }
 }

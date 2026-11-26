@@ -29,6 +29,10 @@ import UIKit
             .addServer: [.servers, .addServer],
             .darkTheme: [.appearance, .darkTheme], .lightTheme: [.appearance, .lightTheme],
             .acknowledgements: [.about, .acknowledgements],
+            .keyBarLayout: [.keyboard, .keyBarLayout], .shortcutGroups: [.keyboard, .shortcutGroups],
+            .charactersGroup: [.keyboard, .shortcutGroups, .charactersGroup],
+            .shortcutsGroup: [.keyboard, .shortcutGroups, .shortcutsGroup],
+            .functionKeysGroup: [.keyboard, .shortcutGroups, .functionKeysGroup],
         ]
         #expect(Set(expected.keys) == Set(SettingsPage.allCases), "every page is listed here")
         for page in SettingsPage.allCases {
@@ -82,6 +86,14 @@ import UIKit
         #expect(SettingsSummary.appearanceSpoken(theme: "Nord", fontSize: 11) == "Nord, 11 points")
         #expect(SettingsSummary.notifications(on: true) == "On")
         #expect(SettingsSummary.notifications(on: false) == "Off")
+        #expect(SettingsSummary.keyboard(.standard) == "11 Keys")
+        var one = KeyBarSetup.standard
+        one.sections = [.primary]
+        for i in one.primary.indices { one.primary[i].shown = one.primary[i].id == "esc" }
+        #expect(SettingsSummary.keyboard(one) == "1 Key")
+        for kind in ShortcutGroup.Kind.allCases {
+            #expect(Array(SettingsPage.group(kind).path.dropLast()) == [.keyboard, .shortcutGroups])
+        }
     }
 
     // MARK: The Navigation setting
@@ -108,6 +120,8 @@ import UIKit
             .main: "Settings", .servers: "Computers", .appearance: "Appearance", .keyboard: "Keyboard",
             .notifications: "Notifications", .about: "About", .addServer: "Add Computer",
             .darkTheme: "Dark Theme", .lightTheme: "Light Theme", .acknowledgements: "Acknowledgements",
+            .keyBarLayout: "Layout", .shortcutGroups: "Shortcut Groups", .charactersGroup: "Characters",
+            .shortcutsGroup: "Shortcuts", .functionKeysGroup: "Function Keys",
         ]
         for page in SettingsPage.allCases {
             let m = try model(servers: 2)

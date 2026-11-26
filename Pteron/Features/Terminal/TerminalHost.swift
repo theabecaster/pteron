@@ -195,6 +195,24 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var voiceOver: () -> Bool = { UIAccessibility.isVoiceOverRunning }
     /// How often the stream's fence went up: a click queued before the last time is stale.
     private var fencesRaised = 0
+
+    // Compose (TerminalHost+Compose.swift).
+    /// This pane's compose: open or not, and the draft. The pane's slot in `TerminalHostPool`,
+    /// so it outlives the host while the app runs; a host of its own where there is no pool.
+    var composeSlot = ComposeSlot() { didSet { applyComposeSlot() } }
+    /// The agent or program in the pane and its folder, for compose's placeholder. Read when
+    /// compose opens.
+    var composeContext: (@MainActor () -> (agent: AgentKind?, program: String?, pwd: String?))?
+    /// The terminal is taking the keyboard back from compose's field for a moment: it must not
+    /// hand it straight back.
+    var composeYielding = false
+    /// The message compose sent last, and when: put back in an empty field if the stream drops
+    /// input soon after (`composeInputDropped`).
+    var lastComposeSend: (text: String, at: CFTimeInterval)?
+    /// Writes a message: its bytes, then Return as a write of its own. Tests put their own here.
+    lazy var composeWrite: ([UInt8], [UInt8]) -> Void = { [weak self] bytes, then in
+        self?.stream.send(bytes, thenAlone: then)
+    }
     /// Counts what the user did to the pane (a tap, a long press, the hide key): a keyboard
     /// that waits for a click comes only if nothing else was done since.
     private var userActs = 0
@@ -420,6 +438,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         keyBar.onHideKeyboard = { [weak self] in self?.hideKeyboard() }
         keyBar.onShortcut = { [weak self] press, isRepeat in self?.keyBarShortcut(press, isRepeat: isRepeat) ?? false }
         term.inputAccessoryView = keyBar
+        setUpCompose()
 
         zoomer.delegate = self
         zoomer.showsHorizontalScrollIndicator = false
@@ -1181,7 +1200,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         KeyboardFocusPolicy.Situation(
             paneActive: isActive, inWindow: window != nil,
             appActive: UIApplication.shared.applicationState == .active,
-            holdsKeyboard: term.isFirstResponder || findFieldHoldingKeyboard != nil, hardwareKeyboard: hardwareKeyboard(),
+            holdsKeyboard: term.isFirstResponder || findFieldHoldingKeyboard != nil || composeHoldsKeyboard,
+            hardwareKeyboard: hardwareKeyboard(),
             hadKeyboard: hadKeyboard, userHidKeyboard: userHidKeyboard,
             sheetUp: covered || KeyboardFocusPolicy.sheetUp(in: window),
             holder: KeyboardFocusPolicy.holder(UIResponder.rexCurrentFirstResponder(), own: term, ownFields: ownFindFields))
@@ -1251,7 +1271,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         #endif
         // Cheap checks first: this runs for every pane on every notification. The pane's own find
         // field holding the keyboard counts as holding it.
-        guard isActive, window != nil, !term.isFirstResponder, findFieldHoldingKeyboard == nil else { return }
+        guard isActive, window != nil, !term.isFirstResponder, findFieldHoldingKeyboard == nil, !composeHoldsKeyboard else { return }
         // Later: the view may still be on its way into the window, or the app into the foreground.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -1280,6 +1300,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     private func resignIfInactive() {
         // A find field of this pane gives it up too; its bar, needle and matches stay.
         resignFindFieldIfInactive()
+        // Compose's field too, through the terminal: its card and draft stay.
+        if !isActive { yieldComposeToTerminal() }
         guard KeyboardFocusPolicy.mustResign(paneActive: isActive, holdsKeyboard: term.isFirstResponder) else { return }
         _ = term.resignFirstResponder()
     }
@@ -1288,6 +1310,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if focused {
             movedWithKeyboardAt = -10
             resignedUnderCover = false
+            // Compose is open: its field takes the keyboard, once the bar is shown.
+            if !composeYielding { refocusComposeSoon() }
         } else {
             lostKeyboardAt = CACurrentMediaTime()
             keyRepeat.stop()
@@ -1297,8 +1321,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     /// Works `barHidesKeyboard` out again, and says when it changed.
-    private func refreshBarHidesKeyboard() {
-        let up = keyBar.hidesInVerticalBar && term.isFirstResponder && term.inputAccessoryView === keyBar
+    func refreshBarHidesKeyboard() {
+        let up = keyBar.hidesInVerticalBar
+            && ((term.isFirstResponder && term.inputAccessoryView === keyBar) || composeHoldsKeyboard)
         guard up != barHidesKeyboard else { return }
         barHidesKeyboard = up
         onBarHidesKeyboard?(up)
@@ -1320,8 +1345,16 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// A tap on the pane: the keyboard comes up, also after the hide key.
     private func showKeyboard() {
         userHidKeyboard = false
+        // Compose's field already has it: the keyboard is up.
+        guard !composeHoldsKeyboard else { return }
+        let was = term.isFirstResponder
         setKeyboardQuiet(false)
-        if !term.isFirstResponder { _ = term.becomeFirstResponder() }
+        if !was {
+            _ = term.becomeFirstResponder()
+        } else {
+            // Quiet before (a hardware keyboard after the hide key): no focus change says so.
+            refocusComposeSoon()
+        }
     }
 
     /// The click of a tap with the keyboard down is with the program, or never will be: the
@@ -1351,6 +1384,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         }
         if covered {
             stopKeyRepeats()
+            // Compose's keyboard is the terminal's: it gives it up, and the field gets it back.
+            yieldComposeToTerminal()
             // The find field's keyboard is treated like the terminal's.
             if findFieldCovered() {
                 resignedUnderCover = true
@@ -1387,6 +1422,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         if c {
             stopKeyRepeats()
             coverTookKeyBar = false
+            yieldComposeToTerminal()
             // The find field's keyboard counts as the terminal's: the key bar of a hardware
             // keyboard comes back with it, a software keyboard stays down.
             if let place = findFieldHoldingKeyboard, place == .accessory {
@@ -1457,6 +1493,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     func hideKeyboard() {
         userActs += 1
         userHidKeyboard = true
+        // Compose's field gives the keyboard to the terminal first, which then puts it away.
+        yieldComposeToTerminal()
         if hardwareKeyboard() {
             setKeyboardQuiet(true)
         } else {

@@ -13,16 +13,17 @@ enum Glass {
     }
 
     /// Liquid Glass, as the keyboard and the system's bars use. Before iOS 26 the keyboard is
-    /// opaque and square, and a material stands in.
-    static func makeGlass(_ view: UIVisualEffectView, keyboardTinted: Bool = true) {
+    /// opaque and square, and a material stands in. A capsule, or a card with `cornerRadius`.
+    static func makeGlass(_ view: UIVisualEffectView, keyboardTinted: Bool = true, cornerRadius: CGFloat? = nil) {
         if #available(iOS 26.0, *) {
             let glass = UIGlassEffect()
             if keyboardTinted { glass.tintColor = keyboardTint }
             view.effect = glass
-            view.cornerConfiguration = .capsule()
+            view.cornerConfiguration = cornerRadius.map { .corners(radius: .fixed($0)) } ?? .capsule()
         } else {
             view.effect = UIBlurEffect(style: .systemChromeMaterial)
             view.clipsToBounds = true
+            if let cornerRadius { view.layer.cornerRadius = cornerRadius }
         }
     }
 

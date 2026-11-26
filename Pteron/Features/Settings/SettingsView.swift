@@ -1,11 +1,12 @@
 import SwiftUI
 
 /// The pages under Settings. The top level lists five, each with its current value; the rest sit
-/// one level under one of them.
+/// under one of them: Keyboard's key bar pages two levels deep at most.
 enum SettingsPage: String, Hashable, CaseIterable {
     case main
     case servers, appearance, keyboard, notifications, about
     case addServer, darkTheme, lightTheme, acknowledgements
+    case keyBarLayout, shortcutGroups, charactersGroup, shortcutsGroup, functionKeysGroup
 
     /// The top level's rows, in order.
     static let topLevel: [SettingsPage] = [.servers, .appearance, .keyboard, .notifications, .about]
@@ -16,15 +17,27 @@ enum SettingsPage: String, Hashable, CaseIterable {
         case .addServer: .servers
         case .darkTheme, .lightTheme: .appearance
         case .acknowledgements: .about
+        case .keyBarLayout, .shortcutGroups: .keyboard
+        case .charactersGroup, .shortcutsGroup, .functionKeysGroup: .shortcutGroups
         default: nil
         }
     }
 
     /// The navigation path that shows this page, so Back leads where a tap would have come from:
-    /// Add Computer goes back to Computers, a theme to Appearance.
+    /// Add Computer goes back to Computers, a theme to Appearance, a shortcut group to Shortcut
+    /// Groups and then Keyboard.
     var path: [SettingsPage] {
         guard self != .main else { return [] }
-        return (parent.map { [$0] } ?? []) + [self]
+        return (parent?.path ?? []) + [self]
+    }
+
+    /// The page of a shortcut group.
+    static func group(_ kind: ShortcutGroup.Kind) -> SettingsPage {
+        switch kind {
+        case .characters: .charactersGroup
+        case .shortcuts: .shortcutsGroup
+        case .functionKeys: .functionKeysGroup
+        }
     }
 
     /// The page a launch opens at: `-settingsScroll` names a place on the Notifications page, so it
@@ -36,7 +49,8 @@ enum SettingsPage: String, Hashable, CaseIterable {
 
     /// `-settings <page>` (Debug builds): open Settings at that page at launch. The pages are
     /// `main`, `servers`, `appearance`, `keyboard`, `notifications`, `about`, `addServer`,
-    /// `darkTheme`, `lightTheme` and `acknowledgements`.
+    /// `darkTheme`, `lightTheme`, `acknowledgements`, `keyBarLayout`, `shortcutGroups`,
+    /// `charactersGroup`, `shortcutsGroup` and `functionKeysGroup`.
     static var debugLaunch: SettingsPage? {
         #if DEBUG
         launch(page: UserDefaults.standard.string(forKey: "settings").flatMap(SettingsPage.init(rawValue:)),
@@ -91,6 +105,12 @@ enum SettingsSummary {
     }
 
     static func notifications(on: Bool) -> String { on ? "On" : "Off" }
+
+    /// How many keys the key bar's middle capsule shows, a group's button counting as one.
+    static func keyboard(_ setup: KeyBarSetup) -> String {
+        let n = setup.items.count
+        return n == 1 ? "1 Key" : "\(n) Keys"
+    }
 }
 
 /// Settings: only what a user would want to change. `Prefs` decides the rest.
@@ -120,6 +140,11 @@ struct SettingsView: View {
                     case .darkTheme: ThemePicker(title: "Dark Theme", selection: $p.darkThemeID, dark: true, theme: theme)
                     case .lightTheme: ThemePicker(title: "Light Theme", selection: $p.lightThemeID, dark: false, theme: theme)
                     case .acknowledgements: AcknowledgementsView()
+                    case .keyBarLayout: KeyBarLayoutPage(theme: theme)
+                    case .shortcutGroups: ShortcutGroupsPage(theme: theme)
+                    case .charactersGroup: ShortcutGroupPage(kind: .characters, theme: theme)
+                    case .shortcutsGroup: ShortcutGroupPage(kind: .shortcuts, theme: theme)
+                    case .functionKeysGroup: ShortcutGroupPage(kind: .functionKeys, theme: theme)
                     }
                 }
                 .navigationTitle("Settings")
@@ -137,12 +162,6 @@ struct SettingsView: View {
                 path = page.path
             }
         }
-    }
-
-    static func keyLabel(_ k: String) -> String {
-        let names = ["left": "←", "right": "→", "up": "↑", "down": "↓", "paste": "Paste", "attach": "Attach", "enter": "⏎",
-                     "tab": "⇥", "shift-tab": "⇧⇥", "arrows": "✥"]
-        return names[k] ?? KeyBar.titles[k] ?? k
     }
 
     static var version: String {
@@ -170,7 +189,7 @@ struct SettingsTopLevel: View {
                 row(.appearance, "Appearance", "textformat.size",
                     value: SettingsSummary.appearance(theme: current.name, fontSize: prefs.fontSize),
                     spoken: SettingsSummary.appearanceSpoken(theme: current.name, fontSize: prefs.fontSize))
-                row(.keyboard, "Keyboard", "keyboard", value: prefs.keyBarLayout.title)
+                row(.keyboard, "Keyboard", "keyboard", value: SettingsSummary.keyboard(prefs.keyBarSetup))
                 row(.notifications, "Notifications", "bell",
                     value: SettingsSummary.notifications(on: model.push.master.switchOn))
             }

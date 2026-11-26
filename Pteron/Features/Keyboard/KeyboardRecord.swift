@@ -4,7 +4,8 @@ import UIKit
 /// file browser, the share sheet), so the surface can give it back exactly: shown, quiet, to
 /// nobody, or to the pane's own find field.
 enum KeyboardRecord: Equatable {
-    /// The pane's terminal, first responder, with the system keyboard and the key bar.
+    /// The pane's terminal, first responder, with the system keyboard and the key bar (or
+    /// compose's field in that bar, which takes it again from the terminal).
     case shown
     /// The terminal, first responder with the empty input view: hardware keys, nothing shown.
     case quiet
@@ -17,6 +18,8 @@ enum KeyboardRecord: Equatable {
     @MainActor
     static func capture(_ host: TerminalHost) -> KeyboardRecord {
         if let field = host.findFieldHoldingKeyboard { return .ownFindField(accessory: field == .accessory) }
+        // Compose's field: the terminal's keyboard, which hands it back to the field.
+        if host.composeHoldsKeyboard { return .shown }
         guard host.term.isFirstResponder else { return .none }
         return host.keyboardQuiet ? .quiet : .shown
     }
