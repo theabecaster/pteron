@@ -48,6 +48,31 @@ enum GhosttyScrollMath {
         return min(max(cover - blank * max(1, cellHeight), 0), max(cover, 0))
     }
 
+    /// The pin when the cursor rests on `cursorRow` (`GhosttyScrollState`, "The cursor"): the
+    /// shift above that keeps the last row with content above the cover, unless the cursor's row
+    /// would then be off the top or in the top third of the rows that show. Then the cursor's row
+    /// wins: it shows a third of the way down, so the lines typed above it in a wrapped prompt
+    /// show too, and the rows below it stay covered until the user scrolls. Nil: no cursor counts
+    /// (none at rest, a hidden one, the alternate screen), and the pin is the content's.
+    static func pin(cover: Int, rows: Int, contentRows: Int, cursorRow: Int?, cellHeight: Int) -> Int {
+        let end = pin(cover: cover, rows: rows, contentRows: contentRows, cellHeight: cellHeight)
+        guard let cursorRow, cover > 0 else { return end }
+        let cell = max(1, cellHeight)
+        // Whole rows above the cover. With none, nothing can show the cursor's row.
+        let showing = rows - (cover + cell - 1) / cell
+        guard showing > 0 else { return end }
+        let above = (showing - 1) / 3
+        return min(end, max(0, (cursorRow - above) * cell))
+    }
+
+    /// Whether a shift at the bottom sticks to the pin, so that it follows the screen. At the pin
+    /// (within a pixel), or past it while the pin is the content's end (`end`, the content's pin):
+    /// only blank rows show there. Past a pin the cursor set, the covered rows below the cursor
+    /// show: the user is reading them, and the view holds.
+    static func follows(shift: Int, pin: Int, end: Int) -> Bool {
+        shift >= pin - 1 && (shift <= pin + 1 || end <= pin + 1)
+    }
+
     /// Where to put the viewport so a find match shows (`GhosttyScrollState.Request.reveal`), or
     /// nil when it already does. `top` and `bottom` are the match's first and last screen rows;
     /// `viewTop` the first row the viewport shows (`maxRow` while it follows the active area),
@@ -99,6 +124,19 @@ enum GhosttyScrollMath {
 /// scroll view takes to the pin), on input or the jump to the bottom (`.bottom`), and when the
 /// keyboard shows over a view at the bottom. Those moves count in `rebase` like any other move
 /// the terminal makes by itself.
+///
+/// The cursor. A program can draw below the row it is typed on: an agent's prompt box sits above
+/// its status lines and a list of running subagents. When those rows don't fit above the cover,
+/// the pin keeps the cursor's row in view instead, a third of the way down, and the rows below it
+/// stay covered until the user scrolls to them (`GhosttyScrollMath.pin(cover:rows:contentRows:cursorRow:cellHeight:)`).
+/// Only a cursor at rest counts: one that is shown and on the same row in two frames in a row
+/// (`noteCursor`), so the places a redraw passes through on its way, hidden or not, never move
+/// the view. A row the cursor moved to asks for one more frame, which confirms it. A hidden
+/// cursor keeps the row it rested on for `hiddenCursorHold`, the moment a redraw hides it, and so
+/// does a shown one that keeps moving; after that the content's pin applies, as it does on the
+/// alternate screen. The row counts only if rows with content were below it when the cursor last
+/// showed there: a shell's prompt rests on its last row, and while output streams its cursor
+/// rests nowhere, so for a shell the pin is the content's, as before.
 ///
 /// `@unchecked Sendable`: `lock` guards the block marked so. The render-side block is only
 /// touched inside `GhosttyCore.lockFrame` (terminal and render state locks held), which only one
@@ -157,6 +195,11 @@ final class GhosttyScrollState: @unchecked Sendable {
     /// arrive 120 times a second; nothing visible needs the scroll view resized that often.
     static let publishInterval: CFTimeInterval = 1.0 / 30
 
+    /// How long a hidden cursor keeps the row it rested on for the pin. A redraw hides the cursor
+    /// for the moment it draws and shows it again at the end of its frame; a program that hides it
+    /// for good stops counting after this.
+    static let hiddenCursorHold: CFTimeInterval = 0.5
+
     // MARK: Guarded by `lock`
 
     private let lock = GhosttyLock()
@@ -193,8 +236,28 @@ final class GhosttyScrollState: @unchecked Sendable {
     private var covered: Int { cover + findInset }
     /// The cover changed and `finishFrame` has not seen it yet.
     private var coverChanged = false
-    /// The shift that keeps the last row with content above the cover (last frame's).
+    /// The shift the view sticks to at the bottom (last frame's): the content's pin, or less to
+    /// keep the cursor's row in view.
     private var pin = 0
+    /// The shift that keeps the last row with content above the cover (last frame's). Past it only
+    /// blank rows show.
+    private var end = 0
+    /// The cursor's row as last seen shown, and the row it rests on (seen there twice in a row),
+    /// in screen rows; -1 for none (`noteCursor`).
+    private var cursorSeen = -1
+    private var cursorRest = -1
+    private var cursorSeenAt: CFTimeInterval = 0
+    /// When the cursor was last seen shown on the row it rests on.
+    private var cursorRestAt: CFTimeInterval = 0
+    /// The row of this frame's cursor if it is shown, else -1.
+    private var cursorShown = -1
+    /// Rows with content were below the cursor the last time it showed on the row it rests on.
+    /// Only then does that row count: a shell's prompt rests on its last row, and once output
+    /// streams its cursor rests nowhere, so the row its prompt rested on never holds the view.
+    private var restAboveContent = false
+    /// The cursor moved to a row this frame and the next frame decides whether it rests there.
+    /// The renderer asks for that frame.
+    private(set) var wantsAnotherFrame = false
     /// The cover the shift was last decided against (`Snapshot.covered`).
     private var shiftCover = 0
     private var following = true
@@ -353,6 +416,7 @@ final class GhosttyScrollState: @unchecked Sendable {
             coverChanged = true
             if covered == 0 {
                 pin = 0
+                end = 0
                 following = true
             }
         }
@@ -390,13 +454,15 @@ final class GhosttyScrollState: @unchecked Sendable {
                 // user is looking at the covered rows, and it holds where they left it under
                 // output (`holdReadingPlace`) until they come back to it, type or jump
                 // (`finishFrame` decides again with this frame's pin).
-                following = r.bottom && bounce >= pin - 1
+                following = r.bottom && GhosttyScrollMath.follows(shift: bounce, pin: pin, end: end)
                 shiftedAtBottom = r.bottom
             case .lines(let n):
                 if active, cover > 0, n > 0 || bounce > 0 {
-                    // At the bottom, lines go through the covered rows first.
-                    bounce = min(max(bounce + n * cell, 0), cover)
-                    following = bounce >= pin - 1
+                    // At the bottom, lines go through the covered rows first, and stop at the pin
+                    // on the way past it.
+                    let next = min(max(bounce + n * cell, 0), cover)
+                    bounce = bounce < pin && next > pin || bounce > pin && next < pin ? pin : next
+                    following = GhosttyScrollMath.follows(shift: bounce, pin: pin, end: end)
                     shiftedAtBottom = true
                     keepsShift = true
                 } else if n != 0 {
@@ -489,7 +555,10 @@ final class GhosttyScrollState: @unchecked Sendable {
             if !frameActive { publish(frameSnapshot) }
         }
         guard frameActive else { return }
-        pin = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
+        end = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cellHeight: cellHeight)
+        if cursorRest >= 0, cursorShown == cursorRest { restAboveContent = cursorRest < contentRows - 1 }
+        let rest = frameAlternate || cursorRest < 0 || !restAboveContent ? nil : cursorRest
+        pin = GhosttyScrollMath.pin(cover: covered, rows: frameRows, contentRows: contentRows, cursorRow: rest, cellHeight: cellHeight)
         var changed = coverNews
         if frameSnapshot.pin != pin {
             frameSnapshot.pin = pin
@@ -497,7 +566,7 @@ final class GhosttyScrollState: @unchecked Sendable {
         }
         if shiftedAtBottom {
             // Decided against this frame's pin: the request was read with the last frame's.
-            let follows = bounce >= pin - 1
+            let follows = GhosttyScrollMath.follows(shift: bounce, pin: pin, end: end)
             if follows != following {
                 following = follows
                 frameSnapshot.following = follows
@@ -510,7 +579,8 @@ final class GhosttyScrollState: @unchecked Sendable {
         if positioned, !(newCover && following) {
             shift = bounce
         } else {
-            shift = following ? pin : min(bounce, covered)
+            // Below a pin the cursor set, no further than the last row with content.
+            shift = following ? pin : min(bounce, end > pin + 1 ? end : covered)
         }
         if shift != bounce {
             rebase += shift - bounce
@@ -521,6 +591,35 @@ final class GhosttyScrollState: @unchecked Sendable {
             changed = true
         }
         if changed { publish(frameSnapshot) }
+    }
+
+    /// Where the cursor is this frame, shown or hidden: `row` on the screen, -1 when it isn't on
+    /// it. Every frame, before `finishFrame`, so the row it rests on is known when the keyboard
+    /// comes up. Render side.
+    func noteCursor(row: Int, visible: Bool, now: CFTimeInterval) {
+        wantsAnotherFrame = false
+        cursorShown = -1
+        // In the scrollback the cursor isn't on the screen the pin is for; on the alternate
+        // screen it doesn't count. What rested before stays.
+        guard frameActive, !frameAlternate, row >= 0 else { return }
+        if visible {
+            cursorShown = row
+            cursorSeenAt = now
+            if row == cursorSeen {
+                cursorRest = row
+                cursorRestAt = now
+            } else {
+                cursorSeen = row
+                // Only while it matters: the cover's pin is the one that reads it.
+                wantsAnotherFrame = covered > 0 && row != cursorRest
+                // A cursor that keeps moving, as under streaming output, rests nowhere: the row
+                // it rested on before stops counting after the hold.
+                if cursorRest >= 0, now - cursorRestAt > Self.hiddenCursorHold { cursorRest = -1 }
+            }
+        } else if cursorSeen >= 0, now - cursorSeenAt > Self.hiddenCursorHold {
+            cursorSeen = -1
+            cursorRest = -1
+        }
     }
 
     /// `grown` new pixels of rows came in below a view the user left off the pin among the

@@ -790,9 +790,14 @@ final class GhosttyFrameBuilder {
     /// Forces every row to be rebuilt on the next update (theme or font changed).
     func invalidate() { needsFull = true }
 
+    /// The last update saw the cursor move under the keyboard, and the next one decides whether it
+    /// rests there (`GhosttyScrollState.noteCursor`): the renderer asks for it.
+    private(set) var wantsAnotherFrame = false
+
     /// Updates the render state from the terminal and rebuilds dirty rows.
     /// Returns true if anything that is drawn changed.
     func update(core: GhosttyCore, now: CFTimeInterval = CACurrentMediaTime()) -> Bool {
+        wantsAnotherFrame = false
         guard let state = core.lockFrame(now: now) else { return false }
         defer { core.unlockFrame() }
         guard let iterator = core.rowIterator, let cells = core.rowCells else { return false }
@@ -915,6 +920,10 @@ final class GhosttyFrameBuilder {
         ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_OVERSCAN, &captured)
         overscanBelow = Int(captured.below)
         if captured.below == 0 { core.scroll.clearRenderFraction() }
+        // The terminal's cursor, not the one predicted echo draws: the row it rests on decides the
+        // pin under the keyboard.
+        core.scroll.noteCursor(row: cursorRow, visible: cursorRow >= 0 && info.visible, now: now)
+        wantsAnotherFrame = core.scroll.wantsAnotherFrame
         if core.scroll.needsContentRows { core.scroll.finishFrame(contentRows: contentRows(cursorRow: cursorRow)) }
         let offset = core.scroll.renderFraction + core.scroll.renderBounce
         if offset != scrollOffset {

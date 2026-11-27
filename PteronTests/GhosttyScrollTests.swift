@@ -1522,4 +1522,293 @@ extension GhosttyScrollTests {
         _ = frame.update(core: core)
         XCTAssertFalse(core.scroll.snapshot.alternateScreen)
     }
+    // MARK: The cursor under the cover (a prompt above rows the program draws below it)
+
+    /// An agent's screen as Claude Code draws it, on ten rows: two rows of its reply, the prompt
+    /// the user types on at `prompt`, and the program's status and subagent rows below it to the
+    /// last row. One redraw: the cursor hidden while it draws, then shown again on the prompt.
+    private func agentScreen(prompt: Int = 2, rows: Int = 10, tick: Int = 0) -> [UInt8] {
+        var s = "\u{1b}[?25l"
+        for r in 0..<rows {
+            let text = r < prompt ? "reply line \(r)" : r == prompt ? "> hi" : "agent \(r) running \(tick)s"
+            s += "\u{1b}[\(r + 1);1H\(text)\u{1b}[K"
+        }
+        s += "\u{1b}[\(prompt + 1);5H\u{1b}[?25h"
+        return Array(s.utf8)
+    }
+
+    /// A terminal showing `agentScreen`, with the cursor at rest on the prompt (two frames).
+    private func makeAgent(prompt: Int = 2) -> (GhosttyCore, GhosttyFrameBuilder, Int) {
+        let (core, frame) = make(1)
+        core.feed(agentScreen(prompt: prompt))
+        core.sync()
+        _ = frame.update(core: core)
+        _ = frame.update(core: core)
+        return (core, frame, core.scroll.snapshot.cellHeight)
+    }
+
+    /// The cursor's row, as drawn, shows whole between the top edge and the cover.
+    private func assertCursorShows(_ core: GhosttyCore, _ frame: GhosttyFrameBuilder, cover: Int, _ message: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        let cell = core.scroll.snapshot.cellHeight
+        let top = core.cursorPosition.y * cell - frame.scrollOffset
+        XCTAssertGreaterThanOrEqual(top, 0, "\(message): off the top", file: file, line: line)
+        XCTAssertLessThanOrEqual(top + cell, core.gridSize.rows * cell - cover, "\(message): under the cover", file: file, line: line)
+    }
+
+    func testThePinKeepsTheCursorsRowInViewOverRowsBelowIt() {
+        // Forty rows of 30 px, ten covered: thirty show, and a cursor that wins sits nine rows down.
+        let pin = { (content: Int, cursor: Int?) in
+            GhosttyScrollMath.pin(cover: 300, rows: 40, contentRows: content, cursorRow: cursor, cellHeight: 30)
+        }
+        XCTAssertEqual(pin(40, nil), 300, "no cursor: the content's pin")
+        XCTAssertEqual(pin(40, 25), 300, "the cursor shows with the last row: the content's pin")
+        XCTAssertEqual(pin(40, 15), 180, "rows below the cursor that don't fit stay covered")
+        XCTAssertEqual(pin(40, 5), 0, "never less than no shift")
+        XCTAssertEqual(pin(20, 3), 0, "a short screen isn't shifted")
+        XCTAssertEqual(GhosttyScrollMath.pin(cover: 0, rows: 40, contentRows: 40, cursorRow: 3, cellHeight: 30), 0)
+        // A cover that leaves one row: that row is the cursor's.
+        XCTAssertEqual(GhosttyScrollMath.pin(cover: 39 * 30, rows: 40, contentRows: 40, cursorRow: 20, cellHeight: 30), 20 * 30)
+    }
+
+    func testAShellsPinIsTheContentsPinAsBefore() {
+        // A shell's cursor is on its last row with content: the cursor never moves the pin, for
+        // any fill, any cover (a part of a row too) and any cell.
+        for cell in [1, 17, 30] {
+            for rows in [1, 2, 5, 18, 41] {
+                for content in 1...rows {
+                    for cover in stride(from: 0, through: rows * cell, by: max(1, cell / 3)) {
+                        XCTAssertEqual(
+                            GhosttyScrollMath.pin(cover: cover, rows: rows, contentRows: content, cursorRow: content - 1, cellHeight: cell),
+                            GhosttyScrollMath.pin(cover: cover, rows: rows, contentRows: content, cellHeight: cell),
+                            "cell \(cell) rows \(rows) content \(content) cover \(cover)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testAShiftFollowsAtThePinAndPastItOnlyOverBlankRows() {
+        // The pin is the content's: at it or past it, as before.
+        XCTAssertTrue(GhosttyScrollMath.follows(shift: 300, pin: 300, end: 300))
+        XCTAssertTrue(GhosttyScrollMath.follows(shift: 299, pin: 300, end: 300))
+        XCTAssertFalse(GhosttyScrollMath.follows(shift: 298, pin: 300, end: 300))
+        XCTAssertTrue(GhosttyScrollMath.follows(shift: 280, pin: 180, end: 180))
+        // The cursor set the pin: past it the rows below the cursor show, and the view holds.
+        XCTAssertTrue(GhosttyScrollMath.follows(shift: 180, pin: 180, end: 300))
+        XCTAssertTrue(GhosttyScrollMath.follows(shift: 181, pin: 180, end: 300))
+        XCTAssertFalse(GhosttyScrollMath.follows(shift: 210, pin: 180, end: 300))
+        XCTAssertFalse(GhosttyScrollMath.follows(shift: 300, pin: 180, end: 300))
+        XCTAssertFalse(GhosttyScrollMath.follows(shift: 150, pin: 180, end: 300))
+    }
+
+    /// The report: with the keyboard up, many subagent rows under an agent's prompt pinned the last
+    /// of them above the keyboard and put the prompt off the top.
+    func testTheKeyboardComingUpKeepsThePromptInViewOverTheSubagentRows() {
+        let (core, frame, cell) = makeAgent()
+        // Four rows covered: six show, so the prompt sits a row down and the last three rows are
+        // covered. Before, the shift was the whole cover and the prompt was off the top.
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        let s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertTrue(s.following)
+        XCTAssertEqual(s.pin, cell)
+        XCTAssertEqual(s.bounce, cell)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        assertCursorShows(core, frame, cover: 4 * cell, "on show")
+        XCTAssertEqual(core.gridSize.rows, 10, "the grid keeps its rows: nothing is resized")
+        XCTAssertFalse(frame.wantsAnotherFrame, "the cursor was at rest already")
+    }
+
+    func testRedrawsThatHideTheCursorOnTheirWayDoNotMoveTheView() {
+        let (core, frame, cell) = makeAgent()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        // Spinner redraws, each frame split where the program has hidden the cursor and left it
+        // on a row below: the shift never moves.
+        var shifts: [Int] = []
+        for tick in 1...20 {
+            let bytes = agentScreen(tick: tick)
+            let cut = bytes.count * (tick % 4 + 1) / 6
+            core.feed(Array(bytes[..<cut]))
+            core.sync()
+            _ = frame.update(core: core)
+            shifts.append(frame.scrollOffset)
+            core.feed(Array(bytes[cut...]))
+            core.sync()
+            _ = frame.update(core: core)
+            shifts.append(frame.scrollOffset)
+            assertCursorShows(core, frame, cover: 4 * cell, "after redraw \(tick)")
+        }
+        XCTAssertEqual(Set(shifts), [cell], "no jitter")
+        XCTAssertTrue(core.scroll.snapshot.following)
+    }
+
+    func testACursorShownOnItsWayForOneFrameDoesNotMoveTheView() {
+        let (core, frame, cell) = makeAgent()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        // A program that redraws with the cursor shown: one frame catches it on the last row.
+        core.feed(Array("\u{1b}[10;1Hagent 9 running 1s\u{1b}[K".utf8))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, cell, "a cursor seen once isn't at rest")
+        XCTAssertTrue(frame.wantsAnotherFrame, "the next frame decides")
+        core.feed(Array("\u{1b}[3;5H".utf8))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        XCTAssertFalse(frame.wantsAnotherFrame, "back on the row it rests on")
+    }
+
+    func testACursorThatMovesIsTakenOnTheNextFrame() {
+        let (core, frame, cell) = makeAgent()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        // The prompt goes up a row (a status row came in below it): the frame that shows it asks
+        // for another, which takes it, with nothing else to draw.
+        core.feed(agentScreen(prompt: 1))
+        core.sync()
+        _ = frame.update(core: core)
+        XCTAssertTrue(frame.wantsAnotherFrame)
+        XCTAssertEqual(frame.scrollOffset, cell, "not yet")
+        _ = frame.update(core: core)
+        XCTAssertFalse(frame.wantsAnotherFrame)
+        XCTAssertEqual(frame.scrollOffset, 0)
+        assertCursorShows(core, frame, cover: 4 * cell, "after the move")
+        // And down again, to a row that shows with the last one: the content's pin.
+        core.feed(agentScreen(prompt: 6))
+        core.sync()
+        _ = frame.update(core: core)
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+        assertCursorShows(core, frame, cover: 4 * cell, "on the last rows")
+    }
+
+    func testAHiddenCursorStopsCountingAfterTheHold() {
+        let (core, frame, cell) = makeAgent()
+        let start = CACurrentMediaTime()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core, now: start)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        // The program hides the cursor and keeps drawing below.
+        core.feed(Array("\u{1b}[?25l\u{1b}[10;1Hagent 9 running 2s\u{1b}[K".utf8))
+        core.sync()
+        _ = frame.update(core: core, now: start + GhosttyScrollState.hiddenCursorHold / 2)
+        XCTAssertEqual(frame.scrollOffset, cell, "a redraw's moment: the row it rested on holds")
+        core.feed(Array("\u{1b}[10;1Hagent 9 running 3s\u{1b}[K".utf8))
+        core.sync()
+        _ = frame.update(core: core, now: start + GhosttyScrollState.hiddenCursorHold * 2)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell, "hidden for good: the last row with content is pinned, as before")
+        XCTAssertTrue(core.scroll.snapshot.following)
+    }
+
+    func testStreamingOutputUnderAPromptThatRestedHigherPinsTheLastRow() {
+        // A shell's prompt rested on row 1, then output streams: the cursor moves down a row a
+        // frame and rests nowhere. It is on the last row with content all along, so the pin is
+        // the content's from the first line, as before.
+        let (core, frame) = make(1)
+        let cell = core.scroll.snapshot.cellHeight
+        _ = frame.update(core: core)
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        for i in 2...30 {
+            core.feed(lines(i...i))
+            core.sync()
+            _ = frame.update(core: core)
+            assertCursorAboveCover(core, frame, cover: 4 * cell, "after line \(i)")
+        }
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+    }
+
+    func testACursorThatKeepsMovingAboveTheLastRowStopsCountingAfterTheHold() {
+        let (core, frame, cell) = makeAgent()
+        let start = CACurrentMediaTime()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core, now: start)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        // A shown cursor on a new row every frame, never on the last one: it rests nowhere.
+        var t = start
+        for row in [3, 4, 5, 6, 7, 3, 4, 5] {
+            t += 0.1
+            core.feed(Array("\u{1b}[\(row + 1);1H".utf8))
+            core.sync()
+            _ = frame.update(core: core, now: t)
+        }
+        XCTAssertGreaterThan(t - start, GhosttyScrollState.hiddenCursorHold)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell, "the content's pin")
+        XCTAssertTrue(core.scroll.snapshot.following)
+    }
+
+    func testTheRowsBelowThePromptScrollIntoViewAndStayUntilInput() {
+        let (core, frame, cell) = makeAgent()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        var s = core.scroll.snapshot
+        // A drag down two rows past the pin shows two of the rows below the prompt.
+        let atPin = s.position + s.bounce
+        core.scrollViewport(.position(px: atPin + 2 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.active)
+        XCTAssertFalse(s.following, "the user reads the rows below the prompt")
+        XCTAssertEqual(frame.scrollOffset, 3 * cell)
+        // The program's redraws don't take it back.
+        for tick in 1...5 {
+            core.feed(agentScreen(tick: tick))
+            core.sync()
+            _ = frame.update(core: core)
+            _ = frame.update(core: core)
+            XCTAssertEqual(frame.scrollOffset, 3 * cell, "after redraw \(tick)")
+        }
+        // Further down than the last row: the view stops at the last row with content.
+        s = core.scroll.snapshot
+        core.scrollViewport(.position(px: s.position + 5 * cell, rebaseSeen: s.rebase))
+        _ = frame.update(core: core)
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, 4 * cell)
+        XCTAssertFalse(core.scroll.snapshot.following)
+        // Typing jumps to the bottom, which is the pin with the prompt in view.
+        core.scrollViewport(.bottom)
+        _ = frame.update(core: core)
+        s = core.scroll.snapshot
+        XCTAssertTrue(s.following)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        assertCursorShows(core, frame, cover: 4 * cell, "after input")
+    }
+
+    func testAShortScrollPastThePromptsPinHoldsAndOneBackSticks() {
+        let (core, frame, cell) = makeAgent()
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        // Lines: one down shows a row below the prompt and holds.
+        core.scrollViewport(.lines(1))
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, 2 * cell)
+        XCTAssertFalse(core.scroll.snapshot.following)
+        // Up past the pin in one step stops at it, and sticks.
+        core.scrollViewport(.lines(-3))
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, cell)
+        XCTAssertTrue(core.scroll.snapshot.following)
+        // Then on up, into the covered rows above, as before.
+        core.scrollViewport(.lines(-1))
+        _ = frame.update(core: core)
+        XCTAssertEqual(frame.scrollOffset, 0)
+        XCTAssertFalse(core.scroll.snapshot.following)
+    }
+
+    func testOnTheAlternateScreenTheCursorDoesNotCount() {
+        let (core, frame) = make(1)
+        let cell = core.scroll.snapshot.cellHeight
+        core.feed(Array("\u{1b}[?1049h".utf8) + agentScreen())
+        core.sync()
+        _ = frame.update(core: core)
+        _ = frame.update(core: core)
+        core.scroll.setCover(px: 4 * cell)
+        _ = frame.update(core: core)
+        XCTAssertEqual(core.scroll.snapshot.pin, 4 * cell, "the content's pin, as before")
+    }
 }

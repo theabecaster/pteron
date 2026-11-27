@@ -334,6 +334,9 @@ final class GhosttyRenderer: @unchecked Sendable {
         // frame or two later (`GhosttyRenderThread.glyphsReady`).
         frame.defersSlowGlyphs = true
         let drawn = prepare(now: now)
+        // The cursor moved under the keyboard: the next frame tells whether it rests there
+        // (`GhosttyScrollState.noteCursor`).
+        if frame.wantsAnotherFrame { needsFrame.store(true, ordering: .relaxed) }
         // PERF: a frame that still lacks glyphs doesn't show the state it was built from, so it
         // decides no mark (the probe takes passes that began at or after a mark's time).
         let built = frame.rowsAwaitingGlyphs > 0 ? 0 : now

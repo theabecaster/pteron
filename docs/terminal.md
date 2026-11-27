@@ -537,7 +537,8 @@ is not a cold start.
   measured with the keyboard down, `PaneLayout`), so a program on the main screen gets no
   resize when the keyboard shows or hides and has nothing to redraw. The engine view keeps the
   grid's height, the pane shows its top part, and the engine draws the rows shifted up so the
-  last row with content sits above the key bar (`GhosttyScrollState`, "The cover"). The scroll
+  last row with content sits above the key bar, or the cursor's row when the rows below it
+  don't fit (`GhosttyScrollState`, "The cover" and "The cursor"). The scroll
   view has that much more room at the bottom: dragging down brings the covered rows into view,
   then the scrollback, in one motion. Typing returns to the bottom. A view in the scrollback
   doesn't move when the keyboard shows or hides.
@@ -552,6 +553,28 @@ is not a cold start.
     too); on any key or paste; on the jump-to-bottom button; and when the keyboard shows again
     over a view at the bottom. The button counts rows from the pin, so it also shows for a view
     half a screen up among the covered rows.
+  - The cursor's row stays in view. A program can draw rows below the one the user types on:
+    Claude Code draws its prompt box above its status lines and a row per running subagent, and
+    with eight subagents on the folded Duo those rows alone fill what shows above the key bar.
+    The pin then put the last subagent row above the key bar and the prompt off the top, and
+    typing brought it back there. When the rows below the cursor don't fit, the pin keeps the
+    cursor's row a third of the way down what shows, so the lines of a wrapped prompt above it
+    show too, and the rows below it stay covered until the user scrolls to them
+    (`GhosttyScrollMath.pin(cover:rows:contentRows:cursorRow:cellHeight:)`). A drag down past
+    that pin shows them and holds there under output, no further than the last row with content;
+    a key or paste returns to the pin, with the prompt in view. A shell's cursor is on its last
+    row: its pin is the content's, as before.
+    - Only a cursor at rest counts: shown, and on the same row in two frames in a row
+      (`GhosttyScrollState.noteCursor`). Claude Code doesn't use synchronized output: each redraw
+      hides the cursor, moves through the rows below the prompt, and shows it on the prompt at
+      the end, so a frame drawn mid-redraw finds it hidden or on a row it only passed through,
+      and neither moves the view. A row the cursor moved to asks for one more frame, which
+      confirms it. A hidden cursor keeps the row it rested on for half a second
+      (`hiddenCursorHold`); a program that hides it for good gets the content's pin after that,
+      and so does a shown cursor that keeps moving. The row counts only if rows with content were
+      below it when the cursor last showed there: a shell's prompt rests on its last row, and
+      while output streams its cursor rests nowhere, so the row its prompt rested on never holds
+      the view. On the alternate screen the cursor doesn't count.
   - Whether a view at the bottom follows is decided against the pin of the frame that applies
     the scroll, so a cover change in the same frame (the keyboard's top measured again, the emoji
     keyboard) can't leave the shift short of the pin.
