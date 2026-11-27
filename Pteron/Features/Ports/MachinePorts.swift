@@ -61,7 +61,7 @@ struct MachinePortsButton: View {
                 .frame(width: 300)
                 .frame(maxHeight: 420)
                 .presentationCompactAdaptation(.popover)
-                .presentationBackground(theme.chrome.sidebar)
+                .modifier(PopoverSurface(fill: theme.chrome.sidebar))
                 .environment(model)
                 .environment(prefs)
         }

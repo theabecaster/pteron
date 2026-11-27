@@ -219,7 +219,7 @@ struct TabMenu: View {
         }
         .frame(width: 300)
         .foregroundStyle(theme.fg)
-        .presentationBackground(theme.chrome.sidebar)
+        .modifier(PopoverSurface(fill: theme.chrome.sidebar))
     }
 
     /// Runs `f` once the menu has closed, so a sheet or alert can open.
