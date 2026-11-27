@@ -112,8 +112,14 @@ struct KeyboardCoverLayoutTests {
 
     @MainActor @Test func aCardThatLeavesTooFewRowsCoversTheGridInstead() {
         let card = ComposeCard.height(compact: true) + KeyBar.cardGap
-        let floor = PaneLayout.composeFloor(fontSize: 14)
-        #expect(floor == 3 * 14 * 1.25)
+        let floor = PaneLayout.composeFloor(fontSize: 14, rounded: false)
+        #expect(floor == 3 * 14 * 1.3)
+        // A rounded single pane sits inside its padding: the floor holds that too.
+        #expect(PaneLayout.composeFloor(fontSize: 14, rounded: true) > floor)
+        // Measured on an iPhone 17 on its side: 76 pt above the card holds 4 rows at 11 pt (the
+        // card stays) and 2 at 20 pt (it covers).
+        #expect(76 >= PaneLayout.composeFloor(fontSize: 11, rounded: true))
+        #expect(76 < PaneLayout.composeFloor(fontSize: 20, rounded: true))
         // An iPhone on its side, 372 pt with the keyboard down. With large text the card leaves
         // 40 pt, under the floor: the grid keeps its size without the card.
         #expect(PaneLayout.restCanvas(now: CGSize(width: 489, height: 40), room: 246 + card, card: card,

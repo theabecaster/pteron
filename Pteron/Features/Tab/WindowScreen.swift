@@ -264,7 +264,8 @@ struct WindowScreen: View {
                 // The room, the inset and the header as this layout had them: read with the size
                 // they made.
                 let rest = PaneLayout.restCanvas(now: m.size, room: m.room, card: m.card,
-                                                 cardFloor: PaneLayout.composeFloor(fontSize: prefs.fontSize), home: m.restReach,
+                                                 cardFloor: PaneLayout.composeFloor(fontSize: prefs.fontSize, rounded: mode != .narrow),
+                                                 home: m.restReach,
                                                  header: showsHeader ? 0 : headerHeight, limit: restLimit)
                 if rest != canvasSize { canvasSize = rest }
                 if m.restReach != restReach { restReach = m.restReach }
@@ -1467,10 +1468,11 @@ enum PaneLayout {
     /// The fewest rows Compose's card leaves the panes for a fitted grid to fit above it.
     static let composeMinRows = 3
 
-    /// The height of `composeMinRows` rows at `fontSize`, from the same cell estimate as
-    /// `SplitGeometry.legible`.
-    static func composeFloor(fontSize: Double) -> CGFloat {
-        CGFloat(composeMinRows) * CGFloat(fontSize) * 1.25
+    /// The panes' area that holds `composeMinRows` rows at `fontSize` in a single pane, `rounded`
+    /// or not (`single`). A row is about 1.27 times the font size; 1.3 errs towards covering.
+    static func composeFloor(fontSize: Double, rounded: Bool) -> CGFloat {
+        let pad = rounded ? (roundedPadding + clearance(radius: singleRadius)) * 2 : 0
+        return CGFloat(composeMinRows) * CGFloat(fontSize) * 1.3 + pad
     }
 
     /// A single pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.
