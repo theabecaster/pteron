@@ -110,6 +110,8 @@ extension ServerConnection {
             }
             // A pane that shows the block hears who has it now, and why (`TerminalHost.ownerChanged`).
             if type == "block_owner_changed", let change = BlockOwnerChange(p) { ownerChanges.send(change) }
+            // Another client may be moving a tab here: its panes wait for this session's view.
+            if type == "window_created", let wid = p.str("window_id") { noteArrival(wid, in: sid) }
             // A pane of a tab this iPhone is moving to another session: it goes on there.
             if type == "block_closed", let bid = p.str("block_id"), !transferring.contains(bid) {
                 ownerChanges.forget(block: bid)

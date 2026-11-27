@@ -335,9 +335,15 @@ calls go through changes.
   no resize. The pane's files, sharing and ports go through the new session.
 - **A failed move** (`moveFailed()`) leaves the stream where it was; an end that came meanwhile
   goes on as any drop does (a RESUME, or a fresh start).
-- **Another client's move** ends the streams first: the pane says "This pane closed." until the
-  move is seen in the views, then starts afresh the same way, and hears its owner and typing-aid
-  news again (`TerminalHost.moved(to:)`).
+- **Another client's move** ends the streams first, with the status of a close (4000). Where the
+  server moves tabs (revision 22), a close waits as a moving stream does, the fence up and the
+  screen kept, for `TerminalStream.closeHold` (0.8 s) at most: the app's word normally comes
+  first. A `window_created` that names the tab in another session, or the tab on screen leaving
+  its session's view (docs/sidebar.md, Move to Session), makes it a move's wait
+  (`expectMove`); the view that shows the tab in its new session starts the stream afresh the
+  same way, and the pane hears its owner and typing-aid news again (`TerminalHost.moved(to:)`).
+  With no such view the wait ends as a close does: "This pane closed.", in the turn the app moves
+  off a tab on screen, so the words never show on it. Below revision 22 a close ends at once.
 
 ## Parking
 

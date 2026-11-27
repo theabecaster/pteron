@@ -99,6 +99,10 @@ Rex.app does. It moves the screen instead, by one rule (`CloseNext`, `State/Clos
 - **No empty state in between.** The move happens in the turn that changed the views, before
   anything draws. The phone's own Close Tab moves as soon as the server answers
   (`AppModel.closedTab`), without waiting for the view.
+- **A tab that may be moving.** Where the server moves tabs between sessions (revision 22), the
+  tab on screen that leaves its session's view and is in no other stays there for 0.4 s first,
+  longer if a `window_created` names it elsewhere, since another client's move shows the session
+  it leaves first (`LeavingTab`; docs/sidebar.md, Move to Session). Then the rule runs as above.
 - **Moving is selecting.** The next tab is shown as a tap would (`select`, which sends
   `session.focus_window`); nothing is opened, resized or closed for it beyond what showing a tab
   does (fit mode takes its pane).

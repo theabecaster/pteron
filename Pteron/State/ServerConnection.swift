@@ -324,6 +324,13 @@ final class ServerConnection: Identifiable {
     /// Tabs that left every view lately, with the session they left, so a tab that shows up in
     /// another session a moment later is known to have moved there (`TabMoves`).
     @ObservationIgnored var departedTabs: [String: (session: String, at: Date)] = [:]
+    /// The tab on screen, kept in its session's view for a short wait after that view lost it,
+    /// for another client's move to show it elsewhere (`LeavingTab`).
+    @ObservationIgnored var leaving: LeavingTab?
+    /// Tabs a `window_created` says another client is moving, by tab (`TabArrival`).
+    @ObservationIgnored var arrivals: [String: TabArrival] = [:]
+    /// The tab on screen, when it is on this computer. Set by `AppModel`.
+    @ObservationIgnored var shownTab: (@MainActor () -> (session: String, window: String)?)?
     /// A tab moved to another session of this computer, by this iPhone or any other client. Told
     /// in the turn the views show it, before `viewsChanged`. Set by `AppModel`.
     @ObservationIgnored var tabMoved: (@MainActor (ServerConnection, TabMoves.Move) -> Void)?
@@ -518,6 +525,7 @@ final class ServerConnection: Identifiable {
             if !pendingOrder.isEmpty { pendingOrder = PendingOrder() }
             // Likewise a move's hold: the new connection's views say where the tab is.
             if !transfers.isEmpty { dropTransfers() }
+            dropArrivals()
             panesSupportChanged()
             prompts.onConnected?(connectionSerial)
             #if DEBUG
@@ -918,7 +926,7 @@ final class ServerConnection: Identifiable {
             }
             // Replace, don't merge. Sessions changed by events during the sync get one more read.
             sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
-            views = transfers.isEmpty ? fresh : TabTransfer.reconcile(fresh, Array(transfers.values))
+            views = held(fresh, server: Set(fresh.keys))
             let live = Set(fresh.values.flatMap { $0.windows.flatMap(\.allBlocks).map(\.id) })
             paneNames.removeAll { !live.contains($0) }
             // A sync means events may have been missed, a bar's removal among them: bars with
@@ -1015,13 +1023,13 @@ final class ServerConnection: Identifiable {
         guard !hiddenSessions().contains(view.sessionID) else { return }
         let old = views[view.sessionID]
         if let old, old.revision > view.revision { return }
-        if transfers.isEmpty {
+        if transfers.isEmpty, leaving == nil, shownTab?()?.session != view.sessionID {
             views[view.sessionID] = view
         } else {
             // A tab on its way to another session is in exactly one of them at every moment.
             var next = views
             next[view.sessionID] = view
-            views = TabTransfer.reconcile(next, Array(transfers.values))
+            views = held(next, server: [view.sessionID])
         }
         createdBlocksShown(view, old: old)
         if let i = sessions.firstIndex(where: { $0.id == view.sessionID }) {

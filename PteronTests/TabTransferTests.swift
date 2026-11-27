@@ -115,6 +115,54 @@ final class TabTransferTests: XCTestCase {
         XCTAssertEqual(TabMoves.find(old: [:], new: added, departed: [:]), [], "a first sync moves nothing")
     }
 
+    // MARK: The tab on screen while another client may be moving it
+
+    func testTheTabOnScreenThatLeftEveryViewIsHeldWhereItWas() throws {
+        let old = ["session:1": Self.view("session:1", revision: 3, [Self.w1, Self.w2]),
+                   "session:2": Self.view("session:2", revision: 3, [Self.w3])]
+        var new = old
+        new["session:1"] = Self.view("session:1", revision: 4, [Self.w1])
+        let h = try XCTUnwrap(LeavingTab.begins(shown: ("session:1", "window:2"), old: old, new: new))
+        XCTAssertEqual(h.index, 1)
+        XCTAssertEqual(h.apply(&new, server: ["session:1"]), .held)
+        XCTAssertEqual(ids(new["session:1"]), ["window:1", "window:2"], "kept at its place")
+        // A view of the destination shows it: one step, never in two sessions.
+        new["session:2"] = Self.view("session:2", revision: 4, [Self.w3, Self.w2])
+        XCTAssertEqual(h.apply(&new, server: ["session:2"]), .moved)
+        XCTAssertEqual(ids(new["session:1"]), ["window:1"])
+        XCTAssertEqual(ids(new["session:2"]), ["window:3", "window:2"])
+    }
+
+    func testTheHoldIsOverWhenItsSessionShowsItAgainOrIsGone() throws {
+        let old = ["session:1": Self.view("session:1", revision: 3, [Self.w1, Self.w2])]
+        var new = ["session:1": Self.view("session:1", revision: 4, [Self.w1])]
+        let h = try XCTUnwrap(LeavingTab.begins(shown: ("session:1", "window:2"), old: old, new: new))
+        XCTAssertEqual(h.apply(&new, server: ["session:1"]), .held)
+        var back = new
+        back["session:1"] = Self.view("session:1", revision: 5, [Self.w2, Self.w1])
+        XCTAssertEqual(h.apply(&back, server: ["session:1"]), .over)
+        XCTAssertEqual(ids(back["session:1"]), ["window:2", "window:1"], "the server's order")
+        var gone: [String: SessionView] = [:]
+        XCTAssertEqual(h.apply(&gone, server: []), .over)
+        h.release(&new)
+        XCTAssertEqual(ids(new["session:1"]), ["window:1"])
+    }
+
+    func testNoHoldForAPaneMovedToAnotherTabOrATabOffScreen() {
+        let old = ["session:1": Self.view("session:1", revision: 3, [Self.w1, Self.w2])]
+        // Move Pane to Tab took `x`, the tab's last pane, to `window:1`: CloseNext follows it.
+        let paneMoved = Store.window("window:1", focused: "a", split: ("a", "x"))
+        XCTAssertNil(LeavingTab.begins(shown: ("session:1", "window:2"), old: old,
+                                       new: ["session:1": Self.view("session:1", revision: 4, [paneMoved])]))
+        // Another tab left: the one on screen is still there.
+        XCTAssertNil(LeavingTab.begins(shown: ("session:1", "window:1"), old: old,
+                                       new: ["session:1": Self.view("session:1", revision: 4, [Self.w1])]))
+        // The destination's view came first: a move, found as one (`TabMoves`).
+        XCTAssertNil(LeavingTab.begins(shown: ("session:1", "window:2"), old: old,
+                                       new: ["session:1": Self.view("session:1", revision: 4, [Self.w1]),
+                                             "session:2": Self.view("session:2", revision: 4, [Self.w2])]))
+    }
+
     // MARK: Gating, wording and places
 
     func testOnlyRevision22AndLaterMoveTabs() {
@@ -463,6 +511,171 @@ final class TabTransferTests: XCTestCase {
         XCTAssertTrue(rig.model.openPane(rig.server, session: "session:1", window: "window:2", block: nil),
                       "a place named before the move opens the tab where it is")
         XCTAssertEqual(rig.model.openRequest?.selection.sessionID, "session:2")
+    }
+
+    // MARK: Another client moves the tab on screen (`rex window move --to`)
+
+    /// The selections the app showed and whether a view ever had the tab in neither session,
+    /// from every change of the views.
+    private final class Watch {
+        var shown: [Selection] = []
+        var inNeither = false
+    }
+
+    private func watch(_ rig: Rig) -> Watch {
+        let w = Watch()
+        if let sel = rig.model.selection { w.shown = [sel] }
+        let follow = rig.server.viewsChanged
+        rig.server.viewsChanged = { [weak model = rig.model] s, old in
+            follow?(s, old)
+            if let sel = model?.selection, w.shown.last != sel { w.shown.append(sel) }
+            if s.views["session:1"]?.window("window:2") == nil, s.views["session:2"]?.window("window:2") == nil { w.inNeither = true }
+        }
+        return w
+    }
+
+    private func onScreen(_ rig: Rig, _ sid: String = "session:1", _ wid: String = "window:2") -> Selection {
+        Selection(serverID: rig.server.id, sessionID: sid, windowID: wid)
+    }
+
+    /// The source's events and view: `window:2` left session 1.
+    private func sourceCloses(_ rig: Rig) {
+        rig.store.setView("session:1", Store.view("session:1", revision: 4, windows: [Self.w1]))
+        rig.fake.send(session: "session:1", event: "window_closed", ["window_id": "window:2"])
+        rig.fake.send(session: "session:1", event: "block_closed", ["block_id": "x"])
+    }
+
+    /// The destination's events and view: `window:2` arrived in session 2.
+    private func destinationOpens(_ rig: Rig) {
+        rig.store.setView("session:2", Store.view("session:2", revision: 4, windows: [Self.w3, Self.w2]))
+        rig.fake.send(session: "session:2", event: "block_created", ["block_id": "x"])
+        rig.fake.send(session: "session:2", event: "window_created", ["window_id": "window:2", "label": ""])
+    }
+
+    func testAMoveWhoseSourceComesFirstIsFollowedWithNoClose() async throws {
+        let rig = try await Rig()
+        defer { rig.stop() }
+        await rig.connect()
+        rig.model.selection = onScreen(rig)
+        let w = watch(rig)
+
+        sourceCloses(rig)
+        let held = await eventually { rig.server.views["session:1"]?.revision == 4 }
+        XCTAssertTrue(held)
+        XCTAssertNotNil(rig.server.leaving, "the source's view came first: the tab is held")
+        XCTAssertEqual(rig.server.views["session:1"]?.windows.map(\.id), ["window:1", "window:2"], "the old frame stays")
+        destinationOpens(rig)
+        let followed = await eventually { rig.model.selection == self.onScreen(rig, "session:2") }
+
+        XCTAssertTrue(followed)
+        XCTAssertEqual(w.shown, [onScreen(rig), onScreen(rig, "session:2")], "never another tab, never the empty state")
+        XCTAssertFalse(w.inNeither)
+        XCTAssertNil(rig.server.views["session:1"]?.window("window:2"))
+        XCTAssertNil(rig.server.leaving)
+        XCTAssertTrue(rig.server.arrivals.isEmpty)
+        XCTAssertNil(Notice.shared.message)
+    }
+
+    func testAMoveWhoseDestinationComesFirstIsFollowedWithNoClose() async throws {
+        let rig = try await Rig()
+        defer { rig.stop() }
+        await rig.connect()
+        rig.model.selection = onScreen(rig)
+        let w = watch(rig)
+
+        destinationOpens(rig)
+        let followed = await eventually { rig.model.selection == self.onScreen(rig, "session:2") }
+        XCTAssertTrue(followed)
+        sourceCloses(rig)
+        _ = await eventually { rig.server.views["session:1"]?.revision == 4 }
+        try await Task.sleep(for: .milliseconds(Int(LeavingTab.wait * 1000) + 200))
+
+        XCTAssertEqual(rig.model.selection, onScreen(rig, "session:2"))
+        XCTAssertEqual(w.shown, [onScreen(rig), onScreen(rig, "session:2")])
+        XCTAssertFalse(w.inNeither)
+        XCTAssertNil(rig.server.leaving)
+    }
+
+    func testAWindowCreatedDuringTheWaitHoldsUntilItsSlowViewLands() async throws {
+        let rig = try await Rig()
+        defer { rig.stop() }
+        await rig.connect()
+        rig.model.selection = onScreen(rig)
+        let w = watch(rig)
+
+        sourceCloses(rig)
+        _ = await eventually { rig.server.leaving != nil }
+        // The destination's view takes longer than the wait: its `window_created` says to wait on.
+        rig.fake.delay("session.view", seconds: LeavingTab.wait + 0.4)
+        destinationOpens(rig)
+        _ = await eventually { !rig.server.arrivals.isEmpty }
+        XCTAssertEqual(rig.server.arrivals["window:2"]?.to, "session:2")
+        let followed = await eventually { rig.model.selection == self.onScreen(rig, "session:2") }
+
+        XCTAssertTrue(followed)
+        XCTAssertEqual(w.shown, [onScreen(rig), onScreen(rig, "session:2")])
+        XCTAssertFalse(w.inNeither)
+    }
+
+    func testARealCloseWaitsBrieflyThenMovesOff() async throws {
+        let rig = try await Rig()
+        defer { rig.stop() }
+        await rig.connect()
+        rig.model.selection = onScreen(rig)
+
+        sourceCloses(rig)
+        _ = await eventually { rig.server.leaving != nil }
+        let start = Date()
+        XCTAssertEqual(rig.model.selection, onScreen(rig), "nothing new during the wait")
+        let closed = await eventually { rig.model.selection == self.onScreen(rig, "session:1", "window:1") }
+        let took = Date().timeIntervalSince(start)
+
+        XCTAssertTrue(closed)
+        XCTAssertGreaterThan(took, LeavingTab.wait - 0.1)
+        XCTAssertLessThan(took, LeavingTab.wait + 0.5, "a real close stays quick")
+        XCTAssertNil(rig.server.views["session:1"]?.window("window:2"))
+        XCTAssertNil(rig.server.leaving)
+    }
+
+    func testACreateAfterTheWaitMovesTheTabButNotTheScreen() async throws {
+        let rig = try await Rig()
+        defer { rig.stop() }
+        await rig.connect()
+        rig.model.selection = onScreen(rig)
+        var moves: [TabMoves.Move] = []
+        let follow = rig.server.tabMoved
+        rig.server.tabMoved = { s, m in moves.append(m); follow?(s, m) }
+
+        sourceCloses(rig)
+        let closed = await eventually { rig.model.selection == self.onScreen(rig, "session:1", "window:1") }
+        XCTAssertTrue(closed)
+        destinationOpens(rig)
+        let found = await eventually { !moves.isEmpty }
+
+        XCTAssertTrue(found, "still found as a move, for the places that name the tab")
+        XCTAssertEqual(moves.first?.to, "session:2")
+        XCTAssertEqual(rig.model.selection, onScreen(rig, "session:1", "window:1"), "the screen doesn't jump back")
+        XCTAssertEqual(rig.model.recentTabs.first { $0.windowID == "window:2" }?.sessionID, "session:2")
+    }
+
+    func testBelowRevision22ACloseMovesOffAtOnce() async throws {
+        let rig = try await Rig(revision: 21)
+        defer { rig.stop() }
+        await rig.connect()
+        rig.model.selection = onScreen(rig)
+        var heldAtClose: Bool?
+        let follow = rig.server.viewsChanged
+        rig.server.viewsChanged = { s, old in
+            follow?(s, old)
+            if heldAtClose == nil, s.views["session:1"]?.revision == 4 { heldAtClose = rig.model.selection == self.onScreen(rig) }
+        }
+
+        sourceCloses(rig)
+        let closed = await eventually { rig.model.selection == self.onScreen(rig, "session:1", "window:1") }
+
+        XCTAssertTrue(closed)
+        XCTAssertEqual(heldAtClose, false, "moved off in the turn the view landed")
+        XCTAssertNil(rig.server.leaving)
     }
 }
 

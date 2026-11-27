@@ -339,6 +339,10 @@ final class AppModel {
                 s.viewsChanged = { [weak self] s, old in self?.viewsChanged(on: s, old: old) }
                 s.tabMoved = { [weak self] s, move in self?.tabMoved(on: s, move) }
                 s.tabMoving = { [weak self] s, moving in self?.tabMoving(on: s, moving) }
+                s.shownTab = { [weak self, weak s] in
+                    guard let sel = self?.selection, sel.serverID == s?.id else { return nil }
+                    return (sel.sessionID, sel.windowID)
+                }
             }
         }
     }

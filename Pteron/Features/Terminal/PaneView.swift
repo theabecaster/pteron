@@ -68,6 +68,9 @@ struct PaneHostView: UIViewRepresentable {
         let stream = TerminalStream(control: server.control, sessionID: sessionID, blockID: blockID,
                                     echoGate: server.echoGate, syncCalls: server.syncCalls)
         stream.showsNotices(computer: server.config.name, keymap: server.keymap)
+        // Where the server moves tabs, a close may be another client's move (docs/terminal.md,
+        // A tab that moves).
+        stream.closesMayBeMoves = { [weak server] in server?.capabilities.paneSupport.has(.transferTab) == true }
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
         // Read when the pane checks its fit (`TerminalHost.checkFit`), never per frame.

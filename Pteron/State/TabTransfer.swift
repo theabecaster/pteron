@@ -156,6 +156,79 @@ enum TabMoves {
     }
 }
 
+/// The tab on screen, gone from its session's view and in no other view yet (docs/sidebar.md,
+/// Move to Session). Another client's move (the Rex app, `rex window move --to`) sends the
+/// session the tab leaves first, so its view can land before the destination's. Where the server
+/// moves tabs, the tab stays in its session's view for a short wait (`wait`), longer once a
+/// `window_created` names it in another session (`arrivalWait`): nothing new shows, the old
+/// frame stays, and the view that shows it elsewhere moves it in one step. When the wait ends
+/// with no such view, the tab closes as before (`CloseNext`). Pure, so it is tested.
+struct LeavingTab {
+    /// The tab as its session had it.
+    var window: WindowInfo
+    var session: String
+    /// Its place there, to keep it there.
+    var index: Int
+    /// The hold this is: an expiry for an earlier hold does nothing.
+    var token = 0
+
+    /// How long the tab on screen waits for another session's view to show it.
+    static let wait: TimeInterval = 0.4
+    /// How long a move a `window_created` announced waits for the destination's view.
+    static let arrivalWait: TimeInterval = 2
+
+    enum Outcome: Equatable {
+        /// Kept in its session.
+        case held
+        /// A view of another session shows it: it moved, in this same change.
+        case moved
+        /// The server's view of its session shows it again, or that view is gone: no hold.
+        case over
+    }
+
+    /// The hold a change of views from `old` to `new` begins for the tab on screen (`shown`): the
+    /// tab left its session's view, is in no other, and no pane of it went to another tab of its
+    /// session (Move Pane to Tab, which `CloseNext` follows at once). Nil: no hold.
+    static func begins(shown: (session: String, window: String), old: [String: SessionView],
+                       new: [String: SessionView]) -> LeavingTab? {
+        guard let was = old[shown.session], let w = was.window(shown.window),
+              let now = new[shown.session], now.window(shown.window) == nil,
+              !w.allBlocks.contains(where: { now.windowContaining(block: $0.id) != nil }),
+              !new.values.contains(where: { $0.window(shown.window) != nil }) else { return nil }
+        return LeavingTab(window: w, session: shown.session, index: was.windows.firstIndex { $0.id == w.id } ?? was.windows.count)
+    }
+
+    /// Applies the hold to `views`, in which the views of the sessions in `server` are the
+    /// server's own (the others may hold the kept tab).
+    func apply(_ views: inout [String: SessionView], server: Set<String>) -> Outcome {
+        let id = window.id
+        if views.contains(where: { $0.key != session && $0.value.window(id) != nil }) {
+            release(&views)
+            return .moved
+        }
+        guard var v = views[session] else { return .over }
+        if v.window(id) != nil { return server.contains(session) ? .over : .held }
+        v.windows.insert(window, at: min(index, v.windows.count))
+        views[session] = v
+        return .held
+    }
+
+    /// Takes the kept tab out of its session's view.
+    func release(_ views: inout [String: SessionView]) {
+        views[session]?.windows.removeAll { $0.id == window.id }
+    }
+}
+
+/// A tab a `window_created` names in a session while a view of another session still holds it:
+/// another client is moving it there. Its panes wait for the move (`TerminalStream.expectMove`)
+/// until the destination's view shows it, or `LeavingTab.arrivalWait` at most.
+struct TabArrival {
+    var to: String
+    var blocks: [String]
+    var until: Date
+    var token: Int
+}
+
 /// What a failed move says, in the notice style of the app's other failures.
 enum TransferCopy {
     static func failure(_ error: Error, to session: String, computer: String) -> String {

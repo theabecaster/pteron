@@ -111,6 +111,7 @@ extension ServerConnection {
         guard !moves.isEmpty else { return }
         for m in moves {
             departedTabs[m.window] = nil
+            arrivals[m.window] = nil
             for b in m.blocks {
                 // A pane on screen keeps its ports followed, through its new session.
                 if portWatch[b] != nil { portWatch[b] = PortWatch(session: m.to) }
@@ -124,6 +125,96 @@ extension ServerConnection {
             tabMoved?(self, m)
         }
         refreshPortRows()
+    }
+
+    // MARK: Another client's move of the tab on screen
+
+    /// `next` as the app shows it: with this iPhone's moves (`TabTransfer`) and the tab on screen
+    /// kept while it may be moving (`LeavingTab`). The views of the sessions in `server` are the
+    /// server's own.
+    func held(_ next: [String: SessionView], server: Set<String>) -> [String: SessionView] {
+        var out = transfers.isEmpty ? next : TabTransfer.reconcile(next, Array(transfers.values))
+        if leaving == nil { beginLeaving(old: views, new: out) }
+        guard let h = leaving else { return out }
+        switch h.apply(&out, server: server) {
+        case .held:
+            break
+        case .moved:
+            // Followed from this change of views (`noteTabMoves`): the panes open through the
+            // new session there.
+            leaving = nil
+        case .over:
+            leaving = nil
+            if arrivals[h.window.id] == nil { tabMoving?(self, .failed(blocks: h.window.allBlocks.map(\.id))) }
+        }
+        return out
+    }
+
+    /// Holds the tab on screen when this change takes it out of every view, where the server
+    /// moves tabs. Its panes wait for the move as this iPhone's own move's do.
+    private func beginLeaving(old: [String: SessionView], new: [String: SessionView]) {
+        guard capabilities.paneSupport.has(.transferTab), let shown = shownTab?(), transfers[shown.window] == nil,
+              var h = LeavingTab.begins(shown: shown, old: old, new: new) else { return }
+        nextOrderToken += 1
+        h.token = nextOrderToken
+        leaving = h
+        tabMoving?(self, .began(blocks: h.window.allBlocks.map(\.id)))
+        waitForLeaving(h.token, LeavingTab.wait)
+    }
+
+    private func waitForLeaving(_ token: Int, _ seconds: TimeInterval) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0.01) * 1_000_000_000))
+            self?.leavingWaitOver(token)
+        }
+    }
+
+    /// The wait is over and no view showed the tab elsewhere: unless a `window_created` named it
+    /// in another session and its view may still come, it closes, and the app moves off it as
+    /// for any closed tab (`CloseNext`) in this same turn.
+    private func leavingWaitOver(_ token: Int) {
+        guard let h = leaving, h.token == token else { return }
+        if let a = arrivals[h.window.id], a.until > Date() {
+            return waitForLeaving(token, a.until.timeIntervalSinceNow)
+        }
+        leaving = nil
+        arrivals[h.window.id] = nil
+        var next = views
+        h.release(&next)
+        views = next
+        tabMoving?(self, .failed(blocks: h.window.allBlocks.map(\.id)))
+    }
+
+    /// A `window_created` in session `sid`: when a view of another session holds that tab, another
+    /// client is moving it here (`session.transfer_window`, which keeps the tab's ID). Its panes
+    /// wait for the destination's view, `LeavingTab.arrivalWait` at most.
+    func noteArrival(_ wid: String, in sid: String) {
+        guard capabilities.paneSupport.has(.transferTab), transfers[wid] == nil, arrivals[wid] == nil,
+              views[sid]?.window(wid) == nil,
+              let w = views.first(where: { $0.key != sid && $0.value.window(wid) != nil })?.value.window(wid) else { return }
+        nextOrderToken += 1
+        let token = nextOrderToken
+        let blocks = w.allBlocks.map(\.id)
+        arrivals[wid] = TabArrival(to: sid, blocks: blocks, until: Date().addingTimeInterval(LeavingTab.arrivalWait), token: token)
+        tabMoving?(self, .began(blocks: blocks))
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(LeavingTab.arrivalWait * 1_000_000_000))
+            guard let self, self.arrivals[wid]?.token == token else { return }
+            self.arrivals[wid] = nil
+            // The tab on screen ends with its own hold, which waits for this one.
+            if self.leaving?.window.id != wid { self.tabMoving?(self, .failed(blocks: blocks)) }
+        }
+    }
+
+    /// A new connection: its views say where each tab is, and a move they show reaches the
+    /// panes from there (`noteTabMoves`). The kept tab stays in the views until they come.
+    func dropArrivals() {
+        if let h = leaving {
+            leaving = nil
+            tabMoving?(self, .failed(blocks: h.window.allBlocks.map(\.id)))
+        }
+        for a in arrivals.values { tabMoving?(self, .failed(blocks: a.blocks)) }
+        arrivals = [:]
     }
 
     /// The session that holds a pane now, which differs from the one a stale place names once

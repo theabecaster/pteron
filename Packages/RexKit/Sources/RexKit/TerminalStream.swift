@@ -442,6 +442,15 @@ public final class TerminalStream {
     public private(set) var isMoving = false
     /// The close code of a drop that came while moving, for `moveFailed()` to go on from.
     private var dropWhileMoving: Int?
+    /// Whether the server can move a pane's tab to another session (revision 22): then a close
+    /// may be another client's move, and waits `closeHold` for word of it. Set by the app.
+    public var closesMayBeMoves: @MainActor () -> Bool = { false }
+    /// How long a close (status 4000) waits, with the screen kept behind the fence, for word
+    /// that the pane's tab moved (`expectMove()`, `moved(to:)`) before the pane ends. A backstop:
+    /// the app's own word (the views, a `window_created`) normally comes first and decides.
+    public static let closeHold: Duration = .milliseconds(800)
+    /// The moving state is a close's wait (`closeHold`), not a move the app was told of.
+    private var closeHeld = false
     /// True from a WELCOME until the socket drops or the stream is stopped or restarted.
     private var live = false
     /// The data socket is up and has been welcomed: what the stream last said of the pane (its
@@ -751,6 +760,7 @@ public final class TerminalStream {
         isParked = false
         isMoving = false
         dropWhileMoving = nil
+        closeHeld = false
         gen += 1
         endAttachWait()
         live = false
@@ -863,6 +873,8 @@ public final class TerminalStream {
     public func expectMove() {
         guard !stopped else { return }
         isMoving = true
+        // A close that waits for this word now waits for the move's end instead.
+        closeHeld = false
     }
 
     /// The pane's tab is in `session` now. Its stream through the old session is over (the
@@ -873,6 +885,7 @@ public final class TerminalStream {
     public func moved(to session: String) {
         isMoving = false
         dropWhileMoving = nil
+        closeHeld = false
         guard session != sessionID else { return }
         sessionID = session
         token = nil
@@ -886,6 +899,7 @@ public final class TerminalStream {
     public func moveFailed() {
         guard isMoving else { return }
         isMoving = false
+        closeHeld = false
         guard let code = dropWhileMoving else { return }
         dropWhileMoving = nil
         guard !stopped else { return }
@@ -1822,7 +1836,27 @@ public final class TerminalStream {
             dropWhileMoving = code
             return
         }
+        if code == 4000, closesMayBeMoves() { return holdClose(code: code, gen: myGen) }
         afterDrop(code: code, gen: myGen)
+    }
+
+    /// A close where the server moves tabs between sessions: another client's move ends the
+    /// streams opened through the session the tab leaves with the same status as a close, and
+    /// says where the tab went only on the control connection. The pane waits as a moving one
+    /// does (the fence up, the screen kept, nothing new shown), for `closeHold` at most; then it
+    /// ends as any closed pane.
+    private func holdClose(code: Int, gen myGen: Int) {
+        fence.raise(exact: hasScreen)
+        droppedAt = .now
+        isMoving = true
+        dropWhileMoving = code
+        closeHeld = true
+        let sleep = self.sleep
+        Task {
+            await sleep(Self.closeHold)
+            guard myGen == self.gen, !self.stopped, self.closeHeld else { return }
+            self.moveFailed()
+        }
     }
 
     /// What a drop of the data socket leads to: the end of a closed pane, else a RESUME or a

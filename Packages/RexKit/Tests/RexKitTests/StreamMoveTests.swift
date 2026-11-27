@@ -120,4 +120,76 @@ final class StreamMoveTests: XCTestCase {
         XCTAssertEqual(link.written, ["a"], "what had left is not sent again, what waited is gone")
         XCTAssertFalse(stream.hasPendingInput)
     }
+
+    // MARK: Another client's move: a close that may be a move
+
+    /// A live stream on a server that moves tabs, whose close hold passes only when the test says.
+    private func holdingStream(_ link: FakeLink) async -> (TerminalStream, Sink, SleepLog) {
+        let sink = Sink()
+        let (stream, log) = makeStream(link: link, sink: sink)
+        log.held = [TerminalStream.closeHold]
+        stream.closesMayBeMoves = { true }
+        streams.append(stream)
+        stream.start()
+        let live = await eventually { sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        await catchUp(stream, link)
+        return (stream, sink, log)
+    }
+
+    func testACloseWaitsForWordOfAMoveAndTheMoveOpensTheNewSession() async {
+        let link = FakeLink()
+        let (stream, sink, _) = await holdingStream(link)
+        link.sockets[0].drop(code: 4000)
+        await settle()
+        XCTAssertFalse(sink.statuses.contains(.ended("pane closed")), "nothing new shows during the wait")
+        XCTAssertFalse(sink.statuses.contains(.reconnecting))
+        XCTAssertTrue(stream.isFenced, "keys typed meanwhile are held")
+        XCTAssertEqual(link.sockets.count, 1)
+        stream.moved(to: "session:other")
+        let live = await eventually { link.sockets.count == 2 && sink.statuses.last == .live }
+        XCTAssertTrue(live)
+        XCTAssertTrue(link.sockets[1].isHello)
+        XCTAssertEqual(sessions(link), ["session:test", "session:other"])
+        XCTAssertFalse(sink.statuses.contains(.ended("pane closed")))
+    }
+
+    func testACloseWithNoWordOfAMoveEndsWhenTheWaitIsOver() async {
+        let link = FakeLink()
+        let (stream, sink, log) = await holdingStream(link)
+        link.sockets[0].drop(code: 4000)
+        await settle()
+        XCTAssertFalse(sink.statuses.contains(.ended("pane closed")))
+        log.release(TerminalStream.closeHold)
+        let ended = await eventually { sink.statuses.last == .ended("pane closed") }
+        XCTAssertTrue(ended)
+        XCTAssertFalse(stream.isMoving)
+        XCTAssertEqual(link.sockets.count, 1, "a closed pane opens nothing")
+    }
+
+    func testWordOfAMoveDuringTheWaitOutlastsIt() async {
+        let link = FakeLink()
+        let (stream, sink, log) = await holdingStream(link)
+        link.sockets[0].drop(code: 4000)
+        await settle()
+        // A `window_created` named the tab in another session: the move's end decides now.
+        stream.expectMove()
+        log.release(TerminalStream.closeHold)
+        await settle()
+        XCTAssertFalse(sink.statuses.contains(.ended("pane closed")))
+        XCTAssertTrue(stream.isMoving)
+        // The move's view never came: the pane ends as the close said.
+        stream.moveFailed()
+        let ended = await eventually { sink.statuses.last == .ended("pane closed") }
+        XCTAssertTrue(ended)
+    }
+
+    func testBelowRevision22ACloseEndsAtOnce() async {
+        let link = FakeLink()
+        let (stream, sink) = await liveStream(link)
+        XCTAssertFalse(stream.closesMayBeMoves())
+        link.sockets[0].drop(code: 4000)
+        let ended = await eventually { sink.statuses.last == .ended("pane closed") }
+        XCTAssertTrue(ended)
+    }
 }

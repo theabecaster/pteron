@@ -236,10 +236,17 @@ November 2026 lists none, and its tab menus have none); the CLI has `rex window 
   that moves). Nothing draws the empty state or `CloseNext` in between.
 - **A move by another client** (the Rex app, `rex window move --to`) is found the same way: a tab
   ID that leaves one session's view and shows up in another's within 10 s (`TabMoves`). Its
-  panes, places and the tab on screen follow it as for the phone's own move. The server closes
-  the panes' streams first there, so a pane shows "This pane closed." until its view in the new
-  session lands; when the source's view lands first, the tab on screen is taken for closed and
-  `CloseNext` runs, as for any closed tab.
+  panes, places and the tab on screen follow it as for the phone's own move. The server sends
+  the session the tab leaves first (`window_closed`, then the destination's `window_created`),
+  and closes the panes' streams. So when the tab on screen leaves its session's view and is in
+  no other, it stays there, with its panes' screens, for 0.4 s (`LeavingTab`): nothing new shows.
+  A `window_created` with its ID in another session within that wait means a move, and the wait
+  goes on for that session's view, 2 s at most (`TabArrival`). The view that shows it moves the
+  tab in one step, and the screen follows. When the wait ends with no such view, the tab closes
+  and `CloseNext` runs, as for any closed tab. A view that shows it later still moves it, for the
+  places that name it, but the screen stays where `CloseNext` put it. Not for a pane moved to
+  another tab of the session (Move Pane to Tab), a session that ends, or the phone's own Close
+  Tab, which move off at once; nor below revision 22.
 - **Errors**, one notice in the error style, the tab where it was: "Couldn't move the tab.
   “ops” is full, or a pane in the tab is still starting." (`conflict`), "Couldn't move the tab.
   That session closed." (`session_not_found`), "Couldn't move the tab. That tab closed."
