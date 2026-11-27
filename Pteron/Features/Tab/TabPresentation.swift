@@ -11,6 +11,8 @@ enum ActivePane {
         if let f = phone, w.allBlocks.contains(where: { $0.id == f }), !w.isHidden(f) { return f }
         if let z = w.zoomedBlockID, !w.isHidden(z) { return z }
         if let f = w.focusedBlockID, !w.isHidden(f) { return f }
+        // Focus in a hidden float, with the tiled layer zoomed behind it (revision 21).
+        if let t = w.tiledZoomedBlockID { return t }
         return w.tiledPageIDs.first ?? w.floatPageIDs.first
     }
 }
@@ -46,8 +48,12 @@ enum TabPresentation: Equatable {
         var window: WindowInfo
         /// A narrow window (folded Duo, iPhone portrait): the float sheet, never floating windows.
         var narrow: Bool
-        /// Zoomed, on the server or on the phone: the shown pane alone, as in any tab.
+        /// Zoomed, on the server or on the phone: the shown pane alone, as in any tab. On the
+        /// server from revision 21, a floating layer's zoom only (`WindowInfo.zoomCoveringWindow`).
         var zoomed: Bool
+        /// From revision 21, the tiled layer's zoomed pane: drawn alone in the tiled layer's
+        /// place, behind the floating windows (`WindowInfo.tiledZoomUnderFloats`).
+        var tiledZoom: String? = nil
         /// The pane the screen treats as active (`WindowScreen.activeBlock`).
         var active: String?
         /// The panes' area with the keyboard down.
@@ -72,12 +78,17 @@ enum TabPresentation: Equatable {
         if i.narrow { return .floatSheet(FloatSheet.layout(i)) }
         let leaves = w.layout?.leaves ?? []
         let tiled: TiledLook
-        switch leaves.count {
-        case 0: tiled = .empty
-        case 1: tiled = .single(leaves[0].id)
-        default:
-            guard SplitGeometry.legible(leaves.map(\.rect), canvas: i.canvas, fontSize: i.fontSize) else { return pages }
-            tiled = .splits
+        if let z = i.tiledZoom, leaves.contains(where: { $0.id == z }) {
+            // The tiled layer's zoom: its pane alone, the floats over it.
+            tiled = .single(z)
+        } else {
+            switch leaves.count {
+            case 0: tiled = .empty
+            case 1: tiled = .single(leaves[0].id)
+            default:
+                guard SplitGeometry.legible(leaves.map(\.rect), canvas: i.canvas, fontSize: i.fontSize) else { return pages }
+                tiled = .splits
+            }
         }
         var frames: [FloatLayout.Frame] = []
         for layer in FloatLayout.ordered(floats, front: i.front) {

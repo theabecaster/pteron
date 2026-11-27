@@ -50,7 +50,7 @@ extension RexCommand {
         switch self {
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings,
              .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer,
-             .navigateBack, .navigateForward: return false
+             .navigateBack, .navigateForward, .undoClose: return false
         default: return true
         }
     }

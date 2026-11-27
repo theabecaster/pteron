@@ -86,6 +86,9 @@ enum FloatSheet {
         let tiled: Layout.Tiled
         if ids.isEmpty {
             tiled = .empty
+        } else if let z = i.tiledZoom, ids.contains(z) {
+            // The tiled layer's zoom (revision 21): its pane alone under the sheet.
+            tiled = .page(z, ids: [z])
         } else if leaves.count > 1, SplitGeometry.legible(leaves.map(\.rect), canvas: i.canvas, fontSize: i.fontSize) {
             tiled = .splits
         } else {

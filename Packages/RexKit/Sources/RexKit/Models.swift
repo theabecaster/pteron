@@ -115,7 +115,23 @@ public struct WindowInfo: Identifiable, Sendable {
     public var id: String
     public var label: String
     public var focusedBlockID: String?
+    /// `zoomed_block_id` as the server sent it. Up to revision 20 the window's one zoomed block,
+    /// drawn over the whole window. From revision 21 the focused block, if it is zoomed: the
+    /// tiled zoom when it equals `tiled_zoomed_block_id`, else a floating layer's. Read the zoom
+    /// through `tiledZoomedBlockID`, `floatZoomedBlockID` and `zoomsApart`, which mean the same
+    /// at every revision.
     public var zoomedBlockID: String?
+    /// The tiled layer's zoomed block: `tiled_zoomed_block_id` (revision 21), or before it
+    /// `zoomed_block_id` when that block is a tiled one.
+    public var tiledZoomedBlockID: String?
+    /// The zoomed block of a floating layer, drawn over the whole window in front of every layer.
+    public var floatZoomedBlockID: String?
+    /// Revision 21 and later: the window has two zooms, and a tiled zoom is drawn behind the
+    /// floating layers, which it outlives while one has focus. Before, the one zoom covers the
+    /// window and ends as soon as focus leaves it. Told by `tiled_zoomed_block_id` being there:
+    /// a server that has it sends it for each tiled zoom, and a window without one draws the same
+    /// either way.
+    public var zoomsApart: Bool
     public var layers: [LayerInfo]
 
     public init(_ o: JSONObject) {
@@ -124,7 +140,28 @@ public struct WindowInfo: Identifiable, Sendable {
         focusedBlockID = o.str("focused_block_id")
         zoomedBlockID = o.str("zoomed_block_id")
         layers = o.arr("layers").map(LayerInfo.init)
+        let tiledZoom = o.str("tiled_zoomed_block_id")
+        zoomsApart = tiledZoom != nil
+        let floatingIDs = Set(layers.filter(\.isFloating).flatMap { $0.blocks.map(\.id) })
+        if let z = zoomedBlockID, z != tiledZoom, floatingIDs.contains(z) {
+            floatZoomedBlockID = z
+            tiledZoomedBlockID = tiledZoom
+        } else {
+            floatZoomedBlockID = nil
+            tiledZoomedBlockID = tiledZoom ?? zoomedBlockID
+        }
     }
+
+    /// Some block of the window is zoomed, on any layer.
+    public var isZoomed: Bool { tiledZoomedBlockID != nil || floatZoomedBlockID != nil }
+
+    /// The zoomed block drawn alone over the whole window: a floating layer's from revision 21,
+    /// and before it whichever block was zoomed.
+    public var zoomCoveringWindow: String? { zoomsApart ? floatZoomedBlockID : (floatZoomedBlockID ?? tiledZoomedBlockID) }
+
+    /// From revision 21, the tiled zoom, drawn in the tiled layer's place behind the floating
+    /// windows. Nil before, where a zoom covers the window (`zoomCoveringWindow`).
+    public var tiledZoomUnderFloats: String? { zoomsApart ? tiledZoomedBlockID : nil }
 
     private var tiledIndex: Int? { layers.firstIndex { $0.kind == "tiled" } ?? (layers.isEmpty ? nil : 0) }
     public var tiled: LayerInfo? { tiledIndex.map { layers[$0] } }

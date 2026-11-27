@@ -106,6 +106,7 @@ wins); the keys below are the defaults the app sends, which are the Mac's.
 | Session | Change Session… | ⌘K | always (switches the palette to sessions) |
 | Session | Next Session, Previous Session | | a session lies that way, in sidebar order across computers; no wrap |
 | Session | Rename Session…, Close Session | | a tab is on screen (the sidebar's alert and question) |
+| Session | Undo Close | ⇧⌘T | the computer can undo (revision 20) and is online (below) |
 | Host | Add Computer… | | always (Settings → Add Computer) |
 | Tab | New Tab | ⌘T | always |
 | Tab | Close Tab | ⌥⌘W | a tab |
@@ -160,8 +161,7 @@ Not here, with the reason:
 - The Mac's own view state the phone doesn't have: Collapse, Expand and Collapse Other Sessions
   (the sidebar folds by tap), Show Activity by Session or Priority, Focus Tab Filter, Mute Tab,
   Mark as Unread, Dismiss Notice, Switch Host, Change Theme… (Settings → Appearance).
-- No server method the phone can call: Undo Close (the Mac keeps what it closed),
-  Reload Config (`server.config_reload` answers only on the computer itself), Refresh Sessions
+- No server method the phone can call: Reload Config (`server.config_reload` answers only on the computer itself), Refresh Sessions
   (the list is live).
 - Needs arguments: Go to Session, Split Pane, Focus Pane, Move Tab, Resize Pane, Send Key, Enter
   Mode. Their bound keys run, and bound ones with fixed arguments have rows (above).
@@ -185,6 +185,28 @@ Not here, with the reason:
   and is never sent later; a key-bound action keeps today's queue. After 1.5 s without an answer
   "Running Dev Layout…" shows on the notice job lane, for about 6 s at most.
 - A place that closed meanwhile says "That tab closed." and leaves the recents.
+
+## Undo Close
+
+The Mac's Undo Close (`session.undo_close`, ⇧⌘T): the server's `client.undo_close` (revision
+20) reopens the newest close this phone made on that computer, a pane, a tab or a session, within
+about a minute, and the app shows it.
+
+- **What can be undone.** Every close a person makes in the app asks to be undoable from revision
+  20 (`ServerConnection.personsClose`): Close Pane, Close Other Panes, Close Tab (the menus, the
+  swipe, Close Other Tabs), Close Session. The closes the app makes by itself never do: the
+  placeholder of Move Pane to New Tab, a port's tunnel, the helper's setup tab. The close
+  questions stay as they are.
+- **Which computer.** The tab on screen's, else any online one that can; the row shows only then.
+  With nothing left the server answers `not_found`: "Nothing to undo." Any other failure says
+  why, as any other call does.
+- **Showing it.** The answer names the session, tab and pane, which open as Go to Anything opens a
+  pane (`openPane`). A session that comes back is announced as new (`session_created`) and the
+  app attaches it; the tab waits for its view, 5 s at most. What shows when a tab closes
+  (`CloseNext`) is unchanged: Undo then moves back to what came back.
+- **Streams.** The close ended the panes' streams. A pane the app kept off screen since then
+  (`TerminalHostPool`) still holds that ended stream, so Undo lets every such pane of that
+  computer go first (`dropClosedPanes`), and the pane opens a fresh one when it shows.
 
 ## Navigate Back and Forward
 

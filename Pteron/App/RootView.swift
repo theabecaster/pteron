@@ -504,6 +504,10 @@ struct RootView: View {
             sidebar.resolve(inline: inline)
             _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()
+        case .undoClose:
+            guard model.undoCloseServer != nil else { Haptic.bump(); return }
+            Haptic.tap()
+            Task { await model.undoClose() }
         case .navigateBack, .navigateForward:
             guard model.navigate(back: r.command == .navigateBack) else { Haptic.bump(); return }
             Haptic.selection()

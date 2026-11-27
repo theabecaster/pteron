@@ -7,7 +7,7 @@ app relies on; update it when you use a new method or event.
 
 - `wss://<server>/api/control`, subprotocol `rex.control.v1`. Only servers with Rex's Tailscale on
   are reachable (`rex server tailscale on`), and the phone must be on the same tailnet and user.
-- The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 19), `client`
+- The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 24), `client`
   (`kind`, `platform`, `name` "Pteron", `version`, `label` = device name) and
   `reconnect_token` when resuming, and no `api_min_revision` (see API revisions). The server
   answers `welcome` with `client.id`, `client.reconnect_token`, `limits.max_message_bytes` and
@@ -30,14 +30,24 @@ app relies on; update it when you use a new method or event.
 ## API revisions
 
 Every server so far speaks revisions 0 up to its own newest, and translates each connection to the
-revision its welcome names. The app says 19 and no minimum, so the server picks the newest
+revision its welcome names. The app says 24 and no minimum, so the server picks the newest
 revision both have: an older server connects at its own revision, exactly as it did when the app
-said 13, and a newer one translates down to 19. Revisions 14 to 19 change no shape the app sends
-or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `ports_changed`;
-17 to 18: the prompt events and `event_dropped`; 19: `focus_history.reverse`, and an event too
-large to send becomes `event_dropped` instead of closing the connection). The oldest revision
-the app serves stays 13: a revision-13, 18 or 19 server connects and works (`RevisionTests`,
-`ServerEventsTests`).
+said 13, and a newer one translates down to 24. What each revision added, as the app uses it
+(the numbers from the server's own `revision_too_low` messages and Rex's published revision
+history):
+
+| Revision | Added | The app |
+| --- | --- | --- |
+| 14, 15 | tunnels; `terminal.ports`, `ports_changed` | Ports |
+| 17, 18 | the prompt events; `event_dropped` | Prompts, Dropped events |
+| 19 | `focus_history.reverse`; an event too large to send becomes `event_dropped` | gated, not called (Focus history) |
+| 20 | `client.undo_close`; `undoable` on `block.close`, `session.close_window`, `session.destroy` | Undo Close |
+| 21 | two zooms per window: `tiled_zoomed_block_id`, and a layout change no longer ends a zoom | Zoom |
+| 22 | `session.transfer_window` | gated, not used (below) |
+| 24 at the latest | the `com.superlogical.fs` block (tar upload and download), `terminal.program_resume_records` | not used (below) |
+
+The oldest revision the app serves stays 13: servers at 13, 18, 19 and 24 connect and work
+(`RevisionTests`, `ServerEventsTests`).
 
 - `RexControl` keeps `negotiatedRevision` (the welcome's `api_revision`; left out means 0),
   `serverRevision` (`api_server_revision`) and `features`, from every welcome, a resumed one
@@ -139,6 +149,46 @@ is on its way.
 - Events: up to revision 18 an event over the limit closed the connection with 1009 (`event
   exceeds message limit`), an ordinary drop. From revision 19 the server sends `event_dropped`
   with the same `seq` in its place and the connection stays (Dropped events, below).
+
+## Undo Close (revision 20)
+
+`block.close`, `session.close_window` and `session.destroy` take `undoable: true`: the server holds
+what closed for about a minute, out of every view, and `client.undo_close` (no arguments) puts the
+caller's newest one back with its old IDs and answers `session_id`, `window_id` and `block_id`;
+`not_found` means nothing is left. The app sends `undoable` only for a close a person made, and
+only at revision 20 or later: Rex's revision history hides the member from older connections. A held block's `block_closed` comes when it is freed, up to a minute
+later; the app follows the view, as always. Its streams end at the close (data close 4000), so a
+pane kept for it is let go when Undo brings it back (docs/goto.md, Undo Close). A destroyed
+session that comes back is announced with `session_created` and attached like a new one.
+
+## Zoom (revision 21)
+
+From revision 21 a window has two zooms. `tiled_zoomed_block_id` is the tiled layer's zoomed
+pane, drawn over the window behind the floating layers; it outlives a float taking focus and
+ends when focus moves to another tiled pane. `zoomed_block_id` is now the focused block if it is
+zoomed: the tiled zoom when the two are equal, else a float's, drawn in front of every layer.
+Before 21, `zoomed_block_id` was the one zoom, which covered the window and ended when focus
+moved. `WindowInfo` reads both into `tiledZoomedBlockID` and `floatZoomedBlockID`, the same at
+every revision, and `zoomsApart` (the field is there) says how a tiled zoom is drawn
+(`zoomCoveringWindow`, `tiledZoomUnderFloats`; docs/terminal.md, Floating windows). New splits,
+moves and focus changes no longer end zooms the old way; the app reads the view, so it shows
+whatever the server reports.
+
+## Not used: `session.transfer_window`, the fs block, Program Resume
+
+- `session.transfer_window` (revision 22) moves a tab with its running programs to another
+  session. No phone surface moves a tab across sessions: the sidebar's drag keeps a tab inside
+  its session (docs/sidebar.md, Reorder). A drop on another session's tabs is the candidate.
+- `com.superlogical.fs` blocks send and take files and folders as tar (`download_begin`,
+  `upload_begin`, over `rex.data.bytes.v1`). Files today sends one file per `upload_begin` of a
+  terminal and downloads one file at a time. The fs block is the candidate for a folder upload
+  from Files or the photo picker's multiple items in one stream, and a folder download from the
+  file browser; it needs an fs block made for the purpose (`session.new_block`), and the creator
+  list says whether a host has it.
+- `com.superlogical.terminal.program_resume_records` lists the commands programs reported with
+  OSC 7577 to restart them; a command can hold a secret. Not used.
+- The creator list names the fs creator and `program_resume_records` at every revision of a
+  revision-24 server, so the revision those arrived at isn't known; at the latest 24.
 
 ## Focus history (`focus_history.reverse`, revision 19)
 

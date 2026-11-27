@@ -11,10 +11,18 @@ public enum RexAPI {
         // The phone's Navigate Back and Forward keep their own history and never call it
         // (docs/rex-protocol.md, Focus history); listed so that a call is never sent below 19.
         "focus_history.reverse": 19,
+        "client.undo_close": 20,
+        // Not used: the sidebar moves tabs only within their session (docs/rex-protocol.md).
+        "session.transfer_window": 22,
     ]
 
     /// The revision that added the prompt events and `event_dropped`.
     public static let prompts = 17
+    /// The revision that added `client.undo_close` and `undoable` on `block.close`,
+    /// `session.close_window` and `session.destroy` (a server below it refuses the field).
+    public static let undoClose = 20
+    /// The revision that split a window's zoom in two (`tiled_zoomed_block_id`).
+    public static let zoomsApart = 21
 
     public static func minimum(for method: String) -> Int { minimumRevision[method] ?? 0 }
 }

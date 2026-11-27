@@ -242,3 +242,61 @@ struct AddressTests {
         #expect(RexControl.webSocketBase(for: address) == nil)
     }
 }
+
+/// A window's zoom in both shapes: one zoom up to revision 20, a tiled and a floating one from
+/// revision 21 (`tiled_zoomed_block_id`).
+struct ZoomShapeTests {
+    /// Tiled panes T1 and T2, and a float with F.
+    private func window(_ zoom: [String: String]) -> WindowInfo {
+        var o: JSONObject = [
+            "window_id": "w", "label": "tab",
+            "layers": [
+                ["kind": "tiled", "layer_id": "t", "bounds": [0, 0, 1, 1],
+                 "blocks": [["block_id": "T1"], ["block_id": "T2"]],
+                 "layout": ["rect": [0, 0, 1, 1], "split": [
+                     "split_id": "s", "direction": "horizontal", "ratio": 0.5,
+                     "before": ["block_id": "T1", "rect": [0, 0, 0.5, 1]],
+                     "after": ["block_id": "T2", "rect": [0.5, 0, 0.5, 1]]] as JSONObject] as JSONObject] as JSONObject,
+                ["kind": "floating", "layer_id": "f", "bounds": [0.2, 0.2, 0.5, 0.5], "blocks": [["block_id": "F"]],
+                 "layout": ["rect": [0.2, 0.2, 0.5, 0.5], "block_id": "F"] as JSONObject] as JSONObject,
+            ],
+        ]
+        for (k, v) in zoom { o[k] = v }
+        return WindowInfo(o)
+    }
+
+    @Test func revision20OneZoomCoversTheWindow() {
+        let tiled = window(["zoomed_block_id": "T1"])
+        #expect(!tiled.zoomsApart)
+        #expect(tiled.tiledZoomedBlockID == "T1")
+        #expect(tiled.floatZoomedBlockID == nil)
+        #expect(tiled.zoomCoveringWindow == "T1", "drawn over the floats, as before")
+        #expect(tiled.tiledZoomUnderFloats == nil)
+        let float = window(["zoomed_block_id": "F"])
+        #expect(float.floatZoomedBlockID == "F")
+        #expect(float.tiledZoomedBlockID == nil)
+        #expect(float.zoomCoveringWindow == "F")
+        #expect(!window([:]).isZoomed)
+    }
+
+    @Test func revision21TheTiledZoomStaysBehindTheFloats() {
+        // Focus on the zoomed tiled pane: both fields name it.
+        let focused = window(["zoomed_block_id": "T1", "tiled_zoomed_block_id": "T1"])
+        #expect(focused.zoomsApart)
+        #expect(focused.tiledZoomUnderFloats == "T1")
+        #expect(focused.zoomCoveringWindow == nil)
+        // Focus moved to the float: the tiled zoom stays, behind it.
+        let behind = window(["tiled_zoomed_block_id": "T1"])
+        #expect(behind.tiledZoomUnderFloats == "T1")
+        #expect(behind.zoomCoveringWindow == nil)
+        #expect(behind.isZoomed)
+        // The float zoomed too: it covers the window, the tiled zoom waits under it.
+        let both = window(["zoomed_block_id": "F", "tiled_zoomed_block_id": "T1"])
+        #expect(both.zoomCoveringWindow == "F")
+        #expect(both.tiledZoomedBlockID == "T1")
+        // Only the float zoomed: the same at either revision.
+        let float = window(["zoomed_block_id": "F"])
+        #expect(float.zoomCoveringWindow == "F")
+        #expect(float.tiledZoomUnderFloats == nil)
+    }
+}

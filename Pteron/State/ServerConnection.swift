@@ -1183,21 +1183,59 @@ final class ServerConnection: Identifiable {
         }
     }
 
+    /// A close the person asked for, as the server takes it: from revision 20 with `undoable`,
+    /// so Undo Close can bring it back (`client.undo_close`). Never for a close the app makes by
+    /// itself (a placeholder, a tunnel, the helper's setup tab).
+    func personsClose(_ payload: JSONObject) -> JSONObject {
+        guard capabilities.supports(RexAPI.undoClose) else { return payload }
+        var p = payload
+        p["undoable"] = true
+        return p
+    }
+
     func closeBlock(_ sid: String, _ bid: String) async {
-        await act("close the pane", session: sid) { try await self.control.call("block.close", ["session_id": sid, "block_id": bid]) }
+        await act("close the pane", session: sid) {
+            try await self.control.call("block.close", self.personsClose(["session_id": sid, "block_id": bid]))
+        }
     }
 
     /// True when the server closed it.
     @discardableResult
     func closeWindow(_ sid: String, _ wid: String) async -> Bool {
-        await act("close the tab", session: sid) { try await self.control.call("session.close_window", ["session_id": sid, "window_id": wid]) } != nil
+        await act("close the tab", session: sid) {
+            try await self.control.call("session.close_window", self.personsClose(["session_id": sid, "window_id": wid]))
+        } != nil
     }
 
     func destroySession(_ sid: String) async {
         // Only drop it locally once the server agrees.
-        guard await act("close the session", session: nil, { try await self.control.call("session.destroy", ["session_id": sid]) }) != nil else { return }
+        guard await act("close the session", session: nil, {
+            try await self.control.call("session.destroy", self.personsClose(["session_id": sid]))
+        }) != nil else { return }
         sessions.removeAll { $0.id == sid }
         views[sid] = nil
+    }
+
+    /// Whether this server can undo a close (`client.undo_close`, revision 20) now.
+    var canUndoClose: Bool { phase == .online && capabilities.supports(RexAPI.undoClose) }
+
+    /// Undo Close: the server reopens this client's newest undoable close (a pane, a tab or a
+    /// session) and says where it is. Nil, after a notice, when there was nothing to reopen or
+    /// the call failed.
+    func undoClose() async -> (session: String, window: String?, block: String?)? {
+        do {
+            let r = try await control.call("client.undo_close")
+            guard let sid = r.str("session_id") else { return nil }
+            refreshView(sid)
+            return (sid, r.str("window_id"), r.str("block_id"))
+        } catch let e as RexError where e.code == "not_found" {
+            // The ordinary answer to Undo with nothing left: said lightly.
+            Notice.shared.show("Nothing to undo.")
+            return nil
+        } catch {
+            Notice.shared.show(Messages.couldNot("undo the close", error, computer: config.name))
+            return nil
+        }
     }
 
     func renameSession(_ sid: String, _ label: String) async {

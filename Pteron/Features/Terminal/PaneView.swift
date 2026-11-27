@@ -296,6 +296,16 @@ final class TerminalHostPool {
         for key in parked + warm where stale(key) { hosts[key]?.evict() }
     }
 
+    /// Undo Close brought panes back on a server (`client.undo_close`): their blocks have their
+    /// old IDs, and a pane kept off screen since the close holds a stream the close ended. Each
+    /// such pane that no window shows is let go, so the pane opens a fresh stream when it shows.
+    func dropClosedPanes(server: UUID) {
+        for (key, host) in hosts where key.server == server && host.paneClosed {
+            guard !live(key).contains(where: { $0.window != nil }) else { continue }
+            host.evict()
+        }
+    }
+
     /// A pane has been off screen for its settle time: it stays warm if the limit allows one
     /// more, and the warm panes over the limit park, oldest first.
     private func didLeave(_ key: Key) {

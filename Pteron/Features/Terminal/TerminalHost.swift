@@ -342,6 +342,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Transient states (connecting, reconnecting) show only if they last this long.
     static let statusDelay: TimeInterval = 1.0
     private var statusWork: DispatchWorkItem?
+    /// The stream said the pane closed (`.ended`). Undo Close can bring the block back; this
+    /// host's stream won't, so the pool lets it go (`TerminalHostPool.dropClosedPanes`).
+    private(set) var paneClosed = false
     /// A fence still up after this long says "Reconnecting…". Tests shorten it.
     var fenceStatusDelay: TimeInterval = 2.5
     private var fenceStatusWork: DispatchWorkItem?
@@ -2539,6 +2542,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
 
     func streamStatus(_ status: TerminalStream.Status) {
         PerfProbe.active?.status(status, host: self)  // PERF
+        if case .ended = status { paneClosed = true } else { paneClosed = false }
         // A fresh start says the size again, after its snapshot: until then none is known.
         if status == .connecting { serverSizeReported = false }
         switch status {

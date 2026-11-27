@@ -244,6 +244,8 @@ enum RexCommand: Equatable {
     /// The pane shown before this one, or the one Navigate Back left (`client.navigate.back`,
     /// `client.navigate.forward`; `NavHistory`).
     case navigateBack, navigateForward
+    /// Reopens the newest close made from this phone (`session.undo_close`; revision 20).
+    case undoClose
     case fontBigger, fontSmaller, fontReset, settings
     /// Find in the active pane's history (`client.find.*`).
     case find(FindStep)
@@ -952,6 +954,28 @@ final class AppModel {
         arriving = p
         openPane(s, session: p.sessionID, window: p.windowID, block: p.blockID)
         return true
+    }
+
+    // MARK: Undo Close
+
+    /// The computer Undo Close asks: the one on screen, else the first online one that can.
+    var undoCloseServer: ServerConnection? {
+        if let s = current?.server ?? server(selection?.serverID) { return s.canUndoClose ? s : nil }
+        return servers.first { $0.canUndoClose }
+    }
+
+    /// Undo Close (`session.undo_close` on the Mac, `client.undo_close` on the server): reopens
+    /// this phone's newest undoable close on that computer and shows it. The reopened panes have
+    /// their old IDs and streams the close ended, so the panes kept for them are let go first. A
+    /// session that comes back is attached as a new one: the tab waits for it, 5 s at most.
+    func undoClose() async {
+        guard let s = undoCloseServer else { return }
+        guard let place = await s.undoClose() else { return }
+        palette.pool?.dropClosedPanes(server: s.id)
+        let end = Date().addingTimeInterval(5)
+        while !openPane(s, session: place.session, window: place.window, block: place.block), Date() < end {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     /// A server's views changed. When that took away the tab on screen (its last pane closed, it

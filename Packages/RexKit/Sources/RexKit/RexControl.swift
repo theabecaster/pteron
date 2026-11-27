@@ -48,7 +48,7 @@ public final class RexControl {
     /// The newest API revision this client speaks. The hello sends it with no `api_min_revision`,
     /// so a server on any revision from 0 up to this one connects, and a newer server translates
     /// down to it. Features newer than revision 13 ask `negotiatedRevision` (`RexAPI`).
-    public nonisolated static let apiRevision = 19
+    public nonisolated static let apiRevision = 24
 
     /// The server address as configured.
     public let address: String

@@ -1480,9 +1480,12 @@ again, and never moves or resizes one (`Features/Tab/TabPresentation.swift`, `Fl
 - **One decision per body.** `TabPresentation.decide` is read by the canvas, the floats, the
   dots, the Waiting pill and Zoom. Book mode's sidebar collapse still asks about the tiled
   splits alone, with the sidebar collapsed: beside the sidebar they may show as pages under a
-  float, and the float must not keep the sidebar open. Zoom (the server's or the phone's) gives
-  pages: one pane at a time, the tiled panes then the floats' panes front first, minimized ones
-  left out, with dots and swipes as any tab. A narrow window gives the float sheet (below). A
+  float, and the float must not keep the sidebar open. Zoom (the phone's, a float's on the
+  server, or before revision 21 any zoom on the server) gives pages: one pane at a time, the
+  tiled panes then the floats' panes front first, minimized ones left out, with dots and swipes
+  as any tab. From revision 21 a window has two zooms (docs/rex-protocol.md, Zoom): the tiled
+  layer's zoomed pane is drawn alone in the tiled layer's place, behind the floats (wide), or
+  alone under the float sheet (narrow), and it stays while a float has focus. A narrow window gives the float sheet (below). A
   wide window draws floating windows when the tiled splits are legible and every float can be
   placed; else pages.
 - **The float sheet** (narrow windows: folded, iPhone portrait, SE, half the inner screen;

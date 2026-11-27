@@ -350,7 +350,7 @@ struct WindowScreen: View {
     /// while every pane keeps a legible grid.
     private func splitsFit(_ w: WindowInfo) -> Bool {
         guard let layout = w.layout, w.pageBlockIDs.count > 1 else { return false }
-        guard w.zoomedBlockID == nil else { return false }
+        guard !w.isZoomed else { return false }
         return SplitGeometry.legible(layout.leaves.map(\.rect), canvas: legibleCanvas, fontSize: prefs.fontSize)
     }
 
@@ -364,7 +364,8 @@ struct WindowScreen: View {
     /// functions above lay out as before.
     private func presentation(_ w: WindowInfo) -> TabPresentation? {
         guard !w.visibleFloating.isEmpty else { return nil }
-        return TabPresentation.decide(.init(window: w, narrow: mode == .narrow, zoomed: w.zoomedBlockID != nil || zoomedHere,
+        return TabPresentation.decide(.init(window: w, narrow: mode == .narrow, zoomed: w.zoomCoveringWindow != nil || zoomedHere,
+                                            tiledZoom: zoomedHere ? nil : w.tiledZoomUnderFloats,
                                             active: activeBlock(w), canvas: legibleCanvas, fontSize: prefs.fontSize,
                                             crease: floatCrease, front: frontOverride,
                                             tiledShown: PhoneState.shared.sheets[windowID]?.tiled))
@@ -392,7 +393,7 @@ struct WindowScreen: View {
     private var bookFits: Bool? {
         guard let w = window, canvasSize != .zero, let canvasMaxX else { return nil }
         // Zoom aside, as `splitsFit`; beside the sidebar the splits may be too narrow to show.
-        guard w.pageBlockIDs.count > 1, w.zoomedBlockID == nil, !zoomedHere else { return false }
+        guard w.pageBlockIDs.count > 1, !w.isZoomed, !zoomedHere else { return false }
         // A split whose layout hasn't arrived yet isn't measured.
         guard let layout = w.layout else { return nil }
         // Collapsed, the panes' area runs from the root's leading edge to where it ends now.
@@ -987,7 +988,7 @@ struct WindowScreen: View {
         case .goTo(let scope): openGoTo(scope, w)
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings,
              .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer,
-             .navigateBack, .navigateForward: break
+             .navigateBack, .navigateForward, .undoClose: break
         }
     }
 

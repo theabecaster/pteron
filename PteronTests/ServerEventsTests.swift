@@ -177,11 +177,42 @@ final class ServerEventsTests: XCTestCase {
 
     /// Servers at revisions 0, 13, 16 and 18, and one that answers `method_not_found` for
     /// everything newer than 13, give the same sessions, tabs, panes, statuses and agents.
+    /// A close the person makes asks to be undoable from revision 20, and Undo Close asks the
+    /// server for the newest one; below 20 neither is sent.
+    func testClosesAreUndoableFromRevision20() async throws {
+        for revision in [13, 18, 19, 20, 24] {
+            let rig = try await Rig(revision: revision)
+            await rig.connect()
+            for m in ["block.close", "session.close_window", "session.destroy"] { rig.fake.reply(m, [:]) }
+            rig.fake.reply("client.undo_close", ["session_id": "session:1", "window_id": "window:1", "block_id": "block:1b"])
+            let s = rig.server
+            await s.closeBlock("session:1", "block:1b")
+            await s.closeWindow("session:1", "window:1")
+            await s.closeBlocks("session:1", ["block:1a"])
+            await s.destroySession("session:2")
+            let undoable = revision >= 20
+            for m in ["block.close", "session.close_window", "session.destroy"] {
+                let calls = rig.fake.calls(m)
+                XCTAssertFalse(calls.isEmpty, "\(m) at \(revision)")
+                XCTAssertTrue(calls.allSatisfy { ($0.bool("undoable") == true) == undoable }, "\(m) at \(revision)")
+            }
+            XCTAssertEqual(s.canUndoClose, undoable, "revision \(revision)")
+            if undoable {
+                let place = await s.undoClose()
+                XCTAssertEqual(place?.session, "session:1")
+                XCTAssertEqual(place?.window, "window:1")
+                XCTAssertEqual(place?.block, "block:1b")
+                XCTAssertEqual(rig.fake.count("client.undo_close"), 1)
+            }
+            rig.stop()
+        }
+    }
+
     func testEveryServerRevisionGivesTheSameModel() async throws {
         var baseline: String?
         var baselineMethods: Set<String>?
         let cases: [(String, Int?, FakeRexServer.Reply?)] = [
-            ("13", 13, nil), ("0", nil, nil), ("16", 16, nil), ("18", 18, nil), ("19", 19, nil),
+            ("13", 13, nil), ("0", nil, nil), ("16", 16, nil), ("18", 18, nil), ("19", 19, nil), ("24", 24, nil),
             ("18 without the creator list", 18, .error(code: "method_not_found", status: 404)),
             ("0 answering not_found", nil, .error(code: "not_found", status: 404)),
         ]

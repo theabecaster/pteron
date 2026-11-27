@@ -135,6 +135,7 @@ enum AppAction {
         case "session.new": return .command(.newSession)
         case "session.next": return .command(.nextSession)
         case "session.previous": return .command(.previousSession)
+        case "session.undo_close": return .command(.undoClose)
         case "session.rename": return .command(.renameSession)
         case "session.close": return .command(.closeSession)
         case "client.host.add": return .command(.addComputer)
@@ -217,6 +218,7 @@ enum KeyActions {
         Info(name: "session.previous", title: "Previous Session", category: "Session", repeats: true),
         Info(name: "session.rename", title: "Rename Session…", category: "Session", repeats: false),
         Info(name: "session.close", title: "Close Session", category: "Session", repeats: false),
+        Info(name: "session.undo_close", title: "Undo Close", category: "Session", repeats: false),
         Info(name: "client.host.add", title: "Add Computer…", category: "Host", repeats: false),
         Info(name: "client.tab.new", title: "New Tab", category: "Tab", repeats: false),
         Info(name: "client.tab.close", title: "Close Tab", category: "Tab", repeats: false),
@@ -331,6 +333,7 @@ enum KeyDefaults {
         bind(["cmd+n"], "session.new")
         bind(["cmd+k"], "session.switch")
         bind(["cmd+t"], "client.tab.new")
+        bind(["shift+cmd+t"], "session.undo_close")
         bind(["alt+cmd+w"], "client.tab.close")
         bind(["ctrl+shift+pageup"], "client.tab.move.backward")
         bind(["ctrl+shift+pagedown"], "client.tab.move.forward")

@@ -425,6 +425,26 @@ final class GoToModelTests: XCTestCase {
         XCTAssertEqual(m.focusedPane["w1"], "b1")
     }
 
+    /// Undo Close shows where the computer can undo (revision 20), with the Mac's ⇧⌘T.
+    func testUndoCloseShowsFromRevision20WithTheMacsKey() throws {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1"])])])
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        for (revision, shows) in [(13, false), (19, false), (20, true), (24, true)] {
+            s.capabilities.connected(serial: revision, revision: revision, serverRevision: revision, features: [])
+            let row = commands(m, target: t).items.first { $0.title == "Undo Close" }
+            XCTAssertEqual(row != nil, shows, "revision \(revision)")
+            if shows {
+                XCTAssertEqual(row?.keyLabel, "⇧⌘T")
+                XCTAssertEqual(row?.category, "Session")
+                XCTAssertNotNil(commands(m, target: nil).items.first { $0.title == "Undo Close" }, "no tab: any computer that can")
+            }
+        }
+        load(s, [("api", [("w1", ["b1"])])], online: false)
+        XCTAssertNil(commands(m, target: t).items.first { $0.title == "Undo Close" }, "offline: it could only fail")
+    }
+
     private func settleVisits() async { for _ in 0..<5 { await Task.yield() } }
 
     // MARK: Open, select, rebuild

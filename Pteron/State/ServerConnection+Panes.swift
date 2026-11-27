@@ -161,7 +161,7 @@ extension ServerConnection {
     /// and at most one notice. A block that is gone already (`not_found`) is what was asked.
     func closeBlocks(_ sid: String, _ ids: [String]) async {
         guard !ids.isEmpty else { return }
-        let results = await control.callInOrder(ids.map { ("block.close", ["session_id": sid, "block_id": $0] as JSONObject) })
+        let results = await control.callInOrder(ids.map { ("block.close", personsClose(["session_id": sid, "block_id": $0])) })
         var failure: Error?
         for case .failure(let e) in results where (e as? RexError)?.code != "not_found" {
             noteMissing("block.close", e)

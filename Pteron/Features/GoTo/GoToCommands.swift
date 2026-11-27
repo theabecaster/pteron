@@ -351,6 +351,10 @@ enum GoToCommands {
         }
         switch c {
         case .jumpToWaiting: return waitingCount > 0
+        case .undoClose:
+            // As `AppModel.undoCloseServer`: the target's computer, else any that can.
+            guard let server else { return servers.contains { $0.canUndoClose } }
+            return server.canUndoClose
         case .navigateBack: return history.back
         case .navigateForward: return history.forward
         case .nextSession, .previousSession:
@@ -385,6 +389,7 @@ enum GoToCommands {
         case .settings: "gearshape"
         case .toggleSidebar: "sidebar.left"
         case .jumpToWaiting: "bell"
+        case .undoClose: "arrow.uturn.backward"
         case .navigateBack: "chevron.backward"
         case .navigateForward: "chevron.forward"
         case .balanceSplits: "rectangle.split.3x1"
