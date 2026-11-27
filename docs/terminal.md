@@ -1365,7 +1365,11 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   menu (⇧⌘.), which also has the parent folders, Home and Copy Path. A tap opens a folder or
   previews a file in Quick Look, by the same download as Open; a file with no extension that
   reads as text, up to 1 MB, is shown as text (`TextHint`). A long press offers Preview, Insert
-  Path, Copy Path, Share… and Save to Files…, which keep the file's own name. The filter matches
+  Path, Copy Path, Share… and Save to Files…, which keep the file's own name. The download's
+  notice ("Saving name · 23%" with Cancel) and anything that goes wrong show on the browser,
+  under its title and filter, not under the sheet (`noticeHost`; [notifications.md](notifications.md),
+  Notices). It stays at 100% while the system's Share or Save sheet loads and goes once that
+  sheet is in; a Cancel meanwhile takes the sheet back and deletes the copy. The filter matches
   anywhere in a name; a filter that starts with `/` or `~` is a path, and Return goes there. A
   folder with more than 2,000 entries says "Showing the first N. Search to find others.", and
   its filter also asks the server for names that start with the text, 250 ms after the last

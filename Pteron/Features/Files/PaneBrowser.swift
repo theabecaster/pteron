@@ -128,6 +128,9 @@ private struct FolderScreen: View {
             }
         }
         .overlay { status(facts) }
+        // The notice shows here while the sheet is up: a Save's or a Share's progress and Cancel,
+        // and what went wrong. Under the title and the filter, so Done stays in reach.
+        .noticeHost(theme: theme)
         .background(theme.chrome.sidebar)
         .searchable(text: $folder.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter, or type a path")
         .textInputAutocapitalization(.never)

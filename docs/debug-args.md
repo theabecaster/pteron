@@ -242,7 +242,8 @@ builds.
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
   `send:<Mac path>|<Mac path>`, `sendAsIs:…`, `sendTree:<Mac path>|…` (files and folders where
   they are, as the Files picker gives them where the computer takes folders), `paste:<image path>`,
-  `open:<text>`, `cancel`, `wait:<s>`.
+  `open:<text>`, `cancel`, `tapNotice` (the notice's button, Cancel or Try Again, wherever it
+  draws), `wait:<s>`.
   The files land on the pane's computer and their paths are typed, so use a `zz-` session.
   The file browser: `browse`, `insert`, `browseAt:<path>` open it; then `go:<path>`,
   `enter:<name>`, `up`, `filter:<text>`, `hidden`, `tap:<name>`, `insertPath:<name>`,

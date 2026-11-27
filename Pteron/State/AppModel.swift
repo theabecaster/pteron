@@ -13,6 +13,9 @@ struct Selection: Hashable, Codable {
 /// A notice can carry one button (Retry), and a running job's notice shows its progress with
 /// Cancel.
 ///
+/// It draws on the app's screen, or on the sheet on top when that sheet hosts it (`Host`), so it
+/// shows where the user is looking, once.
+///
 /// Two places feed it:
 /// - **The slot**: plain notices (`show`), and a transfer's progress (`showProgress`). A plain
 ///   notice shows its full time: progress that comes meanwhile waits and shows when it hides.
@@ -70,6 +73,17 @@ final class Notice {
     }
     @ObservationIgnored private var job: Job?
     @ObservationIgnored private var nextJob = 0
+
+    /// A place that draws the notice: a sheet over the app's screen that shows notices itself
+    /// (`noticeHost`), so what its actions start (a download's progress and Cancel, an error)
+    /// shows on the sheet, not under it.
+    struct Host: Hashable {
+        fileprivate let raw: Int
+    }
+    /// The sheets that host the notice, oldest first. Only the newest draws it; with none, the
+    /// app's screen does.
+    private(set) var hosts: [Host] = []
+    @ObservationIgnored private var nextHost = 0
     /// Jobs waiting for the lane, oldest first.
     @ObservationIgnored private var laneWaiters: [(id: Int, resume: CheckedContinuation<Bool, Never>)] = []
 
@@ -108,6 +122,16 @@ final class Notice {
         render()
     }
 
+    /// Puts away the transfer progress that says `text`, and nothing else: a notice that came
+    /// since stays.
+    func dismissProgress(_ text: String) {
+        if case .progress(let t, _, _) = slot, t == text {
+            dismiss()
+        } else if heldProgress?.text == text {
+            heldProgress = nil
+        }
+    }
+
     /// Puts the notice away and runs its button's action. A job's Cancel leaves its progress up
     /// until the job ends.
     func runAction() {
@@ -130,6 +154,24 @@ final class Notice {
         }
         render()
     }
+
+    // MARK: Hosts
+
+    /// A sheet that hosts the notice came: it draws the notice from now on.
+    func claimHost() -> Host {
+        nextHost += 1
+        let h = Host(raw: nextHost)
+        hosts.append(h)
+        return h
+    }
+
+    /// The sheet went: the host under it, or the app's screen, draws the notice again.
+    func releaseHost(_ h: Host) {
+        hosts.removeAll { $0 == h }
+    }
+
+    /// Whether the banner of `host` draws the notice; nil is the app's screen. Exactly one does.
+    func draws(in host: Host?) -> Bool { host == hosts.last }
 
     // MARK: Job lane
 

@@ -60,6 +60,22 @@ plays main's logic against `ToastState`). Notices have their own rules (`ToastSt
 `NotificationDelegate` (in `App/AppDelegate.swift`) shows no banners while the app is in front,
 except the one "Send Test Notification" asks for (thread id `rexduo-test`, `PushTest`).
 
+## Notices
+
+`Notice` is the app's one small capsule for news about what the user just did: an action the
+server refused, "Copied", a transfer's progress with Cancel, a job's progress, a result with Try
+Again (`NoticeBanner`; the rules of its slot and job lane are on `Notice`). It is not a toast: it
+names no pane and opens nothing.
+
+- **Where it draws.** At the top of the app's screen, over the title bar. A sheet whose actions
+  start transfers hosts it itself (`noticeHost`): while it is up the notice draws at the top of
+  the sheet's content, under its title and search field, so Done stays in reach, and not on the
+  screen under it. Only the newest host draws (`Notice.hosts`), so it never shows twice, and
+  when the sheet goes the screen draws it again, the same notice with the same Cancel. The file
+  browser is such a sheet: a Save to Files… or Share… started there shows its progress there,
+  and its errors. The progress stays, at 100%, until the system's Save or Share sheet is in.
+- One notice at a time, the same capsule, place and motion everywhere.
+
 ## The screen: Settings → Notifications
 
 One master switch, "Notifications", in a group of its own with its line and the section's

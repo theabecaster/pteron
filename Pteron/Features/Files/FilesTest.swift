@@ -16,6 +16,7 @@ import RexKit
 /// - `paste:<path>`: put this image on the clipboard alone, then Paste.
 /// - `open:<text>`: open what `<text>` names, as the edit menu's Open does for a selection.
 /// - `cancel`: cancel the send on its way, as the notice's Cancel does.
+/// - `tapNotice`: tap the notice's button (Cancel, Try Again), wherever it draws.
 /// - `browse`, `insert`: open the file browser in that mode, in the folder the pane's program is in;
 ///   `browseAt:<path>` opens it at a folder. With the browser up: `go:<path>` opens a folder by
 ///   path, `enter:<name>` a folder of the one on screen, `up` its parent, `filter:<text>` types in
@@ -82,6 +83,8 @@ enum FilesTest {
             host.files?.open(selection: arg)
         case "cancel":
             host.files?.cancel()
+        case "tapNotice":
+            Notice.shared.runAction()
         case "browse", "insert":
             host.files?.browse(verb == "insert" ? .insert : .browse)
         case "browseAt":

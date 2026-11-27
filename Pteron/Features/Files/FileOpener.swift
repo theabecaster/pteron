@@ -127,6 +127,20 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     private var showing: PreviewFile?
     /// The copy the share sheet or Save to Files holds.
     private var exporting: URL?
+    /// The system's Share or Save sheet on its way in. The download's notice stays up until it is
+    /// in, so the wait while it loads isn't blank; a Cancel meanwhile takes it back.
+    private var arriving: Arriving?
+
+    private final class Arriving {
+        let sheet: UIViewController
+        let discard: @MainActor () -> Void
+        var cancelled = false
+
+        init(sheet: UIViewController, discard: @escaping @MainActor () -> Void) {
+            self.sheet = sheet
+            self.discard = discard
+        }
+    }
     /// The path named a folder. True when the folder was shown instead (the file browser).
     var onFolder: ((String) -> Bool)?
 
@@ -136,10 +150,45 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
         self.blockID = blockID
     }
 
+    /// A download's notice: "Saving name · 23%", in whole percents rounded down, so 100% shows
+    /// only once all of it is here. No size yet reads 0%.
+    nonisolated static func progress(_ verb: String, _ name: String, got: Int64, size: Int64) -> (text: String, fraction: Double) {
+        let f = size > 0 ? min(max(Double(got) / Double(size), 0), 1) : 0
+        return ("\(verb) \(name) · \(Int(f * 100))%", f)
+    }
+
     func cancel() {
         downloader?.cancel()
         treeDownloader?.cancel()
         if fetchingFolder { folderCancelled = true }
+        arriving?.cancelled = true
+    }
+
+    /// Presents the system's Share or Save sheet over `top`. The progress that says `progress`
+    /// stays until the sheet is in, then goes. A Cancel while it comes in takes it back and
+    /// `discard`s the copy.
+    private func present(_ sheet: UIViewController, over top: UIViewController, progress: String,
+                         discard: @escaping @MainActor () -> Void) {
+        let a = Arriving(sheet: sheet, discard: discard)
+        arriving = a
+        top.present(sheet, animated: true) { [weak self] in
+            if self?.arriving === a { self?.arriving = nil }
+            if a.cancelled {
+                sheet.dismiss(animated: true)
+                a.discard()
+            } else {
+                Notice.shared.dismissProgress(progress)
+            }
+        }
+        // The Save sheet loads out of process, so it may take a while to come in. One that never
+        // came (UIKit refused it) leaves no notice up.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, self.arriving === a, sheet.presentingViewController == nil else { return }
+            self.arriving = nil
+            Notice.shared.dismissProgress(progress)
+            a.discard()
+        }
     }
 
     /// The pane closed: stop a download and delete the copy, unless Quick Look still shows it (it
@@ -169,17 +218,22 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 let outcome = try await d.download(path: path, limit: Self.limit, write: { data in
                     try file.write(data)
                 }, progress: { got, size in
-                    let f = size > 0 ? min(Double(got) / Double(size), 1) : 0
-                    Notice.shared.showProgress("\(destination.verb) \(name) · \(Int(f * 100))%", fraction: f, cancel: cancel)
+                    let p = Self.progress(destination.verb, name, got: got, size: size)
+                    Notice.shared.showProgress(p.text, fraction: p.fraction, cancel: cancel)
                 })
                 self.downloader = nil
                 file.close()
                 guard case .downloaded(let info) = outcome else { return }
                 let url = try file.url ?? Self.empty(named: info.name)
-                Notice.shared.dismiss()
                 switch destination {
-                case .preview(let hint): await self.show(url, textHint: hint, over: view)
-                case .share, .files: self.hand(url, to: destination, over: view)
+                case .preview(let hint):
+                    Notice.shared.dismiss()
+                    await self.show(url, textHint: hint, over: view)
+                case .share, .files:
+                    // The notice stays, at 100%, until the system's sheet is in.
+                    let done = Self.progress(destination.verb, name, got: 1, size: 1)
+                    Notice.shared.showProgress(done.text, fraction: done.fraction, cancel: cancel)
+                    self.hand(url, to: destination, over: view, progress: done.text)
                 }
             } catch {
                 self.downloader = nil
@@ -210,7 +264,8 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
         fetchingFolder = true
         folderCancelled = false
         let cancel: @MainActor () -> Void = { [weak self] in self?.cancel() }
-        Notice.shared.showProgress("\(destination.verb) \(name) · 0%", fraction: 0, cancel: cancel)
+        let start = Self.progress(destination.verb, name, got: 0, size: 0)
+        Notice.shared.showProgress(start.text, fraction: start.fraction, cancel: cancel)
         let control = self.control, sessionID = self.sessionID
         let background = BackgroundTask(name: "Save folder") { [weak self] in self?.cancel() }
         Task { @MainActor in
@@ -234,8 +289,8 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                     if self.folderCancelled { d.cancel() }
                     result = try await d.download([path], into: root, hasRoom: { Self.hasRoom(for: $0) }) { got, size in
                         guard !over.set else { return }
-                        let f = size > 0 ? min(Double(got) / Double(size), 1) : 0
-                        Notice.shared.showProgress("\(destination.verb) \(name) · \(Int(f * 100))%", fraction: f, cancel: cancel)
+                        let p = Self.progress(destination.verb, name, got: got, size: size)
+                        Notice.shared.showProgress(p.text, fraction: p.fraction, cancel: cancel)
                     }
                 }
                 over.set = true
@@ -244,12 +299,16 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 // `FILES_FOLDER <copy>`: where the folder is until it is saved, to check it against the computer's.
                 NSLog("FILES_FOLDER %@ entries=%ld skipped=%ld", root.appendingPathComponent(top).path, result.info.entries, result.skipped)
                 #endif
-                Notice.shared.dismiss()
+                // The notice stays, at 100%, until the system's sheet is in; a note about links
+                // left out takes its place.
+                let done = Self.progress(destination.verb, name, got: 1, size: 1)
+                Notice.shared.showProgress(done.text, fraction: done.fraction, cancel: cancel)
                 if result.skipped > 0 {
                     let n = result.skipped
                     Notice.shared.show(n == 1 ? "\(name) came without its 1 link." : "\(name) came without its \(n) links.", style: .neutral)
                 }
-                self.handFolder(root.appendingPathComponent(top, isDirectory: true), staging: root, to: destination, over: view)
+                self.handFolder(root.appendingPathComponent(top, isDirectory: true), staging: root, to: destination, over: view,
+                                progress: done.text)
             } catch {
                 if let staging { FileStaging.remove(staging) }
                 let retry = Notice.Action(title: "Try Again") { self.exportFolder(path, machine: machine, to: destination, over: view) }
@@ -282,8 +341,11 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
         return free >= size + 200_000_000
     }
 
-    private func handFolder(_ folder: URL, staging: URL, to destination: Destination, over view: UIView?) {
-        guard let top = Self.top(over: view) else { return FileStaging.remove(staging) }
+    private func handFolder(_ folder: URL, staging: URL, to destination: Destination, over view: UIView?, progress: String) {
+        guard let top = Self.top(over: view) else {
+            Notice.shared.dismissProgress(progress)
+            return FileStaging.remove(staging)
+        }
         if let old = exportingFolder { FileStaging.remove(old) }
         exportingFolder = staging
         if destination == .share {
@@ -294,11 +356,11 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
             sheet.popoverPresentationController?.sourceView = top.view
             sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 1, height: 1)
             sheet.popoverPresentationController?.permittedArrowDirections = []
-            top.present(sheet, animated: true)
+            present(sheet, over: top, progress: progress) { [weak self] in self?.folderExported(staging) }
         } else {
             let picker = UIDocumentPickerViewController(forExporting: [folder], asCopy: false)
             picker.delegate = self
-            top.present(picker, animated: true)
+            present(picker, over: top, progress: progress) { [weak self] in self?.folderExported(staging) }
         }
     }
 
@@ -360,8 +422,11 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
 
     // MARK: Share and Save to Files
 
-    private func hand(_ url: URL, to destination: Destination, over view: UIView?) {
-        guard let top = Self.top(over: view) else { return Self.delete(url) }
+    private func hand(_ url: URL, to destination: Destination, over view: UIView?, progress: String) {
+        guard let top = Self.top(over: view) else {
+            Notice.shared.dismissProgress(progress)
+            return Self.delete(url)
+        }
         if let old = exporting { Self.delete(old) }
         exporting = url
         if destination == .share {
@@ -373,11 +438,11 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
             sheet.popoverPresentationController?.sourceView = top.view
             sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 1, height: 1)
             sheet.popoverPresentationController?.permittedArrowDirections = []
-            top.present(sheet, animated: true)
+            present(sheet, over: top, progress: progress) { [weak self] in self?.exported(url) }
         } else {
             let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
             picker.delegate = self
-            top.present(picker, animated: true)
+            present(picker, over: top, progress: progress) { [weak self] in self?.exported(url) }
         }
     }
 

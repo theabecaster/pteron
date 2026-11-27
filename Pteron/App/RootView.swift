@@ -801,11 +801,13 @@ struct TabOfflineOverlay: View {
 /// button (Retry, Cancel) shows it after the text, and a running job's notice a thin progress line.
 struct NoticeBanner: View {
     let theme: TermTheme
+    /// The sheet this banner is on; nil for the app's screen.
+    var host: Notice.Host?
     private var notice: Notice { Notice.shared }
 
     var body: some View {
         ZStack {
-            if let m = notice.message {
+            if notice.draws(in: host), let m = notice.message {
                 HStack(spacing: 12) {
                     Text(m)
                         .font(.footnote.monospacedDigit())
@@ -846,6 +848,32 @@ struct NoticeBanner: View {
         // Not on every change of a progress notice's text.
         .animation(.snappy(duration: 0.25), value: notice.message == nil)
         .animation(.snappy(duration: 0.25), value: notice.actionTitle)
+    }
+}
+
+extension View {
+    /// Shows `Notice` on this sheet, at its top, while the sheet is up, in place of the app's
+    /// screen under it: what the sheet's actions start (a download's progress and Cancel, an
+    /// error) shows where the user is looking. The same banner, so nothing new to learn.
+    func noticeHost(theme: TermTheme) -> some View { modifier(NoticeHosting(theme: theme)) }
+}
+
+private struct NoticeHosting: ViewModifier {
+    let theme: TermTheme
+    @State private var host: Notice.Host?
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if let host { NoticeBanner(theme: theme, host: host) }
+            }
+            .onAppear {
+                if host == nil { host = Notice.shared.claimHost() }
+            }
+            .onDisappear {
+                if let host { Notice.shared.releaseHost(host) }
+                host = nil
+            }
     }
 }
 
