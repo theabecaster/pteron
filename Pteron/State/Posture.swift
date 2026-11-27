@@ -213,6 +213,9 @@ extension EnvironmentValues {
     /// (`KeyboardInset`): measured from the frames on every keyboard change and layout, so it is
     /// never older than the layout it goes with. 0 with neither.
     @Entry var keyboardRoom: CGFloat = 0
+    /// The part of `keyboardRoom` Compose's card takes while it shows on the key bar: room that
+    /// stays while Compose is open, as the key bar alone's does, not the keyboard's. 0 otherwise.
+    @Entry var composeRoom: CGFloat = 0
     /// The window's own bottom inset under the root (the home indicator), its side insets and its
     /// bottom corners, as UIKit reports them, keyboard up or down (`KeyboardInsetReader`). The
     /// panes run on into the inset with the keyboard down as far as the corners allow

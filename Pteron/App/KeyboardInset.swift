@@ -93,12 +93,16 @@ struct KeyboardInsetReader: UIViewRepresentable {
     /// The window's bottom inset under the view (`KeyboardInset.home`), its side insets and its
     /// bottom corners (`WindowBottom`), when they change.
     var onBottom: (WindowBottom) -> Void = { _ in }
+    /// The part of the padding Compose's card takes (`Probe.cardRoom`), when it changes. Reported
+    /// in the same pass as the padding.
+    var onCard: (CGFloat) -> Void = { _ in }
     let onChange: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> Probe {
         let p = Probe()
         p.onChange = onChange
         p.onBottom = onBottom
+        p.onCard = onCard
         connect(p)
         return p
     }
@@ -106,6 +110,7 @@ struct KeyboardInsetReader: UIViewRepresentable {
     func updateUIView(_ p: Probe, context: Context) {
         p.onChange = onChange
         p.onBottom = onBottom
+        p.onCard = onCard
         connect(p)
     }
 
@@ -116,7 +121,9 @@ struct KeyboardInsetReader: UIViewRepresentable {
     final class Probe: UIView {
         var onChange: ((CGFloat) -> Void)?
         var onBottom: ((WindowBottom) -> Void)?
+        var onCard: ((CGFloat) -> Void)?
         private var reportedBottom: WindowBottom?
+        private var reportedCard: CGFloat = 0
         /// The keyboard's last reported end frame, in screen coordinates.
         private var keyboard: CGRect = .null
         /// The last report was a hide.
@@ -242,6 +249,13 @@ struct KeyboardInsetReader: UIViewRepresentable {
                                          windowSafeBottom: window.safeAreaInsets.bottom)
         }
 
+        /// The part of `pad` Compose's card takes: while the key bar it shows on is up in this
+        /// window, the keyboard isn't on its way down, and the padding holds the bar.
+        func cardRoom(pad: CGFloat) -> CGFloat {
+            guard pad > 0, !hiding, let window, keyBarFrame(in: window) != nil, let bar = keyBar as? KeyBar else { return 0 }
+            return min(bar.cardRoom, pad)
+        }
+
         /// The key bar's frame in this window, while it shows in this window's scene.
         private func keyBarFrame(in window: UIWindow) -> CGRect? {
             guard let bar = keyBar, let barWindow = bar.window, !bar.isHidden, !barWindow.isHidden,
@@ -278,7 +292,14 @@ struct KeyboardInsetReader: UIViewRepresentable {
                     onBottom?(bottom)
                 }
             }
-            guard let pad = padding(), pad != reported else { return }
+            guard let pad = padding() else { return }
+            // With the padding, in the same pass: the panes' rest size reads the two together.
+            let card = cardRoom(pad: pad)
+            if card != reportedCard {
+                reportedCard = card
+                onCard?(card)
+            }
+            guard pad != reported else { return }
             reported = pad
             reports += 1
             onChange?(pad)

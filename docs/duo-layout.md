@@ -319,6 +319,15 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   (both panes' key bars during a pane swipe) and leave a band of chrome above the key bar.
   While the keyboard is up the key bar's own top is a floor, for reports without it
   ([terminal.md](terminal.md), Input, Keyboard room).
+  The room is padding below the navigation stack, not a safe area inside it: the stack hosts its
+  content on its own, and that host avoids a keyboard over its frame by itself. With a keyboard
+  taller than about half the window (the key bar with Compose's card) it centered the content on
+  the room left, so the title bar slid off the window's top and the panes were measured too tall.
+  The room is painted in the terminal's color, which shows behind the key bar's glass and the
+  keyboard's corners. Nothing in the tab has a height of its own the room can't take: the inline
+  sidebar's picker and rows clip to it, since the stack they share places the tab at the taller
+  of the two, and a short window (a phone on its side with Compose's card) left the panes running
+  under the card.
   The panes' frames follow that room, but a fitted terminal's grid doesn't: the keyboard covers
   it ([terminal.md](terminal.md), Fit and mirror).
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.

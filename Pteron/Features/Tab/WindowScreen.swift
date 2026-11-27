@@ -50,6 +50,7 @@ struct WindowScreen: View {
     @Environment(\.bookCrease) private var bookCrease
     /// The room the keyboard takes from the root's bottom, for the panes' size with it down.
     @Environment(\.keyboardRoom) private var keyboardRoom
+    @Environment(\.composeRoom) private var composeRoom
     /// The window's bottom inset, side insets and corners, which say how far the panes run on
     /// past the safe area with the keyboard down (`PaneBottom`).
     @Environment(\.windowBottom) private var windowBottom
@@ -232,7 +233,7 @@ struct WindowScreen: View {
         // as far as the window's corners allow, to the edge where they allow it; with it up it
         // keeps to the safe area and ends at the keyboard's top as before (`PaneBottom`).
         let look = canvasLook(w, p)
-        let bottom = PaneBottom(window: windowBottom, keyboardRoom: keyboardRoom,
+        let bottom = PaneBottom(window: windowBottom, keyboardRoom: keyboardRoom, card: composeRoom,
                                 padding: PaneLayout.bottomPadding(splits: look.splits, rounded: mode != .narrow),
                                 tolerance: PaneBottom.tolerance(fontSize: prefs.fontSize), reaches: reachesBottom)
         return ZStack {
@@ -255,11 +256,12 @@ struct WindowScreen: View {
             // Measured again when the inset changes as well: with the keyboard up the area keeps
             // to the safe area, so a fold or a turn that changes only the home indicator's inset
             // leaves its size as it was.
-            .onGeometryChange(for: PaneBottom.Measure.self) { PaneBottom.Measure(size: $0.size, restReach: bottom.restReach) }
-            action: { m in
+            .onGeometryChange(for: PaneBottom.Measure.self) {
+                PaneBottom.Measure(size: $0.size, restReach: bottom.restReach, room: keyboardRoom, card: composeRoom)
+            } action: { m in
                 // The room, the inset and the header as this layout had them: read with the size
                 // they made.
-                let rest = PaneLayout.restCanvas(now: m.size, room: keyboardRoom, home: m.restReach,
+                let rest = PaneLayout.restCanvas(now: m.size, room: m.room, card: m.card, home: m.restReach,
                                                  header: showsHeader ? 0 : headerHeight, limit: restLimit)
                 if rest != canvasSize { canvasSize = rest }
                 if m.restReach != restReach { restReach = m.restReach }
@@ -1437,12 +1439,19 @@ enum PaneLayout {
     /// another size. The key bar alone takes its room: the grid fits above it. Nothing measured
     /// yet stays unmeasured.
     ///
+    /// `card` is the part of `room` Compose's card takes (`EnvironmentValues.composeRoom`): it
+    /// stays while Compose is open, so the grid fits above it, and the room under it is the
+    /// keyboard's, given back as above.
+    ///
     /// `home` is the home indicator's inset under the keyboard (`PaneBottom.restReach`), given back
     /// with its room, since with the keyboard down the panes run on to the window's edge.
-    static func restCanvas(now: CGSize, room: CGFloat, home: CGFloat = 0, header: CGFloat = 0,
+    static func restCanvas(now: CGSize, room: CGFloat, card: CGFloat = 0, home: CGFloat = 0, header: CGFloat = 0,
                            limit: CGFloat = .infinity) -> CGSize {
         guard now.width > 0, now.height > 0 else { return now }
-        let keyboard = PaneBottom.softwareKeyboard(room) ? room + home : 0
+        // Compose's card stays while Compose is open, as the key bar alone does: only the room
+        // under it is given back.
+        let keys = room - min(max(card, 0), room)
+        let keyboard = PaneBottom.softwareKeyboard(keys) ? keys + home : 0
         return CGSize(width: now.width, height: max(min(now.height + keyboard - header, limit), 1))
     }
 

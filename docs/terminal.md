@@ -955,7 +955,13 @@ quotes and dashes are off, so a command or a path stays as typed. Only a tap on 
   (Keyboard room) and a fitted pane's last rows sit above it, as above the key bar. Opening or
   closing compose changes that height once: the bar's height is flexible, not pinned to its
   first frame, and the responder that shows it reloads its input views so the keyboard reads
-  the new one (`KeyBar.onHeightChange`).
+  the new one (`KeyBar.onHeightChange`). The panes end at the card's top, with the title bar
+  where it was. The card stays while Compose is open, as the key bar alone does, so a fitted grid
+  fits above it: the room under the card is the keyboard's and is given back as always
+  (`EnvironmentValues.composeRoom`, `PaneLayout.restCanvas`). Opening Compose sends one resize to
+  a grid the card's rows shorter, and closing it one back to the grid from before; the cover
+  keeps the newest rows and the cursor above the card (Fit and mirror). With the keyboard down
+  the card is down too, and the grid is the full one again.
 - **Postures.** The card spans the width the key bar's capsules may use: inside the safe area and
   short of the Duo's vertical bar's column. With a hardware keyboard the card and the bar show
   on their own at the bottom, as the bar does.

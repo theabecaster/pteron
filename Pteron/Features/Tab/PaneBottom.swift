@@ -66,13 +66,16 @@ struct PaneBottom: Equatable {
     ///   - tolerance: how far a corner may reach past that into a cell (`tolerance(fontSize:)`).
     ///   - reaches: the panes' area is at the bottom of the tab. Not in tabletop, where the panes
     ///     stay above the crease: there nothing changes.
-    init(window: WindowBottom, keyboardRoom: CGFloat, padding: CGFloat, tolerance: CGFloat, reaches: Bool = true) {
+    ///   - card: the part of `keyboardRoom` Compose's card takes, which stays while Compose is
+    ///     open: the rest is the keyboard's (`EnvironmentValues.composeRoom`).
+    init(window: WindowBottom, keyboardRoom: CGFloat, card: CGFloat = 0, padding: CGFloat, tolerance: CGFloat,
+         reaches: Bool = true) {
         let room = reaches ? max(keyboardRoom, 0) : 0
         let corner = reaches ? Self.cornerReach(window, padding: padding, tolerance: tolerance) : 0
         reachesEdge = room == 0 && corner > 0
         reach = room == 0 ? corner : 0
         trim = reachesEdge ? max(window.home - corner, 0) : 0
-        restReach = room == 0 || Self.softwareKeyboard(room) ? corner : 0
+        restReach = room == 0 || Self.softwareKeyboard(room - max(card, 0)) ? corner : 0
     }
 
     /// How far past the bottom safe area the panes may run with the keyboard down: up to the
@@ -120,9 +123,14 @@ struct PaneBottom: Equatable {
 
     /// The panes' area as measured: its size and the `restReach` it was laid out with. Either
     /// changing measures the rest canvas again.
+    /// The panes' area's size with what its rest size is read from, taken in one layout: the
+    /// keyboard's room and the card's part of it can change while the size stays (a keyboard the
+    /// panes' host made room for before the root did), and the rest size must follow them too.
     struct Measure: Equatable {
         var size: CGSize
         var restReach: CGFloat
+        var room: CGFloat = 0
+        var card: CGFloat = 0
     }
 
     /// The room is the software keyboard's, not the key bar's alone (a hardware keyboard), whose

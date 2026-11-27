@@ -23,6 +23,8 @@ struct RootView: View {
     /// The room the docked keyboard takes at the bottom (`KeyboardInset`). The root pads itself by
     /// this instead of following SwiftUI's keyboard safe area.
     @State private var keyboardPad: CGFloat = 0
+    /// The part of `keyboardPad` Compose's card takes (`EnvironmentValues.composeRoom`).
+    @State private var composeRoom: CGFloat = 0
     /// The window's bottom inset under the root, its side insets and its bottom corners, as UIKit
     /// reports them (`KeyboardInsetReader`).
     @State private var windowBottom = WindowBottom()
@@ -65,7 +67,9 @@ struct RootView: View {
         let theme = prefs.theme(for: scheme)
         rootContent(theme)
             .ignoresSafeArea(.keyboard)
-            .background(KeyboardInsetReader(padHold: model.palette.padHold, onBottom: { b in if windowBottom != b { windowBottom = b } }) {
+            .background(KeyboardInsetReader(padHold: model.palette.padHold,
+                                            onBottom: { b in if windowBottom != b { windowBottom = b } },
+                                            onCard: { c in if composeRoom != c { composeRoom = c } }) {
                 setKeyboardPad($0)
             }.ignoresSafeArea())
             .environment(hostPool)
@@ -258,11 +262,6 @@ struct RootView: View {
                 // safe area from the real one, so the posture's insets are given again here.
                 .safeAreaPadding(insets)
                 #endif
-                // The keyboard's room, from its frames (`KeyboardInset`), not SwiftUI's keyboard
-                // safe area, which can stay at a frame the keyboard had for a moment. Here, inside
-                // the navigation stack: its content is hosted on its own.
-                .safeAreaPadding(.bottom, keyboardPad)
-                .ignoresSafeArea(.keyboard)
                 .background(theme.chrome.canvas.ignoresSafeArea())
                 .background(EdgeReveal(enabled: !shown && prefs.navigation == .sidebar) { revealSidebar() })
                 // Only where the system has a vertical bar: the toggle and the tab's actions go there.
@@ -293,6 +292,20 @@ struct RootView: View {
                     }
                 }
             }
+            // The keyboard's room, from its frames (`KeyboardInset`), not SwiftUI's keyboard safe
+            // area, which can stay at a frame the keyboard had for a moment. Below the navigation
+            // stack, so its frame ends at the keyboard's top: its content is hosted on its own, and
+            // that host lays its content out for a keyboard over its frame by itself: past about
+            // half the window (Compose's card) it centered the content on the room left, and the
+            // title bar went off the window's top. Its content keeps SwiftUI's keyboard safe area:
+            // with the frame ending at the keyboard's top that is empty, and content that ignored it
+            // ran on under the keyboard. The room shows the terminal's color behind the key bar's
+            // glass and the keyboard's corners, as the panes did when they ran under them.
+            .padding(.bottom, keyboardPad)
+            .background(alignment: .bottom) {
+                theme.bg.frame(height: keyboardPad).ignoresSafeArea(.container, edges: .bottom)
+            }
+            .ignoresSafeArea(.keyboard)
             // Standing as a tent, the agent board covers all of it (`TentBoard`).
             .modifier(TentBoard(division: division, size: geo.size, inline: arr.inline, fills: fills, sidebar: boardSidebar,
                                 pool: hostPool, keyboardHeight: keyboardHeight, theme: theme))
@@ -309,6 +322,7 @@ struct RootView: View {
             .environment(\.verticalBarEdge, barEdge)
             .environment(\.verticalBarColumn, barColumn)
             .environment(\.keyboardRoom, room ?? keyboardPad)
+            .environment(\.composeRoom, room == nil ? min(composeRoom, keyboardPad) : 0)
             .environment(\.windowBottom, bottom ?? windowBottom)
             .onChange(of: arr.inline, initial: true) { _, new in
                 // Wide: the launch's hold on the drawer ends, and the sidebar shows as it is.

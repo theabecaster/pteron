@@ -90,7 +90,11 @@ struct SidebarSplit<Sidebar: View, Tab: View>: View {
         }
         sidebar
             .frame(width: w)
-            .frame(maxHeight: .infinity)
+            // No floor of its own: the stack around it places the tab at the stack's size, so a
+            // sidebar that can't be shorter (its picker and first rows) would hold the tab taller
+            // than the window's room, and the panes would run under Compose's card. Its rows clip
+            // to the room instead.
+            .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
             // The drawer's shadow comes from its background alone. On the whole sidebar it
             // would shadow every row and glyph on its own, and show through rows that fade.
             .background(theme.chrome.sidebar.shadow(color: .black.opacity(inline ? 0 : 0.25), radius: 12)

@@ -98,6 +98,18 @@ struct KeyboardCoverLayoutTests {
         #expect(PaneLayout.restCanvas(now: .zero, room: 285) == .zero)
     }
 
+    @Test func composesCardStaysInTheRestCanvas() {
+        // iPhone 17: 744 pt with the keyboard down. Up with Compose's card (120 pt of its 468 pt):
+        // the grid fits above the card, and closing Compose gives the same 744 pt as before.
+        let card = ComposeCard.height(compact: false) + KeyBar.cardGap
+        let open = PaneLayout.restCanvas(now: CGSize(width: 402, height: 276), room: 468, card: card)
+        #expect(open == CGSize(width: 402, height: 744 - card))
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 402, height: 396), room: 348) == CGSize(width: 402, height: 744))
+        // The key bar alone (a hardware keyboard) with the card: the grid fits above both.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 402, height: 570), room: 54 + card, card: card)
+                == CGSize(width: 402, height: 570))
+    }
+
     @Test func aFoldWithTheKeyboardUpGivesTheNewPosturesCanvasNotTheOldOnesHeight() {
         // Landscape, keyboard down: 594x374. The phone turns to portrait with the keyboard up: the
         // canvas is 382x291 with 285 pt of keyboard. Its rest is portrait's 576, not landscape's 374

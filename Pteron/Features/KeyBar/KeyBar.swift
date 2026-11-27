@@ -115,6 +115,11 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         (compact ? compactBarHeight : barHeight) + (composeOpen ? ComposeCard.height(compact: compact) + cardGap : 0)
     }
 
+    /// The part of the bar's height Compose's card takes, with its gap: 0 while it is closed.
+    var cardRoom: CGFloat {
+        Self.height(compact: compact, composeOpen: composeOpen) - Self.height(compact: compact, composeOpen: false)
+    }
+
     private let leftCapsule = UIVisualEffectView()
     private let leftStack = UIStackView()
     private let middleCapsule = UIVisualEffectView()
