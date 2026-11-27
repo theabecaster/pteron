@@ -986,7 +986,8 @@ struct WindowScreen: View {
         case .minimizeAllFloats: minimizeAllFloats()
         case .goTo(let scope): openGoTo(scope, w)
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings,
-             .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer: break
+             .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer,
+             .navigateBack, .navigateForward: break
         }
     }
 

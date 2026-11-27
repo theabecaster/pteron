@@ -109,7 +109,9 @@ final class GoToModel {
             pane = GoToPaneState(hasSelection: host.hasSelection, findOpen: host.findOpen)
         }
         GoToCommands.add(model.servers, target: target, waitingCount: waitingItems.count,
-                         navigation: model.prefs.navigation, pane: pane, into: &copy)
+                         navigation: model.prefs.navigation, pane: pane,
+                         history: NavAvailability(back: model.canNavigate(back: true), forward: model.canNavigate(back: false)),
+                         into: &copy)
         items = copy.items
         runs = copy.runs
         // A waiting agent's row: its pane's, where its tab lists panes, else its tab's.

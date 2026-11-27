@@ -364,6 +364,69 @@ final class GoToModelTests: XCTestCase {
         XCTAssertFalse(commands(m, target: t, navigation: .tabs).items.contains { $0.title == "Show/Hide Sidebar" })
     }
 
+    // MARK: Navigate Back and Forward
+
+    /// The rows show only where there is somewhere to go, with the Mac's keys, ⌥⌘[ and ⌥⌘].
+    func testNavigateRowsShowWithSomewhereToGoAndTheMacsKeys() throws {
+        let m = model()
+        let s = server(m)
+        load(s, [("api", [("w1", ["b1"])])])
+        let t = GoToTarget(serverID: s.id, sessionID: "api", windowID: "w1", blockID: "b1")
+        func rows(_ h: NavAvailability) -> [GoToItem] {
+            var c = GoToSource.Copy()
+            GoToCommands.add(m.servers, target: t, waitingCount: 0, history: h, into: &c)
+            return c.items.filter { $0.title.hasPrefix("Navigate") }
+        }
+        XCTAssertEqual(rows(.init()).map(\.title), [])
+        XCTAssertEqual(rows(.init(back: true)).map(\.title), ["Navigate Back"])
+        let both = rows(.init(back: true, forward: true)).sorted { $0.order < $1.order }
+        XCTAssertEqual(both.map(\.title), ["Navigate Back", "Navigate Forward"])
+        XCTAssertEqual(both.map(\.keyLabel), ["⌥⌘[", "⌥⌘]"])
+        XCTAssertEqual(both.map(\.category), ["Pane", "Pane"])
+        // In the Mac's place: after Focus Previous Pane.
+        XCTAssertGreaterThan(both[0].order, GoToCommands.macOrder("pane.focus_previous"))
+        XCTAssertEqual(AppAction.resolve("client.navigate.back", nil).map { "\($0)" }, "\(AppAction.command(.navigateBack))")
+    }
+
+    /// Back and Forward retrace the tabs and panes the phone showed, across computers, and the
+    /// rows follow.
+    func testNavigateRetracesThePhonesOwnPlaces() async throws {
+        let m = model()
+        let a = server(m, "studio"), b = server(m, "laptop")
+        load(a, [("api", [("w1", ["b1", "b2"]), ("w2", ["b3"])])])
+        load(b, [("ops", [("w9", ["b9"])])])
+        m.select(a, session: "api", window: "w1", block: "b1")
+        await settleVisits()
+        m.focusedPane["w1"] = "b2"
+        await settleVisits()
+        m.select(b, session: "ops", window: "w9")
+        await settleVisits()
+        XCTAssertTrue(m.canNavigate(back: true))
+        XCTAssertFalse(m.canNavigate(back: false))
+
+        XCTAssertTrue(m.navigate(back: true))
+        XCTAssertEqual(m.openRequest?.selection, Selection(serverID: a.id, sessionID: "api", windowID: "w1"))
+        XCTAssertEqual(m.focusedPane["w1"], "b2")
+        m.select(a, session: "api", window: "w1")
+        await settleVisits()
+        XCTAssertTrue(m.navigate(back: true))
+        XCTAssertEqual(m.focusedPane["w1"], "b1")
+        await settleVisits()
+        XCTAssertFalse(m.navigate(back: true), "nothing before the first place")
+        XCTAssertTrue(m.canNavigate(back: false))
+        XCTAssertTrue(m.navigate(back: false))
+        XCTAssertEqual(m.focusedPane["w1"], "b2")
+        XCTAssertTrue(m.navigate(back: false))
+        XCTAssertEqual(m.openRequest?.selection, Selection(serverID: b.id, sessionID: "ops", windowID: "w9"))
+
+        // A pane that closed is passed over.
+        load(a, [("api", [("w1", ["b1"]), ("w2", ["b3"])])])
+        XCTAssertTrue(m.navigate(back: true))
+        XCTAssertEqual(m.focusedPane["w1"], "b1")
+    }
+
+    private func settleVisits() async { for _ in 0..<5 { await Task.yield() } }
+
     // MARK: Open, select, rebuild
 
     private func open(_ m: AppModel, _ scope: GoToScope = .anything, target: GoToTarget? = nil) throws -> GoToModel {

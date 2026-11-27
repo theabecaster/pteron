@@ -118,6 +118,7 @@ wins); the keys below are the defaults the app sends, which are the Mac's.
 | Pane | Split Pane Left, Right, Up, Down | ⇧⌘← ⌘D ⇧⌘↑ ⇧⌘D | a pane |
 | Pane | Split Pane Best Fit | ⌘↩ | a terminal pane |
 | Pane | Focus Next Pane, Focus Previous Pane | ⌘] ⌘[ | another pane to show |
+| Pane | Navigate Back, Navigate Forward | ⌥⌘[ ⌥⌘] | a place that way (below) |
 | Pane | Minimize Floating Window | ⌥⌘M | Arrange's gate |
 | Pane | Minimize All Floating Windows | ⌥⇧⌘↩ | Arrange's gate |
 | Pane | Zoom Pane | ⇧⌘↩ | the tab can zoom |
@@ -167,7 +168,7 @@ Not here, with the reason:
 - Duplicates: Close (`client.close`, Close Pane here), Focus Pane Left, Right, Up and Down (Focus
   Next and Previous Pane on the phone), Send Key to Rex (needs the key that ran it).
 - Copy mode and key modes: only in the Rex app.
-- Not yet: Navigate Back and Forward, Move Pane Left, Right, Up and Down, Float Pane, New Floating
+- Not yet: Move Pane Left, Right, Up and Down, Float Pane, New Floating
   Pane, Rename Pane, View Activity…, Pair Device with QR Code…, Copy Block ID, Copy Version Info,
   Copy Debug Info, Forward Port… (Ports covers it), New Session on Host….
 
@@ -184,6 +185,27 @@ Not here, with the reason:
   and is never sent later; a key-bound action keeps today's queue. After 1.5 s without an answer
   "Running Dev Layout…" shows on the notice job lane, for about 6 s at most.
 - A place that closed meanwhile says "That tab closed." and leaves the recents.
+
+## Navigate Back and Forward
+
+The Mac's "Goes back to the pane you were in before this one, in any tab or session" and
+"Returns to the pane that Navigate Back left", with the Mac's keys (⌥⌘[ and ⌥⌘], from Rex's
+Mac Actions page; the user's init.lua wins). With no tab on screen they work too.
+
+- **The phone's own history** (`NavHistory`, kept by `AppModel`): a browser's back and forward
+  lists of the places the phone showed, a place being a computer, session, tab and the pane the
+  tab shows. A tab or pane the phone shows is a place once the turn ends, so a tap that sets
+  both is one; the same place again is no step, and going somewhere new drops what lay
+  forward. 64 places, like the Mac's server; not saved across launches.
+- **Showing a place** is Go to Anything's pane pick (`openPane`): the tab, the pane in it, and
+  `session.focus_block` and `session.focus_window`, nothing else. A place that can't show (its tab
+  or pane closed, its pane is hidden in a minimized float, its computer isn't loaded) is passed
+  over, and dropped when a step goes past it; with nowhere to go, Back bumps and nothing changes.
+- **Only the phone's moves.** A focus change made on the Mac moves nothing in the list.
+- **Not `focus_history.reverse`** (revision 19): its history is the Tailscale login's, may be
+  shared with the owner's other devices, leaves out the panes the phone pages on its own, has no
+  step forward, and exists only from revision 19. The phone's history works at every revision.
+  docs/rex-protocol.md, Focus history, has the probes.
 
 ## Questions (rex.ui, revision 17)
 

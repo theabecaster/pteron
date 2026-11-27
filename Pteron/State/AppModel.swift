@@ -241,6 +241,9 @@ enum RexCommand: Equatable {
     case addComputer
     case nextTab, previousTab, goToTab(Int), nextPane, previousPane
     case toggleZoom, clear, toggleSidebar, toggleAgents, tabOverview, jumpToWaiting
+    /// The pane shown before this one, or the one Navigate Back left (`client.navigate.back`,
+    /// `client.navigate.forward`; `NavHistory`).
+    case navigateBack, navigateForward
     case fontBigger, fontSmaller, fontReset, settings
     /// Find in the active pane's history (`client.find.*`).
     case find(FindStep)
@@ -295,6 +298,9 @@ final class AppModel {
     var selection: Selection? {
         didSet {
             guard let selection, selection != oldValue else { return }
+            // Whatever tab shows now, it is no longer on its way from Navigate Back.
+            arriving = nil
+            noteVisit()
             recentTabs = TabHistory.visiting(selection, recentTabs)
             guard !Self.isTestLaunch else { return }
             prefs.lastSelection = selection
@@ -306,7 +312,16 @@ final class AppModel {
     @ObservationIgnored private(set) var recentTabs: [Selection] = []
     private static let isTestLaunch = UserDefaults.standard.string(forKey: "autoOpen") != nil
     /// The pane shown when only one pane fits (compact width), per window.
-    var focusedPane: [String: String] = [:]
+    var focusedPane: [String: String] = [:] {
+        didSet { noteVisit() }
+    }
+    /// The panes this phone showed, for Navigate Back and Forward (`NavHistory`). Not saved: a
+    /// launch starts it empty, as the Mac's server does after a restart.
+    @ObservationIgnored private(set) var navHistory = NavHistory()
+    @ObservationIgnored private var visitPending = false
+    /// The place Navigate Back or Forward is opening, until its tab is selected: what changes
+    /// before that (its pane set in `openPane`) is not a place of its own.
+    @ObservationIgnored private var arriving: NavPlace?
     var showSettings = false
     /// The Agents sheet is up (`AgentsSheet`): the sidebar's Agents list, for a layout without
     /// the sidebar. Open it with `showAgents()`.
@@ -888,11 +903,64 @@ final class AppModel {
         Task { await server.focusWindow(session, window) }
     }
 
+    // MARK: Navigate Back and Forward
+
+    /// The tab on screen or the pane shown in it changed. Recorded once, after this turn: a tap
+    /// that sets both the tab and its pane is one place, not two.
+    private func noteVisit() {
+        guard !visitPending else { return }
+        visitPending = true
+        Task { @MainActor [weak self] in self?.recordVisit() }
+    }
+
+    private func recordVisit() {
+        visitPending = false
+        if let a = arriving {
+            guard selection == Selection(serverID: a.serverID, sessionID: a.sessionID, windowID: a.windowID) else { return }
+            arriving = nil
+        }
+        guard let place = currentPlace else { return }
+        navHistory.visit(place)
+    }
+
+    /// The pane on screen, as the tab shows it.
+    var currentPlace: NavPlace? {
+        guard let sel = selection, let w = server(sel.serverID)?.views[sel.sessionID]?.window(sel.windowID) else { return nil }
+        return NavPlace(serverID: sel.serverID, sessionID: sel.sessionID, windowID: sel.windowID,
+                        blockID: ActivePane.of(w, phone: focusedPane[w.id]))
+    }
+
+    /// Whether a place can be shown again: its tab is there, and its pane in it and not hidden.
+    func canShow(_ p: NavPlace) -> Bool {
+        guard let w = server(p.serverID)?.views[p.sessionID]?.window(p.windowID) else { return false }
+        guard let b = p.blockID else { return true }
+        return w.allBlocks.contains { $0.id == b } && !w.isHidden(b)
+    }
+
+    func canNavigate(back: Bool) -> Bool {
+        back ? navHistory.canGoBack(where: canShow) : navHistory.canGoForward(where: canShow)
+    }
+
+    /// Navigate Back (`client.navigate.back`) or Forward: shows the place as Go to Anything shows
+    /// a pane (`openPane`). False when there is nowhere to go.
+    @discardableResult
+    func navigate(back: Bool) -> Bool {
+        // A move of this turn is recorded first, so Back leaves from where the phone is.
+        if visitPending { recordVisit() }
+        guard let p = back ? navHistory.back(where: canShow) : navHistory.forward(where: canShow),
+              let s = server(p.serverID) else { return false }
+        arriving = p
+        openPane(s, session: p.sessionID, window: p.windowID, block: p.blockID)
+        return true
+    }
+
     /// A server's views changed. When that took away the tab on screen (its last pane closed, it
     /// was closed, its session ended), shows the next one `CloseNext` picks, in this same turn,
     /// so the empty state never draws in between. Changes elsewhere move nothing.
     private func viewsChanged(on server: ServerConnection, old: [String: SessionView]) {
         guard let sel = selection, sel.serverID == server.id else { return }
+        // The tab a launch picked has loaded: where Navigate Back comes back to.
+        if navHistory.current == nil { noteVisit() }
         let now = server.views[sel.sessionID]
         guard now?.window(sel.windowID) == nil, let gone = old[sel.sessionID]?.window(sel.windowID) else { return }
         // A sync that couldn't read a session that is still listed: its view comes back.

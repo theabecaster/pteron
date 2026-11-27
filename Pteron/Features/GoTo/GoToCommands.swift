@@ -9,6 +9,12 @@ struct GoToPaneState: Equatable {
     var findOpen = false
 }
 
+/// Whether Navigate Back and Navigate Forward have a place to go (`AppModel.canNavigate`).
+struct NavAvailability: Equatable {
+    var back = false
+    var forward = false
+}
+
 /// What a key does in a pane that the palette runs too: a value that crosses to the pane's
 /// host after the palette closes (`GoToRun.pane`).
 enum PaneKeyAction: Equatable, Sendable {
@@ -139,8 +145,10 @@ enum GoToCommands {
         return same.map { KeyLabel.text($0.binding.chord) }
     }
 
+    /// `history`: whether Navigate Back and Navigate Forward have somewhere to go (`NavHistory`).
     static func add(_ servers: [ServerConnection], target: GoToTarget?, waitingCount: Int,
-                    navigation: NavigationStyle = .sidebar, pane: GoToPaneState = .init(), into copy: inout GoToSource.Copy) {
+                    navigation: NavigationStyle = .sidebar, pane: GoToPaneState = .init(),
+                    history: NavAvailability = .init(), into copy: inout GoToSource.Copy) {
         let targetServer = target.flatMap { t in servers.first { $0.id == t.serverID } }
         let server = targetServer ?? servers.first { $0.phase == .online } ?? servers.first
         let keymap = server?.keymap
@@ -158,7 +166,8 @@ enum GoToCommands {
         }
         func applies(_ c: RexCommand) -> Bool {
             Self.applies(c, target: target, server: targetServer, window: window, block: block, tabs: view?.windows ?? [],
-                         support: support, waitingCount: waitingCount, servers: servers, findOpen: pane.findOpen)
+                         support: support, waitingCount: waitingCount, servers: servers, findOpen: pane.findOpen,
+                         history: history)
         }
         func paneApplies(_ p: PaneKeyAction) -> Bool {
             guard block?.isTerminal == true else { return false }
@@ -309,7 +318,8 @@ enum GoToCommands {
     /// Whether an app command applies now, as its menu item would show.
     static func applies(_ c: RexCommand, target: GoToTarget?, server: ServerConnection?, window: WindowInfo?,
                         block: BlockInfo?, tabs: [WindowInfo], support: PaneSupport, waitingCount: Int,
-                        servers: [ServerConnection] = [], findOpen: Bool = false) -> Bool {
+                        servers: [ServerConnection] = [], findOpen: Bool = false,
+                        history: NavAvailability = .init()) -> Bool {
         // Go to Anything… and Change Session… switch the palette's scope, with a tab or without.
         if case .goTo(let scope) = c { return scope != .commands }
         if c.isWindowCommand {
@@ -341,6 +351,8 @@ enum GoToCommands {
         }
         switch c {
         case .jumpToWaiting: return waitingCount > 0
+        case .navigateBack: return history.back
+        case .navigateForward: return history.forward
         case .nextSession, .previousSession:
             guard let t = target else { return false }
             return SessionNav.neighbor(servers, from: Selection(serverID: t.serverID, sessionID: t.sessionID, windowID: t.windowID),
@@ -373,6 +385,8 @@ enum GoToCommands {
         case .settings: "gearshape"
         case .toggleSidebar: "sidebar.left"
         case .jumpToWaiting: "bell"
+        case .navigateBack: "chevron.backward"
+        case .navigateForward: "chevron.forward"
         case .balanceSplits: "rectangle.split.3x1"
         case .closeOtherPanes: "xmark.square"
         case .moveToTab, .moveToNewTab: "rectangle.portrait.and.arrow.right"

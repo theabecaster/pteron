@@ -49,7 +49,8 @@ extension RexCommand {
     var isWindowCommand: Bool {
         switch self {
         case .newSession, .toggleSidebar, .toggleAgents, .jumpToWaiting, .fontBigger, .fontSmaller, .fontReset, .settings,
-             .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer: return false
+             .nextSession, .previousSession, .renameSession, .closeSession, .closeOtherTabs, .addComputer,
+             .navigateBack, .navigateForward: return false
         default: return true
         }
     }

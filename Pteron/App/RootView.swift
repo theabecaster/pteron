@@ -504,6 +504,9 @@ struct RootView: View {
             sidebar.resolve(inline: inline)
             _ = sidebar.perform(r.command)
         case .jumpToWaiting: jumpToWaiting()
+        case .navigateBack, .navigateForward:
+            guard model.navigate(back: r.command == .navigateBack) else { Haptic.bump(); return }
+            Haptic.selection()
         case .settings: model.showSettings = true
         case .addComputer: model.openSettings(at: .addServer)
         case .nextSession, .previousSession:

@@ -161,6 +161,8 @@ enum AppAction {
             case "left", "up": return .command(.previousPane)
             default: return nil
             }
+        case "client.navigate.back": return .command(.navigateBack)
+        case "client.navigate.forward": return .command(.navigateForward)
         case "pane.zoom": return .command(.toggleZoom)
         case "client.font.increase": return .command(.fontBigger)
         case "client.font.decrease": return .command(.fontSmaller)
@@ -239,6 +241,8 @@ enum KeyActions {
         Info(name: "pane.focus.down", title: "Focus Pane Down", category: "Pane", repeats: true),
         Info(name: "pane.focus_next", title: "Focus Next Pane", category: "Pane", repeats: true),
         Info(name: "pane.focus_previous", title: "Focus Previous Pane", category: "Pane", repeats: true),
+        Info(name: "client.navigate.back", title: "Navigate Back", category: "Pane", repeats: true),
+        Info(name: "client.navigate.forward", title: "Navigate Forward", category: "Pane", repeats: true),
         Info(name: "pane.minimize_floating", title: "Minimize Floating Window", category: "Pane", repeats: false),
         Info(name: "pane.minimize_all_floating", title: "Minimize All Floating Windows", category: "Pane", repeats: false),
         Info(name: "pane.zoom", title: "Zoom Pane", category: "Pane", repeats: false),
@@ -345,6 +349,8 @@ enum KeyDefaults {
         bind(["alt+cmd+down"], "pane.focus.down")
         bind(["cmd+]"], "pane.focus_next")
         bind(["cmd+["], "pane.focus_previous")
+        bind(["alt+cmd+["], "client.navigate.back")
+        bind(["alt+cmd+]"], "client.navigate.forward")
         bind(["alt+cmd+m"], "pane.minimize_floating")
         bind(["alt+shift+cmd+enter"], "pane.minimize_all_floating")
         bind(["shift+cmd+enter"], "pane.zoom")
