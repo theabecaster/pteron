@@ -308,7 +308,8 @@ struct RootView: View {
             .ignoresSafeArea(.keyboard)
             // Standing as a tent, the agent board covers all of it (`TentBoard`).
             .modifier(TentBoard(division: division, size: geo.size, inline: arr.inline, fills: fills, sidebar: boardSidebar,
-                                pool: hostPool, keyboardHeight: keyboardHeight, theme: theme))
+                                pool: hostPool, keyboardHeight: keyboardHeight,
+                                composeRoom: room == nil ? min(composeRoom, keyboardPad) : 0, theme: theme))
             // The palette, over the tab and the sidebar, while it is open; nothing while closed.
             .modifier(GoToOverlay(theme: theme, narrow: !arr.inline, division: division, keyboardPad: keyboardHeight))
             // The setup guide, over everything, while it shows (first run, Setup Guide).

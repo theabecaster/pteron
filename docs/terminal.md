@@ -961,7 +961,13 @@ quotes and dashes are off, so a command or a path stays as typed. Only a tap on 
   (`EnvironmentValues.composeRoom`, `PaneLayout.restCanvas`). Opening Compose sends one resize to
   a grid the card's rows shorter, and closing it one back to the grid from before; the cover
   keeps the newest rows and the cursor above the card (Fit and mirror). With the keyboard down
-  the card is down too, and the grid is the full one again.
+  the card is down too, and the grid is the full one again. Where the card would leave fewer than three rows
+  (`PaneLayout.composeMinRows`: a phone on its side with large text) the panes still end at its
+  top, but the grid keeps its size without the card, which covers it as the keyboard does, the
+  newest rows and the cursor in view: a grid that short would show next to nothing on the Mac
+  too. The agent board's test for the software keyboard measures the card out
+  (`TentModel.Input.softwareKeyboard`), so Compose over a hardware keyboard's key bar is still
+  the key bar alone.
 - **Postures.** The card spans the width the key bar's capsules may use: inside the safe area and
   short of the Duo's vertical bar's column. With a hardware keyboard the card and the bar show
   on their own at the bottom, as the bar does.

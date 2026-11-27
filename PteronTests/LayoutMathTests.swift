@@ -110,6 +110,25 @@ struct KeyboardCoverLayoutTests {
                 == CGSize(width: 402, height: 570))
     }
 
+    @MainActor @Test func aCardThatLeavesTooFewRowsCoversTheGridInstead() {
+        let card = ComposeCard.height(compact: true) + KeyBar.cardGap
+        let floor = PaneLayout.composeFloor(fontSize: 14)
+        #expect(floor == 3 * 14 * 1.25)
+        // An iPhone on its side, 372 pt with the keyboard down. With large text the card leaves
+        // 40 pt, under the floor: the grid keeps its size without the card.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 489, height: 40), room: 246 + card, card: card,
+                                      cardFloor: floor) == CGSize(width: 489, height: 40 + 246 + card))
+        // 58 pt is enough: the grid fits above the card.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 489, height: 58), room: 246 + card, card: card,
+                                      cardFloor: floor) == CGSize(width: 489, height: 58 + 246))
+        // The key bar alone with the card, too short: the grid fits above the bar, under the card.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 489, height: 40), room: 42 + card, card: card,
+                                      cardFloor: floor) == CGSize(width: 489, height: 40 + card))
+        // Compose closed: no floor applies.
+        #expect(PaneLayout.restCanvas(now: CGSize(width: 489, height: 30), room: 246, cardFloor: floor)
+                == CGSize(width: 489, height: 276))
+    }
+
     @Test func aFoldWithTheKeyboardUpGivesTheNewPosturesCanvasNotTheOldOnesHeight() {
         // Landscape, keyboard down: 594x374. The phone turns to portrait with the keyboard up: the
         // canvas is 382x291 with 285 pt of keyboard. Its rest is portrait's 576, not landscape's 374

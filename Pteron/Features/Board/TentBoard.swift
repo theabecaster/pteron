@@ -32,6 +32,8 @@ struct TentBoard: ViewModifier {
     let pool: TerminalHostPool
     /// The room the docked keyboard or the key bar takes at the bottom. 0 with neither.
     let keyboardHeight: CGFloat
+    /// The part of `keyboardHeight` Compose's card takes (`EnvironmentValues.composeRoom`).
+    var composeRoom: CGFloat = 0
     let theme: TermTheme
 
     @Environment(AppModel.self) private var model
@@ -84,7 +86,8 @@ struct TentBoard: ViewModifier {
                 if tent.hasHinge || simulated {
                     TentDriver(tent: tent,
                                input: .init(hasDivision: division != nil, divisionActive: division?.isActive, size: size,
-                                            fills: fills, keyboardHeight: keyboardHeight, inline: inline),
+                                            fills: fills, keyboardHeight: keyboardHeight, composeRoom: composeRoom,
+                                            inline: inline),
                                sidebar: $sidebar, pool: pool)
                 }
             }
@@ -142,7 +145,12 @@ final class TentModel {
         var size = CGSize.zero
         var fills: Bool?
         var keyboardHeight: CGFloat = 0
+        var composeRoom: CGFloat = 0
         var inline = false
+
+        /// More than a key bar: the software keyboard is on screen. Compose's card is measured
+        /// out: the key bar alone with the card (a hardware keyboard) is taller than any key bar.
+        var softwareKeyboard: Bool { PaneBottom.softwareKeyboard(keyboardHeight - min(max(composeRoom, 0), keyboardHeight)) }
     }
 
     var presence = BoardPresence()
@@ -293,7 +301,7 @@ private struct TentDriver: View {
     private func apply(_ on: Bool) {
         if on {
             // More than a key bar: the software keyboard is on screen, and stays down afterwards.
-            pool.setCovered(true, softwareKeyboard: tent.input.keyboardHeight > TentBoard.tallestKeyBar)
+            pool.setCovered(true, softwareKeyboard: tent.input.softwareKeyboard)
             // A text field somewhere else (a rename, the sidebar's search) gives the keyboard up
             // too. The panes have decided for themselves.
             if let holder = UIResponder.rexCurrentFirstResponder(), !(holder is GhosttyTerminalView || holder is TerminalHost) {

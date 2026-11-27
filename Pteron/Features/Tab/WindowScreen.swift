@@ -263,7 +263,8 @@ struct WindowScreen: View {
             } action: { m in
                 // The room, the inset and the header as this layout had them: read with the size
                 // they made.
-                let rest = PaneLayout.restCanvas(now: m.size, room: m.room, card: m.card, home: m.restReach,
+                let rest = PaneLayout.restCanvas(now: m.size, room: m.room, card: m.card,
+                                                 cardFloor: PaneLayout.composeFloor(fontSize: prefs.fontSize), home: m.restReach,
                                                  header: showsHeader ? 0 : headerHeight, limit: restLimit)
                 if rest != canvasSize { canvasSize = rest }
                 if m.restReach != restReach { restReach = m.restReach }
@@ -1443,18 +1444,33 @@ enum PaneLayout {
     ///
     /// `card` is the part of `room` Compose's card takes (`EnvironmentValues.composeRoom`): it
     /// stays while Compose is open, so the grid fits above it, and the room under it is the
-    /// keyboard's, given back as above.
+    /// keyboard's, given back as above. Where the card leaves the canvas shorter than `cardFloor`
+    /// (`composeFloor`: a few rows, a phone on its side with large text) a shorter grid would
+    /// show next to nothing on the Mac as well: the grid keeps its size without the card, which
+    /// covers it as the keyboard does, the newest rows and the cursor in view above it.
     ///
     /// `home` is the home indicator's inset under the keyboard (`PaneBottom.restReach`), given back
     /// with its room, since with the keyboard down the panes run on to the window's edge.
-    static func restCanvas(now: CGSize, room: CGFloat, card: CGFloat = 0, home: CGFloat = 0, header: CGFloat = 0,
-                           limit: CGFloat = .infinity) -> CGSize {
+    static func restCanvas(now: CGSize, room: CGFloat, card: CGFloat = 0, cardFloor: CGFloat = 0, home: CGFloat = 0,
+                           header: CGFloat = 0, limit: CGFloat = .infinity) -> CGSize {
         guard now.width > 0, now.height > 0 else { return now }
         // Compose's card stays while Compose is open, as the key bar alone does: only the room
-        // under it is given back.
-        let keys = room - min(max(card, 0), room)
+        // under it is given back. Unless what it leaves is shorter than `cardFloor`: the card is
+        // given back too, and covers the grid as the keyboard does.
+        let card = min(max(card, 0), room)
+        let keys = room - card
         let keyboard = PaneBottom.softwareKeyboard(keys) ? keys + home : 0
-        return CGSize(width: now.width, height: max(min(now.height + keyboard - header, limit), 1))
+        let cardBack = now.height < cardFloor ? card : 0
+        return CGSize(width: now.width, height: max(min(now.height + keyboard + cardBack - header, limit), 1))
+    }
+
+    /// The fewest rows Compose's card leaves the panes for a fitted grid to fit above it.
+    static let composeMinRows = 3
+
+    /// The height of `composeMinRows` rows at `fontSize`, from the same cell estimate as
+    /// `SplitGeometry.legible`.
+    static func composeFloor(fontSize: Double) -> CGFloat {
+        CGFloat(composeMinRows) * CGFloat(fontSize) * 1.25
     }
 
     /// A single pane's terminal size in a canvas of size `canvas`; nil for a canvas not measured yet.

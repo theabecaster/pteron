@@ -158,3 +158,17 @@ struct TentDetectorTests {
         #expect(!HingeProbeRef.fills(window: CGSize(width: 466, height: 676), screen: screen))
     }
 }
+
+/// What the board takes for the software keyboard when it covers the panes.
+@MainActor struct TentInputTests {
+    @Test func composesCardIsNotTheSoftwareKeyboard() {
+        let card = ComposeCard.height(compact: false) + KeyBar.cardGap
+        let bar = KeyBar.height(compact: false, composeOpen: false)
+        // A hardware keyboard: the key bar alone, and with Compose open the card above it.
+        #expect(!TentModel.Input(keyboardHeight: bar).softwareKeyboard)
+        #expect(!TentModel.Input(keyboardHeight: bar + card, composeRoom: card).softwareKeyboard)
+        // The software keyboard, with Compose open or not.
+        #expect(TentModel.Input(keyboardHeight: 321).softwareKeyboard)
+        #expect(TentModel.Input(keyboardHeight: 321 + card, composeRoom: card).softwareKeyboard)
+    }
+}
