@@ -223,13 +223,13 @@ builds.
   the app has left the front and is active again; send it away with `xcrun simctl launch <id>
   com.apple.Preferences` and bring it back with `xcrun simctl launch <id> dev.abrahamgonzalez.rexduo`,
   which leaves a running app as it is; `openurl` would put the system's "Open in" question over it),
-  `reconnect` (starts the pane's stream over and waits until it is current again), and
+  `reconnect` (starts the pane's stream over and waits until it is current again), `compose[:<draft>]` and `close` (open Compose with that draft, and close it, as ✎ does), and
   `<step>+<step>` (the steps with no pause between them: `away+tap:3,1` taps right after the
   return). Each step logs the
   grid, the cover, the scroll position (`y=<offset>/<offset at the pin>` in points), the button's state, `jump=` and `unseen=`, and whether
   the terminal is first responder, `first=` (`KEYBOARD_TEST`). A second line per step gives, on
   screen, the keyboard's last reported end frame `kb=x,y,wxh` (`null` before any report), the key
-  bar's frame `bar=` (`none` out of a window), the pane's bottom `paneBottom=` (at or above the
+  bar's frame `bar=` (`none` out of a window), compose's card `card=` and whether its field has the keyboard `compose=`, the pane's bottom `paneBottom=` (at or above the
   bar's top while the keyboard is up) and the input mode's language `mode=`. The simulator shows the software keyboard only with Connect Hardware
   Keyboard off.
   The Duo simulator can't fold (its inner screen stays dark), so a fold's change of window is
