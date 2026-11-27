@@ -212,6 +212,9 @@ shell.
 - `RexControl` is the only thing that retries a lost connection. Code that needs it waits for
   `observeConnected` instead of polling.
 - Other sessions work in parallel worktrees. Keep diffs to what the task needs; move files with `git mv`.
+- Put worktrees in the repository's `.claude/worktrees/<name>` (gitignored), never beside the
+  checkout or in the home folder: `git worktree add .claude/worktrees/<name> -b <branch> main`.
+  Remove a worktree and its branch once the branch is merged or dropped.
 - Commits: imperative subject, plain message, no AI attribution or trailers.
 - Clean up what you create: simulators (`xcrun simctl delete <id>`), `build/`, `.build/`,
   `Relay/target/` and finished worktrees.
