@@ -129,6 +129,9 @@ final class GhosttyCore: @unchecked Sendable {
     /// The catch-up hold ends at `renderHoldTimeout` (true), or only when the host ends it: the
     /// hold of a pane whose app is away (`AwayFrame`). Guarded by `stateLock`.
     private var catchUpLimited = true
+    /// The screen on show when the catch-up hold began, to type at (`showsHeldScreen`). Guarded
+    /// by `stateLock`.
+    private var catchUpPrint: GhosttyScreenPrint?
     /// Bumped (under `stateLock`) when the render state is replaced, so a renderer drops its cache.
     private(set) var stateGeneration = 0
     /// The render state is new and has read nothing from the terminal yet: a snapshot restored
@@ -842,6 +845,9 @@ final class GhosttyCore: @unchecked Sendable {
             if !catchUpHeld {
                 catchUpGrid = (cols, rows)
                 catchUpGridChanged = false
+                // The screen the user sees from now on until the hold ends: keys typed meanwhile
+                // were typed at it.
+                catchUpPrint = terminal.flatMap { GhosttyScreenPrint.of($0) }
             }
             catchUpHeld = true
             catchUpLimited = limited
@@ -884,6 +890,17 @@ final class GhosttyCore: @unchecked Sendable {
         stateLock.lock()
         frameEcho = nil
         stateLock.unlock()
+    }
+
+    /// Whether the terminal as parsed is the screen that was on show when the catch-up hold
+    /// began: the same text, styles, cursor and input modes, at the same grid. Main thread, once
+    /// per fence that holds keys; it waits for `termLock` like a selection does.
+    func showsHeldScreen() -> Bool {
+        stateLock.lock()
+        let kept = catchUpPrint
+        stateLock.unlock()
+        guard let kept, let now = screenPrint else { return false }
+        return kept == now
     }
 
     /// The host's hold is on (and not past its limit). For tests.

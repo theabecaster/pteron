@@ -61,7 +61,7 @@ final class FitTenureHostTests: XCTestCase {
         // With a gate the calls wait for the session's attach, as the pane's own transport does.
         let claim = FitClaim(transport: gate.map { g in AttachGatedFitTransport(transport) { await g.mayCall() } } ?? transport, settle: {})
         let host = TerminalHost(stream: stream, sizing: .fit, fontSize: 12, theme: ThemeStore.fallback, claim: claim)
-        host.leaveTiming = TerminalHost.LeaveTiming(settle: 0.02, claimGrace: 5)
+        host.leaveTiming = TerminalHost.LeaveTiming(settle: 0.02, claimGrace: 5, backgroundGrace: 0)
         host.hardwareKeyboard = { false }
         host.fitCheckDelay = 0.1
         host.ownClientID = { [phone] in phone }

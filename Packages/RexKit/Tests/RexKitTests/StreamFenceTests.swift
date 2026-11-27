@@ -15,6 +15,13 @@ final class StreamFenceTests: XCTestCase {
         var fed = 0
         /// When true, `streamWhenParsed` waits for `finishParsing()`.
         var parsesLate = false
+        /// What `streamShowsScreenItHeld` answers: the screen came back the one on show.
+        var screenItHeld = false
+        private(set) var screenAsked = 0
+        func streamShowsScreenItHeld() -> Bool {
+            screenAsked += 1
+            return screenItHeld
+        }
         private var parsed: [@MainActor () -> Void] = []
 
         func streamReset(cols: Int, rows: Int) {}
@@ -416,7 +423,8 @@ final class StreamFenceTests: XCTestCase {
         let socket = await dropAndWaitForResume(link, s)
         s.send(text: "k")
         socket.push(FakeLink.welcome())
-        socket.push(Wire.resize(cols: 60, rows: 40, owner: "client:test"))
+        // At the size the pane had: no redraw to wait for (that is the next tests' case).
+        socket.push(Wire.resize(cols: 80, rows: 24, owner: "client:test"))
         await settle()
         s.setClaimPending(false)
         let down = await eventually { !s.isFenced }
@@ -425,6 +433,140 @@ final class StreamFenceTests: XCTestCase {
         await settle()
         XCTAssertEqual(link.written, [], "a resize is a change, ours too")
         XCTAssertEqual(notices, [message])
+    }
+
+    // MARK: Our resize's redraw (back from the background)
+
+    /// A stream back from the background, fenced over the screen the user left, with keys typed
+    /// at it and the claim's resize on its way. The program's redraw for it has not begun.
+    private func backWithKeys(_ link: FakeLink, sameScreen: Bool) async -> (TerminalStream, Sink, SleepLog, FakeSocket) {
+        let (s, sink, log) = await current(link)
+        sink.screenItHeld = sameScreen
+        // The program takes its time to lay out its redraw, and the redraw's cap is far off.
+        log.held.formUnion([s.fence.timing.redrawStart, s.fence.timing.redrawCap])
+        s.setClaimPending(true)
+        let socket = await dropAndWaitForResume(link, s)
+        s.send(text: "he")
+        s.send(text: "llo")
+        socket.push(FakeLink.welcome())
+        // Our resize, from the 80x24 the pane had: the program redraws for it.
+        socket.push(Wire.resize(cols: 60, rows: 40, owner: "client:test"))
+        await settle()
+        s.setClaimPending(false)
+        await settle()
+        return (s, sink, log, socket)
+    }
+
+    func testKeysTypedBeforeOurResizesRedrawArriveAfterItIntactAndInOrder() async {
+        let link = FakeLink()
+        let (s, sink, log, socket) = await backWithKeys(link, sameScreen: true)
+        XCTAssertTrue(s.isFenced, "the program is still laying out its redraw")
+        XCTAssertTrue(log.asked.contains(s.fence.timing.redrawStart))
+        XCTAssertEqual(link.written, [])
+        // The redraw comes, in pieces: nothing is dropped or sent in its middle.
+        socket.push(Array("\u{1b}[2J\u{1b}[3J\u{1b}[H00001 a long transcript\r\n".utf8))
+        socket.push(Array("00002 reprinted at the new width\r\n> ".utf8))
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down, "down once the redraw went quiet")
+        XCTAssertTrue(log.asked.contains(s.fence.timing.resizeQuiet))
+        let sent = await eventually { link.written.joined() == "hello" }
+        XCTAssertTrue(sent, "every key, in order, after the redraw: \(link.written)")
+        XCTAssertEqual(sink.screenAsked, 1, "asked once, as the fence came down")
+        XCTAssertEqual(notices, [])
+    }
+
+    func testKeysAreDroppedWhenTheScreenComesBackDifferent() async {
+        let link = FakeLink()
+        let (s, _, _, socket) = await backWithKeys(link, sameScreen: false)
+        socket.push(Array("\u{1b}[2JDo you want to proceed?\r\n> 1. Yes".utf8))
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        await settle()
+        XCTAssertEqual(link.written, [], "never sent to a screen the user didn't see")
+        XCTAssertEqual(notices, [message])
+    }
+
+    func testOurResizeToTheSizeInPlaceWaitsForNoRedraw() async {
+        let link = FakeLink()
+        let (s, _, log) = await current(link)
+        log.held.formUnion([s.fence.timing.redrawStart, s.fence.timing.redrawCap])
+        s.setClaimPending(true)
+        let socket = await dropAndWaitForResume(link, s)
+        socket.push(FakeLink.welcome())
+        socket.push(Wire.resize(cols: 80, rows: 24, owner: "client:test"))
+        await settle()
+        s.setClaimPending(false)
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down, "no size changed: the program has nothing to redraw")
+        XCTAssertFalse(log.asked.contains(s.fence.timing.redrawStart))
+    }
+
+    func testAResizeTheStreamCantShowWaitsForTheRedrawToo() async {
+        // A fresh stream's snapshot already has the new size: no echo says it changed, and the
+        // program's redraw comes after the snapshot. The claim's answer says so.
+        let link = FakeLink()
+        let (s, sink, log) = await current(link)
+        sink.screenItHeld = true
+        log.held.formUnion([s.fence.timing.redrawStart, s.fence.timing.redrawCap])
+        s.setClaimPending(true)
+        let socket = await dropAndWaitForResume(link, s)
+        s.send(text: "k")
+        socket.push(FakeLink.welcome())
+        await settle()
+        s.resizedBehindFence()
+        s.setClaimPending(false)
+        await settle()
+        XCTAssertTrue(s.isFenced)
+        XCTAssertTrue(s.awaitsRedraw)
+        socket.push(Array("\u{1b}[2Jredrawn\r\n> ".utf8))
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down)
+        let sent = await eventually { link.written == ["k"] }
+        XCTAssertTrue(sent)
+        XCTAssertFalse(s.awaitsRedraw)
+    }
+
+    func testARedrawThatNeverGoesQuietComesDownAtItsCap() async {
+        let link = FakeLink()
+        let (s, sink, log) = await current(link)
+        sink.screenItHeld = true
+        s.fence.timing.redrawCap = .milliseconds(90)
+        log.real.insert(.milliseconds(90))
+        log.held.insert(s.fence.timing.redrawStart)
+        s.setClaimPending(true)
+        let socket = await dropAndWaitForResume(link, s)
+        socket.push(FakeLink.welcome())
+        socket.push(Wire.resize(cols: 60, rows: 40, owner: "client:test"))
+        await settle()
+        s.setClaimPending(false)
+        // Output every 10 ms: the redraw's quiet never holds.
+        let flood = Task { @MainActor in
+            for _ in 0..<100 {
+                socket.push(Array("y\n".utf8))
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        let down = await eventually { !s.isFenced }
+        flood.cancel()
+        XCTAssertTrue(down, "a busy pane can still be typed into")
+    }
+
+    func testAPaneThatOpensDoesNotWaitForARedraw() async {
+        let link = FakeLink()
+        let (s, _, log) = stream(link)
+        log.held.formUnion([s.fence.timing.redrawStart, s.fence.timing.redrawCap])
+        s.setClaimPending(true)
+        s.start()
+        let has = await eventually { !link.sockets.isEmpty }
+        XCTAssertTrue(has)
+        link.sockets.last?.push(Wire.opening)
+        link.sockets.last?.push(Wire.resize(cols: 60, rows: 40, owner: "client:test"))
+        await settle()
+        s.resizedBehindFence()
+        s.setClaimPending(false)
+        let down = await eventually { !s.isFenced }
+        XCTAssertTrue(down, "nothing was on show to keep still, and no key is held")
+        XCTAssertFalse(log.asked.contains(s.fence.timing.redrawStart))
     }
 
     // MARK: Hazard 9: a refused resume

@@ -238,6 +238,8 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         /// A parked pane keeps its size on the Mac this long after it left the screen, so going
         /// back and forth between two panes resizes neither.
         var claimGrace: TimeInterval = 10
+        /// A fitted pane keeps its claim this long after the app left the front (`BackgroundGrace`).
+        var backgroundGrace: TimeInterval = BackgroundGrace.seconds
     }
     /// Tests shorten it.
     var leaveTiming = LeaveTiming()
@@ -268,6 +270,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     var onUnparked: (() -> Void)?
     private var graceWork: DispatchWorkItem?
     private var graceHold: LeaveHold?
+    /// The end of the claim's grace in the background (`BackgroundGrace`), and the system's task
+    /// that keeps the app running until the release has left.
+    private var backgroundGraceWork: DispatchWorkItem?
+    private var backgroundGraceTask: BackgroundTask?
     /// The agent board lies over the pane (`setCovered`).
     private(set) var covered = false
     /// A sheet, an alert or a menu lies over the pane, as UIKit's dimmed tint last said
@@ -1525,9 +1531,13 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // Said when the app left the front; again here for a background that came without it.
         appActiveChanged(false)
         stopKeyRepeats()
-        // Also when nothing is claimed yet: a claim on its way must not resize the pane now.
-        claimedSize = nil
-        releaseClaim()
+        // A claim in place stays for a short absence, so a quick return needs no resize and the
+        // program no redraw (`BackgroundGrace`). Anything else goes at once, also when nothing is
+        // claimed yet: a claim on its way must not resize the pane now.
+        if !keepClaimThroughBackground() {
+            claimedSize = nil
+            releaseClaim()
+        }
         // The Mac's size can come while the app still runs here: the screen the user saw stays
         // on show at its own grid, never stretched to another (`AwayFrame`).
         if away.left(showing: localGrid, hasScreen: hasScreen, inWindow: window != nil) { term.holdWhileAway() }
@@ -1554,12 +1564,58 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
             scheduleTransient(s, after: Self.statusDelay)
         }
         backgroundedAt = nil
+        // Back inside the grace: the claim is still in place, and the layout below finds it at
+        // the size that fits and sends nothing.
+        endBackgroundGrace()
         guard window != nil, sizing == .fit, !lostOwnership else { return }
-        // The claim was given back as the app left; another client may have the pane now.
+        // The claim was given back as the app left, or kept; either way another client may have
+        // the pane now, and a claim given back takes it again.
         reassertNext = true
         lastBounds = .zero
         setNeedsLayout()
     }
+
+    /// Keeps the claim in place as the app leaves, for `leaveTiming.backgroundGrace`, inside a
+    /// task of the system's so the release can still leave at its end. False when nothing is
+    /// kept: the caller gives the claim back now.
+    private func keepClaimThroughBackground() -> Bool {
+        endBackgroundGrace()
+        guard BackgroundGrace.keeps(fitted: fitted, claimed: claimedSize != nil,
+                                    onItsWay: claim.isSettling || stream.isClaimPending, inWindow: window != nil)
+        else { return false }
+        backgroundGraceTask = BackgroundTask(name: "fit_grace") { [weak self] in self?.backgroundGraceEnded() }
+        let work = DispatchWorkItem { [weak self] in self?.backgroundGraceEnded() }
+        backgroundGraceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + leaveTiming.backgroundGrace, execute: work)
+        return true
+    }
+
+    /// Still in the background when the grace ran out (or the system's time did): the Mac gets
+    /// its size back, and the system's time is given back once the release has left.
+    private func backgroundGraceEnded() {
+        backgroundGraceWork?.cancel()
+        backgroundGraceWork = nil
+        let task = backgroundGraceTask
+        backgroundGraceTask = nil
+        guard backgroundedAt != nil else {
+            task?.end()
+            return
+        }
+        claimedSize = nil
+        releaseClaim()
+        claim.whenIdle { task?.end() }
+    }
+
+    /// Back in front, or the pane stops: the grace's end won't come.
+    private func endBackgroundGrace() {
+        backgroundGraceWork?.cancel()
+        backgroundGraceWork = nil
+        backgroundGraceTask?.end()
+        backgroundGraceTask = nil
+    }
+
+    /// True while a claim is kept through the background (`BackgroundGrace`). For tests.
+    var keepsClaimInBackground: Bool { backgroundGraceWork != nil }
 
     /// Tapping the "another device has this pane" chip takes the pane back.
     @objc private func statusTapped() { fitHere() }
@@ -1899,6 +1955,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         loader = nil
         hasScreen = false
         cancelGraceWork()
+        endBackgroundGrace()
         stopKeyRepeats()
         // Find closes with the pane: its handle and tints go, and any hold.
         closeFind(giveBack: false)
@@ -2181,6 +2238,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // A resize that was left out has no echo to wait for: the take alone was the claim, and
         // a size another client sets from here on is news, on a stream that catches up too.
         if claim.resizeLeftOut { ownResizeSeen = true } else if holdsForCatchUp { resizedUnderHold = true }
+        // A resize that went out behind the fence makes the program redraw, even where the
+        // stream can't show the size changing (a fresh stream's snapshot has the new size): the
+        // fence waits for that redraw, and the screen holds still until it is over.
+        if !claim.resizeLeftOut, stream.isFenced { stream.resizedBehindFence() }
         stream.setClaimPending(false)
         // Answered is not applied: a resize the server keeps for later leaves the pane at
         // another client's size (`checkFit`).
@@ -2462,7 +2523,7 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
         // The fence's fall ends that hold, or the engine's limit, after which the screen
         // follows the stream anyway.
         if holdsForCatchUp, fitted, fitGrid() != (cols, rows) { otherSizeUnderHold = true }
-        let reflowing = resizedUnderHold && otherSizeUnderHold && term.core.isCatchUpHeld
+        let reflowing = ((resizedUnderHold && otherSizeUnderHold) || stream.awaitsRedraw) && term.core.isCatchUpHeld
         if holdsForCatchUp, !stream.isClaimPending, !reflowing, !fitted || fitGrid() == (cols, rows) { endCatchUpHold() }
         guard localGrid != (cols, rows) || wasFitted != fitted else { return }
         applyLocalGrid(cols, rows)
@@ -2533,6 +2594,10 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     }
 
     func streamWhenParsed(_ done: @escaping @MainActor () -> Void) { term.whenParsed(done) }
+
+    /// Keys typed behind the fence go only if the screen came back the same (`CatchUpFence`):
+    /// a program that redrew for our resize shows what the user typed at.
+    func streamShowsScreenItHeld() -> Bool { hasScreen && term.core.showsHeldScreen() }
 
     /// True while keys typed here are held, not sent. For tests.
     var isCatchingUp: Bool { stream.isFenced }

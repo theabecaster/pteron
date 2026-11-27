@@ -203,7 +203,11 @@ What it is and when it runs: [terminal.md](terminal.md), Predicted echo. In the 
   grid, kept the prompt under the keyboard for up to half a second on a slow link. The two
   holds are independent: a frame is updated only when neither is on. Setting it takes `termLock`
   once on the main thread, as a selection does, to capture the frame to keep; it is set only
-  when a fence goes up, never at rest. A fenced pane's cursor is drawn hollow
+  when a fence goes up, never at rest. In the same section it keeps a print of the screen it
+  holds (`GhosttyScreenPrint`: a hash of the active area as the formatter writes it in VT, with
+  the cursor, the modes and the keyboard modes), and `showsHeldScreen` compares the terminal as
+  parsed with it once as a fence that holds keys comes down: the keys go only to the screen
+  they were typed at ([terminal.md](terminal.md), The catch-up fence). A fenced pane's cursor is drawn hollow
   (`GhosttyRenderer.setFenced`); nothing else in the frame changes.
   As the app leaves the front the host sets the same hold without its time limit
   (`setCatchUpHold(_:limited: false)`, `GhosttyTerminalView.holdWhileAway`), and ends it once the

@@ -117,7 +117,7 @@ final class PaneParkTests: XCTestCase {
         let stream = TerminalStream(control: control, sessionID: key.session, blockID: key.block)
         let claim = transport.map { FitClaim(transport: $0, settle: {}) }
         let host = TerminalHost(stream: stream, sizing: sizing, fontSize: 12, theme: ThemeStore.fallback, claim: claim)
-        host.leaveTiming = TerminalHost.LeaveTiming(settle: 0.02, claimGrace: 0.4)
+        host.leaveTiming = TerminalHost.LeaveTiming(settle: 0.02, claimGrace: 0.4, backgroundGrace: 0)
         host.hardwareKeyboard = { false }
         pool.add(host, for: key)
         return host

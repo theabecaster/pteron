@@ -209,7 +209,9 @@ from a program state the user has not seen.
   2. no fit claim is on its way (`TerminalStream.setClaimPending`, set by the host from the
      request until the resize has returned, the claim is released or the pane is lost);
   3. no byte and no Rex message came for 40 ms, or for 60 ms once our own `resize` came back in
-     the stream, while the program redraws for its new size;
+     the stream, while the program redraws for its new size. When our resize changed the size
+     over a screen the user saw, the wait before the redraw's first byte is 700 ms (Our
+     resize's redraw, below);
   4. the engine has parsed everything it was fed (`streamWhenParsed`), and nothing came meanwhile.
 - **A pane that never goes quiet** (`yes`, a build log) would never pass 3 and could not be typed
   into, not even Ctrl-C. So 300 ms after 1 and 2 hold, the fence comes down once the engine has
@@ -218,18 +220,24 @@ from a program state the user has not seen.
   - When the fence comes down with nothing received since it went up, over a screen the user saw,
     the screen was exact: the held bytes go out, in order, through the one input queue. This is
     the common case (an idle shell, an agent waiting) and feels local.
-  - As soon as anything arrives (a byte, a resize, a snapshot, any message) they are dropped,
-    with one notice: "The pane changed. Nothing was sent." Key bytes depend on terminal modes
-    that may have changed with the screen, so they are never sent to another one.
-  - They live 1 s at most, counted from the first; then they are dropped though nothing came,
-    and the notice says that instead: "Not sent: the pane was still reconnecting."
+  - When something arrived meanwhile (a byte, a resize, a snapshot, any message), they go the
+    same way only if the screen as parsed is the one that was on show when the fence went up:
+    the same text and styles in every row, the same cursor, the same modes and keyboard modes,
+    at the same grid (`GhosttyCore.showsHeldScreen`, asked once as the fence comes down). That is
+    a program that only redrew, as an agent does for a resize. Otherwise they are dropped, with
+    one notice: "The pane changed. Nothing was sent." Key bytes depend on terminal modes that
+    may have changed with the screen, so they are never sent to another one. Before, anything
+    that arrived dropped them at once, so a key typed right after a return was always lost.
+  - They live 1 s at most, counted from the first, or until the redraw's cap while the fence
+    waits for our resize's redraw; then they are dropped though nothing came, and the notice
+    says that instead: "Not sent: the pane was still reconnecting."
   - Both notices are in the neutral style (`TerminalStream.onFenceNotice`): nothing failed.
   - After a drop, every later key of the same fence is dropped too, silently: the rest of a line
     whose start was dropped must not arrive alone. At most one notice per fence, and none when
     nothing was typed.
   - A pane that shows nothing yet has no screen to type at: keys typed before its first screen
-    are dropped ("Not sent: the pane was still reconnecting."), and so are keys typed during a
-    fresh start, whose snapshot replaces the screen.
+    are dropped ("Not sent: the pane was still reconnecting."). Keys typed during a fresh start
+    go only if its snapshot restores the screen they were typed at.
 - **Input still queued when it goes up** (typed without a connection, or behind a request that
   is out) waits for it in the queue: sent if the screen was exact, dropped with the notice
   otherwise. A request that had left is never sent again, as always.
@@ -279,6 +287,22 @@ from a program state the user has not seen.
   A scroll, a selection and find draw through the hold, and a new keyboard cover too while the
   pane keeps its grid; once the grid changed under the hold, the cover is taken by the frame
   that ends it.
+- **Our resize's redraw.** A program redraws for a new size, and an agent reprints its whole
+  transcript: Claude Code clears the screen and its history and writes everything again at the
+  new width, after laying it out first. When our own resize changed the size behind a fence over
+  a screen the user saw (its echo shows another size than the stream had, or the claim's answer
+  came while the fence was up, as when a fresh stream's snapshot already has the new size), the
+  fence waits for that redraw: up to 700 ms for its first byte, then until it is quiet for 60 ms,
+  and 2.5 s after the resize at most. The screen holds still meanwhile and draws the redrawn
+  screen as one frame. A resize to the size the pane had costs those 700 ms once, with nothing
+  lost. A pane that opens does not wait: it showed nothing to keep still.
+  - Why. Back from the background after the Mac had the pane, the fence came down 60 ms after
+    the echo, while the program was still laying out its redraw. Measured with a stand-in that
+    thinks 400 ms and reprints 2,000 to 6,000 lines: the fence fell, a key typed then reached
+    the program before its reprint, and the reprint then scrolled the screen for up to 1.5 s
+    under the user's typing; a key typed a moment earlier, behind the fence, was dropped
+    ("The pane changed"). After a fresh start (back after the server ended the phone's client)
+    the hold also ended at the size report after the snapshot, before the redraw.
 - A fence over a screen that is still up after 2.5 s shows "Reconnecting…".
 - A `resize` from another client counts as "Resized on another screen" only on a current stream or after
   our own resize has come by: a size from before our resize can arrive after the claim's answer.
@@ -291,7 +315,7 @@ from a program state the user has not seen.
 The screen the user left is the one on show when the app comes back, at its own size, until the
 return has caught up (`AwayFrame`, `GhosttyTerminalView.holdWhileAway`).
 
-- **Why.** A fitted pane is handed back to the Mac as the app leaves (Fit and mirror), and the
+- **Why.** A fitted pane is handed back to the Mac 10 s after the app leaves (below), and the
   Mac's size and redraw can reach the phone while the app still runs in the background, a few
   seconds. The pane was laid out at that grid there, but nothing draws in the background, so its
   layer grew around the last frame it had presented, the phone's. Back in front, iOS showed that
@@ -309,7 +333,17 @@ return has caught up (`AwayFrame`, `GhosttyTerminalView.holdWhileAway`).
   until the hold ends: never an empty frame in between.
 - With the control connection down the frame stays, with "Reconnecting…" after 2.5 s, until the
   stream is back. Scrolling, a selection and find draw through it, as through any hold.
-- Nothing more is sent: the hand-back, the one claim on the return and its resize are as before.
+- **A short absence sends nothing** (`BackgroundGrace`). A fitted pane on screen keeps its claim
+  for 10 s after the app leaves the front, inside a background task, so a quick return (a reply
+  to a message, a look at another app) finds the pane at its size: no take, no resize, and no
+  redraw. The wake's fence comes down over the screen the user left, and keys typed at once go
+  as it does. After 10 s the claim is given back and the Mac gets its size, as a parked pane's
+  claim grace does (Parking), and the task ends once the give-back has left. The Mac's own take
+  wins at once at any moment: the server makes it the owner, and the phone shows the chip on
+  its return instead of taking the pane back. A claim still on its way as the app leaves is
+  given up at once, as before.
+- Back after the grace, the one claim on the return and its resize are as before, and the fence
+  waits for the program's redraw (Our resize's redraw, above).
 - A pane that parks, warms, stops or leaves the screen drops it.
 
 ## A tab that moves
@@ -363,14 +397,15 @@ is not a cold start.
 - **Coming back**: the same host is on screen in its first frame with its last screen and no
   loader. The fence goes up, and one RESUME starts at once, with no ticket and no control
   connection; only the missed bytes arrive. Typed on an idle pane, keys arrive as the fence
-  comes down; on a pane that changed they are dropped with the notice.
+  comes down; on a pane whose screen changed they are dropped with the notice.
 - **If the RESUME is refused or its window has passed**: a fresh start, which keeps the old
   screen until the new snapshot begins; the fence stays up throughout.
 - **Claim grace**: a parked pane keeps its fit claim for 10 s after it left the screen
   (`LeaveTiming.claimGrace`), so going back and forth between two panes resizes neither and the
   screen can be exact. On the Mac the pane stays phone-sized for those 10 s; then it gets its
   size back as before, and a later return claims again beside its RESUME. Going to the
-  background still releases every claim at once.
+  background releases a parked pane's claim at once; a pane on screen keeps its own 10 s (Back
+  from the background).
 - **How many** (`TerminalHostPool`, `ParkPolicy`): the 4 panes parked last, within 96 MB of
   terminal memory together by the engine's own figure (`GhosttyCore.memoryBytes`, read once
   when a pane leaves the screen and again if a warm pane parks: `TerminalHost.keptBytes`). The
@@ -399,7 +434,8 @@ is not a cold start.
 
 - Fit: after layout settles (120 ms), `session.own_block` (take), then `terminal.resize` to the
   largest grid that fits (`TerminalLayout.fitGrid`, at least 12×4), while the stream starts
-  beside it. Backgrounding the app or switching to mirror calls `session.disown_block` at once,
+  beside it. Switching to mirror calls `session.disown_block` at once, backgrounding the app 10 s
+  later (Back from the background),
   and leaving the pane does 10 s later (Parking, claim grace); the Mac then gets its size back. If another client resizes the pane, the host stops and offers "Resized on another screen ·
   tap to fit here". Until then it shows the server's grid as mirror does. A pinch there fits the
   pane here too (Gestures).

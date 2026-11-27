@@ -1,8 +1,8 @@
 /// The screen a pane showed as the app left the front, kept on show at its own grid until the
 /// return has caught up (docs/terminal.md, Back from the background).
 ///
-/// In the background a fitted pane is handed back to the Mac, and the Mac's size and redraw
-/// can reach the phone while the app still runs there, a few seconds. Laid out at that grid,
+/// In the background a fitted pane is handed back to the Mac (after `BackgroundGrace`), and
+/// the Mac's size and redraw can reach the phone while the app still runs there. Laid out at that grid,
 /// the pane's layer grew around the last frame it had presented, the phone's, and nothing drew
 /// in the background: on the return the pane showed that frame stretched to the Mac's grid
 /// (about 7 times as wide on the folded Duo), then the Mac's grid for a frame, then its own.

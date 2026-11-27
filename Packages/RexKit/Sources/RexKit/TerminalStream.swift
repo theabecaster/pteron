@@ -323,11 +323,16 @@ public protocol TerminalSink: AnyObject {
     /// Calls `done` once everything passed to the sink so far has been parsed into the screen.
     /// A sink that parses as it is fed calls it at once.
     @MainActor func streamWhenParsed(_ done: @escaping @MainActor () -> Void)
+    /// Whether the screen as parsed, its cursor and the modes that shape typed keys are the ones
+    /// on show when the fence went up, which the sink kept on show. Asked once as the fence
+    /// comes down with keys held over a screen that changed meanwhile: they go only if true.
+    @MainActor func streamShowsScreenItHeld() -> Bool
 }
 
 public extension TerminalSink {
     @MainActor func streamFence(_ up: Bool, screen: Bool) {}
     @MainActor func streamWhenParsed(_ done: @escaping @MainActor () -> Void) { done() }
+    @MainActor func streamShowsScreenItHeld() -> Bool { false }
 }
 
 /// Streams one terminal block's output over `GET /api/data` (subprotocol rex.data.terminal.v1)
@@ -727,6 +732,7 @@ public final class TerminalStream {
             guard let sink = self?.sink else { return done() }
             sink.streamWhenParsed(done)
         }
+        fence.sameScreen = { [weak self] in self?.sink?.streamShowsScreenItHeld() ?? false }
     }
 
     /// The host asked the server for a new size for this pane (true), or that ended: the pane
@@ -734,6 +740,14 @@ public final class TerminalStream {
     /// a raised fence stays up: the resize changes the screen.
     public func setClaimPending(_ pending: Bool) { fence.setClaimPending(pending) }
     public var isClaimPending: Bool { fence.claimPending }
+
+    /// The host's resize was answered while the fence is up: the program may redraw for it, and
+    /// the fence waits for that (`CatchUpFence.expectRedraw`).
+    public func resizedBehindFence() { fence.expectRedraw() }
+
+    /// The fence waits for the program's redraw for our resize: the screen stays still until it
+    /// comes down.
+    public var awaitsRedraw: Bool { fence.awaitsRedraw }
 
     /// Runs `body` once the screen is current: now if the fence is down, else when it comes
     /// down. Never, if the stream stops first.
@@ -1790,13 +1804,15 @@ public final class TerminalStream {
             return self.handleSnapshot(part, sink: sink)
         }, output: { out in
             guard self.gen == myGen else { return }
-            fence.changed()
+            fence.output()
             // While a resync reads the screen, this output is dropped (see `resync()`).
             if !self.resyncing { sink?.streamFeed(out) }
         }, message: { m in
             guard self.gen == myGen else { return }
             if m.str("type") == "resize", let me = self.link.clientID, m["owner"] as? String == me {
-                fence.resizeEchoed()
+                // A size the pane didn't have makes the program redraw.
+                let c = m.int("cols") ?? self.serverCols, r = m.int("rows") ?? self.serverRows
+                fence.resizeEchoed(changedSize: (max(c, 2), max(r, 2)) != (self.serverCols, self.serverRows))
             } else {
                 fence.changed()
             }
@@ -1865,7 +1881,7 @@ public final class TerminalStream {
         if code == 4000 {
             token = nil
             // Keys held for a pane that is gone are dropped, and say so.
-            if fence.heldCount > 0 { fence.changed() }
+            if fence.heldCount > 0 { fence.paneGone() }
             fence.reset()
             sink?.streamStatus(.ended("pane closed"))
             return

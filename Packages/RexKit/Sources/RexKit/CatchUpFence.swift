@@ -17,24 +17,32 @@ import Foundation
 ///    snapshot, or the pong of a wake;
 /// 2. no fit claim is on its way (`claimPending`);
 /// 3. no byte and no message came for `quiet` (40 ms), or for `resizeQuiet` (60 ms) once our own
-///    resize came back in the stream, while the program redraws for its new size;
+///    resize came back in the stream, while the program redraws for its new size. When that
+///    resize changed the size (`resizeEchoed(changedSize:)`, `expectRedraw`) over a screen the
+///    user saw, the quiet before the redraw's first byte is `redrawStart` (700 ms): an agent lays
+///    out its whole transcript before it reprints it, and a key must not land in that reprint;
 /// 4. the sink has parsed everything it was given (`drained`), and nothing came meanwhile.
 ///
 /// A program that never pauses would keep 3 from ever holding, and the pane could not be typed
 /// into at all. So `cap` (300 ms) after 1 and 2 hold, the fence comes down once the sink has
 /// parsed what it has: the screen then moves as the program writes, as it does on any busy
-/// pane.
+/// pane. While it waits for a redraw for our resize the cap is `redrawCap` (2.5 s), counted
+/// from the resize.
 ///
 /// **Keys and pastes while it is up** (`hold`) are kept, already encoded, in order.
 /// - Down with nothing received since it went up, over a screen the user saw (`exact`): they
 ///   go out, in order, through the stream's one queue.
-/// - Otherwise they are dropped, as soon as something comes, and the user is told once
+/// - Down after something came, over a screen the user saw: they go the same way only if the
+///   screen as parsed is the one on show when the fence went up, with the same cursor and the
+///   same modes (`sameScreen`): a program that only redrew, for our resize or for nothing,
+///   shows what the user typed at. Otherwise they are dropped and the user is told once
 ///   (`onDropped`, with why: the screen changed, or the stream was not back in time). Bytes
 ///   encoded under the old screen's modes are never sent to a new one.
-///   A pane that shows nothing yet, or a fresh snapshot, never sends held keys.
-/// - They live `heldLife` (1 s) at most, counted from the first one; then they are dropped
-///   the same way. After a drop, every later key of the same fence is dropped too, silently:
-///   the rest of a line whose start was dropped must not arrive alone.
+///   A pane that shows nothing yet never sends held keys.
+/// - They live `heldLife` (1 s) at most, counted from the first one, or until the redraw's cap
+///   while the fence waits for a redraw for our resize; then they are dropped the same way.
+///   After a drop, every later key of the same fence is dropped too, silently: the rest of a
+///   line whose start was dropped must not arrive alone.
 ///
 /// **Input queued before the fence went up** and not yet sent (typed without a connection, or
 /// behind a request that is out) waits for it too, in the stream's queue: sent when the fence
@@ -51,6 +59,12 @@ final class CatchUpFence {
         var resizeQuiet: Duration = .milliseconds(60)
         var cap: Duration = .milliseconds(300)
         var heldLife: Duration = .seconds(1)
+        /// Our own resize changed the pane's size: how long the program may take to begin its
+        /// redraw. An agent lays out its whole transcript first (400 ms seen for a long one).
+        var redrawStart: Duration = .milliseconds(700)
+        /// The cap once our own resize changed the size, from the moment it came back: a long
+        /// transcript reprinted over a slow link.
+        var redrawCap: Duration = .milliseconds(2500)
     }
 
     var timing = Timing()
@@ -74,6 +88,9 @@ final class CatchUpFence {
     var onStale: (@MainActor () -> Bool)?
     /// Asks the sink to call back once it has parsed everything it was given so far.
     var drained: (@MainActor (@escaping @MainActor () -> Void) -> Void)?
+    /// Whether the screen as parsed is the one on show when the fence went up, with the same
+    /// modes: the sink kept that screen on show, so keys typed meanwhile were typed at it.
+    var sameScreen: (@MainActor () -> Bool)?
 
     private(set) var isUp = false
     /// A fit claim is on its way: its resize will change the screen.
@@ -82,8 +99,15 @@ final class CatchUpFence {
     private var hasArrived = false
     /// Nothing came since the fence went up, over a screen the user saw.
     private var exact = false
+    /// The fence went up over a screen the user saw: keys are held even after output came, and
+    /// go if the screen comes back the same (`sameScreen`).
+    private var overScreen = false
     /// Our own resize came back in the stream since the fence went up.
     private var echoed = false
+    /// That resize changed the pane's size: the program redraws for it.
+    private var resized = false
+    /// Output came since that resize: the redraw has begun.
+    private var redrawing = false
     private var held: [UInt8] = []
     /// Something was dropped during this fence: nothing more is held, and the user was told.
     private var dropped = false
@@ -97,10 +121,13 @@ final class CatchUpFence {
     /// The fence whose quiet wait is running. A wait left over from an older fence, still
     /// asleep, doesn't stand in for this one's.
     private var quietEpoch = -1
+    /// Counts quiet waits: one that was started over gives way to the newer one.
+    private var quietSerial = 0
     /// Something came since the fence went up.
     private var changedSince = false
-    /// Counts the times conditions 1 and 2 began to hold, for the cap.
-    private var readySerial = 0
+    /// Counts the caps armed: only the newest lowers the fence (conditions 1 and 2 began to
+    /// hold again, or our resize changed the size).
+    private var capSerial = 0
     private var wasReady = false
     /// The fence whose held keys have their expiry running.
     private var expiryEpoch = -1
@@ -122,7 +149,10 @@ final class CatchUpFence {
         isUp = true
         hasArrived = false
         self.exact = exact
+        overScreen = exact
         echoed = false
+        resized = false
+        redrawing = false
         dropped = false
         changedSince = false
         held.removeAll()
@@ -139,22 +169,70 @@ final class CatchUpFence {
         noteActivity()
     }
 
-    /// Output, a snapshot or a message came: the screen is no longer the one the user saw.
+    /// A message came, or something the stream can't say more of: the screen may no longer be
+    /// the one the user saw.
     func changed() {
         guard isUp else { return }
         exact = false
         changedSince = true
-        // Keys held for the screen that just changed can never be sent.
-        if !held.isEmpty { drop() }
+        // Keys held for a screen that changed go only if it comes back the same (`sameScreen`).
+        if !held.isEmpty, !overScreen { drop() }
         noteActivity()
     }
 
+    /// The pane is gone: held keys can never be sent, and the user is told.
+    func paneGone() {
+        guard isUp else { return }
+        exact = false
+        changedSince = true
+        if !held.isEmpty { drop() }
+    }
+
+    /// The program wrote. After our resize changed the size, its redraw has begun: the long
+    /// wait for it to begin gives way to the redraw's quiet at once.
+    func output() {
+        guard isUp else { return }
+        let began = resized && !redrawing
+        if began { redrawing = true }
+        changed()
+        if began, ready { armQuiet(restart: true) }
+    }
+
     /// Our own resize came back in the stream.
-    func resizeEchoed() {
+    ///
+    /// `changedSize`: the pane had another size before it, so the program redraws (an agent
+    /// reprints its whole transcript, often after a pause to lay it out). The fence waits for
+    /// that redraw to begin and settle, up to `redrawCap`, so no key lands in the middle of it.
+    func resizeEchoed(changedSize: Bool = false) {
         guard isUp else { return }
         echoed = true
         changed()
+        if changedSize { awaitRedraw() }
     }
+
+    /// Our resize was applied while the fence is up and may have changed the size, though the
+    /// stream can't show it: a fresh stream's snapshot already has the new size, and the
+    /// program's redraw comes after it. Waits for that redraw as for one the echo showed. A
+    /// resize to the size the pane had costs `redrawStart` once, with nothing lost.
+    func expectRedraw() {
+        guard isUp, !resized else { return }
+        awaitRedraw()
+    }
+
+    /// Only over a screen the user saw: a pane that opens has nothing to keep still, and its
+    /// keys are not held.
+    private func awaitRedraw() {
+        guard overScreen else { return }
+        resized = true
+        redrawing = false
+        noteActivity()
+        // The cap counts from here, at its own length: a pane that never goes quiet still
+        // comes down.
+        if ready { armCap() }
+    }
+
+    /// The fence waits for the program's redraw for our resize (`expectRedraw`).
+    var awaitsRedraw: Bool { isUp && resized }
 
     /// The host asked for a fit claim (true), or the claim ended: resized, given up or lost.
     func setClaimPending(_ pending: Bool) {
@@ -181,7 +259,7 @@ final class CatchUpFence {
     func hold(_ bytes: [UInt8]) -> Bool {
         guard isUp else { return false }
         // A pane that shows nothing has no screen to type at; after a drop the rest goes too.
-        guard exact, !dropped else {
+        guard exact || overScreen, !dropped else {
             drop()
             return true
         }
@@ -216,6 +294,11 @@ final class CatchUpFence {
         let mine = epoch, sleep = self.sleep, life = timing.heldLife
         Task { [weak self] in
             await sleep(life)
+            // While the program redraws for our resize the redraw's cap bounds the wait: the
+            // keys go when it is over, if the screen is the same.
+            while let self, self.epoch == mine, self.isUp, self.resized, self.ready {
+                await sleep(self.timing.redrawCap)
+            }
             guard let self, self.epoch == mine, self.isUp, !self.held.isEmpty else { return }
             self.drop()
         }
@@ -228,40 +311,47 @@ final class CatchUpFence {
     private func noteActivity() {
         activity += 1
         let ready = ready
-        if ready, !wasReady {
-            readySerial += 1
-            armCap()
-        }
+        if ready, !wasReady { armCap() }
         wasReady = ready
         if ready { armQuiet() }
     }
 
-    /// One wait at a time: it starts over while bytes keep coming.
-    private func armQuiet() {
-        guard quietEpoch != epoch else { return }
+    /// One wait at a time: it starts over while bytes keep coming. `restart`: a new wait takes
+    /// the place of the one asleep (the redraw began during the long wait for it).
+    private func armQuiet(restart: Bool = false) {
+        guard restart || quietEpoch != epoch else { return }
         quietEpoch = epoch
-        let mine = epoch, sleep = self.sleep
+        quietSerial += 1
+        let mine = epoch, serial = quietSerial, sleep = self.sleep
         Task { [weak self] in
             while true {
-                guard let self, self.epoch == mine, self.isUp, self.ready else { break }
+                guard let self, self.epoch == mine, self.isUp, self.ready, self.quietSerial == serial else { break }
                 let seen = self.activity
-                await sleep(self.echoed ? self.timing.resizeQuiet : self.timing.quiet)
-                guard self.epoch == mine, self.isUp, self.ready else { break }
+                await sleep(self.quietWait)
+                guard self.epoch == mine, self.isUp, self.ready, self.quietSerial == serial else { break }
                 guard self.activity == seen else { continue }
                 self.quietEpoch = -1
                 self.lowerWhenDrained(epoch: mine, activity: seen)
                 return
             }
-            // Only this fence's own wait gives the place back: a newer fence has armed its own.
-            if let self, self.quietEpoch == mine { self.quietEpoch = -1 }
+            // Only this fence's own, newest wait gives the place back: a newer one has armed its own.
+            if let self, self.quietEpoch == mine, self.quietSerial == serial { self.quietEpoch = -1 }
         }
     }
 
+    /// The quiet that lowers the fence: longer once our resize came back, while the program
+    /// redraws, and longest until that redraw has begun.
+    private var quietWait: Duration {
+        if resized, !redrawing { return timing.redrawStart }
+        return echoed ? timing.resizeQuiet : timing.quiet
+    }
+
     private func armCap() {
-        let mine = epoch, serial = readySerial, sleep = self.sleep, cap = timing.cap
+        capSerial += 1
+        let mine = epoch, serial = capSerial, sleep = self.sleep, cap = resized ? timing.redrawCap : timing.cap
         Task { [weak self] in
             await sleep(cap)
-            guard let self, self.epoch == mine, self.isUp, self.ready, self.readySerial == serial else { return }
+            guard let self, self.epoch == mine, self.isUp, self.ready, self.capSerial == serial else { return }
             self.lowerWhenDrained(epoch: mine, activity: nil)
         }
     }
@@ -283,7 +373,10 @@ final class CatchUpFence {
     private func lower() {
         let keys = held
         held.removeAll()
-        let send = exact && !dropped && !keys.isEmpty
+        // Over a screen that changed, the keys go only if it came back the same: a program that
+        // redrew for a new size, or for the size it had, shows what the user typed at.
+        let same = !keys.isEmpty && !exact && overScreen && !dropped && (sameScreen?() ?? false)
+        let send = (exact || same) && !dropped && !keys.isEmpty
         if !keys.isEmpty, !send { drop() }
         // Keys typed at the old screen that had not left yet go the same way.
         if !exact, onStale?() == true, !dropped {

@@ -134,6 +134,8 @@ final class FitClaim {
     private var ownMissing = false
     /// A call is to be asked again later (the connection is back, or after `notYetPause`).
     private var waiting = false
+    /// Run once no call is out (`whenIdle`).
+    private var idleWaiters: [@MainActor () -> Void] = []
     /// `notYet` answers in a row.
     private var notYetCount = 0
 
@@ -227,6 +229,21 @@ final class FitClaim {
         work()
     }
 
+    /// Runs `body` once no call is out and none waits to be asked again: now if the worker is
+    /// idle. The app in the background holds a task of the system's until a release has left
+    /// (`BackgroundGrace`).
+    func whenIdle(_ body: @escaping @MainActor () -> Void) {
+        guard working || waiting else { return body() }
+        idleWaiters.append(body)
+    }
+
+    private func becameIdle() {
+        guard !working, !waiting, !idleWaiters.isEmpty else { return }
+        let waiters = idleWaiters
+        idleWaiters = []
+        for body in waiters { body() }
+    }
+
     /// The server gave the pane back to this client at this size (an owner whose connection
     /// dropped gets its panes back when it reconnects): it is claimed again without a call.
     func adopt(cols: Int, rows: Int) {
@@ -264,7 +281,10 @@ final class FitClaim {
     }
 
     private func run() async {
-        defer { working = false }
+        defer {
+            working = false
+            becameIdle()
+        }
         while true {
             switch goal {
             case .size(let cols, let rows):

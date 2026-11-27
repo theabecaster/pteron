@@ -158,6 +158,8 @@ final class AwayFrameTests: XCTestCase {
         host.hardwareKeyboard = { false }
         host.ownClientID = { [phone] in phone }
         host.clientGeneration = { 0 }
+        // Given back as the app leaves, as before the grace: these tests are about the Mac's size.
+        host.leaveTiming.backgroundGrace = 0
         host.frame = window.bounds
         window.addSubview(host)
         host.layoutIfNeeded()
@@ -207,9 +209,10 @@ final class AwayFrameTests: XCTestCase {
     }
 
     func testAReturnWithNothingToCatchUpFollowsTheTerminalAtOnce() throws {
-        let (host, _) = try pane()
+        let (host, transport) = try pane()
         let shown = host.term.frame
         NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        XCTAssertTrue(eventually { transport.calls.contains("disown") })
         host.streamResized(cols: 211, rows: 57, owner: mac)
         XCTAssertEqual(host.term.frame, shown)
         // The stream is not running, so nothing will catch up: no fence, no frame kept.
