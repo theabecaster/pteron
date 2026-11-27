@@ -201,9 +201,8 @@ final class FileSender {
                     Outgoing.release(items)
                     Notice.shared.show("Didn't send \(what).", style: .neutral)
                 case .unreadable(let name)?:
-                    let retry = Notice.Action(title: "Try Again") { [weak self, weak view] in
-                        self?.sendTree(items, over: view, onSent: onSent)
-                    }
+                    // The notice holds this for a few seconds only.
+                    let retry = Notice.Action(title: "Try Again") { self.sendTree(items, over: view, onSent: onSent) }
                     Notice.shared.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
                 default:
                     Outgoing.release(items)
