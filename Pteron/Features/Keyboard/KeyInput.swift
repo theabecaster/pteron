@@ -156,6 +156,7 @@ enum KeyInput {
     static func press(barKey key: String, mods: KeyMods) -> Press? {
         switch key {
         case "shift-tab": return press(named: "tab", mods: mods.union(.shift))
+        case "shift-enter": return press(named: "enter", mods: mods.union(.shift))
         case "ctrl", "alt", "cmd", "arrows", "paste", "hide", "attach": return nil
         default:
             if namedUsages[key] != nil { return press(named: key, mods: mods) }

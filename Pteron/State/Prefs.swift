@@ -279,6 +279,7 @@ final class Prefs {
             d.set(dark, forKey: "lightThemeID")
         }
         migrateKeyBar(d)
+        upgradeKeyBarSetup(d)
         // Servers saved by host name join the server list, under the ids they had.
         if let hosts = d.dictionary(forKey: "hostURLs") as? [String: String], !hosts.isEmpty {
             var list = d.data(forKey: "servers").flatMap { try? JSONDecoder().decode([ServerConfig].self, from: $0) } ?? []
@@ -319,6 +320,17 @@ final class Prefs {
         let setup: KeyBarSetup = keys.map { KeyBarSetup.migrating($0) } ?? .standard
         guard let data = try? JSONEncoder().encode(setup) else { return }
         d.set(data, forKey: "keyBarSetup")
+    }
+
+    /// A setup an earlier version stored is saved again as this version reads it
+    /// (`KeyBarSetup.normalized`), so each step of the upgrade runs once: Shift-Return, added
+    /// once, stays hidden once the user hides it. A newer version's setup is left as it is.
+    static func upgradeKeyBarSetup(_ d: UserDefaults) {
+        guard let data = d.data(forKey: "keyBarSetup"),
+              let stored = try? JSONDecoder().decode(KeyBarSetup.self, from: data),
+              stored.version < KeyBarSetup.currentVersion,
+              let upgraded = try? JSONEncoder().encode(stored.normalized()) else { return }
+        d.set(upgraded, forKey: "keyBarSetup")
     }
 
     /// The terminal theme for the system's Light or Dark Mode.

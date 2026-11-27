@@ -38,6 +38,7 @@ struct KeyBarPressTests {
     @Test func barKeys() {
         #expect(spellings(KeyInput.press(barKey: "tab", mods: .cmd)) == [["cmd+tab", "cmd+[Tab]"]])
         #expect(spellings(KeyInput.press(barKey: "shift-tab", mods: .cmd)) == [["shift+cmd+tab", "shift+cmd+[Tab]"]])
+        #expect(spellings(KeyInput.press(barKey: "shift-enter", mods: .cmd)) == [["shift+cmd+enter", "shift+cmd+[Enter]"]])
         #expect(spellings(KeyInput.press(barKey: "esc", mods: .cmd)) == [["cmd+escape", "cmd+[Escape]"]])
         #expect(spellings(KeyInput.press(barKey: "up", mods: [.cmd, .alt])) == [["alt+cmd+up", "alt+cmd+[ArrowUp]"]])
         #expect(spellings(KeyInput.press(barKey: "pgdn", mods: .cmd)) == [["cmd+pagedown", "cmd+[PageDown]"]])
@@ -270,11 +271,75 @@ struct KeyBarCommandTests {
         #expect(spy.sent.count == n)
     }
 
+    // MARK: The Shift-Return key
+
+    /// ⇧⏎ sends what the held Return sends, through the same encoder: normal, with the bar's
+    /// modifiers, and under the Kitty protocol.
+    @Test func theShiftReturnKeySendsWhatTheHeldReturnSends() {
+        let (host, spy, _) = makeHost()
+        let (held, heldSpy, _) = makeHost()
+        host.keyBar.fire("shift-enter")
+        held.keyBar.hold("enter")
+        #expect(spy.sent.last == Array("\u{1b}[27;2;13~".utf8))
+        #expect(spy.sent == heldSpy.sent)
+        host.keyBar.fire("alt")
+        host.keyBar.fire("shift-enter")
+        #expect(spy.sent.last == Array("\u{1b}[27;4;13~".utf8))
+        #expect(host.keyBar.alt == .off, "the one-shot ends")
+        host.keyBar.fire("shift")
+        host.keyBar.fire("shift-enter")
+        #expect(spy.sent.last == Array("\u{1b}[27;2;13~".utf8), "shift adds nothing to it")
+        for h in [host, held] {
+            h.term.feed(text: "\u{1b}[>1u")
+            h.term.core.sync()
+        }
+        host.keyBar.fire("shift-enter")
+        held.keyBar.hold("enter")
+        #expect(spy.sent.last == Array("\u{1b}[13;2u".utf8))
+        #expect(spy.sent.last == heldSpy.sent.last)
+        // Its bytes are the engine's alone, and it never repeats.
+        #expect(KeyBar.bytes(for: "shift-enter", appCursor: false) == nil)
+        #expect(KeyBar.composeText(for: "shift-enter") == nil)
+        #expect(KeyBar.kind(of: "shift-enter") == .normal)
+    }
+
+    @Test func theShiftReturnKeyWithCmdIsShiftCmdReturn() {
+        let (host, spy, unbound) = makeHost()
+        var commands: [RexCommand] = []
+        host.onCommand = { commands.append($0) }
+        host.keyBar.fire("cmd")
+        host.keyBar.fire("shift-enter")
+        #expect(commands == [.toggleZoom], "shift+cmd+enter, as the held Return runs it")
+        #expect(host.keyBar.cmd == .off)
+        #expect(spy.sent.isEmpty)
+        #expect(unbound.n == 0)
+    }
+
+    @Test func theShiftReturnKeyWhileComposingCommitsTheComposition() {
+        let (host, spy, _) = makeHost()
+        host.term.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0))
+        host.keyBar.fire("shift-enter")
+        #expect(!host.term.isComposing)
+        #expect(spy.sent.flatMap { $0 } == Array("か".utf8), "committed, not sent")
+        host.keyBar.fire("shift-enter")
+        #expect(spy.sent.last == Array("\u{1b}[27;2;13~".utf8))
+    }
+
+    @Test func theShiftReturnKeyIsACapWithItsGlyphAndName() {
+        let cap = KeyCap(key: "shift-enter", kind: KeyBar.kind(of: "shift-enter"))
+        #expect(cap.accessibilityLabel == "Shift-Return")
+        #expect(cap.onHold == nil, "held, it is a slow tap")
+        #expect(KeyBar.symbolPairs["shift-enter"] == ["shift", "return"])
+        #expect(KeyBar.symbolImage("shift-enter", pointSize: 16) != nil)
+        #expect(KeyBarLayoutPage.title("shift-enter") == "Shift-Return")
+    }
+
     @Test func theAgentBoardBlocksReturn() {
         let (host, spy, _) = makeHost()
         host.setCovered(true)
         host.keyBar.fire("enter")
         host.keyBar.hold("enter")
+        host.keyBar.fire("shift-enter")
         host.keyBar.fire("esc")
         #expect(spy.sent.isEmpty)
         host.setCovered(false)

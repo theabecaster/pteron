@@ -6,7 +6,8 @@ import Foundation
 /// (⌘, compose, attach), the right one (the arrows, the hide key) and the pinned Return are not
 /// part of it. Stored in `Prefs` as JSON with a version. Pure, so it is tested.
 struct KeyBarSetup: Codable, Equatable {
-    static let currentVersion = 1
+    /// 2 added Shift-Return (`addingShiftReturn`).
+    static let currentVersion = 2
     var version = Self.currentVersion
 
     enum Section: String, Codable, CaseIterable, Identifiable {
@@ -37,14 +38,15 @@ struct KeyBarSetup: Codable, Equatable {
     /// Primary's keys in their first order. Shift-Tab and Command start hidden.
     static let primaryKeys = ["esc", "ctrl", "alt", "shift", "tab", "shift-tab", "cmd"]
     /// Editing's keys in their first order. The arrow keys are here for layouts that had them.
-    static let editingKeys = ["backspace", "paste", "delete", "home", "end", "pgup", "pgdn", "up", "down", "left", "right"]
+    static let editingKeys = ["backspace", "paste", "shift-enter", "delete", "home", "end", "pgup", "pgdn", "up", "down", "left", "right"]
 
     /// The first setup: for agents, as Rex's own key bar is. esc, ctrl, option, shift and tab,
-    /// the Characters ~ | / - as keys, then Backspace and Paste.
+    /// the Characters ~ | / - as keys, then Backspace, Paste and Shift-Return, which sits right
+    /// before the pinned Return.
     static let standard = KeyBarSetup(
         sections: Section.allCases,
         primary: primaryKeys.map { Key(id: $0, shown: !["shift-tab", "cmd"].contains($0)) },
-        editing: editingKeys.map { Key(id: $0, shown: ["backspace", "paste"].contains($0)) },
+        editing: editingKeys.map { Key(id: $0, shown: ["backspace", "paste", "shift-enter"].contains($0)) },
         groups: ShortcutGroup.Kind.allCases.map(ShortcutGroup.standard))
 
     /// Layout as Reset Layout leaves it: the sections and their keys as they first were. The
@@ -99,11 +101,12 @@ struct KeyBarSetup: Codable, Equatable {
         }
     }
 
-    /// The setup as stored, read back: a section, key or group a newer or older version lacks is
-    /// added at its end, hidden, and one this version doesn't know is dropped, so every built-in
-    /// key is always listed once.
+    /// The setup as stored, read back: a setup from before version 2 gets Shift-Return
+    /// (`addingShiftReturn`); a section, key or group a newer or older version lacks is added at
+    /// its end, hidden, and one this version doesn't know is dropped, so every built-in key is
+    /// always listed once.
     func normalized() -> KeyBarSetup {
-        var s = self
+        var s = version < 2 ? addingShiftReturn() : self
         s.version = Self.currentVersion
         var sections: [Section] = []
         for x in s.sections where !sections.contains(x) { sections.append(x) }
@@ -125,13 +128,26 @@ struct KeyBarSetup: Codable, Equatable {
         return s
     }
 
+    /// Version 2's step: Shift-Return, shown, right after Editing's last shown key, as in the
+    /// first setup, so it sits before the pinned Return when Editing comes last. Nothing else
+    /// changes. It runs on a setup stored before version 2 and on a layout carried over from
+    /// before the setup, never again, so a user who hides the key keeps it hidden.
+    func addingShiftReturn() -> KeyBarSetup {
+        var s = self
+        s.editing.removeAll { $0.id == "shift-enter" }
+        let at = s.editing.lastIndex(where: \.shown).map { $0 + 1 } ?? 0
+        s.editing.insert(Key(id: "shift-enter", shown: true), at: at)
+        return s
+    }
+
     // MARK: Before the setup
 
     /// The setup a key list of the layouts before it stands for (`KeyBarLayout`, or a list the
     /// removed key bar editor saved): the same keys, each in its section. The arrows key, attach
     /// and Return have their own places now and leave the list. Keys keep their order within a
     /// section, and the sections are in the order they first appear. A character or control key
-    /// no group has becomes a shortcut of its own, so nothing is lost.
+    /// no group has becomes a shortcut of its own, so nothing is lost. Shift-Return is added as for
+    /// any setup from before it (`addingShiftReturn`).
     static func migrating(_ keys: [String]) -> KeyBarSetup {
         var s = standard
         for i in s.primary.indices { s.primary[i].shown = false }
@@ -183,7 +199,7 @@ struct KeyBarSetup: Codable, Equatable {
             }
         }
         s.groups = groupOrder.compactMap { s.group($0) } + s.groups.filter { !groupOrder.contains($0.id) }
-        return s
+        return s.addingShiftReturn()
     }
 }
 

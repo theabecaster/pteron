@@ -745,6 +745,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         case "compose": onCompose?()
         case "arrows": usedModifiers()  // after a drag
         case "enter" where commitComposition(): break
+        case "shift-enter": shiftReturn()
         default: send(key)
         }
     }
@@ -782,16 +783,22 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         usedModifiers()
     }
 
-    /// A key held for `KeyCap.holdDelay`: Return becomes Shift-Return, with the bar's modifiers,
-    /// encoded as a hardware Shift-Return is (`CSI 27;2;13~`, or `CSI 13;2u` under the Kitty
-    /// protocol), so an agent starts a new line instead of sending. With cmd it is the shift+cmd
-    /// chord. Internal for tests.
+    /// A key held for `KeyCap.holdDelay`: Return becomes Shift-Return (`shiftReturn`). Internal
+    /// for tests.
     func hold(_ key: String) {
         guard key == "enter", !blocked else { return }
         lockImpact.impactOccurred()
+        shiftReturn()
+    }
+
+    /// Shift-Return, for the held Return and the ⇧⏎ key: with the bar's modifiers, encoded as a
+    /// hardware Shift-Return is (`CSI 27;2;13~`, or `CSI 13;2u` under the Kitty protocol), so an
+    /// agent starts a new line instead of sending. With cmd it is the shift+cmd+enter chord. While
+    /// an input method composes it only commits the composition, as Return does.
+    private func shiftReturn() {
         guard !commitComposition() else { return }
         if cmd != .off {
-            let press = KeyInput.press(barKey: key, mods: shortcutMods.union(.shift))
+            let press = KeyInput.press(barKey: "enter", mods: shortcutMods.union(.shift))
             if !(press.map { onShortcut?($0, false) ?? false } ?? false) { onUnbound() }
         } else {
             terminal?.sendShiftReturn(ctrl: ctrl != .off, alt: alt != .off)
@@ -853,7 +860,8 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
     /// The text a bar key types, nil for a key that types none (a named key, a control key, a
     /// modifier, an action).
     static func composeText(for key: String) -> String? {
-        guard kind(of: key) == .normal, !key.hasPrefix("ctrl-"), chordName(key) == nil, key != "shift-tab", key != "enter" else { return nil }
+        guard kind(of: key) == .normal, !key.hasPrefix("ctrl-"), chordName(key) == nil, key != "shift-tab", key != "enter",
+              key != "shift-enter" else { return nil }
         return key
     }
 
@@ -987,7 +995,10 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         case "f10": return csi("21~")
         case "f11": return csi("23~")
         case "f12": return csi("24~")
-        case "arrows", "ctrl", "alt", "shift", "cmd", "paste", "hide", "attach", "palette", "compose", "group", "shortcut":
+        // Shift-Return's bytes come from the engine's encoder, under the program's modes
+        // (`GhosttyTerminalView.sendShiftReturn`).
+        case "shift-enter", "arrows", "ctrl", "alt", "shift", "cmd", "paste", "hide", "attach", "palette", "compose", "group",
+             "shortcut":
             return nil
         default:
             // "ctrl-x" sends that control character; anything else is literal text.
@@ -1014,7 +1025,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
     /// Spoken names for VoiceOver and Settings.
     static let names: [String: String] = [
         "left": "Left", "right": "Right", "up": "Up", "down": "Down", "paste": "Paste", "attach": "Attach", "hide": "Hide Keyboard",
-        "enter": "Return", "tab": "Tab", "shift-tab": "Shift-Tab", "arrows": "Arrow Trackpad", "esc": "Escape",
+        "enter": "Return", "shift-enter": "Shift-Return", "tab": "Tab", "shift-tab": "Shift-Tab", "arrows": "Arrow Trackpad", "esc": "Escape",
         "ctrl": "Control", "alt": "Option", "shift": "Shift", "cmd": "Command",
         "backspace": "Backspace", "delete": "Delete",
         "palette": "Command Palette", "compose": "Compose",
@@ -1022,8 +1033,11 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         "ctrl-a": "Control-A", "ctrl-e": "Control-E", "ctrl-u": "Control-U", "ctrl-w": "Control-W", "ctrl-o": "Control-O",
         "pgup": "Page Up", "pgdn": "Page Down", "home": "Home", "end": "End",
     ]
-    /// Keys shown as two symbols side by side: shift-tab as ⇧⇥, as macOS menus spell it.
-    static let symbolPairs: [String: [String]] = ["shift-tab": ["shift", "arrow.right.to.line"]]
+    /// Keys shown as two symbols side by side: shift-tab as ⇧⇥ and shift-enter as ⇧⏎, as macOS
+    /// menus spell them.
+    static let symbolPairs: [String: [String]] = [
+        "shift-tab": ["shift", "arrow.right.to.line"], "shift-enter": ["shift", "return"],
+    ]
 
     /// A key's symbol image, nil for a key shown as text. A pair is drawn into one template image,
     /// so the cap tints it like any other symbol.

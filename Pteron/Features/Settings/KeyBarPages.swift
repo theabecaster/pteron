@@ -82,12 +82,14 @@ struct KeyBarLayoutPage: View {
     /// What the page calls each built-in key.
     static let titles: [String: String] = [
         "esc": "Escape", "ctrl": "Control", "alt": "Option", "shift": "Shift", "tab": "Tab", "shift-tab": "Shift-Tab",
-        "cmd": "Command", "backspace": "Backspace", "paste": "Paste", "delete": "Delete", "home": "Home", "end": "End",
-        "pgup": "Page Up", "pgdn": "Page Down", "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+        "cmd": "Command", "backspace": "Backspace", "paste": "Paste", "shift-enter": "Shift-Return", "delete": "Delete",
+        "home": "Home", "end": "End", "pgup": "Page Up", "pgdn": "Page Down", "up": "Up", "down": "Down", "left": "Left",
+        "right": "Right",
     ]
     /// The few keys that need a word on what they do.
     static let details: [String: String] = [
         "shift-tab": "Changes mode in an agent",
+        "shift-enter": "A new line in an agent",
         "cmd": "⌘ for the next key, as on a Mac keyboard",
         "delete": "Deletes forward",
     ]

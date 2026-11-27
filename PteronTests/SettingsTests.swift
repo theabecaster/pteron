@@ -86,7 +86,7 @@ import UIKit
         #expect(SettingsSummary.appearanceSpoken(theme: "Nord", fontSize: 11) == "Nord, 11 points")
         #expect(SettingsSummary.notifications(on: true) == "On")
         #expect(SettingsSummary.notifications(on: false) == "Off")
-        #expect(SettingsSummary.keyboard(.standard) == "11 Keys")
+        #expect(SettingsSummary.keyboard(.standard) == "12 Keys")
         var one = KeyBarSetup.standard
         one.sections = [.primary]
         for i in one.primary.indices { one.primary[i].shown = one.primary[i].id == "esc" }
