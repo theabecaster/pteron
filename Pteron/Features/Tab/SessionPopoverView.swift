@@ -34,7 +34,7 @@ struct SessionPopoverView: View {
         .frame(minHeight: 0, idealHeight: contentHeight > 0 ? min(contentHeight, StripStyle.popoverMaxHeight) : nil,
                maxHeight: StripStyle.popoverMaxHeight)
         .foregroundStyle(theme.fg)
-        .presentationBackground(theme.chrome.sidebar)
+        .modifier(PopoverSurface(fill: theme.chrome.sidebar))
     }
 
     /// Names keep one line, two at the accessibility sizes, where one holds a few letters.
@@ -262,6 +262,23 @@ private struct NoScrollEdgeEffect: ViewModifier {
             content.scrollEdgeEffectHidden(true, for: .all)
         } else {
             content
+        }
+    }
+}
+
+/// The popover's surface. From iOS 26 the system draws a popover as glass, arrow and all, and
+/// puts the content under the arrow: a fill of ours would sit inside that glass with corners
+/// of its own and leave the arrow and a rim of glass showing. So the glass is the surface
+/// there, as the system's menus and the Mac's popovers are. Before, the popover is a plain
+/// shape that the sidebar's color fills, arrow included.
+private struct PopoverSurface: ViewModifier {
+    let fill: Color
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+        } else {
+            content.presentationBackground(fill)
         }
     }
 }

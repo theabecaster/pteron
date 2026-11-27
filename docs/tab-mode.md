@@ -112,6 +112,9 @@ tall enough.
     once the popover has gone;
   - the computers that aren't added, each with Add;
   - a footer: Go to Anything…, Agents, Settings.
+  - From iOS 26 it stands on the system's glass, arrow and all, with no fill of its own: the
+    system puts the content under the arrow, so a fill there showed the glass's arrow and a rim
+    of it at the corners. Before iOS 26 the sidebar's color fills it.
 - With no session on screen the chip says "Sessions", and the strip holds little else.
 
 ## Where the sidebar's things are
