@@ -70,7 +70,7 @@ enum PortsLoop {
                 }
                 var top = root
                 while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-                let browser = (top as? UINavigationController)?.viewControllers.first as? PreviewBrowser
+                let browser = top as? PreviewBrowser
                 // Until the page is in (5 s at most).
                 for _ in 0..<100 where browser?.shownTitle != LoopPage.title { await pause(0.05) }
                 await pause(hold)

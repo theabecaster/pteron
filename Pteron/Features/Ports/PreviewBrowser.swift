@@ -159,6 +159,14 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private var barsAsked = false
     /// What the web view loads once it exists: the page, or a path typed before it did.
     private var firstLoad: URL?
+    /// The bar over the page and its buttons (`buildTopBar`).
+    private var topBar: UIView?
+    private var doneButton: UIButton?
+    private var moreButton: UIButton?
+    /// What the top bar shows between Done and the menu: the title stack, or the address field.
+    private var titleView: UIView?
+    /// The line under the top bar, as an opaque navigation bar draws it.
+    private var hairline: UIView?
     /// The bar under the page and its buttons (`buildBottomBar`).
     private var bottomBar: UIView?
     private var backButton: UIButton?
@@ -204,23 +212,21 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         if let view, let holder = UIResponder.rexCurrentFirstResponder() as? UIView, holder.isDescendant(of: view) {
             browser.keyboardHolder = holder
         }
-        let nav = UINavigationController(rootViewController: browser)
-        // The bars are shown one turn after the sheet (`buildItems`).
-        nav.setNavigationBarHidden(true, animated: false)
-        // Opaque bars with the page between them: a page is any color, and the bars' text
-        // must read over none of it.
-        let bar = UINavigationBarAppearance()
-        bar.configureWithOpaqueBackground()
-        nav.navigationBar.standardAppearance = bar
-        nav.navigationBar.scrollEdgeAppearance = bar
-        nav.navigationBar.compactAppearance = bar
+        // The browser is the sheet: no navigation controller, so no system bar and no bar items
+        // (`buildTopBar` says why).
         current = browser
-        top.present(nav, animated: true)
-        nav.presentationController?.delegate = browser
+        top.present(browser, animated: true)
+        browser.presentationController?.delegate = browser
         return true
     }
 
     // MARK: View
+
+    override func loadView() {
+        let root = BrowserView()
+        root.first = { [weak self] in [self?.doneButton, self?.titleView, self?.moreButton].compactMap { $0 } }
+        view = root
+    }
 
     /// The sheet's first frame is the sheet alone. Its bars, with the title, the address, Done,
     /// the menu and the arrows, are shown on the turn after, while the sheet has only begun to
@@ -252,6 +258,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        layoutTopBar()
         layoutBar()
         #if DEBUG || BENCH
         if !laidOut {
@@ -338,8 +345,6 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             stack.accessibilityTraits = .button
         }
         titleStack = stack
-        navigationItem.titleView = stack
-        navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.done() })
     }
 
     /// The bars and what they hold, one turn after the sheet: the menu and the arrows are made
@@ -347,15 +352,165 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private func buildItems() {
         guard !closed, !itemsBuilt else { return }
         PreviewTrace.measure("buildItems") {
-            let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: makeMenu())
-            more.accessibilityLabel = "More"
-            navigationItem.rightBarButtonItem = more
-            navigationController?.setNavigationBarHidden(false, animated: false)
+            buildTopBar()
             buildBottomBar()
             itemsBuilt = true
         }
         refresh()
         DispatchQueue.main.async { [weak self] in self?.makeWebView() }
+    }
+
+    /// Done, the title over the address, and the menu, over the page, where a navigation bar
+    /// has them and looking as its items do. This bar stands in for the navigation bar: on the
+    /// iPhone Duo's iOS 27.2 the system draws that bar with a model that a global observer keeps
+    /// after the sheet is gone, and with it every item the bar held (Done, the menu's button,
+    /// their views and the menu), one set for every page opened. Nothing here is a bar item, so
+    /// nothing of it outlives the page. When the system no longer does that, this can be the
+    /// navigation controller's bar again.
+    private func buildTopBar() {
+        // The look of an opaque navigation bar, taken from the system's own appearance.
+        let look = UINavigationBarAppearance()
+        look.configureWithOpaqueBackground()
+        let bar = UIView()
+        bar.backgroundColor = look.backgroundColor ?? .systemBackground
+        let line = UIView()
+        line.backgroundColor = look.shadowColor
+        line.isUserInteractionEnabled = false
+        bar.addSubview(line)
+        let done = topButton(prominent: true, symbol: "checkmark", label: "Done") { $0.done() }
+        let more = topButton(prominent: false, symbol: "ellipsis.circle", label: "More", nil)
+        more.menu = makeMenu()
+        more.showsMenuAsPrimaryAction = true
+        if let titleStack { bar.addSubview(titleStack) }
+        titleView = titleStack
+        // A navigation bar's title grows with the text only up to a point.
+        titleStack?.maximumContentSizeCategory = Self.barTextLimit
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (browser: PreviewBrowser, _) in
+            browser.updateBarSymbols()
+            browser.view.setNeedsLayout()
+        }
+        // The buttons are the view's own subviews, not the strip's: the iPhone Duo shows them
+        // in its vertical bar, over the page.
+        view.addSubview(bar)
+        view.addSubview(done)
+        view.addSubview(more)
+        // As a navigation bar does at the largest text sizes: a long press shows a button large.
+        view.addInteraction(UILargeContentViewerInteraction())
+        doneButton = done
+        moreButton = more
+        topBar = bar
+        hairline = line
+        layoutTopBar()
+    }
+
+    /// Puts the top bar where a navigation bar is on this shape (`PreviewBarLayout.top`), and
+    /// starts the page under it.
+    private func layoutTopBar() {
+        guard let bar = topBar, let line = hairline, let done = doneButton, let more = moreButton else { return }
+        let shape = barShape()
+        // The room is counted from the view's top inset, as a navigation bar's is.
+        let system = view.safeAreaInsets.top - additionalSafeAreaInsets.top
+        let layout = PreviewBarLayout.top(size: view.bounds.size, inset: system, verticalBar: shape.side,
+                                          compactHeight: shape.compactHeight, floats: shape.floats, rightToLeft: shape.rightToLeft)
+        if abs(additionalSafeAreaInsets.top - layout.height) > 0.5 { additionalSafeAreaInsets.top = layout.height }
+        bar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: system + layout.height)
+        let pixel = 1 / max(traitCollection.displayScale, 1)
+        line.frame = CGRect(x: 0, y: bar.bounds.height, width: bar.bounds.width, height: pixel)
+        done.frame = layout.done
+        more.frame = layout.more
+        guard let title = titleView else { return }
+        // Centred on its line as a navigation bar's title is, and never over a button.
+        let room = layout.title
+        let size: CGSize
+        if title === titleStack {
+            let fit = title.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
+            size = CGSize(width: min(fit.width, room.width), height: fit.height)
+        } else {
+            size = CGSize(width: min(max(200, view.bounds.width - 150), room.width), height: 36)
+        }
+        // As a navigation bar does, the title keeps its centre and starts on a whole pixel: it
+        // grows by what that takes on each side.
+        let scale = max(traitCollection.displayScale, 1)
+        func span(_ centre: CGFloat, _ length: CGFloat) -> (CGFloat, CGFloat) {
+            let start = floor((centre - length / 2) * scale) / scale
+            return (start, max(length, 2 * (centre - start)))
+        }
+        var (x, width) = span(layout.titleCentre.x, size.width)
+        let (y, height) = span(layout.titleCentre.y, size.height)
+        if x < room.minX || x + width > room.maxX {
+            width = size.width
+            x = min(max(layout.titleCentre.x - width / 2, room.minX), room.maxX - width)
+        }
+        title.frame = CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// What the bars are placed by: the side of the system's vertical bar, the size class,
+    /// whether the sheet floats, and the layout direction.
+    private func barShape() -> (side: PreviewBarLayout.Side?, compactHeight: Bool, floats: Bool, rightToLeft: Bool) {
+        var side: PreviewBarLayout.Side?
+        let rightToLeft = traitCollection.layoutDirection == .rightToLeft
+        if #available(iOS 27.1, *) {
+            switch traitCollection.verticalBarEdge {
+            case .leading: side = rightToLeft ? .right : .left
+            case .trailing: side = rightToLeft ? .left : .right
+            default: side = nil
+            }
+        }
+        let floats = view.window.map { $0.bounds.maxY - view.convert(view.bounds, to: $0).maxY > 1 } ?? false
+        return (side, traitCollection.verticalSizeClass == .compact, floats, rightToLeft)
+    }
+
+    /// Puts the title stack or the address field between Done and the menu.
+    private func showInBar(_ shown: UIView) {
+        guard let bar = topBar else { return }
+        if titleView !== shown { titleView?.removeFromSuperview() }
+        titleView = shown
+        bar.addSubview(shown)
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+    }
+
+    private func topButton(prominent: Bool, symbol: String, label: String,
+                           _ action: (@MainActor (PreviewBrowser) -> Void)?) -> UIButton {
+        var style: UIButton.Configuration
+        if #available(iOS 26.0, *) { style = prominent ? .prominentGlass() : .glass() } else { style = prominent ? .filled() : .plain() }
+        style.image = barSymbol(symbol)
+        style.cornerStyle = .capsule
+        let button = UIButton(configuration: style, primaryAction: action.map { action in
+            UIAction { [weak self] _ in if let self { action(self) } }
+        })
+        button.isAccessibilityElement = true
+        button.accessibilityLabel = label
+        button.accessibilityTraits = .button
+        button.showsLargeContentViewer = true
+        button.largeContentTitle = label
+        return button
+    }
+
+    /// A bar item's symbol: the body text's size, 17 points by default, growing with the text up
+    /// to the size where a navigation bar stops (`barTextLimit`).
+    private func barSymbol(_ name: String) -> UIImage? {
+        let size = min(traitCollection.preferredContentSizeCategory, Self.barTextLimit)
+        let points = UIFont.preferredFont(forTextStyle: .body, compatibleWith: UITraitCollection(preferredContentSizeCategory: size)).pointSize
+        guard let image = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: points, weight: .medium)) else { return nil }
+        // On a 3x screen a bar item's symbol sits a sixth of a point right of where the
+        // button centres it and a third of a point lower: its alignment rectangle, which the
+        // button centres, grows up and to the left by twice that. On a 2x screen they match.
+        guard traitCollection.displayScale >= 3 else { return image }
+        let a = image.alignmentRectInsets
+        return image.withAlignmentRectInsets(UIEdgeInsets(top: a.top - 2.0 / 3, left: a.left - 1.0 / 3, bottom: a.bottom, right: a.right))
+    }
+
+    /// The text size a navigation bar's title and items stop growing at.
+    private static let barTextLimit = UIContentSizeCategory.extraExtraLarge
+
+    /// Done's and the menu's symbols follow the text size.
+    private func updateBarSymbols() {
+        for (button, name) in [(doneButton, "checkmark"), (moreButton, "ellipsis.circle")] {
+            guard let button, var style = button.configuration else { continue }
+            style.image = barSymbol(name)
+            button.configuration = style
+        }
     }
 
     /// Back, forward and reload, under the page, where a toolbar has them and looking as its
@@ -389,18 +544,9 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// and ends the page above them. Run on every layout: a rotation, a fold, a resized sheet.
     private func layoutBar() {
         guard let bar = bottomBar, let back = backButton, let forward = forwardButton, let reload = reloadButton else { return }
-        var side: PreviewBarLayout.Side?
-        let rightToLeft = traitCollection.layoutDirection == .rightToLeft
-        if #available(iOS 27.1, *) {
-            switch traitCollection.verticalBarEdge {
-            case .leading: side = rightToLeft ? .right : .left
-            case .trailing: side = rightToLeft ? .left : .right
-            default: side = nil
-            }
-        }
-        let floats = view.window.map { $0.bounds.maxY - view.convert(view.bounds, to: $0).maxY > 1 } ?? false
-        let layout = PreviewBarLayout.make(size: view.bounds.size, verticalBar: side, compactHeight: traitCollection.verticalSizeClass == .compact,
-                                           floats: floats, rightToLeft: rightToLeft)
+        let shape = barShape()
+        let layout = PreviewBarLayout.make(size: view.bounds.size, verticalBar: shape.side, compactHeight: shape.compactHeight,
+                                           floats: shape.floats, rightToLeft: shape.rightToLeft)
         // The room is counted from the view's edge; the system's own inset is part of it.
         let system = view.safeAreaInsets.bottom - additionalSafeAreaInsets.bottom
         let added = max(0, layout.room - system)
@@ -497,8 +643,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         stack.setCustomSpacing(18, after: errorDetail)
         stack.translatesAutoresizingMaskIntoConstraints = false
         errorView.addSubview(stack)
-        // Under the bar with the arrows: reload is how a failed page is tried again from there.
-        if let bottomBar { view.insertSubview(errorView, belowSubview: bottomBar) } else { view.addSubview(errorView) }
+        // Under both bars: reload is how a failed page is tried again from there.
+        if let below = topBar ?? bottomBar { view.insertSubview(errorView, belowSubview: below) } else { view.addSubview(errorView) }
         NSLayoutConstraint.activate([
             stack.centerYAnchor.constraint(equalTo: errorView.centerYAnchor),
             stack.leadingAnchor.constraint(equalTo: errorView.layoutMarginsGuide.leadingAnchor, constant: 16),
@@ -517,8 +663,8 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             titleLabel.text = title
             hostLabel.text = host
             hostLabel.isHidden = title == host
-            navigationItem.titleView?.accessibilityLabel = "\(title), \(host)"
-            (navigationItem.titleView as? UIStackView)?.sizeToFit()
+            titleStack?.accessibilityLabel = "\(title), \(host)"
+            if titleView === titleStack { view.setNeedsLayout() }
         }
         let back = webView?.canGoBack ?? false, forward = webView?.canGoForward ?? false
         for (button, on) in [(backButton, back), (forwardButton, forward)] {
@@ -542,7 +688,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     /// the field any other way puts the title back.
     @objc func editAddress() {
         guard onAddress != nil, addressField == nil else { return }
-        let field = UITextField(frame: CGRect(x: 0, y: 0, width: max(200, view.bounds.width - 150), height: 36))
+        let field = UITextField()
         field.text = PreviewAddress.editing(failed ?? webView?.url, page)
         field.font = .preferredFont(forTextStyle: .subheadline)
         field.adjustsFontForContentSizeCategory = true
@@ -555,9 +701,10 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
         field.spellCheckingType = .no
         field.clearButtonMode = .whileEditing
         field.accessibilityLabel = "Address"
+        field.maximumContentSizeCategory = Self.barTextLimit
         field.delegate = self
         addressField = field
-        navigationItem.titleView = field
+        showInBar(field)
         field.becomeFirstResponder()
     }
 
@@ -580,7 +727,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     func textFieldDidEndEditing(_ textField: UITextField) {
         guard addressField === textField else { return }
         addressField = nil
-        navigationItem.titleView = titleStack
+        if let titleStack { showInBar(titleStack) }
         refresh()
     }
 
@@ -648,6 +795,10 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     var editedText: String? { addressField?.text }
     /// Back, forward and reload, once the bars are up.
     var barButtons: [UIButton] { [backButton, forwardButton, reloadButton].compactMap { $0 } }
+    /// Done and the menu's button, once the bars are up.
+    var topButtons: [UIButton] { [doneButton, moreButton].compactMap { $0 } }
+    /// What the top bar shows between them: the title over the address, or the address line.
+    var shownTitleView: UIView? { titleView }
 
     // MARK: Actions
 
@@ -669,12 +820,12 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     private func share() {
         guard let url = URL(string: linkText) else { return }
         let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        sheet.popoverPresentationController?.sourceItem = moreButton
         present(sheet, animated: true)
     }
 
     private func done(then: (() -> Void)? = nil) {
-        (navigationController ?? self).dismiss(animated: true, completion: then)
+        (presentingViewController ?? self).dismiss(animated: true, completion: then)
         finish()
     }
 
@@ -846,7 +997,7 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
     func downloadDidFinish(_ download: WKDownload) {
         guard let file = downloads.removeValue(forKey: ObjectIdentifier(download)) else { return }
         let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
-        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        sheet.popoverPresentationController?.sourceItem = moreButton
         sheet.completionWithItemsHandler = { _, _, _, _ in try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         guard !closed, presentedViewController == nil else {
             try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
@@ -865,6 +1016,23 @@ final class PreviewBrowser: UIViewController, WKNavigationDelegate, WKUIDelegate
             try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
         }
         Notice.shared.show("Couldn't download that file.", style: .neutral)
+    }
+}
+
+/// The browser's view. VoiceOver reads the top bar first, as it reads a navigation bar: Done,
+/// the title, the menu; then the rest in the order UIKit gives it. Done and the menu are the
+/// view's own subviews (the iPhone Duo shows them in its vertical bar, under the strip).
+private final class BrowserView: UIView {
+    var first: () -> [UIView] = { [] }
+
+    override var accessibilityElements: [Any]? {
+        get {
+            let top = first()
+            guard !top.isEmpty else { return nil }
+            let rest = subviews.filter { view in !view.isHidden && view.alpha > 0 && !top.contains { $0 === view || $0.superview === view } }
+            return top + rest
+        }
+        set {}
     }
 }
 

@@ -1920,16 +1920,25 @@ opens every such port of the machine, so nobody scrolls a pane's history for a l
     Debug and benchmark builds mark the steps of an open as signpost intervals (`PreviewTrace`:
     subsystem `dev.abrahamgonzalez.rexduo`, category `PreviewBrowser`).
   - Chrome: Done, the page's title over its address, a menu (Copy Link, Share…), and back,
-    forward and reload. The top bar is the navigation controller's. The three under the page
-    are the browser's own buttons in its own view, placed and drawn as a toolbar's: UIKit
-    (iOS 27.2) keeps a `UIToolbar`'s items, their buttons and its model after a toolbar that
-    held items is gone, about 90 KB for every page opened, and 100 opens must cost what 30 do
-    (`-portsLoop`, `scripts/bench/ports-loop.sh`). `PreviewBarLayout` puts them where that
-    toolbar's items are on each shape: under the page on an iPhone upright or on its side and
-    in a sheet that floats, and in the system's vertical bar on the iPhone Duo, from the
-    bottom up, where the page keeps its height. They say Back, Forward and Reload to
-    VoiceOver, say when they are off, and show large on a long press at the accessibility
-    text sizes.
+    forward and reload. No bar is the system's: the browser is the sheet itself, with no
+    navigation controller, and both bars are its own views, placed and drawn as a navigation
+    bar's and a toolbar's are, because the system's bars keep what they held. On the iPhone
+    Duo's iOS 27.2 the navigation bar is drawn by a model that a global observer keeps after
+    the sheet is gone, with Done, the menu's button, their views and the menu: one set for
+    every page opened, without bound (the iPhone 17's runtime keeps none). And a `UIToolbar`
+    (iOS 27.2) keeps its items, their buttons and its model after it is gone, about 90 KB for
+    every page opened; 100 opens must cost what 30 do (`-portsLoop`,
+    `scripts/bench/ports-loop.sh`). `PreviewBarLayout.top` puts Done, the title and the menu
+    where the navigation bar had them: an opaque strip with a hairline under it, the page
+    starting below, and on the iPhone Duo Done and the menu in the system's vertical bar, from
+    the top down. The title and the two symbols grow with the text size up to Extra Extra
+    Large, where a navigation bar's stop. VoiceOver reads Done, the title and the menu first, as
+    in a navigation bar.
+    `PreviewBarLayout` puts the arrows where that toolbar's items are on each shape: under the page
+    on an iPhone upright or on its side and in a sheet that floats, and in the system's vertical
+    bar on the iPhone Duo, from the bottom up, where the page keeps its height. They say Back,
+    Forward and Reload to VoiceOver, say when they are off, and show large on a long press at the
+    accessibility text sizes.
     Open in Browser is in the menu only while the computer can hand the page to the
     iPhone's browser (see **Open in Browser**), looked up each time the menu opens, and never
     for a page of another site; otherwise there is no button that leaves for another app,

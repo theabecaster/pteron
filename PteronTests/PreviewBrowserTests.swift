@@ -154,6 +154,56 @@ final class PreviewBarLayoutTests: XCTestCase {
         XCTAssertFalse(narrow.back.intersects(narrow.forward))
     }
 
+    /// Done, the title and the menu where the navigation bar put them on iOS 27.2 (read off
+    /// the iPhone 17, its side, an iPad's form sheet and the iPhone Duo's outer screen).
+    func testTheTopBarIsWhereANavigationBarIs() {
+        let upright = PreviewBarLayout.top(size: CGSize(width: 402, height: 812), inset: 0, verticalBar: nil,
+                                           compactHeight: false, floats: false, rightToLeft: false)
+        XCTAssertEqual(upright.height, 70, "the page starts 70 pt down, under the line")
+        XCTAssertEqual(upright.done, CGRect(x: 16, y: 16, width: 44, height: 44))
+        XCTAssertEqual(upright.more, CGRect(x: 342, y: 16, width: 44, height: 44))
+        XCTAssertEqual(upright.titleCentre, CGPoint(x: 201, y: 38))
+        let side = PreviewBarLayout.top(size: CGSize(width: 874, height: 402), inset: 0, verticalBar: nil,
+                                        compactHeight: true, floats: false, rightToLeft: false)
+        XCTAssertEqual([side.done.minX, side.more.minX, side.done.minY], [38, 792, 24])
+        let sheet = PreviewBarLayout.top(size: CGSize(width: 580, height: 660), inset: 0, verticalBar: nil,
+                                         compactHeight: false, floats: true, rightToLeft: false)
+        XCTAssertEqual([sheet.done.minX, sheet.more.minX, sheet.done.minY, sheet.titleCentre.x], [10, 526, 10, 290])
+        let rtl = PreviewBarLayout.top(size: CGSize(width: 402, height: 812), inset: 0, verticalBar: nil,
+                                       compactHeight: false, floats: false, rightToLeft: true)
+        XCTAssertEqual(rtl.done, upright.more, "Done on the leading side")
+        // The Duo: the strip holds the title, Done and the menu are in the vertical bar.
+        let duo = PreviewBarLayout.top(size: CGSize(width: 450, height: 670), inset: 0, verticalBar: .right,
+                                       compactHeight: false, floats: false, rightToLeft: false)
+        XCTAssertEqual(duo.height, 74, "the page starts 74 pt down")
+        XCTAssertEqual(duo.done, CGRect(x: 386, y: 166, width: 48, height: 48))
+        XCTAssertEqual(duo.more, CGRect(x: 386, y: 226, width: 48, height: 48))
+        XCTAssertEqual(duo.titleCentre, CGPoint(x: 195, y: 40))
+        let duoSide = PreviewBarLayout.top(size: CGSize(width: 662, height: 458), inset: 0, verticalBar: .left,
+                                           compactHeight: true, floats: false, rightToLeft: false)
+        XCTAssertEqual(duoSide.done, CGRect(x: 16, y: 74, width: 48, height: 48))
+        XCTAssertEqual(duoSide.more, CGRect(x: 16, y: 134, width: 48, height: 48))
+        XCTAssertEqual(duoSide.titleCentre, CGPoint(x: 361, y: 40))
+        XCTAssertEqual(duoSide.height, 74)
+        let bottom = PreviewBarLayout.make(size: CGSize(width: 662, height: 458), verticalBar: .left, compactHeight: true, floats: false, rightToLeft: false)
+        XCTAssertLessThan(duoSide.more.maxY, bottom.back.minY, "clear of the arrows")
+    }
+
+    /// Any size: the buttons stay in the view and apart, and the title's room is between them.
+    func testTheTopBarFitsAnySize() {
+        for width in stride(from: CGFloat(280), through: 1100, by: 41) {
+            let size = CGSize(width: width, height: 700), view = CGRect(origin: .zero, size: size)
+            for (compact, floats) in [(false, false), (true, false), (false, true)] {
+                for rightToLeft in [false, true] {
+                    let t = PreviewBarLayout.top(size: size, inset: 0, verticalBar: nil, compactHeight: compact, floats: floats, rightToLeft: rightToLeft)
+                    XCTAssertTrue(view.contains(t.done) && view.contains(t.more))
+                    XCTAssertFalse(t.title.intersects(t.done) || t.title.intersects(t.more))
+                    XCTAssertEqual(t.done.midX < t.more.midX, !rightToLeft)
+                }
+            }
+        }
+    }
+
     func testRightToLeftPutsBackOnTheRight() {
         let l = PreviewBarLayout.make(size: CGSize(width: 402, height: 812), verticalBar: nil, compactHeight: false, floats: false, rightToLeft: true)
         XCTAssertEqual([l.back, l.forward, l.reload].map(centre), [CGPoint(x: 350, y: 760), CGPoint(x: 262, y: 760), CGPoint(x: 52, y: 760)])
@@ -279,7 +329,7 @@ final class PreviewBrowserTests: XCTestCase {
         let page = PreviewPage(load: load, shown: "localhost:3000")
         XCTAssertTrue(PreviewBrowser.present(page, over: window.rootViewController?.view) { [weak self] in self?.closes += 1 })
         let shown = try XCTUnwrap(window.rootViewController?.presentedViewController)
-        return try XCTUnwrap((shown as? UINavigationController)?.viewControllers.first as? PreviewBrowser ?? shown as? PreviewBrowser)
+        return try XCTUnwrap(shown as? PreviewBrowser, "the browser is the sheet itself")
     }
 
     func testThePageShowsItsTitleOverTheComputersAddress() async throws {
@@ -322,15 +372,16 @@ final class PreviewBrowserTests: XCTestCase {
     /// presented it, not the web view, nor what the web view was configured with (WebKit hands
     /// out its configuration as a copy, which shares the one user content controller). Nor
     /// anything that was in the bars: a `UIToolbar` kept its items, their buttons and the menu
-    /// for every page opened, which is why the arrows are the browser's own buttons.
+    /// for every page opened, and so did the iPhone Duo's navigation bar, which is why both
+    /// bars are the browser's own views.
     func testNothingOfAPageOutlivesItsClose() async throws {
         weak var browser: PreviewBrowser?
         weak var shown: UIViewController?
         weak var web: WKWebView?
         weak var configuration: WKWebViewConfiguration?
         weak var content: WKUserContentController?
-        weak var done: UIBarButtonItem?
-        weak var more: UIBarButtonItem?
+        weak var done: UIButton?
+        weak var more: UIButton?
         weak var menu: UIMenu?
         weak var title: UIView?
         let buttons = NSHashTable<UIButton>.weakObjects()
@@ -339,10 +390,15 @@ final class PreviewBrowserTests: XCTestCase {
             let b = try await open()
             _ = await until(b) { b.shownTitle == "Fixture page" && b.barButtons.count == 3 }
             browser = b
-            done = b.navigationItem.leftBarButtonItem
-            more = b.navigationItem.rightBarButtonItem
-            menu = b.navigationItem.rightBarButtonItem?.menu
-            title = b.navigationItem.titleView
+            done = b.topButtons.first
+            more = b.topButtons.last
+            menu = more?.menu
+            title = b.shownTitleView
+            // No system bar holds anything: nothing of the page is a bar item.
+            XCTAssertNil(b.navigationController)
+            XCTAssertNil(b.navigationItem.leftBarButtonItem)
+            XCTAssertNil(b.navigationItem.rightBarButtonItem)
+            XCTAssertNil(b.navigationItem.titleView)
             for button in b.barButtons { buttons.add(button) }
             XCTAssertNotNil(done)
             XCTAssertNotNil(more)
@@ -402,6 +458,33 @@ final class PreviewBrowserTests: XCTestCase {
         XCTAssertTrue(buttons[1].accessibilityTraits.contains(.notEnabled))
         XCTAssertTrue(buttons[2].isEnabled)
         XCTAssertFalse(buttons[2].accessibilityTraits.contains(.notEnabled))
+        b.close()
+    }
+
+    /// Done, the title and the menu, as a navigation bar has them: what VoiceOver hears and in
+    /// which order, and the menu's actions.
+    func testTheBarOverThePageSaysWhatItIs() async throws {
+        let b = try await open()
+        let up = await until(b) { b.shownTitle == "Fixture page" && b.topButtons.count == 2 }
+        XCTAssertTrue(up)
+        let done = try XCTUnwrap(b.topButtons.first), more = try XCTUnwrap(b.topButtons.last)
+        XCTAssertEqual(b.topButtons.map(\.accessibilityLabel), ["Done", "More"])
+        for button in b.topButtons {
+            XCTAssertTrue(button.isAccessibilityElement)
+            XCTAssertTrue(button.accessibilityTraits.contains(.button))
+            XCTAssertTrue(button.showsLargeContentViewer)
+        }
+        let title = try XCTUnwrap(b.shownTitleView)
+        XCTAssertEqual(title.accessibilityLabel, "Fixture page, localhost:3000")
+        let order = try XCTUnwrap(b.view.accessibilityElements)
+        XCTAssertTrue(order.count >= 3)
+        XCTAssertTrue(order[0] as AnyObject === done && order[1] as AnyObject === title && order[2] as AnyObject === more,
+                      "Done, the title, the menu, then the page")
+        XCTAssertTrue(more.showsMenuAsPrimaryAction)
+        let items = try XCTUnwrap(more.menu?.children.compactMap { $0 as? UIAction })
+        XCTAssertEqual(items.map(\.title), ["Copy Link", "Share…"])
+        // The page starts under the bar.
+        XCTAssertGreaterThanOrEqual(b.webView?.frame.minY ?? 0, title.frame.maxY)
         b.close()
     }
 

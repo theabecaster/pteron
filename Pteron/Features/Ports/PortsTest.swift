@@ -96,7 +96,7 @@ enum PortsTest {
             var top = ScreenInspector.keyWindow?.rootViewController
             while let next = top?.presentedViewController { top = next }
             NSLog("PORTS_TEST top %@", String(describing: top.map { type(of: $0) }))
-            if let browser = (top as? UINavigationController)?.viewControllers.first as? PreviewBrowser { browser.close() }
+            if let browser = top as? PreviewBrowser { browser.close() }
         case "wait":
             try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
         case "process":
