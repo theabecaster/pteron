@@ -79,9 +79,10 @@ enum SendTarget {
         return "this computer"
     }
 
-    /// What is being sent: its name for one file, the count for more.
-    static func what(_ names: [String]) -> String {
-        names.count == 1 ? names[0] : "\(names.count) files"
+    /// What is being sent: its name for one item, the count for more ("3 files", or "3 items"
+    /// when a folder is among them).
+    static func what(_ names: [String], folders: Bool = false) -> String {
+        names.count == 1 ? names[0] : "\(names.count) \(folders ? "items" : "files")"
     }
 
     static func progress(_ names: [String], to target: String, fraction: Double) -> String {
@@ -102,6 +103,20 @@ enum SendTarget {
 
     /// Above this, a send on an expensive network (cellular, a hotspot) asks first.
     static let expensiveLimit: Int64 = 25_000_000
+}
+
+/// How a send goes. A single file goes as it always has: one `upload_begin` of the pane's
+/// terminal, which types its path. Where the pane's computer has an fs block, a folder, several
+/// items, or a file larger than a terminal takes go as one archive instead
+/// (`FileSender.sendTree`), and the app inserts their paths.
+enum SendRoute: Equatable {
+    case files
+    case tree
+
+    static func pick(count: Int, folders: Bool, largest: Int64, trees: Bool) -> SendRoute {
+        guard trees else { return .files }
+        return folders || count > 1 || largest > FileUploader.maxFileSize ? .tree : .files
+    }
 }
 
 /// What Paste (the paste key, ⌘V, the edit menu) does with the clipboard. Text always wins, so
@@ -138,7 +153,9 @@ enum ClipboardChoice: Equatable {
 /// Which of an item's types is read as the file to send: an image, else a movie, else, for an item
 /// backed by a file, its data. Text and addresses on their own are never sent as files.
 enum FileItemType {
-    static func pick(_ types: [UTType], fileBacked: Bool) -> UTType? {
+    /// `folders`: the pane's computer takes folders, so a folder is read as one.
+    static func pick(_ types: [UTType], fileBacked: Bool, folders: Bool = false) -> UTType? {
+        if folders, let t = types.first(where: { $0.conforms(to: .directory) }) { return t }
         if let t = types.first(where: { $0.conforms(to: .image) && !$0.conforms(to: .url) }) { return t }
         if let t = types.first(where: { $0.conforms(to: .movie) }) { return t }
         guard fileBacked else { return nil }

@@ -360,6 +360,8 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var createdAt: [String: Date] = [:]
     /// The app's forwards to dev servers; set by `AppModel`.
     @ObservationIgnored weak var forward: PortForward?
+    /// The fs blocks of folder transfers (`TreeBlocks`); set by `AppModel`.
+    @ObservationIgnored weak var treeBlocks: TreeBlocks?
     /// What each listed port answered (`ServerConnection+PortProbe.swift`).
     @ObservationIgnored var portProbes = PortProbeBook()
     /// Each pane's ports that show nowhere for now: held for their probe, or no web page. Its
@@ -925,6 +927,7 @@ final class ServerConnection: Identifiable {
             lastError = nil
             push?.serverReady(self)
             forward?.serverSynced(self)
+            treeBlocks?.serverSynced(self)
             setupSignals?(.ready)
         } catch {
             lastError = error.localizedDescription

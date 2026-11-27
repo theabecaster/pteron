@@ -44,7 +44,7 @@ history):
 | 20 | `client.undo_close`; `undoable` on `block.close`, `session.close_window`, `session.destroy` | Undo Close |
 | 21 | two zooms per window: `tiled_zoomed_block_id`, and a layout change no longer ends a zoom | Zoom |
 | 22 | `session.transfer_window` | gated, not used (below) |
-| 24 at the latest | the `com.superlogical.fs` block (tar upload and download), `terminal.program_resume_records` | not used (below) |
+| 24 at the latest | the `com.superlogical.fs` block (tar upload and download), `terminal.program_resume_records` | folders and several items (The fs block); `program_resume_records` not used |
 
 The oldest revision the app serves stays 13: servers at 13, 18, 19 and 24 connect and work
 (`RevisionTests`, `ServerEventsTests`).
@@ -174,21 +174,66 @@ every revision, and `zoomsApart` (the field is there) says how a tiled zoom is d
 moves and focus changes no longer end zooms the old way; the app reads the view, so it shows
 whatever the server reports.
 
-## Not used: `session.transfer_window`, the fs block, Program Resume
+## Not used: `session.transfer_window`, Program Resume
 
 - `session.transfer_window` (revision 22) moves a tab with its running programs to another
   session. No phone surface moves a tab across sessions: the sidebar's drag keeps a tab inside
   its session (docs/sidebar.md, Reorder). A drop on another session's tabs is the candidate.
-- `com.superlogical.fs` blocks send and take files and folders as tar (`download_begin`,
-  `upload_begin`, over `rex.data.bytes.v1`). Files today sends one file per `upload_begin` of a
-  terminal and downloads one file at a time. The fs block is the candidate for a folder upload
-  from Files or the photo picker's multiple items in one stream, and a folder download from the
-  file browser; it needs an fs block made for the purpose (`session.new_block`), and the creator
-  list says whether a host has it.
 - `com.superlogical.terminal.program_resume_records` lists the commands programs reported with
   OSC 7577 to restart them; a command can hold a secret. Not used.
 - The creator list names the fs creator and `program_resume_records` at every revision of a
   revision-24 server, so the revision those arrived at isn't known; at the latest 24.
+
+## The fs block (`com.superlogical.fs`, revision 24 at the latest)
+
+Folders, several items in one stream and folder downloads go through an fs block
+(`FsUploader`, `FsDownloader`, `TarPlan`, `TarReader` in RexKit; `TreeBlocks` in the app;
+[terminal.md](terminal.md), Files). Probed on a revision-24 server (preview.25, macOS) in a
+throwaway session, 2026-11-27.
+
+- **Where a block comes from.** `session.new_block` with flavor `com.superlogical.fs.fs`, in the
+  pane's session, label `Pteron #<tag>` (the tunnels' tag; the flavor tells them apart), no
+  options (`working_dir` defaults to home; the app sends absolute paths). It starts detached, owned
+  by its maker, and is in no view: `session.list_blocks` lists it (`placement` detached), and no
+  client shows it, the Mac app included. Its `block_created`, `block_owner_changed` and
+  `block_closed` reach every attached client; the app's own change no view. Rex never removes
+  one, so the app closes it (`block.close`) when the transfer ends and sweeps leftovers on sync.
+  `rex cp` works the same way.
+- **Detection.** The creator list names `com.superlogical.fs` with the flavor and
+  `upload_begin` and `download_begin` in `api.methods` for the server's own `host_id`. A pane on
+  another host has no fs block of its own, so it keeps the terminal's methods; so does a Windows
+  server (the landing folder is `/tmp`, and Go's patterns there read `\` as a separator). No
+  revision is checked and no `RexAPI` entry is needed: a revision-24 server lists the creator at
+  every revision it serves, and an older one doesn't list it.
+- **Upload.** `upload_begin` takes `ref` (`upload:<uuid>`), `path`, `roots`, `entries` and `size`
+  and answers `ticket`, `expires_in_ms` (60000) and the absolute `path`. Then HELLO, WELCOME,
+  the archive in binary messages of at most 64 KiB, and one empty message; the server closes with
+  1000 once everything is in place. The app always sends `path: "/tmp"` and one top-level folder
+  of its own, `pteron-<12 hex>`, so nothing is ever replaced.
+  - Nothing appears at the destination before the end: a stream closed early (1000 included) or
+    dropped leaves the destination as it was.
+  - An existing folder is merged into and an existing file replaced, silently: why the app
+    never uploads into a folder that may hold the same names.
+  - A top-level count other than `roots`, an entry with `..` or an absolute path, and an entry
+    whose folder came in no entry before it close with 4006. `entries` and `size` are not
+    checked against the archive.
+  - `size` is checked against the destination's room: `too_large` (413) when it needs more than
+    the free space less 2 GiB.
+  - `path` that is not a directory takes a single root under that name; with more roots it is
+    `bad_request` ("2 sources cannot share one name"); a trailing `/` that names no directory is
+    `bad_request`.
+  - Ustar, PAX and GNU archives are all taken (Go's archive/tar). The app writes ustar with a PAX
+    record only for a name or link over 100 bytes or a size of 8 GiB or more; files keep their
+    mode and mtime.
+- **Download.** `download_begin` takes `ref`, `paths` and `recursive` and answers `ticket`,
+  `expires_in_ms`, `roots`, `entries` and `size`. `paths` are patterns (`*`, `?`, `[...]`, Go's
+  filepath.Match), so the app escapes each of them and the backslash. A folder without
+  `recursive` is `bad_request`, a path that matches nothing `not_found`, an empty list
+  `bad_request`. The stream is a PAX archive (each entry with a PAX header carrying the path and a
+  fractional mtime), with links as links, and ends with 1000.
+- **No resume, short tickets.** A RESUME of either direction is refused (REJECT 0x03), and a
+  ticket used after `expires_in_ms` is refused with 0x01: a lost transfer starts over with a new
+  `…_begin`. The app opens the data connection right after the answer.
 
 ## Focus history (`focus_history.reverse`, revision 19)
 
@@ -236,6 +281,8 @@ revision-19 server (preview.23) in a throwaway session, 2026-11-27:
   screen closes.
 - Other: `block.close`, `hosts.list`, `block_creator.list`, `data.connect`, `client.keymap`,
   `client.action`, `client.key`, `client.reply`.
+- Folders: `session.new_block`, `session.list_blocks` and `block.close` for fs blocks, and
+  `com.superlogical.fs.upload_begin` and `download_begin` (The fs block).
 - Ports: `session.new_block` (dial tunnels), `session.list_blocks` (the sweep),
   `com.superlogical.terminal.ports`. Several `block.close` go through `RexControl.callInOrder`,
   which sends them in one turn, in order.

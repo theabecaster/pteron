@@ -240,11 +240,14 @@ builds.
   `FIT_RESIZE` per pane on screen. Screenshots on the Duo need `--display=1`.
 - `-filesTest '<step>;<step>…'`: drive sending files and Open in the active pane once it is live
   (`Features/Files/FilesTest.swift` lists the steps): `keyboard`, `menu`, `reveal`,
-  `send:<Mac path>|<Mac path>`, `sendAsIs:…`, `paste:<image path>`, `open:<text>`, `cancel`, `wait:<s>`.
+  `send:<Mac path>|<Mac path>`, `sendAsIs:…`, `sendTree:<Mac path>|…` (files and folders where
+  they are, as the Files picker gives them where the computer takes folders), `paste:<image path>`,
+  `open:<text>`, `cancel`, `wait:<s>`.
   The files land on the pane's computer and their paths are typed, so use a `zz-` session.
   The file browser: `browse`, `insert`, `browseAt:<path>` open it; then `go:<path>`,
   `enter:<name>`, `up`, `filter:<text>`, `hidden`, `tap:<name>`, `insertPath:<name>`,
-  `insertHere`, `share:<name>`, `save:<name>`, `select:<n>`, `refresh`, `done`.
+  `insertHere`, `share:<name>`, `save:<name>`, `shareFolder:<name>`, `saveFolder:<name>`,
+  `select:<n>`, `refresh`, `done`.
   `run:<action>` runs `pane.go_to_directory`, `pane.insert_path`, `pane.insert_file` or
   `pane.insert_photo` as a bound key does, and `lose:<method>` records that the pane's host
   lacks `list_dir`, `upload_begin` or `download_begin`. The browser lists the folder the

@@ -115,6 +115,14 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     private let sessionID: String
     private let blockID: String
     private var downloader: FileDownloader?
+    private var treeDownloader: FsDownloader?
+    /// A folder download is under way (its block may still be being made).
+    private var fetchingFolder = false
+    private var folderCancelled = false
+    /// Runs an fs transfer (`FileSender.withFsBlock`). Nil where the pane's computer has none.
+    var withFsBlock: ((_ body: @escaping @MainActor (String, @escaping FsOpen) async throws -> Void) async throws -> Void)?
+    /// The folder the export picker or the share sheet holds, removed when it is done.
+    private var exportingFolder: URL?
     /// The copy Quick Look shows, and the name its title carries.
     private var showing: PreviewFile?
     /// The copy the share sheet or Save to Files holds.
@@ -128,7 +136,11 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
         self.blockID = blockID
     }
 
-    func cancel() { downloader?.cancel() }
+    func cancel() {
+        downloader?.cancel()
+        treeDownloader?.cancel()
+        if fetchingFolder { folderCancelled = true }
+    }
 
     /// The pane closed: stop a download and delete the copy, unless Quick Look still shows it (it
     /// goes when Quick Look does).
@@ -146,7 +158,7 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     }
 
     private func fetch(_ path: String, machine: String, to destination: Destination, over view: UIView?) {
-        guard downloader == nil else { return Notice.shared.show("Wait for the file on its way to finish.") }
+        guard downloader == nil, !fetchingFolder else { return Notice.shared.show("Wait for the file on its way to finish.") }
         let d = FileDownloader(control: control, sessionID: sessionID, blockID: blockID)
         downloader = d
         let name = (path as NSString).lastPathComponent
@@ -184,6 +196,109 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 }
             }
         }
+    }
+
+    // MARK: Folders
+
+    /// Downloads the folder at `path` through an fs block, writing it into the app's temporary
+    /// folder as it arrives, then hands it to Save to Files (moved, not copied, so a large
+    /// folder needs its room once) or the share sheet. A download that fails leaves nothing.
+    func exportFolder(_ path: String, machine: String, to destination: Destination, over view: UIView?) {
+        guard downloader == nil, !fetchingFolder else { return Notice.shared.show("Wait for the file on its way to finish.") }
+        guard let withFsBlock else { return Notice.shared.show(Messages.updateRex(machine, to: "save folders")) }
+        let name = (path as NSString).lastPathComponent
+        fetchingFolder = true
+        folderCancelled = false
+        let cancel: @MainActor () -> Void = { [weak self] in self?.cancel() }
+        Notice.shared.showProgress("\(destination.verb) \(name) · 0%", fraction: 0, cancel: cancel)
+        let control = self.control, sessionID = self.sessionID
+        let background = BackgroundTask(name: "Save folder") { [weak self] in self?.cancel() }
+        Task { @MainActor in
+            defer {
+                self.fetchingFolder = false
+                self.treeDownloader = nil
+                background.end()
+            }
+            var staging: URL?
+            do {
+                let root = try FileStaging.folder(in: FileStaging.incoming)
+                staging = root
+                var result: FsDownloader.Result?
+                try await withFsBlock { blockID, open in
+                    let d = FsDownloader(control: control, sessionID: sessionID, blockID: blockID, open: open)
+                    self.treeDownloader = d
+                    if self.folderCancelled { d.cancel() }
+                    result = try await d.download([path], into: root, hasRoom: { Self.hasRoom(for: $0) }) { got, size in
+                        let f = size > 0 ? min(Double(got) / Double(size), 1) : 0
+                        Notice.shared.showProgress("\(destination.verb) \(name) · \(Int(f * 100))%", fraction: f, cancel: cancel)
+                    }
+                }
+                guard let result, let top = result.tops.first else { throw FsDownloader.Failure.lost("nothing arrived") }
+                #if DEBUG
+                // `FILES_FOLDER <copy>`: where the folder is until it is saved, to check it against the computer's.
+                NSLog("FILES_FOLDER %@ entries=%ld skipped=%ld", root.appendingPathComponent(top).path, result.info.entries, result.skipped)
+                #endif
+                Notice.shared.dismiss()
+                if result.skipped > 0 {
+                    let n = result.skipped
+                    Notice.shared.show(n == 1 ? "\(name) came without its 1 link." : "\(name) came without its \(n) links.", style: .neutral)
+                }
+                self.handFolder(root.appendingPathComponent(top, isDirectory: true), staging: root, to: destination, over: view)
+            } catch {
+                if let staging { FileStaging.remove(staging) }
+                let retry = Notice.Action(title: "Try Again") { self.exportFolder(path, machine: machine, to: destination, over: view) }
+                if self.folderCancelled {
+                    return Notice.shared.show("Didn't save \(name).", style: .neutral)
+                }
+                switch error as? FsDownloader.Failure {
+                case .cancelled?: Notice.shared.show("Didn't save \(name).", style: .neutral)
+                case .notFound?: Notice.shared.show("There's no \(name) on \(machine).")
+                case .noPermission?: Notice.shared.show("Rex on \(machine) isn't allowed to read \(name).")
+                case .noRoom(let size)?:
+                    Notice.shared.show("This \(DeviceWord.current) doesn't have room for \(name) (\(SendTarget.size(size))).")
+                case .unsafe?: Notice.shared.show("Couldn't save \(name): it holds a name that isn't safe to save.")
+                case .saveFailed?: Notice.shared.show("Couldn't save \(name) on this \(DeviceWord.current). Free up space, then try again.")
+                case .refused?: Notice.shared.show("\(Messages.capitalized(machine)) refused \(name).", action: retry)
+                case .lost?, nil:
+                    if (error as? RexError)?.code == "not_found" || (error as? RexError)?.code == "method_not_found" {
+                        return Notice.shared.show(Messages.updateRex(machine, to: "save folders"))
+                    }
+                    Notice.shared.show("Couldn't save \(name). \(Messages.notSent(machine))", action: retry)
+                }
+            }
+        }
+    }
+
+    /// Room for `size` bytes, and 200 MB to spare, in the app's temporary folder.
+    nonisolated static func hasRoom(for size: Int64) -> Bool {
+        let values = try? FileManager.default.temporaryDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        guard let free = values?.volumeAvailableCapacityForImportantUsage else { return true }
+        return free >= size + 200_000_000
+    }
+
+    private func handFolder(_ folder: URL, staging: URL, to destination: Destination, over view: UIView?) {
+        guard let top = Self.top(over: view) else { return FileStaging.remove(staging) }
+        if let old = exportingFolder { FileStaging.remove(old) }
+        exportingFolder = staging
+        if destination == .share {
+            let sheet = UIActivityViewController(activityItems: [folder], applicationActivities: nil)
+            sheet.completionWithItemsHandler = { [weak self] _, _, _, _ in
+                Task { @MainActor in self?.folderExported(staging) }
+            }
+            sheet.popoverPresentationController?.sourceView = top.view
+            sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 1, height: 1)
+            sheet.popoverPresentationController?.permittedArrowDirections = []
+            top.present(sheet, animated: true)
+        } else {
+            let picker = UIDocumentPickerViewController(forExporting: [folder], asCopy: false)
+            picker.delegate = self
+            top.present(picker, animated: true)
+        }
+    }
+
+    private func folderExported(_ staging: URL) {
+        FileStaging.remove(staging)
+        if exportingFolder == staging { exportingFolder = nil }
     }
 
     /// An empty file arrives with no bytes, so nothing was written for it.
@@ -267,10 +382,12 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         if let url = exporting { exported(url) }
+        if let f = exportingFolder { folderExported(f) }
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         if let url = exporting { exported(url) }
+        if let f = exportingFolder { folderExported(f) }
     }
 }
 

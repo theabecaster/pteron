@@ -8,6 +8,40 @@ struct StagedFile: Equatable, Sendable {
     var size: Int64
 }
 
+/// One item of a send that goes as one archive (`FileSender.sendTree`): a file or a folder,
+/// either a copy the app owns in `Outgoing` (removed after) or an item the Files picker gave,
+/// read where it is under its security scope (released after).
+struct Outgoing: Equatable, Sendable {
+    var url: URL
+    /// The name it lands under.
+    var name: String
+    var isFolder: Bool
+    /// A copy in the app's temporary folder.
+    var owned: Bool
+    /// The picker's security scope was started for it.
+    var scoped: Bool
+
+    init(url: URL, name: String, isFolder: Bool, owned: Bool, scoped: Bool) {
+        self.url = url
+        self.name = name
+        self.isFolder = isFolder
+        self.owned = owned
+        self.scoped = scoped
+    }
+
+    init(_ f: StagedFile) {
+        self.init(url: f.url, name: f.name, isFolder: false, owned: true, scoped: false)
+    }
+
+    /// Lets go of what the items hold: removes the copies, ends the scopes.
+    static func release(_ items: [Outgoing]) {
+        for i in items {
+            if i.owned { try? FileManager.default.removeItem(at: i.url.deletingLastPathComponent()) }
+            if i.scoped { i.url.stopAccessingSecurityScopedResource() }
+        }
+    }
+}
+
 /// The app's own copies of files on their way out (`Outgoing`), in (`Incoming`) or to the share
 /// sheet (`Shared`), in its temporary folder. Each file has a folder of its own, so two files of
 /// one name don't collide. A send or a share removes its copies when it ends; what a crash left
@@ -40,6 +74,16 @@ enum FileStaging {
             try FileManager.default.copyItem(at: source, to: dest)
         }
         return try staged(dest, name: clean)
+    }
+
+    /// Moves a folder the system copied for this app (a drop, a paste) in as `name`.
+    static func stageFolder(moving source: URL, as name: String) throws -> Outgoing {
+        let clean = UploadName.sanitize(name, fallback: "Folder")
+        let dest = try folder(in: outgoing).appendingPathComponent(clean, isDirectory: true)
+        do { try FileManager.default.moveItem(at: source, to: dest) } catch {
+            try FileManager.default.copyItem(at: source, to: dest)
+        }
+        return Outgoing(url: dest, name: clean, isFolder: true, owned: true, scoped: false)
     }
 
     static func stage(data: Data, as name: String) throws -> StagedFile {

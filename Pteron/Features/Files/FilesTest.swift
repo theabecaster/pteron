@@ -10,6 +10,9 @@ import RexKit
 /// - `menu`: open the attach menu. `reveal`: scroll the key bar to the attach key.
 /// - `send:<path>|<path>`: send these files (paths on the Mac running the simulator) as one batch,
 ///   prepared as Photos prepares them. `sendAsIs:` sends them untouched, as Files does.
+/// - `sendTree:<path>|<path>`: send these files and folders where they are, as the Files picker
+///   gives them where the computer takes folders (`SendRoute`: several items or a folder go as one
+///   archive through an fs block).
 /// - `paste:<path>`: put this image on the clipboard alone, then Paste.
 /// - `open:<text>`: open what `<text>` names, as the edit menu's Open does for a selection.
 /// - `cancel`: cancel the send on its way, as the notice's Cancel does.
@@ -19,6 +22,7 @@ import RexKit
 ///   the filter, `hidden` shows hidden files, `tap:<name>` taps a row (preview, or insert in
 ///   insert mode), `insertPath:<name>` is the row menu's Insert Path, `insertHere` the bottom
 ///   button, `share:<name>` and `save:<name>` the row menu's Share… and Save to Files…,
+///   `shareFolder:<name>` and `saveFolder:<name>` the same on a folder,
 ///   `select:<n>` moves the keyboard's row down n times, `refresh` lists again, `done` closes.
 /// - `lose:<method>`: record that the pane's host lacks `upload_begin`, `download_begin` or
 ///   `list_dir`, as a call's `method_not_found` does, to see what a server without it shows.
@@ -62,6 +66,13 @@ enum FilesTest {
                 return asIs ? .ready(f) : ImagePrep.prepare(f)
             }
             host.files?.send(files)
+        case "sendTree":
+            let items = arg.split(separator: "|").map { path -> Outgoing in
+                let url = URL(fileURLWithPath: String(path))
+                let folder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                return Outgoing(url: url, name: url.lastPathComponent, isFolder: folder, owned: false, scoped: false)
+            }
+            host.files?.send(items, staged: [])
         case "paste":
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)) else { return }
             let type = UTType(filenameExtension: (arg as NSString).pathExtension) ?? .png
@@ -81,7 +92,8 @@ enum FilesTest {
             files.server.capabilities.record(method: method.full, host: block?.hostID, .absent, serial: files.server.connectionSerial)
         case "run":
             if let c = FilesCommand.forAction(arg) { host.files?.run(c) }
-        case "go", "enter", "up", "filter", "hidden", "tap", "insertPath", "insertHere", "share", "save", "select", "refresh", "done":
+        case "go", "enter", "up", "filter", "hidden", "tap", "insertPath", "insertHere", "share", "save", "shareFolder", "saveFolder",
+             "select", "refresh", "done":
             guard let b = host.files?.browserModel else { return NSLog("FILES_TEST no browser for %@", step) }
             let folder = b.current
             let entry = folder.rows.first { $0.name == arg }
@@ -96,6 +108,8 @@ enum FilesTest {
             case "insertHere": b.onInsert(folder.path)
             case "share": if let entry { b.onShare(b.path(of: entry, in: folder)) }
             case "save": if let entry { b.onSave(b.path(of: entry, in: folder)) }
+            case "shareFolder": if let entry { b.onShareFolder(b.path(of: entry, in: folder)) }
+            case "saveFolder": if let entry { b.onSaveFolder(b.path(of: entry, in: folder)) }
             case "select": for _ in 0..<(Int(arg) ?? 1) { folder.move(1) }
             case "refresh": await b.refresh()
             default: b.onClose()

@@ -128,6 +128,21 @@ final class PaneFiles {
         sender.target = { [weak self] in self?.target ?? "this computer" }
         sender.computer = { [weak self] in self?.machineName ?? "this computer" }
         picker.onPicked = { [weak self] files in self?.send(files) }
+        picker.onPickedInPlace = { [weak self] urls in
+            guard let self else { return Outgoing.release(urls) }
+            self.send(urls, staged: [])
+        }
+        let withFsBlock: (_ body: @escaping @MainActor (String, @escaping FsOpen) async throws -> Void) async throws -> Void = {
+            [weak server] body in
+            guard let server, let keeper = server.treeBlocks else { throw RexError.local("no fs block") }
+            try await keeper.with(server, session: sessionID) { blockID in
+                let tunnels = server.makeTunnelSession()
+                defer { tunnels?.invalidate() }
+                try await body(blockID) { ticket in try await server.openTunnel(ticket: ticket, in: tunnels) }
+            }
+        }
+        sender.withFsBlock = withFsBlock
+        opener.withFsBlock = withFsBlock
         prepare = { ImagePrep.prepare($0) }
         opener.onFolder = { [weak self] path in self?.browse(.browse, at: path) ?? false }
         watchSupport()
@@ -139,6 +154,12 @@ final class PaneFiles {
 
     /// What the pane's host can do with files, each method on its own; nil while not known.
     var support: FileSupport { server.fileSupport(host: block?.hostID) }
+
+    /// The pane's computer takes folders, and several items in one stream (`SendRoute`).
+    var takesFolders: Bool { support.upload == true && server.takesTrees("upload_begin", block: block) }
+
+    /// The pane's computer sends folders: Share and Save to Files on a folder in the browser.
+    var savesFolders: Bool { server.takesTrees("download_begin", block: block) }
 
     /// The attach key shows where there is something behind it: sending, or browsing.
     var showsAttachKey: Bool {
@@ -305,7 +326,7 @@ final class PaneFiles {
     /// The Files picker. Its pick is sent to the pane as it is.
     func pickFiles() {
         guard support.upload == true, let view else { return }
-        picker.pickFiles(over: view)
+        picker.pickFiles(over: view, folders: takesFolders)
     }
 
     // MARK: Commands
@@ -346,12 +367,31 @@ final class PaneFiles {
     /// Sends the items of a paste or a drop as one batch, prepared as picked photos are.
     func send(providers: [NSItemProvider], unnamed: String, empty: String) {
         let prepare = picker.prepare
+        let folders = takesFolders
         Task { @MainActor in
             var files: [ImagePrep.Result] = []
+            var trees: [Outgoing] = []
             for p in providers {
-                if let f = await Self.load(p, unnamed: unnamed) { files.append(await Task.detached { prepare(f) }.value) }
+                if folders, let folder = await Self.loadFolder(p) {
+                    trees.append(folder)
+                } else if let f = await Self.load(p, unnamed: unnamed) {
+                    files.append(await Task.detached { prepare(f) }.value)
+                }
             }
-            if files.isEmpty { Notice.shared.show(empty) } else { self.send(files) }
+            if files.isEmpty, trees.isEmpty { Notice.shared.show(empty) } else { self.send(files, folders: trees) }
+        }
+    }
+
+    /// A folder among a drop's or a paste's items, as a copy the app owns; nil for anything else.
+    static func loadFolder(_ p: NSItemProvider) async -> Outgoing? {
+        guard let type = p.registeredContentTypes.first(where: { $0.conforms(to: .directory) }) else { return nil }
+        let suggested = p.suggestedName
+        return await withCheckedContinuation { (c: CheckedContinuation<Outgoing?, Never>) in
+            _ = p.loadFileRepresentation(for: type, openInPlace: false) { url, _, _ in
+                // The system's copy goes when this returns: it is moved in first.
+                guard let url else { return c.resume(returning: nil) }
+                c.resume(returning: try? FileStaging.stageFolder(moving: url, as: suggested ?? url.lastPathComponent))
+            }
         }
     }
 
@@ -405,13 +445,13 @@ final class PaneFiles {
 
     /// Sends prepared files. An image whose location couldn't be removed goes only if the user
     /// says so; without a yes it is left out.
-    func send(_ results: [ImagePrep.Result]) {
+    func send(_ results: [ImagePrep.Result], folders: [Outgoing] = []) {
         let ready = results.compactMap { if case .ready(let f) = $0 { f } else { nil } }
         let kept = results.compactMap { if case .locationKept(let f) = $0 { f } else { nil } }
-        guard !kept.isEmpty else { return send(ready) }
+        guard !kept.isEmpty else { return send(ready, folders: folders) }
         guard let view else {
             FileStaging.discard(kept)
-            return send(ready)
+            return send(ready, folders: folders)
         }
         let what = kept.count == 1 ? kept[0].name : "\(kept.count) images"
         TerminalPrompt.ask(over: view, title: "Couldn't remove location. Send anyway?",
@@ -419,11 +459,102 @@ final class PaneFiles {
                            confirm: "Send Anyway") { [weak self] yes in
             if !yes { FileStaging.discard(kept) }
             let files = yes ? results.map(\.file) : ready
-            if !files.isEmpty { self?.send(files) }
+            guard let self else { return Outgoing.release(folders) }
+            if !files.isEmpty || !folders.isEmpty { self.send(files, folders: folders) }
         }
     }
 
-    func send(_ files: [StagedFile]) {
+    /// Sends staged files and folders. A single file goes as it always has; a folder, several
+    /// items or a file larger than a terminal takes go as one archive where the pane's computer
+    /// takes folders (`SendRoute`).
+    func send(_ files: [StagedFile], folders: [Outgoing] = []) {
+        let largest = files.map(\.size).max() ?? 0
+        let route = SendRoute.pick(count: files.count + folders.count, folders: !folders.isEmpty, largest: largest, trees: takesFolders)
+        guard route == .files else { return send(files.map(Outgoing.init) + folders, staged: []) }
+        if !folders.isEmpty {
+            Outgoing.release(folders)
+            Notice.shared.show(Messages.updateRex(machineName, to: "send folders"))
+            if files.isEmpty { return }
+        }
+        sendAsFiles(files)
+    }
+
+    /// Sends items picked in Files (read where they are) together with staged ones, by
+    /// `SendRoute`: a single file is copied in and sent as files always are.
+    func send(_ items: [Outgoing], staged: [StagedFile]) {
+        let all = items + staged.map(Outgoing.init)
+        guard !all.isEmpty else { return }
+        Task { @MainActor in
+            let sizes = await Task.detached(priority: .userInitiated) { () -> [Int64] in
+                all.map { (try? $0.url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 }.map(Int64.init) ?? 0 }
+            }.value
+            let route = SendRoute.pick(count: all.count, folders: all.contains(where: \.isFolder), largest: sizes.max() ?? 0,
+                                       trees: self.takesFolders)
+            if route == .tree { return self.sendTree(all) }
+            // Plain files where the computer takes no folders: copies, sent as files.
+            if all.contains(where: \.isFolder) {
+                Notice.shared.show(Messages.updateRex(self.machineName, to: "send folders"))
+            }
+            let plain = all.filter { !$0.isFolder }
+            let files = await Task.detached(priority: .userInitiated) { () -> [StagedFile] in
+                plain.compactMap { i in i.owned ? StagedFile(url: i.url, name: i.name, size: Self.size(i.url))
+                    : try? FileStaging.stage(copying: i.url, as: i.name) }
+            }.value
+            // The copies are made: the picker's originals are let go; owned copies travel on.
+            Outgoing.release(all.filter { !$0.owned || $0.isFolder })
+            if files.count < plain.count { Notice.shared.show("Couldn't read some of the files.") }
+            if !files.isEmpty { self.sendAsFiles(files) }
+        }
+    }
+
+    nonisolated static func size(_ url: URL) -> Int64 {
+        Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 } ?? 0)
+    }
+
+    /// One archive through an fs block (`FileSender.sendTree`), then the items' paths are
+    /// inserted into the pane as Insert Path writes them.
+    private func sendTree(_ items: [Outgoing]) {
+        // The user picked files, not a place on the screen: they go once the pane is current.
+        let go: @MainActor () -> Void = { [weak self] in
+            guard let self else { return Outgoing.release(items) }
+            self.sender.sendTree(items, over: self.view) { [weak self] paths, done in
+                self?.insertSent(paths, done: done)
+            }
+        }
+        guard let whenCurrent else { return go() }
+        whenCurrent(go)
+    }
+
+    /// Writes the paths that just landed into the pane, by `PathInsert`'s rules for the program
+    /// there now. Where it takes no path (an ssh in front, a Windows computer), the notice says
+    /// where they are and offers to copy them.
+    func insertSent(_ paths: [String], done: String) {
+        let decision = insertDecision
+        let texts = paths.compactMap { p -> String? in
+            if case .success(let t) = PathInsert.text(for: p, cwd: nil, home: "", quoting: decision.quoting) { return t }
+            return nil
+        }
+        let copy = Notice.Action(title: "Copy Path") { UIPasteboard.general.string = paths.joined(separator: " ") }
+        guard decision.offered, texts.count == paths.count else {
+            return Notice.shared.show(done + ".", style: .neutral, action: copy)
+        }
+        let text = texts.joined()
+        Notice.shared.show(done, style: .neutral)
+        if case .ask(let program) = decision {
+            let title = PathInsert.question(program: program)
+            let answer: @MainActor (Bool) -> Void = { [weak self] yes in if yes { self?.insertText?(text) } }
+            if let confirmInsert {
+                confirmInsert(title, text, answer)
+            } else if let view {
+                TerminalPrompt.ask(over: view, title: title, message: text, confirm: "Insert", answer: answer)
+            }
+        } else {
+            insertText?(text)
+        }
+    }
+
+    /// Today's send: one `upload_begin` batch of the pane's terminal, which types the paths.
+    func sendAsFiles(_ files: [StagedFile]) {
         guard support.upload == true else {
             FileStaging.discard(files)
             Notice.shared.show(Messages.updateRex(machineName, to: "send files"))
@@ -487,6 +618,7 @@ final class PaneFiles {
         // Without `list_dir` the listing on screen is only to read: nothing in it is fetched or inserted.
         let lists = s.listDir == true
         return BrowserModel.Facts(canList: lists, canFetch: lists && s.download == true,
+                                  canFetchFolders: lists && savesFolders,
                                   insert: lists ? insertDecision : .unavailable,
                                   paneOpen: block != nil && server.meta[blockID]?.exited != true,
                                   online: server.phase == .online)
@@ -528,6 +660,14 @@ final class PaneFiles {
         model.onSave = { [weak self] path in
             guard let self else { return }
             self.opener.export(path, machine: self.machineName, to: .files, over: self.view)
+        }
+        model.onShareFolder = { [weak self] path in
+            guard let self else { return }
+            self.opener.exportFolder(path, machine: self.machineName, to: .share, over: self.view)
+        }
+        model.onSaveFolder = { [weak self] path in
+            guard let self else { return }
+            self.opener.exportFolder(path, machine: self.machineName, to: .files, over: self.view)
         }
         model.onClose = { [weak sheet] in sheet?.dismiss(animated: true) }
         model.onInsert = { [weak sheet] path in

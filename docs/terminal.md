@@ -1209,6 +1209,41 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   at most twice: the server deleted the aborted batch's files and can't resume an upload. Once
   the last file's end has gone out the server may type at any moment, so nothing is sent again
   and Cancel no longer applies; a lost confirmation then says to check the pane.
+- **Folders and several items** (`SendRoute`, `FileSender.sendTree`; [rex-protocol.md](rex-protocol.md),
+  The fs block). Where the pane's computer has an fs block (Rex with revision 24, the pane on the
+  computer's own host, not Windows), a folder, two or more items, or a file over 100 MiB go as
+  one archive in one stream; a single file still goes as above. Files offers folders beside files
+  and reads what is picked where it is, under its security scope, so a large folder is never
+  copied first; a dropped or pasted folder is the system's copy. Without an fs block the picker
+  offers files only and a dropped folder is refused as before ("Couldn't read what was dropped.").
+  - **Where they land.** In a new folder, `/tmp/pteron-<12 hex>` (mode 0700), made by the upload
+    itself, so nothing that is there already is ever replaced and no question is needed. The
+    server puts the archive in place only once all of it has arrived: a cancel, a lost stream or a
+    refused archive leaves nothing. The folder stays until the computer clears `/tmp` (macOS
+    after three days unused, most Linux after ten, or a restart).
+  - **The paths.** The server types nothing for an fs upload: once it has confirmed, the app
+    writes the items' absolute paths into the pane as Insert Path does (`PathInsert`: escaped for
+    a shell, as they are for an agent, "Insert anyway?" for another program), with a space and
+    never Enter. Where Insert isn't offered (ssh and the like in front) nothing is written, and the
+    notice offers Copy Path.
+  - **Before it goes.** The walk that counts `roots`, `entries` and `size` runs off the main
+    thread, with "Preparing …" and Cancel; an item from a file provider is read through a file
+    coordinator first, which brings a folder that is only in the cloud onto the phone. Links are
+    never followed: a link inside a chosen folder goes as a link when its target is relative and
+    stays inside that folder; any other link, a chosen link, and sockets or FIFOs are left out,
+    and the result says how many. The cellular question applies to the whole archive.
+  - **On the way.** The archive is read from the phone's files and framed as it goes, at most 64
+    KiB at a time, off the main thread: the main thread only takes a pacing turn per 128 KiB
+    (`UploadPacer`, the same rate and window as single files) and shows progress in whole
+    percents. A file that changes size while it is read stops the send ("… changed while it was
+    read"); a lost stream starts over from the start, at most twice; once the end has gone out a
+    lost confirmation says to check the pane. Too little room on the computer (Rex wants the
+    size and 2 GiB to spare) is said before anything goes.
+  - **The fs block.** One per transfer, made in the pane's session with `session.new_block` and
+    closed when the transfer ends. It starts detached: no window holds it, so neither the phone
+    nor the Mac app shows it, and its events change no view. Rex never removes one, so each block
+    made is remembered (`TreeBlocks`) and the next sync closes any a killed app left, as the
+    ports' sweep does for tunnels.
 - **Pacing** (`UploadPacer`, RexKit). A socket's send returns once the system has the bytes, so an
   unpaced file fills the phone's uplink queue at once, and the control connection's pings, calls
   and typed keys wait behind all of it (a 7.5 MB photo on a 2 Mbit/s uplink: 10 s), past every
@@ -1275,6 +1310,16 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   to Files. The copy is deleted when Quick Look goes; none is kept for later, so nothing is left
   when the pane closes or the app goes to the background. Not found, a folder, a device and an
   unreadable file each get a plain message.
+- **Folder download.** Where the pane's computer has an fs block, a folder's long press in the
+  browser also has Share… and Save to Files…. The folder comes as one archive
+  (`FsDownloader`, RexKit; the path taken literally, never as a pattern) and is written into the
+  app's `tmp/Incoming` as it arrives, off the main thread, in pieces of at most 64 KiB, never
+  held whole; progress shows in whole percents with Cancel. Then Save to Files moves it to the
+  folder picked (moved, so a large folder needs its room on the phone once) and the share sheet
+  is offered it as a folder. The phone's room is checked first (the size and 200 MB to spare).
+  Links in the folder are left out and said so; an entry with `..` or an absolute path stops the
+  download as unsafe. A cancel, a lost stream or an archive that ends early deletes what arrived,
+  so no half folder is left, and offers Try Again where it can help.
 - **Browse.** "Browse Files…" in the attach menu's "Files on <computer>", below the sending
   rows, and in the palette's commands (as are Insert Path…, Insert File… and Insert Photo…;
   [goto.md](goto.md)), opens a sheet over
@@ -1332,7 +1377,8 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
 - **The keyboard** goes back, when the browser closes, to whoever held it: the terminal shown
   or quiet, nobody, or the pane's find field (`KeyboardRecord`). With a hardware keyboard the
   sheet makes the key bar leave, as the Settings sheet does.
-- **Temporary copies** live in the app's `tmp/Outgoing` and `tmp/Incoming`; a finished send or a
+- **Temporary copies** live in the app's `tmp/Outgoing` and `tmp/Incoming` (a downloaded folder
+  too); a finished send or a
   closed preview removes its own, and launch removes what is left.
 - `-filesTest` drives all of this in the simulator, which can't tap through a picker
   ([debug-args.md](debug-args.md)). Debug builds log the SHA-256 of each file sent (`FILES_SENT`)

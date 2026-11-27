@@ -214,6 +214,9 @@ private struct FolderScreen: View {
         if entry.isFile, facts.canFetch, facts.paneOpen {
             Button { model.onShare(p) } label: { Label("Share…", systemImage: "square.and.arrow.up") }
             Button { model.onSave(p) } label: { Label("Save to Files…", systemImage: "folder") }
+        } else if !entry.isFile, facts.canFetchFolders, facts.paneOpen {
+            Button { model.onShareFolder(p) } label: { Label("Share…", systemImage: "square.and.arrow.up") }
+            Button { model.onSaveFolder(p) } label: { Label("Save to Files…", systemImage: "folder") }
         }
     }
 

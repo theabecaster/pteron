@@ -11,6 +11,9 @@ enum DropRule {
     /// The types a drop can bring as files: images, movies, and items backed by a file. Text and
     /// web addresses are not files: a drag of them is refused rather than sent as a `.txt`.
     static let types: [UTType] = [.image, .movie, .fileURL]
+
+    /// Where the pane's computer takes folders, a folder is one too.
+    static func types(folders: Bool) -> [UTType] { folders ? types + [.folder] : types }
 }
 
 /// Drops onto one pane: files dragged in from another app go to the pane's computer, as the
@@ -36,7 +39,7 @@ final class PaneDrop: NSObject, UIDropInteractionDelegate {
 
     private func accepts(_ session: UIDropSession) -> Bool {
         DropRule.accepts(fromThisApp: session.localDragSession != nil, canSend: files?.support.upload == true,
-                         hasFiles: session.hasItemsConforming(toTypeIdentifiers: DropRule.types.map(\.identifier)))
+                         hasFiles: session.hasItemsConforming(toTypeIdentifiers: DropRule.types(folders: files?.takesFolders == true).map(\.identifier)))
     }
 
     func dropInteraction(_ interaction: UIDropInteraction, canHandle session: UIDropSession) -> Bool {

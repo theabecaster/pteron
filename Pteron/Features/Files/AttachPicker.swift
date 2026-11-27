@@ -9,6 +9,11 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
     UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     /// What a picker produced: staged copies, prepared. Files from Files go as they are.
     var onPicked: (([ImagePrep.Result]) -> Void)?
+    /// What the Files picker produced where folders may be picked: the items where they are,
+    /// each with its security scope started; the receiver releases them (`Outgoing.release`).
+    var onPickedInPlace: (([Outgoing]) -> Void)?
+    /// The open Files picker lets folders be picked and reads items in place.
+    private var inPlace = false
     /// Turns a picked photo into what is sent (`ImagePrep`); the identity until set.
     var prepare: @Sendable (StagedFile) -> ImagePrep.Result = { .ready($0) }
 
@@ -37,8 +42,14 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
         present(picker, over: view)
     }
 
-    func pickFiles(over view: UIView) {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+    /// `folders`: the pane's computer takes folders. The picker then offers folders beside files
+    /// and gives the items where they are, under their security scope, so a large folder is read
+    /// as it is sent and never copied first. Otherwise it gives copies of files, as before.
+    func pickFiles(over view: UIView, folders: Bool = false) {
+        inPlace = folders
+        let picker = folders
+            ? UIDocumentPickerViewController(forOpeningContentTypes: [.item, .folder], asCopy: false)
+            : UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
         picker.allowsMultipleSelection = true
         picker.delegate = self
         present(picker, over: view)
@@ -123,6 +134,16 @@ final class AttachPicker: NSObject, PHPickerViewControllerDelegate, UIDocumentPi
     // MARK: Files
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if inPlace {
+            let items = urls.map { url in
+                let scoped = url.startAccessingSecurityScopedResource()
+                let folder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                return Outgoing(url: url, name: UploadName.sanitize(url.lastPathComponent, fallback: folder ? "Folder" : "File"),
+                                isFolder: folder, owned: false, scoped: scoped)
+            }
+            if !items.isEmpty { onPickedInPlace?(items) }
+            return
+        }
         Task { @MainActor in
             let files = await Task.detached(priority: .userInitiated) { () -> [StagedFile] in
                 urls.compactMap { url in

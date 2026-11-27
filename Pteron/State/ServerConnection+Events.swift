@@ -95,6 +95,8 @@ extension ServerConnection {
         case "block_created":
             // A tunnel of the open browser is detached: no view changes.
             guard !ownTunnel(p.str("block_id"), session: sid) else { return }
+            // So is an fs block of a folder transfer.
+            guard treeBlocks?.owns(p.str("block_id"), server: id, session: sid) != true else { return }
             touchedSessions.insert(sid)
             refreshView(sid)
             // Its metadata is read once the view holds it (`createdBlocksShown`).
@@ -102,7 +104,8 @@ extension ServerConnection {
         case "block_event":
             handleBlockEvent(sessionID: sid, p)
         case "window_created", "window_closed", "window_label_changed", "active_window_changed", "block_closed", "block_owner_changed":
-            if type == "block_closed" || type == "block_owner_changed", let bid = p.str("block_id"), forward?.owns(bid) == true {
+            if type == "block_closed" || type == "block_owner_changed", let bid = p.str("block_id"),
+               forward?.owns(bid) == true || treeBlocks?.owns(bid, server: id, session: sid) == true {
                 return
             }
             // A pane that shows the block hears who has it now, and why (`TerminalHost.ownerChanged`).

@@ -435,6 +435,8 @@ final class AppModel {
     @ObservationIgnored let actions = GlanceActions()
     /// Opens computers' dev servers on the phone, one browser at a time.
     @ObservationIgnored let forward = PortForward()
+    /// The fs blocks folder transfers make, one per transfer (`TreeBlocks`).
+    @ObservationIgnored let treeBlocks = TreeBlocks()
     /// What a row of each machine's ports list does: open, copy its link, show its pane, stop.
     @ObservationIgnored private(set) lazy var ports = PortActions(model: self)
 
@@ -552,7 +554,10 @@ final class AppModel {
         // A server that is gone from the list: its helper's secret must stop working.
         for id in old.keys where !configs.contains(where: { $0.id == id }) {
             push.serverRemoved(id)
-            if let s = old[id] { forward.serverRemoved(s) }
+            if let s = old[id] {
+                forward.serverRemoved(s)
+                treeBlocks.serverRemoved(s)
+            }
         }
         servers = configs.map { cfg in
             if let s = old[cfg.id], s.config == cfg { return s }
@@ -579,6 +584,7 @@ final class AppModel {
                 return sel.sessionID
             }
             s.forward = forward
+            s.treeBlocks = treeBlocks
             s.probePort = { [weak forward, weak s] target in
                 guard let forward, let s else { return .unknown }
                 return await forward.probe(target, on: s)

@@ -216,6 +216,8 @@ final class BrowserModel {
         var canList = true
         /// Files can be fetched: Preview, Share and Save.
         var canFetch = true
+        /// Folders can be fetched whole: Share and Save on a folder (an fs block).
+        var canFetchFolders = false
         var insert = PathInsert.Decision.ask(program: nil)
         var paneOpen = true
         var online = true
@@ -248,6 +250,8 @@ final class BrowserModel {
     @ObservationIgnored var onPreview: (String) -> Void = { _ in }
     @ObservationIgnored var onShare: (String) -> Void = { _ in }
     @ObservationIgnored var onSave: (String) -> Void = { _ in }
+    @ObservationIgnored var onShareFolder: (String) -> Void = { _ in }
+    @ObservationIgnored var onSaveFolder: (String) -> Void = { _ in }
     @ObservationIgnored var onCopy: (String) -> Void = { _ in }
     /// Insert this path and close.
     @ObservationIgnored var onInsert: (String) -> Void = { _ in }
